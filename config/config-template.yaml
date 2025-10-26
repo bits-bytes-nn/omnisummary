@@ -1,0 +1,26 @@
+resources:
+  project_name: omnisummary
+  stage: dev
+  profile_name:
+  default_region_name: us-west-2
+  bedrock_region_name: us-west-2
+  vpc_id:
+  subnet_ids:
+  enable_business_slack_channels: false
+
+content_parser:
+  figure_analysis_model_id: anthropic.claude-3-haiku-20240307-v1:0
+  metadata_extraction_model_id: anthropic.claude-sonnet-4-5-20250929-v1:0
+  pdf_parser_type: unstructured
+
+summarization:
+  summarization_model_id: anthropic.claude-sonnet-4-5-20250929-v1:0
+  n_thumbnails: 1
+
+agent:
+  agent_model_id: anthropic.claude-sonnet-4-5-20250929-v1:0
+
+infrastructure:
+  lambda_timeout_seconds: 60
+  lambda_memory_mb: 128
+  agentcore_image_tag: latest
