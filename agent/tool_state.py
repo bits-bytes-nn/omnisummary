@@ -10,6 +10,7 @@ class ToolStateManager:
         self._last_parse_hash: str | None = None
         self._last_summary_hash: str | None = None
         self._slack_channel_id: str | None = None
+        self._message_sent: bool = False
 
     def clear(self) -> None:
         self._parse_results.clear()
@@ -17,6 +18,7 @@ class ToolStateManager:
         self._last_parse_hash = None
         self._last_summary_hash = None
         self._slack_channel_id = None
+        self._message_sent = False
 
     def get_parse_result(self, parse_hash: str | None = None) -> ParseResult:
         effective_hash = parse_hash or self._last_parse_hash
@@ -61,6 +63,13 @@ class ToolStateManager:
     @slack_channel_id.setter
     def slack_channel_id(self, channel_id: str | None) -> None:
         self._slack_channel_id = channel_id
+
+    @property
+    def message_sent(self) -> bool:
+        return self._message_sent
+
+    def mark_message_sent(self) -> None:
+        self._message_sent = True
 
 
 state_manager = ToolStateManager()

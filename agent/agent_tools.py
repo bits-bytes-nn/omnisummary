@@ -120,6 +120,9 @@ async def send_slack_message(enable_business_channels: bool = False) -> str:
         Success message indicating which channels received the summary, or error message
         if sending failed
     """
+    if state_manager.message_sent:
+        return "✓ Message already sent to Slack channels (skipping duplicate)"
+
     parsed_result = state_manager.get_parse_result()
     summary_result = state_manager.get_summary_result()
     enable_business_channels = enable_business_channels and config.resources.enable_business_slack_channels
@@ -127,6 +130,7 @@ async def send_slack_message(enable_business_channels: bool = False) -> str:
     success = await _send_slack_message(parsed_result, summary_result, enable_business_channels)
 
     if success:
+        state_manager.mark_message_sent()
         channels = "personal and business" if enable_business_channels else "personal"
         return f"✓ Sent summary to '{channels}' Slack channels"
     else:
