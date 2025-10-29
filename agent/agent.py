@@ -172,15 +172,16 @@ tools = [
     send_slack_message,
 ]
 
-summarization_agent = Agent(
-    model=bedrock_model,
-    tools=tools,
-    system_prompt=SYSTEM_PROMPT,
-)
 
-
-logger.info(
-    "Summarization Agent initialized with %d tools using model: '%s'",
-    len(summarization_agent.tool_names),
-    config.agent.agent_model_id.value,
-)
+def create_summarization_agent() -> Agent:
+    agent = Agent(
+        model=bedrock_model,
+        tools=tools,
+        system_prompt=SYSTEM_PROMPT,
+    )
+    logger.info(
+        "Summarization Agent initialized with %d tools using model: '%s'",
+        len(agent.tool_names),
+        config.agent.agent_model_id.value,
+    )
+    return agent

@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agent import state_manager, summarization_agent
+from agent import create_summarization_agent, state_manager
 from shared import logger
 
 
@@ -13,7 +13,8 @@ async def run_agent(message: str) -> None:
     logger.info("Running agent with message: '%s'", message)
     try:
         state_manager.clear()
-        response = await asyncio.to_thread(summarization_agent, message)
+        agent = create_summarization_agent()
+        response = await asyncio.to_thread(agent, message)
         logger.info("Agent response: '%s'", response)
         logger.info("✓ Successfully completed")
     except Exception as e:

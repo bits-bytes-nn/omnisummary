@@ -1,4 +1,4 @@
-from .agent import SYSTEM_PROMPT, bedrock_model, summarization_agent
+from .agent import SYSTEM_PROMPT, bedrock_model, create_summarization_agent
 from .tool_state import state_manager
 
-__all__ = ["SYSTEM_PROMPT", "bedrock_model", "state_manager", "summarization_agent"]
+__all__ = ["SYSTEM_PROMPT", "bedrock_model", "create_summarization_agent", "state_manager"]

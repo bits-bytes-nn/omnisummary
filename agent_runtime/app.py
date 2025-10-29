@@ -4,7 +4,7 @@ from typing import Any
 import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
-from agent import summarization_agent
+from agent import create_summarization_agent
 from agent.tool_state import state_manager
 from shared import EnvVars, SSMParams, get_ssm_param_value, logger
 
@@ -51,7 +51,10 @@ def invoke(payload: dict[str, Any]) -> str:
         logger.info("User input: '%s'", user_input[:100])
         logger.info("Slack context: channel_id='%s'", channel_id)
 
-        response = summarization_agent(user_input)
+        agent = create_summarization_agent()
+        logger.info("Created new agent instance for this request")
+
+        response = agent(user_input)
         logger.info("Agent response received")
 
         result = response.message["content"][0].get("text")
