@@ -4,18 +4,26 @@ from .constants import ContentType
 from .models import ParseResult, SummaryResult
 
 
-def extract_unique_urls(urls_str: str) -> list[str]:
+def extract_unique_urls(urls_str: str) -> list[tuple[str, str]]:
     if not urls_str or not urls_str.strip():
         return []
 
-    cleaned_urls = [url.strip() for url in urls_str.split("\n") if url.strip()]
+    cleaned_entries = [entry.strip() for entry in urls_str.split("\n") if entry.strip()]
     unique_urls = []
     seen_urls = set()
 
-    for url in cleaned_urls:
+    for entry in cleaned_entries:
+        if "|" in entry:
+            parts = entry.split("|", 1)
+            url = parts[0].strip()
+            title = parts[1].strip() if len(parts) > 1 else url
+        else:
+            url = entry.strip()
+            title = url
+
         if url and url not in seen_urls:
             seen_urls.add(url)
-            unique_urls.append(url)
+            unique_urls.append((url, title))
 
     return unique_urls
 
@@ -60,10 +68,10 @@ def format_slack_message(
     message += f"\n\n{summary_text}"
 
     if content.metadata and content.metadata.get("urls"):
-        urls = extract_unique_urls(content.metadata["urls"])
-        if urls:
+        url_entries = extract_unique_urls(content.metadata["urls"])
+        if url_entries:
             message += "\n\n📎 *참고 링크*"
-            for url in urls:
-                message += f"\n- <{url}>"
+            for url, title in url_entries:
+                message += f"\n- <{url}|{title}>"
 
     return message.strip()

@@ -135,6 +135,7 @@ class OmniSummaryFoundationStack(Stack):
             iam.ManagedPolicy.from_aws_managed_policy_name(name)
             for name in [
                 "AmazonBedrockFullAccess",
+                "AmazonDynamoDBFullAccess",
                 "AmazonSSMFullAccess",
                 "CloudWatchLogsFullAccess",
             ]
