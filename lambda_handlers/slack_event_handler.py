@@ -212,7 +212,14 @@ def invoke_agentcore_runtime(message: str, channel_id: str) -> None:
         )
 
         logger.info("AgentCore Runtime invoked successfully for message: '%s'", message[:100])
-        logger.debug("Response: %s", response)
+
+        streaming_body = response.get("response")
+        if streaming_body:
+            response_data = streaming_body.read()
+            logger.info("AgentCore response received (length: %d bytes)", len(response_data))
+            logger.debug("AgentCore response content: %s", response_data.decode("utf-8")[:500])
+        else:
+            logger.warning("No response body in AgentCore response")
 
     except Exception as e:
         logger.error("Failed to invoke AgentCore Runtime for message '%s': %s", message[:100], e)

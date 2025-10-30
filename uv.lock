@@ -296,6 +296,18 @@ wheels = [
 ]
 
 [[package]]
+name = "aws-requests-auth"
+version = "0.4.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/54/b2/455c0bfcbd772dafd4c9e93c4b713e36790abf9ccbca9b8e661968b29798/aws-requests-auth-0.4.3.tar.gz", hash = "sha256:33593372018b960a31dbbe236f89421678b885c35f0b6a7abfae35bb77e069b2", size = 10096 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/af/11/5dc8be418e1d54bed15eaf3a7461797e5ebb9e6a34869ad750561f35fa5b/aws_requests_auth-0.4.3-py2.py3-none-any.whl", hash = "sha256:646bc37d62140ea1c709d20148f5d43197e6bd2d63909eb36fa4bb2345759977", size = 6838 },
+]
+
+[[package]]
 name = "backoff"
 version = "2.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -845,6 +857,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/98/97/06afe62762c9a8a86af0cfb7bfdab22a43ad17138b07af5b1a58442690a2/deprecated-1.2.18.tar.gz", hash = "sha256:422b6f6d859da6f2ef57857761bfb392480502a64c3028ca9bbe86085d72115d", size = 2928744 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6e/c6/ac0b6c1e2d138f1002bcf799d330bd6d85084fece321e662a14223794041/Deprecated-1.2.18-py2.py3-none-any.whl", hash = "sha256:bd5011788200372a32418f888e326a09ff80d0214bd961147cfed01b5c018eec", size = 9998 },
+]
+
+[[package]]
+name = "dill"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/12/80/630b4b88364e9a8c8c5797f4602d0f76ef820909ee32f0bacb9f90654042/dill-0.4.0.tar.gz", hash = "sha256:0633f1d2df477324f53a895b02c901fb961bdbf65a17122586ea7019292cbcf0", size = 186976 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/50/3d/9373ad9c56321fdab5b41197068e1d8c25883b3fea29dd361f9b55116869/dill-0.4.0-py3-none-any.whl", hash = "sha256:44f54bf6412c2c8464c14e8243eb163690a9800dbe2c367330883b19c7561049", size = 119668 },
 ]
 
 [[package]]
@@ -1755,6 +1776,19 @@ wheels = [
 ]
 
 [[package]]
+name = "markdownify"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "beautifulsoup4" },
+    { name = "six" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/83/1b/6f2697b51eaca81f08852fd2734745af15718fea10222a1d40f8a239c4ea/markdownify-1.2.0.tar.gz", hash = "sha256:f6c367c54eb24ee953921804dfe6d6575c5e5b42c643955e7242034435de634c", size = 18771 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6a/e2/7af643acb4cae0741dffffaa7f3f7c9e7ab4046724543ba1777c401d821c/markdownify-1.2.0-py3-none-any.whl", hash = "sha256:48e150a1c4993d4d50f282f725c0111bd9eb25645d41fa2f543708fd44161351", size = 15561 },
+]
+
+[[package]]
 name = "markupsafe"
 version = "3.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -2365,6 +2399,7 @@ dependencies = [
     { name = "slack-bolt" },
     { name = "slack-sdk" },
     { name = "strands-agents" },
+    { name = "strands-agents-tools" },
     { name = "tenacity" },
     { name = "tiktoken" },
     { name = "unstructured", extra = ["pdf"] },
@@ -2384,39 +2419,40 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp", specifier = ">=3.9.0" },
-    { name = "aws-cdk-aws-lambda-python-alpha", specifier = ">=2.120.0a0" },
-    { name = "aws-cdk-lib", specifier = ">=2.120.0" },
+    { name = "aiohttp", specifier = ">=3.13.1" },
+    { name = "aws-cdk-aws-lambda-python-alpha", specifier = ">=2.220.0a0" },
+    { name = "aws-cdk-lib", specifier = ">=2.220.0" },
     { name = "aws-lambda-powertools", specifier = ">=2.30.0" },
-    { name = "beautifulsoup4", specifier = ">=4.12.0" },
-    { name = "bedrock-agentcore", specifier = ">=0.1.0" },
-    { name = "bedrock-agentcore-starter-toolkit", specifier = ">=0.1.0" },
+    { name = "beautifulsoup4", specifier = ">=4.14.2" },
+    { name = "bedrock-agentcore", specifier = ">=1.0.4" },
+    { name = "bedrock-agentcore-starter-toolkit", specifier = ">=0.1.26" },
     { name = "black", marker = "extra == 'dev'", specifier = ">=23.12.0" },
-    { name = "boto3", specifier = ">=1.34.0" },
-    { name = "constructs", specifier = ">=10.0.0" },
-    { name = "httpx", specifier = ">=0.25.0" },
-    { name = "langchain", specifier = ">=0.1.0" },
-    { name = "langchain-aws", specifier = ">=0.1.0" },
-    { name = "langchain-core", specifier = ">=0.1.0" },
+    { name = "boto3", specifier = ">=1.40.58" },
+    { name = "constructs", specifier = ">=10.4.2" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "langchain", specifier = ">=0.3.27,<1.0.0" },
+    { name = "langchain-aws", specifier = ">=0.2.35,<1.0.0" },
+    { name = "langchain-core", specifier = ">=0.3.78,<1.0.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.7.0" },
-    { name = "pdfminer-six", specifier = ">=20221105" },
-    { name = "pillow", specifier = ">=10.1.0" },
-    { name = "pydantic", specifier = ">=2.0.0" },
-    { name = "pymupdf", specifier = ">=1.23.0" },
+    { name = "pdfminer-six", specifier = ">=20250506" },
+    { name = "pillow", specifier = ">=11.3.0" },
+    { name = "pydantic", specifier = ">=2.12.0" },
+    { name = "pymupdf", specifier = ">=1.26.4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.1.0" },
-    { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "python-dotenv", specifier = ">=1.1.1" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.9" },
     { name = "slack-bolt", specifier = ">=1.18.0" },
     { name = "slack-sdk", specifier = ">=3.26.0" },
-    { name = "strands-agents", specifier = ">=0.1.0" },
-    { name = "tenacity", specifier = ">=8.2.0" },
+    { name = "strands-agents", specifier = ">=1.12.0" },
+    { name = "strands-agents-tools", specifier = ">0.2.9" },
+    { name = "tenacity", specifier = ">=9.1.2" },
     { name = "tiktoken", specifier = ">=0.12.0" },
-    { name = "unstructured", extras = ["pdf"], specifier = ">=0.11.0" },
-    { name = "youtube-transcript-api", specifier = ">=0.6.1" },
-    { name = "yt-dlp", specifier = ">=2025.9.26" },
+    { name = "unstructured", extras = ["pdf"], specifier = ">=0.18.15" },
+    { name = "youtube-transcript-api", specifier = ">=1.2.2" },
+    { name = "yt-dlp", specifier = ">=2025.10.22" },
 ]
 provides-extras = ["dev"]
 
@@ -3227,6 +3263,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/b0/77/a5b8c569bf593b0140bde72ea885a803b82086995367bf2037de0159d924/pygments-2.19.2.tar.gz", hash = "sha256:636cb2477cec7f8952536970bc533bc43743542f70392ae026374600add5b887", size = 4968631 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c7/21/705964c7812476f378728bdf590ca4b771ec72385c533964653c68e86bdc/pygments-2.19.2-py3-none-any.whl", hash = "sha256:86540386c03d588bb81d44bc3928634ff26449851e99741617ecb9037ee5ec0b", size = 1225217 },
+]
+
+[[package]]
+name = "pyjwt"
+version = "2.10.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e7/46/bd74733ff231675599650d3e47f361794b22ef3e3770998dda30d3b63726/pyjwt-2.10.1.tar.gz", hash = "sha256:3cc5772eb20009233caf06e9d8a0577824723b44e6648ee0a2aedb6cf9381953", size = 87785 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/61/ad/689f02752eeec26aed679477e80e632ef1b682313be70793d798c1d5fc8f/PyJWT-2.10.1-py3-none-any.whl", hash = "sha256:dcdd193e30abefd5debf142f9adfcdd2b58004e644f25406ffaebd50bd98dacb", size = 22997 },
 ]
 
 [[package]]
@@ -4075,12 +4120,13 @@ wheels = [
 
 [[package]]
 name = "strands-agents"
-version = "1.11.0"
+version = "1.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "boto3" },
     { name = "botocore" },
     { name = "docstring-parser" },
+    { name = "jsonschema" },
     { name = "mcp" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-instrumentation-threading" },
@@ -4089,9 +4135,37 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "watchdog" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/67/73/7ea29184c8f4c07cb4e6c6805ced5deef71e9fdf124d62fe38c9bc92fbcc/strands_agents-1.11.0.tar.gz", hash = "sha256:52899a2205ac612442f7773deb1e45c7fc6e897d54f8ea70068f2e60879ff25a", size = 411280 }
+sdist = { url = "https://files.pythonhosted.org/packages/26/dd/a2dc96614bb1dd7c1623cbdf6df268eb307038b2fe27bc5a6148f4223f59/strands_agents-1.14.0.tar.gz", hash = "sha256:f86dd2b92d50196acd0c5ff5404fcd1b6c3715ae56fcceb2a78210ab47860585", size = 471216 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4b/9e/4d2b0d21505edc4b50c3acf5559832a364d36701c263bcc5735400c68ef3/strands_agents-1.11.0-py3-none-any.whl", hash = "sha256:ff698d5cc73fbeb9993c11e7caa0b74d5a822faf99a65a68d9ef39e10b21158e", size = 213648 },
+    { url = "https://files.pythonhosted.org/packages/8f/08/848c26d917d8f75bc10edeea63578af218df5c6efeb69e3cf91eb8fd396e/strands_agents-1.14.0-py3-none-any.whl", hash = "sha256:d2ebc1b991c37e891cfe79cf5dea1bfa021c3e6d93e4d2f238042ea688019bf3", size = 238974 },
+]
+
+[[package]]
+name = "strands-agents-tools"
+version = "0.2.13"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "aws-requests-auth" },
+    { name = "botocore" },
+    { name = "dill" },
+    { name = "markdownify" },
+    { name = "pillow" },
+    { name = "prompt-toolkit" },
+    { name = "pyjwt" },
+    { name = "requests" },
+    { name = "rich" },
+    { name = "slack-bolt" },
+    { name = "strands-agents" },
+    { name = "sympy" },
+    { name = "tenacity" },
+    { name = "typing-extensions" },
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
+    { name = "watchdog" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fe/d3/50aa7bb388056d814017add5489b68231c25924efce1079bd5b91baf297b/strands_agents_tools-0.2.13.tar.gz", hash = "sha256:31050f6dde57fd6524709c021dcb25946685746bcc5e000112db94b279a2a937", size = 451115 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/43/af/3f42cfb73761817ecd81c04405e6789b4c0b3a24daeb7834952d22b0540d/strands_agents_tools-0.2.13-py3-none-any.whl", hash = "sha256:ddc7f95f1e52ce819039f2961b8428f901b9597bdbb1498793950350672965f3", size = 299642 },
 ]
 
 [[package]]

@@ -47,6 +47,7 @@ def invoke(payload: dict[str, Any]) -> str:
         user_input = payload["prompt"]
         channel_id = payload.get("channel_id")
 
+        state_manager.clear()
         state_manager.slack_channel_id = channel_id
         logger.info("User input: '%s'", user_input[:100])
         logger.info("Slack context: channel_id='%s'", channel_id)
