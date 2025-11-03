@@ -710,7 +710,8 @@ URLs:        Space required after: `url` 에서
 STEP 7: IMAGE SELECTION
 ═══════════════════════════════════════════════════════════════
 
-Select {n_thumbnails} images using this scoring system:
+Images from the content are embedded in the text as: `[Image: src="file_path", caption="..."]`
+Extract the `src` file paths and select {n_thumbnails} images using this scoring system:
 
 **Formula**: (Relevance × 1.5) + Quality = Combined Score
 

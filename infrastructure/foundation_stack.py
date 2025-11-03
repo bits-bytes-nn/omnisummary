@@ -172,7 +172,7 @@ class OmniSummaryFoundationStack(Stack):
                 effect=iam.Effect.ALLOW,
                 actions=["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:Query"],
                 resources=[
-                    f"arn:aws:dynamodb:{self.region}:{self.account}:table/{self._get_resource_name('event-dedup')}"
+                    f"arn:aws:dynamodb:{self.region}:{self.account}:table/{self._get_resource_name('summary-bot')}"
                 ],
             )
         )

@@ -8,12 +8,13 @@ from typing import Any
 import boto3
 from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities.typing import LambdaContext
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 logger = Logger()
 
 AGENTCORE_RUNTIME_ARN = os.getenv("AGENTCORE_RUNTIME_ARN")
-AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2")
+AWS_REGION = os.getenv("AWS_REGION", "us-west-2")
 DDB_TABLE_NAME = os.getenv("DDB_TABLE_NAME")
 PROJECT_NAME = os.getenv("PROJECT_NAME", "omnisummary")
 STAGE = os.getenv("STAGE", "dev")
@@ -22,9 +23,10 @@ EVENT_DEDUPLICATION_TTL_SEC: int = int(os.getenv("EVENT_DEDUPLICATION_TTL_SEC", 
 SLACK_SIGNATURE_EXPIRATION_SEC: int = int(os.getenv("SLACK_SIGNATURE_EXPIRATION_SEC", "300"))
 SSM_PARAM_NAME_PREFIX: str = f"/{PROJECT_NAME}/{STAGE}"
 
-boto_session = boto3.Session(region_name=AWS_DEFAULT_REGION)
+boto_config = Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 2})
+boto_session = boto3.Session(region_name=AWS_REGION)
 agentcore_client = boto_session.client("bedrock-agentcore")
-dynamodb_client = boto_session.client("dynamodb")
+dynamodb_client = boto_session.client("dynamodb", config=boto_config)
 lambda_client = boto_session.client("lambda")
 ssm_client = boto_session.client("ssm")
 
@@ -65,8 +67,8 @@ def is_duplicate_event(event_id: str) -> bool:
         logger.debug("Event '%s' recorded in DynamoDB for deduplication", event_id)
         return False
 
-    except ClientError as e:
-        logger.error("DynamoDB error during deduplication check: %s", e)
+    except Exception as e:
+        logger.error("DynamoDB error during deduplication: %s. Proceeding anyway.", e)
         return False
 
 
@@ -110,7 +112,6 @@ def verify_slack_request(event: dict[str, Any]) -> bool:
 
 
 def _handle_async_invocation(event: dict[str, Any]) -> dict[str, Any]:
-    logger.info("Processing async AgentCore invocation")
     text = event.get("text")
     channel = event.get("channel")
 
@@ -123,6 +124,7 @@ def _handle_async_invocation(event: dict[str, Any]) -> dict[str, Any]:
         logger.info("Duplicate AgentCore invocation detected: '%s'. Skipping.", invocation_id)
         return {"statusCode": 200, "body": json.dumps({"ok": True})}
 
+    logger.info("Processing async AgentCore invocation")
     invoke_agentcore_runtime(text, channel)
     return {"statusCode": 200, "body": json.dumps({"ok": True})}
 
