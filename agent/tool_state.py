@@ -1,6 +1,5 @@
 import hashlib
 from contextlib import contextmanager
-from contextvars import ContextVar
 from typing import Generator
 
 from shared import ParseResult, SummaryResult
@@ -75,59 +74,18 @@ class ToolStateManager:
         self._message_sent = True
 
 
-_state_context: ContextVar[ToolStateManager] = ContextVar("tool_state")
+state_manager = ToolStateManager()
 
 
 def get_state_manager() -> ToolStateManager:
-    try:
-        return _state_context.get()
-    except LookupError:
-        raise RuntimeError(
-            "No active state context. Use 'with tool_state_context():' to create one."
-        ) from None
+    return state_manager
 
 
 @contextmanager
 def tool_state_context(channel_id: str | None = None) -> Generator[ToolStateManager, None, None]:
-    state = ToolStateManager()
-    state.slack_channel_id = channel_id
-    token = _state_context.set(state)
+    state_manager.clear()
+    state_manager.slack_channel_id = channel_id
     try:
-        yield state
+        yield state_manager
     finally:
-        _state_context.reset(token)
-
-
-class _StateManagerProxy:
-    def __getattr__(self, name: str):
-        return getattr(get_state_manager(), name)
-
-    def __setattr__(self, name: str, value):
-        setattr(get_state_manager(), name, value)
-
-    @staticmethod
-    def clear() -> None:
-        get_state_manager().clear()
-
-    @property
-    def slack_channel_id(self) -> str | None:
-        return get_state_manager().slack_channel_id
-
-    @slack_channel_id.setter
-    def slack_channel_id(self, channel_id: str | None) -> None:
-        get_state_manager().slack_channel_id = channel_id
-
-    @property
-    def message_sent(self) -> bool:
-        return get_state_manager().message_sent
-
-    @property
-    def _last_parse_hash(self) -> str | None:
-        return get_state_manager()._last_parse_hash
-
-    @property
-    def _summary_results(self) -> dict[str, SummaryResult]:
-        return get_state_manager()._summary_results
-
-
-state_manager = _StateManagerProxy()
+        pass
