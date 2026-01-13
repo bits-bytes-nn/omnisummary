@@ -10,6 +10,9 @@ from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from botocore.config import Config
 from botocore.exceptions import ClientError
+from pydantic import ValidationError
+
+from shared import SlackEventCallback
 
 logger = Logger()
 
@@ -134,29 +137,33 @@ def _handle_slack_event(event: dict[str, Any], context: LambdaContext) -> dict[s
         logger.warning("Invalid Slack request signature")
         return {"statusCode": 401, "body": json.dumps({"error": "Unauthorized"})}
 
-    body = json.loads(event.get("body", "{}"))
-    event_type = body.get("type")
+    try:
+        raw_body = json.loads(event.get("body", "{}"))
+        slack_event = SlackEventCallback.model_validate(raw_body)
+    except (json.JSONDecodeError, ValidationError) as e:
+        logger.warning("Failed to parse Slack event: %s", e)
+        return {"statusCode": 400, "body": json.dumps({"error": "Invalid request body"})}
 
-    if event_type == "url_verification":
+    if slack_event.is_url_verification:
         logger.info("URL verification request - responding with challenge")
         return {
             "statusCode": 200,
-            "body": json.dumps({"challenge": body.get("challenge")}),
+            "body": json.dumps({"challenge": slack_event.challenge}),
             "headers": {"Content-Type": "application/json"},
         }
 
-    event_data = body.get("event", {})
-    event_subtype = event_data.get("type")
-    event_id = body.get("event_id")
+    logger.info(
+        "Received event type: '%s', event_id: '%s'",
+        slack_event.event.type if slack_event.event else None,
+        slack_event.event_id,
+    )
 
-    logger.info("Received event type: '%s', event_id: '%s'", event_subtype, event_id)
-
-    if event_subtype == "app_mention":
-        if event_id and is_duplicate_event(event_id):
+    if slack_event.is_app_mention and slack_event.event:
+        if slack_event.event_id and is_duplicate_event(slack_event.event_id):
             return {"statusCode": 200, "body": json.dumps({"ok": True})}
 
-        text = event_data.get("text", "")
-        channel = event_data.get("channel")
+        text = slack_event.event.text
+        channel = slack_event.event.channel
 
         if text and text.strip():
             logger.info("Received app_mention: '%s'", text[:100])
@@ -176,7 +183,7 @@ def _handle_slack_event(event: dict[str, Any], context: LambdaContext) -> dict[s
             except Exception as e:
                 logger.error("Failed to trigger async Lambda invocation: %s", e)
     else:
-        logger.info("Ignoring event type: '%s'", event_subtype)
+        logger.info("Ignoring event type: '%s'", slack_event.event.type if slack_event.event else "unknown")
 
     return {"statusCode": 200, "body": json.dumps({"ok": True})}
 

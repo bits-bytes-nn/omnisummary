@@ -4,8 +4,7 @@ from typing import Any
 import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
-from agent import create_summarization_agent
-from agent.tool_state import state_manager
+from agent import create_summarization_agent, tool_state_context
 from shared import EnvVars, SSMParams, get_ssm_param_value, logger
 
 app = BedrockAgentCoreApp()
@@ -47,24 +46,23 @@ def invoke(payload: dict[str, Any]) -> str:
         user_input = payload["prompt"]
         channel_id = payload.get("channel_id")
 
-        state_manager.clear()
-        state_manager.slack_channel_id = channel_id
         logger.info("User input: '%s'", user_input[:100])
         logger.info("Slack context: channel_id='%s'", channel_id)
 
-        agent = create_summarization_agent()
-        logger.info("Created new agent instance for this request")
+        with tool_state_context(channel_id):
+            agent = create_summarization_agent()
+            logger.info("Created new agent instance for this request")
 
-        response = agent(user_input)
-        logger.info("Agent response received")
+            response = agent(user_input)
+            logger.info("Agent response received")
 
-        result = response.message["content"][0].get("text")
-        if not result:
-            logger.error("No text content in agent response")
-            raise ValueError("No text content in agent response")
+            result = response.message["content"][0].get("text")
+            if not result:
+                logger.error("No text content in agent response")
+                raise ValueError("No text content in agent response")
 
-        logger.info("Agent execution completed successfully")
-        return result
+            logger.info("Agent execution completed successfully")
+            return result
 
     except (KeyError, IndexError) as e:
         logger.error("Failed to parse payload or agent response: %s", e, exc_info=True)

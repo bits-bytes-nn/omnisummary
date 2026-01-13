@@ -22,7 +22,7 @@ async def send_slack_message(
     enable_business_channels: bool = False,
 ) -> bool:
     message_text = format_slack_message(parsed_result, summary_result)
-    logger.debug(f"Sending Slack message: {message_text}")
+    logger.debug("Sending Slack message: '%s'", message_text)
     bot_configs = _get_bot_configs(enable_business_channels)
 
     async def action(client: AsyncWebClient, channel_id: str):
@@ -58,12 +58,12 @@ async def _upload_images(client: AsyncWebClient, channel_id: str, image_paths: l
             await client.files_upload_v2(
                 channel=channel_id,
                 file=img_path,
-                filename=os.path.basename(img_path),
+                filename=Path(img_path).name,
             )
         except SlackApiError as e:
-            logger.warning(f"Failed to upload image '{img_path}' to channel '{channel_id}': {e.response['error']}")
+            logger.warning("Failed to upload image '%s' to channel '%s': %s", img_path, channel_id, e.response["error"])
         except Exception as e:
-            logger.warning(f"An unexpected error occurred while uploading '{img_path}': {e}")
+            logger.warning("An unexpected error occurred while uploading '%s': %s", img_path, e)
 
 
 async def _broadcast_to_bots(
@@ -83,18 +83,18 @@ async def _broadcast_to_bots(
         if not channel_ids:
             continue
 
-        logger.info(f"Processing '{name}' for channels: '{channel_ids}'")
+        logger.info("Processing '%s' for channels: '%s'", name, channel_ids)
         client = AsyncWebClient(token=bot_token)
 
         for channel_id in channel_ids:
             try:
                 await action_per_channel(client, channel_id)
                 successful_sends.append(True)
-                logger.info(f"Successfully performed action for channel '{channel_id}'")
+                logger.info("Successfully performed action for channel '%s'", channel_id)
             except SlackApiError as e:
-                logger.error(f"Failed action for '{channel_id}' via '{name}': {e.response['error']}")
+                logger.error("Failed action for '%s' via '%s': %s", channel_id, name, e.response["error"])
             except Exception as e:
-                logger.error(f"An unexpected error occurred for '{channel_id}' via '{name}': {e}")
+                logger.error("An unexpected error occurred for '%s' via '%s': %s", channel_id, name, e)
 
     if not any(successful_sends):
         logger.warning("No Slack actions succeeded. Check Slack tokens and channel IDs.")

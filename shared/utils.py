@@ -71,7 +71,9 @@ _LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
         max_output_tokens=64000,
         supports_prompt_caching=True,
     ),
-    LanguageModelId.CLAUDE_V3_5_SONNET: LanguageModelInfo(context_window_size=200000, max_output_tokens=8192),
+    LanguageModelId.CLAUDE_V3_5_SONNET: LanguageModelInfo(
+        context_window_size=200000, max_output_tokens=8192
+    ),
     LanguageModelId.CLAUDE_V3_5_SONNET_V2: LanguageModelInfo(
         context_window_size=200000, max_output_tokens=8192, supports_prompt_caching=True
     ),
@@ -97,18 +99,28 @@ _LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
     ),
     LanguageModelId.CLAUDE_V4_OPUS: LanguageModelInfo(
         context_window_size=200000,
-        max_output_tokens=32000,
+        max_output_tokens=64000,
         supports_prompt_caching=True,
         supports_thinking=True,
+        supports_1m_context_window=True,
     ),
     LanguageModelId.CLAUDE_V4_1_OPUS: LanguageModelInfo(
         context_window_size=200000,
-        max_output_tokens=32000,
+        max_output_tokens=64000,
         supports_prompt_caching=True,
         supports_thinking=True,
+        supports_1m_context_window=True,
+    ),
+    LanguageModelId.CLAUDE_V4_5_OPUS: LanguageModelInfo(
+        context_window_size=200000,
+        max_output_tokens=64000,
+        supports_prompt_caching=True,
+        supports_thinking=True,
+        supports_1m_context_window=True,
     ),
     # NOTE: add new models here
 }
+
 
 ModelIdT = TypeVar("ModelIdT")
 ModelInfoT = TypeVar("ModelInfoT")
@@ -136,7 +148,10 @@ class BaseBedrockWrapper:
             truncated_token_ids = token_ids[:effective_tokens]
             final_text = self._tokenizer.decode(truncated_token_ids)
             logger.warning(
-                f"{text_type.capitalize()} token count ({len(token_ids)}) exceeds maximum ({max_tokens}). Truncating."
+                "%s token count (%d) exceeds maximum (%d). Truncating.",
+                text_type.capitalize(),
+                len(token_ids),
+                max_tokens,
             )
             truncated = True
 
@@ -144,7 +159,10 @@ class BaseBedrockWrapper:
             if not truncated or len(text[:max_chars]) < len(final_text):
                 final_text = text[:max_chars]
                 logger.warning(
-                    f"{text_type.capitalize()} character count ({len(text)}) exceeds maximum ({max_chars}). Truncating."
+                    "%s character count (%d) exceeds maximum (%d). Truncating.",
+                    text_type.capitalize(),
+                    len(text),
+                    max_chars,
                 )
 
         return final_text

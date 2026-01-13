@@ -232,3 +232,27 @@ class SummaryResult(BaseModel):
     @classmethod
     def validate_thumbnails(cls, paths: list[str | Path]) -> list[str | Path]:
         return [validated for path in paths if (validated := validate_path(str(path))) is not None]
+
+
+class SlackAppMentionEvent(BaseModel):
+    type: str
+    user: str | None = None
+    text: str
+    channel: str
+    ts: str | None = None
+    event_ts: str | None = None
+
+
+class SlackEventCallback(BaseModel):
+    type: str
+    event_id: str | None = None
+    event: SlackAppMentionEvent | None = None
+    challenge: str | None = None
+
+    @property
+    def is_url_verification(self) -> bool:
+        return self.type == "url_verification"
+
+    @property
+    def is_app_mention(self) -> bool:
+        return self.event is not None and self.event.type == "app_mention"

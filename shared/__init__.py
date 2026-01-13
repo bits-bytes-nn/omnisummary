@@ -10,7 +10,15 @@ from .constants import (
 )
 from .formatters import format_slack_message
 from .logger import is_running_in_aws, logger
-from .models import Content, ContentParseError, Figure, ParseResult, SummaryResult
+from .models import (
+    Content,
+    ContentParseError,
+    Figure,
+    ParseResult,
+    SlackAppMentionEvent,
+    SlackEventCallback,
+    SummaryResult,
+)
 from .utils import (
     _LANGUAGE_MODEL_INFO,
     BedrockCrossRegionModelHelper,
@@ -42,6 +50,8 @@ __all__ = [
     "ParseResult",
     "PdfParserType",
     "S3Handler",
+    "SlackAppMentionEvent",
+    "SlackEventCallback",
     "SSMParams",
     "SummaryResult",
     "extract_video_id",

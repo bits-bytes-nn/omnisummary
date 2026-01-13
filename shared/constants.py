@@ -48,6 +48,7 @@ class LanguageModelId(str, Enum):
     CLAUDE_V4_5_SONNET = "anthropic.claude-sonnet-4-5-20250929-v1:0"
     CLAUDE_V4_OPUS = "anthropic.claude-opus-4-20250514-v1:0"
     CLAUDE_V4_1_OPUS = "anthropic.claude-opus-4-1-20250805-v1:0"
+    CLAUDE_V4_5_OPUS = "anthropic.claude-opus-4-5-20251101-v1:0"
     # NOTE: add new models here
 
 
