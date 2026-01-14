@@ -205,7 +205,6 @@ cython_debug/
 
 .claude/
 .idea/
-.mypy_cache/
 .run/
 config.yaml
 cdk.context.json

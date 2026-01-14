@@ -237,7 +237,7 @@ https://github.com/openai/simple-evals|Simple Evals - Benchmarking Framework
 </field_specifications>
 """
 
-    human_prompt_template: str = """Extract structured metadata from the content below following all field 
+    human_prompt_template: str = """Extract structured metadata from the content below following all field
 specifications.
 
 <content>
@@ -262,10 +262,10 @@ specifications.
 
 Analyze the content and extract all seven metadata fields:
 
-1. **Title**: Use raw_title if valid, otherwise extract from content. Apply title case, preserve technical terms, clean 
+1. **Title**: Use raw_title if valid, otherwise extract from content. Apply title case, preserve technical terms, clean
 artifacts.
 
-2. **Authors**: Use raw_authors if valid, otherwise extract from content. Format: "FirstName LastName, FirstName 
+2. **Authors**: Use raw_authors if valid, otherwise extract from content. Format: "FirstName LastName, FirstName
 LastName". Use "None" if absent.
 
 3. **Affiliations**: Check raw_authors context first, then extract from content. Comma-separated. Use "None" if absent.
@@ -522,27 +522,27 @@ STEP 4: TEMPLATE STRUCTURES
 
 **Category A: Research Paper / Tech Blog / Article**
 
-📌 *왜 여기에 주목해야 하나요?*
+*왜 여기에 주목해야 하나요?*
 - State specific importance, novelty, or relevance (2-3 sentences)
 - Ground claims in measurable reality or historical context
 
-🔄 *핵심 아이디어 및 접근 방식*
+*핵심 아이디어 및 접근 방식*
 - Key technical concepts, methodologies, architectures
 - 3-5 items, each 2-3 sentences with concrete specifics
 - Include the tradeoffs, not just the benefits
 
-🛠️ *기술적 심층 분석*
+*기술적 심층 분석*
 - Algorithms, data structures, system design patterns with actual details
 - Specific technologies, frameworks, tools (with versions when relevant)
 - How components work together and where they break
 - 4-6 items with implementation reality checks
 
-📊 *성과 및 비즈니스 임팩트*
+*성과 및 비즈니스 임팩트*
 ⚠️ Only include if measurable results exist
 - Quantitative: Real numbers with context (not "improved performance")
 - Qualitative: Actual impact, honest comparison with alternatives
 
-🔮 *향후 발전 가능성과 기회*
+*향후 발전 가능성과 기회*
 ⚠️ Only include if content discusses future directions
 - Concrete unsolved problems, realistic potential applications
 - Industry adoption blockers (not just "exciting possibilities")
@@ -551,21 +551,21 @@ STEP 4: TEMPLATE STRUCTURES
 
 **Category B: Tutorial / Guide / Course**
 
-🎯 *무엇을 배우거나 만드나요?*
+*무엇을 배우거나 만드나요?*
 - Concrete learning objectives (2-3 sentences)
 - Honest prerequisites (not "basic knowledge of X")
 
-🔧 *핵심 내용*
+*핵심 내용*
 - Specific concepts and technologies with versions
 - Main steps or sections (4-6 items with actual details)
 - Real commands, APIs, techniques (not abstractions)
 
-💡 *주요 팁과 주의사항*
+*주요 팁과 주의사항*
 - Battle-tested practices with reasons why (2-4 items)
 - Common pitfalls you'll actually encounter
 - Production considerations they usually skip
 
-➡️ *다음 단계 및 추가 학습 자료*
+*다음 단계 및 추가 학습 자료*
 ⚠️ Only include if content provides next steps
 - Logical follow-up topics or realistic projects
 - Resources that aren't just "read the docs"
@@ -574,21 +574,21 @@ STEP 4: TEMPLATE STRUCTURES
 
 **Category C: Interview / Podcast**
 
-🎤 *누가, 무엇에 대해 이야기하나요?*
+*누가, 무엇에 대해 이야기하나요?*
 - Speaker background with actual credibility markers (1-2 sentences)
 - Real topics discussed (not PR talking points)
 
-💎 *핵심 인사이트*
+*핵심 인사이트*
 - 3-5 actually valuable insights (not obvious truisms)
 - Include specific examples, data, or war stories
 - Each insight: 2-3 sentences with real context
 
-🗣️ *주목할 만한 인용구*
+*주목할 만한 인용구*
 - 1-2 quotes that reveal something non-obvious
 - Use blockquote format: `> translated quote`
 - Why this quote matters beyond the words
 
-🤔 *논의된 주요 주제 및 관점*
+*논의된 주요 주제 및 관점*
 - 3-5 topics with substance (1-2 sentences each)
 - Contrarian views or uncomfortable truths preferred
 - Industry predictions with their track record
