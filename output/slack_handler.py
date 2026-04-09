@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+import os
+from datetime import datetime
+
+from slack_sdk.errors import SlackApiError
+from slack_sdk.web.async_client import AsyncWebClient
+
+from shared import DigestResult, logger
+from shared.config import SlackConfig
+
+SLACK_MAX_TEXT_LENGTH = 3900
+
+
+def _split_message(text: str, max_len: int = SLACK_MAX_TEXT_LENGTH) -> list[str]:
+    if len(text) <= max_len:
+        return [text]
+    chunks: list[str] = []
+    current = ""
+    for paragraph in text.split("\n\n"):
+        if len(paragraph) > max_len:
+            if current:
+                chunks.append(current.strip())
+                current = ""
+            for line in paragraph.split("\n"):
+                if len(line) > max_len:
+                    for i in range(0, len(line), max_len):
+                        chunks.append(line[i : i + max_len])
+                elif len(current) + len(line) + 1 > max_len:
+                    if current:
+                        chunks.append(current.strip())
+                    current = line
+                else:
+                    current = f"{current}\n{line}" if current else line
+        elif len(current) + len(paragraph) + 2 > max_len:
+            if current:
+                chunks.append(current.strip())
+            current = paragraph
+        else:
+            current = f"{current}\n\n{paragraph}" if current else paragraph
+    if current:
+        chunks.append(current.strip())
+    return chunks
+
+
+async def send_digest_to_slack(digest: DigestResult, config: SlackConfig) -> bool:
+    bot_token = config.bot_token or os.getenv("SLACK_BOT_TOKEN", "")
+    channel_id = config.channel_id or os.getenv("SLACK_CHANNEL_ID", "")
+
+    if not bot_token or not channel_id:
+        logger.warning("Slack bot_token or channel_id not configured. Skipping Slack delivery.")
+        return False
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    n_stories = len(digest.ranked_items)
+    header = f":satellite: *OmniSummary* — {today} · {n_stories} stories\n"
+    message_text = header + "\n" + digest.digest_text
+
+    client = AsyncWebClient(token=bot_token)
+    chunks = _split_message(message_text)
+
+    try:
+        for i, chunk in enumerate(chunks):
+            await client.chat_postMessage(channel=channel_id, text=chunk, mrkdwn=True)
+            if len(chunks) > 1:
+                logger.debug("Sent Slack message chunk %d/%d", i + 1, len(chunks))
+        logger.info("Successfully sent digest to Slack channel '%s' (%d message(s))", channel_id, len(chunks))
+        return True
+    except SlackApiError as e:
+        logger.warning("Failed to send digest to Slack: %s", e.response["error"])
+        return False
+    except Exception as e:
+        logger.warning("Unexpected error sending digest to Slack: %s", e)
+        return False

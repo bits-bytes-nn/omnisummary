@@ -1,0 +1,94 @@
+# OmniSummary Configuration Template
+# Copy to config.yaml and fill in your values.
+
+collectors:
+  youtube:
+    enabled: true
+    channels:
+      # - "https://www.youtube.com/@channel_name"
+    max_videos_per_channel: 3
+    lookback_hours: 24
+  reddit:
+    enabled: true
+    subreddits:
+      # - "subreddit_name"
+    sort: hot
+    limit: 20
+    lookback_hours: 24
+  rss:
+    enabled: true
+    feeds:
+      # - "https://example.substack.com/feed"
+    lookback_hours: 24
+  web_search:
+    enabled: true
+    trend_searches:
+      - name: frontier_models
+        queries:
+          - "frontier AI model release GPT Claude Gemini Llama"
+          - "LLM benchmark SOTA new results"
+        topic: news
+      - name: research
+        queries:
+          - "AI research paper NeurIPS ICML ICLR arXiv"
+          - "machine learning new technique architecture"
+        topic: news
+      - name: industry
+        queries:
+          - "AI startup funding acquisition strategy"
+          - "AI policy regulation open source"
+        topic: news
+      - name: tools_infra
+        queries:
+          - "ML inference optimization deployment tool"
+          - "AI developer tools framework release"
+        domains: ["arxiv.org", "github.com", "huggingface.co"]
+        topic: general
+    max_results_per_query: 10
+    lookback_hours: 72
+    refine_model: "anthropic.claude-sonnet-4-6"
+    max_refine_queries: 3
+  rsshub:
+    enabled: false
+    base_url: "http://localhost:1200"
+    accounts:
+      # - username: "karpathy"
+      #   platform: x
+    lookback_hours: 72
+
+pipeline:
+  top_n: 7
+  min_score: 0.6
+  ranking_model: "anthropic.claude-opus-4-6-v1"
+  digest_model: "anthropic.claude-sonnet-4-6"
+  item_text_max_tokens: 10000
+  source_slots:
+    web: 1
+    x: 2
+    rss: 1
+    reddit: 2
+    youtube: 1
+  origin_weight_default: 1.0
+  origin_weights: {}
+    # Per-origin weight multiplier. Key = X handle, channel URL, subreddit, or feed URL.
+  trend_model: "anthropic.claude-sonnet-4-6"
+  trend_retention_days: 30
+
+agent:
+  model_id: "anthropic.claude-sonnet-4-6"
+  enable_interactive: true
+
+slack:
+  bot_token: ""    # Or set SLACK_BOT_TOKEN env var
+  channel_id: ""   # Or set SLACK_CHANNEL_ID env var
+
+aws:
+  region: "ap-northeast-2"
+  bedrock_region: "us-west-2"
+  profile: ""
+  project_name: "omnisummary"
+  stage: "dev"
+  vpc_id: ""               # Leave empty to create new VPC
+  subnet_ids: []           # Leave empty to use default private subnets
+  state_bucket_name: ""    # Leave empty to create new S3 bucket
+  s3_prefix: ""            # S3 key prefix (e.g., "omnisummary")

@@ -1,0 +1,89 @@
+[project]
+name = "omnisummary"
+version = "0.1.0"
+description = "Proactive AI digest tool - daily content collection, ranking, and delivery via Slack"
+requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.40.58",
+    "beautifulsoup4>=4.14.2",
+    "feedparser>=6.0.11",
+    "httpx>=0.28.1",
+    "langchain>=0.3.27,<1.0.0",
+    "langchain-aws>=0.2.35,<1.0.0",
+    "langchain-core>=0.3.78,<1.0.0",
+    "pydantic>=2.12.0",
+    "python-dotenv>=1.1.1",
+    "pyyaml>=6.0.3",
+    "slack-sdk>=3.26.0",
+    "strands-agents>=1.12.0",
+    "strands-agents-tools>0.2.9",
+    "tavily-python>=0.5.0",
+    "tenacity>=9.1.2",
+    "tiktoken>=0.12.0",
+    "youtube-transcript-api>=1.2.2",
+    "yt-dlp>=2025.10.22",
+    "boto3-stubs~=1.42.63",
+    "black>=26.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.12.0",
+    "mypy>=1.7.0",
+    "ruff>=0.1.9",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["shared*", "collectors*", "pipeline*", "agent*", "output*"]
+exclude = ["tests*", "references*", "config*"]
+
+[tool.black]
+line-length = 120
+target-version = ["py312"]
+exclude = '''
+/(
+    \.git
+  | \.mypy_cache
+  | \.venv
+  | venv
+  | build
+  | dist
+  | references
+)/
+'''
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+select = ["E", "W", "F", "I", "B", "C4", "UP"]
+ignore = ["E501", "B008", "C901"]
+exclude = [".git", ".mypy_cache", ".venv", "venv", "build", "dist", "references"]
+
+[tool.mypy]
+python_version = "3.12"
+check_untyped_defs = true
+disallow_incomplete_defs = false
+disallow_untyped_defs = false
+no_implicit_optional = true
+strict_equality = true
+warn_no_return = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = "-v"
+asyncio_mode = "auto"
