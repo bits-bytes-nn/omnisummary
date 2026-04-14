@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Any
-
 import httpx
 from strands import tool
+from tavily import AsyncTavilyClient
 
 from shared import logger
 
@@ -16,11 +15,10 @@ COMMUNITY_SEARCH_DOMAINS = ["twitter.com", "x.com", "reddit.com", "news.ycombina
 state_manager = DigestStateManager()
 
 
-def _get_tavily_client() -> Any | None:
+def _get_tavily_client() -> AsyncTavilyClient | None:
     api_key = os.getenv("TAVILY_API_KEY", "")
     if not api_key:
         return None
-    from tavily import AsyncTavilyClient
 
     return AsyncTavilyClient(api_key=api_key)
 

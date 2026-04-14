@@ -147,8 +147,10 @@ Rules:
 - Add new trends when today's digest reveals emerging patterns
 - Update existing trends with new evidence
 - "cooling" if no evidence in 7+ days; "archived" if {trend_retention_days}+ days
-- Compress archived trends into one-line summaries
 - Maximum 10 active trends — merge or archive if needed
+- CRITICAL: Keep each evidence entry to ONE short sentence (under 30 words)
+- CRITICAL: Maximum 5 evidence entries per trend — when adding new evidence, drop the oldest
+- Compress archived trends into one-line summaries
 - Write in English (feeds back into English LLM context)
 
 Format:
@@ -160,7 +162,7 @@ Format:
 - **First seen**: YYYY-MM-DD
 - **Last seen**: YYYY-MM-DD
 - **Evidence**:
-  - [YYYY-MM-DD] Brief description
+  - [YYYY-MM-DD] Brief one-sentence description
 
 # Archived Trends (compressed)
 - [Title] (YYYY-MM-DD ~ YYYY-MM-DD): One-sentence summary.
