@@ -66,15 +66,15 @@ collectors:
         platform: x
 
 pipeline:
-  top_n: 7
+  top_n: 5
   min_score: 0.6
   ranking_model: "anthropic.claude-opus-4-6-v1"
   digest_model: "anthropic.claude-sonnet-4-6"
   source_slots:
     web: 1
-    x: 2
+    x: 1
     rss: 1
-    reddit: 2
+    reddit: 1
     youtube: 1
 ```
 
