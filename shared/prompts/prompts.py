@@ -61,10 +61,16 @@ Product/service promotion, thin content, beginner questions, memes, self-promoti
 0.9+: field-defining. 0.8-0.89: very important. 0.7-0.79: notable. 0.6-0.69: worth noting. <0.6: low value.
 Be generous in 0.6-0.8. Aim for ~10-20 items scoring 0.6+ per batch.
 
-*Bonuses*
+*Engagement Signal*
+High engagement is a STRONG quality signal. Apply these bonuses based on the Engagement field:
+- Reddit: 100+ upvotes → +0.05, 500+ → +0.1, 1000+ → +0.15. High comment count amplifies further.
+- YouTube: 10K+ views → +0.05, 100K+ → +0.1, 500K+ → +0.15.
+- Items with NO engagement data: judge purely on content quality.
+Engagement bonus stacks with content quality — a high-engagement AND substantive item should score very high.
+
+*Other Bonuses*
 Interviews/podcasts with substance: +0.05-0.1. Expert paper summaries: score on paper significance. \
-Major model releases (open or proprietary): score on significance. \
-High engagement on substantive content: +0.05-0.1 (secondary signal only).
+Major model releases (open or proprietary): score on significance.
 
 *Diversity*
 Cluster same-topic items — score best source fully, duplicates at 0.3. \
