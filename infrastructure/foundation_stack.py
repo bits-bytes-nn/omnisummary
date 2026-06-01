@@ -11,6 +11,8 @@ from aws_cdk import aws_ecs as ecs
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_servicediscovery as sd
+from aws_cdk import aws_sns as sns
+from aws_cdk import aws_sns_subscriptions as subs
 from constructs import Construct
 
 from shared import Config
@@ -23,6 +25,7 @@ class OmniSummaryFoundationStack(Stack):
         construct_id: str,
         *,
         config: Config,
+        alert_email: str = "",
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -115,6 +118,11 @@ class OmniSummaryFoundationStack(Stack):
         self.state_bucket.grant_read_write(self.lambda_role)
         self.dedup_table.grant_read_write_data(self.lambda_role)
         self.lambda_role.add_to_policy(iam.PolicyStatement(actions=["lambda:InvokeFunction"], resources=["*"]))
+
+        self.alerts_topic = sns.Topic(self, "AlertsTopic", topic_name=f"{project_name}-{stage}-alerts")
+        if alert_email:
+            self.alerts_topic.add_subscription(subs.EmailSubscription(alert_email))
+        self.alerts_topic.grant_publish(self.lambda_role)
 
         self.ecs_cluster = ecs.Cluster(self, "EcsCluster", vpc=self.vpc)
 

@@ -1,7 +1,7 @@
 from .config import Config
 from .constants import DOMAIN_TO_SOURCE, EnvVars, LanguageModelId, LocalPaths, SourceType
 from .logger import is_running_in_aws, logger
-from .models import CollectedItem, DigestResult, RankedItem
+from .models import CollectedItem, DigestResult, HealthReport, RankedItem, SourceHealth, SourceStatus
 from .prompts import DigestPrompt, RankingPrompt, RefineQueryPrompt, TrendUpdatePrompt
 from .state_store import LocalStateStore, S3StateStore, StateStore
 from .utils import (
@@ -26,6 +26,9 @@ __all__ = [
     "Config",
     "DigestPrompt",
     "DigestResult",
+    "HealthReport",
+    "SourceHealth",
+    "SourceStatus",
     "EnvVars",
     "LocalPaths",
     "RankedItem",

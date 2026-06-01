@@ -27,6 +27,9 @@ class OmniSummaryApplicationStack(Stack):
         slack_signing_secret: str = "",
         slack_bot_token: str = "",
         tavily_api_key: str = "",
+        reddit_client_id: str = "",
+        reddit_client_secret: str = "",
+        openai_api_key: str = "",
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -44,6 +47,9 @@ class OmniSummaryApplicationStack(Stack):
             "slack-signing-secret": slack_signing_secret,
             "slack-bot-token": slack_bot_token,
             "tavily-api-key": tavily_api_key,
+            "reddit-client-id": reddit_client_id,
+            "reddit-client-secret": reddit_client_secret,
+            "openai-api-key": openai_api_key,
         }
         for name, value in ssm_params.items():
             if value:
@@ -94,6 +100,7 @@ class OmniSummaryApplicationStack(Stack):
                 "AWS_BEDROCK_REGION": bedrock_region,
                 "PROJECT_NAME": project_name,
                 "STAGE": stage,
+                "ALERT_SNS_TOPIC_ARN": foundation.alerts_topic.topic_arn,
             },
         )
 

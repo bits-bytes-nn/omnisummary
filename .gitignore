@@ -215,3 +215,4 @@ node_modules/
 omnisummary.egg-info/
 references/
 cdk.context.json
+assets/.$*.bkp

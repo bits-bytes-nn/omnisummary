@@ -29,6 +29,7 @@ def main():
         app,
         f"{config.aws.project_name}-{config.aws.stage}-foundation",
         config=config,
+        alert_email=os.getenv("ALERT_EMAIL", ""),
         env=env,
     )
 
@@ -40,6 +41,9 @@ def main():
         slack_signing_secret=os.getenv("SLACK_SIGNING_SECRET", ""),
         slack_bot_token=os.getenv("SLACK_BOT_TOKEN", ""),
         tavily_api_key=os.getenv("TAVILY_API_KEY", ""),
+        reddit_client_id=os.getenv("REDDIT_CLIENT_ID", ""),
+        reddit_client_secret=os.getenv("REDDIT_CLIENT_SECRET", ""),
+        openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         env=env,
     )
 

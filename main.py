@@ -24,21 +24,24 @@ from shared import (
     CollectedItem,
     Config,
     DigestResult,
+    HealthReport,
     LocalPaths,
     LocalStateStore,
     RankedItem,
     S3StateStore,
+    SourceHealth,
+    SourceStatus,
     is_running_in_aws,
     logger,
 )
 from shared.state_store import StateStore
 
 
-async def run_collectors(
+def _build_collector_tasks(
     config: Config,
     llm_factory: BedrockLanguageModelFactory,
     sources: list[str] | None = None,
-) -> list[CollectedItem]:
+) -> tuple[list, list[str]]:
     collectors_map = {
         "reddit": (RedditCollector, config.collectors.reddit, {}),
         "rsshub": (RSSHubCollector, config.collectors.rsshub, {}),
@@ -66,11 +69,45 @@ async def run_collectors(
         tasks.append(collector.collect())
         labels.append(source_name)
 
+    return tasks, labels
+
+
+async def run_collectors(
+    config: Config,
+    llm_factory: BedrockLanguageModelFactory,
+    sources: list[str] | None = None,
+) -> list[CollectedItem]:
+    tasks, labels = _build_collector_tasks(config, llm_factory, sources)
     if not tasks:
         logger.warning("No active collectors")
         return []
-
     return await gather_collector_results(tasks, labels=labels)
+
+
+async def run_collectors_with_health(
+    config: Config,
+    llm_factory: BedrockLanguageModelFactory,
+    sources: list[str] | None = None,
+) -> tuple[list[CollectedItem], HealthReport]:
+    tasks, labels = _build_collector_tasks(config, llm_factory, sources)
+    if not tasks:
+        logger.warning("No active collectors")
+        return [], HealthReport()
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    items: list[CollectedItem] = []
+    health: list[SourceHealth] = []
+    for label, result in zip(labels, results):
+        if isinstance(result, Exception):
+            health.append(
+                SourceHealth(name=label, item_count=0, status=SourceStatus.FAILED, detail=str(result)[:200])
+            )
+            logger.warning("Collector '%s' failed: %s", label, result)
+        else:
+            items.extend(result)
+            status = SourceStatus.OK if result else SourceStatus.EMPTY
+            health.append(SourceHealth(name=label, item_count=len(result), status=status))
+    return items, HealthReport(sources=health)
 
 
 async def run_pipeline(
@@ -188,8 +225,9 @@ async def main() -> None:
         region_name=config.aws.bedrock_region,
     )
 
-    collected_items = await run_collectors(config, llm_factory, args.sources)
+    collected_items, health = await run_collectors_with_health(config, llm_factory, args.sources)
     logger.info("Collected %d total items", len(collected_items))
+    logger.info("Source health report:\n%s", health.summary())
 
     if not collected_items:
         logger.warning("No items collected. Exiting.")

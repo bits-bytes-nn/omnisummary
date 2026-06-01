@@ -1,19 +1,45 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import UTC, datetime
 
+import boto3
 import httpx
 
 from shared import CollectedItem, SourceType, logger
 from shared.config import RedditCollectorConfig
-from shared.proxy import get_proxied_url
 
 from .base import BaseCollector, cutoff_datetime, gather_collector_results
 
 USER_AGENT = "omnisummary:v1.0 (by /u/omnisummary)"
+TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
+OAUTH_BASE = "https://oauth.reddit.com"
 MAX_RETRIES = 3
 RETRY_BACKOFF = 5
+
+
+def _resolve_reddit_credentials() -> tuple[str, str] | None:
+    client_id = os.getenv("REDDIT_CLIENT_ID", "")
+    client_secret = os.getenv("REDDIT_CLIENT_SECRET", "")
+    if client_id and client_secret:
+        return client_id, client_secret
+
+    project = os.getenv("PROJECT_NAME", "omnisummary")
+    stage = os.getenv("STAGE", "dev")
+    region = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2"))
+    ssm = boto3.client("ssm", region_name=region)
+    try:
+        client_id = ssm.get_parameter(Name=f"/{project}/{stage}/reddit-client-id", WithDecryption=True)[
+            "Parameter"
+        ]["Value"]
+        client_secret = ssm.get_parameter(Name=f"/{project}/{stage}/reddit-client-secret", WithDecryption=True)[
+            "Parameter"
+        ]["Value"]
+    except Exception as e:
+        logger.warning("Reddit credentials unavailable (env + SSM): %s", e)
+        return None
+    return client_id, client_secret
 
 
 class RedditCollector(BaseCollector):
@@ -25,24 +51,50 @@ class RedditCollector(BaseCollector):
             logger.info("No subreddits configured, skipping")
             return []
 
-        tasks = [self._collect_subreddit(sub) for sub in self.config.subreddits]
+        creds = await asyncio.to_thread(_resolve_reddit_credentials)
+        if not creds:
+            logger.warning("Reddit credentials missing — skipping Reddit collection")
+            return []
+
+        client_id, client_secret = creds
+        try:
+            token = await self._fetch_token(client_id, client_secret)
+        except Exception:
+            logger.warning("Failed to obtain Reddit OAuth token", exc_info=True)
+            return []
+        if not token:
+            logger.warning("Reddit OAuth token empty — skipping Reddit collection")
+            return []
+
+        tasks = [self._collect_subreddit(sub, token) for sub in self.config.subreddits]
         items = await gather_collector_results(tasks, labels=self.config.subreddits)
         logger.info("Reddit collector gathered %d items total", len(items))
         return items
 
-    async def _collect_subreddit(self, subreddit_name: str) -> list[CollectedItem]:
+    @staticmethod
+    async def _fetch_token(client_id: str, client_secret: str) -> str:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                TOKEN_URL,
+                data={"grant_type": "client_credentials"},
+                auth=httpx.BasicAuth(client_id, client_secret),
+                headers={"User-Agent": USER_AGENT},
+            )
+            response.raise_for_status()
+            return response.json().get("access_token", "")
+
+    async def _collect_subreddit(self, subreddit_name: str, token: str) -> list[CollectedItem]:
         logger.info("Collecting posts from 'r/%s'", subreddit_name)
-        base_url = f"https://www.reddit.com/r/{subreddit_name}/{self.config.sort}.json"
+        url = f"{OAUTH_BASE}/r/{subreddit_name}/{self.config.sort}"
         params: dict[str, str | int] = {"limit": self.config.limit}
         if self.config.sort == "top":
             params["t"] = "day"
-        query = "&".join(f"{k}={v}" for k, v in params.items())
-        url = get_proxied_url(f"{base_url}?{query}")
+        headers = {"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT}
 
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}, timeout=30) as client:
-                    response = await client.get(url)
+                async with httpx.AsyncClient(headers=headers, timeout=30) as client:
+                    response = await client.get(url, params=params)
                     response.raise_for_status()
                     data = response.json()
                 return self._parse_listing(data, subreddit_name)
