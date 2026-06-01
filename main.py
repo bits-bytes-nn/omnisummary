@@ -30,6 +30,7 @@ from shared import (
     S3StateStore,
     SourceHealth,
     SourceStatus,
+    create_memory_store,
     is_running_in_aws,
     logger,
 )
@@ -177,13 +178,11 @@ def _save_state(
     digest: DigestResult,
     digest_date: date,
 ) -> None:
-    state_dir = Path(LocalPaths.DIGEST_STATE_DIR.value)
-    state_dir.mkdir(parents=True, exist_ok=True)
-    state_file = state_dir / f"digest_{digest_date.isoformat()}.json"
-
     mgr = DigestStateManager()
     mgr.store_digest(items, ranked_items, digest)
-    mgr.save_to_file(state_file)
+    memory = create_memory_store(Path(LocalPaths.DIGEST_STATE_DIR.value))
+    memory.put_digest(digest_date.isoformat(), mgr.export_state())
+    memory.record_trend(digest.digest_text, session_id=f"trend-{digest_date.isoformat()}")
 
 
 async def main() -> None:

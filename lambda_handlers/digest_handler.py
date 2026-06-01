@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from datetime import datetime, timedelta
 from typing import Any
@@ -15,8 +14,8 @@ from shared import (
     BedrockLanguageModelFactory,
     Config,
     HealthReport,
-    S3StateStore,
     SourceStatus,
+    create_memory_store,
     logger,
     set_correlation_id,
 )
@@ -82,16 +81,13 @@ async def _run() -> None:
 
     result = await run_pipeline(config, llm_factory, collected_items, digest_date=digest_date)
 
-    bucket = os.environ.get("STATE_BUCKET", "")
-    if bucket and result:
+    if result:
         items, ranked_items, digest = result
         if items and ranked_items and digest:
-            state_store = S3StateStore(boto_session, bucket, prefix="digest_state")
             mgr = DigestStateManager()
             mgr.store_digest(items, ranked_items, digest)
-            state_store.write(
-                f"digest_{digest_date.isoformat()}.json",
-                json.dumps(mgr.export_state(), ensure_ascii=False, indent=2),
-            )
+            memory = create_memory_store()
+            memory.put_digest(digest_date.isoformat(), mgr.export_state())
+            memory.record_trend(digest.digest_text, session_id=f"trend-{digest_date.isoformat()}")
 
     logger.info("Digest pipeline completed for %s", digest_date)

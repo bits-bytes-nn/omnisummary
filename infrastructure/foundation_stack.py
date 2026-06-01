@@ -13,6 +13,7 @@ from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_servicediscovery as sd
 from aws_cdk import aws_sns as sns
 from aws_cdk import aws_sns_subscriptions as subs
+from aws_cdk.aws_bedrockagentcore import CfnMemory
 from constructs import Construct
 
 from shared import Config
@@ -154,6 +155,43 @@ class OmniSummaryFoundationStack(Stack):
         if alert_email:
             self.alerts_topic.add_subscription(subs.EmailSubscription(alert_email))
         self.alerts_topic.grant_publish(self.lambda_role)
+
+        memory_exec_role = iam.Role(
+            self,
+            "MemoryExecutionRole",
+            assumed_by=iam.ServicePrincipal("bedrock-agentcore.amazonaws.com"),
+        )
+        memory_exec_role.add_to_policy(bedrock_invoke_statement)
+
+        self.memory = CfnMemory(
+            self,
+            "DigestMemory",
+            name=f"{project_name}_{stage}_digest_state".replace("-", "_"),
+            event_expiry_duration=90,
+            description="OmniSummary digest state and cross-day trend recall",
+            memory_execution_role_arn=memory_exec_role.role_arn,
+            memory_strategies=[
+                CfnMemory.MemoryStrategyProperty(
+                    semantic_memory_strategy=CfnMemory.SemanticMemoryStrategyProperty(
+                        name="TrendFacts",
+                        namespaces=["/facts/{actorId}/"],
+                    )
+                )
+            ],
+        )
+        self.memory_id = self.memory.attr_memory_id
+
+        memory_data_statement = iam.PolicyStatement(
+            actions=[
+                "bedrock-agentcore:CreateEvent",
+                "bedrock-agentcore:ListEvents",
+                "bedrock-agentcore:ListSessions",
+                "bedrock-agentcore:RetrieveMemoryRecords",
+            ],
+            resources=[f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:memory/*"],
+        )
+        self.lambda_role.add_to_policy(memory_data_statement)
+        self.agentcore_role.add_to_policy(memory_data_statement)
 
         self.ecs_cluster = ecs.Cluster(self, "EcsCluster", vpc=self.vpc)
 

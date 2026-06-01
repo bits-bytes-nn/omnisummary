@@ -71,6 +71,16 @@ class TestFoundationStack:
         assert "ssm:GetParameter" in rendered
         assert "bedrock:InvokeModel" in rendered
 
+    def test_agentcore_memory_resource(self, templates):
+        foundation, _ = templates
+        foundation.resource_count_is("AWS::BedrockAgentCore::Memory", 1)
+
+    def test_memory_data_plane_permissions(self, templates):
+        foundation, _ = templates
+        rendered = str(foundation.find_resources("AWS::IAM::Policy"))
+        assert "bedrock-agentcore:CreateEvent" in rendered
+        assert "bedrock-agentcore:RetrieveMemoryRecords" in rendered
+
 
 class TestApplicationStack:
     def test_waf_web_acl(self, templates):

@@ -85,6 +85,7 @@ class OmniSummaryApplicationStack(Stack):
                 "S3_PREFIX": f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state",
                 "PROJECT_NAME": project_name,
                 "STAGE": stage,
+                "MEMORY_ID": foundation.memory_id,
             },
         )
 
@@ -110,6 +111,7 @@ class OmniSummaryApplicationStack(Stack):
                 "PROJECT_NAME": project_name,
                 "STAGE": stage,
                 "ALERT_SNS_TOPIC_ARN": foundation.alerts_topic.topic_arn,
+                "MEMORY_ID": foundation.memory_id,
             },
         )
 
