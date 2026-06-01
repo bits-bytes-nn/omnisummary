@@ -4,15 +4,21 @@ Proactive AI/ML daily digest system that collects content from multiple sources,
 
 ## Features
 
-- **Multi-source collection**: Reddit, YouTube, X/Twitter (via RSSHub), RSS/Substack, Web Search (Tavily)
-- **LLM-powered ranking**: 6-axis evaluation (technical substance, practitioner value, novelty, industry impact, research significance, source authority)
-- **Editorial digest**: Korean editorial with trend tracking across days
-- **Follow-up agent**: Slack-based interactive agent for detailed analysis, paper search, and community reaction lookup
-- **AWS deployment**: Lambda + EventBridge cron + Bedrock AgentCore + ECS (RSSHub) + S3 state storage
+- **Multi-source collection**: Reddit (official OAuth API), YouTube, X/Twitter (via RSSHub), RSS/Substack, Web Search (Tavily)
+- **LLM-powered ranking**: Claude Opus 4.8, multi-axis evaluation with source-slot + per-origin diversity caps
+- **Editorial digest**: Claude Sonnet 4.6 Korean editorial with cross-day trend tracking
+- **Follow-up agent**: Slack-based Strands agent — analysis, paper/community/news search, and on-demand visualizations (comic / diagram via OpenAI gpt-image)
+- **AgentCore-centric**: digest state persisted in Bedrock AgentCore Memory; agent runs on AgentCore Runtime
+- **Operational excellence**: per-source health checks → SNS email alerts, structured JSON logging with correlation IDs, CloudWatch alarms, AWS WAF on the API
+- **AWS deployment**: Lambda + EventBridge cron + Bedrock AgentCore (Runtime + Memory) + ECS (RSSHub)
 
 ## Architecture
 
 ![OmniSummary Architecture](assets/architecture.png)
+
+![How the digest works](assets/concept-pipeline.png)
+
+> Detailed, line-by-line technical reference: [`assets/tech-doc.md`](assets/tech-doc.md).
 
 ## Quick Start
 
@@ -68,8 +74,9 @@ collectors:
 pipeline:
   top_n: 5
   min_score: 0.6
-  ranking_model: "anthropic.claude-opus-4-6-v1"
+  ranking_model: "anthropic.claude-opus-4-8"
   digest_model: "anthropic.claude-sonnet-4-6"
+  max_per_origin: 1   # cap items per channel/author/subreddit
   source_slots:
     web: 1
     x: 1
@@ -85,7 +92,11 @@ SLACK_BOT_TOKEN=xoxb-...
 SLACK_CHANNEL_ID=C...
 TAVILY_API_KEY=tvly-...
 YOUTUBE_API_KEY=AIza...            # Optional, falls back to RSS
-CLOUDFLARE_PROXY_URL=https://...   # For AWS deployment
+REDDIT_CLIENT_ID=...               # Reddit "script" app (oauth)
+REDDIT_CLIENT_SECRET=...
+OPENAI_API_KEY=sk-...              # Optional, enables make_visual (comic/diagram)
+ALERT_EMAIL=you@example.com        # Optional, source-health alerts
+CLOUDFLARE_PROXY_URL=https://...   # For AWS deployment (YouTube fallback)
 CLOUDFLARE_PROXY_TOKEN=...
 ```
 
@@ -126,7 +137,7 @@ Each collector runs async in parallel. Lookback window is configurable per sourc
 
 | Collector | Source | Method |
 |-----------|--------|--------|
-| `RedditCollector` | Reddit JSON API | Cloudflare proxy on AWS |
+| `RedditCollector` | Reddit official OAuth API | env/SSM credentials, preserves engagement |
 | `YouTubeCollector` | YouTube Data API v3 / RSS fallback | Direct or proxy |
 | `RSSCollector` | RSS/Atom feeds | feedparser |
 | `RSSHubCollector` | X/Twitter via RSSHub | Local Docker or S3 sync |
@@ -161,7 +172,7 @@ Each collector runs async in parallel. Lookback window is configurable per sourc
 
 ### 6. Follow-up Agent
 
-Strands Agent with 4 tools:
+Strands Agent (on Bedrock AgentCore Runtime, reads digest state from AgentCore Memory) with 5 tools:
 
 | Tool | Function |
 |------|----------|
@@ -169,6 +180,7 @@ Strands Agent with 4 tools:
 | `search_papers(query)` | Semantic Scholar API |
 | `search_community(query)` | Tavily (Reddit, X, HN, Substack) |
 | `search_related_news(query)` | Tavily (general news) |
+| `make_visual(item_number, mode, panels)` | Generate + post a comic (1–6 panels) or explanatory diagram via OpenAI gpt-image |
 
 ## AWS Deployment
 
@@ -182,12 +194,14 @@ AWS_PROFILE=<profile> uv run cdk deploy --all -a "uv run python scripts/deploy.p
 Resources created:
 - **Lambda** (Docker): Digest pipeline, 15min timeout
 - **Lambda**: Slack event handler, 60s timeout
-- **API Gateway**: `POST /slack/events`
-- **EventBridge**: Daily cron (22:00 KST)
-- **Bedrock AgentCore**: Follow-up agent runtime (arm64)
+- **API Gateway** + **AWS WAFv2**: `POST /slack/events` with rate-limit + managed rules + throttling
+- **EventBridge**: Daily cron (config-driven hour/minute)
+- **Bedrock AgentCore**: Runtime (follow-up agent, arm64) + **Memory** (digest state, trends)
 - **ECS Fargate**: RSSHub container
-- **S3**: Digest state, trends, RSSHub sync data
+- **S3**: trends + RSSHub sync data
 - **DynamoDB**: Slack event deduplication
+- **SNS**: source-health alert topic (email)
+- **CloudWatch**: structured logs + error/5xx alarms
 - **ECR**: Docker images (amd64 for Lambda, arm64 for AgentCore)
 
 ### Docker Images
@@ -254,15 +268,19 @@ omnisummary/
 ├── scripts/                    # Deploy, RSSHub sync
 ├── cloudflare-proxy/           # CF Worker proxy
 ├── config/                     # YAML configuration
-├── tests/                      # Unit tests (54)
-└── docs/                       # Architecture documentation
+├── tests/                      # Unit + CDK tests (155)
+└── assets/                     # tech-doc.md, architecture + concept diagrams
 ```
 
-## Testing
+## Testing & CI
 
 ```bash
-uv run python -m pytest tests/ -v
+uv run python -m pytest tests/ -v        # 155 tests (unit + CDK assertions)
+uv run black --check . && uv run ruff check .
+uv run python scripts/ci_synth.py        # offline CDK synth
 ```
+
+CI (`.github/workflows/ci.yml`): lint, format check, tests + coverage gate, CDK synth, Docker build.
 
 ## License
 
