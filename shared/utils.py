@@ -98,6 +98,18 @@ _LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
         max_output_tokens=64000,
         supports_thinking=True,
     ),
+    LanguageModelId.CLAUDE_V4_7_OPUS: LanguageModelInfo(
+        context_window_size=1000000,
+        max_output_tokens=64000,
+        supports_thinking=True,
+        supports_1m_context_window=True,
+    ),
+    LanguageModelId.CLAUDE_V4_8_OPUS: LanguageModelInfo(
+        context_window_size=1000000,
+        max_output_tokens=64000,
+        supports_thinking=True,
+        supports_1m_context_window=True,
+    ),
     # NOTE: add new models here
 }
 

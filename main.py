@@ -1,6 +1,5 @@
 import argparse
 import asyncio
-import json
 import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -8,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import boto3
 
+from agent.tool_state import DigestStateManager
 from collectors import (
     RedditCollector,
     RSSCollector,
@@ -17,7 +17,6 @@ from collectors import (
 )
 from collectors.base import gather_collector_results
 from output import send_digest_to_slack
-from agent.tool_state import DigestStateManager
 from pipeline import ContentAggregator, ContentRanker, DigestGenerator, TrendTracker
 from shared import (
     BedrockLanguageModelFactory,
@@ -97,7 +96,7 @@ async def run_collectors_with_health(
     results = await asyncio.gather(*tasks, return_exceptions=True)
     items: list[CollectedItem] = []
     health: list[SourceHealth] = []
-    for label, result in zip(labels, results):
+    for label, result in zip(labels, results, strict=True):
         if isinstance(result, Exception):
             health.append(
                 SourceHealth(name=label, item_count=0, status=SourceStatus.FAILED, detail=str(result)[:200])
@@ -241,7 +240,7 @@ async def main() -> None:
 
 
 def _run_interactive(items: list[CollectedItem], ranked_items: list[RankedItem], digest: DigestResult) -> None:
-    from agent import DigestStateManager, create_digest_agent
+    from agent import create_digest_agent
     from agent.agent_tools import state_manager
 
     state_manager.store_digest(items, ranked_items, digest)

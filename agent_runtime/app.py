@@ -8,12 +8,11 @@ import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from slack_sdk.web import WebClient
 
-from output.slack_handler import _split_message
-
 from agent import create_digest_agent
 from agent.agent_tools import state_manager
 from agent.tool_state import DigestStateManager
-from shared import S3StateStore, logger, sanitize_slack_mrkdwn
+from output.slack_handler import _split_message
+from shared import S3StateStore, logger, sanitize_slack_mrkdwn, set_correlation_id
 
 app = BedrockAgentCoreApp()
 
@@ -84,6 +83,7 @@ def invoke(payload: dict[str, Any]) -> str:
     channel_id = payload.get("channel_id", "")
     thread_ts = payload.get("thread_ts", "")
 
+    set_correlation_id(payload.get("correlation_id") or None)
     logger.info("AgentCore invoked: prompt='%s', channel='%s'", prompt[:100], channel_id)
 
     _load_latest_state()

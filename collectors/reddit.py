@@ -15,8 +15,6 @@ from .base import BaseCollector, cutoff_datetime, gather_collector_results
 USER_AGENT = "omnisummary:v1.0 (by /u/omnisummary)"
 TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
 OAUTH_BASE = "https://oauth.reddit.com"
-MAX_RETRIES = 3
-RETRY_BACKOFF = 5
 
 
 def _resolve_reddit_credentials() -> tuple[str, str] | None:
@@ -71,9 +69,8 @@ class RedditCollector(BaseCollector):
         logger.info("Reddit collector gathered %d items total", len(items))
         return items
 
-    @staticmethod
-    async def _fetch_token(client_id: str, client_secret: str) -> str:
-        async with httpx.AsyncClient(timeout=30) as client:
+    async def _fetch_token(self, client_id: str, client_secret: str) -> str:
+        async with httpx.AsyncClient(timeout=self.config.request_timeout) as client:
             response = await client.post(
                 TOKEN_URL,
                 data={"grant_type": "client_credentials"},
@@ -90,23 +87,25 @@ class RedditCollector(BaseCollector):
         if self.config.sort == "top":
             params["t"] = "day"
         headers = {"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT}
+        max_retries = self.config.max_retries
+        backoff = self.config.retry_backoff_sec
 
-        for attempt in range(1, MAX_RETRIES + 1):
+        for attempt in range(1, max_retries + 1):
             try:
-                async with httpx.AsyncClient(headers=headers, timeout=30) as client:
+                async with httpx.AsyncClient(headers=headers, timeout=self.config.request_timeout) as client:
                     response = await client.get(url, params=params)
                     response.raise_for_status()
                     data = response.json()
                 return self._parse_listing(data, subreddit_name)
             except Exception:
-                if attempt < MAX_RETRIES:
+                if attempt < max_retries:
                     logger.warning(
                         "Failed to fetch 'r/%s' (attempt %d/%d), retrying in %ds...",
-                        subreddit_name, attempt, MAX_RETRIES, RETRY_BACKOFF * attempt,
+                        subreddit_name, attempt, max_retries, backoff * attempt,
                     )
-                    await asyncio.sleep(RETRY_BACKOFF * attempt)
+                    await asyncio.sleep(backoff * attempt)
                 else:
-                    logger.warning("Failed to fetch 'r/%s' after %d attempts", subreddit_name, MAX_RETRIES, exc_info=True)
+                    logger.warning("Failed to fetch 'r/%s' after %d attempts", subreddit_name, max_retries, exc_info=True)
                     return []
         return []
 

@@ -13,6 +13,9 @@ class BaseCollectorConfig(BaseModel):
     enabled: bool = True
     lookback_hours: int = 24
     reference_time: datetime | None = None
+    request_timeout: int = Field(default=30, ge=1)
+    max_retries: int = Field(default=3, ge=1)
+    retry_backoff_sec: int = Field(default=5, ge=0)
 
 
 class YouTubeCollectorConfig(BaseCollectorConfig):
@@ -111,6 +114,11 @@ class AWSConfig(BaseModel):
     subnet_ids: list[str] = Field(default_factory=list)
     state_bucket_name: str = ""
     s3_prefix: str = ""
+    digest_cron_hour: str = "13"
+    digest_cron_minute: str = "0"
+    api_throttle_rate_limit: int = Field(default=20, ge=1)
+    api_throttle_burst_limit: int = Field(default=10, ge=1)
+    waf_rate_limit: int = Field(default=2000, ge=100)
 
 
 class Config(BaseModel):

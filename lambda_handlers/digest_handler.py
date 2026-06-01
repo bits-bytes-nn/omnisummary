@@ -11,7 +11,15 @@ import boto3
 
 from agent.tool_state import DigestStateManager
 from main import run_collectors_with_health, run_pipeline
-from shared import BedrockLanguageModelFactory, Config, HealthReport, S3StateStore, SourceStatus, logger
+from shared import (
+    BedrockLanguageModelFactory,
+    Config,
+    HealthReport,
+    S3StateStore,
+    SourceStatus,
+    logger,
+    set_correlation_id,
+)
 
 
 def _maybe_alert(health: HealthReport) -> None:
@@ -32,6 +40,8 @@ def _maybe_alert(health: HealthReport) -> None:
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    request_id = getattr(context, "aws_request_id", "") if context else ""
+    set_correlation_id(request_id or None)
     logger.info("Digest pipeline Lambda invoked")
 
     try:

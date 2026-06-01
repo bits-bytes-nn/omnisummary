@@ -71,6 +71,10 @@ class OmniSummaryFoundationStack(Stack):
                 bucket_name=f"{project_name}-{stage}-state",
                 removal_policy=RemovalPolicy.RETAIN if is_prod else RemovalPolicy.DESTROY,
                 auto_delete_objects=not is_prod,
+                encryption=s3.BucketEncryption.S3_MANAGED,
+                block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+                enforce_ssl=True,
+                versioned=True,
             )
 
         self.ecr_repo = ecr.Repository(
@@ -89,6 +93,10 @@ class OmniSummaryFoundationStack(Stack):
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             time_to_live_attribute="ttl",
             removal_policy=RemovalPolicy.DESTROY,
+            encryption=dynamodb.TableEncryption.AWS_MANAGED,
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
+                point_in_time_recovery_enabled=is_prod
+            ),
         )
 
         self.agentcore_role = iam.Role(
@@ -117,7 +125,18 @@ class OmniSummaryFoundationStack(Stack):
         )
         self.state_bucket.grant_read_write(self.lambda_role)
         self.dedup_table.grant_read_write_data(self.lambda_role)
-        self.lambda_role.add_to_policy(iam.PolicyStatement(actions=["lambda:InvokeFunction"], resources=["*"]))
+        self.lambda_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["lambda:InvokeFunction"],
+                resources=[f"arn:aws:lambda:{self.region}:{self.account}:function:{project_name}-{stage}-*"],
+            )
+        )
+        self.lambda_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["bedrock-agentcore:InvokeAgentRuntime"],
+                resources=[f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:runtime/*"],
+            )
+        )
 
         self.alerts_topic = sns.Topic(self, "AlertsTopic", topic_name=f"{project_name}-{stage}-alerts")
         if alert_email:

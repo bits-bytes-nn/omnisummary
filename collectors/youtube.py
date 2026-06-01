@@ -4,8 +4,7 @@ import asyncio
 import json
 import os
 import re
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime
 
 import feedparser
 import httpx
