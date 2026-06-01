@@ -99,17 +99,29 @@ class OmniSummaryFoundationStack(Stack):
             ),
         )
 
+        ssm_read_statement = iam.PolicyStatement(
+            actions=["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"],
+            resources=[f"arn:aws:ssm:{self.region}:{self.account}:parameter/{project_name}/{stage}/*"],
+        )
+        bedrock_invoke_statement = iam.PolicyStatement(
+            actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+            resources=[
+                "arn:aws:bedrock:*::foundation-model/*",
+                f"arn:aws:bedrock:*:{self.account}:inference-profile/*",
+            ],
+        )
+
         self.agentcore_role = iam.Role(
             self,
             "AgentCoreRole",
             assumed_by=iam.ServicePrincipal("bedrock-agentcore.amazonaws.com"),
             managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name("AmazonBedrockFullAccess"),
                 iam.ManagedPolicy.from_aws_managed_policy_name("AmazonEC2ContainerRegistryReadOnly"),
-                iam.ManagedPolicy.from_aws_managed_policy_name("AmazonSSMReadOnlyAccess"),
                 iam.ManagedPolicy.from_aws_managed_policy_name("CloudWatchLogsFullAccess"),
             ],
         )
+        self.agentcore_role.add_to_policy(ssm_read_statement)
+        self.agentcore_role.add_to_policy(bedrock_invoke_statement)
         self.state_bucket.grant_read_write(self.agentcore_role)
 
         self.lambda_role = iam.Role(
@@ -118,11 +130,11 @@ class OmniSummaryFoundationStack(Stack):
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
             managed_policies=[
                 iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaVPCAccessExecutionRole"),
-                iam.ManagedPolicy.from_aws_managed_policy_name("AmazonBedrockFullAccess"),
-                iam.ManagedPolicy.from_aws_managed_policy_name("AmazonSSMReadOnlyAccess"),
                 iam.ManagedPolicy.from_aws_managed_policy_name("CloudWatchLogsFullAccess"),
             ],
         )
+        self.lambda_role.add_to_policy(ssm_read_statement)
+        self.lambda_role.add_to_policy(bedrock_invoke_statement)
         self.state_bucket.grant_read_write(self.lambda_role)
         self.dedup_table.grant_read_write_data(self.lambda_role)
         self.lambda_role.add_to_policy(

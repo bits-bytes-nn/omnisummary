@@ -148,7 +148,6 @@ class RSSHubCollector(BaseCollector):
 
     @staticmethod
     def _load_from_s3() -> list[CollectedItem] | None:
-
         bucket = os.environ.get("STATE_BUCKET", "")
         if not bucket:
             return None

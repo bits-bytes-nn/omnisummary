@@ -26,8 +26,8 @@ def _resolve_reddit_credentials() -> tuple[str, str] | None:
     project = os.getenv("PROJECT_NAME", "omnisummary")
     stage = os.getenv("STAGE", "dev")
     region = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2"))
-    ssm = boto3.client("ssm", region_name=region)
     try:
+        ssm = boto3.client("ssm", region_name=region)
         client_id = ssm.get_parameter(Name=f"/{project}/{stage}/reddit-client-id", WithDecryption=True)[
             "Parameter"
         ]["Value"]

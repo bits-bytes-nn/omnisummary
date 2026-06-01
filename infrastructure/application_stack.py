@@ -54,6 +54,10 @@ class OmniSummaryApplicationStack(Stack):
             "reddit-client-secret": reddit_client_secret,
             "openai-api-key": openai_api_key,
         }
+        # CloudFormation cannot create SecureString SSM parameters (AWS::SSM::Parameter
+        # supports only String/StringList). These hold low-sensitivity API tokens; access
+        # is restricted by the scoped ssm:GetParameter* IAM policy on /{project}/{stage}/*.
+        # Promote to Secrets Manager if higher-sensitivity credentials are added.
         for name, value in ssm_params.items():
             if value:
                 ssm.StringParameter(
