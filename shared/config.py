@@ -88,6 +88,7 @@ class PipelineConfig(BaseModel):
         }
     )
     source_cap_multiplier: int = Field(default=2, ge=1)
+    max_per_origin: int = Field(default=1, ge=1)
     origin_weights: dict[str, float] = Field(default_factory=dict)
     origin_weight_default: float = Field(default=1.0, ge=0.0)
     trend_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET

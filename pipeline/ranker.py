@@ -114,17 +114,32 @@ class ContentRanker:
         selected: list[RankedItem] = []
         selected_ids: set[str] = set()
         source_counts: dict[str, int] = {}
+        origin_counts: dict[str, int] = {}
+        max_per_origin = self.config.max_per_origin
+
+        def _origin_at_cap(item: RankedItem) -> bool:
+            origin_key = self._resolve_origin_key(item.item)
+            return bool(origin_key) and origin_counts.get(origin_key, 0) >= max_per_origin
+
+        def _record(item: RankedItem, source_key: str) -> None:
+            selected.append(item)
+            selected_ids.add(item.item.item_id)
+            source_counts[source_key] = source_counts.get(source_key, 0) + 1
+            origin_key = self._resolve_origin_key(item.item)
+            if origin_key:
+                origin_counts[origin_key] = origin_counts.get(origin_key, 0) + 1
 
         for source_key, slot_count in source_slots.items():
-            candidates = [
-                r
-                for r in above_threshold
-                if r.item.source_type.value == source_key and r.item.item_id not in selected_ids
-            ]
-            for item in candidates[:slot_count]:
-                selected.append(item)
-                selected_ids.add(item.item.item_id)
-                source_counts[source_key] = source_counts.get(source_key, 0) + 1
+            taken = 0
+            for item in above_threshold:
+                if taken >= slot_count:
+                    break
+                if item.item.source_type.value != source_key or item.item.item_id in selected_ids:
+                    continue
+                if _origin_at_cap(item):
+                    continue
+                _record(item, source_key)
+                taken += 1
 
         if len(selected) < self.config.top_n:
             for item in above_threshold:
@@ -132,11 +147,9 @@ class ContentRanker:
                     continue
                 src = item.item.source_type.value
                 cap = source_slots.get(src, 1) * self.config.source_cap_multiplier
-                if source_counts.get(src, 0) >= cap:
+                if source_counts.get(src, 0) >= cap or _origin_at_cap(item):
                     continue
-                selected.append(item)
-                selected_ids.add(item.item.item_id)
-                source_counts[src] = source_counts.get(src, 0) + 1
+                _record(item, src)
                 if len(selected) >= self.config.top_n:
                     break
 

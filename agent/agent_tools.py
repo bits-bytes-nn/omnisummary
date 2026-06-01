@@ -24,6 +24,36 @@ def _get_tavily_client() -> AsyncTavilyClient | None:
     return AsyncTavilyClient(api_key=api_key)
 
 
+def _format_search_results(results: list[dict]) -> str:
+    return "\n\n".join(
+        f"- {r.get('title', 'N/A')}\n  URL: {r.get('url', '')}\n  Content: {r.get('content', '')[:300]}"
+        for r in results
+    )
+
+
+async def _tavily_search(query: str, *, topic: str | None = None, include_domains: list[str] | None = None) -> str:
+    client = _get_tavily_client()
+    if not client:
+        return "TAVILY_API_KEY not configured."
+
+    kwargs: dict = {"query": query, "max_results": 5}
+    if topic:
+        kwargs["topic"] = topic
+    if include_domains:
+        kwargs["include_domains"] = include_domains
+
+    try:
+        response = await client.search(**kwargs)
+        results = response.get("results", [])
+        if not results:
+            return "No results found."
+        logger.info("Tavily search found %d results for query '%s'", len(results), query)
+        return _format_search_results(results)
+    except Exception as e:
+        logger.warning("Tavily search failed: %s", e)
+        return f"Search failed: {e}"
+
+
 @tool
 def get_detail(item_number: int, query: str = "") -> str:
     """Get detailed analysis of a digest item by its number.
@@ -122,31 +152,7 @@ async def search_community(query: str) -> str:
     Args:
         query: Search query for community discussions
     """
-    client = _get_tavily_client()
-    if not client:
-        return "TAVILY_API_KEY not configured."
-
-    try:
-        response = await client.search(
-            query=query,
-            max_results=5,
-            include_domains=COMMUNITY_SEARCH_DOMAINS,
-        )
-        results = response.get("results", [])
-        if not results:
-            return "No community discussions found."
-
-        formatted: list[str] = []
-        for r in results:
-            formatted.append(
-                f"- {r.get('title', 'N/A')}\n" f"  URL: {r.get('url', '')}\n" f"  Content: {r.get('content', '')[:300]}"
-            )
-
-        logger.info("Found %d community discussions for query '%s'", len(results), query)
-        return "\n\n".join(formatted)
-    except Exception as e:
-        logger.warning("Tavily search failed: %s", e)
-        return f"Search failed: {e}"
+    return await _tavily_search(query, include_domains=COMMUNITY_SEARCH_DOMAINS)
 
 
 @tool
@@ -156,28 +162,4 @@ async def search_related_news(query: str) -> str:
     Args:
         query: Search query for related news articles
     """
-    client = _get_tavily_client()
-    if not client:
-        return "TAVILY_API_KEY not configured."
-
-    try:
-        response = await client.search(
-            query=query,
-            max_results=5,
-            topic="news",
-        )
-        results = response.get("results", [])
-        if not results:
-            return "No related news found."
-
-        formatted: list[str] = []
-        for r in results:
-            formatted.append(
-                f"- {r.get('title', 'N/A')}\n" f"  URL: {r.get('url', '')}\n" f"  Content: {r.get('content', '')[:300]}"
-            )
-
-        logger.info("Found %d related news for query '%s'", len(results), query)
-        return "\n\n".join(formatted)
-    except Exception as e:
-        logger.warning("Tavily news search failed: %s", e)
-        return f"Search failed: {e}"
+    return await _tavily_search(query, topic="news")
