@@ -153,8 +153,9 @@ class TestSendDigestToSlack:
         mock_client = AsyncMock()
 
         env = {"SLACK_BOT_TOKEN": "xoxb-env", "SLACK_CHANNEL_ID": "C_ENV"}
-        with patch.dict("os.environ", env, clear=False), patch(
-            "output.slack_handler.AsyncWebClient", return_value=mock_client
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("output.slack_handler.AsyncWebClient", return_value=mock_client),
         ):
             result = await send_digest_to_slack(digest, config)
 

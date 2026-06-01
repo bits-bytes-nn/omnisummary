@@ -63,7 +63,9 @@ def _send_slack_message(channel: str, text: str, thread_ts: str = "") -> None:
             bot_token = ssm.get_parameter(
                 Name=f"/{project}/{stage}/slack-bot-token",
                 WithDecryption=True,
-            )["Parameter"]["Value"]
+            )[
+                "Parameter"
+            ]["Value"]
         except Exception as e:
             logger.error("Failed to get Slack token: %s", e)
             return

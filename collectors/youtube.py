@@ -18,6 +18,7 @@ from .base import BaseCollector, cutoff_datetime, gather_collector_results
 
 YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
 
+
 class YouTubeCollector(BaseCollector):
     def __init__(self, config: YouTubeCollectorConfig):
         self.config = config
@@ -93,7 +94,9 @@ class YouTubeCollector(BaseCollector):
                     video_id = video["id"]
 
                     published_str = snippet.get("publishedAt", "")
-                    published_at = datetime.fromisoformat(published_str.replace("Z", "+00:00")) if published_str else None
+                    published_at = (
+                        datetime.fromisoformat(published_str.replace("Z", "+00:00")) if published_str else None
+                    )
                     if published_at and published_at < cutoff:
                         continue
 
@@ -187,16 +190,16 @@ class YouTubeCollector(BaseCollector):
     def _get_transcript(video_id: str) -> str:
         try:
             if is_proxy_configured():
-                proxy_url = get_proxied_url(
-                    f"https://www.youtube.com/api/timedtext?v={video_id}&lang=en"
-                )
+                proxy_url = get_proxied_url(f"https://www.youtube.com/api/timedtext?v={video_id}&lang=en")
                 resp = httpx.get(proxy_url, timeout=15)
                 if resp.status_code == 200 and resp.text.strip():
 
                     try:
                         data = json.loads(resp.text)
                         if isinstance(data, dict) and "events" in data:
-                            return " ".join(e.get("segs", [{}])[0].get("utf8", "") for e in data["events"] if e.get("segs"))
+                            return " ".join(
+                                e.get("segs", [{}])[0].get("utf8", "") for e in data["events"] if e.get("segs")
+                            )
                     except (json.JSONDecodeError, KeyError):
                         pass
 

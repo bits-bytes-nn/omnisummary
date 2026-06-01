@@ -38,7 +38,7 @@ class RSSHubCollector(BaseCollector):
         items: list[CollectedItem] = []
         failed_accounts: list[str] = []
         empty_accounts: list[str] = []
-        for label, result in zip(labels, results):
+        for label, result in zip(labels, results, strict=True):
             if isinstance(result, Exception):
                 logger.warning("RSSHub task '%s' failed: %s", label, result)
                 failed_accounts.append(label)

@@ -72,7 +72,9 @@ class OmniSummaryApplicationStack(Stack):
             "AgentCoreRuntime",
             agent_runtime_name=f"{project_name}_{stage}_followup",
             agent_runtime_artifact={
-                "containerConfiguration": {"containerUri": f"{foundation.ecr_repo.repository_uri}@sha256:96eede6755e1496685d0f2c46a449e08e12a45ba3b6492dc258b873cee56fd4f"}
+                "containerConfiguration": {
+                    "containerUri": f"{foundation.ecr_repo.repository_uri}@sha256:96eede6755e1496685d0f2c46a449e08e12a45ba3b6492dc258b873cee56fd4f"
+                }
             },
             network_configuration={"networkMode": "PUBLIC"},
             protocol_configuration="HTTP",

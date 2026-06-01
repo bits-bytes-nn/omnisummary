@@ -72,7 +72,6 @@ class HealthReport(BaseModel):
 
     def summary(self) -> str:
         return "\n".join(
-            f"[{s.status.value.upper()}] {s.name}: {s.item_count} items"
-            + (f" — {s.detail}" if s.detail else "")
+            f"[{s.status.value.upper()}] {s.name}: {s.item_count} items" + (f" — {s.detail}" if s.detail else "")
             for s in self.sources
         )

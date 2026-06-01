@@ -31,6 +31,9 @@ dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.1.0",
+    "respx>=0.21.1",
+    "aws-cdk-lib>=2.180.0",
+    "constructs>=10.0.0",
     "black>=23.12.0",
     "mypy>=1.7.0",
     "ruff>=0.1.9",
@@ -63,9 +66,21 @@ exclude = '''
 [tool.ruff]
 line-length = 120
 target-version = "py312"
-select = ["E", "W", "F", "I", "B", "C4", "UP"]
-ignore = ["E501", "B008", "C901"]
 exclude = [".git", ".mypy_cache", ".venv", "venv", "build", "dist", "references"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP"]
+# E501: line length handled by black. B008: FastAPI/CDK default-arg pattern.
+# C901: complexity. UP042: codebase uses (str, Enum) intentionally for JSON-serializable enums.
+# UP046: PEP 695 generic syntax not adopted (py312 baseline).
+ignore = ["E501", "B008", "C901", "UP042", "UP046"]
+
+[tool.ruff.lint.per-file-ignores]
+# Entrypoint scripts mutate sys.path before importing local packages.
+"scripts/*.py" = ["E402"]
+"slack_agent.py" = ["E402"]
+# W291: trailing whitespace is intentional inside multi-line prompt string literals.
+"agent/agent.py" = ["W291"]
 
 [tool.mypy]
 python_version = "3.12"

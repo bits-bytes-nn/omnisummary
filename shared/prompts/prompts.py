@@ -137,8 +137,7 @@ what it reveals, what people are getting wrong. Don't cover every story.
 - Blank line between items."""
 
     human_prompt_template: str = (
-        "Here are today's top ranked items:\n\n{items_text}\n\n"
-        "Ongoing trends from recent days:\n\n{trends_context}"
+        "Here are today's top ranked items:\n\n{items_text}\n\n" "Ongoing trends from recent days:\n\n{trends_context}"
     )
 
 

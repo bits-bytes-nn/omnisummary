@@ -28,9 +28,9 @@ def _resolve_reddit_credentials() -> tuple[str, str] | None:
     region = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2"))
     try:
         ssm = boto3.client("ssm", region_name=region)
-        client_id = ssm.get_parameter(Name=f"/{project}/{stage}/reddit-client-id", WithDecryption=True)[
-            "Parameter"
-        ]["Value"]
+        client_id = ssm.get_parameter(Name=f"/{project}/{stage}/reddit-client-id", WithDecryption=True)["Parameter"][
+            "Value"
+        ]
         client_secret = ssm.get_parameter(Name=f"/{project}/{stage}/reddit-client-secret", WithDecryption=True)[
             "Parameter"
         ]["Value"]
@@ -101,11 +101,16 @@ class RedditCollector(BaseCollector):
                 if attempt < max_retries:
                     logger.warning(
                         "Failed to fetch 'r/%s' (attempt %d/%d), retrying in %ds...",
-                        subreddit_name, attempt, max_retries, backoff * attempt,
+                        subreddit_name,
+                        attempt,
+                        max_retries,
+                        backoff * attempt,
                     )
                     await asyncio.sleep(backoff * attempt)
                 else:
-                    logger.warning("Failed to fetch 'r/%s' after %d attempts", subreddit_name, max_retries, exc_info=True)
+                    logger.warning(
+                        "Failed to fetch 'r/%s' after %d attempts", subreddit_name, max_retries, exc_info=True
+                    )
                     return []
         return []
 

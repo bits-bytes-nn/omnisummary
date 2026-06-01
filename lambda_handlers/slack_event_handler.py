@@ -55,13 +55,15 @@ def _handle_slack_event(event: dict[str, Any], context: Any) -> dict[str, Any]:
             lambda_client.invoke(
                 FunctionName=context.function_name,
                 InvocationType="Event",
-                Payload=json.dumps({
-                    "action": "invoke_agentcore",
-                    "text": evt.get("text", ""),
-                    "channel": evt.get("channel", ""),
-                    "thread_ts": evt.get("thread_ts") or evt.get("ts", ""),
-                    "event_id": event_id,
-                }),
+                Payload=json.dumps(
+                    {
+                        "action": "invoke_agentcore",
+                        "text": evt.get("text", ""),
+                        "channel": evt.get("channel", ""),
+                        "thread_ts": evt.get("thread_ts") or evt.get("ts", ""),
+                        "event_id": event_id,
+                    }
+                ),
             )
 
     return {"statusCode": 200, "body": "OK"}
@@ -87,11 +89,13 @@ def _handle_async_invocation(event: dict[str, Any], context: Any) -> dict[str, A
         agentcore_client.invoke_agent_runtime(
             agentRuntimeArn=agentcore_arn,
             qualifier="DEFAULT",
-            payload=json.dumps({
-                "prompt": clean_text,
-                "channel_id": channel,
-                "thread_ts": thread_ts,
-            }),
+            payload=json.dumps(
+                {
+                    "prompt": clean_text,
+                    "channel_id": channel,
+                    "thread_ts": thread_ts,
+                }
+            ),
         )
 
         logger.info("AgentCore invocation completed for event '%s'", event_id)
@@ -121,7 +125,9 @@ def _verify_slack_signature(headers: dict[str, str], body: str) -> bool:
         secret = ssm.get_parameter(
             Name=f"/{project_name}/{stage}/slack-signing-secret",
             WithDecryption=True,
-        )["Parameter"]["Value"]
+        )[
+            "Parameter"
+        ]["Value"]
     except Exception as e:
         logger.error("Failed to fetch Slack signing secret: %s", e)
         return False
