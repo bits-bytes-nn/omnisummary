@@ -16,6 +16,16 @@ COMMUNITY_SEARCH_DOMAINS = ["twitter.com", "x.com", "reddit.com", "news.ycombina
 state_manager = DigestStateManager()
 
 
+class DeliveryContext:
+    """Slack delivery target for tools that produce media (set per-invocation)."""
+
+    channel_id: str = ""
+    thread_ts: str = ""
+
+
+delivery_context = DeliveryContext()
+
+
 def _get_tavily_client() -> AsyncTavilyClient | None:
     api_key = os.getenv("TAVILY_API_KEY", "")
     if not api_key:
@@ -163,3 +173,77 @@ async def search_related_news(query: str) -> str:
         query: Search query for related news articles
     """
     return await _tavily_search(query, topic="news")
+
+
+def _build_llm_factory():
+    import boto3
+
+    from shared import BedrockLanguageModelFactory, Config, is_running_in_aws
+
+    config = Config.load()
+    if is_running_in_aws():
+        session = boto3.Session(region_name=config.aws.bedrock_region)
+    else:
+        session = boto3.Session(
+            region_name=config.aws.bedrock_region,
+            profile_name=config.aws.profile or None,
+        )
+    return BedrockLanguageModelFactory(boto_session=session, region_name=config.aws.bedrock_region), config
+
+
+def _brief_caption(mode: str, brief: dict) -> str:
+    if mode == "comic":
+        return "\n".join(f"{i + 1}. {p.get('caption', '')}" for i, p in enumerate(brief.get("panels", [])))
+    return brief.get("visual", "")[:300]
+
+
+@tool
+async def make_visual(item_number: int, mode: str = "comic", panels: int = 4) -> str:
+    """Create a visualization that helps explain a digest item, and post it to Slack.
+
+    Use this when the user asks for a cartoon/comic, an illustration, a diagram, or a
+    visual explanation of an item.
+
+    Args:
+        item_number: The digest item number (1-based) to visualize
+        mode: "comic" for a narrative cartoon, or "diagram" for an explanatory concept diagram
+        panels: For comic mode, how many panels to draw (1-6); pick what fits the story
+    """
+    from agent.visuals import MODES, VisualGenerator
+    from output.slack_handler import send_image_to_slack
+
+    if mode not in MODES:
+        return f"mode must be one of {sorted(MODES)}."
+
+    ranked = state_manager.get_item_by_number(item_number)
+    if not ranked:
+        return f"Item {item_number} not found. Today's digest has {state_manager.get_item_count()} items."
+
+    if not os.getenv("OPENAI_API_KEY"):
+        return "Visualization is disabled (OPENAI_API_KEY not configured)."
+
+    item = ranked.item
+    factory, config = _build_llm_factory()
+    generator = VisualGenerator(factory, config.pipeline.digest_model)
+
+    try:
+        image_bytes, brief = await generator.generate(item.title, item.text, mode=mode, panels=panels)
+    except Exception as e:
+        logger.error("Visualization failed: %s", e, exc_info=True)
+        return f"Visualization failed: {e}"
+
+    if not delivery_context.channel_id:
+        return "Visual generated but no Slack channel is set for delivery."
+
+    visual_title = brief.get("title", item.title)
+    uploaded = await send_image_to_slack(
+        image_bytes,
+        channel_id=delivery_context.channel_id,
+        title=visual_title,
+        comment=f"*{visual_title}*\n{_brief_caption(mode, brief)}",
+        thread_ts=delivery_context.thread_ts,
+    )
+    if not uploaded:
+        return "Visual generated but Slack upload failed."
+    descriptor = f"{panels}-panel comic" if mode == "comic" else "diagram"
+    return f"Posted a {descriptor} for item {item_number}: '{visual_title}'."

@@ -1,3 +1,19 @@
-from .prompts import BasePrompt, DigestPrompt, RankingPrompt, RefineQueryPrompt, TrendUpdatePrompt
+from .prompts import (
+    BasePrompt,
+    ComicSynopsisPrompt,
+    DigestPrompt,
+    RankingPrompt,
+    RefineQueryPrompt,
+    TrendUpdatePrompt,
+    VisualizationBriefPrompt,
+)
 
-__all__ = ["BasePrompt", "DigestPrompt", "RankingPrompt", "RefineQueryPrompt", "TrendUpdatePrompt"]
+__all__ = [
+    "BasePrompt",
+    "ComicSynopsisPrompt",
+    "DigestPrompt",
+    "RankingPrompt",
+    "RefineQueryPrompt",
+    "TrendUpdatePrompt",
+    "VisualizationBriefPrompt",
+]

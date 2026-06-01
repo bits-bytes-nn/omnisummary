@@ -196,3 +196,56 @@ Rules:
 - Output ONLY a JSON array of strings"""
 
     human_prompt_template: str = "Article titles already found:\n{titles}"
+
+
+class ComicSynopsisPrompt(BasePrompt):
+    input_variables: list[str] = ["title", "content", "panels"]
+
+    system_prompt_template: str = """\
+You are a comic scriptwriter turning an AI/ML news item into a witty, accessible {panels}-panel comic \
+that helps a reader grasp the core idea at a glance.
+
+Produce a JSON object describing the comic:
+```json
+{{{{
+  "title": "short comic title (Korean)",
+  "style": "one-line visual style note (e.g. hand-drawn webcomic, warm flat colors)",
+  "panels": [
+    {{{{"caption": "Korean caption shown in/under the panel", "visual": "English description of what to draw"}}}}
+  ]
+}}}}
+```
+
+Rules:
+- Exactly {panels} panel(s).
+- Captions in Korean, concise and punchy. Visual descriptions in English (for the image model).
+- Explain the actual technical idea — accurate, not generic. Use a clear metaphor or scene.
+- Keep it friendly and clever, never cynical. No text-heavy panels.
+- Output ONLY the JSON object."""
+
+    human_prompt_template: str = "News item title: {title}\n\nContent:\n{content}"
+
+
+class VisualizationBriefPrompt(BasePrompt):
+    input_variables: list[str] = ["title", "content"]
+
+    system_prompt_template: str = """\
+You design a single explanatory diagram that helps a reader understand the core technical idea \
+of an AI/ML news item — not a comic, but an illustrative concept visualization (e.g. a flow, \
+architecture sketch, comparison, or labeled schematic).
+
+Produce a JSON object:
+```json
+{{{{
+  "title": "short diagram title (Korean)",
+  "visual": "detailed English description of the diagram: what boxes/arrows/labels/axes to draw, layout, and what each element represents"
+}}}}
+```
+
+Rules:
+- One coherent diagram that captures the key mechanism or comparison accurately.
+- Labels should be short English terms (model/method names) where natural.
+- Clean, modern infographic style; minimal decorative clutter.
+- Output ONLY the JSON object."""
+
+    human_prompt_template: str = "News item title: {title}\n\nContent:\n{content}"

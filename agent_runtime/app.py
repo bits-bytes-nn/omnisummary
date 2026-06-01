@@ -67,6 +67,11 @@ def invoke(payload: dict[str, Any]) -> str:
 
     _load_latest_state()
 
+    from agent.agent_tools import delivery_context
+
+    delivery_context.channel_id = channel_id
+    delivery_context.thread_ts = thread_ts
+
     agent = create_digest_agent()
 
     try:

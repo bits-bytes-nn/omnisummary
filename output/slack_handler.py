@@ -43,6 +43,43 @@ def _split_message(text: str, max_len: int = SLACK_MAX_TEXT_LENGTH) -> list[str]
     return chunks
 
 
+async def send_image_to_slack(
+    image_bytes: bytes,
+    *,
+    channel_id: str,
+    title: str,
+    comment: str = "",
+    thread_ts: str = "",
+    bot_token: str = "",
+) -> bool:
+    token = bot_token or os.getenv("SLACK_BOT_TOKEN", "")
+    if not token or not channel_id:
+        logger.warning("Slack bot_token or channel_id not configured. Skipping image upload.")
+        return False
+
+    client = AsyncWebClient(token=token)
+    try:
+        kwargs = {
+            "channel": channel_id,
+            "content": image_bytes,
+            "title": title,
+            "filename": f"{title}.png",
+        }
+        if comment:
+            kwargs["initial_comment"] = comment
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+        await client.files_upload_v2(**kwargs)
+        logger.info("Uploaded image to Slack channel '%s'", channel_id)
+        return True
+    except SlackApiError as e:
+        logger.warning("Failed to upload image to Slack: %s", e.response["error"])
+        return False
+    except Exception as e:
+        logger.warning("Unexpected error uploading image to Slack: %s", e)
+        return False
+
+
 async def send_digest_to_slack(digest: DigestResult, config: SlackConfig) -> bool:
     bot_token = config.bot_token or os.getenv("SLACK_BOT_TOKEN", "")
     channel_id = config.channel_id or os.getenv("SLACK_CHANNEL_ID", "")
