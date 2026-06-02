@@ -428,8 +428,12 @@ def sanitize_slack_mrkdwn(text: str) -> str:
 
     text = re.sub(r'"\*([^*\n]+?)\*"', r"*\1*", text)
 
-    text = re.sub(r"(\S)\*([^*\n]+?)\*", r"\1 *\2*", text)
-    text = re.sub(r"\*([^*\n]+?)\*(\S)", r"*\1* \2", text)
+    # Slack bold breaks when a non-space char touches the * marker (English), but CJK
+    # text has no spaces around emphasis — inserting one there corrupts correct bold
+    # (e.g. *규모*가 -> *규모 * 가). Only pad when the neighbor is a non-CJK, non-space char.
+    cjk = r"가-힣぀-ヿ一-鿿"
+    text = re.sub(rf"([^\s{cjk}])\*([^*\n]+?)\*", r"\1 *\2*", text)
+    text = re.sub(rf"\*([^*\n]+?)\*([^\s{cjk}])", r"*\1* \2", text)
 
     text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"<\2|\1>", text)
     text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"<\2|\1>", text)

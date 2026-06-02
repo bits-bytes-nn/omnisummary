@@ -104,3 +104,14 @@ class TestSanitizeSlackMrkdwn:
     def test_horizontal_rule_removal(self):
         result = sanitize_slack_mrkdwn("above\n---\nbelow")
         assert "---" not in result
+
+    def test_korean_bold_not_broken_by_space_padding(self):
+        # Korean particles attach directly to bold (*규모*가); the space-padding rule
+        # must NOT insert a space inside the markers (which breaks Slack rendering).
+        result = sanitize_slack_mrkdwn("*규모*가 아니라 *설계*가 이기고 있다")
+        assert "*규모*" in result and "*규모 *" not in result
+        assert "*설계*" in result and "*설계 *" not in result
+
+    def test_english_bold_still_padded(self):
+        # English words touching a bold marker should still get a separating space.
+        assert sanitize_slack_mrkdwn("word*bold*word") == "word *bold* word"

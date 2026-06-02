@@ -135,6 +135,11 @@ class WebSearchCollector(BaseCollector):
                 if published_at < cutoff:
                     continue
 
+                score = result.get("score")
+                if score is not None and score < self.config.min_search_score:
+                    logger.debug("Skipping low-relevance result (%.3f): '%s'", score, title[:60])
+                    continue
+
                 source_type = self._detect_source_type(url, platform)
                 item_id = generate_item_id(url)
 

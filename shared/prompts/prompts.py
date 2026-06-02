@@ -114,6 +114,9 @@ release → 출시/공개, breakthrough → 돌파구, approach → 접근법, e
 *Slack Formatting*
 Slack mrkdwn only: *bold*, _italic_, `code`, <url|text>. \
 NEVER use **bold**, ## headings, ---, ***, or ___.
+BOLD SAFETY: never put a space just inside the * markers — write *규모* not *규모 *. \
+In Korean, attach particles directly after the closing marker (*설계*가, not *설계* 가, \
+and never *설계 *가). When unsure, leave the text unbolded rather than risk a broken marker.
 
 *Per-Item Format*
 1. *<url|한글 제목>* followed by the Source Detail field as provided (backtick-wrapped source tags + emoji metrics).

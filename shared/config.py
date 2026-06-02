@@ -46,6 +46,7 @@ class WebSearchCollectorConfig(BaseCollectorConfig):
     lookback_hours: int = 72
     refine_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     max_refine_queries: int = 3
+    min_search_score: float = Field(default=0.3, ge=0.0, le=1.0)
 
 
 class RSSHubAccount(BaseModel):
