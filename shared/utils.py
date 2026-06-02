@@ -23,6 +23,7 @@ class LanguageModelInfo(BaseModel):
     supports_prompt_caching: bool = False
     supports_thinking: bool = False
     supports_1m_context_window: bool = False
+    supports_temperature: bool = True
 
 
 _LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
@@ -106,6 +107,7 @@ _LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
         supports_prompt_caching=True,
         supports_thinking=True,
         supports_1m_context_window=True,
+        supports_temperature=False,
     ),
     LanguageModelId.CLAUDE_V4_8_OPUS: LanguageModelInfo(
         context_window_size=1000000,
@@ -113,6 +115,7 @@ _LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
         supports_prompt_caching=True,
         supports_thinking=True,
         supports_1m_context_window=True,
+        supports_temperature=False,
     ),
     # NOTE: add new models here
 }
@@ -269,10 +272,14 @@ class BedrockLanguageModelFactory(
             logger.debug("Adjusting temperature to 1.0 for thinking mode")
         final_max_tokens = self._validate_max_tokens(kwargs.get("max_tokens"), model_info)
         config = self._build_base_config(resolved_model_id, is_cross_region, **kwargs)
+        # Newer models (e.g. Opus 4.7/4.8) reject the `temperature` param entirely.
+        params: dict[str, Any] = {"max_tokens": final_max_tokens}
+        if model_info.supports_temperature:
+            params["temperature"] = final_temperature
         if is_cross_region:
-            config.update({"max_tokens": final_max_tokens, "temperature": final_temperature})
+            config.update(params)
         else:
-            config["model_kwargs"].update({"max_tokens": final_max_tokens, "temperature": final_temperature})
+            config["model_kwargs"].update(params)
         if supports_1m_context_window and model_info.supports_1m_context_window:
             if is_cross_region:
                 config.setdefault("additional_model_request_fields", {}).update(
