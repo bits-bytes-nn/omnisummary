@@ -114,15 +114,19 @@ class TestMakeVisual:
             fake_upload.kwargs = k
             return True
 
-        with patch("shared.resolve_secret", return_value="key"):
-            with patch("agent.visuals.VisualGenerator", return_value=gen):
-                with patch("agent.agent_tools._build_llm_factory", return_value=(MagicMock(), MagicMock())):
-                    with patch("output.slack_handler.send_image_to_slack", side_effect=fake_upload):
-                        result = await agent_tools.make_visual._tool_func(
-                            "a 1-page presentation slide", item_number=0, context="extra research"
-                        )
-        assert "슬라이드" in result
-        assert fake_upload.kwargs["channel_id"] == "C1"
+        try:
+            with patch("shared.resolve_secret", return_value="key"):
+                with patch("agent.visuals.VisualGenerator", return_value=gen):
+                    with patch("agent.agent_tools._build_llm_factory", return_value=(MagicMock(), MagicMock())):
+                        with patch("output.slack_handler.send_image_to_slack", side_effect=fake_upload):
+                            result = await agent_tools.make_visual._tool_func(
+                                "a 1-page presentation slide", item_number=0, context="extra research"
+                            )
+            assert "슬라이드" in result
+            assert fake_upload.kwargs["channel_id"] == "C1"
+        finally:
+            agent_tools.delivery_context.channel_id = ""
+            agent_tools.delivery_context.thread_ts = ""
 
     @pytest.mark.asyncio
     async def test_unknown_item_number(self, monkeypatch):

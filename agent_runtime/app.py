@@ -80,6 +80,11 @@ def invoke(payload: dict[str, Any]) -> str:
     except Exception as e:
         logger.error("Agent execution failed: %s", e, exc_info=True)
         response = f"Error processing request: {e}"
+    finally:
+        # Clear per-invocation delivery target so a warm container can't leak it
+        # into a later invocation that arrives without one.
+        delivery_context.channel_id = ""
+        delivery_context.thread_ts = ""
 
     if channel_id:
         _send_slack_message(channel_id, response, thread_ts)

@@ -32,7 +32,7 @@ jobs:
       - name: Black format check
         run: uv run black --check .
       - name: Mypy type-check
-        run: uv run mypy shared/ collectors/ pipeline/ agent/ output/ lambda_handlers/ main.py
+        run: uv run mypy shared/ collectors/ pipeline/ agent/ agent_runtime/ output/ lambda_handlers/ main.py
 
   test:
     name: Tests & coverage
