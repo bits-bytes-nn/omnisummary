@@ -31,6 +31,8 @@ jobs:
         run: uv run ruff check .
       - name: Black format check
         run: uv run black --check .
+      - name: Mypy type-check
+        run: uv run mypy shared/ collectors/ pipeline/ agent/ output/ lambda_handlers/ main.py
 
   test:
     name: Tests & coverage
@@ -51,7 +53,7 @@ jobs:
           --cov=collectors --cov=pipeline --cov=shared --cov=main
           --cov=lambda_handlers --cov=output --cov=agent
           --cov-report=term-missing --cov-report=xml
-          --cov-fail-under=45
+          --cov-fail-under=55
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4

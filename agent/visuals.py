@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import re
 from dataclasses import dataclass
 
 from langchain_core.output_parsers import StrOutputParser
 
-from shared import BedrockLanguageModelFactory, ComicSynopsisPrompt, VisualizationBriefPrompt, logger
+from shared import (
+    BedrockLanguageModelFactory,
+    ComicSynopsisPrompt,
+    VisualizationBriefPrompt,
+    logger,
+    resolve_secret,
+)
 from shared.config import LanguageModelId
 from shared.prompts.prompts import BasePrompt
 
@@ -98,15 +103,19 @@ class VisualGenerator:
 
     @staticmethod
     def render(mode: VisualMode, brief: dict, panels: int) -> bytes:
-        if not os.getenv("OPENAI_API_KEY"):
+        api_key = resolve_secret("OPENAI_API_KEY", "openai-api-key")
+        if not api_key:
             raise RuntimeError("OPENAI_API_KEY not configured — visualization disabled")
         from openai import OpenAI
 
-        client = OpenAI()
+        client = OpenAI(api_key=api_key)
         prompt = mode.build_image_prompt(brief, panels)
         response = client.images.generate(model=IMAGE_MODEL, prompt=prompt, size=IMAGE_SIZE)
+        b64 = response.data[0].b64_json if response.data else None
+        if not b64:
+            raise RuntimeError("gpt-image returned no image data")
         logger.info("Rendered %s image", mode.name)
-        return base64.b64decode(response.data[0].b64_json)
+        return base64.b64decode(b64)
 
     async def generate(self, title: str, content: str, *, mode: str = "comic", panels: int = 4) -> tuple[bytes, dict]:
         if mode not in MODES:

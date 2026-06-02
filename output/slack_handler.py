@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
+from typing import Any
 
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
@@ -59,7 +60,7 @@ async def send_image_to_slack(
 
     client = AsyncWebClient(token=token)
     try:
-        kwargs = {
+        kwargs: dict[str, Any] = {
             "channel": channel_id,
             "content": image_bytes,
             "title": title,

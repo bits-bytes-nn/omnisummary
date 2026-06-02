@@ -60,10 +60,16 @@ class TestFoundationStack:
 
     def test_no_broad_managed_policies(self, templates):
         foundation, _ = templates
-        policies = foundation.find_resources("AWS::IAM::Role")
-        rendered = str(policies)
+        rendered = str(foundation.find_resources("AWS::IAM::Role"))
         assert "AmazonSSMReadOnlyAccess" not in rendered
         assert "AmazonBedrockFullAccess" not in rendered
+        assert "CloudWatchLogsFullAccess" not in rendered
+
+    def test_scoped_logs_policy(self, templates):
+        foundation, _ = templates
+        rendered = str(foundation.find_resources("AWS::IAM::Policy"))
+        assert "logs:CreateLogStream" in rendered
+        assert "logs:PutLogEvents" in rendered
 
     def test_scoped_ssm_policy(self, templates):
         foundation, _ = templates

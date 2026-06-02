@@ -44,7 +44,7 @@ class TestResolveCredentials:
     def test_returns_none_on_ssm_failure(self, monkeypatch):
         monkeypatch.delenv("REDDIT_CLIENT_ID", raising=False)
         monkeypatch.delenv("REDDIT_CLIENT_SECRET", raising=False)
-        with patch("collectors.reddit.boto3.client", side_effect=Exception("no ssm")):
+        with patch("shared.utils.boto3.client", side_effect=Exception("no ssm")):
             assert _resolve_reddit_credentials() is None
 
 

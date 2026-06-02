@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import UTC, datetime
 
-import boto3
 import httpx
 
-from shared import CollectedItem, SourceType, logger
+from shared import CollectedItem, SourceType, logger, resolve_secret
 from shared.config import RedditCollectorConfig
 
 from .base import BaseCollector, cutoff_datetime, gather_collector_results
@@ -18,26 +16,12 @@ OAUTH_BASE = "https://oauth.reddit.com"
 
 
 def _resolve_reddit_credentials() -> tuple[str, str] | None:
-    client_id = os.getenv("REDDIT_CLIENT_ID", "")
-    client_secret = os.getenv("REDDIT_CLIENT_SECRET", "")
+    client_id = resolve_secret("REDDIT_CLIENT_ID", "reddit-client-id")
+    client_secret = resolve_secret("REDDIT_CLIENT_SECRET", "reddit-client-secret")
     if client_id and client_secret:
         return client_id, client_secret
-
-    project = os.getenv("PROJECT_NAME", "omnisummary")
-    stage = os.getenv("STAGE", "dev")
-    region = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2"))
-    try:
-        ssm = boto3.client("ssm", region_name=region)
-        client_id = ssm.get_parameter(Name=f"/{project}/{stage}/reddit-client-id", WithDecryption=True)["Parameter"][
-            "Value"
-        ]
-        client_secret = ssm.get_parameter(Name=f"/{project}/{stage}/reddit-client-secret", WithDecryption=True)[
-            "Parameter"
-        ]["Value"]
-    except Exception as e:
-        logger.warning("Reddit credentials unavailable (env + SSM): %s", e)
-        return None
-    return client_id, client_secret
+    logger.warning("Reddit credentials unavailable (env + SSM)")
+    return None
 
 
 class RedditCollector(BaseCollector):

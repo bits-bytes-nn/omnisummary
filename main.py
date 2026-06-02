@@ -98,7 +98,7 @@ async def run_collectors_with_health(
     items: list[CollectedItem] = []
     health: list[SourceHealth] = []
     for label, result in zip(labels, results, strict=True):
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             health.append(SourceHealth(name=label, item_count=0, status=SourceStatus.FAILED, detail=str(result)[:200]))
             logger.warning("Collector '%s' failed: %s", label, result)
         else:

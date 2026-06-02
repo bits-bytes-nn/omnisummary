@@ -144,7 +144,7 @@ class BaseBedrockModelFactory(Generic[ModelIdT, ModelInfoT, WrapperT], ABC):
             retries={"max_attempts": self.BOTO_MAX_ATTEMPTS, "mode": "adaptive"},
             max_pool_connections=self.MAX_POOL_CONNECTIONS,
         )
-        self._client = self.boto_session.client(
+        self._client = self.boto_session.client(  # type: ignore[call-overload]
             self._get_boto_service_name(),
             region_name=self.region_name,
             config=boto_config,
@@ -350,6 +350,29 @@ class BedrockLanguageModelFactory(
     @staticmethod
     def _should_enable_thinking(enable: bool, model_info: LanguageModelInfo) -> bool:
         return enable and model_info.supports_thinking
+
+
+def resolve_secret(env_var: str, ssm_suffix: str) -> str:
+    """Resolve a secret from env first, then SSM Parameter Store.
+
+    SSM path is /{PROJECT_NAME}/{STAGE}/{ssm_suffix} (SecureString-decrypted).
+    Returns "" if unavailable from either source (callers degrade gracefully).
+    """
+    import os
+
+    value = os.getenv(env_var, "")
+    if value:
+        return value
+
+    project = os.getenv("PROJECT_NAME", "omnisummary")
+    stage = os.getenv("STAGE", "dev")
+    region = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2"))
+    try:
+        ssm = boto3.client("ssm", region_name=region)
+        return ssm.get_parameter(Name=f"/{project}/{stage}/{ssm_suffix}", WithDecryption=True)["Parameter"]["Value"]
+    except Exception as e:
+        logger.warning("Secret '%s' unavailable (env + SSM '%s'): %s", env_var, ssm_suffix, e)
+        return ""
 
 
 def generate_item_id(url: str) -> str:

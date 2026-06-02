@@ -19,6 +19,7 @@ from .utils import (
     LanguageModelInfo,
     generate_item_id,
     parse_feed_published_date,
+    resolve_secret,
     sanitize_slack_mrkdwn,
     truncate_text_by_tokens,
 )
@@ -61,4 +62,5 @@ __all__ = [
     "parse_feed_published_date",
     "sanitize_slack_mrkdwn",
     "truncate_text_by_tokens",
+    "resolve_secret",
 ]

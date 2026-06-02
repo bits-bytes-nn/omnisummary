@@ -1,7 +1,37 @@
 import hashlib
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from shared.utils import generate_item_id, parse_feed_published_date, sanitize_slack_mrkdwn, truncate_text_by_tokens
+from shared.utils import (
+    generate_item_id,
+    parse_feed_published_date,
+    resolve_secret,
+    sanitize_slack_mrkdwn,
+    truncate_text_by_tokens,
+)
+
+
+class TestResolveSecret:
+    def test_prefers_env(self, monkeypatch):
+        monkeypatch.setenv("MY_SECRET", "from-env")
+        assert resolve_secret("MY_SECRET", "my-secret") == "from-env"
+
+    def test_falls_back_to_ssm(self, monkeypatch):
+        monkeypatch.delenv("MY_SECRET", raising=False)
+        monkeypatch.setenv("PROJECT_NAME", "proj")
+        monkeypatch.setenv("STAGE", "dev")
+        ssm = patch("shared.utils.boto3.client").start()
+        ssm.return_value.get_parameter.return_value = {"Parameter": {"Value": "from-ssm"}}
+        try:
+            assert resolve_secret("MY_SECRET", "my-secret") == "from-ssm"
+            assert ssm.return_value.get_parameter.call_args.kwargs["Name"] == "/proj/dev/my-secret"
+        finally:
+            patch.stopall()
+
+    def test_returns_empty_on_failure(self, monkeypatch):
+        monkeypatch.delenv("MY_SECRET", raising=False)
+        with patch("shared.utils.boto3.client", side_effect=Exception("no ssm")):
+            assert resolve_secret("MY_SECRET", "my-secret") == ""
 
 
 class TestGenerateItemId:

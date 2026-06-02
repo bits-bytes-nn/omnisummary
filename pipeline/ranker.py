@@ -120,7 +120,9 @@ class ContentRanker:
 
         def _origin_at_cap(item: RankedItem) -> bool:
             origin_key = self._resolve_origin_key(item.item)
-            return bool(origin_key) and origin_counts.get(origin_key, 0) >= max_per_origin
+            if not origin_key:
+                return False
+            return origin_counts.get(origin_key, 0) >= max_per_origin
 
         def _record(item: RankedItem, source_key: str) -> None:
             selected.append(item)

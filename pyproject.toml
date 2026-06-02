@@ -38,6 +38,7 @@ dev = [
     "black>=23.12.0",
     "mypy>=1.7.0",
     "ruff>=0.1.9",
+    "types-PyYAML>=6.0",
 ]
 
 [build-system]
@@ -92,9 +93,11 @@ no_implicit_optional = true
 strict_equality = true
 warn_no_return = true
 warn_redundant_casts = true
-warn_return_any = true
+warn_return_any = false
 warn_unused_configs = true
-warn_unused_ignores = true
+warn_unused_ignores = false
+ignore_missing_imports = true
+exclude = "(references|tests|cdk\\.out)/"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

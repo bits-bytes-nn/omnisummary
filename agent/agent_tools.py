@@ -238,7 +238,9 @@ async def make_visual(item_number: int, mode: str = "comic", panels: int = 4) ->
     if not ranked:
         return f"Item {item_number} not found. Today's digest has {state_manager.get_item_count()} items."
 
-    if not os.getenv("OPENAI_API_KEY"):
+    from shared import resolve_secret
+
+    if not resolve_secret("OPENAI_API_KEY", "openai-api-key"):
         return "Visualization is disabled (OPENAI_API_KEY not configured)."
 
     item = ranked.item

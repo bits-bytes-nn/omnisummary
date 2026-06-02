@@ -67,6 +67,8 @@ class WebSearchCollector(BaseCollector):
         return await gather_collector_results(tasks)
 
     async def _generate_refined_queries(self, items: list[CollectedItem]) -> list[str]:
+        if not self._llm:
+            return []
         titles = "\n".join(f"- {item.title}" for item in items)
         chain = RefineQueryPrompt.get_prompt() | self._llm | StrOutputParser()
 
