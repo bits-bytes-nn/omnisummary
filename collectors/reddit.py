@@ -1,30 +1,28 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+import re
 
-import httpx
+import feedparser
 
-from shared import CollectedItem, SourceType, logger, resolve_secret
+from shared import CollectedItem, SourceType, generate_item_id, logger, parse_feed_published_date
 from shared.config import RedditCollectorConfig
+from shared.proxy import get_proxied_url
 
 from .base import BaseCollector, cutoff_datetime, gather_collector_results
 
-USER_AGENT = "omnisummary:v1.0 (by /u/omnisummary)"
-TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
-OAUTH_BASE = "https://oauth.reddit.com"
-
-
-def _resolve_reddit_credentials() -> tuple[str, str] | None:
-    client_id = resolve_secret("REDDIT_CLIENT_ID", "reddit-client-id")
-    client_secret = resolve_secret("REDDIT_CLIENT_SECRET", "reddit-client-secret")
-    if client_id and client_secret:
-        return client_id, client_secret
-    logger.warning("Reddit credentials unavailable (env + SSM)")
-    return None
+RSS_BASE = "https://www.reddit.com"
 
 
 class RedditCollector(BaseCollector):
+    """Collects subreddit posts via Reddit's public .rss feed.
+
+    Reddit froze self-serve OAuth app creation (Responsible Builder Policy, 2025-11)
+    and blocks the .json API from datacenter IPs, but the .rss feed remains open.
+    Routed through the Cloudflare proxy so it also works from AWS Lambda IPs.
+    Trade-off vs the old OAuth API: RSS carries no score/num_comments engagement.
+    """
+
     def __init__(self, config: RedditCollectorConfig):
         self.config = config
 
@@ -33,107 +31,63 @@ class RedditCollector(BaseCollector):
             logger.info("No subreddits configured, skipping")
             return []
 
-        creds = await asyncio.to_thread(_resolve_reddit_credentials)
-        if not creds:
-            logger.warning("Reddit credentials missing — skipping Reddit collection")
-            return []
-
-        client_id, client_secret = creds
-        try:
-            token = await self._fetch_token(client_id, client_secret)
-        except Exception:
-            logger.warning("Failed to obtain Reddit OAuth token", exc_info=True)
-            return []
-        if not token:
-            logger.warning("Reddit OAuth token empty — skipping Reddit collection")
-            return []
-
-        tasks = [self._collect_subreddit(sub, token) for sub in self.config.subreddits]
+        tasks = [self._collect_subreddit(sub) for sub in self.config.subreddits]
         items = await gather_collector_results(tasks, labels=self.config.subreddits)
         logger.info("Reddit collector gathered %d items total", len(items))
         return items
 
-    async def _fetch_token(self, client_id: str, client_secret: str) -> str:
-        async with httpx.AsyncClient(timeout=self.config.request_timeout) as client:
-            response = await client.post(
-                TOKEN_URL,
-                data={"grant_type": "client_credentials"},
-                auth=httpx.BasicAuth(client_id, client_secret),
-                headers={"User-Agent": USER_AGENT},
-            )
-            response.raise_for_status()
-            return response.json().get("access_token", "")
-
-    async def _collect_subreddit(self, subreddit_name: str, token: str) -> list[CollectedItem]:
+    async def _collect_subreddit(self, subreddit_name: str) -> list[CollectedItem]:
         logger.info("Collecting posts from 'r/%s'", subreddit_name)
-        url = f"{OAUTH_BASE}/r/{subreddit_name}/{self.config.sort}"
-        params: dict[str, str | int] = {"limit": self.config.limit}
-        if self.config.sort == "top":
-            params["t"] = "day"
-        headers = {"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT}
-        max_retries = self.config.max_retries
-        backoff = self.config.retry_backoff_sec
+        feed_url = f"{RSS_BASE}/r/{subreddit_name}/{self.config.sort}/.rss?limit={self.config.limit}"
+        return await asyncio.to_thread(self._parse_feed, feed_url, subreddit_name)
 
-        for attempt in range(1, max_retries + 1):
-            try:
-                async with httpx.AsyncClient(headers=headers, timeout=self.config.request_timeout) as client:
-                    response = await client.get(url, params=params)
-                    response.raise_for_status()
-                    data = response.json()
-                return self._parse_listing(data, subreddit_name)
-            except Exception:
-                if attempt < max_retries:
-                    logger.warning(
-                        "Failed to fetch 'r/%s' (attempt %d/%d), retrying in %ds...",
-                        subreddit_name,
-                        attempt,
-                        max_retries,
-                        backoff * attempt,
-                    )
-                    await asyncio.sleep(backoff * attempt)
-                else:
-                    logger.warning(
-                        "Failed to fetch 'r/%s' after %d attempts", subreddit_name, max_retries, exc_info=True
-                    )
-                    return []
-        return []
+    def _parse_feed(self, feed_url: str, subreddit_name: str) -> list[CollectedItem]:
+        feed = feedparser.parse(get_proxied_url(feed_url))
+        if feed.bozo and not feed.entries:
+            logger.warning("Failed to parse Reddit feed 'r/%s': %s", subreddit_name, feed.bozo_exception)
+            return []
 
-    def _parse_listing(self, data: dict, subreddit_name: str) -> list[CollectedItem]:
         cutoff = cutoff_datetime(self.config.lookback_hours, self.config.reference_time)
         items: list[CollectedItem] = []
 
-        for child in data.get("data", {}).get("children", []):
-            post = child.get("data", {})
+        for entry in feed.entries:
             try:
-                created_utc = post.get("created_utc")
-                if not created_utc:
-                    continue
-                created_at = datetime.fromtimestamp(created_utc, tz=UTC)
-                if created_at < cutoff:
+                published_at = parse_feed_published_date(entry)
+                if published_at and published_at < cutoff:
                     continue
 
-                permalink = post.get("permalink", "")
-                is_self = post.get("is_self", True)
+                link = entry.get("link", "")
+                text = ""
+                if hasattr(entry, "content") and entry.content:
+                    text = entry.content[0].get("value", "")
+                elif hasattr(entry, "summary"):
+                    text = entry.summary or ""
+
+                item_id = self._extract_post_id(entry.get("id", ""), link)
 
                 items.append(
                     CollectedItem(
-                        item_id=post.get("id", ""),
+                        item_id=item_id,
                         source_type=SourceType.REDDIT,
-                        title=post.get("title", ""),
-                        url=f"https://www.reddit.com{permalink}",
-                        text=post.get("selftext", ""),
-                        author=post.get("author"),
-                        published_at=created_at,
-                        metadata={
-                            "subreddit": subreddit_name,
-                            "score": post.get("score", 0),
-                            "num_comments": post.get("num_comments", 0),
-                            "link_url": post.get("url") if not is_self else None,
-                        },
+                        title=entry.get("title", ""),
+                        url=link,
+                        text=text,
+                        author=entry.get("author"),
+                        published_at=published_at,
+                        metadata={"subreddit": subreddit_name},
                     )
                 )
-                logger.info("Collected Reddit post: '%s'", post.get("title", ""))
+                logger.info("Collected Reddit post: '%s'", entry.get("title", ""))
             except Exception:
-                logger.warning("Failed to process Reddit post in 'r/%s'", subreddit_name, exc_info=True)
+                logger.warning("Failed to process Reddit entry in 'r/%s'", subreddit_name, exc_info=True)
 
         return items
+
+    @staticmethod
+    def _extract_post_id(entry_id: str, link: str) -> str:
+        match = re.search(r"/comments/([a-z0-9]+)/", link)
+        if match:
+            return match.group(1)
+        if entry_id:
+            return entry_id.rsplit("_", 1)[-1] if "_" in entry_id else entry_id
+        return generate_item_id(link)

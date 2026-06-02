@@ -4,7 +4,7 @@ Proactive AI/ML daily digest system that collects content from multiple sources,
 
 ## Features
 
-- **Multi-source collection**: Reddit (official OAuth API), YouTube, X/Twitter (via RSSHub), RSS/Substack, Web Search (Tavily)
+- **Multi-source collection**: Reddit (public .rss feed via proxy), YouTube, X/Twitter (via RSSHub), RSS/Substack, Web Search (Tavily)
 - **LLM-powered ranking**: Claude Opus 4.8, multi-axis evaluation with source-slot + per-origin diversity caps
 - **Editorial digest**: Claude Sonnet 4.6 Korean editorial with cross-day trend tracking
 - **Follow-up agent**: Slack-based Strands agent — analysis, paper/community/news search, and on-demand visualizations (comic / diagram via OpenAI gpt-image)
@@ -92,8 +92,6 @@ SLACK_BOT_TOKEN=xoxb-...
 SLACK_CHANNEL_ID=C...
 TAVILY_API_KEY=tvly-...
 YOUTUBE_API_KEY=AIza...            # Optional, falls back to RSS
-REDDIT_CLIENT_ID=...               # Reddit "script" app (oauth)
-REDDIT_CLIENT_SECRET=...
 OPENAI_API_KEY=sk-...              # Optional, enables make_visual (comic/diagram)
 ALERT_EMAIL=you@example.com        # Optional, source-health alerts
 CLOUDFLARE_PROXY_URL=https://...   # For AWS deployment (YouTube fallback)
@@ -137,7 +135,7 @@ Each collector runs async in parallel. Lookback window is configurable per sourc
 
 | Collector | Source | Method |
 |-----------|--------|--------|
-| `RedditCollector` | Reddit official OAuth API | env/SSM credentials, preserves engagement |
+| `RedditCollector` | Reddit public `.rss` feed | via Cloudflare proxy (no API/app needed) |
 | `YouTubeCollector` | YouTube Data API v3 / RSS fallback | Direct or proxy |
 | `RSSCollector` | RSS/Atom feeds | feedparser |
 | `RSSHubCollector` | X/Twitter via RSSHub | Local Docker or S3 sync |

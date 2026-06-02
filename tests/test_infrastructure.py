@@ -19,8 +19,6 @@ def templates():
         "app",
         config=config,
         foundation=foundation,
-        reddit_client_id="rid",
-        reddit_client_secret="rsec",
         openai_api_key="oai",
         tavily_api_key="tav",
         env=env,
@@ -106,12 +104,10 @@ class TestApplicationStack:
         # 2 lambda error alarms + 1 api 5xx alarm
         app.resource_count_is("AWS::CloudWatch::Alarm", 3)
 
-    def test_reddit_and_openai_ssm_params(self, templates):
+    def test_openai_ssm_param(self, templates):
         _, app = templates
         params = app.find_resources("AWS::SSM::Parameter")
         names = {v["Properties"]["Name"] for v in params.values()}
-        assert "/omnisummary/dev/reddit-client-id" in names
-        assert "/omnisummary/dev/reddit-client-secret" in names
         assert "/omnisummary/dev/openai-api-key" in names
 
     def test_digest_lambda_has_alert_topic_env(self, templates):

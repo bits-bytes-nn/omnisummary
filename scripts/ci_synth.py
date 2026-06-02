@@ -33,8 +33,6 @@ def main() -> None:
         slack_signing_secret=os.getenv("SLACK_SIGNING_SECRET", "ci"),
         slack_bot_token=os.getenv("SLACK_BOT_TOKEN", "ci"),
         tavily_api_key=os.getenv("TAVILY_API_KEY", "ci"),
-        reddit_client_id=os.getenv("REDDIT_CLIENT_ID", "ci"),
-        reddit_client_secret=os.getenv("REDDIT_CLIENT_SECRET", "ci"),
         openai_api_key=os.getenv("OPENAI_API_KEY", "ci"),
         env=env,
     )

@@ -32,7 +32,7 @@ Runtime 위의 Strands)는 다이제스트 항목에 대한 질문에 답하고 
 
 | 경로 | 책임 |
 |------|------|
-| `collectors/` | `BaseCollector` ABC + RSS, Reddit(OAuth), RSSHub(X/Twitter), YouTube, WebSearch(Tavily) |
+| `collectors/` | `BaseCollector` ABC + RSS, Reddit(.rss 피드), RSSHub(X/Twitter), YouTube, WebSearch(Tavily) |
 | `pipeline/` | `ContentAggregator`, `ContentRanker`, `DigestGenerator`, `TrendTracker` |
 | `agent/` | Strands 에이전트, 도구, `DigestStateManager`, `VisualGenerator`(만화/다이어그램) |
 | `agent_runtime/` | Bedrock AgentCore HTTP 서버(`BedrockAgentCoreApp`) |
@@ -56,7 +56,7 @@ Runtime 위의 Strands)는 다이제스트 항목에 대한 질문에 답하고 
 - `aws` — region, profile, project/stage, `digest_cron_hour/minute`, `api_throttle_*`, `waf_rate_limit`.
 
 환경 변수(`.env`): `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_CHANNEL_ID`, `TAVILY_API_KEY`,
-`YOUTUBE_API_KEY`, `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET`, `OPENAI_API_KEY`, `ALERT_EMAIL`,
+`YOUTUBE_API_KEY`, `OPENAI_API_KEY`, `ALERT_EMAIL`,
 `CLOUDFLARE_PROXY_URL`/`CLOUDFLARE_PROXY_TOKEN`. AWS에서는 `MEMORY_ID`, `ALERT_SNS_TOPIC_ARN`,
 `STATE_BUCKET`, `RSSHUB_BASE_URL`, `PROJECT_NAME`, `STAGE`를 CDK가 주입합니다.
 
@@ -66,10 +66,11 @@ Runtime 위의 Strands)는 다이제스트 항목에 대한 질문에 답하고 
 `cutoff_datetime(lookback_hours, reference_time)`(`collectors/base.py`)로 필터링합니다.
 
 - **RSS** (`rss.py`): `config.collectors.rss.feeds`에 대해 feedparser 사용; 메타데이터 `feed_url`, `feed_title`.
-- **Reddit** (`reddit.py`): **공식 OAuth API** 사용(공개 `.json`은 IP 차단됨). `_resolve_reddit_credentials()`가
-  공유 헬퍼 `resolve_secret`로 env → SSM(`reddit-client-id/-secret`) 순으로 해석; `_fetch_token()`이
-  client-credentials 그랜트 수행; 서브레딧별로 `oauth.reddit.com/r/{sub}/{sort}` GET. `score`/`num_comments`를
-  보존(랭킹 engagement 신호). 자격증명 없으면 `[]` 반환(우아한 skip, FAILED가 아닌 EMPTY로 분류).
+- **Reddit** (`reddit.py`): **공개 `.rss` 피드** 사용. Reddit이 셀프서비스 OAuth 앱 생성을 동결하고
+  (Responsible Builder Policy, 2025-11) `.json` API는 데이터센터 IP를 차단했지만 `.rss` 피드는 열려 있음.
+  `https://www.reddit.com/r/{sub}/{sort}/.rss`를 Cloudflare 프록시(`get_proxied_url`) 경유로 가져와 AWS
+  Lambda IP에서도 동작. 자격증명·앱 등록 불필요. 트레이드오프: RSS엔 `score`/`num_comments`(engagement)가
+  없어 랭킹은 LLM 품질 판단에 의존.
 - **RSSHub** (`rsshub.py`): 로컬/컨테이너 RSSHub를 통한 X/Twitter 피드; S3에 사전 동기화된 스냅샷
   (`rsshub_items.json`)도 로드 가능. 실패/빈 계정을 자체 추적하며 `error_rate_threshold` 보유.
 - **YouTube** (`youtube.py`): `YOUTUBE_API_KEY`가 있으면 YouTube Data API, 없으면 프록시 경유 RSS 폴백.
