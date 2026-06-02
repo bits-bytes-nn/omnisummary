@@ -6,6 +6,7 @@ import boto3
 from botocore.config import Config as BotoConfig
 from strands import Agent
 from strands.models import BedrockModel
+from strands.models.bedrock import CacheConfig
 
 from shared import _LANGUAGE_MODEL_INFO, BedrockCrossRegionModelHelper, Config, EnvVars, is_running_in_aws, logger
 
@@ -194,6 +195,7 @@ def create_digest_agent() -> Agent:
         max_tokens=model_info.max_output_tokens if model_info else 64000,
         streaming=True,
         temperature=0.0,
+        cache_config=CacheConfig(strategy="auto"),
     )
 
     agent = Agent(

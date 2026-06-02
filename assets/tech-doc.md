@@ -101,6 +101,14 @@ configured for the model's capabilities (`_LANGUAGE_MODEL_INFO`): thinking, 1M c
 prompt caching. `BedrockCrossRegionModelHelper` resolves `global.`/`apac.` inference-profile IDs when
 available. Model IDs are enumerated in `shared/constants.py` (`LanguageModelId`), latest = Opus 4.8 / Sonnet 4.6.
 
+**Prompt caching.** Bedrock prompt caching has a ~1024-token minimum cacheable prefix for Claude. It is
+applied where it pays off: the follow-up **agent**, whose ~1.7K-token system prompt + tool schemas are
+re-sent on every ReAct step and across multi-turn sessions, uses Strands `BedrockModel(cache_config=
+CacheConfig(strategy="auto"))` (`agent/agent.py`) to cache that prefix (verified: `cacheWriteInputTokens`
+on first call, `cacheReadInputTokens` thereafter). The one-shot pipeline prompts (ranker/digest/trend/visual
+synopsis, all ≤~530 tokens and invoked once per run) are below the cache minimum and have no cross-call
+reuse, so caching is intentionally not applied there.
+
 ## 7. Memory (AgentCore-centric)
 
 `shared/memory.py` defines `MemoryStore` ABC with two implementations:
