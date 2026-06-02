@@ -9,7 +9,14 @@ from strands.models import BedrockModel
 
 from shared import _LANGUAGE_MODEL_INFO, BedrockCrossRegionModelHelper, Config, EnvVars, is_running_in_aws, logger
 
-from .agent_tools import get_detail, make_visual, search_community, search_papers, search_related_news
+from .agent_tools import (
+    get_detail,
+    make_visual,
+    recall_trends,
+    search_community,
+    search_papers,
+    search_related_news,
+)
 
 BOTO_READ_TIMEOUT: int = 300
 BOTO_CONNECT_TIMEOUT: int = 60
@@ -24,7 +31,8 @@ The user has already read today's digest and wants to go deeper on specific item
 2. search_papers(query) — Search academic papers (Semantic Scholar)
 3. search_community(query) — Search community discussions (Reddit, X, HN)
 4. search_related_news(query) — Search related news broadly
-5. make_visual(item_number, mode, panels) — Generate and post a visualization to Slack.
+5. recall_trends(query) — Recall related trends from earlier digests (cross-day memory)
+6. make_visual(item_number, mode, panels) — Generate and post a visualization to Slack.
    mode="comic" draws a narrative cartoon (pick panels 1-6 to fit the story);
    mode="diagram" draws an explanatory concept diagram.
 </tools>
@@ -40,6 +48,7 @@ Match the user's intent to EXACTLY ONE routing pattern. Do NOT combine tools unl
 | "N번 관련 뉴스 더"                             | get_detail → search_related_news    |
 | "N번 만화/카툰/4컷"                            | make_visual(N, mode="comic")        |
 | "N번 그림/시각화/다이어그램으로 설명"          | make_visual(N, mode="diagram")      |
+| "예전/이전 트렌드", "그동안 어땠어"            | recall_trends(query)                |
 | Free-form question (no item number)           | Use user's message as search query  |
 
 CRITICAL CONSTRAINTS:
@@ -189,7 +198,7 @@ def create_digest_agent() -> Agent:
 
     agent = Agent(
         model=bedrock_model,
-        tools=[get_detail, search_papers, search_community, search_related_news, make_visual],
+        tools=[get_detail, search_papers, search_community, search_related_news, recall_trends, make_visual],
         system_prompt=SYSTEM_PROMPT,
     )
 

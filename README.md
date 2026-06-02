@@ -172,7 +172,7 @@ Each collector runs async in parallel. Lookback window is configurable per sourc
 
 ### 6. Follow-up Agent
 
-Strands Agent (on Bedrock AgentCore Runtime, reads digest state from AgentCore Memory) with 5 tools:
+Strands Agent (on Bedrock AgentCore Runtime, reads digest state from AgentCore Memory) with 6 tools:
 
 | Tool | Function |
 |------|----------|
@@ -180,6 +180,7 @@ Strands Agent (on Bedrock AgentCore Runtime, reads digest state from AgentCore M
 | `search_papers(query)` | Semantic Scholar API |
 | `search_community(query)` | Tavily (Reddit, X, HN, Substack) |
 | `search_related_news(query)` | Tavily (general news) |
+| `recall_trends(query)` | Cross-day semantic recall from AgentCore Memory |
 | `make_visual(item_number, mode, panels)` | Generate + post a comic (1–6 panels) or explanatory diagram via OpenAI gpt-image |
 
 ## AWS Deployment

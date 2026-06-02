@@ -103,3 +103,29 @@ class TestOriginCap:
         ]
         selected = ranker._apply_source_slots(items)
         assert len(selected) == 3
+
+
+class TestOriginWeights:
+    def test_named_origin_weight_applied(self):
+        ranker = _ranker(origin_weights={"chanA": 1.5}, origin_weight_default=1.0)
+        items = [_ranked(0.5, SourceType.YOUTUBE, item_id="v1", channel="chanA")]
+        ranker._apply_origin_weights(items)
+        assert items[0].score == 0.75
+
+    def test_default_weight_applied_to_unlisted_origin(self):
+        ranker = _ranker(origin_weights={}, origin_weight_default=0.5)
+        items = [_ranked(0.8, SourceType.YOUTUBE, item_id="v1", channel="chanB")]
+        ranker._apply_origin_weights(items)
+        assert items[0].score == 0.4
+
+    def test_no_op_when_default_one_and_no_weights(self):
+        ranker = _ranker(origin_weights={}, origin_weight_default=1.0)
+        items = [_ranked(0.8, SourceType.YOUTUBE, item_id="v1", channel="chanB")]
+        ranker._apply_origin_weights(items)
+        assert items[0].score == 0.8
+
+    def test_score_capped_at_one(self):
+        ranker = _ranker(origin_weights={"chanA": 2.0}, origin_weight_default=1.0)
+        items = [_ranked(0.8, SourceType.YOUTUBE, item_id="v1", channel="chanA")]
+        ranker._apply_origin_weights(items)
+        assert items[0].score == 1.0

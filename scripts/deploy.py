@@ -44,6 +44,7 @@ def main():
         reddit_client_id=os.getenv("REDDIT_CLIENT_ID", ""),
         reddit_client_secret=os.getenv("REDDIT_CLIENT_SECRET", ""),
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
+        agentcore_image_ref=os.getenv("AGENTCORE_IMAGE_REF", ""),
         env=env,
     )
 

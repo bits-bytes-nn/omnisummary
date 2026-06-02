@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -69,3 +69,22 @@ class TestTavilySearch:
         with patch.object(agent_tools, "_tavily_search", new=AsyncMock(return_value="ok")) as mock:
             await agent_tools.search_related_news._tool_func("query")
         assert mock.call_args.kwargs["topic"] == "news"
+
+
+class TestRecallTrends:
+    @pytest.mark.asyncio
+    async def test_returns_recalled_trends(self):
+        store = MagicMock()
+        store.recall.return_value = ["trend A", "trend B"]
+        with patch("shared.create_memory_store", return_value=store):
+            result = await agent_tools.recall_trends._tool_func("open models")
+        assert "trend A" in result and "trend B" in result
+        store.recall.assert_called_once_with("open models", top_k=5)
+
+    @pytest.mark.asyncio
+    async def test_empty_recall(self):
+        store = MagicMock()
+        store.recall.return_value = []
+        with patch("shared.create_memory_store", return_value=store):
+            result = await agent_tools.recall_trends._tool_func("nothing")
+        assert "No earlier trends" in result

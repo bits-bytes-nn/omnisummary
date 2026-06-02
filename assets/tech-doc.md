@@ -107,12 +107,17 @@ available. Model IDs are enumerated in `shared/constants.py` (`LanguageModelId`)
 - **`AgentCoreMemoryStore`** (system of record in AWS): digest snapshots are written as short-term session
   events (`create_event`, session `digest-<date>`); `get_latest_digest()` lists sessions and reads the newest
   digest session's event. Trend summaries are written as events that feed the **semantic** long-term strategy;
-  `recall(query)` does `retrieve_memory_records` over namespace `/facts/{actor}/`.
+  `recall(query)` does `retrieve_memory_records` over namespace `/facts/{actor}/` and is exposed to the
+  follow-up agent through the `recall_trends` tool (cross-day memory).
 - **`LocalMemoryStore`**: filesystem fallback for offline dev (`digest_*.json`, `trends.jsonl`).
 
 `create_memory_store()` picks AgentCore when `MEMORY_ID` is set, else local. The digest Lambda writes the
 snapshot + trend after each run; the AgentCore runtime loads the latest snapshot into `DigestStateManager`
-on each invocation.
+on each invocation and the agent can `recall_trends` to retrieve prior-day context.
+
+Note: the human-readable `trends.md` document (cross-day narrative used to seed digest generation) is a
+separate, intentional artifact still persisted via `StateStore` (`TrendTracker`); AgentCore Memory holds the
+machine-recallable trend facts used by the agent. The two are complementary, not duplicates.
 
 The Memory resource itself (`AWS::BedrockAgentCore::Memory`) is created in `foundation_stack` with a
 semantic strategy and a dedicated `MemoryExecutionRole` (for the extraction model). Cost: long-term
@@ -137,6 +142,7 @@ Tools (`agent/agent_tools.py`):
 - `search_papers(query)` — Semantic Scholar (retry/backoff on 429).
 - `search_community(query)` / `search_related_news(query)` — thin wrappers over the shared
   `_tavily_search(query, topic, include_domains)` helper.
+- `recall_trends(query)` — cross-day semantic recall via `MemoryStore.recall` (AgentCore long-term memory).
 - `make_visual(item_number, mode, panels)` — see §10.
 
 `agent_runtime/app.py` (`BedrockAgentCoreApp`): on invoke, sets a correlation id, loads latest digest state

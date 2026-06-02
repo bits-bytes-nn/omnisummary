@@ -74,13 +74,14 @@ class ContentRanker:
 
     def _apply_origin_weights(self, ranked_items: list[RankedItem]) -> None:
         weights = self.config.origin_weights
-        if not weights:
+        default_weight = self.config.origin_weight_default
+        if not weights and default_weight == 1.0:
             return
         for ranked in ranked_items:
             origin_key = self._resolve_origin_key(ranked.item)
-            if not origin_key or origin_key not in weights:
+            if not origin_key:
                 continue
-            weight = weights[origin_key]
+            weight = weights.get(origin_key, default_weight)
             if weight != 1.0:
                 original = ranked.score
                 ranked.score = min(1.0, ranked.score * weight)

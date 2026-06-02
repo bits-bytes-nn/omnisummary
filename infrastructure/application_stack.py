@@ -33,6 +33,7 @@ class OmniSummaryApplicationStack(Stack):
         reddit_client_id: str = "",
         reddit_client_secret: str = "",
         openai_api_key: str = "",
+        agentcore_image_ref: str = "",
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -67,22 +68,25 @@ class OmniSummaryApplicationStack(Stack):
                     string_value=value,
                 )
 
+        image_ref = agentcore_image_ref or "arm64"
+        container_uri = (
+            image_ref
+            if image_ref.startswith(("sha256:", "@sha256:"))
+            else f"{foundation.ecr_repo.repository_uri}:{image_ref}"
+        )
+        if image_ref.startswith("sha256:"):
+            container_uri = f"{foundation.ecr_repo.repository_uri}@{image_ref}"
+
         agentcore_runtime = CfnRuntime(
             self,
             "AgentCoreRuntime",
             agent_runtime_name=f"{project_name}_{stage}_followup",
-            agent_runtime_artifact={
-                "containerConfiguration": {
-                    "containerUri": f"{foundation.ecr_repo.repository_uri}@sha256:96eede6755e1496685d0f2c46a449e08e12a45ba3b6492dc258b873cee56fd4f"
-                }
-            },
+            agent_runtime_artifact={"containerConfiguration": {"containerUri": container_uri}},
             network_configuration={"networkMode": "PUBLIC"},
             protocol_configuration="HTTP",
             role_arn=foundation.agentcore_role.role_arn,
             environment_variables={
                 "AWS_BEDROCK_REGION": bedrock_region,
-                "STATE_BUCKET": foundation.state_bucket.bucket_name,
-                "S3_PREFIX": f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state",
                 "PROJECT_NAME": project_name,
                 "STAGE": stage,
                 "MEMORY_ID": foundation.memory_id,

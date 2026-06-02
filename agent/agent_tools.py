@@ -175,6 +175,25 @@ async def search_related_news(query: str) -> str:
     return await _tavily_search(query, topic="news")
 
 
+@tool
+async def recall_trends(query: str) -> str:
+    """Recall related AI/ML trends seen in earlier digests (cross-day memory).
+
+    Use this when the user asks how a topic has evolved, what was covered before,
+    or for historical context beyond today's digest.
+
+    Args:
+        query: What to recall (e.g. "open-weight model releases", "agent frameworks")
+    """
+    from shared import create_memory_store
+
+    store = create_memory_store()
+    recalled = await asyncio.to_thread(store.recall, query, top_k=5)
+    if not recalled:
+        return "No earlier trends recalled for that query."
+    return "Earlier trends:\n\n" + "\n\n".join(f"- {t}" for t in recalled)
+
+
 def _build_llm_factory():
     import boto3
 
