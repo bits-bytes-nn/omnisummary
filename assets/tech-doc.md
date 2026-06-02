@@ -28,6 +28,17 @@ Runtime 위의 Strands)는 다이제스트 항목에 대한 질문에 답하고 
    → AgentCore Memory에서 다이제스트 상태를 읽고, Slack에 답변/이미지를 게시
 ```
 
+파이프라인 개념도(수집 → 랭킹 → 다이제스트 → 전달, 후속 에이전트 루프):
+
+![How the digest works](concept-pipeline.png)
+
+AWS 아키텍처(두 경로 — 스케줄 다이제스트 / 인터랙티브 후속):
+
+![AWS architecture](architecture.png)
+
+> 두 다이어그램 모두 Excalidraw(손글씨 스타일)로 작성하며 소스는 `assets/*.excalidraw`,
+> 렌더는 `excalidraw-to-png` + resvg(Virgil 폰트)로 생성합니다.
+
 ## 2. 저장소 구조
 
 | 경로 | 책임 |

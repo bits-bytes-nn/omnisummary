@@ -18,8 +18,6 @@ Proactive AI/ML daily digest system that collects content from multiple sources,
 
 ![How the digest works](assets/concept-pipeline.png)
 
-> Detailed, line-by-line technical reference: [`assets/tech-doc.md`](assets/tech-doc.md).
-
 ## Quick Start
 
 ### Prerequisites
