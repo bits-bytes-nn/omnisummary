@@ -158,35 +158,40 @@ recall하는 트렌드 사실을 보관합니다. 둘은 중복이 아니라 상
 
 ## 9. 에이전트(AgentCore Runtime 위의 Strands)
 
-`agent/agent.py`는 `BedrockModel`(Sonnet 4.6)과 도구로 Strands `Agent`를 구성합니다. SYSTEM_PROMPT에
-엄격한 라우팅 테이블(한국어), Slack mrkdwn 포맷 규칙, 응답 템플릿이 인코딩되어 있습니다.
+`agent/agent.py`는 `BedrockModel`(Sonnet 4.6)과 도구로 Strands `Agent`를 구성합니다. SYSTEM_PROMPT는
+**자율 에이전트** 철학을 따릅니다 — 고정 라우팅 없이 작은 단일 목적 도구들을 자유롭게 조합하도록 안내하고,
+Slack mrkdwn 포맷 규칙과 응답 템플릿을 포함합니다.
 
-도구(`agent/agent_tools.py`):
+도구(`agent/agent_tools.py`) — 모두 독립적이며 에이전트가 자유롭게 조합:
 - `get_detail(item_number)` — `state_manager`에서 항목 본문 + 랭킹 메타데이터 로드.
 - `search_papers(query)` — Semantic Scholar(429 시 retry/backoff).
 - `search_community(query)` / `search_related_news(query)` — 공유 `_tavily_search(query, topic,
   include_domains)` 헬퍼를 감싼 얇은 래퍼.
 - `recall_trends(query)` — `MemoryStore.recall`을 통한 교차일 시맨틱 recall(AgentCore 장기 메모리).
-- `make_visual(item_number, mode, panels)` — §10 참조.
+- `make_visual(instruction, item_number, context)` — 자유형 이미지 생성, §10 참조.
+
+전형적 조합 예: "1번을 1페이지 슬라이드로" → `get_detail`(+필요시 `search_papers`/`search_related_news`로
+보강) → `make_visual(instruction="...설명하는 1페이지 프리젠테이션 슬라이드...", item_number=1,
+context=<수집한 리서치>)`. 고정 워크플로가 아니라 에이전트가 매번 계획을 세웁니다.
 
 `agent_runtime/app.py`(`BedrockAgentCoreApp`): invoke 시 correlation id 설정, Memory에서 최신 다이제스트
 상태 로드, `delivery_context`(미디어 도구용 채널/스레드) 설정, 에이전트 실행, Slack에 답변 게시. Slack
 이벤트 Lambda(`slack_event_handler.py`)는 Slack 서명을 검증(HMAC, 타이밍 안전)하고 DynamoDB 조건부
 쓰기로 중복 제거하며 비동기 self-invoke로 AgentCore 런타임을 호출합니다.
 
-## 10. 시각화 파이프라인(시놉시스 → 이미지)
+## 10. 시각화 파이프라인(자유형 시놉시스 → 이미지)
 
-`agent/visuals.py`는 "시놉시스 → 시각화"를 `VisualMode`(브리프 프롬프트 + 이미지 프롬프트 빌더)와 `MODES`
-레지스트리로 일반화합니다:
-- **comic**(`ComicSynopsisPrompt`): 1~6컷 내러티브 만화(에이전트가 스토리에 맞게 컷 수 선택); 한국어
-  캡션, 영어 비주얼 지시; 단일/나란히/2x2/2x3 레이아웃으로 렌더링.
-- **diagram**(`VisualizationBriefPrompt`): 핵심 개념을 설명하는 인포그래픽 한 장(흐름/아키텍처/비교).
+`agent/visuals.py`의 `VisualGenerator`는 **모드 없는 자유형** 생성기입니다. 고정된 comic/diagram 모드나
+컷 수 파라미터가 없습니다 — 에이전트가 자연어 `instruction`으로 원하는 형식(1페이지 프리젠테이션 슬라이드,
+N컷 만화, 개념 다이어그램, 인포그래픽, 포스터 등)을 묘사하고, source(다이제스트 항목)와 직접 수집한
+`context`(논문/기사 리서치)를 넘깁니다.
 
-`VisualGenerator.generate(title, content, mode, panels)`: Claude(Bedrock)로 브리프 생성 →
-`_parse_json_object` → 모드별 이미지 프롬프트 → **OpenAI `gpt-image-1`**(`b64_json`) → PNG 바이트.
-`make_visual`이 `output.slack_handler.send_image_to_slack`(`files_upload_v2`)로 Slack에 이미지 업로드. OpenAI
-키(`resolve_secret`로 env→SSM 해석)가 없으면 우아하게 비활성화. 새 모드는 또 다른 `VisualMode`를 등록하면
-추가됩니다.
+`VisualGenerator.generate(instruction, source, context)`: `VisualSynopsisPrompt`로 Claude(Bedrock)가 단일
+이미지 브리프(JSON: title·caption·prompt)를 생성 → `_parse_json_object` → 브리프의 `prompt`로 **OpenAI
+`gpt-image-1`**(1024x1024, `b64_json`) → PNG 바이트. `make_visual` 도구가
+`output.slack_handler.send_image_to_slack`(`files_upload_v2`)로 **Slack에 이미지 업로드**. OpenAI 키
+(`resolve_secret`로 env→SSM 해석)가 없으면 우아하게 비활성화. 새 출력 형식은 코드 변경 없이 instruction
+문구만 바꾸면 됩니다(에이전틱).
 
 ## 11. 인프라(CDK)
 

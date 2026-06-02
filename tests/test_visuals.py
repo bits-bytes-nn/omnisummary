@@ -3,75 +3,34 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.visuals import COMIC_MODE, DIAGRAM_MODE, MODES, VisualGenerator, _parse_json_object
+from agent.visuals import VisualGenerator, _parse_json_object
+from shared.constants import LanguageModelId
 
 
 class TestParseJsonObject:
     def test_extracts_embedded_json(self):
-        raw = 'Here is the comic:\n```json\n{"title": "T", "panels": []}\n```\nDone.'
-        assert _parse_json_object(raw) == {"title": "T", "panels": []}
+        raw = 'Here is the brief:\n```json\n{"title": "T", "prompt": "draw X"}\n```\nDone.'
+        assert _parse_json_object(raw) == {"title": "T", "prompt": "draw X"}
 
     def test_raises_without_json(self):
         with pytest.raises(ValueError):
             _parse_json_object("no json here")
 
 
-class TestImagePrompts:
-    def test_comic_prompt_includes_panels_and_captions(self):
-        brief = {
-            "style": "hand-drawn",
-            "panels": [{"visual": "a robot", "caption": "안녕"}, {"visual": "a chip", "caption": "빠름"}],
-        }
-        prompt = COMIC_MODE.build_image_prompt(brief, 2)
-        assert "2-panel" in prompt
-        assert "a robot" in prompt
-        assert "안녕" in prompt
-
-    def test_diagram_prompt_uses_visual(self):
-        brief = {"title": "T", "visual": "boxes connected by arrows showing a pipeline"}
-        prompt = DIAGRAM_MODE.build_image_prompt(brief, 1)
-        assert "pipeline" in prompt
-        assert "diagram" in prompt.lower()
-
-
-class TestBriefInputs:
-    def test_comic_includes_panels(self):
-        inputs = COMIC_MODE.brief_inputs("t", "c", 4)
-        assert inputs["panels"] == "4"
-
-    def test_diagram_omits_panels(self):
-        inputs = DIAGRAM_MODE.brief_inputs("t", "c", 4)
-        assert "panels" not in inputs
-
-
 def _generator():
     factory = MagicMock()
     factory.get_model.return_value = MagicMock()
-    from shared.constants import LanguageModelId
-
     return VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET)
 
 
 class TestVisualGenerator:
     @pytest.mark.asyncio
-    async def test_generate_rejects_unknown_mode(self):
-        gen = _generator()
-        with pytest.raises(ValueError):
-            await gen.generate("t", "c", mode="hologram")
-
-    @pytest.mark.asyncio
-    async def test_generate_rejects_bad_panel_count(self):
-        gen = _generator()
-        with pytest.raises(ValueError):
-            await gen.generate("t", "c", mode="comic", panels=99)
-
-    @pytest.mark.asyncio
-    async def test_generate_comic_pipeline(self, monkeypatch):
+    async def test_generate_pipeline(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "key")
         gen = _generator()
-        brief = {"title": "테스트", "style": "x", "panels": [{"visual": "v", "caption": "c"}]}
+        brief = {"title": "테스트", "caption": "요약", "prompt": "a one-page slide explaining X"}
 
-        async def fake_brief(mode, title, content, panels):
+        async def fake_brief(instruction, source, context=""):
             return brief
 
         fake_img = base64.b64encode(b"PNGDATA").decode()
@@ -82,21 +41,30 @@ class TestVisualGenerator:
 
         with patch.object(gen, "brief", side_effect=fake_brief):
             with patch("openai.OpenAI", return_value=fake_client):
-                image_bytes, out_brief = await gen.generate("t", "c", mode="comic", panels=1)
+                image_bytes, out_brief = await gen.generate("a 1-page slide", "source text", "context")
 
         assert image_bytes == b"PNGDATA"
         assert out_brief["title"] == "테스트"
         assert fake_client.images.generate.called
+        # the image prompt sent to OpenAI comes from brief["prompt"]
+        assert fake_client.images.generate.call_args.kwargs["prompt"] == "a one-page slide explaining X"
 
     def test_render_requires_api_key(self):
-        # Deterministic: resolve_secret returns "" (no env, no SSM) -> render must raise.
         with patch("agent.visuals.resolve_secret", return_value=""):
             with pytest.raises(RuntimeError):
-                VisualGenerator.render(COMIC_MODE, {"panels": []}, 1)
+                VisualGenerator.render({"prompt": "anything"})
 
+    def test_render_requires_prompt(self, monkeypatch):
+        with patch("agent.visuals.resolve_secret", return_value="key"):
+            with pytest.raises(ValueError):
+                VisualGenerator.render({"title": "no prompt field"})
 
-class TestModes:
-    def test_registry(self):
-        assert set(MODES) == {"comic", "diagram"}
-        assert MODES["comic"] is COMIC_MODE
-        assert MODES["diagram"] is DIAGRAM_MODE
+    def test_render_raises_on_empty_image_data(self):
+        with patch("agent.visuals.resolve_secret", return_value="key"):
+            resp = MagicMock()
+            resp.data = []
+            client = MagicMock()
+            client.images.generate.return_value = resp
+            with patch("openai.OpenAI", return_value=client):
+                with pytest.raises(RuntimeError):
+                    VisualGenerator.render({"prompt": "draw"})

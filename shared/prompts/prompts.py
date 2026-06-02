@@ -197,54 +197,36 @@ Rules:
     human_prompt_template: str = "Article titles already found:\n{titles}"
 
 
-class ComicSynopsisPrompt(BasePrompt):
-    input_variables: list[str] = ["title", "content", "panels"]
+class VisualSynopsisPrompt(BasePrompt):
+    """Free-form synopsis -> image brief. The agent describes WHAT it wants in natural
+    language (a 1-page presentation slide, a 4-panel comic, a concept diagram, an
+    infographic ...); this turns it + the source material into a single image-generation
+    brief. No fixed modes or panel counts."""
+
+    input_variables: list[str] = ["instruction", "source", "context"]
 
     system_prompt_template: str = """\
-You are a comic scriptwriter turning an AI/ML news item into a witty, accessible {panels}-panel comic \
-that helps a reader grasp the core idea at a glance.
+You are an art director. Turn the requested visualization into a single, concrete brief that an \
+image model can render in one image. Honor the user's instruction about format (e.g. a one-page \
+presentation slide, an N-panel comic, a concept diagram, an infographic, a poster).
 
-Produce a JSON object describing the comic:
+Produce ONLY a JSON object:
 ```json
 {{{{
-  "title": "short comic title (Korean)",
-  "style": "one-line visual style note (e.g. hand-drawn webcomic, warm flat colors)",
-  "panels": [
-    {{{{"caption": "Korean caption shown in/under the panel", "visual": "English description of what to draw"}}}}
-  ]
+  "title": "short title in Korean",
+  "caption": "1-2 line Korean caption summarizing the visual (shown alongside the image)",
+  "prompt": "a single rich English prompt for the image model: describe the full composition, layout, panels/sections, labels, style, and what each element conveys — accurate to the source material, legible, minimal text, clean modern style"
 }}}}
 ```
 
 Rules:
-- Exactly {panels} panel(s).
-- Captions in Korean, concise and punchy. Visual descriptions in English (for the image model).
-- Explain the actual technical idea — accurate, not generic. Use a clear metaphor or scene.
-- Keep it friendly and clever, never cynical. No text-heavy panels.
-- Output ONLY the JSON object."""
+- The image is rendered in ONE pass at 1024x1024 — design a self-contained composition.
+- Be faithful to the actual technical content; do not invent facts.
+- Korean for title/caption; English for the image `prompt` (image model works best in English).
+- If the instruction implies multiple panels/sections, lay them out explicitly in `prompt`.
+- Keep on-image text short and legible. Output ONLY the JSON object."""
 
-    human_prompt_template: str = "News item title: {title}\n\nContent:\n{content}"
-
-
-class VisualizationBriefPrompt(BasePrompt):
-    input_variables: list[str] = ["title", "content"]
-
-    system_prompt_template: str = """\
-You design a single explanatory diagram that helps a reader understand the core technical idea \
-of an AI/ML news item — not a comic, but an illustrative concept visualization (e.g. a flow, \
-architecture sketch, comparison, or labeled schematic).
-
-Produce a JSON object:
-```json
-{{{{
-  "title": "short diagram title (Korean)",
-  "visual": "detailed English description of the diagram: what boxes/arrows/labels/axes to draw, layout, and what each element represents"
-}}}}
-```
-
-Rules:
-- One coherent diagram that captures the key mechanism or comparison accurately.
-- Labels should be short English terms (model/method names) where natural.
-- Clean, modern infographic style; minimal decorative clutter.
-- Output ONLY the JSON object."""
-
-    human_prompt_template: str = "News item title: {title}\n\nContent:\n{content}"
+    human_prompt_template: str = (
+        "Visualization request:\n{instruction}\n\nSource material:\n{source}\n\n"
+        "Additional research/context (may be empty):\n{context}"
+    )

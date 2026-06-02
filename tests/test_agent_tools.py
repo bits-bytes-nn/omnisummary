@@ -88,3 +88,45 @@ class TestRecallTrends:
         with patch("shared.create_memory_store", return_value=store):
             result = await agent_tools.recall_trends._tool_func("nothing")
         assert "No earlier trends" in result
+
+
+class TestMakeVisual:
+    @pytest.mark.asyncio
+    async def test_disabled_without_openai_key(self):
+        with patch("shared.resolve_secret", return_value=""):
+            result = await agent_tools.make_visual._tool_func("a slide about X")
+        assert "disabled" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_free_form_generate_and_post(self, monkeypatch):
+        gen = MagicMock()
+
+        async def fake_generate(instruction, source, context):
+            assert instruction == "a 1-page presentation slide"
+            assert context == "extra research"
+            return b"PNG", {"title": "슬라이드", "caption": "요약"}
+
+        gen.generate = fake_generate
+        agent_tools.delivery_context.channel_id = "C1"
+        agent_tools.delivery_context.thread_ts = "1.0"
+
+        async def fake_upload(*a, **k):
+            fake_upload.kwargs = k
+            return True
+
+        with patch("shared.resolve_secret", return_value="key"):
+            with patch("agent.visuals.VisualGenerator", return_value=gen):
+                with patch("agent.agent_tools._build_llm_factory", return_value=(MagicMock(), MagicMock())):
+                    with patch("output.slack_handler.send_image_to_slack", side_effect=fake_upload):
+                        result = await agent_tools.make_visual._tool_func(
+                            "a 1-page presentation slide", item_number=0, context="extra research"
+                        )
+        assert "슬라이드" in result
+        assert fake_upload.kwargs["channel_id"] == "C1"
+
+    @pytest.mark.asyncio
+    async def test_unknown_item_number(self, monkeypatch):
+        agent_tools.state_manager.clear()
+        with patch("shared.resolve_secret", return_value="key"):
+            result = await agent_tools.make_visual._tool_func("draw it", item_number=99)
+        assert "not found" in result

@@ -7,7 +7,7 @@ Proactive AI/ML daily digest system that collects content from multiple sources,
 - **Multi-source collection**: Reddit (public .rss feed via proxy), YouTube, X/Twitter (via RSSHub), RSS/Substack, Web Search (Tavily)
 - **LLM-powered ranking**: Claude Opus 4.8, multi-axis evaluation with source-slot + per-origin diversity caps
 - **Editorial digest**: Claude Sonnet 4.6 Korean editorial with cross-day trend tracking
-- **Follow-up agent**: Slack-based Strands agent — analysis, paper/community/news search, and on-demand visualizations (comic / diagram via OpenAI gpt-image)
+- **Follow-up agent**: autonomous Slack-based Strands agent — freely composes analysis, paper/community/news search, cross-day recall, and free-form image generation (1-page slide / comic / diagram / infographic via OpenAI gpt-image)
 - **AgentCore-centric**: digest state persisted in Bedrock AgentCore Memory; agent runs on AgentCore Runtime
 - **Operational excellence**: per-source health checks → SNS email alerts, structured JSON logging with correlation IDs, CloudWatch alarms, AWS WAF on the API
 - **AWS deployment**: Lambda + EventBridge cron + Bedrock AgentCore (Runtime + Memory) + ECS (RSSHub)
@@ -91,7 +91,7 @@ SLACK_APP_TOKEN=xapp-...           # Socket Mode (slack_agent.py)
 SLACK_CHANNEL_ID=C...
 TAVILY_API_KEY=tvly-...
 YOUTUBE_API_KEY=AIza...            # Optional, falls back to RSS
-OPENAI_API_KEY=sk-...              # Optional, enables make_visual (comic/diagram)
+OPENAI_API_KEY=sk-...              # Optional, enables make_visual (free-form images)
 ALERT_EMAIL=you@example.com        # Optional, source-health alerts
 CLOUDFLARE_PROXY_URL=https://...   # For AWS deployment (YouTube fallback)
 CLOUDFLARE_PROXY_TOKEN=...
@@ -169,7 +169,7 @@ Each collector runs async in parallel. Lookback window is configurable per sourc
 
 ### 6. Follow-up Agent
 
-Strands Agent (on Bedrock AgentCore Runtime, reads digest state from AgentCore Memory) with 6 tools:
+Autonomous Strands Agent (on Bedrock AgentCore Runtime, reads digest state from AgentCore Memory). It freely composes these 6 single-purpose tools to satisfy a request — e.g. "turn item 1 into a 1-page slide" → `get_detail` → optional `search_*` for grounding → `make_visual`:
 
 | Tool | Function |
 |------|----------|
@@ -178,7 +178,7 @@ Strands Agent (on Bedrock AgentCore Runtime, reads digest state from AgentCore M
 | `search_community(query)` | Tavily (Reddit, X, HN, Substack) |
 | `search_related_news(query)` | Tavily (general news) |
 | `recall_trends(query)` | Cross-day semantic recall from AgentCore Memory |
-| `make_visual(item_number, mode, panels)` | Generate + post a comic (1–6 panels) or explanatory diagram via OpenAI gpt-image |
+| `make_visual(instruction, item_number, context)` | Free-form image from a natural-language instruction (1-page slide / comic / diagram / infographic) → posted to Slack via OpenAI gpt-image |
 
 ## AWS Deployment
 

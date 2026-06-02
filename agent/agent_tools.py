@@ -210,45 +210,39 @@ def _build_llm_factory():
     return BedrockLanguageModelFactory(boto_session=session, region_name=config.aws.bedrock_region), config
 
 
-def _brief_caption(mode: str, brief: dict) -> str:
-    if mode == "comic":
-        return "\n".join(f"{i + 1}. {p.get('caption', '')}" for i, p in enumerate(brief.get("panels", [])))
-    return brief.get("visual", "")[:300]
-
-
 @tool
-async def make_visual(item_number: int, mode: str = "comic", panels: int = 4) -> str:
-    """Create a visualization that helps explain a digest item, and post it to Slack.
+async def make_visual(instruction: str, item_number: int = 0, context: str = "") -> str:
+    """Generate an image from a free-form instruction and post it to Slack.
 
-    Use this when the user asks for a cartoon/comic, an illustration, a diagram, or a
-    visual explanation of an item.
+    The visual format is entirely up to you: a one-page presentation slide, an N-panel
+    comic, a concept diagram, an infographic, a poster — describe what you want in
+    `instruction`. First gather any extra material yourself (search_papers /
+    search_related_news / search_community / get_detail) and pass it via `context`.
 
     Args:
-        item_number: The digest item number (1-based) to visualize
-        mode: "comic" for a narrative cartoon, or "diagram" for an explanatory concept diagram
-        panels: For comic mode, how many panels to draw (1-6); pick what fits the story
+        instruction: Natural-language description of the image to create (format, content, style).
+        item_number: Optional digest item (1-based) to use as the source material.
+        context: Optional extra research/notes you gathered to ground the visual.
     """
-    from agent.visuals import MODES, VisualGenerator
+    from agent.visuals import VisualGenerator
     from output.slack_handler import send_image_to_slack
-
-    if mode not in MODES:
-        return f"mode must be one of {sorted(MODES)}."
-
-    ranked = state_manager.get_item_by_number(item_number)
-    if not ranked:
-        return f"Item {item_number} not found. Today's digest has {state_manager.get_item_count()} items."
-
     from shared import resolve_secret
 
     if not resolve_secret("OPENAI_API_KEY", "openai-api-key"):
         return "Visualization is disabled (OPENAI_API_KEY not configured)."
 
-    item = ranked.item
+    source = ""
+    if item_number:
+        ranked = state_manager.get_item_by_number(item_number)
+        if not ranked:
+            return f"Item {item_number} not found. Today's digest has {state_manager.get_item_count()} items."
+        source = f"{ranked.item.title}\n\n{ranked.item.text}"
+
     factory, config = _build_llm_factory()
     generator = VisualGenerator(factory, config.pipeline.digest_model)
 
     try:
-        image_bytes, brief = await generator.generate(item.title, item.text, mode=mode, panels=panels)
+        image_bytes, brief = await generator.generate(instruction, source, context)
     except Exception as e:
         logger.error("Visualization failed: %s", e, exc_info=True)
         return f"Visualization failed: {e}"
@@ -256,15 +250,15 @@ async def make_visual(item_number: int, mode: str = "comic", panels: int = 4) ->
     if not delivery_context.channel_id:
         return "Visual generated but no Slack channel is set for delivery."
 
-    visual_title = brief.get("title", item.title)
+    visual_title = brief.get("title", "Visual")
+    caption = brief.get("caption", "")
     uploaded = await send_image_to_slack(
         image_bytes,
         channel_id=delivery_context.channel_id,
         title=visual_title,
-        comment=f"*{visual_title}*\n{_brief_caption(mode, brief)}",
+        comment=f"*{visual_title}*\n{caption}",
         thread_ts=delivery_context.thread_ts,
     )
     if not uploaded:
         return "Visual generated but Slack upload failed."
-    descriptor = f"{panels}-panel comic" if mode == "comic" else "diagram"
-    return f"Posted a {descriptor} for item {item_number}: '{visual_title}'."
+    return f"Posted a visual to Slack: '{visual_title}'."

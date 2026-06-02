@@ -4,12 +4,11 @@ from .logger import get_correlation_id, is_running_in_aws, logger, set_correlati
 from .memory import AgentCoreMemoryStore, LocalMemoryStore, MemoryStore, create_memory_store
 from .models import CollectedItem, DigestResult, HealthReport, RankedItem, SourceHealth, SourceStatus
 from .prompts import (
-    ComicSynopsisPrompt,
     DigestPrompt,
     RankingPrompt,
     RefineQueryPrompt,
     TrendUpdatePrompt,
-    VisualizationBriefPrompt,
+    VisualSynopsisPrompt,
 )
 from .state_store import LocalStateStore, S3StateStore, StateStore
 from .utils import (
@@ -32,7 +31,6 @@ __all__ = [
     "LanguageModelInfo",
     "_LANGUAGE_MODEL_INFO",
     "CollectedItem",
-    "ComicSynopsisPrompt",
     "Config",
     "DigestPrompt",
     "DigestResult",
@@ -45,7 +43,7 @@ __all__ = [
     "RankingPrompt",
     "RefineQueryPrompt",
     "TrendUpdatePrompt",
-    "VisualizationBriefPrompt",
+    "VisualSynopsisPrompt",
     "LocalStateStore",
     "S3StateStore",
     "StateStore",
