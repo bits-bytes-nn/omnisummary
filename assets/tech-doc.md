@@ -1,215 +1,223 @@
-# OmniSummary — Technical Documentation
+# OmniSummary — 기술 문서
 
-> Single source of detailed, line-by-line technical reference for OmniSummary.
-> Higher-level orientation lives in `README.md` and `.claude/CLAUDE.md`; this document is the deep reference.
+> OmniSummary의 상세한 line-by-line 기술 레퍼런스를 담은 단일 문서입니다.
+> 상위 수준 개요는 `README.md`와 `.claude/CLAUDE.md`에 있고, 이 문서는 심화 레퍼런스입니다.
 
-## 1. Overview
+## 1. 개요
 
-OmniSummary is a proactive AI/ML daily-digest system. On a daily schedule it collects content from five
-source families, aggregates and de-duplicates it, ranks it with an LLM, generates a Korean editorial digest,
-delivers it to Slack, and persists state to **Bedrock AgentCore Memory**. A follow-up agent (Strands on
-Bedrock AgentCore Runtime) answers questions about digest items and can produce visualizations (comics,
-diagrams). Operational health is reported per-source and alerted via SNS email.
+OmniSummary는 능동형(proactive) AI/ML 일일 다이제스트 시스템입니다. 매일 정해진 스케줄에 5개 소스
+계열에서 콘텐츠를 수집하고, 집계·중복 제거 후 LLM으로 순위를 매기고, 한국어 에디토리얼 다이제스트를
+생성해 Slack으로 전달하며, 상태를 **Bedrock AgentCore Memory**에 저장합니다. 후속 에이전트(AgentCore
+Runtime 위의 Strands)는 다이제스트 항목에 대한 질문에 답하고 시각화(만화, 다이어그램)를 생성할 수
+있습니다. 운영 헬스는 소스별로 리포팅되며 SNS 이메일로 알림됩니다.
 
 ```
-[EventBridge cron] → [Digest Lambda (Docker)]
-   → Collectors (RSS, Reddit, YouTube, WebSearch, X via RSSHub/S3)
-   → Aggregator (URL + title dedup)
-   → Ranker (Bedrock Claude Opus 4.8, source-slot + per-origin diversity)
-   → TrendTracker (trends.md via StateStore)
-   → DigestGenerator (Bedrock Claude Sonnet 4.6, Korean Slack mrkdwn)
-   → Slack delivery
-   → AgentCore Memory (digest snapshot + trend facts)
-   → SNS alert if any source FAILED
+[EventBridge 크론] → [다이제스트 Lambda (Docker)]
+   → 수집기 (RSS, Reddit, YouTube, WebSearch, X via RSSHub/S3)
+   → 집계기 (URL + 제목 중복 제거)
+   → 랭커 (Bedrock Claude Opus 4.8, 소스 슬롯 + origin 다양성)
+   → 트렌드 트래커 (StateStore의 trends.md)
+   → 다이제스트 생성기 (Bedrock Claude Sonnet 4.6, 한국어 Slack mrkdwn)
+   → Slack 전달
+   → AgentCore Memory (다이제스트 스냅샷 + 트렌드 사실)
+   → 실패한 소스가 있으면 SNS 알림
 
-[Slack mention] → [API Gateway + WAF] → [Slack Lambda]
-   → async self-invoke → [Bedrock AgentCore Runtime: Strands agent]
-   → tools: get_detail, search_papers, search_community, search_related_news, make_visual
-   → reads digest state from AgentCore Memory; posts replies/images to Slack
+[Slack 멘션] → [API Gateway + WAF] → [Slack Lambda]
+   → 비동기 self-invoke → [Bedrock AgentCore Runtime: Strands 에이전트]
+   → 도구: get_detail, search_papers, search_community, search_related_news, recall_trends, make_visual
+   → AgentCore Memory에서 다이제스트 상태를 읽고, Slack에 답변/이미지를 게시
 ```
 
-## 2. Repository layout
+## 2. 저장소 구조
 
-| Path | Responsibility |
-|------|----------------|
-| `collectors/` | `BaseCollector` ABC + RSS, Reddit (OAuth), RSSHub (X/Twitter), YouTube, WebSearch (Tavily) |
+| 경로 | 책임 |
+|------|------|
+| `collectors/` | `BaseCollector` ABC + RSS, Reddit(OAuth), RSSHub(X/Twitter), YouTube, WebSearch(Tavily) |
 | `pipeline/` | `ContentAggregator`, `ContentRanker`, `DigestGenerator`, `TrendTracker` |
-| `agent/` | Strands agent, tools, `DigestStateManager`, `VisualGenerator` (comic/diagram) |
-| `agent_runtime/` | Bedrock AgentCore HTTP server (`BedrockAgentCoreApp`) |
-| `shared/` | config, models, constants, utils (Bedrock factory), logger, prompts, state_store, **memory**, proxy |
-| `output/` | Slack delivery (text + image upload) |
-| `lambda_handlers/` | digest handler, Slack-events handler |
+| `agent/` | Strands 에이전트, 도구, `DigestStateManager`, `VisualGenerator`(만화/다이어그램) |
+| `agent_runtime/` | Bedrock AgentCore HTTP 서버(`BedrockAgentCoreApp`) |
+| `shared/` | config, models, constants, utils(Bedrock 팩토리), logger, prompts, state_store, **memory**, proxy |
+| `output/` | Slack 전달(텍스트 + 이미지 업로드) |
+| `lambda_handlers/` | 다이제스트 핸들러, Slack 이벤트 핸들러 |
 | `infrastructure/` | CDK `foundation_stack` + `application_stack` |
 | `scripts/` | `deploy.py`, `ci_synth.py`, `sync_rsshub_to_s3.py` |
 
-## 3. Configuration
+## 3. 설정(Configuration)
 
-`config/config.yaml` → Pydantic models in `shared/config.py` via `Config.load()`. Secrets come from `.env`
-(local) or SSM Parameter Store under `/{project}/{stage}/{name}` (AWS).
+`config/config.yaml` → `shared/config.py`의 Pydantic 모델로 `Config.load()`를 통해 로드됩니다. 시크릿은
+`.env`(로컬) 또는 SSM Parameter Store의 `/{project}/{stage}/{name}` 경로(AWS)에서 옵니다.
 
-Key config groups:
-- `collectors.*` — each extends `BaseCollectorConfig` (`enabled`, `lookback_hours`, `reference_time`,
+주요 설정 그룹:
+- `collectors.*` — 각각 `BaseCollectorConfig`를 상속(`enabled`, `lookback_hours`, `reference_time`,
   `request_timeout`, `max_retries`, `retry_backoff_sec`).
-- `pipeline` — `top_n`, `min_score`, `ranking_model` (Opus 4.8), `digest_model` (Sonnet 4.6),
-  `source_slots`, `source_cap_multiplier`, **`max_per_origin`** (per-channel/author/subreddit cap),
-  `origin_weights`, `trend_retention_days`.
+- `pipeline` — `top_n`, `min_score`, `ranking_model`(Opus 4.8), `digest_model`(Sonnet 4.6),
+  `source_slots`, `source_cap_multiplier`, **`max_per_origin`**(채널/작성자/서브레딧당 상한),
+  `origin_weights`, `origin_weight_default`, `trend_retention_days`.
 - `aws` — region, profile, project/stage, `digest_cron_hour/minute`, `api_throttle_*`, `waf_rate_limit`.
 
-Environment variables (`.env`): `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_CHANNEL_ID`, `TAVILY_API_KEY`,
+환경 변수(`.env`): `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_CHANNEL_ID`, `TAVILY_API_KEY`,
 `YOUTUBE_API_KEY`, `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET`, `OPENAI_API_KEY`, `ALERT_EMAIL`,
-`CLOUDFLARE_PROXY_URL`/`CLOUDFLARE_PROXY_TOKEN`. In AWS, `MEMORY_ID`, `ALERT_SNS_TOPIC_ARN`,
-`STATE_BUCKET`, `RSSHUB_BASE_URL`, `PROJECT_NAME`, `STAGE` are injected by CDK.
+`CLOUDFLARE_PROXY_URL`/`CLOUDFLARE_PROXY_TOKEN`. AWS에서는 `MEMORY_ID`, `ALERT_SNS_TOPIC_ARN`,
+`STATE_BUCKET`, `RSSHUB_BASE_URL`, `PROJECT_NAME`, `STAGE`를 CDK가 주입합니다.
 
-## 4. Collectors
+## 4. 수집기(Collectors)
 
-All collectors implement `BaseCollector.collect() -> list[CollectedItem]` and filter by
-`cutoff_datetime(lookback_hours, reference_time)` (`collectors/base.py`).
+모든 수집기는 `BaseCollector.collect() -> list[CollectedItem]`을 구현하고
+`cutoff_datetime(lookback_hours, reference_time)`(`collectors/base.py`)로 필터링합니다.
 
-- **RSS** (`rss.py`): feedparser over `config.collectors.rss.feeds`; metadata `feed_url`, `feed_title`.
-- **Reddit** (`reddit.py`): **official OAuth API** (public `.json` is IP-blocked). `_resolve_reddit_credentials()`
-  reads env then SSM (`reddit-client-id/-secret`); `_fetch_token()` does client-credentials grant; per-subreddit
-  GET to `oauth.reddit.com/r/{sub}/{sort}`. Preserves `score`/`num_comments` (ranking engagement signal).
-  Missing creds → `[]` (graceful skip, classified EMPTY not FAILED).
-- **RSSHub** (`rsshub.py`): X/Twitter feeds via a local/containerized RSSHub; can also load a pre-synced
-  snapshot from S3 (`rsshub_items.json`). Self-tracks failed/empty accounts and an `error_rate_threshold`.
-- **YouTube** (`youtube.py`): YouTube Data API when `YOUTUBE_API_KEY` set, else RSS fallback via proxy.
-  `max_videos_per_channel=1` so a high-volume channel can't flood the candidate pool.
-- **WebSearch** (`web_search.py`): Tavily search with LLM query refinement (`RefineQueryPrompt`).
+- **RSS** (`rss.py`): `config.collectors.rss.feeds`에 대해 feedparser 사용; 메타데이터 `feed_url`, `feed_title`.
+- **Reddit** (`reddit.py`): **공식 OAuth API** 사용(공개 `.json`은 IP 차단됨). `_resolve_reddit_credentials()`가
+  공유 헬퍼 `resolve_secret`로 env → SSM(`reddit-client-id/-secret`) 순으로 해석; `_fetch_token()`이
+  client-credentials 그랜트 수행; 서브레딧별로 `oauth.reddit.com/r/{sub}/{sort}` GET. `score`/`num_comments`를
+  보존(랭킹 engagement 신호). 자격증명 없으면 `[]` 반환(우아한 skip, FAILED가 아닌 EMPTY로 분류).
+- **RSSHub** (`rsshub.py`): 로컬/컨테이너 RSSHub를 통한 X/Twitter 피드; S3에 사전 동기화된 스냅샷
+  (`rsshub_items.json`)도 로드 가능. 실패/빈 계정을 자체 추적하며 `error_rate_threshold` 보유.
+- **YouTube** (`youtube.py`): `YOUTUBE_API_KEY`가 있으면 YouTube Data API, 없으면 프록시 경유 RSS 폴백.
+  `max_videos_per_channel=1`로 고빈도 채널이 후보 풀을 독점하지 못하게 함.
+- **WebSearch** (`web_search.py`): LLM 쿼리 정제(`RefineQueryPrompt`)를 곁들인 Tavily 검색.
 
-`gather_collector_results()` runs collectors concurrently and swallows per-task exceptions (logs only,
-returns flat list). For health reporting, `main.run_collectors_with_health()` runs the same tasks but
-returns a `HealthReport` (see §8) — `gather_collector_results` is left unchanged for its other callers.
+`gather_collector_results()`는 수집기를 동시 실행하고 작업별 예외를 삼킴(로깅만, 평탄한 리스트 반환).
+헬스 리포팅용으로 `main.run_collectors_with_health()`가 동일 작업을 실행하되 `HealthReport`(§8 참조)를
+반환 — `gather_collector_results`는 다른 호출자들을 위해 그대로 유지.
 
-## 5. Pipeline
+## 5. 파이프라인(Pipeline)
 
-1. **Aggregator** (`aggregator.py`): dedup by URL then normalized title; merges metadata of duplicates.
-2. **Ranker** (`ranker.py`): formats items (with engagement + origin), calls `RankingPrompt` on Claude Opus
-   4.8, parses JSON scores, applies `origin_weights`, filters by `min_score`, then `_apply_source_slots`:
-   - fills each source's base slot from `source_slots`,
-   - overflow fill up to `source_cap_multiplier × slot`,
-   - **`max_per_origin`** caps how many items share one origin key (channel/author/subreddit) — the durable
-     fix for single-channel monopoly. Origin resolved by `_resolve_origin_key` (YouTube→channel_url,
-     Reddit→subreddit, RSS→feed_url, X→author).
-3. **TrendTracker** (`trend_tracker.py`): maintains `trends.md` via a `StateStore`; merges archived history.
-4. **DigestGenerator** (`digest_generator.py`): `DigestPrompt` on Claude Sonnet 4.6 → Korean Slack mrkdwn;
-   `sanitize_slack_mrkdwn` normalizes output.
+1. **집계기** (`aggregator.py`): URL → 정규화 제목 순으로 중복 제거; 중복의 메타데이터 병합.
+2. **랭커** (`ranker.py`): 항목 포맷팅(engagement + origin 포함), Claude Opus 4.8로 `RankingPrompt` 호출,
+   JSON 점수 파싱, `origin_weights`(미등록 origin엔 `origin_weight_default`) 적용, `min_score` 필터,
+   이후 `_apply_source_slots`:
+   - `source_slots`로 소스별 기본 슬롯 채우기,
+   - `source_cap_multiplier × slot`까지 오버플로 채우기,
+   - **`max_per_origin`**으로 하나의 origin 키(채널/작성자/서브레딧)가 차지하는 항목 수 제한 — 단일 채널
+     독점에 대한 근본 해결책. origin은 `_resolve_origin_key`로 해석(YouTube→channel_url, Reddit→subreddit,
+     RSS→feed_url, X→author).
+3. **트렌드 트래커** (`trend_tracker.py`): `StateStore`를 통해 `trends.md` 유지; 아카이브 이력 병합.
+4. **다이제스트 생성기** (`digest_generator.py`): Claude Sonnet 4.6로 `DigestPrompt` → 한국어 Slack mrkdwn;
+   `sanitize_slack_mrkdwn`이 출력 정규화.
 
-## 6. LLM factory (`shared/utils.py`)
+## 6. LLM 팩토리 (`shared/utils.py`)
 
-`BedrockLanguageModelFactory.get_model(model_id, **kwargs)` returns a `ChatBedrock`/`ChatBedrockConverse`
-configured for the model's capabilities (`_LANGUAGE_MODEL_INFO`): thinking, 1M context, performance latency,
-prompt caching. `BedrockCrossRegionModelHelper` resolves `global.`/`apac.` inference-profile IDs when
-available. Model IDs are enumerated in `shared/constants.py` (`LanguageModelId`), latest = Opus 4.8 / Sonnet 4.6.
+`BedrockLanguageModelFactory.get_model(model_id, **kwargs)`는 모델 역량(`_LANGUAGE_MODEL_INFO`)에 맞게
+구성된 `ChatBedrock`/`ChatBedrockConverse`를 반환합니다: thinking, 1M 컨텍스트, 성능 레이턴시, 프롬프트
+캐싱. `BedrockCrossRegionModelHelper`가 가능 시 `global.`/`apac.` inference-profile ID를 해석합니다. 모델
+ID는 `shared/constants.py`(`LanguageModelId`)에 열거되며, 최신은 Opus 4.8 / Sonnet 4.6입니다.
 
-**Prompt caching.** Bedrock prompt caching has a ~1024-token minimum cacheable prefix for Claude. It is
-applied where it pays off: the follow-up **agent**, whose ~1.7K-token system prompt + tool schemas are
-re-sent on every ReAct step and across multi-turn sessions, uses Strands `BedrockModel(cache_config=
-CacheConfig(strategy="auto"))` (`agent/agent.py`) to cache that prefix (verified: `cacheWriteInputTokens`
-on first call, `cacheReadInputTokens` thereafter). The one-shot pipeline prompts (ranker/digest/trend/visual
-synopsis, all ≤~530 tokens and invoked once per run) are below the cache minimum and have no cross-call
-reuse, so caching is intentionally not applied there.
+`resolve_secret(env_var, ssm_suffix)`는 env 우선, 그다음 SSM(`/{project}/{stage}/{suffix}`,
+SecureString 복호화) 순으로 시크릿을 해석하는 공유 헬퍼입니다. Reddit 자격증명과 OpenAI 키가 이를 사용합니다.
 
-## 7. Memory (AgentCore-centric)
+**프롬프트 캐싱.** Bedrock 프롬프트 캐싱은 Claude 기준 캐시 가능 프리픽스 최소치가 ~1024 토큰입니다.
+효과가 있는 곳에만 적용했습니다: 후속 **에이전트**는 ~1.7K 토큰 시스템 프롬프트 + 도구 스키마가 매 ReAct
+스텝마다, 그리고 멀티턴 세션 내내 재전송되므로 Strands `BedrockModel(cache_config=
+CacheConfig(strategy="auto"))`(`agent/agent.py`)로 해당 프리픽스를 캐싱합니다(검증: 첫 호출에
+`cacheWriteInputTokens`, 이후 `cacheReadInputTokens` 발생). 단발성 파이프라인 프롬프트(랭커/다이제스트/트렌드/
+시각화 시놉시스, 모두 ≤~530 토큰이며 실행당 1회 호출)는 캐시 최소치 미만이고 호출 간 재사용도 없어
+의도적으로 캐싱을 적용하지 않았습니다.
 
-`shared/memory.py` defines `MemoryStore` ABC with two implementations:
-- **`AgentCoreMemoryStore`** (system of record in AWS): digest snapshots are written as short-term session
-  events (`create_event`, session `digest-<date>`); `get_latest_digest()` lists sessions and reads the newest
-  digest session's event. Trend summaries are written as events that feed the **semantic** long-term strategy;
-  `recall(query)` does `retrieve_memory_records` over namespace `/facts/{actor}/` and is exposed to the
-  follow-up agent through the `recall_trends` tool (cross-day memory).
-- **`LocalMemoryStore`**: filesystem fallback for offline dev (`digest_*.json`, `trends.jsonl`).
+## 7. 메모리(AgentCore 중심)
 
-`create_memory_store()` picks AgentCore when `MEMORY_ID` is set, else local. The digest Lambda writes the
-snapshot + trend after each run; the AgentCore runtime loads the latest snapshot into `DigestStateManager`
-on each invocation and the agent can `recall_trends` to retrieve prior-day context.
+`shared/memory.py`는 `MemoryStore` ABC와 두 구현을 정의합니다:
+- **`AgentCoreMemoryStore`**(AWS에서의 시스템 오브 레코드): 다이제스트 스냅샷을 단기 세션 이벤트로 기록
+  (`create_event`, 세션 `digest-<date>`); `get_latest_digest()`가 세션을 나열해 가장 최근 다이제스트 세션의
+  이벤트를 읽음. 트렌드 요약은 **시맨틱** 장기 전략에 공급되는 이벤트로 기록되며, `recall(query)`가
+  네임스페이스 `/facts/{actor}/`에 대해 `retrieve_memory_records`를 수행하고 `recall_trends` 도구를 통해
+  후속 에이전트에 노출됨(교차일 메모리).
+- **`LocalMemoryStore`**: 오프라인 개발용 파일시스템 폴백(`digest_*.json`, `trends.jsonl`).
 
-Note: the human-readable `trends.md` document (cross-day narrative used to seed digest generation) is a
-separate, intentional artifact still persisted via `StateStore` (`TrendTracker`); AgentCore Memory holds the
-machine-recallable trend facts used by the agent. The two are complementary, not duplicates.
+`create_memory_store()`는 `MEMORY_ID`가 설정되면 AgentCore를, 아니면 로컬을 선택합니다. 다이제스트
+Lambda는 매 실행 후 스냅샷 + 트렌드를 기록하고, AgentCore 런타임은 매 호출 시 최신 스냅샷을
+`DigestStateManager`에 로드하며 에이전트는 `recall_trends`로 이전 날짜의 맥락을 조회할 수 있습니다.
 
-The Memory resource itself (`AWS::BedrockAgentCore::Memory`) is created in `foundation_stack` with a
-semantic strategy and a dedicated `MemoryExecutionRole` (for the extraction model). Cost: long-term
-extraction invokes a Bedrock model per event asynchronously; short-term events expire after
-`event_expiry_duration` (90 days). For a once-daily digest the event volume is tiny.
+참고: 사람이 읽는 `trends.md` 문서(다이제스트 생성 시드로 쓰이는 교차일 내러티브)는 별도의 의도적
+산출물로 여전히 `StateStore`(`TrendTracker`)를 통해 저장됩니다. AgentCore Memory는 에이전트가 기계적으로
+recall하는 트렌드 사실을 보관합니다. 둘은 중복이 아니라 상호 보완적입니다.
 
-## 8. Health check & alerting
+메모리 리소스 자체(`AWS::BedrockAgentCore::Memory`)는 시맨틱 전략과 전용 `MemoryExecutionRole`(추출
+모델용)과 함께 `foundation_stack`에서 생성됩니다. 비용: 장기 추출이 이벤트당 Bedrock 모델을 비동기로
+호출하며, 단기 이벤트는 `event_expiry_duration`(90일) 후 만료됩니다. 하루 1회 다이제스트라 이벤트 볼륨은
+매우 작습니다.
 
-`shared/models.py`: `SourceStatus` (`ok`/`empty`/`failed`), `SourceHealth(name, item_count, status, detail)`,
-`HealthReport(sources)` with `has_failures` and `summary()`. `run_collectors_with_health` classifies each
-source: exception → FAILED (with truncated detail), 0 items → EMPTY (legitimate on quiet days), else OK.
-In the digest Lambda, `_maybe_alert` publishes to `ALERT_SNS_TOPIC_ARN` **only** when a source FAILED, before
-the empty-items early return (so an outage still alerts even if nothing was collected).
+## 8. 헬스 체크 & 알림
 
-## 9. Agent (Strands on AgentCore Runtime)
+`shared/models.py`: `SourceStatus`(`ok`/`empty`/`failed`), `SourceHealth(name, item_count, status, detail)`,
+`HealthReport(sources)`(`has_failures`, `summary()` 보유). `run_collectors_with_health`가 각 소스를 분류:
+예외 → FAILED(잘린 detail 포함), 0 항목 → EMPTY(조용한 날엔 정상), 그 외 → OK. 다이제스트 Lambda에서
+`_maybe_alert`가 소스가 FAILED일 때만, 그리고 빈 항목 조기 반환 이전에 `ALERT_SNS_TOPIC_ARN`으로
+게시(아무것도 수집 못 해도 장애는 알림되도록).
 
-`agent/agent.py` builds a Strands `Agent` with a `BedrockModel` (Sonnet 4.6) and tools. The SYSTEM_PROMPT
-encodes a strict routing table (Korean), Slack mrkdwn formatting rules, and a response template.
+## 9. 에이전트(AgentCore Runtime 위의 Strands)
 
-Tools (`agent/agent_tools.py`):
-- `get_detail(item_number)` — load item content + ranking metadata from `state_manager`.
-- `search_papers(query)` — Semantic Scholar (retry/backoff on 429).
-- `search_community(query)` / `search_related_news(query)` — thin wrappers over the shared
-  `_tavily_search(query, topic, include_domains)` helper.
-- `recall_trends(query)` — cross-day semantic recall via `MemoryStore.recall` (AgentCore long-term memory).
-- `make_visual(item_number, mode, panels)` — see §10.
+`agent/agent.py`는 `BedrockModel`(Sonnet 4.6)과 도구로 Strands `Agent`를 구성합니다. SYSTEM_PROMPT에
+엄격한 라우팅 테이블(한국어), Slack mrkdwn 포맷 규칙, 응답 템플릿이 인코딩되어 있습니다.
 
-`agent_runtime/app.py` (`BedrockAgentCoreApp`): on invoke, sets a correlation id, loads latest digest state
-from Memory, sets `delivery_context` (channel/thread for media tools), runs the agent, and posts the reply to
-Slack. The Slack-events Lambda (`slack_event_handler.py`) verifies the Slack signature (HMAC, timing-safe),
-de-dupes via DynamoDB conditional writes, and async self-invokes to call the AgentCore runtime.
+도구(`agent/agent_tools.py`):
+- `get_detail(item_number)` — `state_manager`에서 항목 본문 + 랭킹 메타데이터 로드.
+- `search_papers(query)` — Semantic Scholar(429 시 retry/backoff).
+- `search_community(query)` / `search_related_news(query)` — 공유 `_tavily_search(query, topic,
+  include_domains)` 헬퍼를 감싼 얇은 래퍼.
+- `recall_trends(query)` — `MemoryStore.recall`을 통한 교차일 시맨틱 recall(AgentCore 장기 메모리).
+- `make_visual(item_number, mode, panels)` — §10 참조.
 
-## 10. Visualization pipeline (synopsis → image)
+`agent_runtime/app.py`(`BedrockAgentCoreApp`): invoke 시 correlation id 설정, Memory에서 최신 다이제스트
+상태 로드, `delivery_context`(미디어 도구용 채널/스레드) 설정, 에이전트 실행, Slack에 답변 게시. Slack
+이벤트 Lambda(`slack_event_handler.py`)는 Slack 서명을 검증(HMAC, 타이밍 안전)하고 DynamoDB 조건부
+쓰기로 중복 제거하며 비동기 self-invoke로 AgentCore 런타임을 호출합니다.
 
-`agent/visuals.py` generalizes "synopsis → visualization" with a `VisualMode` (a brief prompt + an image-prompt
-builder) and a `MODES` registry:
-- **comic** (`ComicSynopsisPrompt`): a 1–6 panel narrative cartoon (the agent picks the panel count to fit the
-  story); Korean captions, English visual directions; rendered as a single/side-by-side/2x2/2x3 layout.
-- **diagram** (`VisualizationBriefPrompt`): one explanatory concept infographic (flow/architecture/comparison).
+## 10. 시각화 파이프라인(시놉시스 → 이미지)
 
-`VisualGenerator.generate(title, content, mode, panels)`: brief via Claude (Bedrock) → `_parse_json_object`
-→ mode-specific image prompt → **OpenAI `gpt-image-1`** (`b64_json`) → PNG bytes. `make_visual` uploads the
-image to Slack via `output.slack_handler.send_image_to_slack` (`files_upload_v2`). Disabled gracefully when
-`OPENAI_API_KEY` is absent. New modes are added by registering another `VisualMode`.
+`agent/visuals.py`는 "시놉시스 → 시각화"를 `VisualMode`(브리프 프롬프트 + 이미지 프롬프트 빌더)와 `MODES`
+레지스트리로 일반화합니다:
+- **comic**(`ComicSynopsisPrompt`): 1~6컷 내러티브 만화(에이전트가 스토리에 맞게 컷 수 선택); 한국어
+  캡션, 영어 비주얼 지시; 단일/나란히/2x2/2x3 레이아웃으로 렌더링.
+- **diagram**(`VisualizationBriefPrompt`): 핵심 개념을 설명하는 인포그래픽 한 장(흐름/아키텍처/비교).
 
-## 11. Infrastructure (CDK)
+`VisualGenerator.generate(title, content, mode, panels)`: Claude(Bedrock)로 브리프 생성 →
+`_parse_json_object` → 모드별 이미지 프롬프트 → **OpenAI `gpt-image-1`**(`b64_json`) → PNG 바이트.
+`make_visual`이 `output.slack_handler.send_image_to_slack`(`files_upload_v2`)로 Slack에 이미지 업로드. OpenAI
+키(`resolve_secret`로 env→SSM 해석)가 없으면 우아하게 비활성화. 새 모드는 또 다른 `VisualMode`를 등록하면
+추가됩니다.
 
-**`foundation_stack`**: VPC, ECR repo, DynamoDB dedup table (SSE + PITR-in-prod), S3 state bucket (S3-managed
-encryption, versioning, block-public, enforce-SSL when CDK-created), ECS Fargate RSSHub service +
-service-discovery, CodeBuild image build, SNS alerts topic (+ optional email subscription), AgentCore
-**Memory** resource + execution role, and IAM roles. IAM is least-privilege: scoped `ssm:GetParameter*` on
-`/{project}/{stage}/*`, scoped `bedrock:InvokeModel*` on foundation-model/inference-profile ARNs, scoped
-`lambda:InvokeFunction` and `bedrock-agentcore:InvokeAgentRuntime`/Memory data-plane actions — no
-account-wide managed policies.
+## 11. 인프라(CDK)
 
-**`application_stack`**: digest Lambda (DockerImage), Slack-events Lambda, API Gateway (+ stage throttling),
-**WAFv2 WebACL** (rate-limit + AWS managed rule sets: Common, KnownBadInputs, IpReputation) associated to the
-stage, EventBridge daily cron (config-driven hour/minute), AgentCore Runtime, SSM parameters for secrets,
-CloudWatch alarms (Lambda errors ×2, API 5xx) → SNS. Secrets are plaintext `String` SSM parameters
-(CloudFormation cannot create SecureString); the compensating control is the scoped IAM read policy —
-promote to Secrets Manager for higher-sensitivity credentials.
+**`foundation_stack`**: VPC, ECR 리포, DynamoDB 중복 제거 테이블(SSE + prod에서 PITR), S3 상태 버킷
+(CDK 생성 시 S3-managed 암호화, 버저닝, 퍼블릭 차단, SSL 강제), ECS Fargate RSSHub 서비스 +
+service-discovery, CodeBuild 이미지 빌드, SNS 알림 토픽(+ 선택적 이메일 구독), AgentCore **Memory** 리소스
++ 실행 역할, IAM 역할들. IAM은 최소 권한: `/{project}/{stage}/*`로 스코프된 `ssm:GetParameter*`,
+foundation-model/inference-profile ARN으로 스코프된 `bedrock:InvokeModel*`, 스코프된 `lambda:InvokeFunction`
+및 `bedrock-agentcore:InvokeAgentRuntime`/Memory 데이터플레인 액션, 프로젝트 로그 그룹 ARN으로 스코프된
+CloudWatch Logs — 계정 전역 관리형 정책 없음.
 
-## 12. Observability
+**`application_stack`**: 다이제스트 Lambda(DockerImage), Slack 이벤트 Lambda, API Gateway(+ 스테이지
+스로틀링), 스테이지에 연결된 **WAFv2 WebACL**(rate-limit + AWS 관리형 규칙셋: Common, KnownBadInputs,
+IpReputation), EventBridge 일일 크론(설정 기반 시/분), AgentCore Runtime(설정 가능한
+`agentcore_image_ref`로 이미지 바인딩), 시크릿용 SSM 파라미터, SNS로 향하는 CloudWatch 알람(Lambda 에러
+×2, API 5xx). 시크릿은 평문 `String` SSM 파라미터입니다(CloudFormation은 SecureString 생성 불가) —
+보완 통제는 스코프된 IAM 읽기 정책이며, 더 민감한 자격증명은 Secrets Manager로 승격 권장.
 
-`shared/logger.py`: structured JSON logs in AWS (`is_running_in_aws()`), human-readable locally; a
-`ContextVar`-based correlation id (`set_correlation_id`/`get_correlation_id`) is injected into every record
-and seeded from the Lambda request id / AgentCore payload. CloudWatch alarms route to the SNS alerts topic.
+## 12. 관측성(Observability)
 
-## 13. Testing & CI/CD
+`shared/logger.py`: AWS에서는 구조화 JSON 로그(`is_running_in_aws()`), 로컬에서는 사람이 읽는 형식;
+`ContextVar` 기반 correlation id(`set_correlation_id`/`get_correlation_id`)가 모든 레코드에 주입되고 Lambda
+요청 id / AgentCore 페이로드에서 시드됩니다. CloudWatch 알람은 SNS 알림 토픽으로 라우팅됩니다.
 
-`tests/` (pytest, `asyncio_mode=auto`): collectors (respx-mocked HTTP/OAuth), aggregator, ranker parsing +
-slot/origin-cap logic, health report, logger, memory store (local + AgentCore mocked), digest-handler alert,
-agent tools, visuals, and CDK assertions (`aws-cdk.assertions` over both stacks). Coverage gate 45%.
+## 13. 테스트 & CI/CD
 
-`.github/workflows/ci.yml`: lint (ruff), format (black `--check`), tests + coverage gate, offline `cdk synth`
-(`scripts/ci_synth.py`, dummy account — no AWS creds), and a Docker build (amd64, `--provenance=false`).
+`tests/`(pytest, `asyncio_mode=auto`): 수집기(respx로 모킹한 HTTP/OAuth), 집계기, 랭커 파싱 + 슬롯/origin-cap
+로직, 헬스 리포트, logger, 메모리 스토어(로컬 + AgentCore 모킹), 다이제스트 핸들러 알림, 에이전트 도구,
+visuals, trend_tracker(trim/evidence-cap/archived-merge), 그리고 CDK assertion(`aws-cdk.assertions`로 두
+스택 검증). 커버리지 게이트 55%.
 
-## 14. Key commands
+`.github/workflows/ci.yml`: lint(ruff), 포맷 체크(black `--check`), mypy 타입 체크, 테스트 + 커버리지 게이트,
+오프라인 `cdk synth`(`scripts/ci_synth.py`, 더미 계정 — AWS 자격증명 불필요), Docker 빌드(amd64,
+`--provenance=false`).
+
+## 14. 주요 명령어
 
 ```bash
-uv run python main.py --dry-run --sources rss reddit   # partial dry run
-uv run python main.py                                   # full pipeline + Slack
-uv run python -m pytest tests/ -v                       # tests
+uv run python main.py --dry-run --sources rss reddit   # 부분 dry run
+uv run python main.py                                   # 전체 파이프라인 + Slack
+uv run python -m pytest tests/ -v                       # 테스트
 uv run black --check . && uv run ruff check .           # lint/format
-uv run python scripts/ci_synth.py                       # offline CDK synth
+uv run mypy shared/ collectors/ pipeline/ agent/ output/ lambda_handlers/ main.py
+uv run python scripts/ci_synth.py                       # 오프라인 CDK synth
 AWS_PROFILE=research uv run cdk deploy --all -a "uv run python scripts/deploy.py"
 ```
