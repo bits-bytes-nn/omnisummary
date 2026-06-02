@@ -104,7 +104,7 @@ Runtime 위의 Strands)는 다이제스트 항목에 대한 질문에 답하고 
 ID는 `shared/constants.py`(`LanguageModelId`)에 열거되며, 최신은 Opus 4.8 / Sonnet 4.6입니다.
 
 `resolve_secret(env_var, ssm_suffix)`는 env 우선, 그다음 SSM(`/{project}/{stage}/{suffix}`,
-SecureString 복호화) 순으로 시크릿을 해석하는 공유 헬퍼입니다. Reddit 자격증명과 OpenAI 키가 이를 사용합니다.
+SecureString 복호화) 순으로 시크릿을 해석하는 공유 헬퍼입니다. OpenAI 키(`make_visual`)가 이를 사용합니다.
 
 **프롬프트 캐싱.** Bedrock 프롬프트 캐싱은 Claude 기준 캐시 가능 프리픽스 최소치가 ~1024 토큰입니다.
 효과가 있는 곳에만 적용했습니다: 후속 **에이전트**는 ~1.7K 토큰 시스템 프롬프트 + 도구 스키마가 매 ReAct
@@ -202,7 +202,8 @@ IpReputation), EventBridge 일일 크론(설정 기반 시/분), AgentCore Runti
 
 ## 13. 테스트 & CI/CD
 
-`tests/`(pytest, `asyncio_mode=auto`): 수집기(respx로 모킹한 HTTP/OAuth), 집계기, 랭커 파싱 + 슬롯/origin-cap
+`tests/`(pytest, `asyncio_mode=auto`): 수집기(모킹한 HTTP/feedparser), Slack 이벤트 핸들러(서명 검증/중복 제거),
+집계기, 랭커 파싱 + 슬롯/origin-cap
 로직, 헬스 리포트, logger, 메모리 스토어(로컬 + AgentCore 모킹), 다이제스트 핸들러 알림, 에이전트 도구,
 visuals, trend_tracker(trim/evidence-cap/archived-merge), 그리고 CDK assertion(`aws-cdk.assertions`로 두
 스택 검증). 커버리지 게이트 55%.

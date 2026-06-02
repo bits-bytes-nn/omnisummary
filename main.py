@@ -15,7 +15,6 @@ from collectors import (
     WebSearchCollector,
     YouTubeCollector,
 )
-from collectors.base import gather_collector_results
 from output import send_digest_to_slack
 from pipeline import ContentAggregator, ContentRanker, DigestGenerator, TrendTracker
 from shared import (
@@ -70,18 +69,6 @@ def _build_collector_tasks(
         labels.append(source_name)
 
     return tasks, labels
-
-
-async def run_collectors(
-    config: Config,
-    llm_factory: BedrockLanguageModelFactory,
-    sources: list[str] | None = None,
-) -> list[CollectedItem]:
-    tasks, labels = _build_collector_tasks(config, llm_factory, sources)
-    if not tasks:
-        logger.warning("No active collectors")
-        return []
-    return await gather_collector_results(tasks, labels=labels)
 
 
 async def run_collectors_with_health(
