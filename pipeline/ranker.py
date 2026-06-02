@@ -156,6 +156,21 @@ class ContentRanker:
                 if len(selected) >= self.config.top_n:
                     break
 
+        # Final fallback: if diversity caps left the digest below top_n while valid
+        # candidates remain, relax the per-origin cap (keep the source cap) so a quiet
+        # day with few distinct origins still fills the digest.
+        if len(selected) < self.config.top_n:
+            for item in above_threshold:
+                if item.item.item_id in selected_ids:
+                    continue
+                src = item.item.source_type.value
+                cap = source_slots.get(src, 1) * self.config.source_cap_multiplier
+                if source_counts.get(src, 0) >= cap:
+                    continue
+                _record(item, src)
+                if len(selected) >= self.config.top_n:
+                    break
+
         selected.sort(key=lambda r: r.score, reverse=True)
         return selected
 
@@ -195,17 +210,10 @@ class ContentRanker:
 
     @staticmethod
     def _format_engagement(item: CollectedItem) -> str:
-        parts: list[str] = []
         meta = item.metadata
-        if item.source_type == SourceType.REDDIT:
-            if meta.get("score"):
-                parts.append(f"{meta['score']} upvotes")
-            if meta.get("num_comments"):
-                parts.append(f"{meta['num_comments']} comments")
-        elif item.source_type == SourceType.YOUTUBE:
-            if meta.get("view_count"):
-                parts.append(f"{meta['view_count']:,} views")
-        return ", ".join(parts)
+        if item.source_type == SourceType.YOUTUBE and meta.get("view_count"):
+            return f"{meta['view_count']:,} views"
+        return ""
 
     def _parse_rankings(self, raw_output: str, items: list[CollectedItem]) -> list[RankedItem]:
         items_by_id = {item.item_id: item for item in items}

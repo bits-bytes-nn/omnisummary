@@ -64,14 +64,11 @@ class OmniSummaryApplicationStack(Stack):
                     string_value=value,
                 )
 
-        image_ref = agentcore_image_ref or "arm64"
-        container_uri = (
-            image_ref
-            if image_ref.startswith(("sha256:", "@sha256:"))
-            else f"{foundation.ecr_repo.repository_uri}:{image_ref}"
-        )
+        image_ref = (agentcore_image_ref or "arm64").lstrip("@")
         if image_ref.startswith("sha256:"):
             container_uri = f"{foundation.ecr_repo.repository_uri}@{image_ref}"
+        else:
+            container_uri = f"{foundation.ecr_repo.repository_uri}:{image_ref}"
 
         agentcore_runtime = CfnRuntime(
             self,

@@ -62,10 +62,9 @@ Product/service promotion, thin content, beginner questions, memes, self-promoti
 Be generous in 0.6-0.8. Aim for ~10-20 items scoring 0.6+ per batch.
 
 *Engagement Signal*
-High engagement is a STRONG quality signal. Apply these bonuses based on the Engagement field:
-- Reddit: 100+ upvotes → +0.05, 500+ → +0.1, 1000+ → +0.15. High comment count amplifies further.
+High engagement is a STRONG quality signal. Apply this bonus based on the Engagement field when present:
 - YouTube: 10K+ views → +0.05, 100K+ → +0.1, 500K+ → +0.15.
-- Items with NO engagement data: judge purely on content quality.
+- Items with NO engagement data (most sources): judge purely on content quality.
 Engagement bonus stacks with content quality — a high-engagement AND substantive item should score very high.
 
 *Other Bonuses*

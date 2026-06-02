@@ -156,7 +156,7 @@ class AgentCoreMemoryStore(MemoryStore):
         except Exception as e:
             logger.warning("AgentCore recall failed: %s", e)
             return []
-        return [self._extract_record_text(r) for r in response.get("memoryRecords", [])]
+        return [self._extract_record_text(r) for r in response.get("memoryRecordSummaries", [])]
 
     @staticmethod
     def _extract_text(event: dict[str, Any]) -> str:

@@ -88,10 +88,11 @@ class TestVisualGenerator:
         assert out_brief["title"] == "테스트"
         assert fake_client.images.generate.called
 
-    def test_render_requires_api_key(self, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        with pytest.raises(RuntimeError):
-            VisualGenerator.render(COMIC_MODE, {"panels": []}, 1)
+    def test_render_requires_api_key(self):
+        # Deterministic: resolve_secret returns "" (no env, no SSM) -> render must raise.
+        with patch("agent.visuals.resolve_secret", return_value=""):
+            with pytest.raises(RuntimeError):
+                VisualGenerator.render(COMIC_MODE, {"panels": []}, 1)
 
 
 class TestModes:

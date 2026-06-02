@@ -87,8 +87,9 @@ class TestAgentCoreMemoryStore:
 
     def test_recall_returns_record_text(self):
         store, client = self._store()
+        # Real bedrock-agentcore RetrieveMemoryRecords returns 'memoryRecordSummaries'.
         client.retrieve_memory_records.return_value = {
-            "memoryRecords": [{"content": {"text": "fact A"}}, {"content": {"text": "fact B"}}]
+            "memoryRecordSummaries": [{"content": {"text": "fact A"}}, {"content": {"text": "fact B"}}]
         }
         assert store.recall("query") == ["fact A", "fact B"]
 

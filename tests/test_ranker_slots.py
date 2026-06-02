@@ -39,7 +39,7 @@ class TestOriginCap:
             top_n=3,
             min_score=0.5,
             source_slots={"youtube": 1},
-            source_cap_multiplier=5,
+            source_cap_multiplier=2,
             max_per_origin=1,
         )
         # 3 high-scoring videos all from the same channel
@@ -49,9 +49,10 @@ class TestOriginCap:
             _ranked(0.86, SourceType.YOUTUBE, item_id="v3", channel="chanA"),
         ]
         selected = ranker._apply_source_slots(items)
-        # max_per_origin=1 means only one chanA video survives
-        assert len(selected) == 1
-        assert selected[0].item.item_id == "v1"
+        # No distinct origins to diversify into, so the fallback fills up to the SOURCE cap
+        # (1 slot x 2 multiplier = 2) — bounded monopoly, never all 3.
+        assert len(selected) == 2
+        assert {r.item.item_id for r in selected} == {"v1", "v2"}
 
     def test_distinct_channels_fill_slots(self):
         ranker = _ranker(
@@ -72,8 +73,10 @@ class TestOriginCap:
         assert channels == {"chanA", "chanB", "chanC"}
 
     def test_higher_cap_allows_more_per_origin(self):
+        # top_n=2 so the digest is filled before the fallback pass — isolates the
+        # max_per_origin=2 behavior: the diversity pass alone admits 2 from one channel.
         ranker = _ranker(
-            top_n=3,
+            top_n=2,
             min_score=0.5,
             source_slots={"youtube": 1},
             source_cap_multiplier=5,
@@ -86,6 +89,7 @@ class TestOriginCap:
         ]
         selected = ranker._apply_source_slots(items)
         assert len(selected) == 2
+        assert {r.item.item_id for r in selected} == {"v1", "v2"}
 
     def test_items_without_origin_not_capped(self):
         ranker = _ranker(
@@ -103,6 +107,24 @@ class TestOriginCap:
         ]
         selected = ranker._apply_source_slots(items)
         assert len(selected) == 3
+
+    def test_fallback_fills_top_n_when_origins_exhausted(self):
+        # Only one X author has items; without the relaxation pass the digest would stop
+        # at 1 (origin cap) even though top_n=3 and the source cap allows more.
+        ranker = _ranker(
+            top_n=3,
+            min_score=0.5,
+            source_slots={"x": 1},
+            source_cap_multiplier=5,
+            max_per_origin=1,
+        )
+        items = [
+            _ranked(0.9, SourceType.X, item_id="t1", author="alice"),
+            _ranked(0.88, SourceType.X, item_id="t2", author="alice"),
+            _ranked(0.86, SourceType.X, item_id="t3", author="alice"),
+        ]
+        selected = ranker._apply_source_slots(items)
+        assert len(selected) == 3  # fallback relaxes origin cap (source cap 1x5=5 allows it)
 
 
 class TestOriginWeights:

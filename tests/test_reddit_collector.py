@@ -17,15 +17,18 @@ def _config(**kwargs) -> RedditCollectorConfig:
     return cfg
 
 
-def _feed(entries):
-    class FakeFeed:
-        bozo = False
-        bozo_exception = None
+class _Feed(dict):
+    """Mimics feedparser's parse result (attribute + .get access)."""
 
-        def __init__(self, entries):
-            self.entries = entries
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as e:
+            raise AttributeError(name) from e
 
-    return FakeFeed(entries)
+
+def _feed(entries, *, bozo=False, bozo_exception=None, status=200):
+    return _Feed(entries=entries, bozo=bozo, bozo_exception=bozo_exception, status=status)
 
 
 class _Entry(dict):
@@ -80,16 +83,39 @@ class TestRedditCollect:
         assert items == []
 
     @pytest.mark.asyncio
-    async def test_bozo_feed_returns_empty(self):
-        class BadFeed:
-            bozo = True
-            bozo_exception = Exception("parse error")
-            entries: list = []
-
+    async def test_total_outage_raises_for_health_alert(self):
+        # All subreddits failing (e.g. proxy/upstream error) must surface as a failure
+        # so the health check marks Reddit FAILED rather than a silent empty day.
+        bad = _feed([], bozo=True, bozo_exception=Exception("parse error"))
         collector = RedditCollector(_config())
-        with patch("collectors.reddit.feedparser.parse", return_value=BadFeed()):
+        with patch("collectors.reddit.feedparser.parse", return_value=bad):
+            with pytest.raises(RuntimeError):
+                await collector.collect()
+
+    @pytest.mark.asyncio
+    async def test_http_error_status_raises(self):
+        collector = RedditCollector(_config())
+        with patch("collectors.reddit.feedparser.parse", return_value=_feed([], status=503)):
+            with pytest.raises(RuntimeError):
+                await collector.collect()
+
+    @pytest.mark.asyncio
+    async def test_bozo_with_entries_still_parses(self):
+        # feedparser sets bozo on minor XML issues but still yields entries — must parse them.
+        feed = _feed([_entry()], bozo=True, bozo_exception=Exception("minor xml warning"))
+        collector = RedditCollector(_config())
+        with patch("collectors.reddit.feedparser.parse", return_value=feed):
             items = await collector.collect()
-        assert items == []
+        assert len(items) == 1
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_keeps_succeeding_subreddits(self):
+        good = _feed([_entry()])
+        bad = _feed([], bozo=True, bozo_exception=Exception("boom"))
+        collector = RedditCollector(_config(subreddits=["LocalLLaMA", "MachineLearning"]))
+        with patch("collectors.reddit.feedparser.parse", side_effect=[good, bad]):
+            items = await collector.collect()
+        assert len(items) == 1  # one subreddit failed, the other survived
 
     @pytest.mark.asyncio
     async def test_uses_proxied_rss_url(self):
@@ -100,6 +126,7 @@ class TestRedditCollect:
         called_url = mock_proxy.call_args.args[0]
         assert "/r/LocalLLaMA/top/.rss" in called_url
         assert "limit=5" in called_url
+        assert "t=day" in called_url  # sort=top must request the daily window
         assert mock_parse.called
 
 

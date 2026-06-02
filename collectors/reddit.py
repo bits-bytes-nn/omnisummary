@@ -9,7 +9,7 @@ from shared import CollectedItem, SourceType, generate_item_id, logger, parse_fe
 from shared.config import RedditCollectorConfig
 from shared.proxy import get_proxied_url
 
-from .base import BaseCollector, cutoff_datetime, gather_collector_results
+from .base import BaseCollector, cutoff_datetime
 
 RSS_BASE = "https://www.reddit.com"
 
@@ -31,21 +31,41 @@ class RedditCollector(BaseCollector):
             logger.info("No subreddits configured, skipping")
             return []
 
-        tasks = [self._collect_subreddit(sub) for sub in self.config.subreddits]
-        items = await gather_collector_results(tasks, labels=self.config.subreddits)
+        results = await asyncio.gather(
+            *(self._collect_subreddit(sub) for sub in self.config.subreddits),
+            return_exceptions=True,
+        )
+        items: list[CollectedItem] = []
+        failures: list[BaseException] = []
+        for sub, result in zip(self.config.subreddits, results, strict=True):
+            if isinstance(result, BaseException):
+                logger.warning("Reddit subreddit 'r/%s' failed: %s", sub, result)
+                failures.append(result)
+            else:
+                items.extend(result)
+
+        # All subreddits failed (proxy/network/upstream outage) -> surface as a failure
+        # so the health check marks Reddit FAILED and alerts, rather than a silent empty day.
+        if failures and len(failures) == len(self.config.subreddits):
+            raise RuntimeError(f"All {len(failures)} Reddit subreddits failed: {failures[0]}")
+
         logger.info("Reddit collector gathered %d items total", len(items))
         return items
 
     async def _collect_subreddit(self, subreddit_name: str) -> list[CollectedItem]:
         logger.info("Collecting posts from 'r/%s'", subreddit_name)
         feed_url = f"{RSS_BASE}/r/{subreddit_name}/{self.config.sort}/.rss?limit={self.config.limit}"
+        if self.config.sort == "top":
+            feed_url += "&t=day"
         return await asyncio.to_thread(self._parse_feed, feed_url, subreddit_name)
 
     def _parse_feed(self, feed_url: str, subreddit_name: str) -> list[CollectedItem]:
         feed = feedparser.parse(get_proxied_url(feed_url))
+        status = feed.get("status")
+        if status is not None and status >= 400:
+            raise RuntimeError(f"Reddit feed 'r/{subreddit_name}' returned HTTP {status}")
         if feed.bozo and not feed.entries:
-            logger.warning("Failed to parse Reddit feed 'r/%s': %s", subreddit_name, feed.bozo_exception)
-            return []
+            raise RuntimeError(f"Failed to parse Reddit feed 'r/{subreddit_name}': {feed.bozo_exception}")
 
         cutoff = cutoff_datetime(self.config.lookback_hours, self.config.reference_time)
         items: list[CollectedItem] = []

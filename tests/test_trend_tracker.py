@@ -63,9 +63,9 @@ class TestTrimEvidence:
         assert "keep me" in result
 
     def test_non_evidence_lines_untouched(self):
-        content = "# Header\n- **Trend**: X\n- **Impact**: high\nplain line\n"
+        content = "# Header\n- **Trend**: X\n- **Impact**: high\nplain line"
         result = TrendTracker._trim_evidence(content, date(2026, 6, 1))
-        assert result == content.rstrip("\n") or "plain line" in result
+        assert result == content  # no evidence block -> content passes through verbatim
 
 
 class TestMergeArchived:

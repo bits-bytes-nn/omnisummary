@@ -75,6 +75,23 @@ class TestFoundationStack:
         assert "ssm:GetParameter" in rendered
         assert "bedrock:InvokeModel" in rendered
 
+    def test_sensitive_actions_not_wildcard_resource(self, templates):
+        foundation, _ = templates
+        policies = foundation.find_resources("AWS::IAM::Policy")
+        sensitive = ("ssm:GetParameter", "logs:PutLogEvents", "bedrock-agentcore:CreateEvent")
+        for policy in policies.values():
+            for stmt in policy["Properties"]["PolicyDocument"]["Statement"]:
+                actions = stmt.get("Action", [])
+                actions = [actions] if isinstance(actions, str) else actions
+                if any(any(s in a for s in sensitive) for a in actions):
+                    assert stmt.get("Resource") != "*", f"sensitive action scoped to *: {actions}"
+
+    def test_ssm_resource_scoped_to_project_path(self, templates):
+        foundation, _ = templates
+        rendered = str(foundation.find_resources("AWS::IAM::Policy"))
+        # the scoped SSM ARN must reference the /{project}/{stage}/ parameter path
+        assert "parameter/omnisummary/dev/" in rendered
+
     def test_agentcore_memory_resource(self, templates):
         foundation, _ = templates
         foundation.resource_count_is("AWS::BedrockAgentCore::Memory", 1)
@@ -98,6 +115,16 @@ class TestApplicationStack:
         rendered = str(acls)
         assert "RateBasedStatement" in rendered
         assert "AWSManagedRulesCommonRuleSet" in rendered
+
+    def test_waf_enforces_block_not_just_monitor(self, templates):
+        _, app = templates
+        acl = next(iter(app.find_resources("AWS::WAFv2::WebACL").values()))
+        props = acl["Properties"]
+        # default allow, rate-limit rule actually blocks (not Count/monitor-only)
+        assert "Allow" in props["DefaultAction"]
+        rate_rule = next(r for r in props["Rules"] if r["Name"] == "RateLimit")
+        assert "Block" in rate_rule["Action"]
+        assert rate_rule["Statement"]["RateBasedStatement"]["Limit"] > 0
 
     def test_cloudwatch_alarms(self, templates):
         _, app = templates
