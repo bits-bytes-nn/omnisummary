@@ -18,6 +18,7 @@ from shared import (
     SourceType,
     generate_item_id,
     logger,
+    resolve_secret,
 )
 from shared.config import WebSearchCollectorConfig
 
@@ -27,12 +28,22 @@ from .base import BaseCollector, cutoff_datetime, gather_collector_results
 class WebSearchCollector(BaseCollector):
     def __init__(self, config: WebSearchCollectorConfig, llm_factory: BedrockLanguageModelFactory | None = None):
         self.config = config
-        self._client = AsyncTavilyClient()
+        self._client_instance: AsyncTavilyClient | None = None
         self._llm = llm_factory.get_model(config.refine_model) if llm_factory else None
+
+    @property
+    def _client(self) -> AsyncTavilyClient:
+        if self._client_instance is None:
+            self._client_instance = AsyncTavilyClient(api_key=resolve_secret("TAVILY_API_KEY", "tavily-api-key"))
+        return self._client_instance
 
     async def collect(self) -> list[CollectedItem]:
         if not self.config.enabled:
             logger.info("Web search collector is disabled, skipping")
+            return []
+
+        if not resolve_secret("TAVILY_API_KEY", "tavily-api-key"):
+            logger.warning("TAVILY_API_KEY not set, skipping web search collector")
             return []
 
         tasks: list[asyncio.Task] = []

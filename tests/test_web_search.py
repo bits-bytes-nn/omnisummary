@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 
+import pytest
+
 from collectors.web_search import WebSearchCollector
 from shared.config import WebSearchCollectorConfig
 from shared.constants import SourceType
@@ -58,3 +60,12 @@ class TestParseResults:
         del r["score"]
         items = c._parse_results({"results": [r]}, trend_name="t")
         assert len(items) == 1
+
+
+class TestCollect:
+    @pytest.mark.asyncio
+    async def test_skips_without_api_key(self, monkeypatch):
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "")
+        c = _collector(min_search_score=0.3)
+        assert await c.collect() == []
