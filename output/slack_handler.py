@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from typing import Any
 
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
-from shared import DigestResult, logger
+from shared import DigestResult, logger, resolve_secret
 from shared.config import SlackConfig
 
 SLACK_MAX_TEXT_LENGTH = 3900
@@ -53,7 +52,8 @@ async def send_image_to_slack(
     thread_ts: str = "",
     bot_token: str = "",
 ) -> bool:
-    token = bot_token or os.getenv("SLACK_BOT_TOKEN", "")
+    token = bot_token or resolve_secret("SLACK_BOT_TOKEN", "slack-bot-token")
+    channel_id = channel_id or resolve_secret("SLACK_CHANNEL_ID", "slack-channel-id")
     if not token or not channel_id:
         logger.warning("Slack bot_token or channel_id not configured. Skipping image upload.")
         return False
@@ -82,8 +82,8 @@ async def send_image_to_slack(
 
 
 async def send_digest_to_slack(digest: DigestResult, config: SlackConfig) -> bool:
-    bot_token = config.bot_token or os.getenv("SLACK_BOT_TOKEN", "")
-    channel_id = config.channel_id or os.getenv("SLACK_CHANNEL_ID", "")
+    bot_token = config.bot_token or resolve_secret("SLACK_BOT_TOKEN", "slack-bot-token")
+    channel_id = config.channel_id or resolve_secret("SLACK_CHANNEL_ID", "slack-channel-id")
 
     if not bot_token or not channel_id:
         logger.warning("Slack bot_token or channel_id not configured. Skipping Slack delivery.")

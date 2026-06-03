@@ -29,6 +29,7 @@ class OmniSummaryApplicationStack(Stack):
         foundation: OmniSummaryFoundationStack,
         slack_signing_secret: str = "",
         slack_bot_token: str = "",
+        slack_channel_id: str = "",
         tavily_api_key: str = "",
         openai_api_key: str = "",
         agentcore_image_ref: str = "",
@@ -49,6 +50,7 @@ class OmniSummaryApplicationStack(Stack):
         ssm_params = {
             "slack-signing-secret": slack_signing_secret,
             "slack-bot-token": slack_bot_token,
+            "slack-channel-id": slack_channel_id,
             "tavily-api-key": tavily_api_key,
             "openai-api-key": openai_api_key,
         }
