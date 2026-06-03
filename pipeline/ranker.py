@@ -37,7 +37,7 @@ class ContentRanker:
         self._apply_origin_weights(ranked_items)
 
         above_threshold = [r for r in ranked_items if r.score >= self.config.min_score]
-        above_threshold.sort(key=lambda r: r.score, reverse=True)
+        above_threshold.sort(key=lambda r: (-r.score, r.item.item_id))
 
         source_scores: dict[str, list[float]] = {}
         for r in ranked_items:
@@ -140,7 +140,7 @@ class ContentRanker:
         for source_key, slot_count in source_slots.items():
             taken = 0
             for item in above_threshold:
-                if taken >= slot_count:
+                if taken >= slot_count or len(selected) >= self.config.top_n:
                     break
                 if item.item.source_type.value != source_key or item.item.item_id in selected_ids:
                     continue
@@ -176,8 +176,8 @@ class ContentRanker:
                 if len(selected) >= self.config.top_n:
                     break
 
-        selected.sort(key=lambda r: r.score, reverse=True)
-        return selected
+        selected.sort(key=lambda r: (-r.score, r.item.item_id))
+        return selected[: self.config.top_n]
 
     def _format_items(self, items: list[CollectedItem]) -> str:
         parts: list[str] = []
@@ -227,7 +227,7 @@ class ContentRanker:
             json_str = raw_output.strip()
             if "```" in json_str:
                 json_str = json_str.split("```")[-2] if json_str.count("```") >= 2 else json_str
-                json_str = json_str.lstrip("json").strip()
+                json_str = json_str.removeprefix("json").strip()
             start = json_str.find("{")
             end = json_str.rfind("}") + 1
             if start != -1 and end > start:

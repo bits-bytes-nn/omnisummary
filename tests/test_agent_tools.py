@@ -134,3 +134,28 @@ class TestMakeVisual:
         with patch("shared.resolve_secret", return_value="key"):
             result = await agent_tools.make_visual._tool_func("draw it", item_number=99)
         assert "not found" in result
+
+
+class TestRequestContext:
+    def test_context_overrides_globals_and_resets(self):
+        from agent.agent_tools import (
+            DeliveryContext,
+            current_delivery_context,
+            current_state_manager,
+            request_context,
+        )
+        from agent.tool_state import DigestStateManager
+
+        # Outside any request, accessors return the module defaults.
+        assert current_delivery_context() is agent_tools.delivery_context
+        assert current_state_manager() is agent_tools.state_manager
+
+        scoped_state = DigestStateManager()
+        scoped_delivery = DeliveryContext(channel_id="CSCOPED", thread_ts="9.9")
+        with request_context(scoped_state, scoped_delivery):
+            assert current_state_manager() is scoped_state
+            assert current_delivery_context().channel_id == "CSCOPED"
+
+        # Reset after the block — no leak into the global.
+        assert current_delivery_context() is agent_tools.delivery_context
+        assert agent_tools.delivery_context.channel_id == ""

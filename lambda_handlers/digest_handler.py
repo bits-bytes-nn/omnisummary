@@ -8,14 +8,12 @@ from zoneinfo import ZoneInfo
 
 import boto3
 
-from agent.tool_state import DigestStateManager
-from main import run_collectors_with_health, run_pipeline
+from main import persist_digest, run_collectors_with_health, run_pipeline
 from shared import (
     BedrockLanguageModelFactory,
     Config,
     HealthReport,
     SourceStatus,
-    create_memory_store,
     logger,
     set_correlation_id,
 )
@@ -84,10 +82,7 @@ async def _run() -> None:
     if result:
         items, ranked_items, digest = result
         if items and ranked_items and digest:
-            mgr = DigestStateManager()
-            mgr.store_digest(items, ranked_items, digest)
-            memory = create_memory_store()
-            memory.put_digest(digest_date.isoformat(), mgr.export_state())
-            memory.record_trend(digest.digest_text, session_id=f"trend-{digest_date.isoformat()}")
+            # base_dir=None → AgentCore-backed memory store in AWS.
+            persist_digest(items, ranked_items, digest, digest_date, base_dir=None)
 
     logger.info("Digest pipeline completed for %s", digest_date)

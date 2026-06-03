@@ -231,6 +231,9 @@ Rules:
 - Be faithful to the actual technical content; do not invent facts.
 - Korean for title/caption; English for the image `prompt` (image model works best in English).
 - If the instruction implies multiple panels/sections, lay them out explicitly in `prompt`.
+- If the instruction asks for a comic/cartoon, make it genuinely funny: build in internet
+  humor, memes, parody, and exaggeration with a clear setup-and-punchline; describe a
+  meme-style visual gag and expressive characters — while keeping the facts accurate.
 - Keep on-image text short and legible. Output ONLY the JSON object."""
 
     human_prompt_template: str = (

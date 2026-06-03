@@ -139,7 +139,7 @@ async def run_pipeline(
         logger.error("Failed to send digest to Slack")
 
     if not is_running_in_aws():
-        _save_state(items, ranked_items, digest, digest_date)
+        persist_digest(items, ranked_items, digest, digest_date, base_dir=Path(LocalPaths.DIGEST_STATE_DIR.value))
     return items, ranked_items, digest
 
 
@@ -159,15 +159,20 @@ def _create_state_store(config: Config | None = None) -> StateStore:
     return LocalStateStore(Path(LocalPaths.DIGEST_STATE_DIR.value))
 
 
-def _save_state(
+def persist_digest(
     items: list[CollectedItem],
     ranked_items: list[RankedItem],
     digest: DigestResult,
     digest_date: date,
+    *,
+    base_dir: Path | None = None,
 ) -> None:
+    """Persist the digest snapshot + trend fact to the memory store (single path used
+    by both the local CLI and the Lambda handler). base_dir selects the local fallback;
+    pass None in AWS so create_memory_store picks the AgentCore-backed store."""
     mgr = DigestStateManager()
     mgr.store_digest(items, ranked_items, digest)
-    memory = create_memory_store(Path(LocalPaths.DIGEST_STATE_DIR.value))
+    memory = create_memory_store(base_dir)
     memory.put_digest(digest_date.isoformat(), mgr.export_state())
     memory.record_trend(digest.digest_text, session_id=f"trend-{digest_date.isoformat()}")
 

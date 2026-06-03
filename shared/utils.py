@@ -171,8 +171,27 @@ class BaseBedrockModelFactory(Generic[ModelIdT, ModelInfoT, WrapperT], ABC):
 
 
 class BedrockCrossRegionModelHelper:
+    # Resolution is identical for a given (model_id, region) within a process, but each
+    # call hits list_inference_profiles. Cache it so ranker/digest/trend/refine model
+    # builds don't each pay the round-trip (and don't each risk the AccessDenied path).
+    _resolution_cache: ClassVar[dict[tuple[str, str], str]] = {}
+
     @staticmethod
     def get_cross_region_model_id(
+        boto_session: boto3.Session,
+        model_id: LanguageModelId,
+        region_name: str,
+    ) -> str:
+        cache_key = (model_id.value, region_name)
+        cached = BedrockCrossRegionModelHelper._resolution_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        resolved = BedrockCrossRegionModelHelper._resolve(boto_session, model_id, region_name)
+        BedrockCrossRegionModelHelper._resolution_cache[cache_key] = resolved
+        return resolved
+
+    @staticmethod
+    def _resolve(
         boto_session: boto3.Session,
         model_id: LanguageModelId,
         region_name: str,
@@ -261,9 +280,11 @@ class BedrockLanguageModelFactory(
         self,
         model_info: LanguageModelInfo,
         resolved_model_id: str,
-        is_cross_region: bool,
+        use_converse: bool,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        # use_converse selects the config SHAPE: ChatBedrockConverse takes top-level
+        # params + camelCase additional fields, ChatBedrock nests them under model_kwargs.
         enable_thinking = kwargs.get("enable_thinking", False)
         supports_1m_context_window = kwargs.get("supports_1m_context_window", False)
         temperature = kwargs.get("temperature", self.DEFAULT_TEMPERATURE)
@@ -271,17 +292,17 @@ class BedrockLanguageModelFactory(
         if final_temperature != temperature:
             logger.debug("Adjusting temperature to 1.0 for thinking mode")
         final_max_tokens = self._validate_max_tokens(kwargs.get("max_tokens"), model_info)
-        config = self._build_base_config(resolved_model_id, is_cross_region, **kwargs)
+        config = self._build_base_config(resolved_model_id, use_converse, **kwargs)
         # Newer models (e.g. Opus 4.7/4.8) reject the `temperature` param entirely.
         params: dict[str, Any] = {"max_tokens": final_max_tokens}
         if model_info.supports_temperature:
             params["temperature"] = final_temperature
-        if is_cross_region:
+        if use_converse:
             config.update(params)
         else:
             config["model_kwargs"].update(params)
         if supports_1m_context_window and model_info.supports_1m_context_window:
-            if is_cross_region:
+            if use_converse:
                 config.setdefault("additional_model_request_fields", {}).update(
                     {"anthropic_beta": ["context-1m-2025-08-07"]}
                 )
@@ -290,10 +311,10 @@ class BedrockLanguageModelFactory(
                     {"anthropic_beta": ["context-1m-2025-08-07"]}
                 )
             logger.debug("Applied 1M context window support")
-        self._apply_model_features(config, model_info, is_cross_region, **kwargs)
+        self._apply_model_features(config, model_info, use_converse, **kwargs)
         return config
 
-    def _build_base_config(self, resolved_model_id: str, is_cross_region: bool, **kwargs: Any) -> dict[str, Any]:
+    def _build_base_config(self, resolved_model_id: str, use_converse: bool, **kwargs: Any) -> dict[str, Any]:
         config = {
             "model_id": resolved_model_id,
             "region_name": self.region_name,
@@ -305,7 +326,7 @@ class BedrockLanguageModelFactory(
         common_params = {
             "stop_sequences": ["\n\nHuman:"],
         }
-        if is_cross_region:
+        if use_converse:
             config.update(common_params)
         else:
             config["model_kwargs"] = {
@@ -318,19 +339,19 @@ class BedrockLanguageModelFactory(
         self,
         config: dict[str, Any],
         model_info: LanguageModelInfo,
-        is_cross_region: bool,
+        use_converse: bool,
         **kwargs: Any,
     ) -> None:
         enable_perf = kwargs.get("enable_performance_optimization", False)
         enable_think = kwargs.get("enable_thinking", False)
-        if self._should_enable_performance_optimization(enable_perf, model_info, is_cross_region):
+        if self._should_enable_performance_optimization(enable_perf, model_info, use_converse):
             latency = kwargs.get("latency_mode", self.DEFAULT_LATENCY_MODE)
             config.setdefault("performanceConfig", {}).update({"latency": latency})
             logger.debug("Applied performance optimization (latency_mode='%s')", latency)
         if self._should_enable_thinking(enable_think, model_info):
             budget = kwargs.get("thinking_budget_tokens", self.DEFAULT_THINKING_BUDGET_TOKENS)
             think_config = {"thinking": {"type": "enabled", "budget_tokens": budget}}
-            if is_cross_region:
+            if use_converse:
                 config.setdefault("additional_model_request_fields", {}).update(think_config)
             else:
                 config.setdefault("model_kwargs", {}).update(think_config)
@@ -350,9 +371,9 @@ class BedrockLanguageModelFactory(
 
     @staticmethod
     def _should_enable_performance_optimization(
-        enable: bool, model_info: LanguageModelInfo, is_cross_region: bool
+        enable: bool, model_info: LanguageModelInfo, use_converse: bool
     ) -> bool:
-        return enable and model_info.supports_performance_optimization and not is_cross_region
+        return enable and model_info.supports_performance_optimization and not use_converse
 
     @staticmethod
     def _should_enable_thinking(enable: bool, model_info: LanguageModelInfo) -> bool:

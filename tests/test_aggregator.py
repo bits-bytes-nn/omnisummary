@@ -24,6 +24,27 @@ class TestContentAggregator:
         urls = {item.url for item in result}
         assert urls == {"http://a.com", "http://b.com"}
 
+    def test_dedup_normalizes_url_variants(self):
+        # trailing slash, scheme, www, tracking params, fragment, query order
+        # should all collapse to one item.
+        items = [
+            _item(item_id="id1", url="https://www.a.com/post", title="A1"),
+            _item(item_id="id2", url="http://a.com/post/", title="A2"),
+            _item(item_id="id3", url="https://a.com/post?utm_source=x&fbclid=y", title="A3"),
+            _item(item_id="id4", url="https://a.com/post#section", title="A4"),
+        ]
+        result = ContentAggregator().aggregate(items)
+        assert len(result) == 1
+        assert result[0].item_id == "id1"  # first wins
+
+    def test_dedup_preserves_meaningful_query_params(self):
+        items = [
+            _item(item_id="id1", url="https://a.com/watch?v=abc", title="V1"),
+            _item(item_id="id2", url="https://a.com/watch?v=def", title="V2"),
+        ]
+        result = ContentAggregator().aggregate(items)
+        assert len(result) == 2
+
     def test_merges_metadata_on_duplicate(self):
         items = [
             _item(url="http://a.com", metadata={"key1": "val1"}),

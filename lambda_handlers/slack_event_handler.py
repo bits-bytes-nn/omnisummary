@@ -103,7 +103,48 @@ def _handle_async_invocation(event: dict[str, Any], context: Any) -> dict[str, A
 
     except Exception as e:
         logger.error("AgentCore invocation failed: %s", e, exc_info=True)
+        # The outer Slack request already got 200, so without this the user sees
+        # nothing when the runtime invocation itself throws (throttle, cold-start
+        # timeout). Post a visible fallback to the originating thread.
+        _post_fallback(channel, thread_ts)
         return {"statusCode": 500, "body": f"Error: {e}"}
+
+
+def _post_fallback(channel: str, thread_ts: str) -> None:
+    if not channel:
+        return
+    try:
+        from slack_sdk.web import WebClient
+
+        token = _resolve_slack_bot_token()
+        if not token:
+            return
+        kwargs: dict[str, Any] = {
+            "channel": channel,
+            "text": ":warning: Sorry, I couldn't process that request. Please mention me again in a moment.",
+        }
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+        WebClient(token=token).chat_postMessage(**kwargs)
+    except Exception as e:
+        logger.error("Failed to post fallback message: %s", e)
+
+
+def _resolve_slack_bot_token() -> str:
+    token = os.environ.get("SLACK_BOT_TOKEN", "")
+    if token:
+        return token
+    project = os.environ.get("PROJECT_NAME", "omnisummary")
+    stage = os.environ.get("STAGE", "dev")
+    region = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2"))
+    try:
+        return boto3.client("ssm", region_name=region).get_parameter(
+            Name=f"/{project}/{stage}/slack-bot-token",
+            WithDecryption=True,
+        )["Parameter"]["Value"]
+    except Exception as e:
+        logger.error("Failed to resolve Slack bot token for fallback: %s", e)
+        return ""
 
 
 def _verify_slack_signature(headers: dict[str, str], body: str) -> bool:

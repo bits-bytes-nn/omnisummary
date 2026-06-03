@@ -47,6 +47,12 @@ no fixed routing. Compose multi-step plans when useful. Examples of good composi
   then make_visual(instruction="a one-page presentation slide that explains ...", item_number=1,
   context=<the research you gathered>).
 - "1번 4컷 만화" → make_visual(instruction="a 4-panel webcomic explaining ...", item_number=1).
+
+For comics/cartoons specifically, make them genuinely funny: lean into internet humor,
+memes, parody, and exaggeration. Tell make_visual to use a punchy setup-and-punchline
+structure, relatable tech-culture in-jokes, and a meme-style visual gag — while staying
+accurate to the real facts. The goal is something people would actually share, not a dry
+illustration.
 - "요즘 N 트렌드 어땠어" → recall_trends, and/or search tools.
 
 Guidance:

@@ -76,8 +76,19 @@ class TestParseRankings:
         result = self._parse("not valid json at all")
         assert result == []
 
-    def test_score_clamped_by_pydantic(self):
+    def test_out_of_range_score_dropped(self):
+        # score > 1.0 violates RankedItem's le=1.0 → Pydantic raises → entry dropped
+        # (NOT clamped to 1.0). Documents the intended drop-vs-clamp behavior.
         raw = json.dumps({"rankings": [{"item_id": "item_1", "score": 1.5}]})
 
         result = self._parse(raw)
         assert len(result) == 0
+
+    def test_leading_json_token_not_stripped_into_content(self):
+        # removeprefix('json') must not corrupt a value — guard against the old
+        # lstrip('json') char-set bug that would eat leading j/s/o/n characters.
+        inner = json.dumps({"rankings": [{"item_id": "item_1", "score": 0.7, "reasoning": "sonnet json notes"}]})
+        raw = f"```json\n{inner}\n```"
+        result = self._parse(raw)
+        assert len(result) == 1
+        assert result[0].reasoning == "sonnet json notes"

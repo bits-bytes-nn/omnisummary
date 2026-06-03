@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 
 import httpx
 from strands import tool
@@ -13,9 +16,8 @@ from .tool_state import DigestStateManager
 
 COMMUNITY_SEARCH_DOMAINS = ["twitter.com", "x.com", "reddit.com", "news.ycombinator.com", "substack.com"]
 
-state_manager = DigestStateManager()
 
-
+@dataclass
 class DeliveryContext:
     """Slack delivery target for tools that produce media (set per-invocation)."""
 
@@ -23,7 +25,34 @@ class DeliveryContext:
     thread_ts: str = ""
 
 
+# Module-level defaults (used by tests and single-threaded local runs). In a warm
+# AgentCore container two concurrent invocations would race on these, so the runtime
+# binds per-request copies via contextvars; tools resolve through the accessors below.
+state_manager = DigestStateManager()
 delivery_context = DeliveryContext()
+
+_request_state: ContextVar[DigestStateManager | None] = ContextVar("request_state", default=None)
+_request_delivery: ContextVar[DeliveryContext | None] = ContextVar("request_delivery", default=None)
+
+
+def current_state_manager() -> DigestStateManager:
+    return _request_state.get() or state_manager
+
+
+def current_delivery_context() -> DeliveryContext:
+    return _request_delivery.get() or delivery_context
+
+
+@contextmanager
+def request_context(state: DigestStateManager, delivery: DeliveryContext):
+    """Bind per-invocation state so concurrent invocations don't share globals."""
+    state_token = _request_state.set(state)
+    delivery_token = _request_delivery.set(delivery)
+    try:
+        yield
+    finally:
+        _request_state.reset(state_token)
+        _request_delivery.reset(delivery_token)
 
 
 def _get_tavily_client() -> AsyncTavilyClient | None:
@@ -72,9 +101,10 @@ def get_detail(item_number: int, query: str = "") -> str:
         item_number: The item number from the digest (1-based, e.g. 1, 2, 3)
         query: Optional specific question about the item
     """
-    ranked = state_manager.get_item_by_number(item_number)
+    state = current_state_manager()
+    ranked = state.get_item_by_number(item_number)
     if not ranked:
-        total = state_manager.get_item_count()
+        total = state.get_item_count()
         return f"Item {item_number} not found. Today's digest has {total} items."
 
     item = ranked.item
@@ -228,14 +258,15 @@ async def make_visual(instruction: str, item_number: int = 0, context: str = "")
     from output.slack_handler import send_image_to_slack
     from shared import resolve_secret
 
-    if not resolve_secret("OPENAI_API_KEY", "openai-api-key"):
+    if not await asyncio.to_thread(resolve_secret, "OPENAI_API_KEY", "openai-api-key"):
         return "Visualization is disabled (OPENAI_API_KEY not configured)."
 
+    state = current_state_manager()
     source = ""
     if item_number:
-        ranked = state_manager.get_item_by_number(item_number)
+        ranked = state.get_item_by_number(item_number)
         if not ranked:
-            return f"Item {item_number} not found. Today's digest has {state_manager.get_item_count()} items."
+            return f"Item {item_number} not found. Today's digest has {state.get_item_count()} items."
         source = f"{ranked.item.title}\n\n{ranked.item.text}"
 
     factory, config = _build_llm_factory()
@@ -247,17 +278,18 @@ async def make_visual(instruction: str, item_number: int = 0, context: str = "")
         logger.error("Visualization failed: %s", e, exc_info=True)
         return f"Visualization failed: {e}"
 
-    if not delivery_context.channel_id:
+    delivery = current_delivery_context()
+    if not delivery.channel_id:
         return "Visual generated but no Slack channel is set for delivery."
 
     visual_title = brief.get("title", "Visual")
     caption = brief.get("caption", "")
     uploaded = await send_image_to_slack(
         image_bytes,
-        channel_id=delivery_context.channel_id,
+        channel_id=delivery.channel_id,
         title=visual_title,
         comment=f"*{visual_title}*\n{caption}",
-        thread_ts=delivery_context.thread_ts,
+        thread_ts=delivery.thread_ts,
     )
     if not uploaded:
         return "Visual generated but Slack upload failed."
