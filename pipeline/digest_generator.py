@@ -14,9 +14,9 @@ from shared import (
     RankedItem,
     SourceType,
     clean_rss_feed_name,
+    format_collected_item,
     logger,
     sanitize_slack_mrkdwn,
-    truncate_text_by_tokens,
 )
 from shared.config import PipelineConfig
 
@@ -73,19 +73,18 @@ class DigestGenerator:
         parts: list[str] = []
         for i, ranked in enumerate(ranked_items):
             item = ranked.item
-            snippet = truncate_text_by_tokens(item.text, self.config.item_text_max_tokens)
-            source_detail = self._format_source_detail(item)
+            fields = [
+                ("Score", f"{ranked.score:.2f}"),
+                ("Categories", ", ".join(ranked.categories)),
+                ("Reasoning", ranked.reasoning),
+                ("Title", item.title),
+                ("URL", item.url),
+                ("Source", item.source_type.value),
+                ("Source Detail", self._format_source_detail(item)),
+                ("Author", item.author or "Unknown"),
+            ]
             parts.append(
-                f"=== Item {i + 1} ===\n"
-                f"Score: {ranked.score:.2f}\n"
-                f"Categories: {', '.join(ranked.categories)}\n"
-                f"Reasoning: {ranked.reasoning}\n"
-                f"Title: {item.title}\n"
-                f"URL: {item.url}\n"
-                f"Source: {item.source_type.value}\n"
-                f"Source Detail: {source_detail}\n"
-                f"Author: {item.author or 'Unknown'}\n"
-                f"Text:\n{snippet}\n"
+                format_collected_item(item, index=i + 1, max_tokens=self.config.item_text_max_tokens, fields=fields)
             )
         return "\n".join(parts)
 

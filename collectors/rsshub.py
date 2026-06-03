@@ -11,6 +11,7 @@ from botocore.exceptions import ClientError
 
 from shared import CollectedItem, SourceType, generate_item_id, logger, parse_feed_published_date
 from shared.config import RSSHubCollectorConfig
+from shared.constants import TWITTER_PLATFORMS
 
 from .base import BaseCollector, cutoff_datetime
 
@@ -112,8 +113,13 @@ class RSSHubCollector(BaseCollector):
 
     @staticmethod
     def _build_feed_path(username: str, platform: str) -> str:
+        """Build the RSSHub route path for an account.
+
+        Twitter/X accounts map to `twitter/user/{username}`; any other platform maps
+        to `{platform}/user/{username}`.
+        """
         platform_lower = platform.lower()
-        if platform_lower in ("x", "twitter"):
+        if platform_lower in TWITTER_PLATFORMS:
             return f"twitter/user/{username}"
         return f"{platform_lower}/user/{username}"
 
@@ -165,7 +171,7 @@ class RSSHubCollector(BaseCollector):
     @staticmethod
     def _detect_source_type(platform: str) -> SourceType:
         platform_lower = platform.lower()
-        if platform_lower in ("x", "twitter"):
+        if platform_lower in TWITTER_PLATFORMS:
             return SourceType.X
         return SourceType.WEB
 

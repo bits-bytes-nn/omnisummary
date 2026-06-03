@@ -3,6 +3,7 @@ from .constants import DOMAIN_TO_SOURCE, EnvVars, LanguageModelId, LocalPaths, S
 from .formatting import (
     YOUTUBE_VIEWS_EMOJI,
     clean_rss_feed_name,
+    format_collected_item,
     format_origin_label,
     resolve_origin_key,
 )
@@ -46,6 +47,7 @@ __all__ = [
     "DOMAIN_TO_SOURCE",
     "YOUTUBE_VIEWS_EMOJI",
     "clean_rss_feed_name",
+    "format_collected_item",
     "format_origin_label",
     "resolve_origin_key",
     "LanguageModelId",

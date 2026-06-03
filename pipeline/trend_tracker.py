@@ -59,6 +59,7 @@ class TrendTracker:
                 "trend_retention_days": str(self.config.trend_retention_days),
                 "trend_cooling_days": str(self.config.trend_cooling_days),
                 "trend_max_evidence": str(self.config.trend_max_evidence),
+                "trend_max_active_trends": str(self.config.trend_max_active_trends),
             }
         )
 

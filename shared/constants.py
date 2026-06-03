@@ -59,3 +59,6 @@ DOMAIN_TO_SOURCE: dict[str, SourceType] = {
     "x.com": SourceType.X,
     "twitter.com": SourceType.X,
 }
+
+# Platform aliases that RSSHub routes through its `twitter` namespace.
+TWITTER_PLATFORMS: tuple[str, ...] = ("x", "twitter")

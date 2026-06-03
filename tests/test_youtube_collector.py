@@ -90,6 +90,64 @@ class TestApiPath:
         assert items == []
 
     @pytest.mark.asyncio
+    async def test_malformed_playlist_json_returns_empty(self, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config())
+
+        bad = MagicMock(status_code=200)
+        bad.json.side_effect = ValueError("truncated body")
+        client = AsyncMock()
+        client.get.return_value = bad
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=client)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
+            with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
+                items = await collector.collect()
+        assert items == []
+
+    @pytest.mark.asyncio
+    async def test_malformed_videos_json_returns_empty(self, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config())
+
+        bad_details = MagicMock(status_code=200)
+        bad_details.json.side_effect = ValueError("truncated body")
+        client = AsyncMock()
+        client.get.side_effect = [
+            _resp(200, _playlist_payload("vid00000001")),
+            bad_details,
+        ]
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=client)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
+            with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
+                items = await collector.collect()
+        assert items == []
+
+    @pytest.mark.asyncio
+    async def test_videos_non_200_returns_empty(self, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config())
+
+        client = AsyncMock()
+        client.get.side_effect = [
+            _resp(200, _playlist_payload("vid00000001")),
+            _resp(500, {}),
+        ]
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=client)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
+            with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
+                items = await collector.collect()
+        assert items == []
+
+    @pytest.mark.asyncio
     async def test_unresolvable_channel_returns_empty(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
         collector = YouTubeCollector(_config())

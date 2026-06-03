@@ -71,7 +71,11 @@ class YouTubeCollector(BaseCollector):
                 logger.warning("YouTube API error for '%s': %d", channel_url, response.status_code)
                 return []
 
-            data = response.json()
+            try:
+                data = response.json()
+            except ValueError:
+                logger.warning("YouTube playlistItems for '%s' returned malformed JSON", channel_url, exc_info=True)
+                return []
             video_ids = []
             for item in data.get("items", []):
                 snippet = item.get("snippet", {})
@@ -82,18 +86,31 @@ class YouTubeCollector(BaseCollector):
             if not video_ids:
                 return []
 
-            details_resp = await client.get(
-                f"{YOUTUBE_API_BASE}/videos",
-                params={
-                    "part": "snippet,statistics,contentDetails",
-                    "id": ",".join(video_ids),
-                    "key": self.api_key,
-                },
+            details_resp = await retry_async(
+                lambda: client.get(
+                    f"{YOUTUBE_API_BASE}/videos",
+                    params={
+                        "part": "snippet,statistics,contentDetails",
+                        "id": ",".join(video_ids),
+                        "key": self.api_key,
+                    },
+                ),
+                max_retries=self.config.max_retries,
+                backoff_sec=self.config.retry_backoff_sec,
+                retry_on=(httpx.HTTPError,),
+                description=f"YouTube videos details for '{channel_url}'",
             )
             if details_resp.status_code != 200:
+                logger.warning("YouTube API error for '%s': %d", channel_url, details_resp.status_code)
                 return []
 
-            for video in details_resp.json().get("items", []):
+            try:
+                details_data = details_resp.json()
+            except ValueError:
+                logger.warning("YouTube videos details for '%s' returned malformed JSON", channel_url, exc_info=True)
+                return []
+
+            for video in details_data.get("items", []):
                 try:
                     snippet = video["snippet"]
                     stats = video.get("statistics", {})

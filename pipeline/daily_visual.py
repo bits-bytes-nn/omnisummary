@@ -92,9 +92,11 @@ class DailyVisualMaker:
             if not api_key:
                 return ""
             client = AsyncTavilyClient(api_key=api_key)
-            response = await client.search(query=query, max_results=5, topic="news")
+            max_results = self.config.pipeline.visual_context_max_results
+            preview_chars = self.config.pipeline.visual_context_preview_chars
+            response = await client.search(query=query, max_results=max_results, topic="news")
             results = response.get("results", [])
-            return "\n\n".join(f"- {r.get('title', '')}: {r.get('content', '')[:300]}" for r in results)
+            return "\n\n".join(f"- {r.get('title', '')}: {r.get('content', '')[:preview_chars]}" for r in results)
         except Exception:
             logger.warning("Daily visual context search failed", exc_info=True)
             return ""

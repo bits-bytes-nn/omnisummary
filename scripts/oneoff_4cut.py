@@ -52,13 +52,13 @@ async def main() -> None:
 
     generator = VisualGenerator(factory, config.pipeline.digest_model)
     image_bytes, brief = await generator.generate(instruction, source, context)
-    logger.info("Brief title: %s", brief.get("title"))
+    logger.info("Brief title: %s", brief.title)
 
     ok = await send_image_to_slack(
         image_bytes,
         channel_id=config.slack.channel_id,
-        title=brief.get("title", "4컷 카툰"),
-        comment=f"*{brief.get('title', '4컷 카툰')}* (4컷 재생성)\n{brief.get('caption', '')}",
+        title=brief.title or "4컷 카툰",
+        comment=f"*{brief.title or '4컷 카툰'}* (4컷 재생성)\n{brief.caption}",
         bot_token=config.slack.bot_token,
     )
     logger.info("Posted to Slack: %s", ok)

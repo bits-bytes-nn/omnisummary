@@ -80,6 +80,74 @@ class TestTavilySearch:
         assert mock.call_args.kwargs["topic"] == "news"
 
 
+class TestSearchPapers:
+    def _client_returning(self, responses):
+        client = AsyncMock()
+        client.get.side_effect = responses
+        client.__aenter__.return_value = client
+        client.__aexit__.return_value = False
+        return client
+
+    @pytest.mark.asyncio
+    async def test_retries_on_429_then_succeeds(self, monkeypatch):
+        import httpx
+
+        monkeypatch.setattr(agent_tools.asyncio, "sleep", AsyncMock())
+
+        rate_limited = MagicMock(status_code=429, request=MagicMock())
+        ok = MagicMock(status_code=200)
+        ok.json.return_value = {
+            "data": [{"title": "Paper", "year": 2024, "authors": [{"name": "A"}], "url": "u", "abstract": "abs"}]
+        }
+        client = self._client_returning([rate_limited, ok])
+
+        with patch.object(httpx, "AsyncClient", return_value=client):
+            result = await agent_tools.search_papers._tool_func("transformers")
+
+        assert "Paper" in result
+        assert client.get.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_exhausts_retries_on_persistent_429(self, monkeypatch):
+        import httpx
+
+        monkeypatch.setattr(agent_tools.asyncio, "sleep", AsyncMock())
+        rate_limited = MagicMock(status_code=429, request=MagicMock())
+        retries = agent_tools.Config.load().agent.search_max_retries
+        client = self._client_returning([rate_limited] * retries)
+
+        with patch.object(httpx, "AsyncClient", return_value=client):
+            result = await agent_tools.search_papers._tool_func("q")
+
+        assert "SEARCH_FAILED" in result
+        assert client.get.call_count == retries
+
+    @pytest.mark.asyncio
+    async def test_caps_authors_and_abstract_from_config(self, monkeypatch):
+        import httpx
+
+        cfg = agent_tools.Config.load().agent
+        ok = MagicMock(status_code=200)
+        ok.json.return_value = {
+            "data": [
+                {
+                    "title": "P",
+                    "year": 2024,
+                    "authors": [{"name": f"Author{i}"} for i in range(10)],
+                    "url": "u",
+                    "abstract": "x" * 500,
+                }
+            ]
+        }
+        client = self._client_returning([ok])
+        with patch.object(httpx, "AsyncClient", return_value=client):
+            result = await agent_tools.search_papers._tool_func("q")
+
+        assert result.count("Author") == cfg.search_paper_max_authors
+        assert "x" * cfg.search_paper_abstract_max_chars in result
+        assert "x" * (cfg.search_paper_abstract_max_chars + 1) not in result
+
+
 class TestRecallTrends:
     @pytest.mark.asyncio
     async def test_returns_recalled_trends(self):

@@ -13,10 +13,10 @@ from shared import (
     RankingPrompt,
     SourceType,
     extract_json_from_llm_output,
+    format_collected_item,
     format_origin_label,
     logger,
     resolve_origin_key,
-    truncate_text_by_tokens,
 )
 from shared.config import PipelineConfig
 
@@ -89,7 +89,12 @@ class ContentRanker:
         chain = RankingPrompt.get_prompt() | self.llm | StrOutputParser()
         try:
             raw_output = await chain.ainvoke(
-                {"items_text": items_text, "engagement_guidance": self._engagement_guidance()}
+                {
+                    "items_text": items_text,
+                    "engagement_guidance": self._engagement_guidance(),
+                    "ranking_categories": ", ".join(self.config.ranking_categories),
+                    "duplicate_score_penalty": self.config.ranking_duplicate_score_penalty,
+                }
             )
         except Exception:
             logger.warning("Ranking batch of %d items failed", len(items), exc_info=True)
@@ -198,22 +203,21 @@ class ContentRanker:
     def _format_items(self, items: list[CollectedItem]) -> str:
         parts: list[str] = []
         for i, item in enumerate(items):
-            snippet = truncate_text_by_tokens(item.text, self.config.item_text_max_tokens)
             engagement = self._format_engagement(item)
             origin = format_origin_label(item)
-            entry = (
-                f"=== Item {i + 1} ===\n"
-                f"ID: {item.item_id}\n"
-                f"Title: {item.title}\n"
-                f"Source: {item.source_type.value}\n"
-                f"Author: {item.author or 'Unknown'}\n"
-            )
+            fields = [
+                ("ID", item.item_id),
+                ("Title", item.title),
+                ("Source", item.source_type.value),
+                ("Author", item.author or "Unknown"),
+            ]
             if origin:
-                entry += f"Origin: {origin}\n"
+                fields.append(("Origin", origin))
             if engagement:
-                entry += f"Engagement: {engagement}\n"
-            entry += f"Text:\n{snippet}\n"
-            parts.append(entry)
+                fields.append(("Engagement", engagement))
+            parts.append(
+                format_collected_item(item, index=i + 1, max_tokens=self.config.item_text_max_tokens, fields=fields)
+            )
         return "\n".join(parts)
 
     @staticmethod

@@ -61,6 +61,7 @@ class VisualGenerator:
                 "instruction": instruction,
                 "source": truncate_text_by_tokens(source, self.source_max_tokens),
                 "context": truncate_text_by_tokens(context, self.context_max_tokens),
+                "image_size": self.image_size,
             }
         )
         brief = _parse_brief(raw)

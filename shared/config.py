@@ -101,16 +101,36 @@ class PipelineConfig(BaseModel):
     engagement_tiers: list[tuple[int, float]] = Field(
         default_factory=lambda: [(10000, 0.05), (100000, 0.1), (500000, 0.15)]
     )
+    # Taxonomy the ranking prompt assigns to each item. Configurable so non-AI
+    # deployments can supply their own categories.
+    ranking_categories: list[str] = Field(
+        default_factory=lambda: [
+            "research",
+            "tools",
+            "news",
+            "release",
+            "industry",
+            "paper",
+            "interview",
+            "infrastructure",
+            "community",
+        ]
+    )
+    # Score the ranking prompt assigns to duplicate items within a same-topic cluster.
+    ranking_duplicate_score_penalty: float = Field(default=0.3, ge=0.0, le=1.0)
     trend_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     trend_retention_days: int = Field(default=30, ge=1)
     trend_cooling_days: int = Field(default=7, ge=1)
     trend_max_evidence: int = Field(default=5, ge=1)
+    trend_max_active_trends: int = Field(default=10, ge=1)
     trend_max_chars: int = Field(default=15000, ge=1)
     enable_daily_visual: bool = True
     image_model: str = "gpt-image-1"
     image_size: str = "1024x1024"
     visual_synopsis_source_max_tokens: int = Field(default=2000, ge=1)
     visual_synopsis_context_max_tokens: int = Field(default=1500, ge=1)
+    visual_context_max_results: int = Field(default=5, ge=1)
+    visual_context_preview_chars: int = Field(default=300, ge=1)
 
 
 class AgentConfig(BaseModel):
@@ -122,6 +142,11 @@ class AgentConfig(BaseModel):
     search_result_limit: int = Field(default=5, ge=1)
     detail_max_tokens: int = Field(default=2000, ge=1)
     search_content_preview_chars: int = Field(default=300, ge=1)
+    search_request_timeout: int = Field(default=30, ge=1)
+    search_max_retries: int = Field(default=3, ge=1)
+    search_retry_backoff_sec: int = Field(default=2, ge=0)
+    search_paper_max_authors: int = Field(default=3, ge=1)
+    search_paper_abstract_max_chars: int = Field(default=200, ge=1)
 
 
 class SlackConfig(BaseModel):

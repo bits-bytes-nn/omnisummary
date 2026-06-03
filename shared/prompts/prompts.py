@@ -40,7 +40,12 @@ class BasePrompt(ABC):
 
 
 class RankingPrompt(BasePrompt):
-    input_variables: list[str] = ["items_text", "engagement_guidance"]
+    input_variables: list[str] = [
+        "items_text",
+        "engagement_guidance",
+        "ranking_categories",
+        "duplicate_score_penalty",
+    ]
 
     system_prompt_template: str = """\
 You are an AI/ML content curator. Evaluate each item for a daily digest aimed at practicing ML engineers.
@@ -72,7 +77,7 @@ Interviews/podcasts with substance: +0.05-0.1. Expert paper summaries: score on 
 Major model releases (open or proprietary): score on significance.
 
 *Diversity*
-Cluster same-topic items — score best source fully, duplicates at 0.3. \
+Cluster same-topic items — score best source fully, duplicates at {duplicate_score_penalty}. \
 Balance topic AND platform diversity.
 
 *Output*
@@ -89,7 +94,7 @@ Return JSON with ALL items.
   ]
 }}}}
 ```
-Categories: research, tools, news, release, industry, paper, interview, infrastructure, community"""
+Categories: {ranking_categories}"""
 
     human_prompt_template: str = "Here are the content items to evaluate:\n\n{items_text}"
 
@@ -155,6 +160,7 @@ class TrendUpdatePrompt(BasePrompt):
         "trend_retention_days",
         "trend_cooling_days",
         "trend_max_evidence",
+        "trend_max_active_trends",
     ]
 
     system_prompt_template: str = """\
@@ -165,7 +171,7 @@ Rules:
 - Add new trends when today's digest reveals emerging patterns
 - Update existing trends with new evidence
 - "cooling" if no evidence in {trend_cooling_days}+ days; "archived" if {trend_retention_days}+ days
-- Maximum 10 active trends — merge or archive if needed
+- Maximum {trend_max_active_trends} active trends — merge or archive if needed
 - CRITICAL: Keep each evidence entry to ONE short sentence (under 30 words)
 - CRITICAL: Maximum {trend_max_evidence} evidence entries per trend — when adding new evidence, drop the oldest
 - Compress archived trends into one-line summaries
@@ -250,7 +256,7 @@ class VisualSynopsisPrompt(BasePrompt):
     infographic ...); this turns it + the source material into a single image-generation
     brief. No fixed modes or panel counts."""
 
-    input_variables: list[str] = ["instruction", "source", "context"]
+    input_variables: list[str] = ["instruction", "source", "context", "image_size"]
 
     system_prompt_template: str = """\
 You are an art director. Turn the requested visualization into a single, concrete brief that an \
@@ -267,7 +273,7 @@ Produce ONLY a JSON object:
 ```
 
 Rules:
-- The image is rendered in ONE pass at 1024x1024 — design a self-contained composition.
+- The image is rendered in ONE pass at {image_size} — design a self-contained composition.
 - Be faithful to the actual technical content; do not invent facts.
 - Korean for the `title`/`caption` (shown alongside the image in Slack). But ALL text that
   appears INSIDE the image — labels, speech bubbles, signs, captions — must be SHORT ENGLISH:

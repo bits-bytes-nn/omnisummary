@@ -10,7 +10,7 @@ import httpx
 from strands import tool
 from tavily import AsyncTavilyClient
 
-from shared import Config, logger, truncate_text_by_tokens
+from shared import Config, format_collected_item, logger, retry_async
 
 from .tool_state import DigestStateManager
 
@@ -108,17 +108,18 @@ def get_detail(item_number: int, query: str = "") -> str:
 
     item = ranked.item
     max_tokens = Config.load().agent.detail_max_tokens
-    detail = (
-        f"=== Item {item_number} ===\n"
-        f"Title: {item.title}\n"
-        f"Source: {item.source_type.value}\n"
-        f"URL: {item.url}\n"
-        f"Author: {item.author or 'Unknown'}\n"
-        f"Score: {ranked.score:.2f}\n"
-        f"Categories: {', '.join(ranked.categories)}\n"
-        f"Reasoning: {ranked.reasoning}\n\n"
-        f"Content:\n{truncate_text_by_tokens(item.text, max_tokens)}"
-    )
+    fields = [
+        ("Title", item.title),
+        ("Source", item.source_type.value),
+        ("URL", item.url),
+        ("Author", item.author or "Unknown"),
+        ("Score", f"{ranked.score:.2f}"),
+        ("Categories", ", ".join(ranked.categories)),
+        ("Reasoning", ranked.reasoning),
+    ]
+    detail = format_collected_item(
+        item, index=item_number, max_tokens=max_tokens, fields=fields, text_label="Content"
+    ).rstrip("\n")
     if query:
         detail += f"\n\nUser question: {query}"
 
@@ -134,35 +135,38 @@ async def search_papers(query: str) -> str:
         query: Search query for finding related papers
     """
     agent_config = Config.load().agent
-    async with httpx.AsyncClient(timeout=30) as client:
-        last_error = ""
-        for attempt in range(3):
-            try:
-                response = await client.get(
-                    "https://api.semanticscholar.org/graph/v1/paper/search",
-                    params={
-                        "query": query,
-                        "limit": agent_config.search_result_limit,
-                        "fields": "title,year,authors,url,abstract",
-                    },
-                )
-            except httpx.HTTPError as e:
-                logger.warning("Semantic Scholar API request failed: %s", e)
-                return f"Search request failed: {e}"
+    async with httpx.AsyncClient(timeout=agent_config.search_request_timeout) as client:
 
-            if response.status_code == 429:
-                last_error = "Rate limited by Semantic Scholar API"
-                logger.warning("Semantic Scholar rate limited (attempt %d/3)", attempt + 1)
-                await asyncio.sleep(2 * (attempt + 1))
-                continue
+        async def _fetch() -> httpx.Response:
+            resp = await client.get(
+                "https://api.semanticscholar.org/graph/v1/paper/search",
+                params={
+                    "query": query,
+                    "limit": agent_config.search_result_limit,
+                    "fields": "title,year,authors,url,abstract",
+                },
+            )
+            if resp.status_code == 429:
+                raise httpx.HTTPStatusError("Rate limited by Semantic Scholar API", request=resp.request, response=resp)
+            return resp
 
-            if response.status_code != 200:
-                logger.warning("Semantic Scholar API returned status %d", response.status_code)
-                return f"Search failed (status {response.status_code})"
+        try:
+            response = await retry_async(
+                _fetch,
+                max_retries=agent_config.search_max_retries,
+                backoff_sec=agent_config.search_retry_backoff_sec,
+                retry_on=(httpx.HTTPStatusError,),
+                description="Semantic Scholar paper search",
+            )
+        except httpx.HTTPStatusError:
+            return "SEARCH_FAILED: Rate limited by Semantic Scholar API. Could not retrieve papers."
+        except httpx.HTTPError as e:
+            logger.warning("Semantic Scholar API request failed: %s", e)
+            return f"Search request failed: {e}"
 
-            break
-        else:
-            return f"SEARCH_FAILED: {last_error}. Could not retrieve papers."
+        if response.status_code != 200:
+            logger.warning("Semantic Scholar API returned status %d", response.status_code)
+            return f"Search failed (status {response.status_code})"
 
         try:
             data = response.json()
@@ -174,8 +178,8 @@ async def search_papers(query: str) -> str:
 
         results: list[str] = []
         for p in papers:
-            authors = ", ".join(a["name"] for a in (p.get("authors") or [])[:3])
-            abstract = (p.get("abstract") or "")[:200]
+            authors = ", ".join(a["name"] for a in (p.get("authors") or [])[: agent_config.search_paper_max_authors])
+            abstract = (p.get("abstract") or "")[: agent_config.search_paper_abstract_max_chars]
             results.append(
                 f"- {p.get('title', 'N/A')} ({p.get('year', 'N/A')}) by {authors}\n"
                 f"  URL: {p.get('url', '')}\n"

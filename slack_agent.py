@@ -18,7 +18,7 @@ load_dotenv()
 logging.basicConfig(level=logging.getLevelName(os.getenv("LOG_LEVEL", "INFO")))
 
 from agent import create_digest_agent
-from agent.agent_tools import state_manager
+from agent.agent_tools import DeliveryContext, request_context, state_manager
 from agent.tool_state import DigestStateManager
 from output.slack_handler import _split_message
 from shared import LocalPaths, logger, sanitize_slack_mrkdwn
@@ -99,6 +99,7 @@ def main() -> None:
     def _handle_user_query(event: dict, say) -> None:
         user_text = _strip_mention(event.get("text", ""))
         thread_ts = event.get("thread_ts") or event.get("ts")
+        channel_id = event.get("channel", "")
 
         if event.get("bot_id") or event.get("subtype") == "bot_message":
             return
@@ -112,7 +113,9 @@ def main() -> None:
 
         def _respond():
             try:
-                response = sanitize_slack_mrkdwn(str(agent(user_text)))
+                delivery = DeliveryContext(channel_id=channel_id, thread_ts=thread_ts or "")
+                with request_context(state_manager, delivery):
+                    response = sanitize_slack_mrkdwn(str(agent(user_text)))
                 chunks = _split_message(response)
                 for chunk in chunks:
                     say(text=chunk, thread_ts=thread_ts)
