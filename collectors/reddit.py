@@ -3,11 +3,9 @@ from __future__ import annotations
 import asyncio
 import re
 
-import feedparser
-
 from shared import CollectedItem, SourceType, generate_item_id, logger, parse_feed_published_date
 from shared.config import RedditCollectorConfig
-from shared.proxy import get_proxied_url
+from shared.proxy import parse_feed_with_fallback
 
 from .base import BaseCollector, cutoff_datetime
 
@@ -60,7 +58,7 @@ class RedditCollector(BaseCollector):
         return await asyncio.to_thread(self._parse_feed, feed_url, subreddit_name)
 
     def _parse_feed(self, feed_url: str, subreddit_name: str) -> list[CollectedItem]:
-        feed = feedparser.parse(get_proxied_url(feed_url))
+        feed = parse_feed_with_fallback(feed_url)
         status = feed.get("status")
         if status is not None and status >= 400:
             raise RuntimeError(f"Reddit feed 'r/{subreddit_name}' returned HTTP {status}")

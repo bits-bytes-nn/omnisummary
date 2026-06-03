@@ -65,7 +65,7 @@ class TestRedditCollect:
     @pytest.mark.asyncio
     async def test_collects_via_rss(self):
         collector = RedditCollector(_config())
-        with patch("collectors.reddit.feedparser.parse", return_value=_feed([_entry()])):
+        with patch("collectors.reddit.parse_feed_with_fallback", return_value=_feed([_entry()])):
             items = await collector.collect()
         assert len(items) == 1
         item = items[0]
@@ -78,7 +78,7 @@ class TestRedditCollect:
     async def test_filters_old_posts(self):
         old = _entry(published_parsed=(2026, 5, 1, 0, 0, 0, 0, 0, 0))
         collector = RedditCollector(_config())
-        with patch("collectors.reddit.feedparser.parse", return_value=_feed([old])):
+        with patch("collectors.reddit.parse_feed_with_fallback", return_value=_feed([old])):
             items = await collector.collect()
         assert items == []
 
@@ -88,14 +88,14 @@ class TestRedditCollect:
         # so the health check marks Reddit FAILED rather than a silent empty day.
         bad = _feed([], bozo=True, bozo_exception=Exception("parse error"))
         collector = RedditCollector(_config())
-        with patch("collectors.reddit.feedparser.parse", return_value=bad):
+        with patch("collectors.reddit.parse_feed_with_fallback", return_value=bad):
             with pytest.raises(RuntimeError):
                 await collector.collect()
 
     @pytest.mark.asyncio
     async def test_http_error_status_raises(self):
         collector = RedditCollector(_config())
-        with patch("collectors.reddit.feedparser.parse", return_value=_feed([], status=503)):
+        with patch("collectors.reddit.parse_feed_with_fallback", return_value=_feed([], status=503)):
             with pytest.raises(RuntimeError):
                 await collector.collect()
 
@@ -104,7 +104,7 @@ class TestRedditCollect:
         # feedparser sets bozo on minor XML issues but still yields entries — must parse them.
         feed = _feed([_entry()], bozo=True, bozo_exception=Exception("minor xml warning"))
         collector = RedditCollector(_config())
-        with patch("collectors.reddit.feedparser.parse", return_value=feed):
+        with patch("collectors.reddit.parse_feed_with_fallback", return_value=feed):
             items = await collector.collect()
         assert len(items) == 1
 
@@ -113,21 +113,19 @@ class TestRedditCollect:
         good = _feed([_entry()])
         bad = _feed([], bozo=True, bozo_exception=Exception("boom"))
         collector = RedditCollector(_config(subreddits=["LocalLLaMA", "MachineLearning"]))
-        with patch("collectors.reddit.feedparser.parse", side_effect=[good, bad]):
+        with patch("collectors.reddit.parse_feed_with_fallback", side_effect=[good, bad]):
             items = await collector.collect()
         assert len(items) == 1  # one subreddit failed, the other survived
 
     @pytest.mark.asyncio
-    async def test_uses_proxied_rss_url(self):
+    async def test_builds_correct_rss_url(self):
         collector = RedditCollector(_config(sort="top"))
-        with patch("collectors.reddit.feedparser.parse", return_value=_feed([])) as mock_parse:
-            with patch("collectors.reddit.get_proxied_url", side_effect=lambda u: u) as mock_proxy:
-                await collector.collect()
-        called_url = mock_proxy.call_args.args[0]
+        with patch("collectors.reddit.parse_feed_with_fallback", return_value=_feed([])) as mock_parse:
+            await collector.collect()
+        called_url = mock_parse.call_args.args[0]
         assert "/r/LocalLLaMA/top/.rss" in called_url
         assert "limit=5" in called_url
         assert "t=day" in called_url  # sort=top must request the daily window
-        assert mock_parse.called
 
 
 class TestExtractPostId:
