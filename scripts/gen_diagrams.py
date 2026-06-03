@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Generate the Excalidraw architecture + concept diagrams (hand-drawn style).
+"""Generate the Excalidraw concept diagram (hand-drawn style).
 
 Render with:
-  excalidraw-to-png assets/<name>.excalidraw <name>.svg --svg
-  (then resvg with fontDirs=~/Library/Fonts, defaultFontFamily=Virgil)
+  node scripts/render_excalidraw.mjs assets/concept-pipeline.excalidraw assets/concept-pipeline.png
+
+(render_excalidraw.mjs screenshots the font-embedded SVG in a headless browser so the
+hand-drawn Virgil font is preserved; the plain `excalidraw-to-png` PNG path rasterizes
+via resvg, which drops the embedded font and falls back to sans-serif.)
 """
 
 import json
