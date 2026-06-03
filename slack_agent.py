@@ -21,7 +21,11 @@ from agent import create_digest_agent
 from agent.agent_tools import DeliveryContext, request_context, state_manager
 from agent.tool_state import DigestStateManager
 from output.slack_handler import _split_message
-from shared import LOGGING_TRUNCATION_CHARS, LocalPaths, logger, sanitize_slack_mrkdwn
+from shared import LOGGING_TRUNCATION_CHARS, Config, LocalPaths, logger, sanitize_slack_mrkdwn
+
+
+def _local_timezone() -> ZoneInfo:
+    return ZoneInfo(Config.load().aws.timezone)
 
 
 def _find_state_file(digest_date: date) -> Path | None:
@@ -45,7 +49,7 @@ _current_state_file: Path | None = None
 
 def _load_state(digest_date: date | None = None) -> bool:
     global _current_state_file
-    state_file = _find_state_file(digest_date or datetime.now(ZoneInfo("Asia/Seoul")).date())
+    state_file = _find_state_file(digest_date or datetime.now(_local_timezone()).date())
     if not state_file:
         logger.warning("No digest state file found")
         return False
@@ -62,7 +66,7 @@ def _load_state(digest_date: date | None = None) -> bool:
 
 def _reload_if_newer() -> None:
     global _current_state_file
-    latest = _find_state_file(datetime.now(ZoneInfo("Asia/Seoul")).date())
+    latest = _find_state_file(datetime.now(_local_timezone()).date())
     if latest and latest != _current_state_file:
         loaded = DigestStateManager.load_from_file(latest)
         state_manager.load_from(loaded)
@@ -79,8 +83,8 @@ def main() -> None:
     parser.add_argument("--date", type=str, help="Load digest for specific date (YYYY-MM-DD)")
     args = parser.parse_args()
 
-    KST = ZoneInfo("Asia/Seoul")
-    digest_date = date.fromisoformat(args.date) if args.date else datetime.now(KST).date()
+    tz = _local_timezone()
+    digest_date = date.fromisoformat(args.date) if args.date else datetime.now(tz).date()
 
     if not _load_state(digest_date):
         logger.error("Cannot start agent: no digest state available")

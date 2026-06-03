@@ -95,6 +95,8 @@ class ContentRanker:
                     "engagement_guidance": self._engagement_guidance(),
                     "ranking_categories": ", ".join(self.config.ranking_categories),
                     "duplicate_score_penalty": self.config.ranking_duplicate_score_penalty,
+                    "scoring_rubric": self.config.ranking_scoring_rubric,
+                    "target_count": self.config.ranking_target_count,
                 }
             )
         except Exception:

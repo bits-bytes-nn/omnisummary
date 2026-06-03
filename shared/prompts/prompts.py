@@ -45,6 +45,8 @@ class RankingPrompt(BasePrompt):
         "engagement_guidance",
         "ranking_categories",
         "duplicate_score_penalty",
+        "scoring_rubric",
+        "target_count",
     ]
 
     system_prompt_template: str = """\
@@ -63,8 +65,8 @@ Use these as lenses, not a formula. Apply holistic judgment.
 Product/service promotion, thin content, beginner questions, memes, self-promotional posts without substance.
 
 *Score Calibration*
-0.9+: field-defining. 0.8-0.89: very important. 0.7-0.79: notable. 0.6-0.69: worth noting. <0.6: low value.
-Be generous in 0.6-0.8. Aim for ~10-20 items scoring 0.6+ per batch.
+{scoring_rubric}
+Be generous in 0.6-0.8. Aim for {target_count} per batch.
 
 *Engagement Signal*
 High engagement is a STRONG quality signal. Apply this bonus based on the Engagement field when present:
@@ -100,21 +102,14 @@ Categories: {ranking_categories}"""
 
 
 class DigestPrompt(BasePrompt):
-    input_variables: list[str] = ["items_text", "trends_context"]
+    input_variables: list[str] = ["items_text", "trends_context", "language_rules"]
 
     system_prompt_template: str = """\
 You are a daily AI digest editor for ML engineers. Write like a sharp, opinionated tech columnist — \
 connecting dots between stories and telling practitioners what matters and why.
 
 *Language*
-- Write in Korean (95%+). English ONLY for proper nouns and untranslatable technical terms.
-- Translate terms that have established Korean equivalents: architecture → 아키텍처, \
-benchmark → 벤치마크, inference → 추론, training → 학습, deployment → 배포, \
-weight → 가중치, parameter → 파라미터, token → 토큰, open-source → 오픈소스, \
-pipeline → 파이프라인, optimization → 최적화, compression → 압축, memory → 메모리.
-- General words MUST be Korean: practitioner → 실무자, implication → 시사점, \
-release → 출시/공개, breakthrough → 돌파구, approach → 접근법, ecosystem → 생태계.
-- If the original item title is in English, translate it to Korean for the display text.
+{language_rules}
 
 *Slack Formatting*
 Slack mrkdwn only: *bold*, _italic_, `code`, <url|text>. \
@@ -221,10 +216,10 @@ class VisualEditorPrompt(BasePrompt):
     """Pick ONE digest story worth a fun daily visual and decide how to render it.
     Returns skip=true when no story is a good fit (e.g. a dry, purely-technical day)."""
 
-    input_variables: list[str] = ["items_text"]
+    input_variables: list[str] = ["items_text", "audience", "on_image_language"]
 
     system_prompt_template: str = """\
-You are the visual editor for a daily AI/ML digest. From today's stories, pick the SINGLE one \
+You are the visual editor for {audience}. From today's stories, pick the SINGLE one \
 that would make the most entertaining, shareable visual — a meme, parody, illustration, or a \
 short cartoon. Prefer news / industry / drama / surprising releases (they parody well) over dry \
 technical papers. If NO story is a good fit today, skip — do not force it.
@@ -236,7 +231,7 @@ Produce ONLY a JSON object:
   "item_number": 2,
   "search_query": "a focused web query for extra context to enrich the visual",
   "format": "one-line: e.g. 'single-panel meme', '4-panel cartoon', 'parody movie poster'",
-  "instruction": "a rich natural-language brief for the image: what to depict, the joke/angle, the format, recognizable real-world cues (people, logos) to include, and that any on-image text must be short ENGLISH (the image model garbles Korean)"
+  "instruction": "a rich natural-language brief for the image: what to depict, the joke/angle, the format, recognizable real-world cues (people, logos) to include, and that any on-image text must be {on_image_language}"
 }}}}
 ```
 
@@ -256,7 +251,14 @@ class VisualSynopsisPrompt(BasePrompt):
     infographic ...); this turns it + the source material into a single image-generation
     brief. No fixed modes or panel counts."""
 
-    input_variables: list[str] = ["instruction", "source", "context", "image_size"]
+    input_variables: list[str] = [
+        "instruction",
+        "source",
+        "context",
+        "image_size",
+        "caption_language",
+        "on_image_language",
+    ]
 
     system_prompt_template: str = """\
 You are an art director. Turn the requested visualization into a single, concrete brief that an \
@@ -266,8 +268,8 @@ presentation slide, an N-panel comic, a concept diagram, an infographic, a poste
 Produce ONLY a JSON object:
 ```json
 {{{{
-  "title": "short title in Korean",
-  "caption": "1-2 line Korean caption summarizing the visual (shown alongside the image)",
+  "title": "short title in {caption_language}",
+  "caption": "1-2 line {caption_language} caption summarizing the visual (shown alongside the image)",
   "prompt": "a single rich English prompt for the image model: describe the full composition, layout, panels/sections, labels, style, and what each element conveys — accurate to the source material, legible, minimal text, clean modern style"
 }}}}
 ```
@@ -290,9 +292,9 @@ reading the caption. Work through these general decisions and bake the answers i
 
 Rules:
 - Be faithful to the actual facts; the humor/angle is in framing, never in fabrication.
-- Korean for the `title`/`caption` (shown alongside the image in Slack). But ALL text that appears
-  INSIDE the image — labels, speech bubbles, signs — must be SHORT ENGLISH and quoted exactly in
-  the prompt (e.g. text reads "SHIP IT"): the image model garbles Korean glyphs. Minimize on-image text.
+- {caption_language} for the `title`/`caption` (shown alongside the image in Slack). But ALL text that
+  appears INSIDE the image — labels, speech bubbles, signs — must be {on_image_language} and quoted
+  exactly in the prompt (e.g. text reads "SHIP IT"). Minimize on-image text.
 - Multi-panel: same characters and a single consistent, polished art style across panels; each panel
   follows from the previous so the sequence reads in order without explanation.
 - For comics/cartoons, aim for genuinely funny and shareable — internet-humor sensibility, a clear

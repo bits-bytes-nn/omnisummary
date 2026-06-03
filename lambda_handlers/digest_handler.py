@@ -56,10 +56,10 @@ async def _run() -> None:
     if rsshub_url:
         config.collectors.rsshub.base_url = rsshub_url
 
-    KST = ZoneInfo("Asia/Seoul")
-    digest_date = datetime.now(KST).date()
+    tz = ZoneInfo(config.aws.timezone)
+    digest_date = datetime.now(tz).date()
     next_day = digest_date + timedelta(days=1)
-    reference_time = datetime(next_day.year, next_day.month, next_day.day, tzinfo=KST)
+    reference_time = datetime(next_day.year, next_day.month, next_day.day, tzinfo=tz)
     config.collectors.set_reference_time(reference_time)
 
     boto_session = boto3.Session(region_name=config.aws.bedrock_region)

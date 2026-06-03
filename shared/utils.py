@@ -417,8 +417,8 @@ def parse_feed_published_date(entry) -> datetime | None:
     if published_str:
         try:
             return parsedate_to_datetime(published_str).astimezone(UTC)
-        except (TypeError, ValueError):
-            pass
+        except (TypeError, ValueError) as e:
+            logger.debug("Failed to parse feed published date '%s': %s", published_str, e)
 
     if hasattr(entry, "updated_parsed") and entry.updated_parsed:
         return datetime.fromtimestamp(timegm(entry.updated_parsed), tz=UTC)

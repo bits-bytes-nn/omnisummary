@@ -44,16 +44,20 @@ class VisualGenerator:
         llm_factory: BedrockLanguageModelFactory,
         brief_model: LanguageModelId,
         *,
-        image_model: str = "gpt-image-1",
-        image_size: str = "1024x1024",
+        image_model: str = "gpt-image-2",
+        image_size: str = "1024x1536",
         source_max_tokens: int = 2000,
         context_max_tokens: int = 1500,
+        caption_language: str = "Korean",
+        on_image_language: str = "SHORT ENGLISH (the image model garbles Korean and other non-Latin glyphs)",
     ) -> None:
         self.llm = llm_factory.get_model(brief_model)
         self.image_model = image_model
         self.image_size = image_size
         self.source_max_tokens = source_max_tokens
         self.context_max_tokens = context_max_tokens
+        self.caption_language = caption_language
+        self.on_image_language = on_image_language
 
     async def brief(self, instruction: str, source: str, context: str = "") -> VisualBrief:
         chain = VisualSynopsisPrompt.get_prompt() | self.llm | StrOutputParser()
@@ -63,6 +67,8 @@ class VisualGenerator:
                 "source": truncate_text_by_tokens(source, self.source_max_tokens),
                 "context": truncate_text_by_tokens(context, self.context_max_tokens),
                 "image_size": self.image_size,
+                "caption_language": self.caption_language,
+                "on_image_language": self.on_image_language,
             }
         )
         brief = _parse_brief(raw)

@@ -9,6 +9,7 @@ from datetime import datetime
 import feedparser
 import httpx
 from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import YouTubeTranscriptApiException
 
 from shared import CollectedItem, SourceType, logger, parse_feed_published_date, retry_async
 from shared.config import YouTubeCollectorConfig
@@ -233,12 +234,12 @@ class YouTubeCollector(BaseCollector):
                             return " ".join(
                                 e.get("segs", [{}])[0].get("utf8", "") for e in data["events"] if e.get("segs")
                             )
-                    except (json.JSONDecodeError, KeyError):
-                        pass
+                    except (json.JSONDecodeError, KeyError) as e:
+                        logger.debug("Failed to parse proxied transcript JSON for video '%s': %s", video_id, e)
 
             ytt_api = YouTubeTranscriptApi()
             transcript = ytt_api.fetch(video_id)
             return " ".join(snippet.text for snippet in transcript.snippets)
-        except Exception:
-            logger.warning("Could not fetch transcript for video '%s'", video_id)
+        except (YouTubeTranscriptApiException, httpx.HTTPError, ValueError, KeyError, TypeError, RuntimeError) as e:
+            logger.warning("Could not fetch transcript for video '%s': %s", video_id, e)
             return ""

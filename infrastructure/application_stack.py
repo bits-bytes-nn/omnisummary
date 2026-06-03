@@ -20,6 +20,11 @@ from .foundation_stack import OmniSummaryFoundationStack
 
 
 class OmniSummaryApplicationStack(Stack):
+    # Service-discovery DNS name for the Fargate RSSHub service injected into the digest
+    # Lambda. Overridable at synth via the `rsshub_base_url` CDK context value so
+    # dev/staging/prod can target different endpoints without editing this stack.
+    DEFAULT_RSSHUB_BASE_URL = "http://rsshub.omnisummary.local:1200"
+
     def __init__(
         self,
         scope: Construct,
@@ -41,6 +46,7 @@ class OmniSummaryApplicationStack(Stack):
         project_name = config.aws.project_name
         stage = config.aws.stage
         bedrock_region = config.aws.bedrock_region
+        rsshub_base_url = self.node.try_get_context("rsshub_base_url") or self.DEFAULT_RSSHUB_BASE_URL
 
         Tags.of(self).add("Project", project_name)
         Tags.of(self).add("Stage", stage)
@@ -136,7 +142,7 @@ class OmniSummaryApplicationStack(Stack):
             environment={
                 "STATE_BUCKET": foundation.state_bucket.bucket_name,
                 "S3_PREFIX": f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state",
-                "RSSHUB_BASE_URL": "http://rsshub.omnisummary.local:1200",
+                "RSSHUB_BASE_URL": rsshub_base_url,
                 "AWS_BEDROCK_REGION": bedrock_region,
                 "PROJECT_NAME": project_name,
                 "STAGE": stage,

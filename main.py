@@ -202,11 +202,11 @@ async def main() -> None:
     if args.top_n:
         config.pipeline.top_n = args.top_n
 
-    KST = ZoneInfo("Asia/Seoul")
-    digest_date = date.fromisoformat(args.date) if args.date else datetime.now(KST).date()
+    tz = ZoneInfo(config.aws.timezone)
+    digest_date = date.fromisoformat(args.date) if args.date else datetime.now(tz).date()
 
     next_day = digest_date + timedelta(days=1)
-    reference_time = datetime(next_day.year, next_day.month, next_day.day, tzinfo=KST)
+    reference_time = datetime(next_day.year, next_day.month, next_day.day, tzinfo=tz)
     config.collectors.set_reference_time(reference_time)
 
     logger.info(

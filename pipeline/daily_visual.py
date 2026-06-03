@@ -33,6 +33,8 @@ class DailyVisualMaker:
             image_size=config.pipeline.image_size,
             source_max_tokens=config.pipeline.visual_synopsis_source_max_tokens,
             context_max_tokens=config.pipeline.visual_synopsis_context_max_tokens,
+            caption_language=config.pipeline.visual_caption_language,
+            on_image_language=config.pipeline.visual_on_image_language,
         )
 
     async def run(self, ranked_items: list[RankedItem]) -> bool:
@@ -75,7 +77,13 @@ class DailyVisualMaker:
             f"{i}. [{r.item.source_type.value}] {r.item.title}" for i, r in enumerate(ranked_items, start=1)
         )
         chain = VisualEditorPrompt.get_prompt() | self.llm | StrOutputParser()
-        raw = await chain.ainvoke({"items_text": items_text})
+        raw = await chain.ainvoke(
+            {
+                "items_text": items_text,
+                "audience": self.config.pipeline.visual_audience_description,
+                "on_image_language": self.config.pipeline.visual_on_image_language,
+            }
+        )
         try:
             return json.loads(extract_json_from_llm_output(raw))
         except json.JSONDecodeError:

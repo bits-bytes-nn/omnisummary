@@ -81,6 +81,19 @@ class PipelineConfig(BaseModel):
     min_score: float = Field(default=0.7, ge=0.0, le=1.0)
     ranking_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     digest_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
+    # Language rules injected into the digest prompt's *Language* block. Defaults to the
+    # Korean editorial rules + translation glossary; other deployments can override to
+    # write the digest in another language without forking the prompt.
+    digest_language_rules: str = (
+        "- Write in Korean (95%+). English ONLY for proper nouns and untranslatable technical terms.\n"
+        "- Translate terms that have established Korean equivalents: architecture → 아키텍처, "
+        "benchmark → 벤치마크, inference → 추론, training → 학습, deployment → 배포, "
+        "weight → 가중치, parameter → 파라미터, token → 토큰, open-source → 오픈소스, "
+        "pipeline → 파이프라인, optimization → 최적화, compression → 압축, memory → 메모리.\n"
+        "- General words MUST be Korean: practitioner → 실무자, implication → 시사점, "
+        "release → 출시/공개, breakthrough → 돌파구, approach → 접근법, ecosystem → 생태계.\n"
+        "- If the original item title is in English, translate it to Korean for the display text."
+    )
     item_text_max_tokens: int = 8000
     ranking_batch_size: int = Field(default=40, ge=1)
     source_slots: dict[str, int] = Field(
@@ -119,6 +132,13 @@ class PipelineConfig(BaseModel):
     )
     # Score the ranking prompt assigns to duplicate items within a same-topic cluster.
     ranking_duplicate_score_penalty: float = Field(default=0.3, ge=0.0, le=1.0)
+    # Score-calibration buckets the ranking prompt applies, injected as template text so
+    # ops can retune the distribution without editing the prompt.
+    ranking_scoring_rubric: str = (
+        "0.9+: field-defining. 0.8-0.89: very important. 0.7-0.79: notable. " "0.6-0.69: worth noting. <0.6: low value."
+    )
+    # Target count of items the ranking prompt should aim to score above the bar per batch.
+    ranking_target_count: str = "~10-20 items scoring 0.6+"
     trend_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     trend_retention_days: int = Field(default=30, ge=1)
     trend_cooling_days: int = Field(default=7, ge=1)
@@ -133,6 +153,13 @@ class PipelineConfig(BaseModel):
     visual_synopsis_context_max_tokens: int = Field(default=1500, ge=1)
     visual_context_max_results: int = Field(default=5, ge=1)
     visual_context_preview_chars: int = Field(default=300, ge=1)
+    # Audience/domain the visual prompts target. Configurable so the visual pipeline can
+    # be reused across domains without forking the prompts.
+    visual_audience_description: str = "a daily AI/ML digest aimed at practicing ML engineers"
+    # Language rules for visual output: which language the title/caption use and which
+    # language must appear inside the rendered image (image models garble non-Latin glyphs).
+    visual_caption_language: str = "Korean"
+    visual_on_image_language: str = "SHORT ENGLISH (the image model garbles Korean and other non-Latin glyphs)"
 
 
 class AgentConfig(BaseModel):
@@ -163,6 +190,7 @@ class AWSConfig(BaseModel):
     profile: str = ""
     project_name: str = "omnisummary"
     stage: str = "dev"
+    timezone: str = "Asia/Seoul"
     vpc_id: str = ""
     subnet_ids: list[str] = Field(default_factory=list)
     state_bucket_name: str = ""

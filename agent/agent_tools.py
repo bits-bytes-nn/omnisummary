@@ -286,6 +286,8 @@ async def make_visual(instruction: str, item_number: int = 0, context: str = "")
         image_size=config.pipeline.image_size,
         source_max_tokens=config.pipeline.visual_synopsis_source_max_tokens,
         context_max_tokens=config.pipeline.visual_synopsis_context_max_tokens,
+        caption_language=config.pipeline.visual_caption_language,
+        on_image_language=config.pipeline.visual_on_image_language,
     )
 
     try:

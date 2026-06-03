@@ -122,8 +122,8 @@ class TrendTracker:
                             if entry_date < cutoff:
                                 dropped_count += 1
                                 continue
-                        except ValueError:
-                            pass
+                        except ValueError as e:
+                            logger.debug("Failed to parse evidence date '%s': %s", date_match.group(1), e)
                     evidence_count += 1
                     if evidence_count > max_evidence:
                         dropped_count += 1

@@ -55,6 +55,7 @@ class DigestGenerator:
             {
                 "items_text": items_text,
                 "trends_context": trends_context or "(No trend data available yet.)",
+                "language_rules": self.config.digest_language_rules,
             }
         )
         digest_text = sanitize_slack_mrkdwn(digest_text)

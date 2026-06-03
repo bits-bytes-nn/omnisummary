@@ -163,7 +163,7 @@ class RSSHubCollector(BaseCollector):
                     )
                 )
                 logger.info("Collected RSSHub item: '%s'", title)
-            except Exception:
+            except (AttributeError, KeyError, TypeError, ValueError):
                 logger.warning("Failed to process RSSHub entry from '%s'", feed_url, exc_info=True)
 
         return items
