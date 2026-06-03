@@ -1,6 +1,18 @@
 from datetime import date
+from unittest.mock import MagicMock
 
-from pipeline.trend_tracker import ARCHIVED_MARKER, MAX_EVIDENCE_PER_TREND, TrendTracker
+from pipeline.trend_tracker import ARCHIVED_MARKER, TrendTracker
+from shared.config import PipelineConfig
+
+
+def _tracker(**overrides) -> TrendTracker:
+    config = PipelineConfig(**overrides)
+    factory = MagicMock()
+    factory.get_model.return_value = MagicMock()
+    return TrendTracker(config, factory, MagicMock())
+
+
+_MAX_EVIDENCE = PipelineConfig().trend_max_evidence
 
 
 class TestStripCodeFences:
@@ -16,23 +28,29 @@ class TestStripCodeFences:
 
 class TestTrimForLlm:
     def test_empty_returns_empty(self):
-        assert TrendTracker._trim_for_llm("", "2026-06-02") == ("", "")
+        assert _tracker()._trim_for_llm("", "2026-06-02") == ("", "")
 
     def test_splits_archived_section(self):
         content = f"# Active\n- **Trend**: A\n\n{ARCHIVED_MARKER}\n- old archived entry"
-        active, archived = TrendTracker._trim_for_llm(content, "2026-06-02")
+        active, archived = _tracker()._trim_for_llm(content, "2026-06-02")
         assert ARCHIVED_MARKER in archived
         assert "old archived entry" in archived
         assert ARCHIVED_MARKER not in active
 
     def test_truncates_oversized(self):
         big = "x" * 20000
-        active, _ = TrendTracker._trim_for_llm(big, "2026-06-02")
+        active, _ = _tracker()._trim_for_llm(big, "2026-06-02")
+        assert "truncated for size" in active
+
+    def test_truncation_respects_config_max_chars(self):
+        big = "x" * 20000
+        active, _ = _tracker(trend_max_chars=500)._trim_for_llm(big, "2026-06-02")
+        assert active.startswith("x" * 500)
         assert "truncated for size" in active
 
     def test_invalid_date_skips_cutoff(self):
         content = "# Active\n- **Trend**: A"
-        active, _ = TrendTracker._trim_for_llm(content, "not-a-date")
+        active, _ = _tracker()._trim_for_llm(content, "not-a-date")
         assert "Trend" in active
 
 
@@ -45,7 +63,7 @@ class TestTrimEvidence:
             "- [2026-06-01] new item\n"
             "- **Impact**: high\n"
         )
-        result = TrendTracker._trim_evidence(content, date(2026, 5, 15))
+        result = TrendTracker._trim_evidence(content, date(2026, 5, 15), _MAX_EVIDENCE)
         assert "new item" in result
         assert "old item" not in result
         assert "1 earlier entries omitted" in result
@@ -53,18 +71,25 @@ class TestTrimEvidence:
     def test_caps_evidence_count(self):
         recent = "\n".join(f"- [2026-06-0{i}] item{i}" for i in range(1, 9))
         content = f"- **Trend**: X\n- **Evidence**:\n{recent}\n- **Impact**: y\n"
-        result = TrendTracker._trim_evidence(content, date(2026, 1, 1))
+        result = TrendTracker._trim_evidence(content, date(2026, 1, 1), _MAX_EVIDENCE)
         kept = [ln for ln in result.split("\n") if ln.strip().startswith("- [")]
-        assert len(kept) == MAX_EVIDENCE_PER_TREND
+        assert len(kept) == _MAX_EVIDENCE
+
+    def test_caps_evidence_count_respects_config(self):
+        recent = "\n".join(f"- [2026-06-0{i}] item{i}" for i in range(1, 9))
+        content = f"- **Trend**: X\n- **Evidence**:\n{recent}\n- **Impact**: y\n"
+        result = TrendTracker._trim_evidence(content, date(2026, 1, 1), 3)
+        kept = [ln for ln in result.split("\n") if ln.strip().startswith("- [")]
+        assert len(kept) == 3
 
     def test_keeps_undated_evidence(self):
         content = "- **Trend**: X\n- **Evidence**:\n- [bad-date] keep me\n- **Impact**: y\n"
-        result = TrendTracker._trim_evidence(content, date(2026, 6, 1))
+        result = TrendTracker._trim_evidence(content, date(2026, 6, 1), _MAX_EVIDENCE)
         assert "keep me" in result
 
     def test_non_evidence_lines_untouched(self):
         content = "# Header\n- **Trend**: X\n- **Impact**: high\nplain line"
-        result = TrendTracker._trim_evidence(content, date(2026, 6, 1))
+        result = TrendTracker._trim_evidence(content, date(2026, 6, 1), _MAX_EVIDENCE)
         assert result == content  # no evidence block -> content passes through verbatim
 
 

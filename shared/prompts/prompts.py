@@ -40,7 +40,7 @@ class BasePrompt(ABC):
 
 
 class RankingPrompt(BasePrompt):
-    input_variables: list[str] = ["items_text"]
+    input_variables: list[str] = ["items_text", "engagement_guidance"]
 
     system_prompt_template: str = """\
 You are an AI/ML content curator. Evaluate each item for a daily digest aimed at practicing ML engineers.
@@ -63,7 +63,7 @@ Be generous in 0.6-0.8. Aim for ~10-20 items scoring 0.6+ per batch.
 
 *Engagement Signal*
 High engagement is a STRONG quality signal. Apply this bonus based on the Engagement field when present:
-- YouTube: 10K+ views → +0.05, 100K+ → +0.1, 500K+ → +0.15.
+- {engagement_guidance}
 - Items with NO engagement data (most sources): judge purely on content quality.
 Engagement bonus stacks with content quality — a high-engagement AND substantive item should score very high.
 
@@ -148,7 +148,14 @@ what it reveals, what people are getting wrong. Don't cover every story.
 
 
 class TrendUpdatePrompt(BasePrompt):
-    input_variables: list[str] = ["current_trends", "todays_digest", "today_date", "trend_retention_days"]
+    input_variables: list[str] = [
+        "current_trends",
+        "todays_digest",
+        "today_date",
+        "trend_retention_days",
+        "trend_cooling_days",
+        "trend_max_evidence",
+    ]
 
     system_prompt_template: str = """\
 You are a trend tracker for an AI/ML digest. Maintain a running markdown document of active trends.
@@ -157,10 +164,10 @@ Rules:
 - Each trend: title, status (active/cooling/archived), first_seen, last_seen, evidence list
 - Add new trends when today's digest reveals emerging patterns
 - Update existing trends with new evidence
-- "cooling" if no evidence in 7+ days; "archived" if {trend_retention_days}+ days
+- "cooling" if no evidence in {trend_cooling_days}+ days; "archived" if {trend_retention_days}+ days
 - Maximum 10 active trends — merge or archive if needed
 - CRITICAL: Keep each evidence entry to ONE short sentence (under 30 words)
-- CRITICAL: Maximum 5 evidence entries per trend — when adding new evidence, drop the oldest
+- CRITICAL: Maximum {trend_max_evidence} evidence entries per trend — when adding new evidence, drop the oldest
 - Compress archived trends into one-line summaries
 - Write in English (feeds back into English LLM context)
 
@@ -229,12 +236,22 @@ Produce ONLY a JSON object:
 Rules:
 - The image is rendered in ONE pass at 1024x1024 — design a self-contained composition.
 - Be faithful to the actual technical content; do not invent facts.
-- Korean for title/caption; English for the image `prompt` (image model works best in English).
+- Korean for title/caption AND for ALL on-image text: write the `prompt` in English (the image
+  model follows English best), but every label, speech bubble, caption, or sign that appears
+  INSIDE the image must be specified as short Korean text (quote the exact Korean string in the
+  prompt, e.g. text reads "출시"). Keep each on-image string short so it renders legibly.
+- Make the visual understandable WITHOUT reading the caption: bake the context into the imagery
+  itself. Depict recognizable real-world cues — the actual people's likenesses (e.g. well-known
+  founders/researchers), company logos and brand colors, product UIs, recognizable settings — so a
+  viewer instantly grasps who and what it is about. State these concrete cues explicitly in `prompt`.
 - If the instruction implies multiple panels/sections, lay them out explicitly in `prompt`.
+- For multi-panel comics, the panels must tell ONE connected story: keep the same characters and
+  visual style across panels, and make each panel follow causally from the previous one (setup →
+  development → punchline) so the sequence reads naturally left-to-right, top-to-bottom.
 - If the instruction asks for a comic/cartoon, make it genuinely funny: build in internet
   humor, memes, parody, and exaggeration with a clear setup-and-punchline; describe a
   meme-style visual gag and expressive characters — while keeping the facts accurate.
-- Keep on-image text short and legible. Output ONLY the JSON object."""
+- Output ONLY the JSON object."""
 
     human_prompt_template: str = (
         "Visualization request:\n{instruction}\n\nSource material:\n{source}\n\n"

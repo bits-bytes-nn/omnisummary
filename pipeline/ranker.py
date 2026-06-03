@@ -31,7 +31,7 @@ class ContentRanker:
 
         items_text = self._format_items(items)
         chain = RankingPrompt.get_prompt() | self.llm | StrOutputParser()
-        raw_output = await chain.ainvoke({"items_text": items_text})
+        raw_output = await chain.ainvoke({"items_text": items_text, "engagement_guidance": self._engagement_guidance()})
 
         ranked_items = self._parse_rankings(raw_output, items)
         self._apply_origin_weights(ranked_items)
@@ -71,6 +71,11 @@ class ContentRanker:
                 r.item.title[:70],
             )
         return selected
+
+    def _engagement_guidance(self) -> str:
+        tiers = sorted(self.config.engagement_tiers)
+        parts = [f"{views:,}+ views → +{bonus}" for views, bonus in tiers]
+        return "Items with view counts: " + ", ".join(parts) + "."
 
     def _apply_origin_weights(self, ranked_items: list[RankedItem]) -> None:
         weights = self.config.origin_weights

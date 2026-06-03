@@ -10,11 +10,14 @@ import httpx
 from strands import tool
 from tavily import AsyncTavilyClient
 
-from shared import logger
+from shared import logger, truncate_text_by_tokens
 
 from .tool_state import DigestStateManager
 
-COMMUNITY_SEARCH_DOMAINS = ["twitter.com", "x.com", "reddit.com", "news.ycombinator.com", "substack.com"]
+# Token cap for the content snippet get_detail feeds the agent. Named (not a bare
+# slice) and token-based to match the pipeline's truncation; ~2000 tokens keeps the
+# tool response dense without flooding the agent context.
+GET_DETAIL_MAX_TOKENS = 2000
 
 
 @dataclass
@@ -117,7 +120,7 @@ def get_detail(item_number: int, query: str = "") -> str:
         f"Score: {ranked.score:.2f}\n"
         f"Categories: {', '.join(ranked.categories)}\n"
         f"Reasoning: {ranked.reasoning}\n\n"
-        f"Content:\n{item.text[:8000]}"
+        f"Content:\n{truncate_text_by_tokens(item.text, GET_DETAIL_MAX_TOKENS)}"
     )
     if query:
         detail += f"\n\nUser question: {query}"
@@ -192,7 +195,10 @@ async def search_community(query: str) -> str:
     Args:
         query: Search query for community discussions
     """
-    return await _tavily_search(query, include_domains=COMMUNITY_SEARCH_DOMAINS)
+    from shared import Config
+
+    domains = Config.load().agent.community_search_domains
+    return await _tavily_search(query, include_domains=domains)
 
 
 @tool

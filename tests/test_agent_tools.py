@@ -58,10 +58,14 @@ class TestTavilySearch:
 
     @pytest.mark.asyncio
     async def test_community_search_uses_community_domains(self, monkeypatch):
+        from shared import Config
+
         monkeypatch.setenv("TAVILY_API_KEY", "key")
+        expected = Config.load().agent.community_search_domains
         with patch.object(agent_tools, "_tavily_search", new=AsyncMock(return_value="ok")) as mock:
             await agent_tools.search_community._tool_func("query")
-        assert mock.call_args.kwargs["include_domains"] == agent_tools.COMMUNITY_SEARCH_DOMAINS
+        assert mock.call_args.kwargs["include_domains"] == expected
+        assert "reddit.com" in expected
 
     @pytest.mark.asyncio
     async def test_news_search_uses_news_topic(self, monkeypatch):

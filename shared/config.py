@@ -93,13 +93,24 @@ class PipelineConfig(BaseModel):
     origin_weights: dict[str, float] = Field(default_factory=dict)
     origin_weight_default: float = Field(default=1.0, ge=0.0)
     origin_weight_nudge: float = Field(default=0.1, ge=0.0, le=1.0)
+    # Engagement bonus tiers (views threshold -> score bonus) the ranking prompt applies
+    # to items carrying view counts. Tunable instead of baked into the prompt text.
+    engagement_tiers: list[tuple[int, float]] = Field(
+        default_factory=lambda: [(10000, 0.05), (100000, 0.1), (500000, 0.15)]
+    )
     trend_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     trend_retention_days: int = Field(default=30, ge=1)
+    trend_cooling_days: int = Field(default=7, ge=1)
+    trend_max_evidence: int = Field(default=5, ge=1)
+    trend_max_chars: int = Field(default=15000, ge=1)
 
 
 class AgentConfig(BaseModel):
     model_id: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     enable_interactive: bool = True
+    community_search_domains: list[str] = Field(
+        default_factory=lambda: ["twitter.com", "x.com", "reddit.com", "news.ycombinator.com", "substack.com"]
+    )
 
 
 class SlackConfig(BaseModel):
