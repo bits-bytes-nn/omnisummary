@@ -1,7 +1,9 @@
+import asyncio
 import hashlib
 import re
 from abc import ABC, abstractmethod
 from calendar import timegm
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, ClassVar, Generic, TypeVar
@@ -422,6 +424,54 @@ def parse_feed_published_date(entry) -> datetime | None:
         return datetime.fromtimestamp(timegm(entry.updated_parsed), tz=UTC)
 
     return None
+
+
+def extract_json_from_llm_output(raw: str) -> str:
+    """Extract the first JSON value (object or array) from an LLM response.
+
+    Tolerates leading/trailing prose and ```json fenced blocks, then returns the
+    substring from the first opening brace/bracket to the matching last one. Callers
+    pass the result to json.loads and handle the JSONDecodeError.
+    """
+    text = raw.strip()
+    if "```" in text:
+        fences = text.split("```")
+        if len(fences) >= 3:
+            text = fences[-2]
+        text = re.sub(r"^\s*json\b", "", text, count=1).strip()
+
+    candidates = [(text.find(opener), text.rfind(closer)) for opener, closer in (("{", "}"), ("[", "]"))]
+    starts = [(start, end) for start, end in candidates if start != -1 and end > start]
+    if not starts:
+        return text
+    start, end = min(starts, key=lambda pair: pair[0])
+    return text[start : end + 1]
+
+
+async def retry_async(
+    func: Callable[[], Awaitable[Any]],
+    *,
+    max_retries: int,
+    backoff_sec: float,
+    retry_on: tuple[type[BaseException], ...] = (Exception,),
+    description: str = "operation",
+) -> Any:
+    """Run an async callable with exponential backoff on transient failures.
+
+    Retries up to max_retries attempts, sleeping backoff_sec * attempt between tries.
+    Re-raises the last exception once attempts are exhausted.
+    """
+    last_error: BaseException | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            return await func()
+        except retry_on as e:
+            last_error = e
+            if attempt < max_retries:
+                logger.warning("%s failed (attempt %d/%d): %s", description, attempt, max_retries, e)
+                await asyncio.sleep(backoff_sec * attempt)
+    assert last_error is not None
+    raise last_error
 
 
 def truncate_text_by_tokens(text: str, max_tokens: int = MAX_TOKENS) -> str:

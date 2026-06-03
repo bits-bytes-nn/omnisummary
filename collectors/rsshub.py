@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 
 import boto3
 import feedparser
@@ -89,12 +90,19 @@ class RSSHubCollector(BaseCollector):
         import httpx
 
         base = self.config.base_url.rstrip("/")
-        try:
-            resp = httpx.get(base, timeout=10, follow_redirects=True)
-        except Exception as e:
-            raise RuntimeError(f"RSSHub unreachable at {base}: {e}") from e
-        if resp.status_code >= 500:
-            raise RuntimeError(f"RSSHub at {base} returned HTTP {resp.status_code}")
+        last_error: Exception | None = None
+        for attempt in range(1, self.config.max_retries + 1):
+            try:
+                resp = httpx.get(base, timeout=self.config.request_timeout, follow_redirects=True)
+                if resp.status_code >= 500:
+                    raise RuntimeError(f"RSSHub at {base} returned HTTP {resp.status_code}")
+                return
+            except Exception as e:
+                last_error = e
+                if attempt < self.config.max_retries:
+                    logger.warning("RSSHub reachability check failed (attempt %d): %s", attempt, e)
+                    time.sleep(self.config.retry_backoff_sec * attempt)
+        raise RuntimeError(f"RSSHub unreachable at {base}: {last_error}") from last_error
 
     async def _collect_account(self, username: str, platform: str) -> list[CollectedItem]:
         feed_path = self._build_feed_path(username, platform)

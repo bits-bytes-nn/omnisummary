@@ -8,7 +8,9 @@ from agent.visuals import VisualGenerator
 from shared import (
     BedrockLanguageModelFactory,
     RankedItem,
+    VisualBrief,
     VisualEditorPrompt,
+    extract_json_from_llm_output,
     logger,
     resolve_secret,
 )
@@ -24,7 +26,14 @@ class DailyVisualMaker:
     def __init__(self, config: Config, llm_factory: BedrockLanguageModelFactory) -> None:
         self.config = config
         self.llm = llm_factory.get_model(config.pipeline.digest_model)
-        self.generator = VisualGenerator(llm_factory, config.pipeline.digest_model)
+        self.generator = VisualGenerator(
+            llm_factory,
+            config.pipeline.digest_model,
+            image_model=config.pipeline.image_model,
+            image_size=config.pipeline.image_size,
+            source_max_tokens=config.pipeline.visual_synopsis_source_max_tokens,
+            context_max_tokens=config.pipeline.visual_synopsis_context_max_tokens,
+        )
 
     async def run(self, ranked_items: list[RankedItem]) -> bool:
         if not ranked_items:
@@ -67,11 +76,11 @@ class DailyVisualMaker:
         )
         chain = VisualEditorPrompt.get_prompt() | self.llm | StrOutputParser()
         raw = await chain.ainvoke({"items_text": items_text})
-        raw = raw.strip()
-        start, end = raw.find("{"), raw.rfind("}") + 1
-        if start == -1 or end <= start:
+        try:
+            return json.loads(extract_json_from_llm_output(raw))
+        except json.JSONDecodeError:
+            logger.warning("Daily visual editor returned unparseable JSON", exc_info=True)
             return {}
-        return json.loads(raw[start:end])
 
     async def _gather_context(self, query: str) -> str:
         if not query:
@@ -90,11 +99,11 @@ class DailyVisualMaker:
             logger.warning("Daily visual context search failed", exc_info=True)
             return ""
 
-    async def _post(self, image_bytes: bytes, brief: dict) -> bool:
+    async def _post(self, image_bytes: bytes, brief: VisualBrief) -> bool:
         from output.slack_handler import send_image_to_slack
 
-        title = brief.get("title", "Daily Visual")
-        caption = brief.get("caption", "")
+        title = brief.title
+        caption = brief.caption
         bot_token = self.config.slack.bot_token
         channel_id = self.config.slack.channel_id
         return await send_image_to_slack(

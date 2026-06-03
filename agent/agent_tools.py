@@ -10,14 +10,9 @@ import httpx
 from strands import tool
 from tavily import AsyncTavilyClient
 
-from shared import logger, truncate_text_by_tokens
+from shared import Config, logger, truncate_text_by_tokens
 
 from .tool_state import DigestStateManager
-
-# Token cap for the content snippet get_detail feeds the agent. Named (not a bare
-# slice) and token-based to match the pipeline's truncation; ~2000 tokens keeps the
-# tool response dense without flooding the agent context.
-GET_DETAIL_MAX_TOKENS = 2000
 
 
 @dataclass
@@ -66,9 +61,9 @@ def _get_tavily_client() -> AsyncTavilyClient | None:
     return AsyncTavilyClient(api_key=api_key)
 
 
-def _format_search_results(results: list[dict]) -> str:
+def _format_search_results(results: list[dict], preview_chars: int) -> str:
     return "\n\n".join(
-        f"- {r.get('title', 'N/A')}\n  URL: {r.get('url', '')}\n  Content: {r.get('content', '')[:300]}"
+        f"- {r.get('title', 'N/A')}\n  URL: {r.get('url', '')}\n  Content: {r.get('content', '')[:preview_chars]}"
         for r in results
     )
 
@@ -78,7 +73,8 @@ async def _tavily_search(query: str, *, topic: str | None = None, include_domain
     if not client:
         return "TAVILY_API_KEY not configured."
 
-    kwargs: dict = {"query": query, "max_results": 5}
+    agent_config = Config.load().agent
+    kwargs: dict = {"query": query, "max_results": agent_config.search_result_limit}
     if topic:
         kwargs["topic"] = topic
     if include_domains:
@@ -90,7 +86,7 @@ async def _tavily_search(query: str, *, topic: str | None = None, include_domain
         if not results:
             return "No results found."
         logger.info("Tavily search found %d results for query '%s'", len(results), query)
-        return _format_search_results(results)
+        return _format_search_results(results, agent_config.search_content_preview_chars)
     except Exception as e:
         logger.warning("Tavily search failed: %s", e)
         return f"Search failed: {e}"
@@ -111,6 +107,7 @@ def get_detail(item_number: int, query: str = "") -> str:
         return f"Item {item_number} not found. Today's digest has {total} items."
 
     item = ranked.item
+    max_tokens = Config.load().agent.detail_max_tokens
     detail = (
         f"=== Item {item_number} ===\n"
         f"Title: {item.title}\n"
@@ -120,7 +117,7 @@ def get_detail(item_number: int, query: str = "") -> str:
         f"Score: {ranked.score:.2f}\n"
         f"Categories: {', '.join(ranked.categories)}\n"
         f"Reasoning: {ranked.reasoning}\n\n"
-        f"Content:\n{truncate_text_by_tokens(item.text, GET_DETAIL_MAX_TOKENS)}"
+        f"Content:\n{truncate_text_by_tokens(item.text, max_tokens)}"
     )
     if query:
         detail += f"\n\nUser question: {query}"
@@ -136,6 +133,7 @@ async def search_papers(query: str) -> str:
     Args:
         query: Search query for finding related papers
     """
+    agent_config = Config.load().agent
     async with httpx.AsyncClient(timeout=30) as client:
         last_error = ""
         for attempt in range(3):
@@ -144,7 +142,7 @@ async def search_papers(query: str) -> str:
                     "https://api.semanticscholar.org/graph/v1/paper/search",
                     params={
                         "query": query,
-                        "limit": 5,
+                        "limit": agent_config.search_result_limit,
                         "fields": "title,year,authors,url,abstract",
                     },
                 )
@@ -195,8 +193,6 @@ async def search_community(query: str) -> str:
     Args:
         query: Search query for community discussions
     """
-    from shared import Config
-
     domains = Config.load().agent.community_search_domains
     return await _tavily_search(query, include_domains=domains)
 
@@ -233,7 +229,7 @@ async def recall_trends(query: str) -> str:
 def _build_llm_factory():
     import boto3
 
-    from shared import BedrockLanguageModelFactory, Config, is_running_in_aws
+    from shared import BedrockLanguageModelFactory, is_running_in_aws
 
     config = Config.load()
     if is_running_in_aws():
@@ -276,7 +272,14 @@ async def make_visual(instruction: str, item_number: int = 0, context: str = "")
         source = f"{ranked.item.title}\n\n{ranked.item.text}"
 
     factory, config = _build_llm_factory()
-    generator = VisualGenerator(factory, config.pipeline.digest_model)
+    generator = VisualGenerator(
+        factory,
+        config.pipeline.digest_model,
+        image_model=config.pipeline.image_model,
+        image_size=config.pipeline.image_size,
+        source_max_tokens=config.pipeline.visual_synopsis_source_max_tokens,
+        context_max_tokens=config.pipeline.visual_synopsis_context_max_tokens,
+    )
 
     try:
         image_bytes, brief = await generator.generate(instruction, source, context)
@@ -288,8 +291,8 @@ async def make_visual(instruction: str, item_number: int = 0, context: str = "")
     if not delivery.channel_id:
         return "Visual generated but no Slack channel is set for delivery."
 
-    visual_title = brief.get("title", "Visual")
-    caption = brief.get("caption", "")
+    visual_title = brief.title
+    caption = brief.caption
     uploaded = await send_image_to_slack(
         image_bytes,
         channel_id=delivery.channel_id,

@@ -6,12 +6,14 @@ from urllib.parse import urlparse
 from langchain_core.output_parsers import StrOutputParser
 
 from shared import (
+    YOUTUBE_VIEWS_EMOJI,
     BedrockLanguageModelFactory,
     CollectedItem,
     DigestPrompt,
     DigestResult,
     RankedItem,
     SourceType,
+    clean_rss_feed_name,
     logger,
     sanitize_slack_mrkdwn,
     truncate_text_by_tokens,
@@ -101,15 +103,11 @@ class DigestGenerator:
         elif item.source_type == SourceType.YOUTUBE:
             tag = "`YouTube`"
             if meta.get("view_count"):
-                metrics.append(f":arrow_forward: {meta['view_count']:,}")
+                metrics.append(f"{YOUTUBE_VIEWS_EMOJI} {meta['view_count']:,}")
         elif item.source_type == SourceType.X:
             tag = f"`@{item.author}`" if item.author else "`X`"
         elif item.source_type == SourceType.RSS:
-            feed_title = meta.get("feed_title", "")
-            name = feed_title.split(" - ")[0].split(" — ")[0].strip() if feed_title else ""
-            if not name:
-                feed_url = meta.get("feed_url", "")
-                name = urlparse(feed_url).netloc.removeprefix("www.").removeprefix("feeds.") if feed_url else "RSS"
+            name = clean_rss_feed_name(meta.get("feed_title", ""), meta.get("feed_url", "")) or "RSS"
             tag = f"`{name}`"
         elif item.source_type == SourceType.WEB:
             domain = urlparse(item.url).netloc.removeprefix("www.")

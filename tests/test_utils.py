@@ -1,11 +1,16 @@
 import hashlib
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from shared.utils import (
+    extract_json_from_llm_output,
     generate_item_id,
     parse_feed_published_date,
     resolve_secret,
+    retry_async,
     sanitize_slack_mrkdwn,
     truncate_text_by_tokens,
 )
@@ -92,6 +97,75 @@ class TestTruncateTextByTokens:
         text = "word " * 1000
         result = truncate_text_by_tokens(text, max_tokens=10)
         assert len(result) < len(text)
+
+
+class TestExtractJsonFromLlmOutput:
+    def test_bare_object(self):
+        assert json.loads(extract_json_from_llm_output('{"a": 1}')) == {"a": 1}
+
+    def test_object_with_prose(self):
+        raw = 'Here it is:\n{"a": 1, "b": 2}\nThanks!'
+        assert json.loads(extract_json_from_llm_output(raw)) == {"a": 1, "b": 2}
+
+    def test_fenced_json_block(self):
+        raw = 'note\n```json\n{"x": [1, 2]}\n```\nend'
+        assert json.loads(extract_json_from_llm_output(raw)) == {"x": [1, 2]}
+
+    def test_bare_array(self):
+        raw = 'queries:\n["a", "b"]\n'
+        assert json.loads(extract_json_from_llm_output(raw)) == ["a", "b"]
+
+    def test_picks_outermost_value(self):
+        raw = '{"rankings": [{"item_id": "1", "score": 0.5}]}'
+        assert json.loads(extract_json_from_llm_output(raw)) == {"rankings": [{"item_id": "1", "score": 0.5}]}
+
+
+class TestRetryAsync:
+    @pytest.mark.asyncio
+    async def test_returns_on_first_success(self):
+        calls = {"n": 0}
+
+        async def ok():
+            calls["n"] += 1
+            return "done"
+
+        result = await retry_async(ok, max_retries=3, backoff_sec=0)
+        assert result == "done"
+        assert calls["n"] == 1
+
+    @pytest.mark.asyncio
+    async def test_retries_then_succeeds(self):
+        calls = {"n": 0}
+
+        async def flaky():
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise ValueError("transient")
+            return "ok"
+
+        result = await retry_async(flaky, max_retries=3, backoff_sec=0)
+        assert result == "ok"
+        assert calls["n"] == 3
+
+    @pytest.mark.asyncio
+    async def test_reraises_after_exhausting_attempts(self):
+        async def always_fail():
+            raise RuntimeError("nope")
+
+        with pytest.raises(RuntimeError):
+            await retry_async(always_fail, max_retries=2, backoff_sec=0)
+
+    @pytest.mark.asyncio
+    async def test_does_not_retry_unlisted_exception(self):
+        calls = {"n": 0}
+
+        async def boom():
+            calls["n"] += 1
+            raise KeyError("unexpected")
+
+        with pytest.raises(KeyError):
+            await retry_async(boom, max_retries=3, backoff_sec=0, retry_on=(ValueError,))
+        assert calls["n"] == 1
 
 
 class TestSanitizeSlackMrkdwn:

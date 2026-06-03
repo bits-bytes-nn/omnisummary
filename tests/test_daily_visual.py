@@ -6,7 +6,7 @@ import pytest
 from pipeline.daily_visual import DailyVisualMaker
 from shared.config import Config
 from shared.constants import SourceType
-from shared.models import CollectedItem, RankedItem
+from shared.models import CollectedItem, RankedItem, VisualBrief
 
 
 def _maker() -> DailyVisualMaker:
@@ -60,7 +60,9 @@ class TestDailyVisualMaker:
         plan = {"skip": False, "item_number": 2, "search_query": "", "instruction": "a 4-panel cartoon"}
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
             with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = AsyncMock(return_value=(b"PNG", {"title": "T", "caption": "C"}))
+                maker.generator.generate = AsyncMock(
+                    return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw"))
+                )
                 with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
                     result = await maker.run(_items())
         assert result is True

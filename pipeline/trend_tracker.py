@@ -10,7 +10,12 @@ from shared.config import PipelineConfig
 from shared.state_store import StateStore
 
 TRENDS_KEY = "trends.md"
+# Markdown structure tokens that must stay in lockstep with TrendUpdatePrompt's output
+# format. Defined once so the prompt/parser contract is explicit.
 ARCHIVED_MARKER = "# Archived Trends"
+EVIDENCE_MARKER = "- **Evidence**:"
+DATE_ENTRY_PREFIX = "- ["
+DATE_ENTRY_PATTERN = re.compile(r"- \[(\d{4}-\d{2}-\d{2})\]")
 
 
 class TrendTracker:
@@ -98,7 +103,7 @@ class TrendTracker:
 
         for line in lines:
             stripped = line.strip()
-            if stripped == "- **Evidence**:":
+            if stripped == EVIDENCE_MARKER:
                 if in_evidence and dropped_count > 0:
                     result.append(f"  - (+ {dropped_count} earlier entries omitted)")
                 in_evidence = True
@@ -108,8 +113,8 @@ class TrendTracker:
                 continue
 
             if in_evidence:
-                if stripped.startswith("- ["):
-                    date_match = re.match(r"- \[(\d{4}-\d{2}-\d{2})\]", stripped)
+                if stripped.startswith(DATE_ENTRY_PREFIX):
+                    date_match = DATE_ENTRY_PATTERN.match(stripped)
                     if date_match:
                         try:
                             entry_date = date.fromisoformat(date_match.group(1))

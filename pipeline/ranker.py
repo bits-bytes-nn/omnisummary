@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import defaultdict
 
 from langchain_core.output_parsers import StrOutputParser
 
@@ -11,10 +12,15 @@ from shared import (
     RankedItem,
     RankingPrompt,
     SourceType,
+    extract_json_from_llm_output,
+    format_origin_label,
     logger,
+    resolve_origin_key,
     truncate_text_by_tokens,
 )
 from shared.config import PipelineConfig
+
+DEFAULT_SOURCE_SLOT = 1
 
 
 class ContentRanker:
@@ -106,7 +112,7 @@ class ContentRanker:
         # (and inflate mid-range scores most). nudge = (weight-1.0) * factor, clamped.
         nudge_factor = self.config.origin_weight_nudge
         for ranked in ranked_items:
-            origin_key = self._resolve_origin_key(ranked.item)
+            origin_key = resolve_origin_key(ranked.item)
             if not origin_key:
                 continue
             weight = weights.get(origin_key, default_weight)
@@ -122,19 +128,6 @@ class ContentRanker:
                     ranked.score,
                 )
 
-    @staticmethod
-    def _resolve_origin_key(item: CollectedItem) -> str | None:
-        meta = item.metadata
-        if item.source_type == SourceType.YOUTUBE:
-            return meta.get("channel_url")
-        if item.source_type == SourceType.REDDIT:
-            return meta.get("subreddit")
-        if item.source_type == SourceType.RSS:
-            return meta.get("feed_url")
-        if item.source_type == SourceType.X:
-            return item.author
-        return None
-
     def _apply_source_slots(self, above_threshold: list[RankedItem]) -> list[RankedItem]:
         source_slots = self.config.source_slots
         if not source_slots:
@@ -142,23 +135,23 @@ class ContentRanker:
 
         selected: list[RankedItem] = []
         selected_ids: set[str] = set()
-        source_counts: dict[str, int] = {}
-        origin_counts: dict[str, int] = {}
+        source_counts: dict[str, int] = defaultdict(int)
+        origin_counts: dict[str, int] = defaultdict(int)
         max_per_origin = self.config.max_per_origin
 
-        def _origin_at_cap(item: RankedItem) -> bool:
-            origin_key = self._resolve_origin_key(item.item)
+        def origin_at_cap(item: RankedItem) -> bool:
+            origin_key = resolve_origin_key(item.item)
             if not origin_key:
                 return False
-            return origin_counts.get(origin_key, 0) >= max_per_origin
+            return origin_counts[origin_key] >= max_per_origin
 
-        def _record(item: RankedItem, source_key: str) -> None:
+        def record(item: RankedItem, source_key: str) -> None:
             selected.append(item)
             selected_ids.add(item.item.item_id)
-            source_counts[source_key] = source_counts.get(source_key, 0) + 1
-            origin_key = self._resolve_origin_key(item.item)
+            source_counts[source_key] += 1
+            origin_key = resolve_origin_key(item.item)
             if origin_key:
-                origin_counts[origin_key] = origin_counts.get(origin_key, 0) + 1
+                origin_counts[origin_key] += 1
 
         for source_key, slot_count in source_slots.items():
             taken = 0
@@ -167,9 +160,9 @@ class ContentRanker:
                     break
                 if item.item.source_type.value != source_key or item.item.item_id in selected_ids:
                     continue
-                if _origin_at_cap(item):
+                if origin_at_cap(item):
                     continue
-                _record(item, source_key)
+                record(item, source_key)
                 taken += 1
 
         if len(selected) < self.config.top_n:
@@ -177,10 +170,10 @@ class ContentRanker:
                 if item.item.item_id in selected_ids:
                     continue
                 src = item.item.source_type.value
-                cap = source_slots.get(src, 1) * self.config.source_cap_multiplier
-                if source_counts.get(src, 0) >= cap or _origin_at_cap(item):
+                cap = source_slots.get(src, DEFAULT_SOURCE_SLOT) * self.config.source_cap_multiplier
+                if source_counts[src] >= cap or origin_at_cap(item):
                     continue
-                _record(item, src)
+                record(item, src)
                 if len(selected) >= self.config.top_n:
                     break
 
@@ -192,10 +185,10 @@ class ContentRanker:
                 if item.item.item_id in selected_ids:
                     continue
                 src = item.item.source_type.value
-                cap = source_slots.get(src, 1) * self.config.source_cap_multiplier
-                if source_counts.get(src, 0) >= cap:
+                cap = source_slots.get(src, DEFAULT_SOURCE_SLOT) * self.config.source_cap_multiplier
+                if source_counts[src] >= cap:
                     continue
-                _record(item, src)
+                record(item, src)
                 if len(selected) >= self.config.top_n:
                     break
 
@@ -207,7 +200,7 @@ class ContentRanker:
         for i, item in enumerate(items):
             snippet = truncate_text_by_tokens(item.text, self.config.item_text_max_tokens)
             engagement = self._format_engagement(item)
-            origin = self._format_origin(item)
+            origin = format_origin_label(item)
             entry = (
                 f"=== Item {i + 1} ===\n"
                 f"ID: {item.item_id}\n"
@@ -224,19 +217,6 @@ class ContentRanker:
         return "\n".join(parts)
 
     @staticmethod
-    def _format_origin(item: CollectedItem) -> str:
-        meta = item.metadata
-        if item.source_type == SourceType.REDDIT:
-            return f"r/{meta.get('subreddit', '')}" if meta.get("subreddit") else ""
-        if item.source_type == SourceType.YOUTUBE:
-            return meta.get("channel_url", "")
-        if item.source_type == SourceType.X:
-            return f"@{item.author}" if item.author else ""
-        if item.source_type == SourceType.RSS:
-            return meta.get("feed_title", "") or meta.get("feed_url", "")
-        return ""
-
-    @staticmethod
     def _format_engagement(item: CollectedItem) -> str:
         meta = item.metadata
         if item.source_type == SourceType.YOUTUBE and meta.get("view_count"):
@@ -247,16 +227,7 @@ class ContentRanker:
         items_by_id = {item.item_id: item for item in items}
 
         try:
-            json_str = raw_output.strip()
-            if "```" in json_str:
-                json_str = json_str.split("```")[-2] if json_str.count("```") >= 2 else json_str
-                json_str = json_str.removeprefix("json").strip()
-            start = json_str.find("{")
-            end = json_str.rfind("}") + 1
-            if start != -1 and end > start:
-                json_str = json_str[start:end]
-
-            data = json.loads(json_str)
+            data = json.loads(extract_json_from_llm_output(raw_output))
             rankings = data.get("rankings", [])
         except (json.JSONDecodeError, KeyError) as exc:
             logger.error("Failed to parse ranking LLM output: '%s'", exc)

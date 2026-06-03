@@ -8,15 +8,20 @@ from agent import agent_tools
 class TestFormatSearchResults:
     def test_formats_fields(self):
         results = [{"title": "T1", "url": "http://a", "content": "body one"}]
-        out = agent_tools._format_search_results(results)
+        out = agent_tools._format_search_results(results, preview_chars=300)
         assert "- T1" in out
         assert "URL: http://a" in out
         assert "Content: body one" in out
 
     def test_truncates_content(self):
         results = [{"title": "T", "url": "u", "content": "x" * 500}]
-        out = agent_tools._format_search_results(results)
+        out = agent_tools._format_search_results(results, preview_chars=300)
         assert out.count("x") == 300
+
+    def test_preview_chars_is_configurable(self):
+        results = [{"title": "T", "url": "u", "content": "x" * 500}]
+        out = agent_tools._format_search_results(results, preview_chars=10)
+        assert out.count("x") == 10
 
 
 class TestTavilySearch:
@@ -105,10 +110,12 @@ class TestMakeVisual:
     async def test_free_form_generate_and_post(self, monkeypatch):
         gen = MagicMock()
 
+        from shared.models import VisualBrief
+
         async def fake_generate(instruction, source, context):
             assert instruction == "a 1-page presentation slide"
             assert context == "extra research"
-            return b"PNG", {"title": "슬라이드", "caption": "요약"}
+            return b"PNG", VisualBrief(title="슬라이드", caption="요약", prompt="draw")
 
         gen.generate = fake_generate
         agent_tools.delivery_context.channel_id = "C1"

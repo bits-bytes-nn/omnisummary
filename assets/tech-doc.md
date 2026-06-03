@@ -29,12 +29,14 @@ Runtime 위의 Strands)는 다이제스트 항목에 대한 질문에 답하고 
 ```
 
 파이프라인 개념도(수집 → 랭킹 → 다이제스트 → 전달, 후속 에이전트 루프)
-(`assets/concept-pipeline.excalidraw`, `node scripts/render_excalidraw.mjs`로 렌더):
+(`assets/concept-pipeline.excalidraw`,
+`excalidraw-to-png assets/concept-pipeline.excalidraw assets/concept-pipeline.png --scale 2`로 렌더):
 
 ![How the digest works](concept-pipeline.png)
 
 AWS 아키텍처(두 경로 — 스케줄 다이제스트 / 인터랙티브 후속) — draw.io
-(`assets/architecture.drawio`, `drawio -x -f png -s 2 -b 10`로 렌더):
+(`assets/architecture.drawio`,
+`drawio -x -f png -s 2 -b 10 -o assets/architecture.png assets/architecture.drawio`로 렌더):
 
 ![AWS architecture](architecture.png)
 
@@ -242,5 +244,6 @@ uv run python -m pytest tests/ -v                       # 테스트
 uv run black --check . && uv run ruff check .           # lint/format
 uv run mypy shared/ collectors/ pipeline/ agent/ output/ lambda_handlers/ main.py
 uv run python scripts/ci_synth.py                       # 오프라인 CDK synth
-AWS_PROFILE=research uv run cdk deploy --all -a "uv run python scripts/deploy.py"
+# 프로파일은 config.aws.profile에서 오며, 환경 변수로 재정의할 수 있다 (기본값 research)
+AWS_PROFILE=${AWS_PROFILE:-research} uv run cdk deploy --all -a "uv run python scripts/deploy.py"
 ```

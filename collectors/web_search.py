@@ -16,6 +16,7 @@ from shared import (
     CollectedItem,
     RefineQueryPrompt,
     SourceType,
+    extract_json_from_llm_output,
     generate_item_id,
     logger,
     resolve_secret,
@@ -96,14 +97,11 @@ class WebSearchCollector(BaseCollector):
                     "max_queries": self.config.max_refine_queries,
                 }
             )
-            raw = raw.strip()
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-            queries = json.loads(raw)
+            queries = json.loads(extract_json_from_llm_output(raw))
             if isinstance(queries, list):
                 return [q for q in queries if isinstance(q, str)][: self.config.max_refine_queries]
         except Exception:
-            logger.warning("Failed to generate refined queries via LLM", exc_info=True)
+            logger.warning("Failed to generate refined queries via LLM, falling back to broad results", exc_info=True)
 
         return []
 

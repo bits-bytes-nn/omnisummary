@@ -10,7 +10,7 @@ import feedparser
 import httpx
 from youtube_transcript_api import YouTubeTranscriptApi
 
-from shared import CollectedItem, SourceType, logger, parse_feed_published_date
+from shared import CollectedItem, SourceType, logger, parse_feed_published_date, retry_async
 from shared.config import YouTubeCollectorConfig
 from shared.proxy import get_proxied_url, is_proxy_configured
 
@@ -51,15 +51,21 @@ class YouTubeCollector(BaseCollector):
         cutoff = cutoff_datetime(self.config.lookback_hours, self.config.reference_time)
         items: list[CollectedItem] = []
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(
-                f"{YOUTUBE_API_BASE}/playlistItems",
-                params={
-                    "part": "snippet",
-                    "playlistId": uploads_playlist,
-                    "maxResults": self.config.max_videos_per_channel,
-                    "key": self.api_key,
-                },
+        async with httpx.AsyncClient(timeout=self.config.request_timeout) as client:
+            response = await retry_async(
+                lambda: client.get(
+                    f"{YOUTUBE_API_BASE}/playlistItems",
+                    params={
+                        "part": "snippet",
+                        "playlistId": uploads_playlist,
+                        "maxResults": self.config.max_videos_per_channel,
+                        "key": self.api_key,
+                    },
+                ),
+                max_retries=self.config.max_retries,
+                backoff_sec=self.config.retry_backoff_sec,
+                retry_on=(httpx.HTTPError,),
+                description=f"YouTube playlistItems for '{channel_url}'",
             )
             if response.status_code != 200:
                 logger.warning("YouTube API error for '%s': %d", channel_url, response.status_code)
@@ -100,7 +106,7 @@ class YouTubeCollector(BaseCollector):
                     if published_at and published_at < cutoff:
                         continue
 
-                    transcript = await asyncio.to_thread(self._get_transcript, video_id)
+                    transcript = await self._fetch_transcript(video_id)
                     text = transcript or snippet.get("description", "")
 
                     items.append(
@@ -151,7 +157,7 @@ class YouTubeCollector(BaseCollector):
                 if published_at and published_at < cutoff:
                     continue
 
-                transcript = await asyncio.to_thread(self._get_transcript, video_id)
+                transcript = await self._fetch_transcript(video_id)
                 text = transcript or entry.get("summary", "")
 
                 items.append(
@@ -172,10 +178,9 @@ class YouTubeCollector(BaseCollector):
 
         return items
 
-    @staticmethod
-    def _resolve_channel_id(channel_url: str) -> str:
+    def _resolve_channel_id(self, channel_url: str) -> str:
         try:
-            resp = httpx.get(channel_url, follow_redirects=True, timeout=15)
+            resp = httpx.get(channel_url, follow_redirects=True, timeout=self.config.resolve_timeout)
             match = re.search(r'"channelId":"(UC[a-zA-Z0-9_-]+)"', resp.text)
             if match:
                 return match.group(1)
@@ -186,12 +191,21 @@ class YouTubeCollector(BaseCollector):
             logger.warning("Failed to resolve channel ID for '%s'", channel_url)
         return ""
 
-    @staticmethod
-    def _get_transcript(video_id: str) -> str:
+    async def _fetch_transcript(self, video_id: str) -> str:
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._get_transcript, video_id),
+                timeout=self.config.transcript_timeout,
+            )
+        except TimeoutError:
+            logger.warning("Transcript fetch timed out for video '%s', skipping", video_id)
+            return ""
+
+    def _get_transcript(self, video_id: str) -> str:
         try:
             if is_proxy_configured():
                 proxy_url = get_proxied_url(f"https://www.youtube.com/api/timedtext?v={video_id}&lang=en")
-                resp = httpx.get(proxy_url, timeout=15)
+                resp = httpx.get(proxy_url, timeout=self.config.transcript_timeout)
                 if resp.status_code == 200 and resp.text.strip():
 
                     try:

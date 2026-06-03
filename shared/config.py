@@ -21,6 +21,8 @@ class BaseCollectorConfig(BaseModel):
 class YouTubeCollectorConfig(BaseCollectorConfig):
     channels: list[str] = Field(default_factory=list)
     max_videos_per_channel: int = 3
+    resolve_timeout: int = Field(default=15, ge=1)
+    transcript_timeout: int = Field(default=15, ge=1)
 
 
 class RedditCollectorConfig(BaseCollectorConfig):
@@ -105,6 +107,10 @@ class PipelineConfig(BaseModel):
     trend_max_evidence: int = Field(default=5, ge=1)
     trend_max_chars: int = Field(default=15000, ge=1)
     enable_daily_visual: bool = True
+    image_model: str = "gpt-image-1"
+    image_size: str = "1024x1024"
+    visual_synopsis_source_max_tokens: int = Field(default=2000, ge=1)
+    visual_synopsis_context_max_tokens: int = Field(default=1500, ge=1)
 
 
 class AgentConfig(BaseModel):
@@ -113,6 +119,9 @@ class AgentConfig(BaseModel):
     community_search_domains: list[str] = Field(
         default_factory=lambda: ["twitter.com", "x.com", "reddit.com", "news.ycombinator.com", "substack.com"]
     )
+    search_result_limit: int = Field(default=5, ge=1)
+    detail_max_tokens: int = Field(default=2000, ge=1)
+    search_content_preview_chars: int = Field(default=300, ge=1)
 
 
 class SlackConfig(BaseModel):
