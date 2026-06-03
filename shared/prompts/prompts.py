@@ -230,7 +230,7 @@ Produce ONLY a JSON object:
   "item_number": 2,
   "search_query": "a focused web query for extra context to enrich the visual",
   "format": "one-line: e.g. 'single-panel meme', '4-panel cartoon', 'parody movie poster'",
-  "instruction": "a rich natural-language brief for the image: what to depict, the joke/angle, the format, recognizable real-world cues (people, logos) to include, and that on-image text must be short Korean"
+  "instruction": "a rich natural-language brief for the image: what to depict, the joke/angle, the format, recognizable real-world cues (people, logos) to include, and that any on-image text must be short ENGLISH (the image model garbles Korean)"
 }}}}
 ```
 
@@ -269,10 +269,10 @@ Produce ONLY a JSON object:
 Rules:
 - The image is rendered in ONE pass at 1024x1024 — design a self-contained composition.
 - Be faithful to the actual technical content; do not invent facts.
-- Korean for title/caption AND for ALL on-image text: write the `prompt` in English (the image
-  model follows English best), but every label, speech bubble, caption, or sign that appears
-  INSIDE the image must be specified as short Korean text (quote the exact Korean string in the
-  prompt, e.g. text reads "출시"). Keep each on-image string short so it renders legibly.
+- Korean for the `title`/`caption` (shown alongside the image in Slack). But ALL text that
+  appears INSIDE the image — labels, speech bubbles, signs, captions — must be SHORT ENGLISH:
+  the image model garbles Korean glyphs. Quote the exact English string in the prompt
+  (e.g. text reads "SHIP IT"). Keep each on-image string short so it renders legibly.
 - Make the visual understandable WITHOUT reading the caption: bake the context into the imagery
   itself. Depict recognizable real-world cues — the actual people's likenesses (e.g. well-known
   founders/researchers), company logos and brand colors, product UIs, recognizable settings — so a

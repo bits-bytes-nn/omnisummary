@@ -93,6 +93,32 @@ class OmniSummaryApplicationStack(Stack):
         # ":latest" tag string never changes in the template, so CloudFormation would
         # not redeploy the function after a new push; a digest forces the update.
         digest_tag_or_digest = (digest_image_ref or "latest").lstrip("@")
+
+        # Daily-visual Lambda: invoked asynchronously by the digest Lambda so its
+        # LLM-editor + Tavily + gpt-image work (~1-2 min) stays off the digest's
+        # critical path. Same image, loads ranked items from AgentCore Memory.
+        visual_lambda = lambda_.DockerImageFunction(
+            self,
+            "DailyVisualLambda",
+            function_name=f"{project_name}-{stage}-visual",
+            code=lambda_.DockerImageCode.from_ecr(
+                foundation.ecr_repo,
+                tag_or_digest=digest_tag_or_digest,
+                cmd=["lambda_handlers.visual_handler.handler"],
+            ),
+            timeout=Duration.minutes(5),
+            memory_size=512,
+            role=foundation.lambda_role,
+            vpc=foundation.vpc,
+            vpc_subnets=foundation.vpc_subnets,
+            environment={
+                "AWS_BEDROCK_REGION": bedrock_region,
+                "PROJECT_NAME": project_name,
+                "STAGE": stage,
+                "MEMORY_ID": foundation.memory_id,
+            },
+        )
+
         digest_lambda = lambda_.DockerImageFunction(
             self,
             "DigestPipelineLambda",
@@ -116,6 +142,7 @@ class OmniSummaryApplicationStack(Stack):
                 "STAGE": stage,
                 "ALERT_SNS_TOPIC_ARN": foundation.alerts_topic.topic_arn,
                 "MEMORY_ID": foundation.memory_id,
+                "VISUAL_FUNCTION_NAME": visual_lambda.function_name,
             },
         )
 

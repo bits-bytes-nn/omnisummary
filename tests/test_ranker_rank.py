@@ -73,3 +73,26 @@ class TestRankEndToEnd:
         result = await ranker.rank(items)
         scores = [r.score for r in result]
         assert scores == sorted(scores, reverse=True)
+
+    @pytest.mark.asyncio
+    async def test_parallel_batches_merge_all_items(self):
+        import re
+
+        from langchain_core.messages import AIMessage
+        from langchain_core.runnables import RunnableLambda
+
+        items = _items([(f"i{n}", SourceType.RSS) for n in range(10)])
+        config = PipelineConfig(top_n=20, min_score=0.6, source_slots={}, ranking_batch_size=3)
+        factory = MagicMock()
+
+        # Each batch's mock scores exactly the item_ids present in that batch's prompt,
+        # so a correct merge yields all 10 (4 batches: 3+3+3+1).
+        def score_batch(prompt_value):
+            text = str(prompt_value)
+            ids = re.findall(r"ID: (i\d+)", text)
+            return AIMessage(content=_rankings(dict.fromkeys(ids, 0.8)))
+
+        factory.get_model.return_value = RunnableLambda(score_batch)
+        ranker = ContentRanker(config, factory)
+        result = await ranker.rank(items)
+        assert {r.item.item_id for r in result} == {f"i{n}" for n in range(10)}

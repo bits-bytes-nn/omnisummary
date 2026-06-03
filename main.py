@@ -138,7 +138,9 @@ async def run_pipeline(
     else:
         logger.error("Failed to send digest to Slack")
 
-    if config.pipeline.enable_daily_visual:
+    # In AWS the digest Lambda fires a separate visual Lambda (off the critical path);
+    # locally we run it inline so `uv run python main.py` still produces the visual.
+    if config.pipeline.enable_daily_visual and not is_running_in_aws():
         try:
             from pipeline.daily_visual import DailyVisualMaker
 

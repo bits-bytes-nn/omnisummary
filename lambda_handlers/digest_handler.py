@@ -84,5 +84,19 @@ async def _run() -> None:
         if items and ranked_items and digest:
             # base_dir=None → AgentCore-backed memory store in AWS.
             persist_digest(items, ranked_items, digest, digest_date, base_dir=None)
+            _trigger_visual()
 
     logger.info("Digest pipeline completed for %s", digest_date)
+
+
+def _trigger_visual() -> None:
+    """Fire the daily-visual Lambda asynchronously so its ~1-2 min of work doesn't
+    count against the digest Lambda's 15-min timeout. Best-effort."""
+    fn = os.environ.get("VISUAL_FUNCTION_NAME", "")
+    if not fn:
+        return
+    try:
+        boto3.client("lambda").invoke(FunctionName=fn, InvocationType="Event", Payload=b"{}")
+        logger.info("Triggered visual Lambda '%s'", fn)
+    except Exception as e:
+        logger.warning("Failed to trigger visual Lambda: %s", e)

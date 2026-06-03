@@ -52,8 +52,9 @@ For comics/cartoons specifically, make them genuinely funny: lean into internet 
 memes, parody, and exaggeration. Tell make_visual to use a punchy setup-and-punchline
 structure, relatable tech-culture in-jokes, and a meme-style visual gag — while staying
 accurate to the real facts. The goal is something people would actually share, not a dry
-illustration. Also tell make_visual to: (1) put any on-image text/speech bubbles in short
-Korean; (2) bake in recognizable context — real people's likenesses, company logos, brand
+illustration. Also tell make_visual to: (1) keep any on-image text/speech bubbles in SHORT
+ENGLISH (the image model garbles Korean glyphs) — the Korean goes in the caption, not inside
+the image; (2) bake in recognizable context — real people's likenesses, company logos, brand
 colors — so it reads without the caption; (3) for multi-panel comics keep one connected
 story with consistent characters across panels so the sequence is easy to follow.
 - "요즘 N 트렌드 어땠어" → recall_trends, and/or search tools.

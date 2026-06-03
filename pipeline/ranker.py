@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 from langchain_core.output_parsers import StrOutputParser
@@ -29,11 +30,16 @@ class ContentRanker:
 
         logger.info("Ranking %d items with model '%s'", len(items), self.config.ranking_model.value)
 
-        items_text = self._format_items(items)
-        chain = RankingPrompt.get_prompt() | self.llm | StrOutputParser()
-        raw_output = await chain.ainvoke({"items_text": items_text, "engagement_guidance": self._engagement_guidance()})
+        # Scoring is absolute (the prompt calibrates each item to fixed 0-1 criteria), so
+        # large inputs are split into batches scored CONCURRENTLY and merged — a single
+        # call over 100+ items dominated the Lambda runtime. Results are independent.
+        batch_size = self.config.ranking_batch_size
+        batches = [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
+        if len(batches) > 1:
+            logger.info("Ranking in %d parallel batches of up to %d", len(batches), batch_size)
+        results = await asyncio.gather(*(self._rank_batch(b) for b in batches))
 
-        ranked_items = self._parse_rankings(raw_output, items)
+        ranked_items: list[RankedItem] = [r for batch in results for r in batch]
         self._apply_origin_weights(ranked_items)
 
         above_threshold = [r for r in ranked_items if r.score >= self.config.min_score]
@@ -71,6 +77,18 @@ class ContentRanker:
                 r.item.title[:70],
             )
         return selected
+
+    async def _rank_batch(self, items: list[CollectedItem]) -> list[RankedItem]:
+        items_text = self._format_items(items)
+        chain = RankingPrompt.get_prompt() | self.llm | StrOutputParser()
+        try:
+            raw_output = await chain.ainvoke(
+                {"items_text": items_text, "engagement_guidance": self._engagement_guidance()}
+            )
+        except Exception:
+            logger.warning("Ranking batch of %d items failed", len(items), exc_info=True)
+            return []
+        return self._parse_rankings(raw_output, items)
 
     def _engagement_guidance(self) -> str:
         tiers = sorted(self.config.engagement_tiers)

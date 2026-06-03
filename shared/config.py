@@ -79,6 +79,7 @@ class PipelineConfig(BaseModel):
     ranking_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     digest_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     item_text_max_tokens: int = 8000
+    ranking_batch_size: int = Field(default=40, ge=1)
     source_slots: dict[str, int] = Field(
         default_factory=lambda: {
             "web": 2,
