@@ -40,9 +40,11 @@ def main():
         foundation=foundation,
         slack_signing_secret=os.getenv("SLACK_SIGNING_SECRET", ""),
         slack_bot_token=os.getenv("SLACK_BOT_TOKEN", ""),
+        slack_channel_id=os.getenv("SLACK_CHANNEL_ID", ""),
         tavily_api_key=os.getenv("TAVILY_API_KEY", ""),
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         agentcore_image_ref=os.getenv("AGENTCORE_IMAGE_REF", ""),
+        digest_image_ref=os.getenv("DIGEST_IMAGE_REF", ""),
         env=env,
     )
 

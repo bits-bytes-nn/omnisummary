@@ -64,6 +64,19 @@ class TestAgentCoreMemoryStore:
         assert payload["role"] == "ASSISTANT"
         assert "ranked_items" in payload["content"]["text"]
 
+    def test_put_digest_trims_when_over_limit(self):
+        store, client = self._store()
+        big = {
+            "collected_items": {"a": {"text": "x" * 200_000}},
+            "ranked_items": [{"item": {"item_id": "a"}}],
+            "digest_result": {"digest_text": "ok"},
+        }
+        store.put_digest("2026-06-02", big)
+        text = client.create_event.call_args.kwargs["payload"][0]["conversational"]["content"]["text"]
+        assert len(text) <= AgentCoreMemoryStore.MAX_EVENT_TEXT
+        assert '"collected_items": {}' in text
+        assert "ranked_items" in text
+
     def test_get_latest_digest_picks_newest_session(self):
         store, client = self._store()
         client.list_sessions.return_value = {

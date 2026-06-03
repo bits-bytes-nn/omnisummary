@@ -29,9 +29,11 @@ class OmniSummaryApplicationStack(Stack):
         foundation: OmniSummaryFoundationStack,
         slack_signing_secret: str = "",
         slack_bot_token: str = "",
+        slack_channel_id: str = "",
         tavily_api_key: str = "",
         openai_api_key: str = "",
         agentcore_image_ref: str = "",
+        digest_image_ref: str = "",
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -48,6 +50,7 @@ class OmniSummaryApplicationStack(Stack):
         ssm_params = {
             "slack-signing-secret": slack_signing_secret,
             "slack-bot-token": slack_bot_token,
+            "slack-channel-id": slack_channel_id,
             "tavily-api-key": tavily_api_key,
             "openai-api-key": openai_api_key,
         }
@@ -86,13 +89,17 @@ class OmniSummaryApplicationStack(Stack):
             },
         )
 
+        # Pin to the pushed image digest when provided (DIGEST_IMAGE_REF). A bare
+        # ":latest" tag string never changes in the template, so CloudFormation would
+        # not redeploy the function after a new push; a digest forces the update.
+        digest_tag_or_digest = (digest_image_ref or "latest").lstrip("@")
         digest_lambda = lambda_.DockerImageFunction(
             self,
             "DigestPipelineLambda",
             function_name=f"{project_name}-{stage}-digest",
             code=lambda_.DockerImageCode.from_ecr(
                 foundation.ecr_repo,
-                tag_or_digest="latest",
+                tag_or_digest=digest_tag_or_digest,
                 cmd=["lambda_handlers.digest_handler.handler"],
             ),
             timeout=Duration.minutes(15),

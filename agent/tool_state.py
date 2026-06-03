@@ -51,9 +51,16 @@ class DigestStateManager:
         self._digest_result = other._digest_result
 
     def export_state(self) -> dict:
+        # Only the ranked items (and the collected items they reference) are ever read
+        # back by the follow-up agent; persisting all collected items blew past the
+        # AgentCore Memory 100k-char event limit on busy days. Each RankedItem already
+        # embeds its CollectedItem, so the ranked set is self-contained.
+        ranked_ids = {ri.item.item_id for ri in self._ranked_items}
         return {
             "collected_items": {
-                item_id: item.model_dump(mode="json") for item_id, item in self._collected_items.items()
+                item_id: item.model_dump(mode="json")
+                for item_id, item in self._collected_items.items()
+                if item_id in ranked_ids
             },
             "ranked_items": [ri.model_dump(mode="json") for ri in self._ranked_items],
             "digest_result": self._digest_result.model_dump(mode="json") if self._digest_result else None,

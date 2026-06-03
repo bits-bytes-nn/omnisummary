@@ -94,9 +94,19 @@ class AgentCoreMemoryStore(MemoryStore):
         region = region_name or os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-west-2"))
         self._client = boto3.client("bedrock-agentcore", region_name=region)
 
+    MAX_EVENT_TEXT = 100_000
+
     def put_digest(self, digest_date: str, state: dict[str, Any]) -> None:
         session_id = f"{self.DIGEST_SESSION_PREFIX}-{digest_date}"
         payload_text = json.dumps(state, ensure_ascii=False)
+        if len(payload_text) > self.MAX_EVENT_TEXT:
+            # Last-resort guard against the AgentCore 100k-char event limit: drop the
+            # bulky collected-item bodies, keeping the ranked set (self-contained) and
+            # the digest. Normally export_state already trims to the ranked subset.
+            trimmed = {k: v for k, v in state.items() if k != "collected_items"}
+            trimmed["collected_items"] = {}
+            payload_text = json.dumps(trimmed, ensure_ascii=False)
+            logger.warning("Digest state exceeded %d chars; stored without collected_items bodies", self.MAX_EVENT_TEXT)
         self._client.create_event(
             memoryId=self.memory_id,
             actorId=self.actor_id,
