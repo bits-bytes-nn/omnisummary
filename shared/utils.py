@@ -414,6 +414,32 @@ def truncate_text_by_tokens(text: str, max_tokens: int = MAX_TOKENS) -> str:
     return truncated
 
 
+_CJK = "가-힣぀-ヿ一-鿿"
+
+
+def _normalize_bold_spans(text: str) -> str:
+    """Fix Slack *bold* spacing per-span so it renders correctly.
+
+    Slack requires no space just inside the * markers (`*x *` fails) and a word
+    boundary just outside (`a*x*` fails). CJK text has no spaces around emphasis,
+    so a CJK neighbour (e.g. a Korean particle `*설계*가`) must NOT get padding.
+    Handled as a single match-per-span pass to avoid the cross-span corruption of
+    chained regexes.
+    """
+
+    def repair(m: re.Match) -> str:
+        before, inner, after = m.group("before"), m.group("inner"), m.group("after")
+        inner = inner.strip()
+        if not inner:
+            return f"{before}{after}"  # empty bold -> drop the markers
+        lead = " " if before and not before.isspace() and not re.match(rf"[{_CJK}]", before) else ""
+        trail = " " if after and not after.isspace() and not re.match(rf"[{_CJK}]", after) else ""
+        return f"{before}{lead}*{inner}*{trail}{after}"
+
+    # (char before) *inner* (char after); inner has no '*' or newline
+    return re.sub(r"(?P<before>.?)\*(?P<inner>[^*\n]+?)\*(?P<after>.?)", repair, text)
+
+
 def sanitize_slack_mrkdwn(text: str) -> str:
     text = re.sub(r"\n---+\n", "\n\n", text)
     text = re.sub(r"\n\*\*\*+\n", "\n\n", text)
@@ -422,18 +448,7 @@ def sanitize_slack_mrkdwn(text: str) -> str:
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
 
     text = re.sub(r"\*\*([^*\n]+?)\*\*", r"*\1*", text)
-
-    text = re.sub(r"\* ([^*\n]+?)\*", r"*\1*", text)
-    text = re.sub(r"\*([^*\n]+?) \*", r"*\1*", text)
-
-    text = re.sub(r'"\*([^*\n]+?)\*"', r"*\1*", text)
-
-    # Slack bold breaks when a non-space char touches the * marker (English), but CJK
-    # text has no spaces around emphasis — inserting one there corrupts correct bold
-    # (e.g. *규모*가 -> *규모 * 가). Only pad when the neighbor is a non-CJK, non-space char.
-    cjk = r"가-힣぀-ヿ一-鿿"
-    text = re.sub(rf"([^\s{cjk}])\*([^*\n]+?)\*", r"\1 *\2*", text)
-    text = re.sub(rf"\*([^*\n]+?)\*([^\s{cjk}])", r"*\1* \2", text)
+    text = _normalize_bold_spans(text)
 
     text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"<\2|\1>", text)
     text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"<\2|\1>", text)
