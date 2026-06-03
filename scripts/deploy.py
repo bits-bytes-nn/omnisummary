@@ -43,6 +43,7 @@ def main():
         tavily_api_key=os.getenv("TAVILY_API_KEY", ""),
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         agentcore_image_ref=os.getenv("AGENTCORE_IMAGE_REF", ""),
+        digest_image_ref=os.getenv("DIGEST_IMAGE_REF", ""),
         env=env,
     )
 

@@ -111,6 +111,13 @@ class OmniSummaryFoundationStack(Stack):
                 f"arn:aws:bedrock:*:{self.account}:inference-profile/*",
             ],
         )
+        # The cross-region helper resolves a model ID to its inference-profile ARN
+        # before invoking. Without these, it AccessDenies on ListInferenceProfiles and
+        # falls back to a bare model ID, which Bedrock rejects for on-demand throughput.
+        bedrock_profile_statement = iam.PolicyStatement(
+            actions=["bedrock:GetInferenceProfile", "bedrock:ListInferenceProfiles"],
+            resources=["*"],
+        )
         logs_statement = iam.PolicyStatement(
             actions=["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
             resources=[
@@ -129,6 +136,7 @@ class OmniSummaryFoundationStack(Stack):
         )
         self.agentcore_role.add_to_policy(ssm_read_statement)
         self.agentcore_role.add_to_policy(bedrock_invoke_statement)
+        self.agentcore_role.add_to_policy(bedrock_profile_statement)
         self.agentcore_role.add_to_policy(logs_statement)
         self.state_bucket.grant_read_write(self.agentcore_role)
 
@@ -142,6 +150,7 @@ class OmniSummaryFoundationStack(Stack):
         )
         self.lambda_role.add_to_policy(ssm_read_statement)
         self.lambda_role.add_to_policy(bedrock_invoke_statement)
+        self.lambda_role.add_to_policy(bedrock_profile_statement)
         self.lambda_role.add_to_policy(logs_statement)
         self.state_bucket.grant_read_write(self.lambda_role)
         self.dedup_table.grant_read_write_data(self.lambda_role)
@@ -169,6 +178,7 @@ class OmniSummaryFoundationStack(Stack):
             assumed_by=iam.ServicePrincipal("bedrock-agentcore.amazonaws.com"),
         )
         memory_exec_role.add_to_policy(bedrock_invoke_statement)
+        memory_exec_role.add_to_policy(bedrock_profile_statement)
 
         self.memory = CfnMemory(
             self,

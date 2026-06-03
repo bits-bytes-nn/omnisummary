@@ -74,6 +74,7 @@ class TestFoundationStack:
         rendered = str(foundation.find_resources("AWS::IAM::Policy"))
         assert "ssm:GetParameter" in rendered
         assert "bedrock:InvokeModel" in rendered
+        assert "bedrock:ListInferenceProfiles" in rendered
 
     def test_sensitive_actions_not_wildcard_resource(self, templates):
         foundation, _ = templates
