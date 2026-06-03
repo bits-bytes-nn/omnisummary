@@ -92,6 +92,7 @@ class PipelineConfig(BaseModel):
     max_per_origin: int = Field(default=1, ge=1)
     origin_weights: dict[str, float] = Field(default_factory=dict)
     origin_weight_default: float = Field(default=1.0, ge=0.0)
+    origin_weight_nudge: float = Field(default=0.1, ge=0.0, le=1.0)
     trend_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     trend_retention_days: int = Field(default=30, ge=1)
 

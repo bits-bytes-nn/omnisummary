@@ -31,6 +31,8 @@ class RSSHubCollector(BaseCollector):
             logger.info("No RSSHub accounts configured, skipping")
             return []
 
+        await asyncio.to_thread(self._check_reachable)
+
         coros = [self._collect_account(account.username, account.platform) for account in self.config.accounts]
         labels = [f"{a.platform}/{a.username}" for a in self.config.accounts]
         results = await asyncio.gather(*coros, return_exceptions=True)
@@ -80,6 +82,19 @@ class RSSHubCollector(BaseCollector):
                 ", ".join(empty_accounts[:10]) + ("..." if len(empty_accounts) > 10 else ""),
             )
         return items
+
+    def _check_reachable(self) -> None:
+        """Raise if the RSSHub service is unreachable, so a total outage is reported
+        as FAILED (→ alert) instead of looking like an all-accounts-empty quiet day."""
+        import httpx
+
+        base = self.config.base_url.rstrip("/")
+        try:
+            resp = httpx.get(base, timeout=10, follow_redirects=True)
+        except Exception as e:
+            raise RuntimeError(f"RSSHub unreachable at {base}: {e}") from e
+        if resp.status_code >= 500:
+            raise RuntimeError(f"RSSHub at {base} returned HTTP {resp.status_code}")
 
     async def _collect_account(self, username: str, platform: str) -> list[CollectedItem]:
         feed_path = self._build_feed_path(username, platform)

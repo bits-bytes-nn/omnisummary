@@ -77,6 +77,11 @@ class ContentRanker:
         default_weight = self.config.origin_weight_default
         if not weights and default_weight == 1.0:
             return
+        # A weight is a small ADDITIVE tie-breaker, not a multiplier. The LLM prompt
+        # already judges Source Authority; multiplying its calibrated score by the
+        # weight would double-count authority and distort the scale non-linearly
+        # (and inflate mid-range scores most). nudge = (weight-1.0) * factor, clamped.
+        nudge_factor = self.config.origin_weight_nudge
         for ranked in ranked_items:
             origin_key = self._resolve_origin_key(ranked.item)
             if not origin_key:
@@ -84,9 +89,9 @@ class ContentRanker:
             weight = weights.get(origin_key, default_weight)
             if weight != 1.0:
                 original = ranked.score
-                ranked.score = min(1.0, ranked.score * weight)
+                ranked.score = max(0.0, min(1.0, ranked.score + (weight - 1.0) * nudge_factor))
                 logger.debug(
-                    "Applied origin weight %.2f to '%s' (origin='%s'): %.2f → %.2f",
+                    "Applied origin nudge (w=%.2f) to '%s' (origin='%s'): %.2f → %.2f",
                     weight,
                     ranked.item.title[:50],
                     origin_key,

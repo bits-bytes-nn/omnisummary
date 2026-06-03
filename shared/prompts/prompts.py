@@ -124,6 +124,10 @@ and never *설계 *가). When unsure, leave the text unbolded rather than risk a
 3. Technical detail or context in 1-2 sentences (in Korean).
 4. _Implications in 1-2 sentences, MUST be in italic (in Korean)._
 ONLY item 4 uses italic. 6-8 sentences per item.
+VARY the implications sentence — do NOT end every item with the same template \
+(avoid repeating "...실무자라면 ~할 필요가 있다" across items). Mix the angle and ending: \
+a sharp prediction, a contrarian caveat, a concrete "watch X", a "what breaks if...", \
+a question. Each item's closing should read differently from the others.
 
 *Hyperlinks*
 Titles must be clickable. Inline-link papers/repos naturally. No separate links section.
