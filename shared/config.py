@@ -103,6 +103,7 @@ class PipelineConfig(BaseModel):
     trend_cooling_days: int = Field(default=7, ge=1)
     trend_max_evidence: int = Field(default=5, ge=1)
     trend_max_chars: int = Field(default=15000, ge=1)
+    enable_daily_visual: bool = True
 
 
 class AgentConfig(BaseModel):

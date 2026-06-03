@@ -138,6 +138,15 @@ async def run_pipeline(
     else:
         logger.error("Failed to send digest to Slack")
 
+    if config.pipeline.enable_daily_visual:
+        try:
+            from pipeline.daily_visual import DailyVisualMaker
+
+            posted = await DailyVisualMaker(config, llm_factory).run(ranked_items)
+            logger.info("Daily visual %s", "posted" if posted else "skipped")
+        except Exception:
+            logger.warning("Daily visual step failed (non-fatal)", exc_info=True)
+
     if not is_running_in_aws():
         persist_digest(items, ranked_items, digest, digest_date, base_dir=Path(LocalPaths.DIGEST_STATE_DIR.value))
     return items, ranked_items, digest

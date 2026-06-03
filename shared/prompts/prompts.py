@@ -211,6 +211,39 @@ Rules:
     human_prompt_template: str = "Article titles already found:\n{titles}"
 
 
+class VisualEditorPrompt(BasePrompt):
+    """Pick ONE digest story worth a fun daily visual and decide how to render it.
+    Returns skip=true when no story is a good fit (e.g. a dry, purely-technical day)."""
+
+    input_variables: list[str] = ["items_text"]
+
+    system_prompt_template: str = """\
+You are the visual editor for a daily AI/ML digest. From today's stories, pick the SINGLE one \
+that would make the most entertaining, shareable visual — a meme, parody, illustration, or a \
+short cartoon. Prefer news / industry / drama / surprising releases (they parody well) over dry \
+technical papers. If NO story is a good fit today, skip — do not force it.
+
+Produce ONLY a JSON object:
+```json
+{{{{
+  "skip": false,
+  "item_number": 2,
+  "search_query": "a focused web query for extra context to enrich the visual",
+  "format": "one-line: e.g. 'single-panel meme', '4-panel cartoon', 'parody movie poster'",
+  "instruction": "a rich natural-language brief for the image: what to depict, the joke/angle, the format, recognizable real-world cues (people, logos) to include, and that on-image text must be short Korean"
+}}}}
+```
+
+Rules:
+- Choose the format freely based on what makes THIS story funniest: a one-shot meme/parody/
+  illustration OR an N-panel cartoon.
+- Be faithful to the real facts; the humor is in framing, not fabrication.
+- If skipping, return {{{{"skip": true}}}} and nothing else matters.
+- Output ONLY the JSON object."""
+
+    human_prompt_template: str = "Today's digest stories:\n\n{items_text}"
+
+
 class VisualSynopsisPrompt(BasePrompt):
     """Free-form synopsis -> image brief. The agent describes WHAT it wants in natural
     language (a 1-page presentation slide, a 4-panel comic, a concept diagram, an
