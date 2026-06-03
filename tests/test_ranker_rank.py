@@ -75,6 +75,41 @@ class TestRankEndToEnd:
         assert scores == sorted(scores, reverse=True)
 
     @pytest.mark.asyncio
+    async def test_ranking_categories_reach_prompt(self):
+        items = _items([("a", SourceType.RSS)])
+        captured: dict[str, str] = {}
+
+        def capture(prompt_value):
+            captured["text"] = str(prompt_value)
+            return AIMessage(content=_rankings({"a": 0.9}))
+
+        config = PipelineConfig(top_n=5, min_score=0.6, ranking_categories=["alpha", "beta", "gamma"])
+        factory = MagicMock()
+        factory.get_model.return_value = RunnableLambda(capture)
+        ranker = ContentRanker(config, factory)
+        await ranker.rank(items)
+
+        assert "alpha, beta, gamma" in captured["text"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("penalty", [0.0, 0.25, 0.5])
+    async def test_duplicate_score_penalty_reaches_prompt(self, penalty):
+        items = _items([("a", SourceType.RSS)])
+        captured: dict[str, str] = {}
+
+        def capture(prompt_value):
+            captured["text"] = str(prompt_value)
+            return AIMessage(content=_rankings({"a": 0.9}))
+
+        config = PipelineConfig(top_n=5, min_score=0.6, ranking_duplicate_score_penalty=penalty)
+        factory = MagicMock()
+        factory.get_model.return_value = RunnableLambda(capture)
+        ranker = ContentRanker(config, factory)
+        await ranker.rank(items)
+
+        assert str(penalty) in captured["text"]
+
+    @pytest.mark.asyncio
     async def test_parallel_batches_merge_all_items(self):
         import re
 

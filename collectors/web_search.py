@@ -20,6 +20,7 @@ from shared import (
     generate_item_id,
     logger,
     resolve_secret,
+    retry_async,
 )
 from shared.config import WebSearchCollectorConfig
 
@@ -63,7 +64,7 @@ class WebSearchCollector(BaseCollector):
             logger.info("No web search queries or accounts configured, skipping")
             return []
 
-        broad_items = self._deduplicate(await gather_collector_results(tasks))
+        broad_items = self._deduplicate(await gather_collector_results(tasks, raise_if_all_failed=True))
         logger.info("Web search collector gathered %d items (broad phase)", len(broad_items))
 
         refined_items = await self._refine_search(broad_items)
@@ -73,7 +74,11 @@ class WebSearchCollector(BaseCollector):
         return all_items
 
     async def _refine_search(self, broad_items: list[CollectedItem]) -> list[CollectedItem]:
-        if not broad_items or not self._llm:
+        if not self._llm:
+            logger.info("Skipping web search refinement: refine LLM not configured (feature disabled)")
+            return []
+        if not broad_items:
+            logger.info("Skipping web search refinement: no broad-phase items to refine from")
             return []
 
         queries = await self._generate_refined_queries(broad_items)
@@ -110,18 +115,27 @@ class WebSearchCollector(BaseCollector):
     ) -> list[CollectedItem]:
         logger.info("Searching trend '%s' with query: '%s' (topic='%s')", trend_name, query, topic)
         days = max(1, self.config.lookback_hours // 24)
-        try:
-            response = await self._client.search(
-                query=query,
-                max_results=self.config.max_results_per_query,
-                include_domains=domains if domains else None,
-                topic=topic,
-                days=days,
+
+        async def _search() -> dict:
+            return await asyncio.wait_for(
+                self._client.search(
+                    query=query,
+                    max_results=self.config.max_results_per_query,
+                    include_domains=domains if domains else None,
+                    topic=topic,
+                    days=days,
+                ),
+                timeout=self.config.request_timeout,
             )
-            return self._parse_results(response, trend_name=trend_name)
-        except Exception:
-            logger.warning("Failed to search trend '%s' query '%s'", trend_name, query, exc_info=True)
-            return []
+
+        response = await retry_async(
+            _search,
+            max_retries=self.config.max_retries,
+            backoff_sec=self.config.retry_backoff_sec,
+            retry_on=(Exception,),
+            description=f"Tavily search for trend '{trend_name}' query '{query}'",
+        )
+        return self._parse_results(response, trend_name=trend_name)
 
     def _parse_results(
         self,

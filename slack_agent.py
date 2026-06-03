@@ -21,7 +21,7 @@ from agent import create_digest_agent
 from agent.agent_tools import DeliveryContext, request_context, state_manager
 from agent.tool_state import DigestStateManager
 from output.slack_handler import _split_message
-from shared import LocalPaths, logger, sanitize_slack_mrkdwn
+from shared import LOGGING_TRUNCATION_CHARS, LocalPaths, logger, sanitize_slack_mrkdwn
 
 
 def _find_state_file(digest_date: date) -> Path | None:
@@ -108,7 +108,11 @@ def main() -> None:
             say(text="Please enter a question. e.g. '1번 자세히', '관련 논문 찾아줘'", thread_ts=thread_ts)
             return
 
-        logger.info("Agent query from user '%s': '%s'", event.get("user"), user_text[:100])
+        logger.info(
+            "Agent query from user '%s': '%s'",
+            event.get("user"),
+            user_text[: LOGGING_TRUNCATION_CHARS["user_query"]],
+        )
         _reload_if_newer()
 
         def _respond():

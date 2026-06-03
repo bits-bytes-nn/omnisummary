@@ -26,7 +26,14 @@ class RSSCollector(BaseCollector):
 
     async def _collect_feed(self, feed_url: str) -> list[CollectedItem]:
         logger.info("Collecting posts from feed '%s'", feed_url)
-        return await asyncio.to_thread(self._parse_feed, feed_url)
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._parse_feed, feed_url),
+                timeout=self.config.request_timeout,
+            )
+        except TimeoutError:
+            logger.warning("RSS feed '%s' timed out after %ds, skipping", feed_url, self.config.request_timeout)
+            return []
 
     def _parse_feed(self, feed_url: str) -> list[CollectedItem]:
         feed = feedparser.parse(feed_url)

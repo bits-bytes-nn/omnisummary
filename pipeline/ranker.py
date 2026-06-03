@@ -7,6 +7,7 @@ from collections import defaultdict
 from langchain_core.output_parsers import StrOutputParser
 
 from shared import (
+    LOGGING_TRUNCATION_CHARS,
     BedrockLanguageModelFactory,
     CollectedItem,
     RankedItem,
@@ -80,7 +81,7 @@ class ContentRanker:
                 "  Selected: [%s] %.2f - '%s'",
                 r.item.source_type.value,
                 r.score,
-                r.item.title[:70],
+                r.item.title[: LOGGING_TRUNCATION_CHARS["title"]],
             )
         return selected
 
@@ -127,7 +128,7 @@ class ContentRanker:
                 logger.debug(
                     "Applied origin nudge (w=%.2f) to '%s' (origin='%s'): %.2f → %.2f",
                     weight,
-                    ranked.item.title[:50],
+                    ranked.item.title[: LOGGING_TRUNCATION_CHARS["title_short"]],
                     origin_key,
                     original,
                     ranked.score,

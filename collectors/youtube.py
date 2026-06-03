@@ -30,7 +30,7 @@ class YouTubeCollector(BaseCollector):
             return []
 
         tasks = [self._collect_channel(ch) for ch in self.config.channels]
-        items = await gather_collector_results(tasks, labels=self.config.channels)
+        items = await gather_collector_results(tasks, labels=self.config.channels, raise_if_all_failed=True)
         logger.info("YouTube collector gathered %d items total", len(items))
         return items
 
@@ -221,7 +221,9 @@ class YouTubeCollector(BaseCollector):
     def _get_transcript(self, video_id: str) -> str:
         try:
             if is_proxy_configured():
-                proxy_url = get_proxied_url(f"https://www.youtube.com/api/timedtext?v={video_id}&lang=en")
+                proxy_url = get_proxied_url(
+                    f"https://www.youtube.com/api/timedtext?v={video_id}&lang={self.config.transcript_language}"
+                )
                 resp = httpx.get(proxy_url, timeout=self.config.transcript_timeout)
                 if resp.status_code == 200 and resp.text.strip():
 

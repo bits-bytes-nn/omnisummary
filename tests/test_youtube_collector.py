@@ -210,6 +210,23 @@ class TestTranscript:
             with patch("collectors.youtube.YouTubeTranscriptApi", side_effect=RuntimeError("boom")):
                 assert collector._get_transcript("vid") == ""
 
+    def test_proxied_transcript_uses_configured_language(self):
+        collector = YouTubeCollector(_config(transcript_language="ko"))
+        captured: dict[str, str] = {}
+
+        def fake_get(url, timeout):
+            captured["url"] = url
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.text = '{"events": [{"segs": [{"utf8": "hello"}]}]}'
+            return resp
+
+        with patch("collectors.youtube.is_proxy_configured", return_value=True):
+            with patch("collectors.youtube.get_proxied_url", side_effect=lambda u: u):
+                with patch("collectors.youtube.httpx.get", side_effect=fake_get):
+                    collector._get_transcript("vid")
+        assert "lang=ko" in captured["url"]
+
     @pytest.mark.asyncio
     async def test_fetch_transcript_times_out_and_skips(self):
         collector = YouTubeCollector(_config(transcript_timeout=1))

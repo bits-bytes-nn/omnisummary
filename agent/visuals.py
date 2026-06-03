@@ -7,6 +7,7 @@ from langchain_core.output_parsers import StrOutputParser
 from pydantic import ValidationError
 
 from shared import (
+    LOGGING_TRUNCATION_CHARS,
     BedrockLanguageModelFactory,
     VisualBrief,
     VisualSynopsisPrompt,
@@ -65,7 +66,7 @@ class VisualGenerator:
             }
         )
         brief = _parse_brief(raw)
-        logger.info("Generated visual brief '%s'", brief.title[:60])
+        logger.info("Generated visual brief '%s'", brief.title[: LOGGING_TRUNCATION_CHARS["brief_title"]])
         return brief
 
     def render(self, brief: VisualBrief) -> bytes:

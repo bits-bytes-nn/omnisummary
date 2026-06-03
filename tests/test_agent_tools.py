@@ -92,7 +92,7 @@ class TestSearchPapers:
     async def test_retries_on_429_then_succeeds(self, monkeypatch):
         import httpx
 
-        monkeypatch.setattr(agent_tools.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr("shared.utils.asyncio.sleep", AsyncMock())
 
         rate_limited = MagicMock(status_code=429, request=MagicMock())
         ok = MagicMock(status_code=200)
@@ -111,7 +111,7 @@ class TestSearchPapers:
     async def test_exhausts_retries_on_persistent_429(self, monkeypatch):
         import httpx
 
-        monkeypatch.setattr(agent_tools.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr("shared.utils.asyncio.sleep", AsyncMock())
         rate_limited = MagicMock(status_code=429, request=MagicMock())
         retries = agent_tools.Config.load().agent.search_max_retries
         client = self._client_returning([rate_limited] * retries)
@@ -165,6 +165,19 @@ class TestRecallTrends:
         with patch("shared.create_memory_store", return_value=store):
             result = await agent_tools.recall_trends._tool_func("nothing")
         assert "No earlier trends" in result
+
+    @pytest.mark.asyncio
+    async def test_top_k_is_config_driven(self):
+        from shared.config import AgentConfig, Config
+
+        store = MagicMock()
+        store.recall.return_value = ["trend A"]
+        cfg = Config()
+        cfg.agent = AgentConfig(recall_memory_top_k=11)
+        with patch.object(agent_tools.Config, "load", return_value=cfg):
+            with patch("shared.create_memory_store", return_value=store):
+                await agent_tools.recall_trends._tool_func("topic")
+        store.recall.assert_called_once_with("topic", top_k=11)
 
 
 class TestMakeVisual:

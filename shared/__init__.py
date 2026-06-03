@@ -1,5 +1,12 @@
 from .config import Config
-from .constants import DOMAIN_TO_SOURCE, EnvVars, LanguageModelId, LocalPaths, SourceType
+from .constants import (
+    DOMAIN_TO_SOURCE,
+    LOGGING_TRUNCATION_CHARS,
+    EnvVars,
+    LanguageModelId,
+    LocalPaths,
+    SourceType,
+)
 from .formatting import (
     YOUTUBE_VIEWS_EMOJI,
     clean_rss_feed_name,
@@ -45,6 +52,7 @@ __all__ = [
     "BedrockCrossRegionModelHelper",
     "BedrockLanguageModelFactory",
     "DOMAIN_TO_SOURCE",
+    "LOGGING_TRUNCATION_CHARS",
     "YOUTUBE_VIEWS_EMOJI",
     "clean_rss_feed_name",
     "format_collected_item",

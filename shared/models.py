@@ -51,9 +51,9 @@ class DigestResult(BaseModel):
 
 
 class VisualBrief(BaseModel):
-    title: str
-    caption: str
-    prompt: str
+    title: str = Field(min_length=1)
+    caption: str = Field(min_length=1)
+    prompt: str = Field(min_length=1, max_length=4000)
 
 
 class SourceStatus(str, Enum):

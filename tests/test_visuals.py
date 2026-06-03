@@ -24,6 +24,17 @@ class TestParseBrief:
         with pytest.raises(ValueError):
             _parse_brief('{"title": "only title"}')
 
+    def test_raises_on_empty_field(self):
+        # Empty title/caption/prompt are rejected at parse time so a runaway LLM parse
+        # can't produce a garbage brief that only fails downstream at image generation.
+        with pytest.raises(ValueError):
+            _parse_brief('{"title": "", "caption": "c", "prompt": "p"}')
+
+    def test_raises_on_overlong_prompt(self):
+        long_prompt = "x" * 5000
+        with pytest.raises(ValueError):
+            _parse_brief(f'{{"title": "t", "caption": "c", "prompt": "{long_prompt}"}}')
+
 
 def _generator() -> VisualGenerator:
     factory = MagicMock()

@@ -10,7 +10,7 @@ import httpx
 from strands import tool
 from tavily import AsyncTavilyClient
 
-from shared import Config, format_collected_item, logger, retry_async
+from shared import LOGGING_TRUNCATION_CHARS, Config, format_collected_item, logger, retry_async
 
 from .tool_state import DigestStateManager
 
@@ -123,7 +123,9 @@ def get_detail(item_number: int, query: str = "") -> str:
     if query:
         detail += f"\n\nUser question: {query}"
 
-    logger.info("Retrieved detail for item #%d: '%s'", item_number, item.title[:50])
+    logger.info(
+        "Retrieved detail for item #%d: '%s'", item_number, item.title[: LOGGING_TRUNCATION_CHARS["title_short"]]
+    )
     return detail
 
 
@@ -223,8 +225,9 @@ async def recall_trends(query: str) -> str:
     """
     from shared import create_memory_store
 
+    top_k = Config.load().agent.recall_memory_top_k
     store = create_memory_store()
-    recalled = await asyncio.to_thread(store.recall, query, top_k=5)
+    recalled = await asyncio.to_thread(store.recall, query, top_k=top_k)
     if not recalled:
         return "No earlier trends recalled for that query."
     return "Earlier trends:\n\n" + "\n\n".join(f"- {t}" for t in recalled)
