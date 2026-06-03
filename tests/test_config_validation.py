@@ -6,7 +6,8 @@ from shared.config import PipelineConfig, YouTubeCollectorConfig
 
 class TestImageSizeValidation:
     def test_default_is_valid(self):
-        assert PipelineConfig().image_size == "1024x1024"
+        # portrait by default so multi-panel comics aren't cropped
+        assert PipelineConfig().image_size == "1024x1536"
 
     def test_accepts_well_formed_size(self):
         assert PipelineConfig(image_size="512x768").image_size == "512x768"

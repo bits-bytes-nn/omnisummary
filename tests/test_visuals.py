@@ -68,17 +68,65 @@ class TestVisualGenerator:
         # the image prompt sent to OpenAI comes from brief.prompt
         assert fake_client.images.generate.call_args.kwargs["prompt"] == "a one-page slide explaining X"
 
+    @pytest.mark.asyncio
+    async def test_generate_retries_softened_on_moderation_block(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "key")
+        gen = _generator()
+        briefs = [
+            VisualBrief(title="t1", caption="c1", prompt="edgy prompt"),
+            VisualBrief(title="t2", caption="c2", prompt="softened prompt"),
+        ]
+        instructions: list[str] = []
+
+        async def fake_brief(instruction, source, context=""):
+            instructions.append(instruction)
+            return briefs[len(instructions) - 1]
+
+        fake_img = base64.b64encode(b"OK").decode()
+        ok_resp = MagicMock()
+        ok_resp.data = [MagicMock(b64_json=fake_img)]
+        client = MagicMock()
+        # first render raises moderation, second succeeds
+        client.images.generate.side_effect = [
+            Exception("Your request was rejected by the safety system: moderation_blocked"),
+            ok_resp,
+        ]
+
+        with patch.object(gen, "brief", side_effect=fake_brief):
+            with patch("openai.OpenAI", return_value=client):
+                image_bytes, out_brief = await gen.generate("draw it", "src", "")
+
+        assert image_bytes == b"OK"
+        assert out_brief.title == "t2"  # the softened-retry brief was used
+        assert len(instructions) == 2
+        assert "safe-for-work" in instructions[1]
+
+    @pytest.mark.asyncio
+    async def test_generate_reraises_non_moderation_error(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "key")
+        gen = _generator()
+
+        async def fake_brief(instruction, source, context=""):
+            return VisualBrief(title="t", caption="c", prompt="p")
+
+        client = MagicMock()
+        client.images.generate.side_effect = RuntimeError("network down")
+        with patch.object(gen, "brief", side_effect=fake_brief):
+            with patch("openai.OpenAI", return_value=client):
+                with pytest.raises(RuntimeError, match="network down"):
+                    await gen.generate("draw", "src", "")
+
     def test_render_requires_api_key(self):
         gen = _generator()
         with patch("agent.visuals.resolve_secret", return_value=""):
             with pytest.raises(RuntimeError):
-                gen.render(VisualBrief(title="t", caption="c", prompt="anything"))
+                gen.render("anything")
 
     def test_render_requires_prompt(self):
         gen = _generator()
         with patch("agent.visuals.resolve_secret", return_value="key"):
             with pytest.raises(ValueError):
-                gen.render(VisualBrief(title="t", caption="c", prompt=""))
+                gen.render("")
 
     def test_render_raises_on_empty_image_data(self):
         gen = _generator()
@@ -89,7 +137,7 @@ class TestVisualGenerator:
             client.images.generate.return_value = resp
             with patch("openai.OpenAI", return_value=client):
                 with pytest.raises(RuntimeError):
-                    gen.render(VisualBrief(title="t", caption="c", prompt="draw"))
+                    gen.render("draw")
 
     def test_render_uses_configured_model_and_size(self):
         factory = MagicMock()
@@ -104,7 +152,7 @@ class TestVisualGenerator:
         client.images.generate.return_value = resp
         with patch("agent.visuals.resolve_secret", return_value="key"):
             with patch("openai.OpenAI", return_value=client):
-                gen.render(VisualBrief(title="t", caption="c", prompt="draw"))
+                gen.render("draw")
         kwargs = client.images.generate.call_args.kwargs
         assert kwargs["model"] == "custom-model"
         assert kwargs["size"] == "512x512"

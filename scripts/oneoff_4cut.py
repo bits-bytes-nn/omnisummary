@@ -11,7 +11,6 @@ import boto3
 
 from agent.tool_state import DigestStateManager
 from agent.visuals import VisualGenerator
-from output.slack_handler import send_image_to_slack
 from pipeline.daily_visual import DailyVisualMaker
 from shared import BedrockLanguageModelFactory, Config, create_memory_store, logger
 
@@ -40,28 +39,22 @@ async def main() -> None:
 
     source = f"{chosen.item.title}\n\n{chosen.item.text}"
     context = await maker._gather_context(plan.get("search_query", ""))
-    instruction = (
-        "A 4-panel cartoon (2x2 grid) telling ONE connected story about this item. "
-        "Keep the same characters and art style across all four panels; each panel follows "
-        "causally from the previous one (setup -> escalation -> twist -> punchline). Make it "
-        "genuinely funny with internet-meme energy and parody. Bake in recognizable real-world "
-        "cues (the actual people's likenesses, company logos, brand colors) so it reads without "
-        "a caption. All on-image text/speech bubbles must be SHORT ENGLISH (the image model "
-        "garbles Korean glyphs). Original angle: " + plan.get("instruction", "")
-    )
+    # Let the editor's own format/instruction drive it; just nudge toward a 4-panel comic.
+    instruction = "A 4-panel comic. " + plan.get("instruction", "")
 
-    generator = VisualGenerator(factory, config.pipeline.digest_model)
+    generator = VisualGenerator(
+        factory,
+        config.pipeline.digest_model,
+        image_model=config.pipeline.image_model,
+        image_size=config.pipeline.image_size,
+    )
     image_bytes, brief = await generator.generate(instruction, source, context)
     logger.info("Brief title: %s", brief.title)
+    logger.info("Image prompt: %s", brief.prompt[:600])
 
-    ok = await send_image_to_slack(
-        image_bytes,
-        channel_id=config.slack.channel_id,
-        title=brief.title or "4컷 카툰",
-        comment=f"*{brief.title or '4컷 카툰'}* (4컷 재생성)\n{brief.caption}",
-        bot_token=config.slack.bot_token,
-    )
-    logger.info("Posted to Slack: %s", ok)
+    with open("/tmp/oneoff_4cut.png", "wb") as f:
+        f.write(image_bytes)
+    logger.info("Saved /tmp/oneoff_4cut.png (%d bytes)", len(image_bytes))
 
 
 if __name__ == "__main__":

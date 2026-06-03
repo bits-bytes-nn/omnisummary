@@ -272,24 +272,31 @@ Produce ONLY a JSON object:
 }}}}
 ```
 
+Think like an editor BEFORE you describe pixels. A good visual is understandable on its own —
+a viewer should grasp the subject, the context, and the one point within a few seconds, WITHOUT
+reading the caption. Work through these general decisions and bake the answers into `prompt`:
+
+1. SUBJECT & CONTEXT — Who/what is this about? Make it visually unmistakable using whatever
+   real-world cues fit this story: the actual named people's likenesses, organization logos and
+   brand colors, recognizable products/UIs/settings. Choose the cues the story calls for — do not
+   default to any fixed set.
+2. THE ONE POINT — What single idea, tension, or punchline should land? State it in one sentence,
+   then make every visual element serve it. Cut anything that doesn't.
+3. STRUCTURE — Pick the composition that best delivers that point for THIS story (e.g. a single
+   striking frame, a before/after contrast, a cause→effect or time progression, an N-panel
+   sequence). Let the story decide; don't force a template.
+4. LEGIBILITY — The whole composition must fit the {image_size} frame with nothing cropped; leave
+   margins. Few elements, clear focal point.
+
 Rules:
-- The image is rendered in ONE pass at {image_size} — design a self-contained composition.
-- Be faithful to the actual technical content; do not invent facts.
-- Korean for the `title`/`caption` (shown alongside the image in Slack). But ALL text that
-  appears INSIDE the image — labels, speech bubbles, signs, captions — must be SHORT ENGLISH:
-  the image model garbles Korean glyphs. Quote the exact English string in the prompt
-  (e.g. text reads "SHIP IT"). Keep each on-image string short so it renders legibly.
-- Make the visual understandable WITHOUT reading the caption: bake the context into the imagery
-  itself. Depict recognizable real-world cues — the actual people's likenesses (e.g. well-known
-  founders/researchers), company logos and brand colors, product UIs, recognizable settings — so a
-  viewer instantly grasps who and what it is about. State these concrete cues explicitly in `prompt`.
-- If the instruction implies multiple panels/sections, lay them out explicitly in `prompt`.
-- For multi-panel comics, the panels must tell ONE connected story: keep the same characters and
-  visual style across panels, and make each panel follow causally from the previous one (setup →
-  development → punchline) so the sequence reads naturally left-to-right, top-to-bottom.
-- If the instruction asks for a comic/cartoon, make it genuinely funny: build in internet
-  humor, memes, parody, and exaggeration with a clear setup-and-punchline; describe a
-  meme-style visual gag and expressive characters — while keeping the facts accurate.
+- Be faithful to the actual facts; the humor/angle is in framing, never in fabrication.
+- Korean for the `title`/`caption` (shown alongside the image in Slack). But ALL text that appears
+  INSIDE the image — labels, speech bubbles, signs — must be SHORT ENGLISH and quoted exactly in
+  the prompt (e.g. text reads "SHIP IT"): the image model garbles Korean glyphs. Minimize on-image text.
+- Multi-panel: same characters and a single consistent, polished art style across panels; each panel
+  follows from the previous so the sequence reads in order without explanation.
+- For comics/cartoons, aim for genuinely funny and shareable — internet-humor sensibility, a clear
+  setup-and-payoff, expressive characters — in a clean, modern, appealing illustration style.
 - Output ONLY the JSON object."""
 
     human_prompt_template: str = (

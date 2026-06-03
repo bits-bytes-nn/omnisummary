@@ -126,8 +126,9 @@ class PipelineConfig(BaseModel):
     trend_max_active_trends: int = Field(default=10, ge=1)
     trend_max_chars: int = Field(default=15000, ge=1)
     enable_daily_visual: bool = True
-    image_model: str = "gpt-image-1"
-    image_size: str = Field(default="1024x1024", pattern=r"^\d+x\d+$")
+    image_model: str = "gpt-image-2"
+    # Portrait by default so multi-panel comics aren't cropped in a square frame.
+    image_size: str = Field(default="1024x1536", pattern=r"^\d+x\d+$")
     visual_synopsis_source_max_tokens: int = Field(default=2000, ge=1)
     visual_synopsis_context_max_tokens: int = Field(default=1500, ge=1)
     visual_context_max_results: int = Field(default=5, ge=1)

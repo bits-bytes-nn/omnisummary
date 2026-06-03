@@ -69,22 +69,42 @@ class VisualGenerator:
         logger.info("Generated visual brief '%s'", brief.title[: LOGGING_TRUNCATION_CHARS["brief_title"]])
         return brief
 
-    def render(self, brief: VisualBrief) -> bytes:
+    def render(self, prompt: str) -> bytes:
         api_key = resolve_secret("OPENAI_API_KEY", "openai-api-key")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY not configured — visualization disabled")
         from openai import OpenAI
 
-        if not brief.prompt:
+        if not prompt:
             raise ValueError("Visual brief has no image prompt")
         client = OpenAI(api_key=api_key)
-        response = client.images.generate(model=self.image_model, prompt=brief.prompt, size=self.image_size)
+        response = client.images.generate(model=self.image_model, prompt=prompt, size=self.image_size)
         b64 = response.data[0].b64_json if response.data else None
         if not b64:
             raise RuntimeError("gpt-image returned no image data")
         logger.info("Rendered visual image")
         return base64.b64decode(b64)
 
+    @staticmethod
+    def _is_moderation_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "moderation_blocked" in msg or "safety system" in msg
+
     async def generate(self, instruction: str, source: str, context: str = "") -> tuple[bytes, VisualBrief]:
         brief = await self.brief(instruction, source, context)
-        return self.render(brief), brief
+        try:
+            return self.render(brief.prompt), brief
+        except Exception as e:
+            if not self._is_moderation_error(e):
+                raise
+            # gpt-image moderation is intermittent and sensitive to real-person likenesses /
+            # edgy parody. Regenerate the brief once with a softened, safe-for-work instruction
+            # rather than losing the visual entirely.
+            logger.warning("Image moderation blocked the prompt; retrying with a softened brief")
+            safe_instruction = (
+                instruction + "\n\nIMPORTANT: keep it clearly safe-for-work and good-natured. "
+                "Use brand mascots/logos and generic stylized characters rather than realistic "
+                "depictions of real named individuals; avoid anything that could read as defamatory."
+            )
+            brief = await self.brief(safe_instruction, source, context)
+            return self.render(brief.prompt), brief
