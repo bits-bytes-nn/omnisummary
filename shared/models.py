@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
@@ -47,3 +48,30 @@ class DigestResult(BaseModel):
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     total_collected: int = 0
     total_ranked: int = 0
+
+
+class SourceStatus(str, Enum):
+    OK = "ok"
+    EMPTY = "empty"
+    FAILED = "failed"
+
+
+class SourceHealth(BaseModel):
+    name: str
+    item_count: int = 0
+    status: SourceStatus = SourceStatus.OK
+    detail: str | None = None
+
+
+class HealthReport(BaseModel):
+    sources: list[SourceHealth] = Field(default_factory=list)
+
+    @property
+    def has_failures(self) -> bool:
+        return any(s.status == SourceStatus.FAILED for s in self.sources)
+
+    def summary(self) -> str:
+        return "\n".join(
+            f"[{s.status.value.upper()}] {s.name}: {s.item_count} items" + (f" — {s.detail}" if s.detail else "")
+            for s in self.sources
+        )

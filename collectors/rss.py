@@ -30,6 +30,11 @@ class RSSCollector(BaseCollector):
 
     def _parse_feed(self, feed_url: str) -> list[CollectedItem]:
         feed = feedparser.parse(feed_url)
+        status = feed.get("status")
+        if (status is not None and status >= 400) or (feed.bozo and not feed.entries):
+            reason = f"HTTP {status}" if status and status >= 400 else feed.get("bozo_exception")
+            logger.warning("Failed RSS feed '%s': %s", feed_url, reason)
+            return []
         cutoff = cutoff_datetime(self.config.lookback_hours, self.config.reference_time)
 
         items: list[CollectedItem] = []

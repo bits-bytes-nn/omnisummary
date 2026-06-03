@@ -16,11 +16,10 @@ def _item(source_type=SourceType.REDDIT, metadata=None, author=None):
 
 class TestFormatSourceDetail:
     def test_reddit(self):
-        item = _item(SourceType.REDDIT, metadata={"subreddit": "LocalLLaMA", "score": 342, "num_comments": 89})
+        # .rss feed carries no score/num_comments — only the subreddit tag is rendered.
+        item = _item(SourceType.REDDIT, metadata={"subreddit": "LocalLLaMA"})
         result = DigestGenerator._format_source_detail(item)
-        assert "`r/LocalLLaMA`" in result
-        assert ":thumbsup: 342" in result
-        assert ":speech_balloon: 89" in result
+        assert result == "`r/LocalLLaMA`"
 
     def test_youtube(self):
         item = _item(SourceType.YOUTUBE, metadata={"view_count": 12345})

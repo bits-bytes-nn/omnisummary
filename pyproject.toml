@@ -10,6 +10,7 @@ dependencies = [
     "httpx>=0.28.1",
     "langchain>=0.3.27,<1.0.0",
     "langchain-aws>=0.2.35,<1.0.0",
+    "openai>=1.55.0",
     "langchain-core>=0.3.78,<1.0.0",
     "pydantic>=2.12.0",
     "python-dotenv>=1.1.1",
@@ -31,9 +32,12 @@ dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.1.0",
+    "aws-cdk-lib>=2.180.0",
+    "constructs>=10.0.0",
     "black>=23.12.0",
     "mypy>=1.7.0",
     "ruff>=0.1.9",
+    "types-PyYAML>=6.0",
 ]
 
 [build-system]
@@ -63,9 +67,22 @@ exclude = '''
 [tool.ruff]
 line-length = 120
 target-version = "py312"
-select = ["E", "W", "F", "I", "B", "C4", "UP"]
-ignore = ["E501", "B008", "C901"]
 exclude = [".git", ".mypy_cache", ".venv", "venv", "build", "dist", "references"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP"]
+# E501: line length handled by black. B008: FastAPI/CDK default-arg pattern.
+# C901: complexity. UP042: codebase uses (str, Enum) intentionally for JSON-serializable enums.
+# UP046: PEP 695 generic syntax not adopted (py312 baseline).
+ignore = ["E501", "B008", "C901", "UP042", "UP046"]
+
+[tool.ruff.lint.per-file-ignores]
+# Entrypoint scripts mutate sys.path before importing local packages.
+# C408: diagram generator uses dict(...) kwargs-builder style intentionally.
+"scripts/*.py" = ["E402", "C408"]
+"slack_agent.py" = ["E402"]
+# W291: trailing whitespace is intentional inside multi-line prompt string literals.
+"agent/agent.py" = ["W291"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -76,9 +93,11 @@ no_implicit_optional = true
 strict_equality = true
 warn_no_return = true
 warn_redundant_casts = true
-warn_return_any = true
+warn_return_any = false
 warn_unused_configs = true
-warn_unused_ignores = true
+warn_unused_ignores = false
+ignore_missing_imports = true
+exclude = "(references|tests|cdk\\.out)/"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

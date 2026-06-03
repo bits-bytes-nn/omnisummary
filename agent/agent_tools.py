@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+
 import httpx
 from strands import tool
 from tavily import AsyncTavilyClient
@@ -15,12 +16,52 @@ COMMUNITY_SEARCH_DOMAINS = ["twitter.com", "x.com", "reddit.com", "news.ycombina
 state_manager = DigestStateManager()
 
 
+class DeliveryContext:
+    """Slack delivery target for tools that produce media (set per-invocation)."""
+
+    channel_id: str = ""
+    thread_ts: str = ""
+
+
+delivery_context = DeliveryContext()
+
+
 def _get_tavily_client() -> AsyncTavilyClient | None:
     api_key = os.getenv("TAVILY_API_KEY", "")
     if not api_key:
         return None
 
     return AsyncTavilyClient(api_key=api_key)
+
+
+def _format_search_results(results: list[dict]) -> str:
+    return "\n\n".join(
+        f"- {r.get('title', 'N/A')}\n  URL: {r.get('url', '')}\n  Content: {r.get('content', '')[:300]}"
+        for r in results
+    )
+
+
+async def _tavily_search(query: str, *, topic: str | None = None, include_domains: list[str] | None = None) -> str:
+    client = _get_tavily_client()
+    if not client:
+        return "TAVILY_API_KEY not configured."
+
+    kwargs: dict = {"query": query, "max_results": 5}
+    if topic:
+        kwargs["topic"] = topic
+    if include_domains:
+        kwargs["include_domains"] = include_domains
+
+    try:
+        response = await client.search(**kwargs)
+        results = response.get("results", [])
+        if not results:
+            return "No results found."
+        logger.info("Tavily search found %d results for query '%s'", len(results), query)
+        return _format_search_results(results)
+    except Exception as e:
+        logger.warning("Tavily search failed: %s", e)
+        return f"Search failed: {e}"
 
 
 @tool
@@ -121,31 +162,7 @@ async def search_community(query: str) -> str:
     Args:
         query: Search query for community discussions
     """
-    client = _get_tavily_client()
-    if not client:
-        return "TAVILY_API_KEY not configured."
-
-    try:
-        response = await client.search(
-            query=query,
-            max_results=5,
-            include_domains=COMMUNITY_SEARCH_DOMAINS,
-        )
-        results = response.get("results", [])
-        if not results:
-            return "No community discussions found."
-
-        formatted: list[str] = []
-        for r in results:
-            formatted.append(
-                f"- {r.get('title', 'N/A')}\n" f"  URL: {r.get('url', '')}\n" f"  Content: {r.get('content', '')[:300]}"
-            )
-
-        logger.info("Found %d community discussions for query '%s'", len(results), query)
-        return "\n\n".join(formatted)
-    except Exception as e:
-        logger.warning("Tavily search failed: %s", e)
-        return f"Search failed: {e}"
+    return await _tavily_search(query, include_domains=COMMUNITY_SEARCH_DOMAINS)
 
 
 @tool
@@ -155,28 +172,93 @@ async def search_related_news(query: str) -> str:
     Args:
         query: Search query for related news articles
     """
-    client = _get_tavily_client()
-    if not client:
-        return "TAVILY_API_KEY not configured."
+    return await _tavily_search(query, topic="news")
+
+
+@tool
+async def recall_trends(query: str) -> str:
+    """Recall related AI/ML trends seen in earlier digests (cross-day memory).
+
+    Use this when the user asks how a topic has evolved, what was covered before,
+    or for historical context beyond today's digest.
+
+    Args:
+        query: What to recall (e.g. "open-weight model releases", "agent frameworks")
+    """
+    from shared import create_memory_store
+
+    store = create_memory_store()
+    recalled = await asyncio.to_thread(store.recall, query, top_k=5)
+    if not recalled:
+        return "No earlier trends recalled for that query."
+    return "Earlier trends:\n\n" + "\n\n".join(f"- {t}" for t in recalled)
+
+
+def _build_llm_factory():
+    import boto3
+
+    from shared import BedrockLanguageModelFactory, Config, is_running_in_aws
+
+    config = Config.load()
+    if is_running_in_aws():
+        session = boto3.Session(region_name=config.aws.bedrock_region)
+    else:
+        session = boto3.Session(
+            region_name=config.aws.bedrock_region,
+            profile_name=config.aws.profile or None,
+        )
+    return BedrockLanguageModelFactory(boto_session=session, region_name=config.aws.bedrock_region), config
+
+
+@tool
+async def make_visual(instruction: str, item_number: int = 0, context: str = "") -> str:
+    """Generate an image from a free-form instruction and post it to Slack.
+
+    The visual format is entirely up to you: a one-page presentation slide, an N-panel
+    comic, a concept diagram, an infographic, a poster — describe what you want in
+    `instruction`. First gather any extra material yourself (search_papers /
+    search_related_news / search_community / get_detail) and pass it via `context`.
+
+    Args:
+        instruction: Natural-language description of the image to create (format, content, style).
+        item_number: Optional digest item (1-based) to use as the source material.
+        context: Optional extra research/notes you gathered to ground the visual.
+    """
+    from agent.visuals import VisualGenerator
+    from output.slack_handler import send_image_to_slack
+    from shared import resolve_secret
+
+    if not resolve_secret("OPENAI_API_KEY", "openai-api-key"):
+        return "Visualization is disabled (OPENAI_API_KEY not configured)."
+
+    source = ""
+    if item_number:
+        ranked = state_manager.get_item_by_number(item_number)
+        if not ranked:
+            return f"Item {item_number} not found. Today's digest has {state_manager.get_item_count()} items."
+        source = f"{ranked.item.title}\n\n{ranked.item.text}"
+
+    factory, config = _build_llm_factory()
+    generator = VisualGenerator(factory, config.pipeline.digest_model)
 
     try:
-        response = await client.search(
-            query=query,
-            max_results=5,
-            topic="news",
-        )
-        results = response.get("results", [])
-        if not results:
-            return "No related news found."
-
-        formatted: list[str] = []
-        for r in results:
-            formatted.append(
-                f"- {r.get('title', 'N/A')}\n" f"  URL: {r.get('url', '')}\n" f"  Content: {r.get('content', '')[:300]}"
-            )
-
-        logger.info("Found %d related news for query '%s'", len(results), query)
-        return "\n\n".join(formatted)
+        image_bytes, brief = await generator.generate(instruction, source, context)
     except Exception as e:
-        logger.warning("Tavily news search failed: %s", e)
-        return f"Search failed: {e}"
+        logger.error("Visualization failed: %s", e, exc_info=True)
+        return f"Visualization failed: {e}"
+
+    if not delivery_context.channel_id:
+        return "Visual generated but no Slack channel is set for delivery."
+
+    visual_title = brief.get("title", "Visual")
+    caption = brief.get("caption", "")
+    uploaded = await send_image_to_slack(
+        image_bytes,
+        channel_id=delivery_context.channel_id,
+        title=visual_title,
+        comment=f"*{visual_title}*\n{caption}",
+        thread_ts=delivery_context.thread_ts,
+    )
+    if not uploaded:
+        return "Visual generated but Slack upload failed."
+    return f"Posted a visual to Slack: '{visual_title}'."

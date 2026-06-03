@@ -62,10 +62,9 @@ Product/service promotion, thin content, beginner questions, memes, self-promoti
 Be generous in 0.6-0.8. Aim for ~10-20 items scoring 0.6+ per batch.
 
 *Engagement Signal*
-High engagement is a STRONG quality signal. Apply these bonuses based on the Engagement field:
-- Reddit: 100+ upvotes → +0.05, 500+ → +0.1, 1000+ → +0.15. High comment count amplifies further.
+High engagement is a STRONG quality signal. Apply this bonus based on the Engagement field when present:
 - YouTube: 10K+ views → +0.05, 100K+ → +0.1, 500K+ → +0.15.
-- Items with NO engagement data: judge purely on content quality.
+- Items with NO engagement data (most sources): judge purely on content quality.
 Engagement bonus stacks with content quality — a high-engagement AND substantive item should score very high.
 
 *Other Bonuses*
@@ -115,6 +114,9 @@ release → 출시/공개, breakthrough → 돌파구, approach → 접근법, e
 *Slack Formatting*
 Slack mrkdwn only: *bold*, _italic_, `code`, <url|text>. \
 NEVER use **bold**, ## headings, ---, ***, or ___.
+BOLD SAFETY: never put a space just inside the * markers — write *규모* not *규모 *. \
+In Korean, attach particles directly after the closing marker (*설계*가, not *설계* 가, \
+and never *설계 *가). When unsure, leave the text unbolded rather than risk a broken marker.
 
 *Per-Item Format*
 1. *<url|한글 제목>* followed by the Source Detail field as provided (backtick-wrapped source tags + emoji metrics).
@@ -122,6 +124,10 @@ NEVER use **bold**, ## headings, ---, ***, or ___.
 3. Technical detail or context in 1-2 sentences (in Korean).
 4. _Implications in 1-2 sentences, MUST be in italic (in Korean)._
 ONLY item 4 uses italic. 6-8 sentences per item.
+VARY the implications sentence — do NOT end every item with the same template \
+(avoid repeating "...실무자라면 ~할 필요가 있다" across items). Mix the angle and ending: \
+a sharp prediction, a contrarian caveat, a concrete "watch X", a "what breaks if...", \
+a question. Each item's closing should read differently from the others.
 
 *Hyperlinks*
 Titles must be clickable. Inline-link papers/repos naturally. No separate links section.
@@ -137,8 +143,7 @@ what it reveals, what people are getting wrong. Don't cover every story.
 - Blank line between items."""
 
     human_prompt_template: str = (
-        "Here are today's top ranked items:\n\n{items_text}\n\n"
-        "Ongoing trends from recent days:\n\n{trends_context}"
+        "Here are today's top ranked items:\n\n{items_text}\n\n" "Ongoing trends from recent days:\n\n{trends_context}"
     )
 
 
@@ -197,3 +202,38 @@ Rules:
 - Output ONLY a JSON array of strings"""
 
     human_prompt_template: str = "Article titles already found:\n{titles}"
+
+
+class VisualSynopsisPrompt(BasePrompt):
+    """Free-form synopsis -> image brief. The agent describes WHAT it wants in natural
+    language (a 1-page presentation slide, a 4-panel comic, a concept diagram, an
+    infographic ...); this turns it + the source material into a single image-generation
+    brief. No fixed modes or panel counts."""
+
+    input_variables: list[str] = ["instruction", "source", "context"]
+
+    system_prompt_template: str = """\
+You are an art director. Turn the requested visualization into a single, concrete brief that an \
+image model can render in one image. Honor the user's instruction about format (e.g. a one-page \
+presentation slide, an N-panel comic, a concept diagram, an infographic, a poster).
+
+Produce ONLY a JSON object:
+```json
+{{{{
+  "title": "short title in Korean",
+  "caption": "1-2 line Korean caption summarizing the visual (shown alongside the image)",
+  "prompt": "a single rich English prompt for the image model: describe the full composition, layout, panels/sections, labels, style, and what each element conveys — accurate to the source material, legible, minimal text, clean modern style"
+}}}}
+```
+
+Rules:
+- The image is rendered in ONE pass at 1024x1024 — design a self-contained composition.
+- Be faithful to the actual technical content; do not invent facts.
+- Korean for title/caption; English for the image `prompt` (image model works best in English).
+- If the instruction implies multiple panels/sections, lay them out explicitly in `prompt`.
+- Keep on-image text short and legible. Output ONLY the JSON object."""
+
+    human_prompt_template: str = (
+        "Visualization request:\n{instruction}\n\nSource material:\n{source}\n\n"
+        "Additional research/context (may be empty):\n{context}"
+    )

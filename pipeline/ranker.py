@@ -74,18 +74,24 @@ class ContentRanker:
 
     def _apply_origin_weights(self, ranked_items: list[RankedItem]) -> None:
         weights = self.config.origin_weights
-        if not weights:
+        default_weight = self.config.origin_weight_default
+        if not weights and default_weight == 1.0:
             return
+        # A weight is a small ADDITIVE tie-breaker, not a multiplier. The LLM prompt
+        # already judges Source Authority; multiplying its calibrated score by the
+        # weight would double-count authority and distort the scale non-linearly
+        # (and inflate mid-range scores most). nudge = (weight-1.0) * factor, clamped.
+        nudge_factor = self.config.origin_weight_nudge
         for ranked in ranked_items:
             origin_key = self._resolve_origin_key(ranked.item)
-            if not origin_key or origin_key not in weights:
+            if not origin_key:
                 continue
-            weight = weights[origin_key]
+            weight = weights.get(origin_key, default_weight)
             if weight != 1.0:
                 original = ranked.score
-                ranked.score = min(1.0, ranked.score * weight)
+                ranked.score = max(0.0, min(1.0, ranked.score + (weight - 1.0) * nudge_factor))
                 logger.debug(
-                    "Applied origin weight %.2f to '%s' (origin='%s'): %.2f → %.2f",
+                    "Applied origin nudge (w=%.2f) to '%s' (origin='%s'): %.2f → %.2f",
                     weight,
                     ranked.item.title[:50],
                     origin_key,
@@ -114,18 +120,50 @@ class ContentRanker:
         selected: list[RankedItem] = []
         selected_ids: set[str] = set()
         source_counts: dict[str, int] = {}
+        origin_counts: dict[str, int] = {}
+        max_per_origin = self.config.max_per_origin
+
+        def _origin_at_cap(item: RankedItem) -> bool:
+            origin_key = self._resolve_origin_key(item.item)
+            if not origin_key:
+                return False
+            return origin_counts.get(origin_key, 0) >= max_per_origin
+
+        def _record(item: RankedItem, source_key: str) -> None:
+            selected.append(item)
+            selected_ids.add(item.item.item_id)
+            source_counts[source_key] = source_counts.get(source_key, 0) + 1
+            origin_key = self._resolve_origin_key(item.item)
+            if origin_key:
+                origin_counts[origin_key] = origin_counts.get(origin_key, 0) + 1
 
         for source_key, slot_count in source_slots.items():
-            candidates = [
-                r
-                for r in above_threshold
-                if r.item.source_type.value == source_key and r.item.item_id not in selected_ids
-            ]
-            for item in candidates[:slot_count]:
-                selected.append(item)
-                selected_ids.add(item.item.item_id)
-                source_counts[source_key] = source_counts.get(source_key, 0) + 1
+            taken = 0
+            for item in above_threshold:
+                if taken >= slot_count:
+                    break
+                if item.item.source_type.value != source_key or item.item.item_id in selected_ids:
+                    continue
+                if _origin_at_cap(item):
+                    continue
+                _record(item, source_key)
+                taken += 1
 
+        if len(selected) < self.config.top_n:
+            for item in above_threshold:
+                if item.item.item_id in selected_ids:
+                    continue
+                src = item.item.source_type.value
+                cap = source_slots.get(src, 1) * self.config.source_cap_multiplier
+                if source_counts.get(src, 0) >= cap or _origin_at_cap(item):
+                    continue
+                _record(item, src)
+                if len(selected) >= self.config.top_n:
+                    break
+
+        # Final fallback: if diversity caps left the digest below top_n while valid
+        # candidates remain, relax the per-origin cap (keep the source cap) so a quiet
+        # day with few distinct origins still fills the digest.
         if len(selected) < self.config.top_n:
             for item in above_threshold:
                 if item.item.item_id in selected_ids:
@@ -134,9 +172,7 @@ class ContentRanker:
                 cap = source_slots.get(src, 1) * self.config.source_cap_multiplier
                 if source_counts.get(src, 0) >= cap:
                     continue
-                selected.append(item)
-                selected_ids.add(item.item.item_id)
-                source_counts[src] = source_counts.get(src, 0) + 1
+                _record(item, src)
                 if len(selected) >= self.config.top_n:
                     break
 
@@ -179,17 +215,10 @@ class ContentRanker:
 
     @staticmethod
     def _format_engagement(item: CollectedItem) -> str:
-        parts: list[str] = []
         meta = item.metadata
-        if item.source_type == SourceType.REDDIT:
-            if meta.get("score"):
-                parts.append(f"{meta['score']} upvotes")
-            if meta.get("num_comments"):
-                parts.append(f"{meta['num_comments']} comments")
-        elif item.source_type == SourceType.YOUTUBE:
-            if meta.get("view_count"):
-                parts.append(f"{meta['view_count']:,} views")
-        return ", ".join(parts)
+        if item.source_type == SourceType.YOUTUBE and meta.get("view_count"):
+            return f"{meta['view_count']:,} views"
+        return ""
 
     def _parse_rankings(self, raw_output: str, items: list[CollectedItem]) -> list[RankedItem]:
         items_by_id = {item.item_id: item for item in items}

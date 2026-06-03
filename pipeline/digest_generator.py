@@ -94,12 +94,10 @@ class DigestGenerator:
         metrics: list[str] = []
 
         if item.source_type == SourceType.REDDIT:
+            # Reddit is collected via the public .rss feed, which carries no
+            # score/num_comments — only the subreddit tag is available.
             sub = meta.get("subreddit", "")
             tag = f"`r/{sub}`" if sub else "`Reddit`"
-            if meta.get("score"):
-                metrics.append(f":thumbsup: {meta['score']}")
-            if meta.get("num_comments"):
-                metrics.append(f":speech_balloon: {meta['num_comments']}")
         elif item.source_type == SourceType.YOUTUBE:
             tag = "`YouTube`"
             if meta.get("view_count"):

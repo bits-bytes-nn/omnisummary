@@ -4,6 +4,7 @@
 Run locally via cron (e.g., daily before the AWS digest pipeline):
     python scripts/sync_rsshub_to_s3.py
 """
+
 import asyncio
 import json
 import os

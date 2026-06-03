@@ -42,16 +42,20 @@ class TrendTracker:
     async def update_trends(self, digest_text: str, today_date: str) -> str:
         current = self._cached_trends if self._cached_trends is not None else self.get_trends_context()
         trimmed, old_archived = self._trim_for_llm(current, today_date)
-        logger.info("Trimmed trends for LLM: %d → %d chars (archived: %d chars)", len(current), len(trimmed), len(old_archived))
+        logger.info(
+            "Trimmed trends for LLM: %d → %d chars (archived: %d chars)", len(current), len(trimmed), len(old_archived)
+        )
 
         chain = TrendUpdatePrompt.get_prompt() | self.llm | StrOutputParser()
 
-        updated = await chain.ainvoke({
-            "current_trends": trimmed or "(No trends tracked yet. Start fresh.)",
-            "todays_digest": digest_text,
-            "today_date": today_date,
-            "trend_retention_days": str(self.config.trend_retention_days),
-        })
+        updated = await chain.ainvoke(
+            {
+                "current_trends": trimmed or "(No trends tracked yet. Start fresh.)",
+                "todays_digest": digest_text,
+                "today_date": today_date,
+                "trend_retention_days": str(self.config.trend_retention_days),
+            }
+        )
 
         updated = self._strip_code_fences(updated)
         updated = self._merge_archived(updated, old_archived)

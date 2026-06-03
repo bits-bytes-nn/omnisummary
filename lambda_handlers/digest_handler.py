@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from datetime import datetime, timedelta
 from typing import Any
@@ -10,11 +9,38 @@ from zoneinfo import ZoneInfo
 import boto3
 
 from agent.tool_state import DigestStateManager
-from main import run_collectors, run_pipeline
-from shared import BedrockLanguageModelFactory, Config, S3StateStore, logger
+from main import run_collectors_with_health, run_pipeline
+from shared import (
+    BedrockLanguageModelFactory,
+    Config,
+    HealthReport,
+    SourceStatus,
+    create_memory_store,
+    logger,
+    set_correlation_id,
+)
+
+
+def _maybe_alert(health: HealthReport) -> None:
+    topic_arn = os.environ.get("ALERT_SNS_TOPIC_ARN", "")
+    if not topic_arn or not health.has_failures:
+        return
+    failed = [s.name for s in health.sources if s.status == SourceStatus.FAILED]
+    try:
+        sns = boto3.client("sns")
+        sns.publish(
+            TopicArn=topic_arn,
+            Subject=f"[omnisummary] {len(failed)} source(s) failed",
+            Message="Source health report:\n\n" + health.summary(),
+        )
+        logger.warning("Published SNS alert for failed sources: %s", failed)
+    except Exception as e:
+        logger.error("Failed to publish SNS alert: %s", e)
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    request_id = getattr(context, "aws_request_id", "") if context else ""
+    set_correlation_id(request_id or None)
     logger.info("Digest pipeline Lambda invoked")
 
     try:
@@ -44,8 +70,10 @@ async def _run() -> None:
         region_name=config.aws.bedrock_region,
     )
 
-    collected_items = await run_collectors(config, llm_factory)
+    collected_items, health = await run_collectors_with_health(config, llm_factory)
     logger.info("Collected %d total items", len(collected_items))
+    logger.info("Source health report:\n%s", health.summary())
+    _maybe_alert(health)
 
     if not collected_items:
         logger.warning("No items collected. Exiting.")
@@ -53,16 +81,13 @@ async def _run() -> None:
 
     result = await run_pipeline(config, llm_factory, collected_items, digest_date=digest_date)
 
-    bucket = os.environ.get("STATE_BUCKET", "")
-    if bucket and result:
+    if result:
         items, ranked_items, digest = result
         if items and ranked_items and digest:
-            state_store = S3StateStore(boto_session, bucket, prefix="digest_state")
             mgr = DigestStateManager()
             mgr.store_digest(items, ranked_items, digest)
-            state_store.write(
-                f"digest_{digest_date.isoformat()}.json",
-                json.dumps(mgr.export_state(), ensure_ascii=False, indent=2),
-            )
+            memory = create_memory_store()
+            memory.put_digest(digest_date.isoformat(), mgr.export_state())
+            memory.record_trend(digest.digest_text, session_id=f"trend-{digest_date.isoformat()}")
 
     logger.info("Digest pipeline completed for %s", digest_date)

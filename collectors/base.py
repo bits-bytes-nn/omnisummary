@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 from shared import CollectedItem, logger
 
@@ -19,13 +18,13 @@ def cutoff_datetime(lookback_hours: int, reference_time: datetime | None = None)
 
 
 async def gather_collector_results(
-    tasks: list[asyncio.Task | asyncio.Future | Coroutine[Any, Any, list[CollectedItem]]],
+    tasks: Sequence[Awaitable[list[CollectedItem]]],
     labels: list[str] | None = None,
 ) -> list[CollectedItem]:
     results = await asyncio.gather(*tasks, return_exceptions=True)
     items: list[CollectedItem] = []
     for i, result in enumerate(results):
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             label = labels[i] if labels else f"task-{i}"
             logger.warning("Collector task '%s' failed: %s", label, result)
         else:

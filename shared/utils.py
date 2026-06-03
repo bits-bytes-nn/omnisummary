@@ -23,6 +23,7 @@ class LanguageModelInfo(BaseModel):
     supports_prompt_caching: bool = False
     supports_thinking: bool = False
     supports_1m_context_window: bool = False
+    supports_temperature: bool = True
 
 
 _LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
@@ -70,6 +71,7 @@ _LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
     LanguageModelId.CLAUDE_V4_6_SONNET: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=64000,
+        supports_prompt_caching=True,
         supports_thinking=True,
     ),
     LanguageModelId.CLAUDE_V4_OPUS: LanguageModelInfo(
@@ -96,7 +98,24 @@ _LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
     LanguageModelId.CLAUDE_V4_6_OPUS: LanguageModelInfo(
         context_window_size=1000000,
         max_output_tokens=64000,
+        supports_prompt_caching=True,
         supports_thinking=True,
+    ),
+    LanguageModelId.CLAUDE_V4_7_OPUS: LanguageModelInfo(
+        context_window_size=1000000,
+        max_output_tokens=64000,
+        supports_prompt_caching=True,
+        supports_thinking=True,
+        supports_1m_context_window=True,
+        supports_temperature=False,
+    ),
+    LanguageModelId.CLAUDE_V4_8_OPUS: LanguageModelInfo(
+        context_window_size=1000000,
+        max_output_tokens=64000,
+        supports_prompt_caching=True,
+        supports_thinking=True,
+        supports_1m_context_window=True,
+        supports_temperature=False,
     ),
     # NOTE: add new models here
 }
@@ -128,7 +147,7 @@ class BaseBedrockModelFactory(Generic[ModelIdT, ModelInfoT, WrapperT], ABC):
             retries={"max_attempts": self.BOTO_MAX_ATTEMPTS, "mode": "adaptive"},
             max_pool_connections=self.MAX_POOL_CONNECTIONS,
         )
-        self._client = self.boto_session.client(
+        self._client = self.boto_session.client(  # type: ignore[call-overload]
             self._get_boto_service_name(),
             region_name=self.region_name,
             config=boto_config,
@@ -253,10 +272,14 @@ class BedrockLanguageModelFactory(
             logger.debug("Adjusting temperature to 1.0 for thinking mode")
         final_max_tokens = self._validate_max_tokens(kwargs.get("max_tokens"), model_info)
         config = self._build_base_config(resolved_model_id, is_cross_region, **kwargs)
+        # Newer models (e.g. Opus 4.7/4.8) reject the `temperature` param entirely.
+        params: dict[str, Any] = {"max_tokens": final_max_tokens}
+        if model_info.supports_temperature:
+            params["temperature"] = final_temperature
         if is_cross_region:
-            config.update({"max_tokens": final_max_tokens, "temperature": final_temperature})
+            config.update(params)
         else:
-            config["model_kwargs"].update({"max_tokens": final_max_tokens, "temperature": final_temperature})
+            config["model_kwargs"].update(params)
         if supports_1m_context_window and model_info.supports_1m_context_window:
             if is_cross_region:
                 config.setdefault("additional_model_request_fields", {}).update(
@@ -336,6 +359,29 @@ class BedrockLanguageModelFactory(
         return enable and model_info.supports_thinking
 
 
+def resolve_secret(env_var: str, ssm_suffix: str) -> str:
+    """Resolve a secret from env first, then SSM Parameter Store.
+
+    SSM path is /{PROJECT_NAME}/{STAGE}/{ssm_suffix} (SecureString-decrypted).
+    Returns "" if unavailable from either source (callers degrade gracefully).
+    """
+    import os
+
+    value = os.getenv(env_var, "")
+    if value:
+        return value
+
+    project = os.getenv("PROJECT_NAME", "omnisummary")
+    stage = os.getenv("STAGE", "dev")
+    region = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2"))
+    try:
+        ssm = boto3.client("ssm", region_name=region)
+        return ssm.get_parameter(Name=f"/{project}/{stage}/{ssm_suffix}", WithDecryption=True)["Parameter"]["Value"]
+    except Exception as e:
+        logger.warning("Secret '%s' unavailable (env + SSM '%s'): %s", env_var, ssm_suffix, e)
+        return ""
+
+
 def generate_item_id(url: str) -> str:
     return hashlib.sha256(url.encode()).hexdigest()[:16]
 
@@ -368,6 +414,32 @@ def truncate_text_by_tokens(text: str, max_tokens: int = MAX_TOKENS) -> str:
     return truncated
 
 
+_CJK = "가-힣぀-ヿ一-鿿"
+
+
+def _normalize_bold_spans(text: str) -> str:
+    """Fix Slack *bold* spacing per-span so it renders correctly.
+
+    Slack requires no space just inside the * markers (`*x *` fails) and a word
+    boundary just outside (`a*x*` fails). CJK text has no spaces around emphasis,
+    so a CJK neighbour (e.g. a Korean particle `*설계*가`) must NOT get padding.
+    Handled as a single match-per-span pass to avoid the cross-span corruption of
+    chained regexes.
+    """
+
+    def repair(m: re.Match) -> str:
+        before, inner, after = m.group("before"), m.group("inner"), m.group("after")
+        inner = inner.strip()
+        if not inner:
+            return f"{before}{after}"  # empty bold -> drop the markers
+        lead = " " if before and not before.isspace() and not re.match(rf"[{_CJK}]", before) else ""
+        trail = " " if after and not after.isspace() and not re.match(rf"[{_CJK}]", after) else ""
+        return f"{before}{lead}*{inner}*{trail}{after}"
+
+    # (char before) *inner* (char after); inner has no '*' or newline
+    return re.sub(r"(?P<before>.?)\*(?P<inner>[^*\n]+?)\*(?P<after>.?)", repair, text)
+
+
 def sanitize_slack_mrkdwn(text: str) -> str:
     text = re.sub(r"\n---+\n", "\n\n", text)
     text = re.sub(r"\n\*\*\*+\n", "\n\n", text)
@@ -376,14 +448,7 @@ def sanitize_slack_mrkdwn(text: str) -> str:
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
 
     text = re.sub(r"\*\*([^*\n]+?)\*\*", r"*\1*", text)
-
-    text = re.sub(r"\* ([^*\n]+?)\*", r"*\1*", text)
-    text = re.sub(r"\*([^*\n]+?) \*", r"*\1*", text)
-
-    text = re.sub(r'"\*([^*\n]+?)\*"', r"*\1*", text)
-
-    text = re.sub(r"(\S)\*([^*\n]+?)\*", r"\1 *\2*", text)
-    text = re.sub(r"\*([^*\n]+?)\*(\S)", r"*\1* \2", text)
+    text = _normalize_bold_spans(text)
 
     text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"<\2|\1>", text)
     text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"<\2|\1>", text)

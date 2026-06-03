@@ -1,5 +1,4 @@
 import tempfile
-from pathlib import Path
 
 from shared.state_store import LocalStateStore
 

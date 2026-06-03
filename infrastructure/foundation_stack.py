@@ -11,6 +11,9 @@ from aws_cdk import aws_ecs as ecs
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_servicediscovery as sd
+from aws_cdk import aws_sns as sns
+from aws_cdk import aws_sns_subscriptions as subs
+from aws_cdk.aws_bedrockagentcore import CfnMemory
 from constructs import Construct
 
 from shared import Config
@@ -23,6 +26,7 @@ class OmniSummaryFoundationStack(Stack):
         construct_id: str,
         *,
         config: Config,
+        alert_email: str = "",
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -68,6 +72,10 @@ class OmniSummaryFoundationStack(Stack):
                 bucket_name=f"{project_name}-{stage}-state",
                 removal_policy=RemovalPolicy.RETAIN if is_prod else RemovalPolicy.DESTROY,
                 auto_delete_objects=not is_prod,
+                encryption=s3.BucketEncryption.S3_MANAGED,
+                block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+                enforce_ssl=True,
+                versioned=True,
             )
 
         self.ecr_repo = ecr.Repository(
@@ -86,6 +94,29 @@ class OmniSummaryFoundationStack(Stack):
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             time_to_live_attribute="ttl",
             removal_policy=RemovalPolicy.DESTROY,
+            encryption=dynamodb.TableEncryption.AWS_MANAGED,
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
+                point_in_time_recovery_enabled=is_prod
+            ),
+        )
+
+        ssm_read_statement = iam.PolicyStatement(
+            actions=["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"],
+            resources=[f"arn:aws:ssm:{self.region}:{self.account}:parameter/{project_name}/{stage}/*"],
+        )
+        bedrock_invoke_statement = iam.PolicyStatement(
+            actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+            resources=[
+                "arn:aws:bedrock:*::foundation-model/*",
+                f"arn:aws:bedrock:*:{self.account}:inference-profile/*",
+            ],
+        )
+        logs_statement = iam.PolicyStatement(
+            actions=["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+            resources=[
+                f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/lambda/{project_name}-{stage}-*",
+                f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/bedrock-agentcore/*",
+            ],
         )
 
         self.agentcore_role = iam.Role(
@@ -93,12 +124,12 @@ class OmniSummaryFoundationStack(Stack):
             "AgentCoreRole",
             assumed_by=iam.ServicePrincipal("bedrock-agentcore.amazonaws.com"),
             managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name("AmazonBedrockFullAccess"),
                 iam.ManagedPolicy.from_aws_managed_policy_name("AmazonEC2ContainerRegistryReadOnly"),
-                iam.ManagedPolicy.from_aws_managed_policy_name("AmazonSSMReadOnlyAccess"),
-                iam.ManagedPolicy.from_aws_managed_policy_name("CloudWatchLogsFullAccess"),
             ],
         )
+        self.agentcore_role.add_to_policy(ssm_read_statement)
+        self.agentcore_role.add_to_policy(bedrock_invoke_statement)
+        self.agentcore_role.add_to_policy(logs_statement)
         self.state_bucket.grant_read_write(self.agentcore_role)
 
         self.lambda_role = iam.Role(
@@ -107,14 +138,67 @@ class OmniSummaryFoundationStack(Stack):
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
             managed_policies=[
                 iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaVPCAccessExecutionRole"),
-                iam.ManagedPolicy.from_aws_managed_policy_name("AmazonBedrockFullAccess"),
-                iam.ManagedPolicy.from_aws_managed_policy_name("AmazonSSMReadOnlyAccess"),
-                iam.ManagedPolicy.from_aws_managed_policy_name("CloudWatchLogsFullAccess"),
             ],
         )
+        self.lambda_role.add_to_policy(ssm_read_statement)
+        self.lambda_role.add_to_policy(bedrock_invoke_statement)
+        self.lambda_role.add_to_policy(logs_statement)
         self.state_bucket.grant_read_write(self.lambda_role)
         self.dedup_table.grant_read_write_data(self.lambda_role)
-        self.lambda_role.add_to_policy(iam.PolicyStatement(actions=["lambda:InvokeFunction"], resources=["*"]))
+        self.lambda_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["lambda:InvokeFunction"],
+                resources=[f"arn:aws:lambda:{self.region}:{self.account}:function:{project_name}-{stage}-*"],
+            )
+        )
+        self.lambda_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["bedrock-agentcore:InvokeAgentRuntime"],
+                resources=[f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:runtime/*"],
+            )
+        )
+
+        self.alerts_topic = sns.Topic(self, "AlertsTopic", topic_name=f"{project_name}-{stage}-alerts")
+        if alert_email:
+            self.alerts_topic.add_subscription(subs.EmailSubscription(alert_email))
+        self.alerts_topic.grant_publish(self.lambda_role)
+
+        memory_exec_role = iam.Role(
+            self,
+            "MemoryExecutionRole",
+            assumed_by=iam.ServicePrincipal("bedrock-agentcore.amazonaws.com"),
+        )
+        memory_exec_role.add_to_policy(bedrock_invoke_statement)
+
+        self.memory = CfnMemory(
+            self,
+            "DigestMemory",
+            name=f"{project_name}_{stage}_digest_state".replace("-", "_"),
+            event_expiry_duration=90,
+            description="OmniSummary digest state and cross-day trend recall",
+            memory_execution_role_arn=memory_exec_role.role_arn,
+            memory_strategies=[
+                CfnMemory.MemoryStrategyProperty(
+                    semantic_memory_strategy=CfnMemory.SemanticMemoryStrategyProperty(
+                        name="TrendFacts",
+                        namespaces=["/facts/{actorId}/"],
+                    )
+                )
+            ],
+        )
+        self.memory_id = self.memory.attr_memory_id
+
+        memory_data_statement = iam.PolicyStatement(
+            actions=[
+                "bedrock-agentcore:CreateEvent",
+                "bedrock-agentcore:ListEvents",
+                "bedrock-agentcore:ListSessions",
+                "bedrock-agentcore:RetrieveMemoryRecords",
+            ],
+            resources=[f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:memory/*"],
+        )
+        self.lambda_role.add_to_policy(memory_data_statement)
+        self.agentcore_role.add_to_policy(memory_data_statement)
 
         self.ecs_cluster = ecs.Cluster(self, "EcsCluster", vpc=self.vpc)
 

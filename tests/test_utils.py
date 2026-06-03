@@ -1,7 +1,37 @@
 import hashlib
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from shared.utils import generate_item_id, parse_feed_published_date, sanitize_slack_mrkdwn, truncate_text_by_tokens
+from shared.utils import (
+    generate_item_id,
+    parse_feed_published_date,
+    resolve_secret,
+    sanitize_slack_mrkdwn,
+    truncate_text_by_tokens,
+)
+
+
+class TestResolveSecret:
+    def test_prefers_env(self, monkeypatch):
+        monkeypatch.setenv("MY_SECRET", "from-env")
+        assert resolve_secret("MY_SECRET", "my-secret") == "from-env"
+
+    def test_falls_back_to_ssm(self, monkeypatch):
+        monkeypatch.delenv("MY_SECRET", raising=False)
+        monkeypatch.setenv("PROJECT_NAME", "proj")
+        monkeypatch.setenv("STAGE", "dev")
+        ssm = patch("shared.utils.boto3.client").start()
+        ssm.return_value.get_parameter.return_value = {"Parameter": {"Value": "from-ssm"}}
+        try:
+            assert resolve_secret("MY_SECRET", "my-secret") == "from-ssm"
+            assert ssm.return_value.get_parameter.call_args.kwargs["Name"] == "/proj/dev/my-secret"
+        finally:
+            patch.stopall()
+
+    def test_returns_empty_on_failure(self, monkeypatch):
+        monkeypatch.delenv("MY_SECRET", raising=False)
+        with patch("shared.utils.boto3.client", side_effect=Exception("no ssm")):
+            assert resolve_secret("MY_SECRET", "my-secret") == ""
 
 
 class TestGenerateItemId:
@@ -74,3 +104,20 @@ class TestSanitizeSlackMrkdwn:
     def test_horizontal_rule_removal(self):
         result = sanitize_slack_mrkdwn("above\n---\nbelow")
         assert "---" not in result
+
+    def test_korean_bold_not_broken_by_space_padding(self):
+        # Korean particles attach directly to bold (*규모*가); the space-padding rule
+        # must NOT insert a space inside the markers (which breaks Slack rendering).
+        result = sanitize_slack_mrkdwn("*규모*가 아니라 *설계*가 이기고 있다")
+        assert "*규모*" in result and "*규모 *" not in result
+        assert "*설계*" in result and "*설계 *" not in result
+
+    def test_english_bold_still_padded(self):
+        # English words touching a bold marker should still get a separating space.
+        assert sanitize_slack_mrkdwn("word*bold*word") == "word *bold* word"
+
+    def test_bold_before_paren_not_broken(self):
+        # Real regression: *Name* (note) must not become *Name * (note) or merge spans.
+        out = sanitize_slack_mrkdwn("추론 특화 *MAI-Thinking-1* (35B)과 코드 특화 *MAI-Code-1-Flash* (5B)")
+        assert "*MAI-Thinking-1*" in out and "*MAI-Thinking-1 *" not in out
+        assert "*MAI-Code-1-Flash*" in out and "특화*MAI-Code" not in out

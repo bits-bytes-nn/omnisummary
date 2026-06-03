@@ -1,6 +1,5 @@
 import argparse
 import asyncio
-import json
 import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -8,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import boto3
 
+from agent.tool_state import DigestStateManager
 from collectors import (
     RedditCollector,
     RSSCollector,
@@ -15,30 +15,32 @@ from collectors import (
     WebSearchCollector,
     YouTubeCollector,
 )
-from collectors.base import gather_collector_results
 from output import send_digest_to_slack
-from agent.tool_state import DigestStateManager
 from pipeline import ContentAggregator, ContentRanker, DigestGenerator, TrendTracker
 from shared import (
     BedrockLanguageModelFactory,
     CollectedItem,
     Config,
     DigestResult,
+    HealthReport,
     LocalPaths,
     LocalStateStore,
     RankedItem,
     S3StateStore,
+    SourceHealth,
+    SourceStatus,
+    create_memory_store,
     is_running_in_aws,
     logger,
 )
 from shared.state_store import StateStore
 
 
-async def run_collectors(
+def _build_collector_tasks(
     config: Config,
     llm_factory: BedrockLanguageModelFactory,
     sources: list[str] | None = None,
-) -> list[CollectedItem]:
+) -> tuple[list, list[str]]:
     collectors_map = {
         "reddit": (RedditCollector, config.collectors.reddit, {}),
         "rsshub": (RSSHubCollector, config.collectors.rsshub, {}),
@@ -66,11 +68,31 @@ async def run_collectors(
         tasks.append(collector.collect())
         labels.append(source_name)
 
+    return tasks, labels
+
+
+async def run_collectors_with_health(
+    config: Config,
+    llm_factory: BedrockLanguageModelFactory,
+    sources: list[str] | None = None,
+) -> tuple[list[CollectedItem], HealthReport]:
+    tasks, labels = _build_collector_tasks(config, llm_factory, sources)
     if not tasks:
         logger.warning("No active collectors")
-        return []
+        return [], HealthReport()
 
-    return await gather_collector_results(tasks, labels=labels)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    items: list[CollectedItem] = []
+    health: list[SourceHealth] = []
+    for label, result in zip(labels, results, strict=True):
+        if isinstance(result, BaseException):
+            health.append(SourceHealth(name=label, item_count=0, status=SourceStatus.FAILED, detail=str(result)[:200]))
+            logger.warning("Collector '%s' failed: %s", label, result)
+        else:
+            items.extend(result)
+            status = SourceStatus.OK if result else SourceStatus.EMPTY
+            health.append(SourceHealth(name=label, item_count=len(result), status=status))
+    return items, HealthReport(sources=health)
 
 
 async def run_pipeline(
@@ -143,13 +165,11 @@ def _save_state(
     digest: DigestResult,
     digest_date: date,
 ) -> None:
-    state_dir = Path(LocalPaths.DIGEST_STATE_DIR.value)
-    state_dir.mkdir(parents=True, exist_ok=True)
-    state_file = state_dir / f"digest_{digest_date.isoformat()}.json"
-
     mgr = DigestStateManager()
     mgr.store_digest(items, ranked_items, digest)
-    mgr.save_to_file(state_file)
+    memory = create_memory_store(Path(LocalPaths.DIGEST_STATE_DIR.value))
+    memory.put_digest(digest_date.isoformat(), mgr.export_state())
+    memory.record_trend(digest.digest_text, session_id=f"trend-{digest_date.isoformat()}")
 
 
 async def main() -> None:
@@ -188,8 +208,9 @@ async def main() -> None:
         region_name=config.aws.bedrock_region,
     )
 
-    collected_items = await run_collectors(config, llm_factory, args.sources)
+    collected_items, health = await run_collectors_with_health(config, llm_factory, args.sources)
     logger.info("Collected %d total items", len(collected_items))
+    logger.info("Source health report:\n%s", health.summary())
 
     if not collected_items:
         logger.warning("No items collected. Exiting.")
@@ -203,7 +224,7 @@ async def main() -> None:
 
 
 def _run_interactive(items: list[CollectedItem], ranked_items: list[RankedItem], digest: DigestResult) -> None:
-    from agent import DigestStateManager, create_digest_agent
+    from agent import create_digest_agent
     from agent.agent_tools import state_manager
 
     state_manager.store_digest(items, ranked_items, digest)

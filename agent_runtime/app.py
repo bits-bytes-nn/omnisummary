@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 from typing import Any
 
@@ -8,48 +7,25 @@ import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from slack_sdk.web import WebClient
 
-from output.slack_handler import _split_message
-
 from agent import create_digest_agent
 from agent.agent_tools import state_manager
 from agent.tool_state import DigestStateManager
-from shared import S3StateStore, logger, sanitize_slack_mrkdwn
+from output.slack_handler import _split_message
+from shared import create_memory_store, logger, sanitize_slack_mrkdwn, set_correlation_id
 
 app = BedrockAgentCoreApp()
 
 
 def _load_latest_state() -> None:
-    bucket = os.environ.get("STATE_BUCKET", "")
-    if not bucket:
-        logger.warning("STATE_BUCKET not set, agent has no digest state")
+    memory = create_memory_store()
+    data = memory.get_latest_digest()
+    if not data:
+        logger.warning("No digest state available in AgentCore Memory")
         return
 
-    region = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2"))
-    session = boto3.Session(region_name=region)
-    store = S3StateStore(session, bucket, prefix="digest_state")
-
-    s3_client = session.client("s3")
-    prefix = "digest_state/"
-    response = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix)
-
-    files = sorted(
-        [obj["Key"] for obj in response.get("Contents", []) if obj["Key"].endswith(".json")],
-        reverse=True,
-    )
-
-    if not files:
-        logger.warning("No digest state files found in S3")
-        return
-
-    latest_key = files[0]
-    content = store.read(latest_key.removeprefix(prefix))
-    if not content:
-        return
-
-    data = json.loads(content)
     loaded = DigestStateManager.load_from_dict(data)
     state_manager.load_from(loaded)
-    logger.info("Loaded %d items from S3 ('%s')", state_manager.get_item_count(), latest_key)
+    logger.info("Loaded %d items from AgentCore Memory", state_manager.get_item_count())
 
 
 def _send_slack_message(channel: str, text: str, thread_ts: str = "") -> None:
@@ -64,7 +40,9 @@ def _send_slack_message(channel: str, text: str, thread_ts: str = "") -> None:
             bot_token = ssm.get_parameter(
                 Name=f"/{project}/{stage}/slack-bot-token",
                 WithDecryption=True,
-            )["Parameter"]["Value"]
+            )[
+                "Parameter"
+            ]["Value"]
         except Exception as e:
             logger.error("Failed to get Slack token: %s", e)
             return
@@ -84,9 +62,15 @@ def invoke(payload: dict[str, Any]) -> str:
     channel_id = payload.get("channel_id", "")
     thread_ts = payload.get("thread_ts", "")
 
+    set_correlation_id(payload.get("correlation_id") or None)
     logger.info("AgentCore invoked: prompt='%s', channel='%s'", prompt[:100], channel_id)
 
     _load_latest_state()
+
+    from agent.agent_tools import delivery_context
+
+    delivery_context.channel_id = channel_id
+    delivery_context.thread_ts = thread_ts
 
     agent = create_digest_agent()
 
@@ -96,6 +80,11 @@ def invoke(payload: dict[str, Any]) -> str:
     except Exception as e:
         logger.error("Agent execution failed: %s", e, exc_info=True)
         response = f"Error processing request: {e}"
+    finally:
+        # Clear per-invocation delivery target so a warm container can't leak it
+        # into a later invocation that arrives without one.
+        delivery_context.channel_id = ""
+        delivery_context.thread_ts = ""
 
     if channel_id:
         _send_slack_message(channel_id, response, thread_ts)
