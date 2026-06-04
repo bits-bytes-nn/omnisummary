@@ -82,8 +82,13 @@ async def _run() -> None:
     if result:
         items, ranked_items, digest = result
         if items and ranked_items and digest:
-            # base_dir=None → AgentCore-backed memory store in AWS.
-            persist_digest(items, ranked_items, digest, digest_date, base_dir=None)
+            # Persist for the follow-up agent. A persistence failure must NOT abort the
+            # run or block the daily visual — the Slack digest is already sent by now.
+            try:
+                # base_dir=None → AgentCore-backed memory store in AWS.
+                persist_digest(items, ranked_items, digest, digest_date, base_dir=None)
+            except Exception:
+                logger.error("Failed to persist digest state (non-fatal)", exc_info=True)
             _trigger_visual()
 
     logger.info("Digest pipeline completed for %s", digest_date)

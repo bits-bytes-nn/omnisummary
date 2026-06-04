@@ -75,6 +75,33 @@ class TestAgentCoreMemoryStore:
         text = client.create_event.call_args.kwargs["payload"][0]["conversational"]["content"]["text"]
         assert len(text) <= AgentCoreMemoryStore.MAX_EVENT_TEXT
         assert '"collected_items": {}' in text
+
+    def test_put_digest_truncates_oversized_ranked_text(self):
+        # Even after dropping collected_items, the ranked-item bodies alone exceed the
+        # limit (this is what aborted the pipeline on 2026-06-04). Must still fit + store.
+        store, client = self._store()
+        big = {
+            "collected_items": {},
+            "ranked_items": [{"item": {"item_id": f"i{n}", "text": "y" * 30_000}, "score": 0.8} for n in range(5)],
+            "digest_result": {"digest_text": "ok"},
+        }
+        store.put_digest("2026-06-02", big)
+        text = client.create_event.call_args.kwargs["payload"][0]["conversational"]["content"]["text"]
+        assert len(text) <= AgentCoreMemoryStore.MAX_EVENT_TEXT
+        client.create_event.assert_called_once()  # stored, did not raise
+        assert "ranked_items" in text
+
+    def test_put_digest_minimal_fallback_when_still_too_large(self):
+        # Pathological: many ranked items with huge text — falls back to metadata only.
+        store, client = self._store()
+        big = {
+            "collected_items": {},
+            "ranked_items": [{"item": {"item_id": f"i{n}", "text": "z" * 50_000}, "score": 0.8} for n in range(20)],
+            "digest_result": {"digest_text": "ok"},
+        }
+        store.put_digest("2026-06-02", big)
+        text = client.create_event.call_args.kwargs["payload"][0]["conversational"]["content"]["text"]
+        assert len(text) <= AgentCoreMemoryStore.MAX_EVENT_TEXT
         assert "ranked_items" in text
 
     def test_get_latest_digest_picks_newest_session(self):

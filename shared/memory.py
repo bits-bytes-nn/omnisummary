@@ -95,18 +95,13 @@ class AgentCoreMemoryStore(MemoryStore):
         self._client = boto3.client("bedrock-agentcore", region_name=region)
 
     MAX_EVENT_TEXT = 100_000
+    # When even the ranked set overflows, cap each item's stored body. The follow-up
+    # agent re-truncates to ~2000 tokens via get_detail, so this loses nothing it uses.
+    RANKED_TEXT_CAP = 12_000
 
     def put_digest(self, digest_date: str, state: dict[str, Any]) -> None:
         session_id = f"{self.DIGEST_SESSION_PREFIX}-{digest_date}"
-        payload_text = json.dumps(state, ensure_ascii=False)
-        if len(payload_text) > self.MAX_EVENT_TEXT:
-            # Last-resort guard against the AgentCore 100k-char event limit: drop the
-            # bulky collected-item bodies, keeping the ranked set (self-contained) and
-            # the digest. Normally export_state already trims to the ranked subset.
-            trimmed = {k: v for k, v in state.items() if k != "collected_items"}
-            trimmed["collected_items"] = {}
-            payload_text = json.dumps(trimmed, ensure_ascii=False)
-            logger.warning("Digest state exceeded %d chars; stored without collected_items bodies", self.MAX_EVENT_TEXT)
+        payload_text = self._fit_to_limit(state)
         self._client.create_event(
             memoryId=self.memory_id,
             actorId=self.actor_id,
@@ -115,6 +110,44 @@ class AgentCoreMemoryStore(MemoryStore):
             payload=[{"conversational": {"role": "ASSISTANT", "content": {"text": payload_text}}}],
         )
         logger.info("Stored digest state to AgentCore Memory (session '%s')", session_id)
+
+    def _fit_to_limit(self, state: dict[str, Any]) -> str:
+        """Bound the serialized state under AgentCore's per-event char limit by
+        progressively shedding bulk: drop collected-item bodies, then truncate the
+        item text fields the agent reads (it re-truncates anyway), then hard-cap.
+        A single oversized digest must never abort the whole pipeline."""
+        payload_text = json.dumps(state, ensure_ascii=False)
+        if len(payload_text) <= self.MAX_EVENT_TEXT:
+            return payload_text
+
+        import copy
+
+        trimmed = copy.deepcopy(state)
+        trimmed["collected_items"] = {}
+        payload_text = json.dumps(trimmed, ensure_ascii=False)
+        if len(payload_text) <= self.MAX_EVENT_TEXT:
+            logger.warning("Digest state exceeded %d chars; dropped collected_items bodies", self.MAX_EVENT_TEXT)
+            return payload_text
+
+        for ranked in trimmed.get("ranked_items", []):
+            item = ranked.get("item", {})
+            if isinstance(item.get("text"), str):
+                item["text"] = item["text"][: self.RANKED_TEXT_CAP]
+        payload_text = json.dumps(trimmed, ensure_ascii=False)
+        if len(payload_text) <= self.MAX_EVENT_TEXT:
+            logger.warning("Digest state still large; truncated ranked-item text to %d chars", self.RANKED_TEXT_CAP)
+            return payload_text
+
+        logger.warning("Digest state exceeds limit after trimming; storing ranked metadata only")
+        minimal: dict[str, Any] = {
+            "ranked_items": [
+                {"item": {k: v for k, v in r.get("item", {}).items() if k != "text"}, "score": r.get("score")}
+                for r in trimmed.get("ranked_items", [])
+            ],
+            "digest_result": trimmed.get("digest_result"),
+            "collected_items": {},
+        }
+        return json.dumps(minimal, ensure_ascii=False)[: self.MAX_EVENT_TEXT]
 
     def get_latest_digest(self) -> dict[str, Any] | None:
         sessions = self._client.list_sessions(memoryId=self.memory_id, actorId=self.actor_id, maxResults=100)
