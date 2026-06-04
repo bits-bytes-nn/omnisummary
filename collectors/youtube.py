@@ -28,6 +28,13 @@ class YouTubeCollector(BaseCollector):
         # so warm Lambda containers keep connections alive instead of opening one per call.
         self._sync_client = httpx.Client(follow_redirects=True)
 
+    def __del__(self) -> None:
+        # Release pooled sockets when the collector is garbage-collected so warm Lambda
+        # containers don't leak connections across invocations.
+        client = getattr(self, "_sync_client", None)
+        if client is not None:
+            client.close()
+
     async def collect(self) -> list[CollectedItem]:
         if not self.config.channels:
             logger.info("No YouTube channels configured, skipping")
@@ -46,7 +53,7 @@ class YouTubeCollector(BaseCollector):
         return await self._collect_via_rss(channel_url)
 
     async def _collect_via_api(self, channel_url: str) -> list[CollectedItem]:
-        channel_id = await asyncio.to_thread(self._resolve_channel_id, channel_url)
+        channel_id = await self._resolve_channel_id_async(channel_url)
         if not channel_id:
             logger.warning("Could not resolve channel ID for '%s'", channel_url)
             return []
@@ -152,7 +159,7 @@ class YouTubeCollector(BaseCollector):
         return items
 
     async def _collect_via_rss(self, channel_url: str) -> list[CollectedItem]:
-        channel_id = await asyncio.to_thread(self._resolve_channel_id, channel_url)
+        channel_id = await self._resolve_channel_id_async(channel_url)
         if not channel_id:
             logger.warning("Could not resolve channel ID for '%s'", channel_url)
             return []
@@ -198,6 +205,16 @@ class YouTubeCollector(BaseCollector):
                 logger.warning("Failed to process YouTube RSS entry", exc_info=True)
 
         return items
+
+    async def _resolve_channel_id_async(self, channel_url: str) -> str:
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._resolve_channel_id, channel_url),
+                timeout=self.config.resolve_timeout,
+            )
+        except TimeoutError:
+            logger.warning("Channel ID resolution timed out for '%s', skipping", channel_url)
+            return ""
 
     def _resolve_channel_id(self, channel_url: str) -> str:
         try:

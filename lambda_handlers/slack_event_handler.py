@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import logging
 import os
 import re
 import time
@@ -11,8 +10,10 @@ from typing import Any
 
 import boto3
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+# Use the shared logger so records carry correlation_id (via _CorrelationFilter) for
+# continuity from API Gateway through the async AgentCore invocation. Imported directly
+# from shared.logger to avoid pulling the heavy shared package __init__ at cold start.
+from shared.logger import logger
 
 SIGNATURE_EXPIRATION_SEC = int(os.environ.get("SLACK_SIGNATURE_EXPIRATION_SEC", "300"))
 EVENT_DEDUP_TTL_SEC = int(os.environ.get("EVENT_DEDUPLICATION_TTL_SEC", "300"))

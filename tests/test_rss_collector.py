@@ -8,8 +8,8 @@ from shared.config import RSSCollectorConfig
 from shared.constants import SourceType
 
 
-def _config(**kwargs) -> RSSCollectorConfig:
-    cfg = RSSCollectorConfig(feeds=["https://example.com/feed"], **kwargs)
+def _config(feeds=None, **kwargs) -> RSSCollectorConfig:
+    cfg = RSSCollectorConfig(feeds=feeds or ["https://example.com/feed"], **kwargs)
     cfg.reference_time = datetime(2026, 6, 2, tzinfo=UTC)
     cfg.lookback_hours = 24
     return cfg
@@ -79,3 +79,11 @@ class TestRSSCollect:
         with patch("collectors.rss.feedparser.parse", return_value=_feed([_entry()], bozo=True)):
             items = await c.collect()
         assert len(items) == 1
+
+    @pytest.mark.asyncio
+    async def test_raises_when_all_feeds_fail(self):
+        # A total outage (every feed errors) must surface as FAILED, not a silent empty result.
+        c = RSSCollector(_config(feeds=["https://a.example/feed", "https://b.example/feed"]))
+        with patch("collectors.rss.feedparser.parse", side_effect=OSError("network down")):
+            with pytest.raises(RuntimeError):
+                await c.collect()

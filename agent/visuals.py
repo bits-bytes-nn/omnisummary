@@ -63,6 +63,7 @@ class VisualGenerator:
             "For comics/cartoons, aim for genuinely funny and shareable — internet-humor sensibility, "
             "a clear setup-and-payoff, expressive characters — in a clean, modern, appealing illustration style."
         ),
+        style_aesthetic: str = "clean modern style",
     ) -> None:
         self.llm = llm_factory.get_model(brief_model)
         self.image_model = image_model
@@ -74,6 +75,7 @@ class VisualGenerator:
         self.moderation_softening_instruction = moderation_softening_instruction
         self.style_guidance = style_guidance
         self.humor_guidance = humor_guidance
+        self.style_aesthetic = style_aesthetic
 
     async def brief(self, instruction: str, source: str, context: str = "") -> VisualBrief:
         chain = VisualSynopsisPrompt.get_prompt() | self.llm | StrOutputParser()
@@ -87,6 +89,7 @@ class VisualGenerator:
                 "on_image_language": self.on_image_language,
                 "style_guidance": self.style_guidance,
                 "humor_guidance": self.humor_guidance,
+                "style_aesthetic": self.style_aesthetic,
             }
         )
         brief = _parse_brief(raw)
@@ -123,6 +126,8 @@ class VisualGenerator:
                 if code == "moderation_blocked" or error_type == "image_generation_user_error":
                     return True
         except ImportError:
+            # openai SDK lacks BadRequestError (older/partial install): fall through to the
+            # documented last-resort substring detection below.
             pass
         msg = str(exc).lower()
         return "moderation_blocked" in msg or "safety system" in msg

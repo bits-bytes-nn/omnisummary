@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from shared.constants import SourceType
-from shared.models import CollectedItem, RankedItem
+from shared.models import CollectedItem, RankedItem, VisualBrief
 
 
 class TestCollectedItem:
@@ -53,3 +53,17 @@ class TestRankedItem:
         item = CollectedItem(source_type=SourceType.REDDIT, title="T", url="http://a.com")
         assert RankedItem(item=item, score=0.0).score == 0.0
         assert RankedItem(item=item, score=1.0).score == 1.0
+
+
+class TestVisualBrief:
+    def test_valid_brief(self):
+        brief = VisualBrief(title="T", caption="C", prompt="P")
+        assert brief.title == "T"
+
+    def test_overlong_title_rejected(self):
+        with pytest.raises(ValidationError):
+            VisualBrief(title="x" * 101, caption="C", prompt="P")
+
+    def test_overlong_caption_rejected(self):
+        with pytest.raises(ValidationError):
+            VisualBrief(title="T", caption="x" * 301, prompt="P")

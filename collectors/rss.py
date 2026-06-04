@@ -20,7 +20,7 @@ class RSSCollector(BaseCollector):
             return []
 
         tasks = [self._collect_feed(feed_url) for feed_url in self.config.feeds]
-        items = await gather_collector_results(tasks, labels=self.config.feeds)
+        items = await gather_collector_results(tasks, labels=self.config.feeds, raise_if_all_failed=True)
         logger.info("RSS collector gathered %d items total", len(items))
         return items
 
@@ -75,7 +75,7 @@ class RSSCollector(BaseCollector):
                     )
                 )
                 logger.info("Collected RSS post: '%s'", title)
-            except Exception:
+            except (AttributeError, KeyError, TypeError, ValueError):
                 logger.warning("Failed to process feed entry from '%s'", feed_url, exc_info=True)
 
         return items

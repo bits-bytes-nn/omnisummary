@@ -239,3 +239,26 @@ class TestTranscript:
             with patch("collectors.youtube.asyncio.wait_for", side_effect=timeout):
                 result = await collector._fetch_transcript("vid")
         assert result == ""
+
+
+class TestResolveChannelIdTimeout:
+    @pytest.mark.asyncio
+    async def test_resolve_channel_id_times_out_and_skips(self):
+        collector = YouTubeCollector(_config(resolve_timeout=1))
+
+        async def timeout(awaitable, timeout):
+            awaitable.close()  # avoid an un-awaited to_thread coroutine warning
+            raise TimeoutError
+
+        with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
+            with patch("collectors.youtube.asyncio.wait_for", side_effect=timeout):
+                result = await collector._resolve_channel_id_async("https://youtube.com/@x")
+        assert result == ""
+
+
+class TestLifecycle:
+    def test_del_closes_pooled_client(self):
+        collector = YouTubeCollector(_config())
+        with patch.object(collector._sync_client, "close") as close:
+            collector.__del__()
+        close.assert_called_once()

@@ -291,6 +291,7 @@ async def make_visual(instruction: str, item_number: int = 0, context: str = "")
         moderation_softening_instruction=config.pipeline.visual_moderation_softening_instruction,
         style_guidance=config.pipeline.visual_synopsis_style_guidance,
         humor_guidance=config.pipeline.visual_synopsis_humor_guidance,
+        style_aesthetic=config.pipeline.visual_synopsis_style_aesthetic,
     )
 
     try:

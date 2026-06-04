@@ -149,6 +149,7 @@ class BaseBedrockModelFactory(Generic[ModelIdT, ModelInfoT, WrapperT], ABC):
             retries={"max_attempts": self.BOTO_MAX_ATTEMPTS, "mode": "adaptive"},
             max_pool_connections=self.MAX_POOL_CONNECTIONS,
         )
+        # boto3's client() overloads exceed what mypy can resolve for a dynamic service name.
         self._client = self.boto_session.client(  # type: ignore[call-overload]
             self._get_boto_service_name(),
             region_name=self.region_name,

@@ -175,6 +175,9 @@ class PipelineConfig(BaseModel):
         "For comics/cartoons, aim for genuinely funny and shareable — internet-humor sensibility, "
         "a clear setup-and-payoff, expressive characters — in a clean, modern, appealing illustration style."
     )
+    # Default aesthetic injected into the image-generation prompt. Configurable so the visual
+    # pipeline's look can be retuned (or reused for non-AI domains) without editing the prompt.
+    visual_synopsis_style_aesthetic: str = "clean modern style"
     # Appended to the instruction when the image model's moderation blocks the first render,
     # to soften tone before a single retry. Configurable so ops can retune the safe-for-work
     # guidance without editing code.

@@ -87,7 +87,12 @@ class WebSearchCollector(BaseCollector):
 
         logger.info("LLM-generated refined queries: %s", queries)
         tasks = [asyncio.ensure_future(self._search_trend(query, [], "refined")) for query in queries]
-        return await gather_collector_results(tasks)
+        # Refinement is intentionally non-fatal (broad results are the floor), but a total
+        # failure should be visible to ops so degraded refinement isn't silent.
+        refined_items = await gather_collector_results(tasks)
+        if tasks and not refined_items:
+            logger.warning("All %d refined web-search queries returned no items; using broad results only", len(tasks))
+        return refined_items
 
     async def _generate_refined_queries(self, items: list[CollectedItem]) -> list[str]:
         if not self._llm:
@@ -184,7 +189,7 @@ class WebSearchCollector(BaseCollector):
                     )
                 )
                 logger.info("Collected web result: '%s'", title)
-            except Exception:
+            except (AttributeError, KeyError, TypeError, ValueError):
                 logger.warning("Failed to process web search result", exc_info=True)
 
         return items

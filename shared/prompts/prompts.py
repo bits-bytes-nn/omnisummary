@@ -261,6 +261,7 @@ class VisualSynopsisPrompt(BasePrompt):
         "on_image_language",
         "style_guidance",
         "humor_guidance",
+        "style_aesthetic",
     ]
 
     system_prompt_template: str = """\
@@ -273,7 +274,7 @@ Produce ONLY a JSON object:
 {{{{
   "title": "short title in {caption_language}",
   "caption": "1-2 line {caption_language} caption summarizing the visual (shown alongside the image)",
-  "prompt": "a single rich English prompt for the image model: describe the full composition, layout, panels/sections, labels, style, and what each element conveys — accurate to the source material, legible, minimal text, clean modern style"
+  "prompt": "a single rich English prompt for the image model: describe the full composition, layout, panels/sections, labels, style, and what each element conveys — accurate to the source material, legible, minimal text, {style_aesthetic}"
 }}}}
 ```
 

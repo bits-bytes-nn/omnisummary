@@ -38,6 +38,7 @@ class DailyVisualMaker:
             moderation_softening_instruction=config.pipeline.visual_moderation_softening_instruction,
             style_guidance=config.pipeline.visual_synopsis_style_guidance,
             humor_guidance=config.pipeline.visual_synopsis_humor_guidance,
+            style_aesthetic=config.pipeline.visual_synopsis_style_aesthetic,
         )
 
     async def run(self, ranked_items: list[RankedItem]) -> bool:
@@ -50,6 +51,7 @@ class DailyVisualMaker:
         try:
             plan = await self._pick_story(ranked_items)
         except Exception:
+            # Best-effort: a visual failure must never block the digest, so catch broadly here.
             logger.warning("Daily visual editor failed", exc_info=True)
             return False
 
@@ -70,6 +72,7 @@ class DailyVisualMaker:
         try:
             image_bytes, brief = await self.generator.generate(instruction, source, context)
         except Exception:
+            # Best-effort: a visual failure must never block the digest, so catch broadly here.
             logger.warning("Daily visual generation failed", exc_info=True)
             return False
 

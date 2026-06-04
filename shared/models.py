@@ -51,8 +51,8 @@ class DigestResult(BaseModel):
 
 
 class VisualBrief(BaseModel):
-    title: str = Field(min_length=1)
-    caption: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=100)
+    caption: str = Field(min_length=1, max_length=300)
     prompt: str = Field(min_length=1, max_length=4000)
 
 

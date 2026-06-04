@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -164,7 +165,7 @@ Follow-up suggestion (ALWAYS append at the end, replace N with actual item numbe
 """
 
 
-def create_digest_agent() -> Agent:
+def create_digest_agent(tools: list[Any] | None = None) -> Agent:
     config = Config.load()
 
     if is_running_in_aws():
@@ -185,6 +186,11 @@ def create_digest_agent() -> Agent:
 
     model_id = config.agent.model_id
     model_info = _LANGUAGE_MODEL_INFO.get(model_id)
+    if model_info is None:
+        logger.warning(
+            "No model info for model_id '%s'; falling back to max_tokens=64000 (check model configuration)",
+            model_id,
+        )
     resolved_model_id = BedrockCrossRegionModelHelper.get_cross_region_model_id(
         boto_session,
         model_id,
@@ -201,9 +207,12 @@ def create_digest_agent() -> Agent:
         cache_config=CacheConfig(strategy="auto"),
     )
 
+    if tools is None:
+        tools = [get_detail, search_papers, search_community, search_related_news, recall_trends, make_visual]
+
     agent = Agent(
         model=bedrock_model,
-        tools=[get_detail, search_papers, search_community, search_related_news, recall_trends, make_visual],
+        tools=tools,
         system_prompt=SYSTEM_PROMPT,
     )
 
