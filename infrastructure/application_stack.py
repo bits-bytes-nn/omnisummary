@@ -15,6 +15,7 @@ from aws_cdk.aws_bedrockagentcore import CfnRuntime
 from constructs import Construct
 
 from shared import Config
+from shared.constants import RSSHUB_PORT
 
 from .foundation_stack import OmniSummaryFoundationStack
 
@@ -23,7 +24,7 @@ class OmniSummaryApplicationStack(Stack):
     # Service-discovery DNS name for the Fargate RSSHub service injected into the digest
     # Lambda. Overridable at synth via the `rsshub_base_url` CDK context value so
     # dev/staging/prod can target different endpoints without editing this stack.
-    DEFAULT_RSSHUB_BASE_URL = "http://rsshub.omnisummary.local:1200"
+    DEFAULT_RSSHUB_BASE_URL = f"http://rsshub.omnisummary.local:{RSSHUB_PORT}"
 
     def __init__(
         self,

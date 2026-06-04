@@ -213,10 +213,10 @@ class WebSearchCollector(BaseCollector):
 def _parse_date(date_str: str) -> datetime | None:
     try:
         return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        pass
+    except (ValueError, TypeError) as e:
+        logger.debug("ISO date parse failed for '%s' (%s); trying RFC2822", date_str, e)
     try:
         return parsedate_to_datetime(date_str).astimezone(UTC)
-    except (ValueError, TypeError):
-        pass
+    except (ValueError, TypeError) as e:
+        logger.debug("RFC2822 date parse failed for '%s' (%s); giving up", date_str, e)
     return None

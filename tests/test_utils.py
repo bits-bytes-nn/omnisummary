@@ -167,6 +167,23 @@ class TestRetryAsync:
             await retry_async(boom, max_retries=3, backoff_sec=0, retry_on=(ValueError,))
         assert calls["n"] == 1
 
+    @pytest.mark.asyncio
+    async def test_backoff_is_linear(self):
+        # Sleep grows linearly (backoff_sec * attempt), matching the documented contract.
+        sleeps: list[float] = []
+
+        async def always_fail():
+            raise ValueError("transient")
+
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        with patch("shared.utils.asyncio.sleep", side_effect=fake_sleep):
+            with pytest.raises(ValueError):
+                await retry_async(always_fail, max_retries=4, backoff_sec=2.0)
+        # 4 attempts -> sleeps after attempts 1, 2, 3 (none after the final attempt)
+        assert sleeps == [2.0, 4.0, 6.0]
+
 
 class TestSanitizeSlackMrkdwn:
     def test_bold_conversion(self):

@@ -97,6 +97,7 @@ class ContentRanker:
                     "duplicate_score_penalty": self.config.ranking_duplicate_score_penalty,
                     "scoring_rubric": self.config.ranking_scoring_rubric,
                     "target_count": self.config.ranking_target_count,
+                    "audience": self.config.ranking_audience_description,
                 }
             )
         except Exception:

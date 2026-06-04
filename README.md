@@ -270,14 +270,14 @@ omnisummary/
 ├── scripts/                    # Deploy, RSSHub sync
 ├── cloudflare-proxy/           # CF Worker proxy
 ├── config/                     # YAML configuration
-├── tests/                      # Unit + CDK tests (255)
+├── tests/                      # Unit + CDK tests (301)
 └── assets/                     # tech-doc.md, architecture + concept diagrams
 ```
 
 ## Testing & CI
 
 ```bash
-uv run python -m pytest tests/ -v        # 255 tests (unit + CDK assertions)
+uv run python -m pytest tests/ -v        # 301 tests (unit + CDK assertions)
 uv run black --check . && uv run ruff check .
 uv run python scripts/ci_synth.py        # offline CDK synth
 ```

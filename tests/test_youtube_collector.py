@@ -187,19 +187,19 @@ class TestResolveChannelId:
     def test_resolves_from_channel_id_quoted(self):
         collector = YouTubeCollector(_config())
         resp = MagicMock(text='...{"channelId":"UC1234567890abcdef"}...')
-        with patch("collectors.youtube.httpx.get", return_value=resp):
+        with patch.object(collector._sync_client, "get", return_value=resp):
             assert collector._resolve_channel_id("https://youtube.com/@x") == "UC1234567890abcdef"
 
     def test_resolves_from_channel_id_param(self):
         collector = YouTubeCollector(_config())
         resp = MagicMock(text='<link href="...channel_id=UCfromparam">')
-        with patch("collectors.youtube.httpx.get", return_value=resp):
+        with patch.object(collector._sync_client, "get", return_value=resp):
             assert collector._resolve_channel_id("https://youtube.com/@x") == "UCfromparam"
 
     def test_returns_empty_on_no_match(self):
         collector = YouTubeCollector(_config())
         resp = MagicMock(text="no ids here")
-        with patch("collectors.youtube.httpx.get", return_value=resp):
+        with patch.object(collector._sync_client, "get", return_value=resp):
             assert collector._resolve_channel_id("https://youtube.com/@x") == ""
 
 
@@ -223,7 +223,7 @@ class TestTranscript:
 
         with patch("collectors.youtube.is_proxy_configured", return_value=True):
             with patch("collectors.youtube.get_proxied_url", side_effect=lambda u: u):
-                with patch("collectors.youtube.httpx.get", side_effect=fake_get):
+                with patch.object(collector._sync_client, "get", side_effect=fake_get):
                     collector._get_transcript("vid")
         assert "lang=ko" in captured["url"]
 

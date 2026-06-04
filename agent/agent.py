@@ -19,10 +19,6 @@ from .agent_tools import (
     search_related_news,
 )
 
-BOTO_READ_TIMEOUT: int = 300
-BOTO_CONNECT_TIMEOUT: int = 60
-BOTO_MAX_ATTEMPTS: int = 3
-
 SYSTEM_PROMPT: str = """\
 You are a follow-up assistant for an AI/ML daily digest delivered via Slack. \
 The user has already read today's digest and wants to go deeper on specific items.
@@ -182,9 +178,9 @@ def create_digest_agent() -> Agent:
         )
 
     boto_config = BotoConfig(
-        read_timeout=BOTO_READ_TIMEOUT,
-        connect_timeout=BOTO_CONNECT_TIMEOUT,
-        retries={"max_attempts": BOTO_MAX_ATTEMPTS},
+        read_timeout=config.agent.boto_read_timeout,
+        connect_timeout=config.agent.boto_connect_timeout,
+        retries={"max_attempts": config.agent.boto_max_attempts},
     )
 
     model_id = config.agent.model_id

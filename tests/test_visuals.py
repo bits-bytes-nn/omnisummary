@@ -139,6 +139,22 @@ class TestVisualGenerator:
                 with pytest.raises(RuntimeError):
                     gen.render("draw")
 
+    def test_is_moderation_error_string_fallback(self):
+        assert VisualGenerator._is_moderation_error(Exception("... moderation_blocked ..."))
+        assert VisualGenerator._is_moderation_error(Exception("rejected by the safety system"))
+        assert not VisualGenerator._is_moderation_error(RuntimeError("network down"))
+
+    def test_is_moderation_error_typed_openai_exception(self):
+        from openai import BadRequestError
+
+        exc = BadRequestError.__new__(BadRequestError)
+        exc.body = {"code": "moderation_blocked", "type": "image_generation_user_error"}
+        assert VisualGenerator._is_moderation_error(exc)
+
+        other = BadRequestError.__new__(BadRequestError)
+        other.body = {"code": "invalid_request", "type": "invalid_request_error"}
+        assert not VisualGenerator._is_moderation_error(other)
+
     def test_render_uses_configured_model_and_size(self):
         factory = MagicMock()
         factory.get_model.return_value = MagicMock()

@@ -24,6 +24,9 @@ class YouTubeCollector(BaseCollector):
     def __init__(self, config: YouTubeCollectorConfig):
         self.config = config
         self.api_key = os.getenv("YOUTUBE_API_KEY", "")
+        # Reuse one pooled sync client across channel-id resolution and transcript fetches
+        # so warm Lambda containers keep connections alive instead of opening one per call.
+        self._sync_client = httpx.Client(follow_redirects=True)
 
     async def collect(self) -> list[CollectedItem]:
         if not self.config.channels:
@@ -143,7 +146,7 @@ class YouTubeCollector(BaseCollector):
                         )
                     )
                     logger.info("Collected YouTube video: '%s'", snippet.get("title", ""))
-                except Exception:
+                except (KeyError, ValueError, TypeError, AttributeError):
                     logger.warning("Failed to process YouTube video '%s'", video.get("id", ""), exc_info=True)
 
         return items
@@ -191,22 +194,22 @@ class YouTubeCollector(BaseCollector):
                     )
                 )
                 logger.info("Collected YouTube video: '%s'", entry.get("title", ""))
-            except Exception:
+            except (KeyError, ValueError, TypeError, AttributeError):
                 logger.warning("Failed to process YouTube RSS entry", exc_info=True)
 
         return items
 
     def _resolve_channel_id(self, channel_url: str) -> str:
         try:
-            resp = httpx.get(channel_url, follow_redirects=True, timeout=self.config.resolve_timeout)
+            resp = self._sync_client.get(channel_url, timeout=self.config.resolve_timeout)
             match = re.search(r'"channelId":"(UC[a-zA-Z0-9_-]+)"', resp.text)
             if match:
                 return match.group(1)
             match = re.search(r'channel_id=([^"&]+)', resp.text)
             if match:
                 return match.group(1)
-        except Exception:
-            logger.warning("Failed to resolve channel ID for '%s'", channel_url)
+        except httpx.HTTPError as e:
+            logger.warning("Failed to resolve channel ID for '%s': %s", channel_url, e)
         return ""
 
     async def _fetch_transcript(self, video_id: str) -> str:
@@ -225,7 +228,7 @@ class YouTubeCollector(BaseCollector):
                 proxy_url = get_proxied_url(
                     f"https://www.youtube.com/api/timedtext?v={video_id}&lang={self.config.transcript_language}"
                 )
-                resp = httpx.get(proxy_url, timeout=self.config.transcript_timeout)
+                resp = self._sync_client.get(proxy_url, timeout=self.config.transcript_timeout)
                 if resp.status_code == 200 and resp.text.strip():
 
                     try:
@@ -240,6 +243,17 @@ class YouTubeCollector(BaseCollector):
             ytt_api = YouTubeTranscriptApi()
             transcript = ytt_api.fetch(video_id)
             return " ".join(snippet.text for snippet in transcript.snippets)
-        except (YouTubeTranscriptApiException, httpx.HTTPError, ValueError, KeyError, TypeError, RuntimeError) as e:
+        except (
+            YouTubeTranscriptApiException,
+            httpx.HTTPError,
+            ValueError,
+            KeyError,
+            TypeError,
+            AttributeError,
+            RuntimeError,
+        ) as e:
+            # RuntimeError is retained intentionally: youtube_transcript_api raises a variety
+            # of runtime failures (region blocks, parser quirks) and transcript fetch is
+            # best-effort — it must degrade to "" rather than fail the whole channel collect.
             logger.warning("Could not fetch transcript for video '%s': %s", video_id, e)
             return ""

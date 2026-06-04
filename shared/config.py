@@ -6,7 +6,7 @@ import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-from .constants import LanguageModelId
+from .constants import RSSHUB_PORT, LanguageModelId
 
 
 class BaseCollectorConfig(BaseModel):
@@ -58,7 +58,7 @@ class RSSHubAccount(BaseModel):
 
 
 class RSSHubCollectorConfig(BaseCollectorConfig):
-    base_url: str = "http://localhost:1200"
+    base_url: str = f"http://localhost:{RSSHUB_PORT}"
     accounts: list[RSSHubAccount] = Field(default_factory=list)
     lookback_hours: int = 72
     error_rate_threshold: float = Field(default=50.0, ge=0.0, le=100.0)
@@ -78,7 +78,7 @@ class CollectorsConfig(BaseModel):
 
 class PipelineConfig(BaseModel):
     top_n: int = 7
-    min_score: float = Field(default=0.7, ge=0.0, le=1.0)
+    min_score: float = Field(default=0.6, ge=0.0, le=1.0)
     ranking_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     digest_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     # Language rules injected into the digest prompt's *Language* block. Defaults to the
@@ -94,6 +94,10 @@ class PipelineConfig(BaseModel):
         "release → 출시/공개, breakthrough → 돌파구, approach → 접근법, ecosystem → 생태계.\n"
         "- If the original item title is in English, translate it to Korean for the display text."
     )
+    # Audience/domain the ranking and digest prompts target. Configurable so the pipeline can
+    # be reused across domains without forking the prompts.
+    ranking_audience_description: str = "a daily digest aimed at practicing ML engineers"
+    digest_audience_description: str = "ML engineers"
     item_text_max_tokens: int = 8000
     ranking_batch_size: int = Field(default=40, ge=1)
     source_slots: dict[str, int] = Field(
@@ -135,7 +139,8 @@ class PipelineConfig(BaseModel):
     # Score-calibration buckets the ranking prompt applies, injected as template text so
     # ops can retune the distribution without editing the prompt.
     ranking_scoring_rubric: str = (
-        "0.9+: field-defining. 0.8-0.89: very important. 0.7-0.79: notable. " "0.6-0.69: worth noting. <0.6: low value."
+        "0.9+: field-defining. 0.8-0.89: very important. 0.7-0.79: notable. "
+        "0.6-0.69: worth noting (digest bar). <0.6: low value."
     )
     # Target count of items the ranking prompt should aim to score above the bar per batch.
     ranking_target_count: str = "~10-20 items scoring 0.6+"
@@ -160,6 +165,24 @@ class PipelineConfig(BaseModel):
     # language must appear inside the rendered image (image models garble non-Latin glyphs).
     visual_caption_language: str = "Korean"
     visual_on_image_language: str = "SHORT ENGLISH (the image model garbles Korean and other non-Latin glyphs)"
+    # Style/humor guidance injected into the visual synopsis prompt. Configurable so the
+    # visual pipeline's tone can be retuned (or reused for non-AI domains) without forking.
+    visual_synopsis_style_guidance: str = (
+        "Multi-panel: same characters and a single consistent, polished art style across panels; "
+        "each panel follows from the previous so the sequence reads in order without explanation."
+    )
+    visual_synopsis_humor_guidance: str = (
+        "For comics/cartoons, aim for genuinely funny and shareable — internet-humor sensibility, "
+        "a clear setup-and-payoff, expressive characters — in a clean, modern, appealing illustration style."
+    )
+    # Appended to the instruction when the image model's moderation blocks the first render,
+    # to soften tone before a single retry. Configurable so ops can retune the safe-for-work
+    # guidance without editing code.
+    visual_moderation_softening_instruction: str = (
+        "IMPORTANT: keep it clearly safe-for-work and good-natured. "
+        "Use brand mascots/logos and generic stylized characters rather than realistic "
+        "depictions of real named individuals; avoid anything that could read as defamatory."
+    )
 
 
 class AgentConfig(BaseModel):
@@ -177,6 +200,9 @@ class AgentConfig(BaseModel):
     search_paper_max_authors: int = Field(default=3, ge=1)
     search_paper_abstract_max_chars: int = Field(default=200, ge=1)
     recall_memory_top_k: int = Field(default=5, ge=1)
+    boto_read_timeout: int = Field(default=300, ge=1)
+    boto_connect_timeout: int = Field(default=60, ge=1)
+    boto_max_attempts: int = Field(default=3, ge=1)
 
 
 class SlackConfig(BaseModel):

@@ -288,6 +288,9 @@ async def make_visual(instruction: str, item_number: int = 0, context: str = "")
         context_max_tokens=config.pipeline.visual_synopsis_context_max_tokens,
         caption_language=config.pipeline.visual_caption_language,
         on_image_language=config.pipeline.visual_on_image_language,
+        moderation_softening_instruction=config.pipeline.visual_moderation_softening_instruction,
+        style_guidance=config.pipeline.visual_synopsis_style_guidance,
+        humor_guidance=config.pipeline.visual_synopsis_humor_guidance,
     )
 
     try:

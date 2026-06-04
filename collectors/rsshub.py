@@ -8,6 +8,7 @@ import time
 import boto3
 import feedparser
 from botocore.exceptions import ClientError
+from pydantic import ValidationError
 
 from shared import CollectedItem, SourceType, generate_item_id, logger, parse_feed_published_date
 from shared.config import RSSHubCollectorConfig
@@ -98,7 +99,7 @@ class RSSHubCollector(BaseCollector):
                 if resp.status_code >= 500:
                     raise RuntimeError(f"RSSHub at {base} returned HTTP {resp.status_code}")
                 return
-            except Exception as e:
+            except (httpx.HTTPError, RuntimeError) as e:
                 last_error = e
                 if attempt < self.config.max_retries:
                     logger.warning("RSSHub reachability check failed (attempt %d): %s", attempt, e)
@@ -195,6 +196,6 @@ class RSSHubCollector(BaseCollector):
         except ClientError:
             logger.info("No RSSHub items found in S3, falling back to live collection")
             return None
-        except Exception as e:
+        except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as e:
             logger.warning("Failed to load RSSHub items from S3: %s", e)
             return None

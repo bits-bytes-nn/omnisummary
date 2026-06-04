@@ -456,9 +456,10 @@ async def retry_async(
     retry_on: tuple[type[BaseException], ...] = (Exception,),
     description: str = "operation",
 ) -> Any:
-    """Run an async callable with exponential backoff on transient failures.
+    """Run an async callable with linear backoff on transient failures.
 
-    Retries up to max_retries attempts, sleeping backoff_sec * attempt between tries.
+    Retries up to max_retries attempts, sleeping backoff_sec * attempt between tries
+    (so the delay grows linearly: backoff_sec, 2*backoff_sec, ...).
     Re-raises the last exception once attempts are exhausted.
     """
     last_error: BaseException | None = None

@@ -63,6 +63,10 @@ DOMAIN_TO_SOURCE: dict[str, SourceType] = {
 # Platform aliases that RSSHub routes through its `twitter` namespace.
 TWITTER_PLATFORMS: tuple[str, ...] = ("x", "twitter")
 
+# Port the RSSHub service listens on (collector base URL + Fargate container/DNS).
+# Single source of truth so config and infrastructure can't drift.
+RSSHUB_PORT: int = 1200
+
 # Character limits applied to titles/queries when written to log lines. Centralized so
 # log verbosity can be tuned in one place instead of scattered slice literals.
 LOGGING_TRUNCATION_CHARS: dict[str, int] = {

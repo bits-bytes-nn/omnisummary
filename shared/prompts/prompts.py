@@ -47,10 +47,11 @@ class RankingPrompt(BasePrompt):
         "duplicate_score_penalty",
         "scoring_rubric",
         "target_count",
+        "audience",
     ]
 
     system_prompt_template: str = """\
-You are an AI/ML content curator. Evaluate each item for a daily digest aimed at practicing ML engineers.
+You are a content curator. Evaluate each item for {audience}.
 
 *Evaluation Criteria*
 Use these as lenses, not a formula. Apply holistic judgment.
@@ -102,10 +103,10 @@ Categories: {ranking_categories}"""
 
 
 class DigestPrompt(BasePrompt):
-    input_variables: list[str] = ["items_text", "trends_context", "language_rules"]
+    input_variables: list[str] = ["items_text", "trends_context", "language_rules", "audience"]
 
     system_prompt_template: str = """\
-You are a daily AI digest editor for ML engineers. Write like a sharp, opinionated tech columnist — \
+You are a daily digest editor for {audience}. Write like a sharp, opinionated tech columnist — \
 connecting dots between stories and telling practitioners what matters and why.
 
 *Language*
@@ -258,6 +259,8 @@ class VisualSynopsisPrompt(BasePrompt):
         "image_size",
         "caption_language",
         "on_image_language",
+        "style_guidance",
+        "humor_guidance",
     ]
 
     system_prompt_template: str = """\
@@ -295,10 +298,8 @@ Rules:
 - {caption_language} for the `title`/`caption` (shown alongside the image in Slack). But ALL text that
   appears INSIDE the image — labels, speech bubbles, signs — must be {on_image_language} and quoted
   exactly in the prompt (e.g. text reads "SHIP IT"). Minimize on-image text.
-- Multi-panel: same characters and a single consistent, polished art style across panels; each panel
-  follows from the previous so the sequence reads in order without explanation.
-- For comics/cartoons, aim for genuinely funny and shareable — internet-humor sensibility, a clear
-  setup-and-payoff, expressive characters — in a clean, modern, appealing illustration style.
+- {style_guidance}
+- {humor_guidance}
 - Output ONLY the JSON object."""
 
     human_prompt_template: str = (

@@ -50,6 +50,19 @@ class VisualGenerator:
         context_max_tokens: int = 1500,
         caption_language: str = "Korean",
         on_image_language: str = "SHORT ENGLISH (the image model garbles Korean and other non-Latin glyphs)",
+        moderation_softening_instruction: str = (
+            "IMPORTANT: keep it clearly safe-for-work and good-natured. "
+            "Use brand mascots/logos and generic stylized characters rather than realistic "
+            "depictions of real named individuals; avoid anything that could read as defamatory."
+        ),
+        style_guidance: str = (
+            "Multi-panel: same characters and a single consistent, polished art style across panels; "
+            "each panel follows from the previous so the sequence reads in order without explanation."
+        ),
+        humor_guidance: str = (
+            "For comics/cartoons, aim for genuinely funny and shareable — internet-humor sensibility, "
+            "a clear setup-and-payoff, expressive characters — in a clean, modern, appealing illustration style."
+        ),
     ) -> None:
         self.llm = llm_factory.get_model(brief_model)
         self.image_model = image_model
@@ -58,6 +71,9 @@ class VisualGenerator:
         self.context_max_tokens = context_max_tokens
         self.caption_language = caption_language
         self.on_image_language = on_image_language
+        self.moderation_softening_instruction = moderation_softening_instruction
+        self.style_guidance = style_guidance
+        self.humor_guidance = humor_guidance
 
     async def brief(self, instruction: str, source: str, context: str = "") -> VisualBrief:
         chain = VisualSynopsisPrompt.get_prompt() | self.llm | StrOutputParser()
@@ -69,6 +85,8 @@ class VisualGenerator:
                 "image_size": self.image_size,
                 "caption_language": self.caption_language,
                 "on_image_language": self.on_image_language,
+                "style_guidance": self.style_guidance,
+                "humor_guidance": self.humor_guidance,
             }
         )
         brief = _parse_brief(raw)
@@ -93,6 +111,19 @@ class VisualGenerator:
 
     @staticmethod
     def _is_moderation_error(exc: Exception) -> bool:
+        # Prefer the typed OpenAI exception / structured error code, which survives API
+        # version changes; fall back to substring matching only as a documented last resort.
+        try:
+            from openai import BadRequestError
+
+            if isinstance(exc, BadRequestError):
+                body = getattr(exc, "body", None)
+                code = body.get("code") if isinstance(body, dict) else None
+                error_type = body.get("type") if isinstance(body, dict) else None
+                if code == "moderation_blocked" or error_type == "image_generation_user_error":
+                    return True
+        except ImportError:
+            pass
         msg = str(exc).lower()
         return "moderation_blocked" in msg or "safety system" in msg
 
@@ -107,10 +138,6 @@ class VisualGenerator:
             # edgy parody. Regenerate the brief once with a softened, safe-for-work instruction
             # rather than losing the visual entirely.
             logger.warning("Image moderation blocked the prompt; retrying with a softened brief")
-            safe_instruction = (
-                instruction + "\n\nIMPORTANT: keep it clearly safe-for-work and good-natured. "
-                "Use brand mascots/logos and generic stylized characters rather than realistic "
-                "depictions of real named individuals; avoid anything that could read as defamatory."
-            )
+            safe_instruction = f"{instruction}\n\n{self.moderation_softening_instruction}"
             brief = await self.brief(safe_instruction, source, context)
             return self.render(brief.prompt), brief
