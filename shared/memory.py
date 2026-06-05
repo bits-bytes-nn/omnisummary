@@ -12,17 +12,14 @@ import boto3
 from .logger import logger
 
 DEFAULT_ACTOR_ID = "omnisummary"
-DIGEST_NAMESPACE_TEMPLATE = "/facts/{actor_id}/"
 
 
 class MemoryStore(ABC):
-    """Persistence boundary for digest state and cross-day agent recall.
+    """Persistence boundary for the structured digest snapshot.
 
-    Two responsibilities:
-    - put_digest / get_latest_digest: store and reload the structured digest snapshot
-      the follow-up agent reads back (replaces the file/S3 state store).
-    - record_trend / recall: write durable trend facts and semantically recall them
-      across days (AgentCore long-term memory; no-op on local fallback).
+    put_digest / get_latest_digest store and reload the digest state the follow-up
+    agent reads back (replaces the file/S3 state store). Trend memory now lives in the
+    structured trends.json owned by the TrendTracker, not here.
     """
 
     @abstractmethod
@@ -30,12 +27,6 @@ class MemoryStore(ABC):
 
     @abstractmethod
     def get_latest_digest(self) -> dict[str, Any] | None: ...
-
-    @abstractmethod
-    def record_trend(self, summary: str, *, session_id: str) -> None: ...
-
-    @abstractmethod
-    def recall(self, query: str, *, top_k: int = 5) -> list[str]: ...
 
 
 class LocalMemoryStore(MemoryStore):
@@ -58,26 +49,11 @@ class LocalMemoryStore(MemoryStore):
         logger.info("Loaded latest local digest state '%s'", files[0])
         return json.loads(files[0].read_text(encoding="utf-8"))
 
-    def record_trend(self, summary: str, *, session_id: str) -> None:
-        path = self.base_dir / "trends.jsonl"
-        line = json.dumps({"session_id": session_id, "summary": summary}, ensure_ascii=False)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
-
-    def recall(self, query: str, *, top_k: int = 5) -> list[str]:
-        path = self.base_dir / "trends.jsonl"
-        if not path.exists():
-            return []
-        lines = path.read_text(encoding="utf-8").strip().splitlines()
-        return [json.loads(line)["summary"] for line in lines[-top_k:]]
-
 
 class AgentCoreMemoryStore(MemoryStore):
     """Bedrock AgentCore Memory-backed store (system of record in AWS).
 
-    Digest snapshots are persisted as short-term session events under a stable
-    actor; trend summaries additionally feed long-term semantic extraction for
-    cross-day recall via retrieve_memory_records.
+    Digest snapshots are persisted as short-term session events under a stable actor.
     """
 
     DIGEST_SESSION_PREFIX = "digest"
@@ -177,30 +153,6 @@ class AgentCoreMemoryStore(MemoryStore):
         logger.info("Loaded latest digest state from AgentCore Memory (session '%s')", digest_sessions[0])
         return json.loads(text) if text else None
 
-    def record_trend(self, summary: str, *, session_id: str) -> None:
-        self._client.create_event(
-            memoryId=self.memory_id,
-            actorId=self.actor_id,
-            sessionId=session_id,
-            eventTimestamp=datetime.now(UTC),
-            payload=[{"conversational": {"role": "ASSISTANT", "content": {"text": summary}}}],
-        )
-        logger.info("Recorded trend to AgentCore Memory (session '%s')", session_id)
-
-    def recall(self, query: str, *, top_k: int = 5) -> list[str]:
-        namespace = DIGEST_NAMESPACE_TEMPLATE.format(actor_id=self.actor_id)
-        try:
-            response = self._client.retrieve_memory_records(
-                memoryId=self.memory_id,
-                namespace=namespace,
-                searchCriteria={"searchQuery": query, "topK": top_k},
-                maxResults=top_k,
-            )
-        except Exception as e:
-            logger.warning("AgentCore recall failed: %s", e)
-            return []
-        return [self._extract_record_text(r) for r in response.get("memoryRecordSummaries", [])]
-
     @staticmethod
     def _extract_text(event: dict[str, Any]) -> str:
         for entry in event.get("payload", []):
@@ -208,13 +160,6 @@ class AgentCoreMemoryStore(MemoryStore):
             if "text" in content:
                 return content["text"]
         return ""
-
-    @staticmethod
-    def _extract_record_text(record: dict[str, Any]) -> str:
-        content = record.get("content", {})
-        if isinstance(content, dict):
-            return content.get("text", "")
-        return str(content)
 
 
 def create_memory_store(base_dir: Path | None = None) -> MemoryStore:

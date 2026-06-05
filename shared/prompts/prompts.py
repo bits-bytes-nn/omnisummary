@@ -148,53 +148,38 @@ what it reveals, what people are getting wrong. Don't cover every story.
     )
 
 
-class TrendUpdatePrompt(BasePrompt):
-    input_variables: list[str] = [
-        "current_trends",
-        "todays_digest",
-        "today_date",
-        "trend_retention_days",
-        "trend_cooling_days",
-        "trend_max_evidence",
-        "trend_max_active_trends",
-    ]
+class TrendClassifyPrompt(BasePrompt):
+    """Classify today's digest against existing trends. The LLM only decides which
+    existing trend an observation extends (or that it is new) and writes a one-sentence
+    English summary of the evidence. Code owns all dates, status, momentum, archival."""
+
+    input_variables: list[str] = ["existing_trends", "todays_digest"]
 
     system_prompt_template: str = """\
-You are a trend tracker for an AI/ML digest. Maintain a running markdown document of active trends.
+You track recurring AI/ML trends across daily digests. Read today's digest and the list of \
+existing trends, then report which trends today's digest provides evidence for.
+
+Return ONLY a JSON object:
+```json
+{{{{
+  "observations": [
+    {{{{
+      "trend_id": "id of an existing trend to extend, or empty string if this is a new trend",
+      "new_title": "concise trend title (ONLY when trend_id is empty; otherwise empty string)",
+      "summary": "ONE concise English sentence describing today's evidence for this trend"
+    }}}}
+  ]
+}}}}
+```
 
 Rules:
-- Each trend: title, status (active/cooling/archived), first_seen, last_seen, evidence list
-- Add new trends when today's digest reveals emerging patterns
-- Update existing trends with new evidence
-- "cooling" if no evidence in {trend_cooling_days}+ days; "archived" if {trend_retention_days}+ days
-- Maximum {trend_max_active_trends} active trends — merge or archive if needed
-- CRITICAL: Keep each evidence entry to ONE short sentence (under 30 words)
-- CRITICAL: Maximum {trend_max_evidence} evidence entries per trend — when adding new evidence, drop the oldest
-- Compress archived trends into one-line summaries
-- Write in English (feeds back into English LLM context)
+- Extend an EXISTING trend (set trend_id to its id) when today's digest continues it; only \
+create a new trend when no existing one fits.
+- One observation per distinct trend. Skip stories that do not form or continue a recurring trend.
+- summary is ONE English sentence of evidence — do NOT include dates, status, momentum, or counts.
+- Output ONLY the JSON object."""
 
-Format:
-```
-# Active Trends
-
-## 1. [Trend Title]
-- **Status**: active
-- **First seen**: YYYY-MM-DD
-- **Last seen**: YYYY-MM-DD
-- **Evidence**:
-  - [YYYY-MM-DD] Brief one-sentence description
-
-# Archived Trends (compressed)
-- [Title] (YYYY-MM-DD ~ YYYY-MM-DD): One-sentence summary.
-```
-
-Output the FULL updated document."""
-
-    human_prompt_template: str = (
-        "Today's date: {today_date}\n\n"
-        "Current trends document:\n{current_trends}\n\n"
-        "Today's digest:\n{todays_digest}"
-    )
+    human_prompt_template: str = "Existing trends:\n{existing_trends}\n\nToday's digest:\n{todays_digest}"
 
 
 class RefineQueryPrompt(BasePrompt):

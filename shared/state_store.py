@@ -1,26 +1,28 @@
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from botocore.exceptions import ClientError
 
-from .logger import logger
+from .logger import is_running_in_aws, logger
+
+if TYPE_CHECKING:
+    from .config import Config
 
 
 class StateStore(ABC):
-    """Blob store for the single mutable trends document (read-modify-write each run).
+    """Blob store for the structured trends memory (read-modify-write each run).
 
     Distinct from shared.memory.MemoryStore by design — and NOT replaceable by it.
-    trends.md is a deliberately time-varying document with explicit merge/cooling/archive
-    of topic threads. AgentCore's managed strategies extract STABLE records (semantic
-    facts, user preferences) or per-session summaries; even customMemoryStrategy can only
-    *append to* those built-in prompts, not implement trend-thread maintenance. The only
-    full-control path (selfManagedConfiguration) would re-implement this TrendTracker plus
-    SNS/S3 plumbing. So trends.md stays the system of record for trends; MemoryStore holds
-    digest snapshots + cross-day recall for the follow-up agent. (Researched 2026-06; AWS
-    docs confirm strategy edits are in-place/no-replacement if this is ever revisited.)
+    trends.json is a deliberately time-varying document with explicit code-managed
+    merge/cooling/archive of topic threads. AgentCore's managed strategies extract STABLE
+    records (semantic facts, user preferences) or per-session summaries; even
+    customMemoryStrategy can only *append to* those built-in prompts, not implement
+    trend-thread maintenance. So trends.json stays the system of record for trends;
+    MemoryStore holds the digest snapshot for the follow-up agent.
     """
 
     @abstractmethod
@@ -90,3 +92,26 @@ class S3StateStore(StateStore):
             return True
         except ClientError:
             return False
+
+
+def create_state_store(config: Config | None = None) -> StateStore:
+    """Select the S3-backed store when running in AWS or when a state bucket is
+    configured, else the local filesystem fallback. Shared by the pipeline and the
+    follow-up agent so both read/write the same trends.json."""
+    import boto3
+
+    from .constants import LocalPaths
+
+    if is_running_in_aws():
+        bucket = os.environ.get("STATE_BUCKET", "")
+        if bucket:
+            prefix = os.environ.get("S3_PREFIX", "digest_state")
+            return S3StateStore(boto3.Session(), bucket, prefix=prefix)
+    if config and config.aws.state_bucket_name:
+        prefix = f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state"
+        return S3StateStore(
+            boto3.Session(profile_name=config.aws.profile or None, region_name=config.aws.region),
+            config.aws.state_bucket_name,
+            prefix=prefix,
+        )
+    return LocalStateStore(Path(LocalPaths.DIGEST_STATE_DIR.value))

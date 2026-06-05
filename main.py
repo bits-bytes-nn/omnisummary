@@ -1,6 +1,5 @@
 import argparse
 import asyncio
-import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -24,16 +23,14 @@ from shared import (
     DigestResult,
     HealthReport,
     LocalPaths,
-    LocalStateStore,
     RankedItem,
-    S3StateStore,
     SourceHealth,
     SourceStatus,
     create_memory_store,
+    create_state_store,
     is_running_in_aws,
     logger,
 )
-from shared.state_store import StateStore
 
 
 def _build_collector_tasks(
@@ -118,7 +115,7 @@ async def run_pipeline(
         logger.warning("No items passed ranking threshold")
         return None, None, None
 
-    state_store = _create_state_store()
+    state_store = create_state_store(config)
     trend_tracker = TrendTracker(config.pipeline, llm_factory, state_store)
     trends_context = trend_tracker.get_trends_context()
 
@@ -154,22 +151,6 @@ async def run_pipeline(
     return items, ranked_items, digest
 
 
-def _create_state_store(config: Config | None = None) -> StateStore:
-    if is_running_in_aws():
-        bucket = os.environ.get("STATE_BUCKET", "")
-        if bucket:
-            prefix = os.environ.get("S3_PREFIX", "digest_state")
-            return S3StateStore(boto3.Session(), bucket, prefix=prefix)
-    if config and config.aws.state_bucket_name:
-        prefix = f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state"
-        return S3StateStore(
-            boto3.Session(profile_name=config.aws.profile or None, region_name=config.aws.region),
-            config.aws.state_bucket_name,
-            prefix=prefix,
-        )
-    return LocalStateStore(Path(LocalPaths.DIGEST_STATE_DIR.value))
-
-
 def persist_digest(
     items: list[CollectedItem],
     ranked_items: list[RankedItem],
@@ -178,14 +159,13 @@ def persist_digest(
     *,
     base_dir: Path | None = None,
 ) -> None:
-    """Persist the digest snapshot + trend fact to the memory store (single path used
-    by both the local CLI and the Lambda handler). base_dir selects the local fallback;
-    pass None in AWS so create_memory_store picks the AgentCore-backed store."""
+    """Persist the digest snapshot to the memory store (single path used by both the
+    local CLI and the Lambda handler). base_dir selects the local fallback; pass None
+    in AWS so create_memory_store picks the AgentCore-backed store."""
     mgr = DigestStateManager()
     mgr.store_digest(items, ranked_items, digest)
     memory = create_memory_store(base_dir)
     memory.put_digest(digest_date.isoformat(), mgr.export_state())
-    memory.record_trend(digest.digest_text, session_id=f"trend-{digest_date.isoformat()}")
 
 
 async def main() -> None:
