@@ -12,6 +12,7 @@ from .formatting import (
     clean_rss_feed_name,
     format_collected_item,
     format_origin_label,
+    normalize_title,
     resolve_origin_key,
 )
 from .logger import get_correlation_id, is_running_in_aws, logger, set_correlation_id
@@ -61,6 +62,7 @@ __all__ = [
     "clean_rss_feed_name",
     "format_collected_item",
     "format_origin_label",
+    "normalize_title",
     "resolve_origin_key",
     "LanguageModelId",
     "LanguageModelInfo",

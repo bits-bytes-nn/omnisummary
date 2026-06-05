@@ -17,6 +17,7 @@ from shared import (
     format_collected_item,
     format_origin_label,
     logger,
+    normalize_title,
     resolve_origin_key,
 )
 from shared.config import PipelineConfig
@@ -40,8 +41,11 @@ class ContentRanker:
         # Scoring is absolute (the prompt calibrates each item to fixed 0-1 criteria), so
         # large inputs are split into batches scored CONCURRENTLY and merged — a single
         # call over 100+ items dominated the Lambda runtime. Results are independent.
+        # Sort by normalized title first so near-duplicate stories co-locate in the same
+        # batch, where the prompt's same-topic clustering/dedup can still see both.
         batch_size = self.config.ranking_batch_size
-        batches = [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
+        ordered = sorted(items, key=lambda it: normalize_title(it.title))
+        batches = [ordered[i : i + batch_size] for i in range(0, len(ordered), batch_size)]
         if len(batches) > 1:
             logger.info("Ranking in %d parallel batches of up to %d", len(batches), batch_size)
         results = await asyncio.gather(*(self._rank_batch(b) for b in batches))
@@ -96,7 +100,6 @@ class ContentRanker:
                     "ranking_categories": ", ".join(self.config.ranking_categories),
                     "duplicate_score_penalty": self.config.ranking_duplicate_score_penalty,
                     "scoring_rubric": self.config.ranking_scoring_rubric,
-                    "target_count": self.config.ranking_target_count,
                     "audience": self.config.ranking_audience_description,
                 }
             )

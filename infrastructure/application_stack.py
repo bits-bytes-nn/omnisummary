@@ -93,6 +93,11 @@ class OmniSummaryApplicationStack(Stack):
                 "PROJECT_NAME": project_name,
                 "STAGE": stage,
                 "MEMORY_ID": foundation.memory_id,
+                # recall_trends reads trends.json from the same S3 location the digest
+                # pipeline writes; without these the agent falls back to a local store
+                # that has no trends in the container and recall silently returns nothing.
+                "STATE_BUCKET": foundation.state_bucket.bucket_name,
+                "S3_PREFIX": f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state",
             },
         )
 

@@ -100,6 +100,25 @@ class TrendMemory(BaseModel):
     def by_id(self, trend_id: str) -> Trend | None:
         return next((t for t in self.trends if t.id == trend_id), None)
 
+    def search(self, query: str, *, today: date, half_life_days: float, top_k: int) -> list[Trend]:
+        """Return up to top_k active/cooling trends most relevant to the query, ranked by
+        (distinct query-term hits, then momentum). Empty query → top trends by momentum.
+        Deterministic term matching — no embeddings."""
+        terms = {t for t in query.lower().split() if t}
+        candidates = [t for t in self.trends if t.status != TrendStatus.ARCHIVED]
+
+        def hits(trend: Trend) -> int:
+            if not terms:
+                return 0
+            hay = (trend.title + " " + " ".join(ev.summary for ev in trend.evidence)).lower()
+            return sum(1 for term in terms if term in hay)
+
+        scored = [(trend, hits(trend)) for trend in candidates]
+        if terms:
+            scored = [(trend, h) for trend, h in scored if h > 0]
+        scored.sort(key=lambda pair: (pair[1], pair[0].momentum(today, half_life_days)), reverse=True)
+        return [trend for trend, _ in scored[:top_k]]
+
 
 class SourceStatus(str, Enum):
     OK = "ok"

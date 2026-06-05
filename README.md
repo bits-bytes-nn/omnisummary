@@ -157,7 +157,7 @@ Each collector runs async in parallel. Lookback window is configurable per sourc
 
 ### 4. Trend Tracking
 
-`TrendTracker` maintains `trends.md` with active/cooling/archived trends. Updated after each digest. Feeds context into digest generation for cross-day narrative continuity.
+`TrendTracker` maintains structured trends in `trends.json` (slug-id `Trend` objects with dated evidence). The LLM only classifies today's items into existing/new trends; code owns all bookkeeping — date stamping, active/cooling/archived lifecycle, recency-decay momentum, and evidence/active caps. Active+cooling trends (momentum-sorted) feed the next digest for cross-day continuity.
 
 ### 5. Digest Generation
 
@@ -177,7 +177,7 @@ Autonomous Strands Agent (on Bedrock AgentCore Runtime, reads digest state from 
 | `search_papers(query)` | Semantic Scholar API |
 | `search_community(query)` | Tavily (Reddit, X, HN, Substack) |
 | `search_related_news(query)` | Tavily (general news) |
-| `recall_trends(query)` | Cross-day semantic recall from AgentCore Memory |
+| `recall_trends(query)` | Keyword match over the structured `trends.json` (active/cooling), momentum-ranked |
 | `make_visual(instruction, item_number, context)` | Free-form image from a natural-language instruction (1-page slide / comic / diagram / infographic) → posted to Slack via OpenAI gpt-image |
 
 ## AWS Deployment
@@ -270,14 +270,14 @@ omnisummary/
 ├── scripts/                    # Deploy, RSSHub sync
 ├── cloudflare-proxy/           # CF Worker proxy
 ├── config/                     # YAML configuration
-├── tests/                      # Unit + CDK tests (301)
+├── tests/                      # Unit + CDK assertion tests
 └── assets/                     # tech-doc.md, architecture + concept diagrams
 ```
 
 ## Testing & CI
 
 ```bash
-uv run python -m pytest tests/ -v        # 301 tests (unit + CDK assertions)
+uv run python -m pytest tests/ -v        # unit + CDK assertion tests
 uv run black --check . && uv run ruff check .
 uv run python scripts/ci_synth.py        # offline CDK synth
 ```

@@ -46,7 +46,6 @@ class RankingPrompt(BasePrompt):
         "ranking_categories",
         "duplicate_score_penalty",
         "scoring_rubric",
-        "target_count",
         "audience",
     ]
 
@@ -67,7 +66,8 @@ Product/service promotion, thin content, beginner questions, memes, self-promoti
 
 *Score Calibration*
 {scoring_rubric}
-Be generous in 0.6-0.8. Aim for {target_count} per batch.
+Score each item ABSOLUTELY against these criteria — do NOT grade on a curve or target a fixed
+count; identical items must get the same score regardless of what else is in this set.
 
 *Engagement Signal*
 High engagement is a STRONG quality signal. Apply this bonus based on the Engagement field when present:

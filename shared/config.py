@@ -142,14 +142,11 @@ class PipelineConfig(BaseModel):
         "0.9+: field-defining. 0.8-0.89: very important. 0.7-0.79: notable. "
         "0.6-0.69: worth noting (digest bar). <0.6: low value."
     )
-    # Target count of items the ranking prompt should aim to score above the bar per batch.
-    ranking_target_count: str = "~10-20 items scoring 0.6+"
     trend_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     trend_retention_days: int = Field(default=30, ge=1)
     trend_cooling_days: int = Field(default=7, ge=1)
     trend_max_evidence: int = Field(default=5, ge=1)
     trend_max_active_trends: int = Field(default=10, ge=1)
-    trend_max_chars: int = Field(default=15000, ge=1)
     trend_momentum_half_life_days: float = Field(default=7.0, gt=0)
     enable_daily_visual: bool = True
     image_model: str = "gpt-image-2"

@@ -18,6 +18,9 @@ from shared.proxy import get_proxied_url, is_proxy_configured
 from .base import BaseCollector, cutoff_datetime, gather_collector_results
 
 YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
+# Canonical YouTube channel ID: "UC" + 22 base64url chars. The uploads playlist is the
+# same ID with the "UC" prefix swapped to "UU", so a valid UC id is required.
+_CHANNEL_ID_PATTERN = re.compile(r'"channelId":"(UC[a-zA-Z0-9_-]{22})"')
 
 
 class YouTubeCollector(BaseCollector):
@@ -217,14 +220,15 @@ class YouTubeCollector(BaseCollector):
             return ""
 
     def _resolve_channel_id(self, channel_url: str) -> str:
+        # Only accept the canonical channel ID form (UC + 22 chars). The looser
+        # `channel_id=...` fallback could capture a non-UC value, which then produced a
+        # malformed `UU...` uploads-playlist ID and a silent empty result, so it's dropped.
         try:
             resp = self._sync_client.get(channel_url, timeout=self.config.resolve_timeout)
-            match = re.search(r'"channelId":"(UC[a-zA-Z0-9_-]+)"', resp.text)
+            match = _CHANNEL_ID_PATTERN.search(resp.text)
             if match:
                 return match.group(1)
-            match = re.search(r'channel_id=([^"&]+)', resp.text)
-            if match:
-                return match.group(1)
+            logger.warning("No canonical channel ID found on page for '%s'", channel_url)
         except httpx.HTTPError as e:
             logger.warning("Failed to resolve channel ID for '%s': %s", channel_url, e)
         return ""

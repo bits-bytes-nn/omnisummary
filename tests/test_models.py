@@ -95,6 +95,69 @@ class TestTrendMomentum:
         stale = Trend(id="s", title="S", evidence=[TrendEvidence(date="2026-06-01", summary="s")])
         assert recent.momentum(today, 7.0) > stale.momentum(today, 7.0)
 
+    def test_nonpositive_half_life_falls_back_to_count(self):
+        today = date(2026, 6, 5)
+        trend = Trend(
+            id="t",
+            title="T",
+            evidence=[TrendEvidence(date="2026-01-01", summary="a"), TrendEvidence(date="2026-06-05", summary="b")],
+        )
+        assert trend.momentum(today, half_life_days=0) == 2.0
+
+    def test_bad_date_contributes_zero(self):
+        today = date(2026, 6, 5)
+        trend = Trend(id="t", title="T", evidence=[TrendEvidence(date="not-a-date", summary="s")])
+        assert trend.momentum(today, half_life_days=7.0) == 0.0
+
+    def test_future_date_clamps_to_full_weight(self):
+        today = date(2026, 6, 5)
+        trend = Trend(id="t", title="T", evidence=[TrendEvidence(date="2026-06-10", summary="s")])
+        assert trend.momentum(today, half_life_days=7.0) == pytest.approx(1.0)
+
+
+class TestTrendMemorySearch:
+    def _mem(self):
+        from shared.models import TrendMemory, TrendStatus
+
+        return TrendMemory(
+            trends=[
+                Trend(
+                    id="kv",
+                    title="KV Cache Efficiency",
+                    status=TrendStatus.ACTIVE,
+                    evidence=[TrendEvidence(date="2026-06-05", summary="text diffusion bypasses kv cache")],
+                ),
+                Trend(
+                    id="ipo",
+                    title="Lab IPO Race",
+                    status=TrendStatus.ACTIVE,
+                    evidence=[TrendEvidence(date="2026-06-01", summary="anthropic files s-1")],
+                ),
+                Trend(
+                    id="old",
+                    title="Archived Topic",
+                    status=TrendStatus.ARCHIVED,
+                    evidence=[TrendEvidence(date="2026-05-01", summary="kv cache old note")],
+                ),
+            ]
+        )
+
+    def test_excludes_archived(self):
+        out = self._mem().search("kv cache", today=date(2026, 6, 5), half_life_days=7.0, top_k=5)
+        assert [t.id for t in out] == ["kv"]  # archived 'old' excluded despite matching
+
+    def test_ranks_by_term_hits_then_momentum(self):
+        out = self._mem().search("ipo race", today=date(2026, 6, 5), half_life_days=7.0, top_k=5)
+        assert out[0].id == "ipo"
+
+    def test_empty_query_returns_by_momentum(self):
+        out = self._mem().search("", today=date(2026, 6, 5), half_life_days=7.0, top_k=5)
+        assert out[0].id == "kv"  # most recent evidence -> highest momentum
+
+    def test_top_k_caps(self):
+        out = self._mem().search("", today=date(2026, 6, 5), half_life_days=7.0, top_k=1)
+        assert len(out) == 1
+
     def test_zero_half_life_falls_back_to_count(self):
         today = date(2026, 6, 5)
         trend = Trend(

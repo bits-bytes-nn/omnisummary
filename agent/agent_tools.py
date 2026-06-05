@@ -223,14 +223,21 @@ async def recall_trends(query: str) -> str:
     Args:
         query: What to recall (e.g. "open-weight model releases", "agent frameworks")
     """
-    from shared import TrendMemory, TrendStatus, create_state_store
+    from datetime import date
+
+    from shared import TrendMemory, create_state_store
 
     config = Config.load()
     top_k = config.agent.recall_memory_top_k
-    store = create_state_store(config)
+    half_life = config.pipeline.trend_momentum_half_life_days
 
     def _load() -> TrendMemory:
-        raw = store.read("trends.json") if store.exists("trends.json") else None
+        try:
+            store = create_state_store(config)
+            raw = store.read("trends.json") if store.exists("trends.json") else None
+        except Exception as e:
+            logger.warning("Failed to open trend store for recall: %s", e)
+            return TrendMemory()
         if not raw:
             return TrendMemory()
         try:
@@ -240,21 +247,14 @@ async def recall_trends(query: str) -> str:
             return TrendMemory()
 
     memory = await asyncio.to_thread(_load)
-    terms = [t for t in query.lower().split() if t]
-    matches: list[str] = []
-    for trend in memory.trends:
-        if trend.status == TrendStatus.ARCHIVED:
-            continue
-        haystack = (trend.title + " " + " ".join(ev.summary for ev in trend.evidence)).lower()
-        if not terms or any(term in haystack for term in terms):
-            recent = "; ".join(f"[{ev.date}] {ev.summary}" for ev in trend.evidence[-3:])
-            matches.append(f"- *{trend.title}* ({trend.status.value}): {recent}")
-        if len(matches) >= top_k:
-            break
-
-    if not matches:
+    matched = memory.search(query, today=date.today(), half_life_days=half_life, top_k=top_k)
+    if not matched:
         return "No earlier trends recalled for that query."
-    return "Earlier trends:\n\n" + "\n".join(matches)
+    lines = [
+        f"- *{t.title}* ({t.status.value}): " + "; ".join(f"[{ev.date}] {ev.summary}" for ev in t.evidence[-3:])
+        for t in matched
+    ]
+    return "Earlier trends:\n\n" + "\n".join(lines)
 
 
 def _build_llm_factory():
