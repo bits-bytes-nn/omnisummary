@@ -6,15 +6,17 @@ from urllib.parse import urlparse
 from langchain_core.output_parsers import StrOutputParser
 
 from shared import (
+    YOUTUBE_VIEWS_EMOJI,
     BedrockLanguageModelFactory,
     CollectedItem,
     DigestPrompt,
     DigestResult,
     RankedItem,
     SourceType,
+    clean_rss_feed_name,
+    format_collected_item,
     logger,
     sanitize_slack_mrkdwn,
-    truncate_text_by_tokens,
 )
 from shared.config import PipelineConfig
 
@@ -53,6 +55,8 @@ class DigestGenerator:
             {
                 "items_text": items_text,
                 "trends_context": trends_context or "(No trend data available yet.)",
+                "language_rules": self.config.digest_language_rules,
+                "audience": self.config.digest_audience_description,
             }
         )
         digest_text = sanitize_slack_mrkdwn(digest_text)
@@ -71,19 +75,18 @@ class DigestGenerator:
         parts: list[str] = []
         for i, ranked in enumerate(ranked_items):
             item = ranked.item
-            snippet = truncate_text_by_tokens(item.text, self.config.item_text_max_tokens)
-            source_detail = self._format_source_detail(item)
+            fields = [
+                ("Score", f"{ranked.score:.2f}"),
+                ("Categories", ", ".join(ranked.categories)),
+                ("Reasoning", ranked.reasoning),
+                ("Title", item.title),
+                ("URL", item.url),
+                ("Source", item.source_type.value),
+                ("Source Detail", self._format_source_detail(item)),
+                ("Author", item.author or "Unknown"),
+            ]
             parts.append(
-                f"=== Item {i + 1} ===\n"
-                f"Score: {ranked.score:.2f}\n"
-                f"Categories: {', '.join(ranked.categories)}\n"
-                f"Reasoning: {ranked.reasoning}\n"
-                f"Title: {item.title}\n"
-                f"URL: {item.url}\n"
-                f"Source: {item.source_type.value}\n"
-                f"Source Detail: {source_detail}\n"
-                f"Author: {item.author or 'Unknown'}\n"
-                f"Text:\n{snippet}\n"
+                format_collected_item(item, index=i + 1, max_tokens=self.config.item_text_max_tokens, fields=fields)
             )
         return "\n".join(parts)
 
@@ -101,15 +104,11 @@ class DigestGenerator:
         elif item.source_type == SourceType.YOUTUBE:
             tag = "`YouTube`"
             if meta.get("view_count"):
-                metrics.append(f":arrow_forward: {meta['view_count']:,}")
+                metrics.append(f"{YOUTUBE_VIEWS_EMOJI} {meta['view_count']:,}")
         elif item.source_type == SourceType.X:
             tag = f"`@{item.author}`" if item.author else "`X`"
         elif item.source_type == SourceType.RSS:
-            feed_title = meta.get("feed_title", "")
-            name = feed_title.split(" - ")[0].split(" — ")[0].strip() if feed_title else ""
-            if not name:
-                feed_url = meta.get("feed_url", "")
-                name = urlparse(feed_url).netloc.removeprefix("www.").removeprefix("feeds.") if feed_url else "RSS"
+            name = clean_rss_feed_name(meta.get("feed_title", ""), meta.get("feed_url", "")) or "RSS"
             tag = f"`{name}`"
         elif item.source_type == SourceType.WEB:
             domain = urlparse(item.url).netloc.removeprefix("www.")

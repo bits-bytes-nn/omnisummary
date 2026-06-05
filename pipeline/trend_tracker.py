@@ -10,9 +10,12 @@ from shared.config import PipelineConfig
 from shared.state_store import StateStore
 
 TRENDS_KEY = "trends.md"
-MAX_EVIDENCE_PER_TREND = 5
-MAX_TRENDS_CHARS = 15000
+# Markdown structure tokens that must stay in lockstep with TrendUpdatePrompt's output
+# format. Defined once so the prompt/parser contract is explicit.
 ARCHIVED_MARKER = "# Archived Trends"
+EVIDENCE_MARKER = "- **Evidence**:"
+DATE_ENTRY_PREFIX = "- ["
+DATE_ENTRY_PATTERN = re.compile(r"- \[(\d{4}-\d{2}-\d{2})\]")
 
 
 class TrendTracker:
@@ -54,6 +57,9 @@ class TrendTracker:
                 "todays_digest": digest_text,
                 "today_date": today_date,
                 "trend_retention_days": str(self.config.trend_retention_days),
+                "trend_cooling_days": str(self.config.trend_cooling_days),
+                "trend_max_evidence": str(self.config.trend_max_evidence),
+                "trend_max_active_trends": str(self.config.trend_max_active_trends),
             }
         )
 
@@ -64,8 +70,7 @@ class TrendTracker:
         logger.info("Updated trends document (%d chars)", len(updated))
         return updated
 
-    @staticmethod
-    def _trim_for_llm(content: str, today_date: str) -> tuple[str, str]:
+    def _trim_for_llm(self, content: str, today_date: str) -> tuple[str, str]:
         if not content:
             return content, ""
 
@@ -76,20 +81,21 @@ class TrendTracker:
             content = content[:archived_idx].rstrip()
 
         try:
-            cutoff = date.fromisoformat(today_date) - timedelta(days=7)
+            cutoff = date.fromisoformat(today_date) - timedelta(days=self.config.trend_cooling_days)
         except ValueError:
             cutoff = None
 
         if cutoff:
-            content = TrendTracker._trim_evidence(content, cutoff)
+            content = self._trim_evidence(content, cutoff, self.config.trend_max_evidence)
 
-        if len(content) > MAX_TRENDS_CHARS:
-            content = content[:MAX_TRENDS_CHARS] + "\n\n(... truncated for size ...)"
+        max_chars = self.config.trend_max_chars
+        if len(content) > max_chars:
+            content = content[:max_chars] + "\n\n(... truncated for size ...)"
 
         return content, old_archived
 
     @staticmethod
-    def _trim_evidence(content: str, cutoff: date) -> str:
+    def _trim_evidence(content: str, cutoff: date, max_evidence: int) -> str:
         lines = content.split("\n")
         result: list[str] = []
         evidence_count = 0
@@ -98,7 +104,7 @@ class TrendTracker:
 
         for line in lines:
             stripped = line.strip()
-            if stripped == "- **Evidence**:":
+            if stripped == EVIDENCE_MARKER:
                 if in_evidence and dropped_count > 0:
                     result.append(f"  - (+ {dropped_count} earlier entries omitted)")
                 in_evidence = True
@@ -108,18 +114,18 @@ class TrendTracker:
                 continue
 
             if in_evidence:
-                if stripped.startswith("- ["):
-                    date_match = re.match(r"- \[(\d{4}-\d{2}-\d{2})\]", stripped)
+                if stripped.startswith(DATE_ENTRY_PREFIX):
+                    date_match = DATE_ENTRY_PATTERN.match(stripped)
                     if date_match:
                         try:
                             entry_date = date.fromisoformat(date_match.group(1))
                             if entry_date < cutoff:
                                 dropped_count += 1
                                 continue
-                        except ValueError:
-                            pass
+                        except ValueError as e:
+                            logger.debug("Failed to parse evidence date '%s': %s", date_match.group(1), e)
                     evidence_count += 1
-                    if evidence_count > MAX_EVIDENCE_PER_TREND:
+                    if evidence_count > max_evidence:
                         dropped_count += 1
                         continue
                     result.append(line)

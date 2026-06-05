@@ -20,13 +20,20 @@ class RSSCollector(BaseCollector):
             return []
 
         tasks = [self._collect_feed(feed_url) for feed_url in self.config.feeds]
-        items = await gather_collector_results(tasks, labels=self.config.feeds)
+        items = await gather_collector_results(tasks, labels=self.config.feeds, raise_if_all_failed=True)
         logger.info("RSS collector gathered %d items total", len(items))
         return items
 
     async def _collect_feed(self, feed_url: str) -> list[CollectedItem]:
         logger.info("Collecting posts from feed '%s'", feed_url)
-        return await asyncio.to_thread(self._parse_feed, feed_url)
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._parse_feed, feed_url),
+                timeout=self.config.request_timeout,
+            )
+        except TimeoutError:
+            logger.warning("RSS feed '%s' timed out after %ds, skipping", feed_url, self.config.request_timeout)
+            return []
 
     def _parse_feed(self, feed_url: str) -> list[CollectedItem]:
         feed = feedparser.parse(feed_url)
@@ -68,7 +75,7 @@ class RSSCollector(BaseCollector):
                     )
                 )
                 logger.info("Collected RSS post: '%s'", title)
-            except Exception:
+            except (AttributeError, KeyError, TypeError, ValueError):
                 logger.warning("Failed to process feed entry from '%s'", feed_url, exc_info=True)
 
         return items

@@ -50,6 +50,12 @@ class DigestResult(BaseModel):
     total_ranked: int = 0
 
 
+class VisualBrief(BaseModel):
+    title: str = Field(min_length=1, max_length=100)
+    caption: str = Field(min_length=1, max_length=300)
+    prompt: str = Field(min_length=1, max_length=4000)
+
+
 class SourceStatus(str, Enum):
     OK = "ok"
     EMPTY = "empty"

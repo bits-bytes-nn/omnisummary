@@ -8,7 +8,7 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from slack_sdk.web import WebClient
 
 from agent import create_digest_agent
-from agent.agent_tools import state_manager
+from agent.agent_tools import DeliveryContext, request_context
 from agent.tool_state import DigestStateManager
 from output.slack_handler import _split_message
 from shared import create_memory_store, logger, sanitize_slack_mrkdwn, set_correlation_id
@@ -16,16 +16,17 @@ from shared import create_memory_store, logger, sanitize_slack_mrkdwn, set_corre
 app = BedrockAgentCoreApp()
 
 
-def _load_latest_state() -> None:
+def _load_latest_state() -> DigestStateManager:
+    state = DigestStateManager()
     memory = create_memory_store()
     data = memory.get_latest_digest()
     if not data:
         logger.warning("No digest state available in AgentCore Memory")
-        return
+        return state
 
-    loaded = DigestStateManager.load_from_dict(data)
-    state_manager.load_from(loaded)
-    logger.info("Loaded %d items from AgentCore Memory", state_manager.get_item_count())
+    state.load_from(DigestStateManager.load_from_dict(data))
+    logger.info("Loaded %d items from AgentCore Memory", state.get_item_count())
+    return state
 
 
 def _send_slack_message(channel: str, text: str, thread_ts: str = "") -> None:
@@ -65,26 +66,20 @@ def invoke(payload: dict[str, Any]) -> str:
     set_correlation_id(payload.get("correlation_id") or None)
     logger.info("AgentCore invoked: prompt='%s', channel='%s'", prompt[:100], channel_id)
 
-    _load_latest_state()
-
-    from agent.agent_tools import delivery_context
-
-    delivery_context.channel_id = channel_id
-    delivery_context.thread_ts = thread_ts
+    state = _load_latest_state()
+    delivery = DeliveryContext(channel_id=channel_id, thread_ts=thread_ts)
 
     agent = create_digest_agent()
 
-    try:
-        response = str(agent(prompt))
-        response = sanitize_slack_mrkdwn(response)
-    except Exception as e:
-        logger.error("Agent execution failed: %s", e, exc_info=True)
-        response = f"Error processing request: {e}"
-    finally:
-        # Clear per-invocation delivery target so a warm container can't leak it
-        # into a later invocation that arrives without one.
-        delivery_context.channel_id = ""
-        delivery_context.thread_ts = ""
+    # contextvar-scoped per-invocation state: a warm container handling concurrent
+    # invocations can't leak one request's channel/state into another.
+    with request_context(state, delivery):
+        try:
+            response = str(agent(prompt))
+            response = sanitize_slack_mrkdwn(response)
+        except Exception as e:
+            logger.error("Agent execution failed: %s", e, exc_info=True)
+            response = f"Error processing request: {e}"
 
     if channel_id:
         _send_slack_message(channel_id, response, thread_ts)

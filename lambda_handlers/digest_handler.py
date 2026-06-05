@@ -8,14 +8,12 @@ from zoneinfo import ZoneInfo
 
 import boto3
 
-from agent.tool_state import DigestStateManager
-from main import run_collectors_with_health, run_pipeline
+from main import persist_digest, run_collectors_with_health, run_pipeline
 from shared import (
     BedrockLanguageModelFactory,
     Config,
     HealthReport,
     SourceStatus,
-    create_memory_store,
     logger,
     set_correlation_id,
 )
@@ -58,10 +56,10 @@ async def _run() -> None:
     if rsshub_url:
         config.collectors.rsshub.base_url = rsshub_url
 
-    KST = ZoneInfo("Asia/Seoul")
-    digest_date = datetime.now(KST).date()
+    tz = ZoneInfo(config.aws.timezone)
+    digest_date = datetime.now(tz).date()
     next_day = digest_date + timedelta(days=1)
-    reference_time = datetime(next_day.year, next_day.month, next_day.day, tzinfo=KST)
+    reference_time = datetime(next_day.year, next_day.month, next_day.day, tzinfo=tz)
     config.collectors.set_reference_time(reference_time)
 
     boto_session = boto3.Session(region_name=config.aws.bedrock_region)
@@ -84,10 +82,26 @@ async def _run() -> None:
     if result:
         items, ranked_items, digest = result
         if items and ranked_items and digest:
-            mgr = DigestStateManager()
-            mgr.store_digest(items, ranked_items, digest)
-            memory = create_memory_store()
-            memory.put_digest(digest_date.isoformat(), mgr.export_state())
-            memory.record_trend(digest.digest_text, session_id=f"trend-{digest_date.isoformat()}")
+            # Persist for the follow-up agent. A persistence failure must NOT abort the
+            # run or block the daily visual — the Slack digest is already sent by now.
+            try:
+                # base_dir=None → AgentCore-backed memory store in AWS.
+                persist_digest(items, ranked_items, digest, digest_date, base_dir=None)
+            except Exception:
+                logger.error("Failed to persist digest state (non-fatal)", exc_info=True)
+            _trigger_visual()
 
     logger.info("Digest pipeline completed for %s", digest_date)
+
+
+def _trigger_visual() -> None:
+    """Fire the daily-visual Lambda asynchronously so its ~1-2 min of work doesn't
+    count against the digest Lambda's 15-min timeout. Best-effort."""
+    fn = os.environ.get("VISUAL_FUNCTION_NAME", "")
+    if not fn:
+        return
+    try:
+        boto3.client("lambda").invoke(FunctionName=fn, InvocationType="Event", Payload=b"{}")
+        logger.info("Triggered visual Lambda '%s'", fn)
+    except Exception as e:
+        logger.warning("Failed to trigger visual Lambda: %s", e)

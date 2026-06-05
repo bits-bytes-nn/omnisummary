@@ -10,6 +10,14 @@ from .logger import logger
 
 
 class StateStore(ABC):
+    """Blob store for the single mutable trends document (read-modify-write each run).
+
+    Distinct from shared.memory.MemoryStore by design: trends.md is one growing document
+    that must be read back verbatim to merge, which fits an S3 object / local file — not
+    AgentCore's append-only event model (which also caps event text at 100k chars). The
+    MemoryStore holds digest snapshots + semantic trend recall for the follow-up agent.
+    """
+
     @abstractmethod
     def read(self, key: str) -> str | None: ...
 

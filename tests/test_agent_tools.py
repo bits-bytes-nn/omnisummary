@@ -8,15 +8,20 @@ from agent import agent_tools
 class TestFormatSearchResults:
     def test_formats_fields(self):
         results = [{"title": "T1", "url": "http://a", "content": "body one"}]
-        out = agent_tools._format_search_results(results)
+        out = agent_tools._format_search_results(results, preview_chars=300)
         assert "- T1" in out
         assert "URL: http://a" in out
         assert "Content: body one" in out
 
     def test_truncates_content(self):
         results = [{"title": "T", "url": "u", "content": "x" * 500}]
-        out = agent_tools._format_search_results(results)
+        out = agent_tools._format_search_results(results, preview_chars=300)
         assert out.count("x") == 300
+
+    def test_preview_chars_is_configurable(self):
+        results = [{"title": "T", "url": "u", "content": "x" * 500}]
+        out = agent_tools._format_search_results(results, preview_chars=10)
+        assert out.count("x") == 10
 
 
 class TestTavilySearch:
@@ -58,10 +63,14 @@ class TestTavilySearch:
 
     @pytest.mark.asyncio
     async def test_community_search_uses_community_domains(self, monkeypatch):
+        from shared import Config
+
         monkeypatch.setenv("TAVILY_API_KEY", "key")
+        expected = Config.load().agent.community_search_domains
         with patch.object(agent_tools, "_tavily_search", new=AsyncMock(return_value="ok")) as mock:
             await agent_tools.search_community._tool_func("query")
-        assert mock.call_args.kwargs["include_domains"] == agent_tools.COMMUNITY_SEARCH_DOMAINS
+        assert mock.call_args.kwargs["include_domains"] == expected
+        assert "reddit.com" in expected
 
     @pytest.mark.asyncio
     async def test_news_search_uses_news_topic(self, monkeypatch):
@@ -69,6 +78,74 @@ class TestTavilySearch:
         with patch.object(agent_tools, "_tavily_search", new=AsyncMock(return_value="ok")) as mock:
             await agent_tools.search_related_news._tool_func("query")
         assert mock.call_args.kwargs["topic"] == "news"
+
+
+class TestSearchPapers:
+    def _client_returning(self, responses):
+        client = AsyncMock()
+        client.get.side_effect = responses
+        client.__aenter__.return_value = client
+        client.__aexit__.return_value = False
+        return client
+
+    @pytest.mark.asyncio
+    async def test_retries_on_429_then_succeeds(self, monkeypatch):
+        import httpx
+
+        monkeypatch.setattr("shared.utils.asyncio.sleep", AsyncMock())
+
+        rate_limited = MagicMock(status_code=429, request=MagicMock())
+        ok = MagicMock(status_code=200)
+        ok.json.return_value = {
+            "data": [{"title": "Paper", "year": 2024, "authors": [{"name": "A"}], "url": "u", "abstract": "abs"}]
+        }
+        client = self._client_returning([rate_limited, ok])
+
+        with patch.object(httpx, "AsyncClient", return_value=client):
+            result = await agent_tools.search_papers._tool_func("transformers")
+
+        assert "Paper" in result
+        assert client.get.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_exhausts_retries_on_persistent_429(self, monkeypatch):
+        import httpx
+
+        monkeypatch.setattr("shared.utils.asyncio.sleep", AsyncMock())
+        rate_limited = MagicMock(status_code=429, request=MagicMock())
+        retries = agent_tools.Config.load().agent.search_max_retries
+        client = self._client_returning([rate_limited] * retries)
+
+        with patch.object(httpx, "AsyncClient", return_value=client):
+            result = await agent_tools.search_papers._tool_func("q")
+
+        assert "SEARCH_FAILED" in result
+        assert client.get.call_count == retries
+
+    @pytest.mark.asyncio
+    async def test_caps_authors_and_abstract_from_config(self, monkeypatch):
+        import httpx
+
+        cfg = agent_tools.Config.load().agent
+        ok = MagicMock(status_code=200)
+        ok.json.return_value = {
+            "data": [
+                {
+                    "title": "P",
+                    "year": 2024,
+                    "authors": [{"name": f"Author{i}"} for i in range(10)],
+                    "url": "u",
+                    "abstract": "x" * 500,
+                }
+            ]
+        }
+        client = self._client_returning([ok])
+        with patch.object(httpx, "AsyncClient", return_value=client):
+            result = await agent_tools.search_papers._tool_func("q")
+
+        assert result.count("Author") == cfg.search_paper_max_authors
+        assert "x" * cfg.search_paper_abstract_max_chars in result
+        assert "x" * (cfg.search_paper_abstract_max_chars + 1) not in result
 
 
 class TestRecallTrends:
@@ -89,6 +166,19 @@ class TestRecallTrends:
             result = await agent_tools.recall_trends._tool_func("nothing")
         assert "No earlier trends" in result
 
+    @pytest.mark.asyncio
+    async def test_top_k_is_config_driven(self):
+        from shared.config import AgentConfig, Config
+
+        store = MagicMock()
+        store.recall.return_value = ["trend A"]
+        cfg = Config()
+        cfg.agent = AgentConfig(recall_memory_top_k=11)
+        with patch.object(agent_tools.Config, "load", return_value=cfg):
+            with patch("shared.create_memory_store", return_value=store):
+                await agent_tools.recall_trends._tool_func("topic")
+        store.recall.assert_called_once_with("topic", top_k=11)
+
 
 class TestMakeVisual:
     @pytest.mark.asyncio
@@ -101,10 +191,12 @@ class TestMakeVisual:
     async def test_free_form_generate_and_post(self, monkeypatch):
         gen = MagicMock()
 
+        from shared.models import VisualBrief
+
         async def fake_generate(instruction, source, context):
             assert instruction == "a 1-page presentation slide"
             assert context == "extra research"
-            return b"PNG", {"title": "슬라이드", "caption": "요약"}
+            return b"PNG", VisualBrief(title="슬라이드", caption="요약", prompt="draw")
 
         gen.generate = fake_generate
         agent_tools.delivery_context.channel_id = "C1"
@@ -134,3 +226,28 @@ class TestMakeVisual:
         with patch("shared.resolve_secret", return_value="key"):
             result = await agent_tools.make_visual._tool_func("draw it", item_number=99)
         assert "not found" in result
+
+
+class TestRequestContext:
+    def test_context_overrides_globals_and_resets(self):
+        from agent.agent_tools import (
+            DeliveryContext,
+            current_delivery_context,
+            current_state_manager,
+            request_context,
+        )
+        from agent.tool_state import DigestStateManager
+
+        # Outside any request, accessors return the module defaults.
+        assert current_delivery_context() is agent_tools.delivery_context
+        assert current_state_manager() is agent_tools.state_manager
+
+        scoped_state = DigestStateManager()
+        scoped_delivery = DeliveryContext(channel_id="CSCOPED", thread_ts="9.9")
+        with request_context(scoped_state, scoped_delivery):
+            assert current_state_manager() is scoped_state
+            assert current_delivery_context().channel_id == "CSCOPED"
+
+        # Reset after the block — no leak into the global.
+        assert current_delivery_context() is agent_tools.delivery_context
+        assert agent_tools.delivery_context.channel_id == ""

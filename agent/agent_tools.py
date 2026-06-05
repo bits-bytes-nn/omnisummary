@@ -2,20 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 
 import httpx
 from strands import tool
 from tavily import AsyncTavilyClient
 
-from shared import logger
+from shared import LOGGING_TRUNCATION_CHARS, Config, format_collected_item, logger, retry_async
 
 from .tool_state import DigestStateManager
 
-COMMUNITY_SEARCH_DOMAINS = ["twitter.com", "x.com", "reddit.com", "news.ycombinator.com", "substack.com"]
 
-state_manager = DigestStateManager()
-
-
+@dataclass
 class DeliveryContext:
     """Slack delivery target for tools that produce media (set per-invocation)."""
 
@@ -23,7 +23,34 @@ class DeliveryContext:
     thread_ts: str = ""
 
 
+# Module-level defaults (used by tests and single-threaded local runs). In a warm
+# AgentCore container two concurrent invocations would race on these, so the runtime
+# binds per-request copies via contextvars; tools resolve through the accessors below.
+state_manager = DigestStateManager()
 delivery_context = DeliveryContext()
+
+_request_state: ContextVar[DigestStateManager | None] = ContextVar("request_state", default=None)
+_request_delivery: ContextVar[DeliveryContext | None] = ContextVar("request_delivery", default=None)
+
+
+def current_state_manager() -> DigestStateManager:
+    return _request_state.get() or state_manager
+
+
+def current_delivery_context() -> DeliveryContext:
+    return _request_delivery.get() or delivery_context
+
+
+@contextmanager
+def request_context(state: DigestStateManager, delivery: DeliveryContext):
+    """Bind per-invocation state so concurrent invocations don't share globals."""
+    state_token = _request_state.set(state)
+    delivery_token = _request_delivery.set(delivery)
+    try:
+        yield
+    finally:
+        _request_state.reset(state_token)
+        _request_delivery.reset(delivery_token)
 
 
 def _get_tavily_client() -> AsyncTavilyClient | None:
@@ -34,9 +61,9 @@ def _get_tavily_client() -> AsyncTavilyClient | None:
     return AsyncTavilyClient(api_key=api_key)
 
 
-def _format_search_results(results: list[dict]) -> str:
+def _format_search_results(results: list[dict], preview_chars: int) -> str:
     return "\n\n".join(
-        f"- {r.get('title', 'N/A')}\n  URL: {r.get('url', '')}\n  Content: {r.get('content', '')[:300]}"
+        f"- {r.get('title', 'N/A')}\n  URL: {r.get('url', '')}\n  Content: {r.get('content', '')[:preview_chars]}"
         for r in results
     )
 
@@ -46,7 +73,8 @@ async def _tavily_search(query: str, *, topic: str | None = None, include_domain
     if not client:
         return "TAVILY_API_KEY not configured."
 
-    kwargs: dict = {"query": query, "max_results": 5}
+    agent_config = Config.load().agent
+    kwargs: dict = {"query": query, "max_results": agent_config.search_result_limit}
     if topic:
         kwargs["topic"] = topic
     if include_domains:
@@ -58,7 +86,7 @@ async def _tavily_search(query: str, *, topic: str | None = None, include_domain
         if not results:
             return "No results found."
         logger.info("Tavily search found %d results for query '%s'", len(results), query)
-        return _format_search_results(results)
+        return _format_search_results(results, agent_config.search_content_preview_chars)
     except Exception as e:
         logger.warning("Tavily search failed: %s", e)
         return f"Search failed: {e}"
@@ -72,27 +100,32 @@ def get_detail(item_number: int, query: str = "") -> str:
         item_number: The item number from the digest (1-based, e.g. 1, 2, 3)
         query: Optional specific question about the item
     """
-    ranked = state_manager.get_item_by_number(item_number)
+    state = current_state_manager()
+    ranked = state.get_item_by_number(item_number)
     if not ranked:
-        total = state_manager.get_item_count()
+        total = state.get_item_count()
         return f"Item {item_number} not found. Today's digest has {total} items."
 
     item = ranked.item
-    detail = (
-        f"=== Item {item_number} ===\n"
-        f"Title: {item.title}\n"
-        f"Source: {item.source_type.value}\n"
-        f"URL: {item.url}\n"
-        f"Author: {item.author or 'Unknown'}\n"
-        f"Score: {ranked.score:.2f}\n"
-        f"Categories: {', '.join(ranked.categories)}\n"
-        f"Reasoning: {ranked.reasoning}\n\n"
-        f"Content:\n{item.text[:8000]}"
-    )
+    max_tokens = Config.load().agent.detail_max_tokens
+    fields = [
+        ("Title", item.title),
+        ("Source", item.source_type.value),
+        ("URL", item.url),
+        ("Author", item.author or "Unknown"),
+        ("Score", f"{ranked.score:.2f}"),
+        ("Categories", ", ".join(ranked.categories)),
+        ("Reasoning", ranked.reasoning),
+    ]
+    detail = format_collected_item(
+        item, index=item_number, max_tokens=max_tokens, fields=fields, text_label="Content"
+    ).rstrip("\n")
     if query:
         detail += f"\n\nUser question: {query}"
 
-    logger.info("Retrieved detail for item #%d: '%s'", item_number, item.title[:50])
+    logger.info(
+        "Retrieved detail for item #%d: '%s'", item_number, item.title[: LOGGING_TRUNCATION_CHARS["title_short"]]
+    )
     return detail
 
 
@@ -103,35 +136,39 @@ async def search_papers(query: str) -> str:
     Args:
         query: Search query for finding related papers
     """
-    async with httpx.AsyncClient(timeout=30) as client:
-        last_error = ""
-        for attempt in range(3):
-            try:
-                response = await client.get(
-                    "https://api.semanticscholar.org/graph/v1/paper/search",
-                    params={
-                        "query": query,
-                        "limit": 5,
-                        "fields": "title,year,authors,url,abstract",
-                    },
-                )
-            except httpx.HTTPError as e:
-                logger.warning("Semantic Scholar API request failed: %s", e)
-                return f"Search request failed: {e}"
+    agent_config = Config.load().agent
+    async with httpx.AsyncClient(timeout=agent_config.search_request_timeout) as client:
 
-            if response.status_code == 429:
-                last_error = "Rate limited by Semantic Scholar API"
-                logger.warning("Semantic Scholar rate limited (attempt %d/3)", attempt + 1)
-                await asyncio.sleep(2 * (attempt + 1))
-                continue
+        async def _fetch() -> httpx.Response:
+            resp = await client.get(
+                "https://api.semanticscholar.org/graph/v1/paper/search",
+                params={
+                    "query": query,
+                    "limit": agent_config.search_result_limit,
+                    "fields": "title,year,authors,url,abstract",
+                },
+            )
+            if resp.status_code == 429:
+                raise httpx.HTTPStatusError("Rate limited by Semantic Scholar API", request=resp.request, response=resp)
+            return resp
 
-            if response.status_code != 200:
-                logger.warning("Semantic Scholar API returned status %d", response.status_code)
-                return f"Search failed (status {response.status_code})"
+        try:
+            response = await retry_async(
+                _fetch,
+                max_retries=agent_config.search_max_retries,
+                backoff_sec=agent_config.search_retry_backoff_sec,
+                retry_on=(httpx.HTTPStatusError,),
+                description="Semantic Scholar paper search",
+            )
+        except httpx.HTTPStatusError:
+            return "SEARCH_FAILED: Rate limited by Semantic Scholar API. Could not retrieve papers."
+        except httpx.HTTPError as e:
+            logger.warning("Semantic Scholar API request failed: %s", e)
+            return f"Search request failed: {e}"
 
-            break
-        else:
-            return f"SEARCH_FAILED: {last_error}. Could not retrieve papers."
+        if response.status_code != 200:
+            logger.warning("Semantic Scholar API returned status %d", response.status_code)
+            return f"Search failed (status {response.status_code})"
 
         try:
             data = response.json()
@@ -143,8 +180,8 @@ async def search_papers(query: str) -> str:
 
         results: list[str] = []
         for p in papers:
-            authors = ", ".join(a["name"] for a in (p.get("authors") or [])[:3])
-            abstract = (p.get("abstract") or "")[:200]
+            authors = ", ".join(a["name"] for a in (p.get("authors") or [])[: agent_config.search_paper_max_authors])
+            abstract = (p.get("abstract") or "")[: agent_config.search_paper_abstract_max_chars]
             results.append(
                 f"- {p.get('title', 'N/A')} ({p.get('year', 'N/A')}) by {authors}\n"
                 f"  URL: {p.get('url', '')}\n"
@@ -162,7 +199,8 @@ async def search_community(query: str) -> str:
     Args:
         query: Search query for community discussions
     """
-    return await _tavily_search(query, include_domains=COMMUNITY_SEARCH_DOMAINS)
+    domains = Config.load().agent.community_search_domains
+    return await _tavily_search(query, include_domains=domains)
 
 
 @tool
@@ -187,8 +225,9 @@ async def recall_trends(query: str) -> str:
     """
     from shared import create_memory_store
 
+    top_k = Config.load().agent.recall_memory_top_k
     store = create_memory_store()
-    recalled = await asyncio.to_thread(store.recall, query, top_k=5)
+    recalled = await asyncio.to_thread(store.recall, query, top_k=top_k)
     if not recalled:
         return "No earlier trends recalled for that query."
     return "Earlier trends:\n\n" + "\n\n".join(f"- {t}" for t in recalled)
@@ -197,7 +236,7 @@ async def recall_trends(query: str) -> str:
 def _build_llm_factory():
     import boto3
 
-    from shared import BedrockLanguageModelFactory, Config, is_running_in_aws
+    from shared import BedrockLanguageModelFactory, is_running_in_aws
 
     config = Config.load()
     if is_running_in_aws():
@@ -228,18 +267,32 @@ async def make_visual(instruction: str, item_number: int = 0, context: str = "")
     from output.slack_handler import send_image_to_slack
     from shared import resolve_secret
 
-    if not resolve_secret("OPENAI_API_KEY", "openai-api-key"):
+    if not await asyncio.to_thread(resolve_secret, "OPENAI_API_KEY", "openai-api-key"):
         return "Visualization is disabled (OPENAI_API_KEY not configured)."
 
+    state = current_state_manager()
     source = ""
     if item_number:
-        ranked = state_manager.get_item_by_number(item_number)
+        ranked = state.get_item_by_number(item_number)
         if not ranked:
-            return f"Item {item_number} not found. Today's digest has {state_manager.get_item_count()} items."
+            return f"Item {item_number} not found. Today's digest has {state.get_item_count()} items."
         source = f"{ranked.item.title}\n\n{ranked.item.text}"
 
     factory, config = _build_llm_factory()
-    generator = VisualGenerator(factory, config.pipeline.digest_model)
+    generator = VisualGenerator(
+        factory,
+        config.pipeline.digest_model,
+        image_model=config.pipeline.image_model,
+        image_size=config.pipeline.image_size,
+        source_max_tokens=config.pipeline.visual_synopsis_source_max_tokens,
+        context_max_tokens=config.pipeline.visual_synopsis_context_max_tokens,
+        caption_language=config.pipeline.visual_caption_language,
+        on_image_language=config.pipeline.visual_on_image_language,
+        moderation_softening_instruction=config.pipeline.visual_moderation_softening_instruction,
+        style_guidance=config.pipeline.visual_synopsis_style_guidance,
+        humor_guidance=config.pipeline.visual_synopsis_humor_guidance,
+        style_aesthetic=config.pipeline.visual_synopsis_style_aesthetic,
+    )
 
     try:
         image_bytes, brief = await generator.generate(instruction, source, context)
@@ -247,17 +300,18 @@ async def make_visual(instruction: str, item_number: int = 0, context: str = "")
         logger.error("Visualization failed: %s", e, exc_info=True)
         return f"Visualization failed: {e}"
 
-    if not delivery_context.channel_id:
+    delivery = current_delivery_context()
+    if not delivery.channel_id:
         return "Visual generated but no Slack channel is set for delivery."
 
-    visual_title = brief.get("title", "Visual")
-    caption = brief.get("caption", "")
+    visual_title = brief.title
+    caption = brief.caption
     uploaded = await send_image_to_slack(
         image_bytes,
-        channel_id=delivery_context.channel_id,
+        channel_id=delivery.channel_id,
         title=visual_title,
         comment=f"*{visual_title}*\n{caption}",
-        thread_ts=delivery_context.thread_ts,
+        thread_ts=delivery.thread_ts,
     )
     if not uploaded:
         return "Visual generated but Slack upload failed."

@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 
 import boto3
 import feedparser
 from botocore.exceptions import ClientError
+from pydantic import ValidationError
 
 from shared import CollectedItem, SourceType, generate_item_id, logger, parse_feed_published_date
 from shared.config import RSSHubCollectorConfig
+from shared.constants import TWITTER_PLATFORMS
 
 from .base import BaseCollector, cutoff_datetime
 
@@ -89,12 +92,19 @@ class RSSHubCollector(BaseCollector):
         import httpx
 
         base = self.config.base_url.rstrip("/")
-        try:
-            resp = httpx.get(base, timeout=10, follow_redirects=True)
-        except Exception as e:
-            raise RuntimeError(f"RSSHub unreachable at {base}: {e}") from e
-        if resp.status_code >= 500:
-            raise RuntimeError(f"RSSHub at {base} returned HTTP {resp.status_code}")
+        last_error: Exception | None = None
+        for attempt in range(1, self.config.max_retries + 1):
+            try:
+                resp = httpx.get(base, timeout=self.config.request_timeout, follow_redirects=True)
+                if resp.status_code >= 500:
+                    raise RuntimeError(f"RSSHub at {base} returned HTTP {resp.status_code}")
+                return
+            except (httpx.HTTPError, RuntimeError) as e:
+                last_error = e
+                if attempt < self.config.max_retries:
+                    logger.warning("RSSHub reachability check failed (attempt %d): %s", attempt, e)
+                    time.sleep(self.config.retry_backoff_sec * attempt)
+        raise RuntimeError(f"RSSHub unreachable at {base}: {last_error}") from last_error
 
     async def _collect_account(self, username: str, platform: str) -> list[CollectedItem]:
         feed_path = self._build_feed_path(username, platform)
@@ -104,8 +114,13 @@ class RSSHubCollector(BaseCollector):
 
     @staticmethod
     def _build_feed_path(username: str, platform: str) -> str:
+        """Build the RSSHub route path for an account.
+
+        Twitter/X accounts map to `twitter/user/{username}`; any other platform maps
+        to `{platform}/user/{username}`.
+        """
         platform_lower = platform.lower()
-        if platform_lower in ("x", "twitter"):
+        if platform_lower in TWITTER_PLATFORMS:
             return f"twitter/user/{username}"
         return f"{platform_lower}/user/{username}"
 
@@ -149,7 +164,7 @@ class RSSHubCollector(BaseCollector):
                     )
                 )
                 logger.info("Collected RSSHub item: '%s'", title)
-            except Exception:
+            except (AttributeError, KeyError, TypeError, ValueError):
                 logger.warning("Failed to process RSSHub entry from '%s'", feed_url, exc_info=True)
 
         return items
@@ -157,7 +172,7 @@ class RSSHubCollector(BaseCollector):
     @staticmethod
     def _detect_source_type(platform: str) -> SourceType:
         platform_lower = platform.lower()
-        if platform_lower in ("x", "twitter"):
+        if platform_lower in TWITTER_PLATFORMS:
             return SourceType.X
         return SourceType.WEB
 
@@ -181,6 +196,6 @@ class RSSHubCollector(BaseCollector):
         except ClientError:
             logger.info("No RSSHub items found in S3, falling back to live collection")
             return None
-        except Exception as e:
+        except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as e:
             logger.warning("Failed to load RSSHub items from S3: %s", e)
             return None

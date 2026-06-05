@@ -152,7 +152,7 @@ Each collector runs async in parallel. Lookback window is configurable per sourc
 - Industry impact, research significance, source authority
 - Hard filters: promotions, thin content, beginner questions → score ≤ 0.3
 - Content bonuses: interviews, paper summaries, major model releases
-- `origin_weights`: configurable boost for known AI leaders
+- `origin_weights`: additive score nudge for known origins — `score + (weight-1.0) * origin_weight_nudge`, clamped to [0,1] (a tie-breaker, not a multiplier)
 - `source_slots`: guaranteed minimum per source type
 
 ### 4. Trend Tracking
@@ -184,8 +184,12 @@ Autonomous Strands Agent (on Bedrock AgentCore Runtime, reads digest state from 
 
 ### Infrastructure (CDK)
 
+Build and push BOTH images first (see Docker Images below), then deploy pinning the
+pushed digest. CloudFormation will not redeploy the Lambda when the image *tag* string
+is unchanged, so pass the pushed `sha256` digest via `DIGEST_IMAGE_REF`:
+
 ```bash
-# Deploy all stacks
+export DIGEST_IMAGE_REF=sha256:<pushed-digest>   # AGENTCORE_IMAGE_REF defaults to :arm64
 AWS_PROFILE=<profile> uv run cdk deploy --all -a "uv run python scripts/deploy.py"
 ```
 
@@ -266,14 +270,14 @@ omnisummary/
 ├── scripts/                    # Deploy, RSSHub sync
 ├── cloudflare-proxy/           # CF Worker proxy
 ├── config/                     # YAML configuration
-├── tests/                      # Unit + CDK tests (169)
+├── tests/                      # Unit + CDK tests (301)
 └── assets/                     # tech-doc.md, architecture + concept diagrams
 ```
 
 ## Testing & CI
 
 ```bash
-uv run python -m pytest tests/ -v        # 169 tests (unit + CDK assertions)
+uv run python -m pytest tests/ -v        # 301 tests (unit + CDK assertions)
 uv run black --check . && uv run ruff check .
 uv run python scripts/ci_synth.py        # offline CDK synth
 ```

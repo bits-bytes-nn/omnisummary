@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -18,10 +19,6 @@ from .agent_tools import (
     search_papers,
     search_related_news,
 )
-
-BOTO_READ_TIMEOUT: int = 300
-BOTO_CONNECT_TIMEOUT: int = 60
-BOTO_MAX_ATTEMPTS: int = 3
 
 SYSTEM_PROMPT: str = """\
 You are a follow-up assistant for an AI/ML daily digest delivered via Slack. \
@@ -47,6 +44,16 @@ no fixed routing. Compose multi-step plans when useful. Examples of good composi
   then make_visual(instruction="a one-page presentation slide that explains ...", item_number=1,
   context=<the research you gathered>).
 - "1번 4컷 만화" → make_visual(instruction="a 4-panel webcomic explaining ...", item_number=1).
+
+For comics/cartoons specifically, make them genuinely funny: lean into internet humor,
+memes, parody, and exaggeration. Tell make_visual to use a punchy setup-and-punchline
+structure, relatable tech-culture in-jokes, and a meme-style visual gag — while staying
+accurate to the real facts. The goal is something people would actually share, not a dry
+illustration. Also tell make_visual to: (1) keep any on-image text/speech bubbles in SHORT
+ENGLISH (the image model garbles Korean glyphs) — the Korean goes in the caption, not inside
+the image; (2) bake in recognizable context — real people's likenesses, company logos, brand
+colors — so it reads without the caption; (3) for multi-panel comics keep one connected
+story with consistent characters across panels so the sequence is easy to follow.
 - "요즘 N 트렌드 어땠어" → recall_trends, and/or search tools.
 
 Guidance:
@@ -158,7 +165,7 @@ Follow-up suggestion (ALWAYS append at the end, replace N with actual item numbe
 """
 
 
-def create_digest_agent() -> Agent:
+def create_digest_agent(tools: list[Any] | None = None) -> Agent:
     config = Config.load()
 
     if is_running_in_aws():
@@ -172,13 +179,18 @@ def create_digest_agent() -> Agent:
         )
 
     boto_config = BotoConfig(
-        read_timeout=BOTO_READ_TIMEOUT,
-        connect_timeout=BOTO_CONNECT_TIMEOUT,
-        retries={"max_attempts": BOTO_MAX_ATTEMPTS},
+        read_timeout=config.agent.boto_read_timeout,
+        connect_timeout=config.agent.boto_connect_timeout,
+        retries={"max_attempts": config.agent.boto_max_attempts},
     )
 
     model_id = config.agent.model_id
     model_info = _LANGUAGE_MODEL_INFO.get(model_id)
+    if model_info is None:
+        logger.warning(
+            "No model info for model_id '%s'; falling back to max_tokens=64000 (check model configuration)",
+            model_id,
+        )
     resolved_model_id = BedrockCrossRegionModelHelper.get_cross_region_model_id(
         boto_session,
         model_id,
@@ -195,9 +207,12 @@ def create_digest_agent() -> Agent:
         cache_config=CacheConfig(strategy="auto"),
     )
 
+    if tools is None:
+        tools = [get_detail, search_papers, search_community, search_related_news, recall_trends, make_visual]
+
     agent = Agent(
         model=bedrock_model,
-        tools=[get_detail, search_papers, search_community, search_related_news, recall_trends, make_visual],
+        tools=tools,
         system_prompt=SYSTEM_PROMPT,
     )
 

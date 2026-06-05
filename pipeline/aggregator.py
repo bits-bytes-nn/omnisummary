@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from shared import CollectedItem, logger
+
+_TRACKING_PARAM_PREFIXES = ("utm_",)
+_TRACKING_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src", "ref_url"}
 
 
 class ContentAggregator:
@@ -12,11 +16,12 @@ class ContentAggregator:
         seen_urls: dict[str, CollectedItem] = {}
 
         for item in items:
-            if item.url in seen_urls:
+            key = self._normalize_url(item.url)
+            if key in seen_urls:
                 logger.debug("Duplicate URL skipped: '%s'", item.url)
-                seen_urls[item.url].metadata.update(item.metadata)
+                seen_urls[key].metadata.update(item.metadata)
             else:
-                seen_urls[item.url] = item
+                seen_urls[key] = item
 
         url_deduped = list(seen_urls.values())
 
@@ -49,6 +54,28 @@ class ContentAggregator:
         )
 
         return deduplicated
+
+    @staticmethod
+    def _normalize_url(url: str) -> str:
+        # Collapse trivial variants (scheme, host case, trailing slash, tracking
+        # params, fragment) so the same article from two sources dedups on URL.
+        if not url:
+            return url
+        try:
+            parts = urlsplit(url.strip())
+        except ValueError:
+            return url
+        if not parts.netloc:
+            return url.strip()
+        host = parts.netloc.lower().removeprefix("www.")
+        path = parts.path.rstrip("/") or "/"
+        kept = [
+            (k, v)
+            for k, v in parse_qsl(parts.query, keep_blank_values=True)
+            if not k.lower().startswith(_TRACKING_PARAM_PREFIXES) and k.lower() not in _TRACKING_PARAMS
+        ]
+        query = urlencode(sorted(kept))
+        return urlunsplit(("https", host, path, query, ""))
 
     @staticmethod
     def _normalize_title(title: str) -> str:

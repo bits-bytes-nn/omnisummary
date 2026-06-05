@@ -16,9 +16,11 @@ from shared import (
     CollectedItem,
     RefineQueryPrompt,
     SourceType,
+    extract_json_from_llm_output,
     generate_item_id,
     logger,
     resolve_secret,
+    retry_async,
 )
 from shared.config import WebSearchCollectorConfig
 
@@ -28,13 +30,18 @@ from .base import BaseCollector, cutoff_datetime, gather_collector_results
 class WebSearchCollector(BaseCollector):
     def __init__(self, config: WebSearchCollectorConfig, llm_factory: BedrockLanguageModelFactory | None = None):
         self.config = config
+        self._api_key = ""
         self._client_instance: AsyncTavilyClient | None = None
         self._llm = llm_factory.get_model(config.refine_model) if llm_factory else None
 
     @property
     def _client(self) -> AsyncTavilyClient:
+        # The key is resolved once in collect() (env -> SSM); reuse it here so a single
+        # collect doesn't make repeated SSM round-trips.
         if self._client_instance is None:
-            self._client_instance = AsyncTavilyClient(api_key=resolve_secret("TAVILY_API_KEY", "tavily-api-key"))
+            self._client_instance = AsyncTavilyClient(
+                api_key=self._api_key or resolve_secret("TAVILY_API_KEY", "tavily-api-key")
+            )
         return self._client_instance
 
     async def collect(self) -> list[CollectedItem]:
@@ -42,7 +49,8 @@ class WebSearchCollector(BaseCollector):
             logger.info("Web search collector is disabled, skipping")
             return []
 
-        if not resolve_secret("TAVILY_API_KEY", "tavily-api-key"):
+        self._api_key = await asyncio.to_thread(resolve_secret, "TAVILY_API_KEY", "tavily-api-key")
+        if not self._api_key:
             logger.warning("TAVILY_API_KEY not set, skipping web search collector")
             return []
 
@@ -56,7 +64,7 @@ class WebSearchCollector(BaseCollector):
             logger.info("No web search queries or accounts configured, skipping")
             return []
 
-        broad_items = self._deduplicate(await gather_collector_results(tasks))
+        broad_items = self._deduplicate(await gather_collector_results(tasks, raise_if_all_failed=True))
         logger.info("Web search collector gathered %d items (broad phase)", len(broad_items))
 
         refined_items = await self._refine_search(broad_items)
@@ -66,7 +74,11 @@ class WebSearchCollector(BaseCollector):
         return all_items
 
     async def _refine_search(self, broad_items: list[CollectedItem]) -> list[CollectedItem]:
-        if not broad_items or not self._llm:
+        if not self._llm:
+            logger.info("Skipping web search refinement: refine LLM not configured (feature disabled)")
+            return []
+        if not broad_items:
+            logger.info("Skipping web search refinement: no broad-phase items to refine from")
             return []
 
         queries = await self._generate_refined_queries(broad_items)
@@ -75,7 +87,12 @@ class WebSearchCollector(BaseCollector):
 
         logger.info("LLM-generated refined queries: %s", queries)
         tasks = [asyncio.ensure_future(self._search_trend(query, [], "refined")) for query in queries]
-        return await gather_collector_results(tasks)
+        # Refinement is intentionally non-fatal (broad results are the floor), but a total
+        # failure should be visible to ops so degraded refinement isn't silent.
+        refined_items = await gather_collector_results(tasks)
+        if tasks and not refined_items:
+            logger.warning("All %d refined web-search queries returned no items; using broad results only", len(tasks))
+        return refined_items
 
     async def _generate_refined_queries(self, items: list[CollectedItem]) -> list[str]:
         if not self._llm:
@@ -90,14 +107,11 @@ class WebSearchCollector(BaseCollector):
                     "max_queries": self.config.max_refine_queries,
                 }
             )
-            raw = raw.strip()
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-            queries = json.loads(raw)
+            queries = json.loads(extract_json_from_llm_output(raw))
             if isinstance(queries, list):
                 return [q for q in queries if isinstance(q, str)][: self.config.max_refine_queries]
         except Exception:
-            logger.warning("Failed to generate refined queries via LLM", exc_info=True)
+            logger.warning("Failed to generate refined queries via LLM, falling back to broad results", exc_info=True)
 
         return []
 
@@ -106,18 +120,27 @@ class WebSearchCollector(BaseCollector):
     ) -> list[CollectedItem]:
         logger.info("Searching trend '%s' with query: '%s' (topic='%s')", trend_name, query, topic)
         days = max(1, self.config.lookback_hours // 24)
-        try:
-            response = await self._client.search(
-                query=query,
-                max_results=self.config.max_results_per_query,
-                include_domains=domains if domains else None,
-                topic=topic,
-                days=days,
+
+        async def _search() -> dict:
+            return await asyncio.wait_for(
+                self._client.search(
+                    query=query,
+                    max_results=self.config.max_results_per_query,
+                    include_domains=domains if domains else None,
+                    topic=topic,
+                    days=days,
+                ),
+                timeout=self.config.request_timeout,
             )
-            return self._parse_results(response, trend_name=trend_name)
-        except Exception:
-            logger.warning("Failed to search trend '%s' query '%s'", trend_name, query, exc_info=True)
-            return []
+
+        response = await retry_async(
+            _search,
+            max_retries=self.config.max_retries,
+            backoff_sec=self.config.retry_backoff_sec,
+            retry_on=(Exception,),
+            description=f"Tavily search for trend '{trend_name}' query '{query}'",
+        )
+        return self._parse_results(response, trend_name=trend_name)
 
     def _parse_results(
         self,
@@ -166,7 +189,7 @@ class WebSearchCollector(BaseCollector):
                     )
                 )
                 logger.info("Collected web result: '%s'", title)
-            except Exception:
+            except (AttributeError, KeyError, TypeError, ValueError):
                 logger.warning("Failed to process web search result", exc_info=True)
 
         return items
@@ -195,10 +218,10 @@ class WebSearchCollector(BaseCollector):
 def _parse_date(date_str: str) -> datetime | None:
     try:
         return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        pass
+    except (ValueError, TypeError) as e:
+        logger.debug("ISO date parse failed for '%s' (%s); trying RFC2822", date_str, e)
     try:
         return parsedate_to_datetime(date_str).astimezone(UTC)
-    except (ValueError, TypeError):
-        pass
+    except (ValueError, TypeError) as e:
+        logger.debug("RFC2822 date parse failed for '%s' (%s); giving up", date_str, e)
     return None

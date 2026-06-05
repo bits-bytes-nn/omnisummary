@@ -1,19 +1,27 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from collections import defaultdict
 
 from langchain_core.output_parsers import StrOutputParser
 
 from shared import (
+    LOGGING_TRUNCATION_CHARS,
     BedrockLanguageModelFactory,
     CollectedItem,
     RankedItem,
     RankingPrompt,
     SourceType,
+    extract_json_from_llm_output,
+    format_collected_item,
+    format_origin_label,
     logger,
-    truncate_text_by_tokens,
+    resolve_origin_key,
 )
 from shared.config import PipelineConfig
+
+DEFAULT_SOURCE_SLOT = 1
 
 
 class ContentRanker:
@@ -29,15 +37,20 @@ class ContentRanker:
 
         logger.info("Ranking %d items with model '%s'", len(items), self.config.ranking_model.value)
 
-        items_text = self._format_items(items)
-        chain = RankingPrompt.get_prompt() | self.llm | StrOutputParser()
-        raw_output = await chain.ainvoke({"items_text": items_text})
+        # Scoring is absolute (the prompt calibrates each item to fixed 0-1 criteria), so
+        # large inputs are split into batches scored CONCURRENTLY and merged — a single
+        # call over 100+ items dominated the Lambda runtime. Results are independent.
+        batch_size = self.config.ranking_batch_size
+        batches = [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
+        if len(batches) > 1:
+            logger.info("Ranking in %d parallel batches of up to %d", len(batches), batch_size)
+        results = await asyncio.gather(*(self._rank_batch(b) for b in batches))
 
-        ranked_items = self._parse_rankings(raw_output, items)
+        ranked_items: list[RankedItem] = [r for batch in results for r in batch]
         self._apply_origin_weights(ranked_items)
 
         above_threshold = [r for r in ranked_items if r.score >= self.config.min_score]
-        above_threshold.sort(key=lambda r: r.score, reverse=True)
+        above_threshold.sort(key=lambda r: (-r.score, r.item.item_id))
 
         source_scores: dict[str, list[float]] = {}
         for r in ranked_items:
@@ -68,9 +81,34 @@ class ContentRanker:
                 "  Selected: [%s] %.2f - '%s'",
                 r.item.source_type.value,
                 r.score,
-                r.item.title[:70],
+                r.item.title[: LOGGING_TRUNCATION_CHARS["title"]],
             )
         return selected
+
+    async def _rank_batch(self, items: list[CollectedItem]) -> list[RankedItem]:
+        items_text = self._format_items(items)
+        chain = RankingPrompt.get_prompt() | self.llm | StrOutputParser()
+        try:
+            raw_output = await chain.ainvoke(
+                {
+                    "items_text": items_text,
+                    "engagement_guidance": self._engagement_guidance(),
+                    "ranking_categories": ", ".join(self.config.ranking_categories),
+                    "duplicate_score_penalty": self.config.ranking_duplicate_score_penalty,
+                    "scoring_rubric": self.config.ranking_scoring_rubric,
+                    "target_count": self.config.ranking_target_count,
+                    "audience": self.config.ranking_audience_description,
+                }
+            )
+        except Exception:
+            logger.warning("Ranking batch of %d items failed", len(items), exc_info=True)
+            return []
+        return self._parse_rankings(raw_output, items)
+
+    def _engagement_guidance(self) -> str:
+        tiers = sorted(self.config.engagement_tiers)
+        parts = [f"{views:,}+ views → +{bonus}" for views, bonus in tiers]
+        return "Items with view counts: " + ", ".join(parts) + "."
 
     def _apply_origin_weights(self, ranked_items: list[RankedItem]) -> None:
         weights = self.config.origin_weights
@@ -83,7 +121,7 @@ class ContentRanker:
         # (and inflate mid-range scores most). nudge = (weight-1.0) * factor, clamped.
         nudge_factor = self.config.origin_weight_nudge
         for ranked in ranked_items:
-            origin_key = self._resolve_origin_key(ranked.item)
+            origin_key = resolve_origin_key(ranked.item)
             if not origin_key:
                 continue
             weight = weights.get(origin_key, default_weight)
@@ -93,24 +131,11 @@ class ContentRanker:
                 logger.debug(
                     "Applied origin nudge (w=%.2f) to '%s' (origin='%s'): %.2f → %.2f",
                     weight,
-                    ranked.item.title[:50],
+                    ranked.item.title[: LOGGING_TRUNCATION_CHARS["title_short"]],
                     origin_key,
                     original,
                     ranked.score,
                 )
-
-    @staticmethod
-    def _resolve_origin_key(item: CollectedItem) -> str | None:
-        meta = item.metadata
-        if item.source_type == SourceType.YOUTUBE:
-            return meta.get("channel_url")
-        if item.source_type == SourceType.REDDIT:
-            return meta.get("subreddit")
-        if item.source_type == SourceType.RSS:
-            return meta.get("feed_url")
-        if item.source_type == SourceType.X:
-            return item.author
-        return None
 
     def _apply_source_slots(self, above_threshold: list[RankedItem]) -> list[RankedItem]:
         source_slots = self.config.source_slots
@@ -119,34 +144,34 @@ class ContentRanker:
 
         selected: list[RankedItem] = []
         selected_ids: set[str] = set()
-        source_counts: dict[str, int] = {}
-        origin_counts: dict[str, int] = {}
+        source_counts: dict[str, int] = defaultdict(int)
+        origin_counts: dict[str, int] = defaultdict(int)
         max_per_origin = self.config.max_per_origin
 
-        def _origin_at_cap(item: RankedItem) -> bool:
-            origin_key = self._resolve_origin_key(item.item)
+        def origin_at_cap(item: RankedItem) -> bool:
+            origin_key = resolve_origin_key(item.item)
             if not origin_key:
                 return False
-            return origin_counts.get(origin_key, 0) >= max_per_origin
+            return origin_counts[origin_key] >= max_per_origin
 
-        def _record(item: RankedItem, source_key: str) -> None:
+        def record(item: RankedItem, source_key: str) -> None:
             selected.append(item)
             selected_ids.add(item.item.item_id)
-            source_counts[source_key] = source_counts.get(source_key, 0) + 1
-            origin_key = self._resolve_origin_key(item.item)
+            source_counts[source_key] += 1
+            origin_key = resolve_origin_key(item.item)
             if origin_key:
-                origin_counts[origin_key] = origin_counts.get(origin_key, 0) + 1
+                origin_counts[origin_key] += 1
 
         for source_key, slot_count in source_slots.items():
             taken = 0
             for item in above_threshold:
-                if taken >= slot_count:
+                if taken >= slot_count or len(selected) >= self.config.top_n:
                     break
                 if item.item.source_type.value != source_key or item.item.item_id in selected_ids:
                     continue
-                if _origin_at_cap(item):
+                if origin_at_cap(item):
                     continue
-                _record(item, source_key)
+                record(item, source_key)
                 taken += 1
 
         if len(selected) < self.config.top_n:
@@ -154,10 +179,10 @@ class ContentRanker:
                 if item.item.item_id in selected_ids:
                     continue
                 src = item.item.source_type.value
-                cap = source_slots.get(src, 1) * self.config.source_cap_multiplier
-                if source_counts.get(src, 0) >= cap or _origin_at_cap(item):
+                cap = source_slots.get(src, DEFAULT_SOURCE_SLOT) * self.config.source_cap_multiplier
+                if source_counts[src] >= cap or origin_at_cap(item):
                     continue
-                _record(item, src)
+                record(item, src)
                 if len(selected) >= self.config.top_n:
                     break
 
@@ -169,49 +194,35 @@ class ContentRanker:
                 if item.item.item_id in selected_ids:
                     continue
                 src = item.item.source_type.value
-                cap = source_slots.get(src, 1) * self.config.source_cap_multiplier
-                if source_counts.get(src, 0) >= cap:
+                cap = source_slots.get(src, DEFAULT_SOURCE_SLOT) * self.config.source_cap_multiplier
+                if source_counts[src] >= cap:
                     continue
-                _record(item, src)
+                record(item, src)
                 if len(selected) >= self.config.top_n:
                     break
 
-        selected.sort(key=lambda r: r.score, reverse=True)
-        return selected
+        selected.sort(key=lambda r: (-r.score, r.item.item_id))
+        return selected[: self.config.top_n]
 
     def _format_items(self, items: list[CollectedItem]) -> str:
         parts: list[str] = []
         for i, item in enumerate(items):
-            snippet = truncate_text_by_tokens(item.text, self.config.item_text_max_tokens)
             engagement = self._format_engagement(item)
-            origin = self._format_origin(item)
-            entry = (
-                f"=== Item {i + 1} ===\n"
-                f"ID: {item.item_id}\n"
-                f"Title: {item.title}\n"
-                f"Source: {item.source_type.value}\n"
-                f"Author: {item.author or 'Unknown'}\n"
-            )
+            origin = format_origin_label(item)
+            fields = [
+                ("ID", item.item_id),
+                ("Title", item.title),
+                ("Source", item.source_type.value),
+                ("Author", item.author or "Unknown"),
+            ]
             if origin:
-                entry += f"Origin: {origin}\n"
+                fields.append(("Origin", origin))
             if engagement:
-                entry += f"Engagement: {engagement}\n"
-            entry += f"Text:\n{snippet}\n"
-            parts.append(entry)
+                fields.append(("Engagement", engagement))
+            parts.append(
+                format_collected_item(item, index=i + 1, max_tokens=self.config.item_text_max_tokens, fields=fields)
+            )
         return "\n".join(parts)
-
-    @staticmethod
-    def _format_origin(item: CollectedItem) -> str:
-        meta = item.metadata
-        if item.source_type == SourceType.REDDIT:
-            return f"r/{meta.get('subreddit', '')}" if meta.get("subreddit") else ""
-        if item.source_type == SourceType.YOUTUBE:
-            return meta.get("channel_url", "")
-        if item.source_type == SourceType.X:
-            return f"@{item.author}" if item.author else ""
-        if item.source_type == SourceType.RSS:
-            return meta.get("feed_title", "") or meta.get("feed_url", "")
-        return ""
 
     @staticmethod
     def _format_engagement(item: CollectedItem) -> str:
@@ -224,16 +235,7 @@ class ContentRanker:
         items_by_id = {item.item_id: item for item in items}
 
         try:
-            json_str = raw_output.strip()
-            if "```" in json_str:
-                json_str = json_str.split("```")[-2] if json_str.count("```") >= 2 else json_str
-                json_str = json_str.lstrip("json").strip()
-            start = json_str.find("{")
-            end = json_str.rfind("}") + 1
-            if start != -1 and end > start:
-                json_str = json_str[start:end]
-
-            data = json.loads(json_str)
+            data = json.loads(extract_json_from_llm_output(raw_output))
             rankings = data.get("rankings", [])
         except (json.JSONDecodeError, KeyError) as exc:
             logger.error("Failed to parse ranking LLM output: '%s'", exc)

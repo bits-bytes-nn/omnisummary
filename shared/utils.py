@@ -1,7 +1,9 @@
+import asyncio
 import hashlib
 import re
 from abc import ABC, abstractmethod
 from calendar import timegm
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, ClassVar, Generic, TypeVar
@@ -147,6 +149,7 @@ class BaseBedrockModelFactory(Generic[ModelIdT, ModelInfoT, WrapperT], ABC):
             retries={"max_attempts": self.BOTO_MAX_ATTEMPTS, "mode": "adaptive"},
             max_pool_connections=self.MAX_POOL_CONNECTIONS,
         )
+        # boto3's client() overloads exceed what mypy can resolve for a dynamic service name.
         self._client = self.boto_session.client(  # type: ignore[call-overload]
             self._get_boto_service_name(),
             region_name=self.region_name,
@@ -171,8 +174,27 @@ class BaseBedrockModelFactory(Generic[ModelIdT, ModelInfoT, WrapperT], ABC):
 
 
 class BedrockCrossRegionModelHelper:
+    # Resolution is identical for a given (model_id, region) within a process, but each
+    # call hits list_inference_profiles. Cache it so ranker/digest/trend/refine model
+    # builds don't each pay the round-trip (and don't each risk the AccessDenied path).
+    _resolution_cache: ClassVar[dict[tuple[str, str], str]] = {}
+
     @staticmethod
     def get_cross_region_model_id(
+        boto_session: boto3.Session,
+        model_id: LanguageModelId,
+        region_name: str,
+    ) -> str:
+        cache_key = (model_id.value, region_name)
+        cached = BedrockCrossRegionModelHelper._resolution_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        resolved = BedrockCrossRegionModelHelper._resolve(boto_session, model_id, region_name)
+        BedrockCrossRegionModelHelper._resolution_cache[cache_key] = resolved
+        return resolved
+
+    @staticmethod
+    def _resolve(
         boto_session: boto3.Session,
         model_id: LanguageModelId,
         region_name: str,
@@ -261,9 +283,11 @@ class BedrockLanguageModelFactory(
         self,
         model_info: LanguageModelInfo,
         resolved_model_id: str,
-        is_cross_region: bool,
+        use_converse: bool,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        # use_converse selects the config SHAPE: ChatBedrockConverse takes top-level
+        # params + camelCase additional fields, ChatBedrock nests them under model_kwargs.
         enable_thinking = kwargs.get("enable_thinking", False)
         supports_1m_context_window = kwargs.get("supports_1m_context_window", False)
         temperature = kwargs.get("temperature", self.DEFAULT_TEMPERATURE)
@@ -271,17 +295,17 @@ class BedrockLanguageModelFactory(
         if final_temperature != temperature:
             logger.debug("Adjusting temperature to 1.0 for thinking mode")
         final_max_tokens = self._validate_max_tokens(kwargs.get("max_tokens"), model_info)
-        config = self._build_base_config(resolved_model_id, is_cross_region, **kwargs)
+        config = self._build_base_config(resolved_model_id, use_converse, **kwargs)
         # Newer models (e.g. Opus 4.7/4.8) reject the `temperature` param entirely.
         params: dict[str, Any] = {"max_tokens": final_max_tokens}
         if model_info.supports_temperature:
             params["temperature"] = final_temperature
-        if is_cross_region:
+        if use_converse:
             config.update(params)
         else:
             config["model_kwargs"].update(params)
         if supports_1m_context_window and model_info.supports_1m_context_window:
-            if is_cross_region:
+            if use_converse:
                 config.setdefault("additional_model_request_fields", {}).update(
                     {"anthropic_beta": ["context-1m-2025-08-07"]}
                 )
@@ -290,10 +314,10 @@ class BedrockLanguageModelFactory(
                     {"anthropic_beta": ["context-1m-2025-08-07"]}
                 )
             logger.debug("Applied 1M context window support")
-        self._apply_model_features(config, model_info, is_cross_region, **kwargs)
+        self._apply_model_features(config, model_info, use_converse, **kwargs)
         return config
 
-    def _build_base_config(self, resolved_model_id: str, is_cross_region: bool, **kwargs: Any) -> dict[str, Any]:
+    def _build_base_config(self, resolved_model_id: str, use_converse: bool, **kwargs: Any) -> dict[str, Any]:
         config = {
             "model_id": resolved_model_id,
             "region_name": self.region_name,
@@ -305,7 +329,7 @@ class BedrockLanguageModelFactory(
         common_params = {
             "stop_sequences": ["\n\nHuman:"],
         }
-        if is_cross_region:
+        if use_converse:
             config.update(common_params)
         else:
             config["model_kwargs"] = {
@@ -318,19 +342,19 @@ class BedrockLanguageModelFactory(
         self,
         config: dict[str, Any],
         model_info: LanguageModelInfo,
-        is_cross_region: bool,
+        use_converse: bool,
         **kwargs: Any,
     ) -> None:
         enable_perf = kwargs.get("enable_performance_optimization", False)
         enable_think = kwargs.get("enable_thinking", False)
-        if self._should_enable_performance_optimization(enable_perf, model_info, is_cross_region):
+        if self._should_enable_performance_optimization(enable_perf, model_info, use_converse):
             latency = kwargs.get("latency_mode", self.DEFAULT_LATENCY_MODE)
             config.setdefault("performanceConfig", {}).update({"latency": latency})
             logger.debug("Applied performance optimization (latency_mode='%s')", latency)
         if self._should_enable_thinking(enable_think, model_info):
             budget = kwargs.get("thinking_budget_tokens", self.DEFAULT_THINKING_BUDGET_TOKENS)
             think_config = {"thinking": {"type": "enabled", "budget_tokens": budget}}
-            if is_cross_region:
+            if use_converse:
                 config.setdefault("additional_model_request_fields", {}).update(think_config)
             else:
                 config.setdefault("model_kwargs", {}).update(think_config)
@@ -350,9 +374,9 @@ class BedrockLanguageModelFactory(
 
     @staticmethod
     def _should_enable_performance_optimization(
-        enable: bool, model_info: LanguageModelInfo, is_cross_region: bool
+        enable: bool, model_info: LanguageModelInfo, use_converse: bool
     ) -> bool:
-        return enable and model_info.supports_performance_optimization and not is_cross_region
+        return enable and model_info.supports_performance_optimization and not use_converse
 
     @staticmethod
     def _should_enable_thinking(enable: bool, model_info: LanguageModelInfo) -> bool:
@@ -394,13 +418,62 @@ def parse_feed_published_date(entry) -> datetime | None:
     if published_str:
         try:
             return parsedate_to_datetime(published_str).astimezone(UTC)
-        except (TypeError, ValueError):
-            pass
+        except (TypeError, ValueError) as e:
+            logger.debug("Failed to parse feed published date '%s': %s", published_str, e)
 
     if hasattr(entry, "updated_parsed") and entry.updated_parsed:
         return datetime.fromtimestamp(timegm(entry.updated_parsed), tz=UTC)
 
     return None
+
+
+def extract_json_from_llm_output(raw: str) -> str:
+    """Extract the first JSON value (object or array) from an LLM response.
+
+    Tolerates leading/trailing prose and ```json fenced blocks, then returns the
+    substring from the first opening brace/bracket to the matching last one. Callers
+    pass the result to json.loads and handle the JSONDecodeError.
+    """
+    text = raw.strip()
+    if "```" in text:
+        fences = text.split("```")
+        if len(fences) >= 3:
+            text = fences[-2]
+        text = re.sub(r"^\s*json\b", "", text, count=1).strip()
+
+    candidates = [(text.find(opener), text.rfind(closer)) for opener, closer in (("{", "}"), ("[", "]"))]
+    starts = [(start, end) for start, end in candidates if start != -1 and end > start]
+    if not starts:
+        return text
+    start, end = min(starts, key=lambda pair: pair[0])
+    return text[start : end + 1]
+
+
+async def retry_async(
+    func: Callable[[], Awaitable[Any]],
+    *,
+    max_retries: int,
+    backoff_sec: float,
+    retry_on: tuple[type[BaseException], ...] = (Exception,),
+    description: str = "operation",
+) -> Any:
+    """Run an async callable with linear backoff on transient failures.
+
+    Retries up to max_retries attempts, sleeping backoff_sec * attempt between tries
+    (so the delay grows linearly: backoff_sec, 2*backoff_sec, ...).
+    Re-raises the last exception once attempts are exhausted.
+    """
+    last_error: BaseException | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            return await func()
+        except retry_on as e:
+            last_error = e
+            if attempt < max_retries:
+                logger.warning("%s failed (attempt %d/%d): %s", description, attempt, max_retries, e)
+                await asyncio.sleep(backoff_sec * attempt)
+    assert last_error is not None
+    raise last_error
 
 
 def truncate_text_by_tokens(text: str, max_tokens: int = MAX_TOKENS) -> str:

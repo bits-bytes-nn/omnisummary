@@ -17,6 +17,7 @@ from aws_cdk.aws_bedrockagentcore import CfnMemory
 from constructs import Construct
 
 from shared import Config
+from shared.constants import RSSHUB_PORT
 
 
 class OmniSummaryFoundationStack(Stack):
@@ -223,7 +224,7 @@ class OmniSummaryFoundationStack(Stack):
         rsshub_task.add_container(
             "RSSHubContainer",
             image=ecs.ContainerImage.from_registry("diygod/rsshub:latest"),
-            port_mappings=[ecs.PortMapping(container_port=1200)],
+            port_mappings=[ecs.PortMapping(container_port=RSSHUB_PORT)],
             logging=ecs.LogDrivers.aws_logs(stream_prefix="rsshub"),
             environment={
                 "NODE_ENV": "production",

@@ -6,7 +6,7 @@ import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-from .constants import LanguageModelId
+from .constants import RSSHUB_PORT, LanguageModelId
 
 
 class BaseCollectorConfig(BaseModel):
@@ -21,6 +21,9 @@ class BaseCollectorConfig(BaseModel):
 class YouTubeCollectorConfig(BaseCollectorConfig):
     channels: list[str] = Field(default_factory=list)
     max_videos_per_channel: int = 3
+    resolve_timeout: int = Field(default=15, ge=1)
+    transcript_timeout: int = Field(default=15, ge=1)
+    transcript_language: str = Field(default="en")
 
 
 class RedditCollectorConfig(BaseCollectorConfig):
@@ -55,7 +58,7 @@ class RSSHubAccount(BaseModel):
 
 
 class RSSHubCollectorConfig(BaseCollectorConfig):
-    base_url: str = "http://localhost:1200"
+    base_url: str = f"http://localhost:{RSSHUB_PORT}"
     accounts: list[RSSHubAccount] = Field(default_factory=list)
     lookback_hours: int = 72
     error_rate_threshold: float = Field(default=50.0, ge=0.0, le=100.0)
@@ -75,10 +78,28 @@ class CollectorsConfig(BaseModel):
 
 class PipelineConfig(BaseModel):
     top_n: int = 7
-    min_score: float = Field(default=0.7, ge=0.0, le=1.0)
+    min_score: float = Field(default=0.6, ge=0.0, le=1.0)
     ranking_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     digest_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
+    # Language rules injected into the digest prompt's *Language* block. Defaults to the
+    # Korean editorial rules + translation glossary; other deployments can override to
+    # write the digest in another language without forking the prompt.
+    digest_language_rules: str = (
+        "- Write in Korean (95%+). English ONLY for proper nouns and untranslatable technical terms.\n"
+        "- Translate terms that have established Korean equivalents: architecture → 아키텍처, "
+        "benchmark → 벤치마크, inference → 추론, training → 학습, deployment → 배포, "
+        "weight → 가중치, parameter → 파라미터, token → 토큰, open-source → 오픈소스, "
+        "pipeline → 파이프라인, optimization → 최적화, compression → 압축, memory → 메모리.\n"
+        "- General words MUST be Korean: practitioner → 실무자, implication → 시사점, "
+        "release → 출시/공개, breakthrough → 돌파구, approach → 접근법, ecosystem → 생태계.\n"
+        "- If the original item title is in English, translate it to Korean for the display text."
+    )
+    # Audience/domain the ranking and digest prompts target. Configurable so the pipeline can
+    # be reused across domains without forking the prompts.
+    ranking_audience_description: str = "a daily digest aimed at practicing ML engineers"
+    digest_audience_description: str = "ML engineers"
     item_text_max_tokens: int = 8000
+    ranking_batch_size: int = Field(default=40, ge=1)
     source_slots: dict[str, int] = Field(
         default_factory=lambda: {
             "web": 2,
@@ -93,13 +114,98 @@ class PipelineConfig(BaseModel):
     origin_weights: dict[str, float] = Field(default_factory=dict)
     origin_weight_default: float = Field(default=1.0, ge=0.0)
     origin_weight_nudge: float = Field(default=0.1, ge=0.0, le=1.0)
+    # Engagement bonus tiers (views threshold -> score bonus) the ranking prompt applies
+    # to items carrying view counts. Tunable instead of baked into the prompt text.
+    engagement_tiers: list[tuple[int, float]] = Field(
+        default_factory=lambda: [(10000, 0.05), (100000, 0.1), (500000, 0.15)]
+    )
+    # Taxonomy the ranking prompt assigns to each item. Configurable so non-AI
+    # deployments can supply their own categories.
+    ranking_categories: list[str] = Field(
+        default_factory=lambda: [
+            "research",
+            "tools",
+            "news",
+            "release",
+            "industry",
+            "paper",
+            "interview",
+            "infrastructure",
+            "community",
+        ]
+    )
+    # Score the ranking prompt assigns to duplicate items within a same-topic cluster.
+    ranking_duplicate_score_penalty: float = Field(default=0.3, ge=0.0, le=1.0)
+    # Score-calibration buckets the ranking prompt applies, injected as template text so
+    # ops can retune the distribution without editing the prompt.
+    ranking_scoring_rubric: str = (
+        "0.9+: field-defining. 0.8-0.89: very important. 0.7-0.79: notable. "
+        "0.6-0.69: worth noting (digest bar). <0.6: low value."
+    )
+    # Target count of items the ranking prompt should aim to score above the bar per batch.
+    ranking_target_count: str = "~10-20 items scoring 0.6+"
     trend_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     trend_retention_days: int = Field(default=30, ge=1)
+    trend_cooling_days: int = Field(default=7, ge=1)
+    trend_max_evidence: int = Field(default=5, ge=1)
+    trend_max_active_trends: int = Field(default=10, ge=1)
+    trend_max_chars: int = Field(default=15000, ge=1)
+    enable_daily_visual: bool = True
+    image_model: str = "gpt-image-2"
+    # Portrait by default so multi-panel comics aren't cropped in a square frame.
+    image_size: str = Field(default="1024x1536", pattern=r"^\d+x\d+$")
+    visual_synopsis_source_max_tokens: int = Field(default=2000, ge=1)
+    visual_synopsis_context_max_tokens: int = Field(default=1500, ge=1)
+    visual_context_max_results: int = Field(default=5, ge=1)
+    visual_context_preview_chars: int = Field(default=300, ge=1)
+    # Audience/domain the visual prompts target. Configurable so the visual pipeline can
+    # be reused across domains without forking the prompts.
+    visual_audience_description: str = "a daily AI/ML digest aimed at practicing ML engineers"
+    # Language rules for visual output: which language the title/caption use and which
+    # language must appear inside the rendered image (image models garble non-Latin glyphs).
+    visual_caption_language: str = "Korean"
+    visual_on_image_language: str = "SHORT ENGLISH (the image model garbles Korean and other non-Latin glyphs)"
+    # Style/humor guidance injected into the visual synopsis prompt. Configurable so the
+    # visual pipeline's tone can be retuned (or reused for non-AI domains) without forking.
+    visual_synopsis_style_guidance: str = (
+        "Multi-panel: same characters and a single consistent, polished art style across panels; "
+        "each panel follows from the previous so the sequence reads in order without explanation."
+    )
+    visual_synopsis_humor_guidance: str = (
+        "For comics/cartoons, aim for genuinely funny and shareable — internet-humor sensibility, "
+        "a clear setup-and-payoff, expressive characters — in a clean, modern, appealing illustration style."
+    )
+    # Default aesthetic injected into the image-generation prompt. Configurable so the visual
+    # pipeline's look can be retuned (or reused for non-AI domains) without editing the prompt.
+    visual_synopsis_style_aesthetic: str = "clean modern style"
+    # Appended to the instruction when the image model's moderation blocks the first render,
+    # to soften tone before a single retry. Configurable so ops can retune the safe-for-work
+    # guidance without editing code.
+    visual_moderation_softening_instruction: str = (
+        "IMPORTANT: keep it clearly safe-for-work and good-natured. "
+        "Use brand mascots/logos and generic stylized characters rather than realistic "
+        "depictions of real named individuals; avoid anything that could read as defamatory."
+    )
 
 
 class AgentConfig(BaseModel):
     model_id: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     enable_interactive: bool = True
+    community_search_domains: list[str] = Field(
+        default_factory=lambda: ["twitter.com", "x.com", "reddit.com", "news.ycombinator.com", "substack.com"]
+    )
+    search_result_limit: int = Field(default=5, ge=1)
+    detail_max_tokens: int = Field(default=2000, ge=1)
+    search_content_preview_chars: int = Field(default=300, ge=1)
+    search_request_timeout: int = Field(default=30, ge=1)
+    search_max_retries: int = Field(default=3, ge=1)
+    search_retry_backoff_sec: int = Field(default=2, ge=0)
+    search_paper_max_authors: int = Field(default=3, ge=1)
+    search_paper_abstract_max_chars: int = Field(default=200, ge=1)
+    recall_memory_top_k: int = Field(default=5, ge=1)
+    boto_read_timeout: int = Field(default=300, ge=1)
+    boto_connect_timeout: int = Field(default=60, ge=1)
+    boto_max_attempts: int = Field(default=3, ge=1)
 
 
 class SlackConfig(BaseModel):
@@ -113,6 +219,7 @@ class AWSConfig(BaseModel):
     profile: str = ""
     project_name: str = "omnisummary"
     stage: str = "dev"
+    timezone: str = "Asia/Seoul"
     vpc_id: str = ""
     subnet_ids: list[str] = Field(default_factory=list)
     state_bucket_name: str = ""

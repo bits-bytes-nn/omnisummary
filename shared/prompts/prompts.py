@@ -40,10 +40,18 @@ class BasePrompt(ABC):
 
 
 class RankingPrompt(BasePrompt):
-    input_variables: list[str] = ["items_text"]
+    input_variables: list[str] = [
+        "items_text",
+        "engagement_guidance",
+        "ranking_categories",
+        "duplicate_score_penalty",
+        "scoring_rubric",
+        "target_count",
+        "audience",
+    ]
 
     system_prompt_template: str = """\
-You are an AI/ML content curator. Evaluate each item for a daily digest aimed at practicing ML engineers.
+You are a content curator. Evaluate each item for {audience}.
 
 *Evaluation Criteria*
 Use these as lenses, not a formula. Apply holistic judgment.
@@ -58,12 +66,12 @@ Use these as lenses, not a formula. Apply holistic judgment.
 Product/service promotion, thin content, beginner questions, memes, self-promotional posts without substance.
 
 *Score Calibration*
-0.9+: field-defining. 0.8-0.89: very important. 0.7-0.79: notable. 0.6-0.69: worth noting. <0.6: low value.
-Be generous in 0.6-0.8. Aim for ~10-20 items scoring 0.6+ per batch.
+{scoring_rubric}
+Be generous in 0.6-0.8. Aim for {target_count} per batch.
 
 *Engagement Signal*
 High engagement is a STRONG quality signal. Apply this bonus based on the Engagement field when present:
-- YouTube: 10K+ views → +0.05, 100K+ → +0.1, 500K+ → +0.15.
+- {engagement_guidance}
 - Items with NO engagement data (most sources): judge purely on content quality.
 Engagement bonus stacks with content quality — a high-engagement AND substantive item should score very high.
 
@@ -72,7 +80,7 @@ Interviews/podcasts with substance: +0.05-0.1. Expert paper summaries: score on 
 Major model releases (open or proprietary): score on significance.
 
 *Diversity*
-Cluster same-topic items — score best source fully, duplicates at 0.3. \
+Cluster same-topic items — score best source fully, duplicates at {duplicate_score_penalty}. \
 Balance topic AND platform diversity.
 
 *Output*
@@ -89,27 +97,20 @@ Return JSON with ALL items.
   ]
 }}}}
 ```
-Categories: research, tools, news, release, industry, paper, interview, infrastructure, community"""
+Categories: {ranking_categories}"""
 
     human_prompt_template: str = "Here are the content items to evaluate:\n\n{items_text}"
 
 
 class DigestPrompt(BasePrompt):
-    input_variables: list[str] = ["items_text", "trends_context"]
+    input_variables: list[str] = ["items_text", "trends_context", "language_rules", "audience"]
 
     system_prompt_template: str = """\
-You are a daily AI digest editor for ML engineers. Write like a sharp, opinionated tech columnist — \
+You are a daily digest editor for {audience}. Write like a sharp, opinionated tech columnist — \
 connecting dots between stories and telling practitioners what matters and why.
 
 *Language*
-- Write in Korean (95%+). English ONLY for proper nouns and untranslatable technical terms.
-- Translate terms that have established Korean equivalents: architecture → 아키텍처, \
-benchmark → 벤치마크, inference → 추론, training → 학습, deployment → 배포, \
-weight → 가중치, parameter → 파라미터, token → 토큰, open-source → 오픈소스, \
-pipeline → 파이프라인, optimization → 최적화, compression → 압축, memory → 메모리.
-- General words MUST be Korean: practitioner → 실무자, implication → 시사점, \
-release → 출시/공개, breakthrough → 돌파구, approach → 접근법, ecosystem → 생태계.
-- If the original item title is in English, translate it to Korean for the display text.
+{language_rules}
 
 *Slack Formatting*
 Slack mrkdwn only: *bold*, _italic_, `code`, <url|text>. \
@@ -148,7 +149,15 @@ what it reveals, what people are getting wrong. Don't cover every story.
 
 
 class TrendUpdatePrompt(BasePrompt):
-    input_variables: list[str] = ["current_trends", "todays_digest", "today_date", "trend_retention_days"]
+    input_variables: list[str] = [
+        "current_trends",
+        "todays_digest",
+        "today_date",
+        "trend_retention_days",
+        "trend_cooling_days",
+        "trend_max_evidence",
+        "trend_max_active_trends",
+    ]
 
     system_prompt_template: str = """\
 You are a trend tracker for an AI/ML digest. Maintain a running markdown document of active trends.
@@ -157,10 +166,10 @@ Rules:
 - Each trend: title, status (active/cooling/archived), first_seen, last_seen, evidence list
 - Add new trends when today's digest reveals emerging patterns
 - Update existing trends with new evidence
-- "cooling" if no evidence in 7+ days; "archived" if {trend_retention_days}+ days
-- Maximum 10 active trends — merge or archive if needed
+- "cooling" if no evidence in {trend_cooling_days}+ days; "archived" if {trend_retention_days}+ days
+- Maximum {trend_max_active_trends} active trends — merge or archive if needed
 - CRITICAL: Keep each evidence entry to ONE short sentence (under 30 words)
-- CRITICAL: Maximum 5 evidence entries per trend — when adding new evidence, drop the oldest
+- CRITICAL: Maximum {trend_max_evidence} evidence entries per trend — when adding new evidence, drop the oldest
 - Compress archived trends into one-line summaries
 - Write in English (feeds back into English LLM context)
 
@@ -204,13 +213,56 @@ Rules:
     human_prompt_template: str = "Article titles already found:\n{titles}"
 
 
+class VisualEditorPrompt(BasePrompt):
+    """Pick ONE digest story worth a fun daily visual and decide how to render it.
+    Returns skip=true when no story is a good fit (e.g. a dry, purely-technical day)."""
+
+    input_variables: list[str] = ["items_text", "audience", "on_image_language"]
+
+    system_prompt_template: str = """\
+You are the visual editor for {audience}. From today's stories, pick the SINGLE one \
+that would make the most entertaining, shareable visual — a meme, parody, illustration, or a \
+short cartoon. Prefer news / industry / drama / surprising releases (they parody well) over dry \
+technical papers. If NO story is a good fit today, skip — do not force it.
+
+Produce ONLY a JSON object:
+```json
+{{{{
+  "skip": false,
+  "item_number": 2,
+  "search_query": "a focused web query for extra context to enrich the visual",
+  "format": "one-line: e.g. 'single-panel meme', '4-panel cartoon', 'parody movie poster'",
+  "instruction": "a rich natural-language brief for the image: what to depict, the joke/angle, the format, recognizable real-world cues (people, logos) to include, and that any on-image text must be {on_image_language}"
+}}}}
+```
+
+Rules:
+- Choose the format freely based on what makes THIS story funniest: a one-shot meme/parody/
+  illustration OR an N-panel cartoon.
+- Be faithful to the real facts; the humor is in framing, not fabrication.
+- If skipping, return {{{{"skip": true}}}} and nothing else matters.
+- Output ONLY the JSON object."""
+
+    human_prompt_template: str = "Today's digest stories:\n\n{items_text}"
+
+
 class VisualSynopsisPrompt(BasePrompt):
     """Free-form synopsis -> image brief. The agent describes WHAT it wants in natural
     language (a 1-page presentation slide, a 4-panel comic, a concept diagram, an
     infographic ...); this turns it + the source material into a single image-generation
     brief. No fixed modes or panel counts."""
 
-    input_variables: list[str] = ["instruction", "source", "context"]
+    input_variables: list[str] = [
+        "instruction",
+        "source",
+        "context",
+        "image_size",
+        "caption_language",
+        "on_image_language",
+        "style_guidance",
+        "humor_guidance",
+        "style_aesthetic",
+    ]
 
     system_prompt_template: str = """\
 You are an art director. Turn the requested visualization into a single, concrete brief that an \
@@ -220,18 +272,36 @@ presentation slide, an N-panel comic, a concept diagram, an infographic, a poste
 Produce ONLY a JSON object:
 ```json
 {{{{
-  "title": "short title in Korean",
-  "caption": "1-2 line Korean caption summarizing the visual (shown alongside the image)",
-  "prompt": "a single rich English prompt for the image model: describe the full composition, layout, panels/sections, labels, style, and what each element conveys — accurate to the source material, legible, minimal text, clean modern style"
+  "title": "short title in {caption_language}",
+  "caption": "1-2 line {caption_language} caption summarizing the visual (shown alongside the image)",
+  "prompt": "a single rich English prompt for the image model: describe the full composition, layout, panels/sections, labels, style, and what each element conveys — accurate to the source material, legible, minimal text, {style_aesthetic}"
 }}}}
 ```
 
+Think like an editor BEFORE you describe pixels. A good visual is understandable on its own —
+a viewer should grasp the subject, the context, and the one point within a few seconds, WITHOUT
+reading the caption. Work through these general decisions and bake the answers into `prompt`:
+
+1. SUBJECT & CONTEXT — Who/what is this about? Make it visually unmistakable using whatever
+   real-world cues fit this story: the actual named people's likenesses, organization logos and
+   brand colors, recognizable products/UIs/settings. Choose the cues the story calls for — do not
+   default to any fixed set.
+2. THE ONE POINT — What single idea, tension, or punchline should land? State it in one sentence,
+   then make every visual element serve it. Cut anything that doesn't.
+3. STRUCTURE — Pick the composition that best delivers that point for THIS story (e.g. a single
+   striking frame, a before/after contrast, a cause→effect or time progression, an N-panel
+   sequence). Let the story decide; don't force a template.
+4. LEGIBILITY — The whole composition must fit the {image_size} frame with nothing cropped; leave
+   margins. Few elements, clear focal point.
+
 Rules:
-- The image is rendered in ONE pass at 1024x1024 — design a self-contained composition.
-- Be faithful to the actual technical content; do not invent facts.
-- Korean for title/caption; English for the image `prompt` (image model works best in English).
-- If the instruction implies multiple panels/sections, lay them out explicitly in `prompt`.
-- Keep on-image text short and legible. Output ONLY the JSON object."""
+- Be faithful to the actual facts; the humor/angle is in framing, never in fabrication.
+- {caption_language} for the `title`/`caption` (shown alongside the image in Slack). But ALL text that
+  appears INSIDE the image — labels, speech bubbles, signs — must be {on_image_language} and quoted
+  exactly in the prompt (e.g. text reads "SHIP IT"). Minimize on-image text.
+- {style_guidance}
+- {humor_guidance}
+- Output ONLY the JSON object."""
 
     human_prompt_template: str = (
         "Visualization request:\n{instruction}\n\nSource material:\n{source}\n\n"

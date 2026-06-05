@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from collectors.rsshub import RSSHubCollector
@@ -25,7 +26,7 @@ class TestReachability:
         monkeypatch.delenv("STATE_BUCKET", raising=False)
         c = RSSHubCollector(_config())
         with patch("collectors.rsshub.RSSHubCollector._load_from_s3", return_value=None):
-            with patch("httpx.get", side_effect=Exception("connection refused")):
+            with patch("httpx.get", side_effect=httpx.ConnectError("connection refused")):
                 with pytest.raises(RuntimeError, match="unreachable"):
                     await c.collect()
 
