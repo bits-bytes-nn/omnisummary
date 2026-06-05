@@ -3,7 +3,7 @@ from .prompts import (
     DigestPrompt,
     RankingPrompt,
     RefineQueryPrompt,
-    TrendUpdatePrompt,
+    TrendClassifyPrompt,
     VisualEditorPrompt,
     VisualSynopsisPrompt,
 )
@@ -13,7 +13,7 @@ __all__ = [
     "DigestPrompt",
     "RankingPrompt",
     "RefineQueryPrompt",
-    "TrendUpdatePrompt",
+    "TrendClassifyPrompt",
     "VisualEditorPrompt",
     "VisualSynopsisPrompt",
 ]

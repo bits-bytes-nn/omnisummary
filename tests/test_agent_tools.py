@@ -149,35 +149,75 @@ class TestSearchPapers:
 
 
 class TestRecallTrends:
+    def _store_with(self, memory):
+        from shared.state_store import StateStore
+
+        class _S(StateStore):
+            def read(self, key):
+                return memory.model_dump_json() if key == "trends.json" else None
+
+            def write(self, key, content):
+                pass
+
+            def exists(self, key):
+                return key == "trends.json"
+
+        return _S()
+
     @pytest.mark.asyncio
-    async def test_returns_recalled_trends(self):
-        store = MagicMock()
-        store.recall.return_value = ["trend A", "trend B"]
-        with patch("shared.create_memory_store", return_value=store):
+    async def test_matches_query_terms(self):
+        from shared.models import Trend, TrendEvidence, TrendMemory
+
+        memory = TrendMemory(
+            trends=[
+                Trend(
+                    id="open-models",
+                    title="Open Weight Models",
+                    first_seen="2026-06-01",
+                    last_seen="2026-06-05",
+                    evidence=[TrendEvidence(date="2026-06-05", summary="Meta shipped a model")],
+                ),
+                Trend(
+                    id="agents",
+                    title="Agent Frameworks",
+                    first_seen="2026-06-01",
+                    last_seen="2026-06-05",
+                    evidence=[TrendEvidence(date="2026-06-05", summary="new framework")],
+                ),
+            ]
+        )
+        with patch("shared.create_state_store", return_value=self._store_with(memory)):
             result = await agent_tools.recall_trends._tool_func("open models")
-        assert "trend A" in result and "trend B" in result
-        store.recall.assert_called_once_with("open models", top_k=5)
+        assert "Open Weight Models" in result
+        assert "Agent Frameworks" not in result
 
     @pytest.mark.asyncio
     async def test_empty_recall(self):
-        store = MagicMock()
-        store.recall.return_value = []
-        with patch("shared.create_memory_store", return_value=store):
+        from shared.models import TrendMemory
+
+        with patch("shared.create_state_store", return_value=self._store_with(TrendMemory())):
             result = await agent_tools.recall_trends._tool_func("nothing")
         assert "No earlier trends" in result
 
     @pytest.mark.asyncio
-    async def test_top_k_is_config_driven(self):
-        from shared.config import AgentConfig, Config
+    async def test_excludes_archived(self):
+        from shared.models import Trend, TrendEvidence, TrendMemory, TrendStatus
 
-        store = MagicMock()
-        store.recall.return_value = ["trend A"]
-        cfg = Config()
-        cfg.agent = AgentConfig(recall_memory_top_k=11)
-        with patch.object(agent_tools.Config, "load", return_value=cfg):
-            with patch("shared.create_memory_store", return_value=store):
-                await agent_tools.recall_trends._tool_func("topic")
-        store.recall.assert_called_once_with("topic", top_k=11)
+        memory = TrendMemory(
+            trends=[
+                Trend(
+                    id="old",
+                    title="Old Topic",
+                    status=TrendStatus.ARCHIVED,
+                    first_seen="2026-01-01",
+                    last_seen="2026-02-01",
+                    evidence=[TrendEvidence(date="2026-02-01", summary="topic mention")],
+                )
+            ]
+        )
+        with patch("shared.create_state_store", return_value=self._store_with(memory)):
+            result = await agent_tools.recall_trends._tool_func("topic")
+        assert "No earlier trends" in result
 
 
 class TestMakeVisual:

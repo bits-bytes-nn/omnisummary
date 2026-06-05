@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import Enum
 from typing import Any
 
@@ -54,6 +54,51 @@ class VisualBrief(BaseModel):
     title: str = Field(min_length=1, max_length=100)
     caption: str = Field(min_length=1, max_length=300)
     prompt: str = Field(min_length=1, max_length=4000)
+
+
+class TrendEvidence(BaseModel):
+    date: str  # YYYY-MM-DD, stamped by code from the digest date (never the LLM)
+    summary: str
+    item_id: str = ""
+    url: str = ""
+
+
+class TrendStatus(str, Enum):
+    ACTIVE = "active"
+    COOLING = "cooling"
+    ARCHIVED = "archived"
+
+
+class Trend(BaseModel):
+    id: str  # stable slug; identity survives title rephrasing
+    title: str
+    status: TrendStatus = TrendStatus.ACTIVE
+    first_seen: str = ""
+    last_seen: str = ""
+    evidence: list[TrendEvidence] = Field(default_factory=list)
+
+    def momentum(self, today: date, half_life_days: float) -> float:
+        # Recency-decayed evidence count: each piece of evidence contributes
+        # 0.5 ** (age_days / half_life). Recent, frequently-cited trends rank highest.
+        if half_life_days <= 0:
+            return float(len(self.evidence))
+        total = 0.0
+        for ev in self.evidence:
+            try:
+                age = (today - date.fromisoformat(ev.date)).days
+            except ValueError:
+                continue
+            if age < 0:
+                age = 0
+            total += 0.5 ** (age / half_life_days)
+        return total
+
+
+class TrendMemory(BaseModel):
+    trends: list[Trend] = Field(default_factory=list)
+
+    def by_id(self, trend_id: str) -> Trend | None:
+        return next((t for t in self.trends if t.id == trend_id), None)
 
 
 class SourceStatus(str, Enum):

@@ -1,10 +1,11 @@
 import hashlib
+from datetime import date
 
 import pytest
 from pydantic import ValidationError
 
 from shared.constants import SourceType
-from shared.models import CollectedItem, RankedItem, VisualBrief
+from shared.models import CollectedItem, RankedItem, Trend, TrendEvidence, TrendMemory, VisualBrief
 
 
 class TestCollectedItem:
@@ -67,3 +68,48 @@ class TestVisualBrief:
     def test_overlong_caption_rejected(self):
         with pytest.raises(ValidationError):
             VisualBrief(title="T", caption="x" * 301, prompt="P")
+
+
+class TestTrendMomentum:
+    def test_today_evidence_full_weight(self):
+        today = date(2026, 6, 5)
+        trend = Trend(id="t", title="T", evidence=[TrendEvidence(date="2026-06-05", summary="s")])
+        assert trend.momentum(today, half_life_days=7.0) == pytest.approx(1.0)
+
+    def test_half_life_decay(self):
+        today = date(2026, 6, 8)
+        # 7 days old at half_life 7 -> 0.5; 0 days old -> 1.0
+        trend = Trend(
+            id="t",
+            title="T",
+            evidence=[
+                TrendEvidence(date="2026-06-08", summary="fresh"),
+                TrendEvidence(date="2026-06-01", summary="week-old"),
+            ],
+        )
+        assert trend.momentum(today, half_life_days=7.0) == pytest.approx(1.5)
+
+    def test_recent_outranks_stale(self):
+        today = date(2026, 6, 30)
+        recent = Trend(id="r", title="R", evidence=[TrendEvidence(date="2026-06-29", summary="s")])
+        stale = Trend(id="s", title="S", evidence=[TrendEvidence(date="2026-06-01", summary="s")])
+        assert recent.momentum(today, 7.0) > stale.momentum(today, 7.0)
+
+    def test_zero_half_life_falls_back_to_count(self):
+        today = date(2026, 6, 5)
+        trend = Trend(
+            id="t",
+            title="T",
+            evidence=[TrendEvidence(date="2026-06-01", summary="a"), TrendEvidence(date="2026-05-01", summary="b")],
+        )
+        assert trend.momentum(today, half_life_days=0.0) == 2.0
+
+    def test_invalid_evidence_date_skipped(self):
+        today = date(2026, 6, 5)
+        trend = Trend(id="t", title="T", evidence=[TrendEvidence(date="not-a-date", summary="s")])
+        assert trend.momentum(today, 7.0) == 0.0
+
+    def test_by_id_lookup(self):
+        memory = TrendMemory(trends=[Trend(id="x", title="X"), Trend(id="y", title="Y")])
+        assert memory.by_id("y").title == "Y"
+        assert memory.by_id("z") is None

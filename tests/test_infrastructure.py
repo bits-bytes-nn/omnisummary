@@ -101,7 +101,8 @@ class TestFoundationStack:
         foundation, _ = templates
         rendered = str(foundation.find_resources("AWS::IAM::Policy"))
         assert "bedrock-agentcore:CreateEvent" in rendered
-        assert "bedrock-agentcore:RetrieveMemoryRecords" in rendered
+        # Recall is gone (trends live in trends.json); RetrieveMemoryRecords removed.
+        assert "bedrock-agentcore:RetrieveMemoryRecords" not in rendered
 
 
 class TestApplicationStack:

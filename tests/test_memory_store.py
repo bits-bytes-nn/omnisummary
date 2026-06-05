@@ -15,20 +15,6 @@ class TestLocalMemoryStore:
         store = LocalMemoryStore(tmp_path)
         assert store.get_latest_digest() is None
 
-    def test_record_and_recall_trends(self, tmp_path):
-        store = LocalMemoryStore(tmp_path)
-        store.record_trend("trend one", session_id="s1")
-        store.record_trend("trend two", session_id="s2")
-        recalled = store.recall("anything", top_k=5)
-        assert recalled == ["trend one", "trend two"]
-
-    def test_recall_respects_top_k(self, tmp_path):
-        store = LocalMemoryStore(tmp_path)
-        for i in range(10):
-            store.record_trend(f"trend {i}", session_id=f"s{i}")
-        recalled = store.recall("q", top_k=3)
-        assert recalled == ["trend 7", "trend 8", "trend 9"]
-
 
 class TestCreateMemoryStore:
     def test_local_when_no_memory_id(self, monkeypatch, tmp_path):
@@ -124,16 +110,3 @@ class TestAgentCoreMemoryStore:
         store, client = self._store()
         client.list_sessions.return_value = {"sessionSummaries": []}
         assert store.get_latest_digest() is None
-
-    def test_recall_returns_record_text(self):
-        store, client = self._store()
-        # Real bedrock-agentcore RetrieveMemoryRecords returns 'memoryRecordSummaries'.
-        client.retrieve_memory_records.return_value = {
-            "memoryRecordSummaries": [{"content": {"text": "fact A"}}, {"content": {"text": "fact B"}}]
-        }
-        assert store.recall("query") == ["fact A", "fact B"]
-
-    def test_recall_swallows_errors(self):
-        store, client = self._store()
-        client.retrieve_memory_records.side_effect = RuntimeError("boom")
-        assert store.recall("query") == []

@@ -181,21 +181,17 @@ class OmniSummaryFoundationStack(Stack):
         memory_exec_role.add_to_policy(bedrock_invoke_statement)
         memory_exec_role.add_to_policy(bedrock_profile_statement)
 
+        # Short-term event memory only: digest snapshots are stored/reloaded via
+        # CreateEvent/ListEvents. Trend memory now lives in the structured trends.json
+        # (StateStore), so the semantic-extraction strategy and RetrieveMemoryRecords
+        # are no longer needed.
         self.memory = CfnMemory(
             self,
             "DigestMemory",
             name=f"{project_name}_{stage}_digest_state".replace("-", "_"),
             event_expiry_duration=90,
-            description="OmniSummary digest state and cross-day trend recall",
+            description="OmniSummary digest snapshot state",
             memory_execution_role_arn=memory_exec_role.role_arn,
-            memory_strategies=[
-                CfnMemory.MemoryStrategyProperty(
-                    semantic_memory_strategy=CfnMemory.SemanticMemoryStrategyProperty(
-                        name="TrendFacts",
-                        namespaces=["/facts/{actorId}/"],
-                    )
-                )
-            ],
         )
         self.memory_id = self.memory.attr_memory_id
 
@@ -204,7 +200,6 @@ class OmniSummaryFoundationStack(Stack):
                 "bedrock-agentcore:CreateEvent",
                 "bedrock-agentcore:ListEvents",
                 "bedrock-agentcore:ListSessions",
-                "bedrock-agentcore:RetrieveMemoryRecords",
             ],
             resources=[f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:memory/*"],
         )

@@ -1,112 +1,291 @@
+import json
 from datetime import date
 from unittest.mock import MagicMock
 
-from pipeline.trend_tracker import ARCHIVED_MARKER, TrendTracker
+import pytest
+
+from pipeline.trend_tracker import TRENDS_KEY, TrendTracker, from_markdown, to_markdown
 from shared.config import PipelineConfig
+from shared.models import Trend, TrendEvidence, TrendMemory, TrendStatus
 
 
-def _tracker(**overrides) -> TrendTracker:
+class _FakeStore:
+    def __init__(self, initial: dict[str, str] | None = None) -> None:
+        self.data: dict[str, str] = dict(initial or {})
+
+    def read(self, key: str) -> str | None:
+        return self.data.get(key)
+
+    def write(self, key: str, content: str) -> None:
+        self.data[key] = content
+
+    def exists(self, key: str) -> bool:
+        return key in self.data
+
+
+def _patched_tracker(store, observations, monkeypatch, **overrides) -> TrendTracker:
     config = PipelineConfig(**overrides)
     factory = MagicMock()
     factory.get_model.return_value = MagicMock()
-    return TrendTracker(config, factory, MagicMock())
+    tracker = TrendTracker(config, factory, store)
+    payload = observations if isinstance(observations, str) else json.dumps({"observations": observations})
+
+    class _Chain:
+        def __or__(self, _other):
+            return self
+
+        async def ainvoke(self, _inputs):
+            return payload
+
+    monkeypatch.setattr("pipeline.trend_tracker.TrendClassifyPrompt.get_prompt", lambda: _Chain())
+    return tracker
 
 
-_MAX_EVIDENCE = PipelineConfig().trend_max_evidence
+class TestMakeSlug:
+    def test_basic_slug(self):
+        assert TrendTracker._make_slug("Open Weight Models!", set()) == "open-weight-models"
+
+    def test_dedup_against_existing(self):
+        assert TrendTracker._make_slug("Agents", {"agents"}) == "agents-2"
+        assert TrendTracker._make_slug("Agents", {"agents", "agents-2"}) == "agents-3"
+
+    def test_empty_title_fallback(self):
+        assert TrendTracker._make_slug("!!!", set()) == "trend"
 
 
-class TestStripCodeFences:
-    def test_strips_json_fence(self):
-        assert TrendTracker._strip_code_fences("```markdown\n# Trends\n```") == "# Trends"
+class TestUpdateTrends:
+    @pytest.mark.asyncio
+    async def test_creates_new_trend_with_code_stamped_date(self, monkeypatch):
+        store = _FakeStore()
+        obs = [{"trend_id": "", "new_title": "Open Weight Models", "summary": "Meta released a new model."}]
+        tracker = _patched_tracker(store, obs, monkeypatch)
+        await tracker.update_trends("digest body", "2026-06-05")
 
-    def test_strips_bare_fence(self):
-        assert TrendTracker._strip_code_fences("```\nhi\n```") == "hi"
+        memory = TrendMemory.model_validate_json(store.data[TRENDS_KEY])
+        assert len(memory.trends) == 1
+        t = memory.trends[0]
+        assert t.id == "open-weight-models"
+        assert t.first_seen == t.last_seen == "2026-06-05"
+        assert t.evidence[0].date == "2026-06-05"
+        assert t.evidence[0].summary == "Meta released a new model."
 
-    def test_no_fence_unchanged(self):
-        assert TrendTracker._strip_code_fences("# Trends\nbody") == "# Trends\nbody"
-
-
-class TestTrimForLlm:
-    def test_empty_returns_empty(self):
-        assert _tracker()._trim_for_llm("", "2026-06-02") == ("", "")
-
-    def test_splits_archived_section(self):
-        content = f"# Active\n- **Trend**: A\n\n{ARCHIVED_MARKER}\n- old archived entry"
-        active, archived = _tracker()._trim_for_llm(content, "2026-06-02")
-        assert ARCHIVED_MARKER in archived
-        assert "old archived entry" in archived
-        assert ARCHIVED_MARKER not in active
-
-    def test_truncates_oversized(self):
-        big = "x" * 20000
-        active, _ = _tracker()._trim_for_llm(big, "2026-06-02")
-        assert "truncated for size" in active
-
-    def test_truncation_respects_config_max_chars(self):
-        big = "x" * 20000
-        active, _ = _tracker(trend_max_chars=500)._trim_for_llm(big, "2026-06-02")
-        assert active.startswith("x" * 500)
-        assert "truncated for size" in active
-
-    def test_invalid_date_skips_cutoff(self):
-        content = "# Active\n- **Trend**: A"
-        active, _ = _tracker()._trim_for_llm(content, "not-a-date")
-        assert "Trend" in active
-
-
-class TestTrimEvidence:
-    def test_drops_entries_before_cutoff(self):
-        content = (
-            "- **Trend**: X\n"
-            "- **Evidence**:\n"
-            "- [2026-05-01] old item\n"
-            "- [2026-06-01] new item\n"
-            "- **Impact**: high\n"
+    @pytest.mark.asyncio
+    async def test_extends_existing_trend(self, monkeypatch):
+        existing = TrendMemory(
+            trends=[
+                Trend(
+                    id="agents",
+                    title="Agents",
+                    first_seen="2026-06-01",
+                    last_seen="2026-06-01",
+                    evidence=[TrendEvidence(date="2026-06-01", summary="old")],
+                )
+            ]
         )
-        result = TrendTracker._trim_evidence(content, date(2026, 5, 15), _MAX_EVIDENCE)
-        assert "new item" in result
-        assert "old item" not in result
-        assert "1 earlier entries omitted" in result
+        store = _FakeStore({TRENDS_KEY: existing.model_dump_json()})
+        obs = [{"trend_id": "agents", "new_title": "", "summary": "new framework launched"}]
+        tracker = _patched_tracker(store, obs, monkeypatch)
+        await tracker.update_trends("d", "2026-06-03")
 
-    def test_caps_evidence_count(self):
-        recent = "\n".join(f"- [2026-06-0{i}] item{i}" for i in range(1, 9))
-        content = f"- **Trend**: X\n- **Evidence**:\n{recent}\n- **Impact**: y\n"
-        result = TrendTracker._trim_evidence(content, date(2026, 1, 1), _MAX_EVIDENCE)
-        kept = [ln for ln in result.split("\n") if ln.strip().startswith("- [")]
-        assert len(kept) == _MAX_EVIDENCE
+        memory = TrendMemory.model_validate_json(store.data[TRENDS_KEY])
+        t = memory.by_id("agents")
+        assert t is not None
+        assert len(t.evidence) == 2
+        assert t.last_seen == "2026-06-03"
+        assert t.first_seen == "2026-06-01"
 
-    def test_caps_evidence_count_respects_config(self):
-        recent = "\n".join(f"- [2026-06-0{i}] item{i}" for i in range(1, 9))
-        content = f"- **Trend**: X\n- **Evidence**:\n{recent}\n- **Impact**: y\n"
-        result = TrendTracker._trim_evidence(content, date(2026, 1, 1), 3)
-        kept = [ln for ln in result.split("\n") if ln.strip().startswith("- [")]
-        assert len(kept) == 3
+    @pytest.mark.asyncio
+    async def test_idempotent_double_run(self, monkeypatch):
+        store = _FakeStore()
+        obs = [{"trend_id": "", "new_title": "Topic", "summary": "same evidence"}]
+        tracker = _patched_tracker(store, obs, monkeypatch)
+        await tracker.update_trends("d", "2026-06-05")
 
-    def test_keeps_undated_evidence(self):
-        content = "- **Trend**: X\n- **Evidence**:\n- [bad-date] keep me\n- **Impact**: y\n"
-        result = TrendTracker._trim_evidence(content, date(2026, 6, 1), _MAX_EVIDENCE)
-        assert "keep me" in result
+        again = [{"trend_id": "topic", "new_title": "", "summary": "same evidence"}]
+        tracker2 = _patched_tracker(store, again, monkeypatch)
+        await tracker2.update_trends("d", "2026-06-05")
 
-    def test_non_evidence_lines_untouched(self):
-        content = "# Header\n- **Trend**: X\n- **Impact**: high\nplain line"
-        result = TrendTracker._trim_evidence(content, date(2026, 6, 1), _MAX_EVIDENCE)
-        assert result == content  # no evidence block -> content passes through verbatim
+        memory = TrendMemory.model_validate_json(store.data[TRENDS_KEY])
+        assert len(memory.trends) == 1
+        assert len(memory.trends[0].evidence) == 1
+
+    @pytest.mark.asyncio
+    async def test_malformed_llm_output_no_crash(self, monkeypatch):
+        store = _FakeStore()
+        tracker = _patched_tracker(store, "not json at all", monkeypatch)
+        result = await tracker.update_trends("d", "2026-06-05")
+        assert "# Active Trends" in result
+        memory = TrendMemory.model_validate_json(store.data[TRENDS_KEY])
+        assert memory.trends == []
 
 
-class TestMergeArchived:
-    def test_no_old_archived_returns_updated(self):
-        assert TrendTracker._merge_archived("# Active", "") == "# Active"
+class TestLifecycle:
+    def test_status_transitions_by_date(self):
+        config = PipelineConfig(trend_cooling_days=7, trend_retention_days=30)
+        tracker = TrendTracker(config, MagicMock(), _FakeStore())
+        active = Trend(id="a", title="A", first_seen="2026-06-01", last_seen="2026-06-04")
+        cooling = Trend(id="c", title="C", first_seen="2026-05-01", last_seen="2026-05-25")
+        archived = Trend(id="z", title="Z", first_seen="2026-04-01", last_seen="2026-05-01")
+        today = date(2026, 6, 5)
+        assert tracker._compute_status(active, today) == TrendStatus.ACTIVE
+        assert tracker._compute_status(cooling, today) == TrendStatus.COOLING
+        assert tracker._compute_status(archived, today) == TrendStatus.ARCHIVED
 
-    def test_appends_when_no_new_archived_section(self):
-        updated = "# Active trends"
-        old = f"{ARCHIVED_MARKER}\n- archived A"
-        merged = TrendTracker._merge_archived(updated, old)
-        assert "Active trends" in merged
-        assert "archived A" in merged
+    @pytest.mark.asyncio
+    async def test_max_evidence_cap_drops_oldest(self, monkeypatch):
+        ev = [TrendEvidence(date=f"2026-06-0{i}", summary=f"e{i}") for i in range(1, 6)]
+        existing = TrendMemory(
+            trends=[Trend(id="t", title="T", first_seen="2026-06-01", last_seen="2026-06-05", evidence=ev)]
+        )
+        store = _FakeStore({TRENDS_KEY: existing.model_dump_json()})
+        obs = [{"trend_id": "t", "new_title": "", "summary": "newest"}]
+        tracker = _patched_tracker(store, obs, monkeypatch, trend_max_evidence=3)
+        await tracker.update_trends("d", "2026-06-06")
 
-    def test_merges_unique_old_entries(self):
-        updated = f"# Active\n\n{ARCHIVED_MARKER}\n- new entry"
-        old = f"{ARCHIVED_MARKER}\n- new entry\n- unique old entry"
-        merged = TrendTracker._merge_archived(updated, old)
-        assert merged.count("- new entry") == 1
-        assert "unique old entry" in merged
+        memory = TrendMemory.model_validate_json(store.data[TRENDS_KEY])
+        t = memory.by_id("t")
+        assert t is not None
+        assert len(t.evidence) == 3
+        assert t.evidence[-1].summary == "newest"
+        assert t.evidence[0].summary == "e4"
+
+    @pytest.mark.asyncio
+    async def test_active_cap_archives_lowest_momentum(self, monkeypatch):
+        trends = [
+            Trend(
+                id=f"t{i}",
+                title=f"T{i}",
+                first_seen="2026-05-01",
+                last_seen=f"2026-06-0{i}",
+                evidence=[TrendEvidence(date=f"2026-06-0{i}", summary="e")],
+            )
+            for i in range(1, 4)
+        ]
+        store = _FakeStore({TRENDS_KEY: TrendMemory(trends=trends).model_dump_json()})
+        tracker = _patched_tracker(store, [], monkeypatch, trend_max_active_trends=2, trend_cooling_days=60)
+        await tracker.update_trends("d", "2026-06-05")
+
+        memory = TrendMemory.model_validate_json(store.data[TRENDS_KEY])
+        active = {t.id for t in memory.trends if t.status == TrendStatus.ACTIVE}
+        assert active == {"t2", "t3"}
+
+
+class TestGetTrendsContext:
+    def test_excludes_archived_and_sorts_by_momentum(self):
+        config = PipelineConfig(trend_momentum_half_life_days=7.0)
+        trends = [
+            Trend(
+                id="low",
+                title="Low",
+                status=TrendStatus.ACTIVE,
+                first_seen="2026-05-01",
+                last_seen="2026-05-20",
+                evidence=[TrendEvidence(date="2026-05-20", summary="old")],
+            ),
+            Trend(
+                id="high",
+                title="High",
+                status=TrendStatus.ACTIVE,
+                first_seen="2026-06-01",
+                last_seen=date.today().isoformat(),
+                evidence=[TrendEvidence(date=date.today().isoformat(), summary="fresh")],
+            ),
+            Trend(
+                id="gone", title="Gone", status=TrendStatus.ARCHIVED, first_seen="2026-01-01", last_seen="2026-02-01"
+            ),
+        ]
+        store = _FakeStore({TRENDS_KEY: TrendMemory(trends=trends).model_dump_json()})
+        tracker = TrendTracker(config, MagicMock(), store)
+        ctx = tracker.get_trends_context()
+        assert "Gone" not in ctx
+        assert ctx.index("## High") < ctx.index("## Low")
+
+    def test_empty_when_no_visible_trends(self):
+        store = _FakeStore({TRENDS_KEY: TrendMemory().model_dump_json()})
+        tracker = TrendTracker(PipelineConfig(), MagicMock(), store)
+        assert tracker.get_trends_context() == ""
+
+
+class TestMarkdownRender:
+    def test_to_markdown_shape(self):
+        memory = TrendMemory(
+            trends=[
+                Trend(
+                    id="t",
+                    title="My Trend",
+                    status=TrendStatus.ACTIVE,
+                    first_seen="2026-06-01",
+                    last_seen="2026-06-05",
+                    evidence=[TrendEvidence(date="2026-06-05", summary="something happened")],
+                )
+            ]
+        )
+        md = to_markdown(memory)
+        assert "# Active Trends" in md
+        assert "## My Trend" in md
+        assert "- Status: active" in md
+        assert "- First seen: 2026-06-01" in md
+        assert "- Evidence: [2026-06-05] something happened" in md
+
+
+class TestLegacyMigration:
+    LEGACY = """# Active Trends
+
+## 1. Open Models
+- **Status**: active
+- **First seen**: 2026-05-01
+- **Last seen**: 2026-06-01
+- **Evidence**:
+  - [2026-05-01] First release.
+  - [2026-06-01] Second release.
+
+## 2. Cooling Topic
+- **Status**: cooling
+- **First seen**: 2026-04-01
+- **Last seen**: 2026-05-10
+- **Evidence**:
+  - [2026-05-10] last mention
+
+# Archived Trends (compressed)
+- [Dead Topic] (2026-01-01 ~ 2026-02-01): gone.
+"""
+
+    def test_parses_active_trends(self):
+        memory = from_markdown(self.LEGACY)
+        ids = {t.id for t in memory.trends}
+        assert "open-models" in ids
+        assert "cooling-topic" in ids
+        assert "dead-topic" not in ids
+
+    def test_parses_fields_and_evidence(self):
+        memory = from_markdown(self.LEGACY)
+        t = memory.by_id("open-models")
+        assert t is not None
+        assert t.status == TrendStatus.ACTIVE
+        assert t.first_seen == "2026-05-01"
+        assert t.last_seen == "2026-06-01"
+        assert len(t.evidence) == 2
+        assert t.evidence[1].summary == "Second release."
+
+    def test_drops_trends_missing_dates(self):
+        bad = "# Active Trends\n\n## Bad\n- **Status**: active\n"
+        memory = from_markdown(bad)
+        assert memory.trends == []
+
+    def test_garbage_input_starts_fresh(self):
+        memory = from_markdown("totally unrelated text\nno trends here")
+        assert memory.trends == []
+
+
+class TestMigrationOnLoad:
+    @pytest.mark.asyncio
+    async def test_loads_legacy_when_json_absent(self, monkeypatch):
+        store = _FakeStore({"trends.md": TestLegacyMigration.LEGACY})
+        obs = [{"trend_id": "open-models", "new_title": "", "summary": "today's evidence"}]
+        tracker = _patched_tracker(store, obs, monkeypatch, trend_cooling_days=60, trend_retention_days=120)
+        await tracker.update_trends("d", "2026-06-05")
+
+        memory = TrendMemory.model_validate_json(store.data[TRENDS_KEY])
+        t = memory.by_id("open-models")
+        assert t is not None
+        assert t.evidence[-1].summary == "today's evidence"

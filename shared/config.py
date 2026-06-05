@@ -150,6 +150,7 @@ class PipelineConfig(BaseModel):
     trend_max_evidence: int = Field(default=5, ge=1)
     trend_max_active_trends: int = Field(default=10, ge=1)
     trend_max_chars: int = Field(default=15000, ge=1)
+    trend_momentum_half_life_days: float = Field(default=7.0, gt=0)
     enable_daily_visual: bool = True
     image_model: str = "gpt-image-2"
     # Portrait by default so multi-panel comics aren't cropped in a square frame.
