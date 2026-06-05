@@ -306,11 +306,12 @@ async def make_visual(instruction: str, item_number: int = 0, context: str = "")
 
     visual_title = brief.title
     caption = brief.caption
+    emoji = config.pipeline.visual_caption_emoji
     uploaded = await send_image_to_slack(
         image_bytes,
         channel_id=delivery.channel_id,
         title=visual_title,
-        comment=f"*{visual_title}*\n{caption}",
+        comment=f"{emoji} *{visual_title}*\n{caption}",
         thread_ts=delivery.thread_ts,
     )
     if not uploaded:

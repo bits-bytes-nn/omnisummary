@@ -120,12 +120,13 @@ class DailyVisualMaker:
 
         title = brief.title
         caption = brief.caption
+        emoji = self.config.pipeline.visual_caption_emoji
         bot_token = self.config.slack.bot_token
         channel_id = self.config.slack.channel_id
         return await send_image_to_slack(
             image_bytes,
             channel_id=channel_id,
             title=title,
-            comment=f"*{title}*\n{caption}",
+            comment=f"{emoji} *{title}*\n{caption}",
             bot_token=bot_token,
         )

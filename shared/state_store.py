@@ -12,10 +12,15 @@ from .logger import logger
 class StateStore(ABC):
     """Blob store for the single mutable trends document (read-modify-write each run).
 
-    Distinct from shared.memory.MemoryStore by design: trends.md is one growing document
-    that must be read back verbatim to merge, which fits an S3 object / local file — not
-    AgentCore's append-only event model (which also caps event text at 100k chars). The
-    MemoryStore holds digest snapshots + semantic trend recall for the follow-up agent.
+    Distinct from shared.memory.MemoryStore by design — and NOT replaceable by it.
+    trends.md is a deliberately time-varying document with explicit merge/cooling/archive
+    of topic threads. AgentCore's managed strategies extract STABLE records (semantic
+    facts, user preferences) or per-session summaries; even customMemoryStrategy can only
+    *append to* those built-in prompts, not implement trend-thread maintenance. The only
+    full-control path (selfManagedConfiguration) would re-implement this TrendTracker plus
+    SNS/S3 plumbing. So trends.md stays the system of record for trends; MemoryStore holds
+    digest snapshots + cross-day recall for the follow-up agent. (Researched 2026-06; AWS
+    docs confirm strategy edits are in-place/no-replacement if this is ever revisited.)
     """
 
     @abstractmethod
