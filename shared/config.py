@@ -165,8 +165,6 @@ class PipelineConfig(BaseModel):
     )
     visual_synopsis_source_max_tokens: int = Field(default=2000, ge=1)
     visual_synopsis_context_max_tokens: int = Field(default=1500, ge=1)
-    visual_context_max_results: int = Field(default=5, ge=1)
-    visual_context_preview_chars: int = Field(default=300, ge=1)
     # Emoji prefixed to the Slack caption of a generated visual, for scannability.
     visual_caption_emoji: str = "🎨"
     # Audience/domain the visual prompts target. Configurable so the visual pipeline can

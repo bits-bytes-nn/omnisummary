@@ -56,7 +56,7 @@ class TestDailyVisualMaker:
     @pytest.mark.asyncio
     async def test_happy_path_posts(self):
         maker = _maker()
-        plan = {"skip": False, "item_number": 2, "search_query": "", "instruction": "a 4-panel cartoon"}
+        plan = {"skip": False, "item_number": 2, "research": [], "instruction": "a 4-panel cartoon"}
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
             with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(
@@ -77,6 +77,41 @@ class TestDailyVisualMaker:
             with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(side_effect=RuntimeError("boom"))
                 assert await maker.run(_items()) is False
+
+    @pytest.mark.asyncio
+    async def test_gather_context_dispatches_by_source(self):
+        # The editor agentically picks a source per research step; _gather_context routes
+        # each to the matching backend (papers -> Semantic Scholar, community/news -> Tavily).
+        maker = _maker()
+        research = [
+            {"source": "papers", "query": "diffusion scaling"},
+            {"source": "community", "query": "reactions"},
+            {"source": "news", "query": "launch"},
+        ]
+        with patch("agent.agent_tools._search_papers", new=AsyncMock(return_value="PAPERS")) as papers:
+            with patch("agent.agent_tools._tavily_search", new=AsyncMock(side_effect=["COMMUNITY", "NEWS"])) as tav:
+                context = await maker._gather_context(research)
+
+        assert "PAPERS" in context and "COMMUNITY" in context and "NEWS" in context
+        papers.assert_awaited_once_with("diffusion scaling")
+        # community step must pass the configured community domains; news step uses topic=news
+        community_call, news_call = tav.await_args_list
+        assert community_call.kwargs.get("include_domains") == maker.config.agent.community_search_domains
+        assert news_call.kwargs.get("topic") == "news"
+
+    @pytest.mark.asyncio
+    async def test_gather_context_empty_research_returns_empty(self):
+        assert await _maker()._gather_context([]) == ""
+
+    @pytest.mark.asyncio
+    async def test_gather_context_skips_failed_step(self):
+        # A backend that raises must be skipped, not abort the whole gather.
+        maker = _maker()
+        research = [{"source": "papers", "query": "q1"}, {"source": "news", "query": "q2"}]
+        with patch("agent.agent_tools._search_papers", new=AsyncMock(side_effect=RuntimeError("boom"))):
+            with patch("agent.agent_tools._tavily_search", new=AsyncMock(return_value="NEWS")):
+                context = await maker._gather_context(research)
+        assert context == "NEWS"
 
     @pytest.mark.asyncio
     async def test_pick_story_parses_prose_wrapped_json(self):
