@@ -14,9 +14,9 @@ class TestPostToThreads:
             assert await post_to_threads(root_text="hi") is False
 
     @pytest.mark.asyncio
-    async def test_posts_root_and_reply_chain(self):
-        # Root + one reply PER pre-rendered item (no re-splitting), each threaded onto the
-        # previous post id; an over-long reply is hard-capped to 500 chars, still one post.
+    async def test_posts_flat_replies_under_root(self):
+        # Root + one reply PER pre-rendered item, every reply hanging off the ROOT (a flat
+        # thread, NOT nested reply-of-reply); an over-long reply is hard-capped, still one post.
         published: list[dict] = []
 
         async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
@@ -31,8 +31,9 @@ class TestPostToThreads:
         assert ok is True
         assert len(published) == 3  # root + exactly 2 replies (one per input reply)
         assert published[0]["reply_to_id"] == "" and published[0]["text"] == "ROOT"
+        # both replies point at the ROOT (id0), not at each other
         assert published[1]["reply_to_id"] == "id0"
-        assert published[2]["reply_to_id"] == "id1"
+        assert published[2]["reply_to_id"] == "id0"
         assert len(published[2]["text"]) <= 500  # over-long reply hard-capped, not re-split
 
     @pytest.mark.asyncio

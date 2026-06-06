@@ -131,16 +131,18 @@ async def post_to_threads(
 
     try:
         async with httpx.AsyncClient(timeout=request_timeout) as client:
-            reply_to = await _publish_post(
+            root_id = await _publish_post(
                 client, user_id, token, text=root_text[:THREADS_MAX_TEXT_LENGTH], image_url=image_url
             )
-            logger.info("Posted Threads root '%s'", reply_to)
+            logger.info("Posted Threads root '%s'", root_id)
             # An image root needs time to become addressable as a reply target; wait once
             # up front so the first reply usually lands without burning retry attempts.
             if image_url and posts:
                 await asyncio.sleep(THREADS_REPLY_INITIAL_WAIT_SEC)
+            # All replies hang off the ROOT (a flat thread), not off each other — otherwise
+            # they nest as reply-of-reply and only the first shows under the root.
             for i, post in enumerate(posts, start=1):
-                reply_to = await _publish_reply_with_retry(client, user_id, token, post, reply_to)
+                await _publish_reply_with_retry(client, user_id, token, post, root_id)
                 logger.debug("Posted Threads reply %d/%d", i, len(posts))
         logger.info("Successfully posted digest to Threads (%d reply posts)", len(posts))
         return True
