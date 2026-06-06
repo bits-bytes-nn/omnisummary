@@ -96,7 +96,11 @@ class PipelineConfig(BaseModel):
         "pipeline → 파이프라인, optimization → 최적화, compression → 압축, memory → 메모리.\n"
         "- General words MUST be Korean: practitioner → 실무자, implication → 시사점, "
         "release → 출시/공개, breakthrough → 돌파구, approach → 접근법, ecosystem → 생태계.\n"
-        "- If the original item title is in English, translate it to Korean for the display text."
+        "- If the original item title is in English, translate it to Korean for the display text.\n"
+        "- Write natural, idiomatic Korean — NOT translationese. Avoid stiff translated-English "
+        "patterns: drop redundant pronouns (그것은/이것은), avoid overusing passive voice and "
+        "'~에 대해/~에 의해/~을 통해', don't calque English connectives. Read each sentence aloud — "
+        "if it sounds like a machine translation, rewrite it the way a Korean tech writer would say it."
     )
     # Audience/domain the ranking and digest prompts target. Configurable so the pipeline can
     # be reused across domains without forking the prompts.
