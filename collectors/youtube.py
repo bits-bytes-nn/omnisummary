@@ -58,8 +58,11 @@ class YouTubeCollector(BaseCollector):
     async def _collect_via_api(self, channel_url: str) -> list[CollectedItem]:
         channel_id = await self._resolve_channel_id_async(channel_url)
         if not channel_id:
-            logger.warning("Could not resolve channel ID for '%s'", channel_url)
-            return []
+            # Raise (not return []) so an unresolvable channel registers as a FAILURE in
+            # the health report, not a healthy-but-empty channel. YouTube serves a
+            # consent/JS-shell page to datacenter IPs with no canonical UC id, which would
+            # otherwise blackhole the channel silently forever.
+            raise RuntimeError(f"Could not resolve canonical channel ID for '{channel_url}'")
 
         uploads_playlist = f"UU{channel_id[2:]}"
         cutoff = cutoff_datetime(self.config.lookback_hours, self.config.reference_time)

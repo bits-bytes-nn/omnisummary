@@ -1,4 +1,3 @@
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -79,8 +78,22 @@ class TestDailyVisualMaker:
                 maker.generator.generate = AsyncMock(side_effect=RuntimeError("boom"))
                 assert await maker.run(_items()) is False
 
-    def test_pick_story_parses_embedded_json(self):
-        # _pick_story tolerates prose around the JSON object
-        raw = 'Here:\n{"skip": false, "item_number": 1}\ndone'
-        start, end = raw.find("{"), raw.rfind("}") + 1
-        assert json.loads(raw[start:end]) == {"skip": False, "item_number": 1}
+    @pytest.mark.asyncio
+    async def test_pick_story_parses_prose_wrapped_json(self):
+        # Real path: the editor LLM returns prose-wrapped JSON; _pick_story must extract it.
+        from langchain_core.messages import AIMessage
+        from langchain_core.runnables import RunnableLambda
+
+        maker = _maker()
+        maker.llm = RunnableLambda(lambda _: AIMessage(content='Here:\n{"skip": false, "item_number": 1}\ndone'))
+        plan = await maker._pick_story(_items())
+        assert plan == {"skip": False, "item_number": 1}
+
+    @pytest.mark.asyncio
+    async def test_pick_story_malformed_returns_empty(self):
+        from langchain_core.messages import AIMessage
+        from langchain_core.runnables import RunnableLambda
+
+        maker = _maker()
+        maker.llm = RunnableLambda(lambda _: AIMessage(content="no json here at all"))
+        assert await maker._pick_story(_items()) == {}

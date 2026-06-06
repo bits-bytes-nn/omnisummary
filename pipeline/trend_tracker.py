@@ -99,6 +99,11 @@ class TrendTracker:
         for obs in observations:
             self._apply_observation(memory, obs, today_date)
 
+        # Drop trends left with no evidence — e.g. a re-run wiped today's evidence (above)
+        # but the LLM's second pass didn't re-emit that observation. Without this an
+        # empty, contentless trend would linger forever in trends.json and the digest.
+        memory.trends = [t for t in memory.trends if t.evidence]
+
         self._run_lifecycle(memory, today_date)
 
         self._memory = memory

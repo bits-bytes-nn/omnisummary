@@ -44,7 +44,7 @@ class ContentRanker:
         # Sort by normalized title first so near-duplicate stories co-locate in the same
         # batch, where the prompt's same-topic clustering/dedup can still see both.
         batch_size = self.config.ranking_batch_size
-        ordered = sorted(items, key=lambda it: normalize_title(it.title))
+        ordered = sorted(items, key=lambda it: (normalize_title(it.title), it.item_id))
         batches = [ordered[i : i + batch_size] for i in range(0, len(ordered), batch_size)]
         if len(batches) > 1:
             logger.info("Ranking in %d parallel batches of up to %d", len(batches), batch_size)

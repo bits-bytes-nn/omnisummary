@@ -80,7 +80,8 @@ Interviews/podcasts with substance: +0.05-0.1. Expert paper summaries: score on 
 Major model releases (open or proprietary): score on significance.
 
 *Diversity*
-Cluster same-topic items — score best source fully, duplicates at {duplicate_score_penalty}. \
+Cluster same-EVENT items (same company + same incident count as one) — score best source fully, \
+duplicates at {duplicate_score_penalty}; never let one news event occupy two output slots. \
 Balance topic AND platform diversity.
 
 *Output*
@@ -118,13 +119,23 @@ NEVER use **bold**, ## headings, ---, ***, or ___.
 BOLD SAFETY: never put a space just inside the * markers — write *규모* not *규모 *. \
 In Korean, attach particles directly after the closing marker (*설계*가, not *설계* 가, \
 and never *설계 *가). When unsure, leave the text unbolded rather than risk a broken marker.
+Technical identifiers (quant names like Q4_K_M, IQ4_XS, file/flag/model names) must be written \
+verbatim with NO inserted spaces and wrapped in `backticks`; never break an identifier across a \
+space (write `Q4_K_M`, never `Q4_ K_M`).
 
 *Per-Item Format*
 1. *<url|한글 제목>* followed by the Source Detail field as provided (backtick-wrapped source tags + emoji metrics).
 2. Core content in 2-3 sentences (in Korean): what this is and why it matters.
 3. Technical detail or context in 1-2 sentences (in Korean).
-4. _Implications in 1-2 sentences, MUST be in italic (in Korean)._
+4. Implications in 1-2 sentences (in Korean), wrapped in italic as its OWN line:
+   put `_` at the very start and the closing `_` at the very end of the line (before the
+   line break), e.g. `_...시사점 문장._` — never attach a Korean particle right after the
+   closing `_` (Slack won't render `_X_가`). If the sentence can't end cleanly at `_`,
+   leave it unitalicized rather than emit a broken marker.
 ONLY item 4 uses italic. 6-8 sentences per item.
+If two ranked items are the SAME underlying story (same companies/event), MERGE them into one \
+item with both links inline rather than writing two near-duplicate entries; use the freed slot \
+for a distinct story or omit it.
 VARY the implications sentence — do NOT end every item with the same template \
 (avoid repeating "...실무자라면 ~할 필요가 있다" across items). Mix the angle and ending: \
 a sharp prediction, a contrarian caveat, a concrete "watch X", a "what breaks if...", \
@@ -134,11 +145,28 @@ a question. Each item's closing should read differently from the others.
 Titles must be clickable. Inline-link papers/repos naturally. No separate links section.
 
 *Trends*
-If provided, weave ongoing trends into commentary naturally. Do NOT list trends separately.
+If provided, weave ongoing trends into commentary naturally. Do NOT list trends separately. \
+If trends_context is empty, still surface continuity by noting when a story extends a theme \
+visible across today's own items (e.g. a technique or constraint appearing in multiple entries); \
+do not fabricate prior-day trends.
+
+*Faithfulness*
+Do NOT name external systems, products, or mechanisms (acronyms, protocols, kernels, specs, \
+dates, simultaneity claims) that are not present in the provided item text or trends_context. \
+If you draw a parallel, ground it only in the supplied items; never invent a named referent \
+(a protocol/kernel/spec/product) just to complete an analogy. Mark cross-story timing as \
+inferred (e.g. "보도가 잇따랐다") unless an explicit date is in the source.
+Do NOT state a specific numeric statistic, a named blog-post/paper title, or a calendar date \
+unless that exact value appears verbatim in the item text; if a figure or title is implied but \
+not present, omit it or attribute it explicitly (e.g. "보도에 따르면"). Distinguish verified \
+(in item text) vs reported (attributed) vs inferred — never present an inferred number or \
+proper-noun title with a definite verb like "공개했다/밝혔다" unless the value is in the source.
 
 *Structure*
-- Opening 3-5 sentences: pick ONE angle, write like a columnist — why this matters, \
-what it reveals, what people are getting wrong. Don't cover every story.
+- Opening 3-5 sentences: pick ONE angle and only invoke stories that genuinely fit it; do NOT \
+force unrelated stories under a single umbrella thesis. If the day's items don't share a theme, \
+open on the single most important story rather than a strained synthesis. Write like a \
+columnist — why this matters, what it reveals, what people are getting wrong. Don't cover every story.
 - Each item per the format above.
 - Optional closing (1 sentence max).
 - Blank line between items."""
@@ -225,6 +253,12 @@ Rules:
 - Choose the format freely based on what makes THIS story funniest: a one-shot meme/parody/
   illustration OR an N-panel cartoon.
 - Be faithful to the real facts; the humor is in framing, not fabrication.
+- Prefer a story under-covered in the digest body, but it MUST be one of the items that actually
+  appears in the published digest so readers have textual grounding; never pick a
+  ranked-but-undigested story.
+- Do not hardcode internet meme catchphrases (e.g. "X has entered the chat", "this is fine") as
+  on-image text — express the contradiction through imagery; any meme reference belongs in the
+  spoken caption, not baked into the image prompt.
 - If skipping, return {{{{"skip": true}}}} and nothing else matters.
 - Output ONLY the JSON object."""
 
@@ -270,12 +304,21 @@ reading the caption. Work through these general decisions and bake the answers i
 1. SUBJECT & CONTEXT — Who/what is this about? Make it visually unmistakable using whatever
    real-world cues fit this story: the actual named people's likenesses, organization logos and
    brand colors, recognizable products/UIs/settings. Choose the cues the story calls for — do not
-   default to any fixed set.
+   default to any fixed set. Real organizations must be unmistakable: render the actual
+   logo/wordmark and brand color prominently (not "subtle"/"small"), and use a literal text label
+   on a badge, building, or sign when a logo is hard to draw (e.g. an "NSA" cap, an "ANTHROPIC"
+   lapel badge). Do NOT describe brand cues as faint, subtle, or softly luminous.
 2. THE ONE POINT — What single idea, tension, or punchline should land? State it in one sentence,
    then make every visual element serve it. Cut anything that doesn't.
 3. STRUCTURE — Pick the composition that best delivers that point for THIS story (e.g. a single
    striking frame, a before/after contrast, a cause→effect or time progression, an N-panel
-   sequence). Let the story decide; don't force a template.
+   sequence). Let the story decide; don't force a template. Vary the visual genre across days — do
+   not default to the same poster/serif/centered template every time; let each story pick a
+   distinct treatment (screenshot mockup, diagram, before/after split, comic) so consecutive daily
+   visuals don't look alike. Do NOT produce a centered-figure propaganda/recruitment poster with
+   top+bottom serif banners unless the story is specifically about a poster/campaign; for
+   political/irony stories prefer a non-poster treatment (split-screen contrast, faux-screenshot,
+   news-chyron mockup, before/after) so the genre rotates.
 4. LEGIBILITY — The whole composition must fit the {image_size} frame with nothing cropped; leave
    margins. Few elements, clear focal point.
 
@@ -283,7 +326,14 @@ Rules:
 - Be faithful to the actual facts; the humor/angle is in framing, never in fabrication.
 - {caption_language} for the `title`/`caption` (shown alongside the image in Slack). But ALL text that
   appears INSIDE the image — labels, speech bubbles, signs — must be {on_image_language} and quoted
-  exactly in the prompt (e.g. text reads "SHIP IT"). Minimize on-image text.
+  exactly in the prompt (e.g. text reads "SHIP IT").
+- HARD CAP on on-image text: at most ONE short headline (<=5 words) plus at most ONE small tag line
+  on the image; never more than two text blocks total. The single point must read from the imagery
+  + headline alone, with the caption only confirming it — if the joke needs a second caption-like
+  line to land, carry that contrast VISUALLY (e.g. a contradicting object/gesture in frame) and
+  move the explanatory line into the {caption_language} caption instead.
+  Brand/identity labels on badges/caps count toward the two-block cap; if a logo is rendered, do
+  not also add a separate wordmark badge bearing the same name.
 - {style_guidance}
 - {humor_guidance}
 - Output ONLY the JSON object."""

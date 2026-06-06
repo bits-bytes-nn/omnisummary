@@ -513,6 +513,32 @@ def _normalize_bold_spans(text: str) -> str:
     return re.sub(r"(?P<before>.?)\*(?P<inner>[^*\n]+?)\*(?P<after>.?)", repair, text)
 
 
+def _normalize_italic_spans(text: str) -> str:
+    """Fix Slack _italic_ spacing per-span, mirroring _normalize_bold_spans.
+
+    The digest prompt mandates the implications sentence be _italic_, and in Korean the
+    closing `_` is immediately followed by a particle (`_시사점_이다`), which Slack renders
+    as literal underscores. Pad the boundary with a space unless the neighbour is CJK.
+    Only multi-word spans (containing a space) are treated as emphasis, so snake_case
+    identifiers and `code`/URL underscores are left untouched.
+    """
+
+    def repair(m: re.Match) -> str:
+        before, inner, after = m.group("before"), m.group("inner"), m.group("after")
+        # Treat as emphasis only if multi-word OR contains CJK (Korean has no snake_case);
+        # a single ASCII token like `snake_case` is an identifier, not italic.
+        if " " not in inner and not re.search(rf"[{_CJK}]", inner):
+            return m.group(0)
+        inner = inner.strip()
+        if not inner:
+            return f"{before}{after}"
+        lead = " " if before and not before.isspace() and not re.match(rf"[{_CJK}]", before) else ""
+        trail = " " if after and not after.isspace() and not re.match(rf"[{_CJK}]", after) else ""
+        return f"{before}{lead}_{inner}_{trail}{after}"
+
+    return re.sub(r"(?P<before>.?)_(?P<inner>[^_\n]+?)_(?P<after>.?)", repair, text)
+
+
 def sanitize_slack_mrkdwn(text: str) -> str:
     text = re.sub(r"\n---+\n", "\n\n", text)
     text = re.sub(r"\n\*\*\*+\n", "\n\n", text)
@@ -522,6 +548,7 @@ def sanitize_slack_mrkdwn(text: str) -> str:
 
     text = re.sub(r"\*\*([^*\n]+?)\*\*", r"*\1*", text)
     text = _normalize_bold_spans(text)
+    text = _normalize_italic_spans(text)
 
     text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"<\2|\1>", text)
     text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"<\2|\1>", text)
