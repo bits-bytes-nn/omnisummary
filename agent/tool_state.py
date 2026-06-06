@@ -66,7 +66,11 @@ class DigestStateManager:
                 if item_id in ranked_ids
             },
             "ranked_items": [ri.model_dump(mode="json") for ri in self._ranked_items],
-            "digest_result": self._digest_result.model_dump(mode="json") if self._digest_result else None,
+            # Exclude ranked_items from the embedded digest result — it's already persisted at
+            # the top level above; re-embedding it doubled the snapshot and tripped the 100k cap.
+            "digest_result": (
+                self._digest_result.model_dump(mode="json", exclude={"ranked_items"}) if self._digest_result else None
+            ),
         }
 
     def clear(self) -> None:

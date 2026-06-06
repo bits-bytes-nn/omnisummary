@@ -66,7 +66,9 @@ class DigestContent(BaseModel):
 
 class DigestResult(BaseModel):
     digest_text: str
-    ranked_items: list[RankedItem]
+    # Defaults to [] so the memory snapshot can persist the digest result WITHOUT re-embedding
+    # the ranked list (it's stored once at the snapshot's top level); load rebuilds it there.
+    ranked_items: list[RankedItem] = Field(default_factory=list)
     content: DigestContent | None = None
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     total_collected: int = 0

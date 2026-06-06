@@ -250,9 +250,8 @@ Rules:
 - Prefer a story under-covered in the digest body, but it MUST be one of the items that actually
   appears in the published digest so readers have textual grounding; never pick a
   ranked-but-undigested story.
-- Do not hardcode internet meme catchphrases (e.g. "X has entered the chat", "this is fine") as
-  on-image text — express the contradiction through imagery; any meme reference belongs in the
-  spoken caption, not baked into the image prompt.
+- Express the joke or contradiction through imagery, not a stock meme catchphrase baked into the
+  on-image text; any meme reference belongs in the spoken caption.
 - If skipping, return {{{{"skip": true}}}} and nothing else matters.
 - Output ONLY the JSON object."""
 
@@ -299,21 +298,16 @@ reading the caption. Work through these general decisions and bake the answers i
 1. SUBJECT & CONTEXT — Who/what is this about? Make it visually unmistakable using whatever
    real-world cues fit this story: the actual named people's likenesses, organization logos and
    brand colors, recognizable products/UIs/settings. Choose the cues the story calls for — do not
-   default to any fixed set. Real organizations must be unmistakable: render the actual
-   logo/wordmark and brand color prominently (not "subtle"/"small"), and use a literal text label
-   on a badge, building, or sign when a logo is hard to draw (e.g. an "NSA" cap, an "ANTHROPIC"
-   lapel badge). Do NOT describe brand cues as faint, subtle, or softly luminous.
+   default to any fixed set. Render real brands prominently and legibly (a clear logo/wordmark in
+   brand color, or a literal text label on a badge/building/sign when a logo is hard to draw) so
+   the organization reads at a glance.
 2. THE ONE POINT — What single idea, tension, or punchline should land? State it in one sentence,
    then make every visual element serve it. Cut anything that doesn't.
 3. STRUCTURE — Pick the composition that best delivers that point for THIS story (e.g. a single
    striking frame, a before/after contrast, a cause→effect or time progression, an N-panel
-   sequence). Let the story decide; don't force a template. Vary the visual genre across days — do
-   not default to the same poster/serif/centered template every time; let each story pick a
-   distinct treatment (screenshot mockup, diagram, before/after split, comic) so consecutive daily
-   visuals don't look alike. Do NOT produce a centered-figure propaganda/recruitment poster with
-   top+bottom serif banners unless the story is specifically about a poster/campaign; for
-   political/irony stories prefer a non-poster treatment (split-screen contrast, faux-screenshot,
-   news-chyron mockup, before/after) so the genre rotates.
+   sequence). Let the story decide; don't force a template. Vary the visual genre to fit the
+   content — screenshot mockup, diagram, before/after split, comic, poster — rather than defaulting
+   to one go-to layout, so consecutive daily visuals don't look alike.
 4. ORIENTATION — Choose `orientation` from ({orientations}) to fit the composition: a wide
    multi-panel strip or before/after split → landscape; a tall infographic/poster → portrait;
    a single balanced frame/meme → square. Do not default to one ratio; pick what the layout needs.
@@ -329,13 +323,10 @@ Rules:
   figures, dates, and events that actually appear there. State ONLY facts present in those inputs;
   never invent or guess a detail to fill the caption. If the context is thin, write a shorter caption
   rather than padding it with unverified specifics.
-- HARD CAP on on-image text: at most ONE short headline (<=5 words) plus at most ONE small tag line
-  on the image; never more than two text blocks total. The single point must read from the imagery
-  + headline alone, with the caption only confirming it — if the joke needs a second caption-like
-  line to land, carry that contrast VISUALLY (e.g. a contradicting object/gesture in frame) and
-  move the explanatory line into the {caption_language} caption instead.
-  Brand/identity labels on badges/caps count toward the two-block cap; if a logo is rendered, do
-  not also add a separate wordmark badge bearing the same name.
+- Keep on-image text minimal so the point reads from the imagery, not from reading paragraphs.
+  For a single-frame visual: at most one short headline plus one optional tag line. For an N-panel
+  comic: at most one short line (caption or speech bubble) per panel. Push any longer explanation
+  into the {caption_language} caption rather than onto the image.
 - {style_guidance}
 - {humor_guidance}
 - Output ONLY the JSON object."""

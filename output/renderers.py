@@ -118,26 +118,45 @@ def _sentences(text: str) -> list[str]:
     return [s for s in out if s]
 
 
+def _truncate_at_word(text: str, max_len: int) -> str:
+    """Trim text to <=max_len on a whitespace boundary (never mid-word); if there's no space
+    in range, fall back to a hard character cut. Used only when prose has no sentence boundary."""
+    text = text.strip()
+    if len(text) <= max_len:
+        return text
+    window = text[:max_len]
+    cut = window.rfind(" ")
+    return (window[:cut] if cut > 0 else window).rstrip()
+
+
 def _fit_one_post(title: str, body: str, implication: str, url: str, max_len: int = THREADS_MAX_POST_CHARS) -> str:
     """Build ONE Threads post for an item that fits within max_len — title and URL are always
-    kept; body/implication sentences are dropped from the end until it fits, so nothing is cut
-    mid-sentence and the link is never split. Each item maps to exactly one reply."""
+    kept; body/implication sentences are dropped from the end until it fits, never cut
+    mid-sentence and the link is never split. If even one sentence won't fit, the body is
+    word-trimmed (not dropped whole). Each item maps to exactly one reply."""
     fixed = [p for p in (title.strip(),) if p]
     tail = [url.strip()] if url.strip() else []
 
-    def assemble(prose: list[str]) -> str:
-        return "\n\n".join(fixed + ([" ".join(prose)] if prose else []) + tail)
+    def assemble(body_text: str) -> str:
+        return "\n\n".join(fixed + ([body_text] if body_text else []) + tail)
 
-    prose = _sentences(body) + (_sentences(implication) if implication else [])
-    while prose and len(assemble(prose)) > max_len:
-        prose.pop()
-    post = assemble(prose)
+    sentences = _sentences(body) + (_sentences(implication) if implication else [])
+    while sentences and len(assemble(" ".join(sentences))) > max_len:
+        sentences.pop()
+    if sentences:
+        return assemble(" ".join(sentences))
+
+    # No whole sentence fits. Keep title + URL, and fill remaining room with a word-trimmed
+    # slice of the body rather than dropping it entirely.
+    room = max_len - len(assemble("")) - 2
+    if room > 0 and body.strip():
+        return assemble(_truncate_at_word(body, room))
+    post = assemble("")
     if len(post) <= max_len:
         return post
-    # Title + URL alone already overflow (rare): hard-cap the title, keep the URL intact.
+    # Title + URL alone overflow (rare): word-trim the title, keep the URL intact.
     room = max_len - (len(url.strip()) + 2 if url.strip() else 0)
-    capped_title = title.strip()[: max(0, room)].rstrip()
-    return "\n\n".join([p for p in (capped_title, url.strip()) if p])
+    return "\n\n".join([p for p in (_truncate_at_word(title, max(0, room)), url.strip()) if p])
 
 
 def render_threads_posts(content: DigestContent) -> tuple[str, list[str]]:
@@ -148,9 +167,10 @@ def render_threads_posts(content: DigestContent) -> tuple[str, list[str]]:
     lead = content.lead.strip()
     if len(lead) > THREADS_MAX_POST_CHARS:
         kept = _sentences(lead)
-        while kept and len("".join(kept)) + len(kept) > THREADS_MAX_POST_CHARS:
+        while kept and len(" ".join(kept)) > THREADS_MAX_POST_CHARS:
             kept.pop()
-        lead = " ".join(kept) if kept else lead[:THREADS_MAX_POST_CHARS]
+        # No sentence boundary in range → word-trim, never a mid-word slice.
+        lead = " ".join(kept) if kept else _truncate_at_word(lead, THREADS_MAX_POST_CHARS)
 
     replies = [_fit_one_post(item.title, item.body, item.implication or "", item.url) for item in content.items]
     return lead, replies

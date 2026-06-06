@@ -17,7 +17,7 @@ class ContentAggregator:
             key = self._normalize_url(item.url)
             if key in seen_urls:
                 logger.debug("Duplicate URL skipped: '%s'", item.url)
-                seen_urls[key].metadata.update(item.metadata)
+                self._fill_missing_metadata(seen_urls[key], item)
             else:
                 seen_urls[key] = item
 
@@ -34,7 +34,7 @@ class ContentAggregator:
                     item.title[:60],
                     seen_titles[norm].title[:60],
                 )
-                seen_titles[norm].metadata.update(item.metadata)
+                self._fill_missing_metadata(seen_titles[norm], item)
                 title_dupes += 1
             else:
                 seen_titles[norm] = item
@@ -52,6 +52,13 @@ class ContentAggregator:
         )
 
         return deduplicated
+
+    @staticmethod
+    def _fill_missing_metadata(kept: CollectedItem, dupe: CollectedItem) -> None:
+        # Only fill keys the kept item lacks — never overwrite its own origin/engagement
+        # metadata (feed_url, subreddit, channel_url, view_count) with a lower-priority dupe's.
+        for k, v in dupe.metadata.items():
+            kept.metadata.setdefault(k, v)
 
     @staticmethod
     def _normalize_url(url: str) -> str:

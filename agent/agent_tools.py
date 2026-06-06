@@ -295,7 +295,6 @@ async def make_visual(instruction: str, item_number: int = 0, context: str = "")
     """
     from agent.visuals import VisualGenerator
     from output.slack_handler import send_image_to_slack
-    from shared import resolve_secret
 
     if not await asyncio.to_thread(resolve_secret, "OPENAI_API_KEY", "openai-api-key"):
         return "Visualization is disabled (OPENAI_API_KEY not configured)."

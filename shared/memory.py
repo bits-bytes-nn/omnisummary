@@ -123,7 +123,20 @@ class AgentCoreMemoryStore(MemoryStore):
             "digest_result": trimmed.get("digest_result"),
             "collected_items": {},
         }
-        return json.dumps(minimal, ensure_ascii=False)[: self.MAX_EVENT_TEXT]
+        payload_text = json.dumps(minimal, ensure_ascii=False)
+        if len(payload_text) <= self.MAX_EVENT_TEXT:
+            return payload_text
+
+        # Still over: shed whole keys (never byte-slice — a truncated string is invalid JSON
+        # and would crash json.loads on read). Drop the digest_result, then the ranked list.
+        logger.warning("Minimal digest state still over limit; dropping digest_result")
+        minimal["digest_result"] = None
+        payload_text = json.dumps(minimal, ensure_ascii=False)
+        if len(payload_text) <= self.MAX_EVENT_TEXT:
+            return payload_text
+
+        logger.warning("Digest state still over limit; storing empty snapshot")
+        return json.dumps({"ranked_items": [], "digest_result": None, "collected_items": {}}, ensure_ascii=False)
 
     def get_latest_digest(self) -> dict[str, Any] | None:
         sessions = self._client.list_sessions(memoryId=self.memory_id, actorId=self.actor_id, maxResults=100)

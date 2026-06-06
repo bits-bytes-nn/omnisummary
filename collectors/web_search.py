@@ -146,7 +146,6 @@ class WebSearchCollector(BaseCollector):
         self,
         response: dict,
         trend_name: str | None = None,
-        platform: str | None = None,
     ) -> list[CollectedItem]:
         cutoff = cutoff_datetime(self.config.lookback_hours, self.config.reference_time)
         items: list[CollectedItem] = []
@@ -174,7 +173,7 @@ class WebSearchCollector(BaseCollector):
                     logger.debug("Skipping low-relevance result (%.3f): '%s'", score, title[:60])
                     continue
 
-                source_type = self._detect_source_type(url, platform)
+                source_type = self._detect_source_type(url)
                 item_id = generate_item_id(url)
 
                 items.append(
@@ -195,11 +194,7 @@ class WebSearchCollector(BaseCollector):
         return items
 
     @staticmethod
-    def _detect_source_type(url: str, platform: str | None = None) -> SourceType:
-        if platform:
-            if platform.lower() in ("x", "twitter"):
-                return SourceType.X
-
+    def _detect_source_type(url: str) -> SourceType:
         parsed = urlparse(url)
         domain = parsed.netloc.lower().removeprefix("www.")
         return DOMAIN_TO_SOURCE.get(domain, SourceType.WEB)

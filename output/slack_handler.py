@@ -90,7 +90,9 @@ async def send_digest_to_slack(digest: DigestResult, config: SlackConfig) -> boo
         return False
 
     today = datetime.now().strftime("%Y-%m-%d")
-    n_stories = len(digest.ranked_items)
+    # Count the stories actually shown (the LLM may merge ranked items into fewer), not the
+    # raw ranked count — otherwise the header overstates how many stories are in the digest.
+    n_stories = len(digest.content.items) if digest.content and digest.content.items else len(digest.ranked_items)
     header = f":satellite: OmniSummary — {today} · {n_stories} stories"
     client = AsyncWebClient(token=bot_token)
 
