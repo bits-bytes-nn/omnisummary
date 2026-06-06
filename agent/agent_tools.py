@@ -313,7 +313,7 @@ async def make_visual(instruction: str, item_number: int = 0, context: str = "")
         factory,
         config.pipeline.digest_model,
         image_model=config.pipeline.image_model,
-        image_size=config.pipeline.image_size,
+        image_sizes=config.pipeline.image_sizes,
         source_max_tokens=config.pipeline.visual_synopsis_source_max_tokens,
         context_max_tokens=config.pipeline.visual_synopsis_context_max_tokens,
         caption_language=config.pipeline.visual_caption_language,

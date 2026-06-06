@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from urllib.parse import urlparse
 
@@ -11,12 +12,15 @@ from shared import (
     CollectedItem,
     DigestPrompt,
     DigestResult,
+    GroundingCheckPrompt,
     RankedItem,
     SourceType,
     clean_rss_feed_name,
+    extract_json_from_llm_output,
     format_collected_item,
     logger,
     sanitize_slack_mrkdwn,
+    truncate_text_by_tokens,
 )
 from shared.config import PipelineConfig
 
@@ -61,6 +65,9 @@ class DigestGenerator:
         )
         digest_text = sanitize_slack_mrkdwn(digest_text)
 
+        if self.config.enable_grounding_check:
+            digest_text = await self._verify_grounding(digest_text, ranked_items)
+
         logger.info("Digest generated successfully (%d characters)", len(digest_text))
 
         return DigestResult(
@@ -70,6 +77,30 @@ class DigestGenerator:
             total_collected=len(all_items),
             total_ranked=len(ranked_items),
         )
+
+    async def _verify_grounding(self, digest_text: str, ranked_items: list[RankedItem]) -> str:
+        """Check the digest's specific claims against the source items and surgically revise
+        unsupported ones. Best-effort: any failure keeps the original digest."""
+        try:
+            sources = "\n\n".join(
+                f"[{i + 1}] {r.item.title}\n{truncate_text_by_tokens(r.item.text, self.config.item_text_max_tokens)}"
+                for i, r in enumerate(ranked_items)
+            )
+            chain = GroundingCheckPrompt.get_prompt() | self.llm | StrOutputParser()
+            raw = await chain.ainvoke({"digest_text": digest_text, "sources": sources})
+            data = json.loads(extract_json_from_llm_output(raw))
+            violations = data.get("violations", [])
+            corrected = data.get("corrected_digest", "")
+            if not violations or not corrected:
+                logger.info("Grounding check: no unsupported claims found")
+                return digest_text
+            for v in violations:
+                logger.info("Grounding check revised claim: %s (%s)", v.get("claim", "")[:80], v.get("issue", "")[:80])
+            logger.info("Grounding check revised %d unsupported claim(s)", len(violations))
+            return sanitize_slack_mrkdwn(corrected)
+        except Exception:
+            logger.warning("Grounding check failed; keeping original digest", exc_info=True)
+            return digest_text
 
     def _format_ranked_items(self, ranked_items: list[RankedItem]) -> str:
         parts: list[str] = []

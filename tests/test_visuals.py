@@ -120,13 +120,13 @@ class TestVisualGenerator:
         gen = _generator()
         with patch("agent.visuals.resolve_secret", return_value=""):
             with pytest.raises(RuntimeError):
-                gen.render("anything")
+                gen.render(VisualBrief(title="t", caption="c", prompt="anything"))
 
     def test_render_requires_prompt(self):
         gen = _generator()
         with patch("agent.visuals.resolve_secret", return_value="key"):
             with pytest.raises(ValueError):
-                gen.render("")
+                gen.render(VisualBrief(title="t", caption="c", prompt="x").model_copy(update={"prompt": ""}))
 
     def test_render_raises_on_empty_image_data(self):
         gen = _generator()
@@ -137,7 +137,7 @@ class TestVisualGenerator:
             client.images.generate.return_value = resp
             with patch("openai.OpenAI", return_value=client):
                 with pytest.raises(RuntimeError):
-                    gen.render("draw")
+                    gen.render(VisualBrief(title="t", caption="c", prompt="draw"))
 
     def test_is_moderation_error_string_fallback(self):
         assert VisualGenerator._is_moderation_error(Exception("... moderation_blocked ..."))
@@ -155,11 +155,14 @@ class TestVisualGenerator:
         other.body = {"code": "invalid_request", "type": "invalid_request_error"}
         assert not VisualGenerator._is_moderation_error(other)
 
-    def test_render_uses_configured_model_and_size(self):
+    def test_render_uses_configured_model_and_orientation_size(self):
         factory = MagicMock()
         factory.get_model.return_value = MagicMock()
         gen = VisualGenerator(
-            factory, LanguageModelId.CLAUDE_V4_6_SONNET, image_model="custom-model", image_size="512x512"
+            factory,
+            LanguageModelId.CLAUDE_V4_6_SONNET,
+            image_model="custom-model",
+            image_sizes={"square": "1024x1024", "landscape": "1536x1024", "portrait": "1024x1536"},
         )
         fake_img = base64.b64encode(b"X").decode()
         resp = MagicMock()
@@ -168,7 +171,7 @@ class TestVisualGenerator:
         client.images.generate.return_value = resp
         with patch("agent.visuals.resolve_secret", return_value="key"):
             with patch("openai.OpenAI", return_value=client):
-                gen.render("draw")
+                gen.render(VisualBrief(title="t", caption="c", prompt="draw", orientation="landscape"))
         kwargs = client.images.generate.call_args.kwargs
         assert kwargs["model"] == "custom-model"
-        assert kwargs["size"] == "512x512"
+        assert kwargs["size"] == "1536x1024"  # orientation -> mapped size

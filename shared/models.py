@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, date, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -54,6 +54,9 @@ class VisualBrief(BaseModel):
     title: str = Field(min_length=1, max_length=100)
     caption: str = Field(min_length=1, max_length=300)
     prompt: str = Field(min_length=1, max_length=4000)
+    # The synopsis chooses the aspect ratio that fits the visual (a wide 4-panel strip,
+    # a square meme, a tall infographic); the generator maps it to a supported size.
+    orientation: Literal["square", "landscape", "portrait"] = "portrait"
 
 
 class TrendEvidence(BaseModel):

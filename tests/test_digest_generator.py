@@ -1,6 +1,14 @@
+import json
+from unittest.mock import MagicMock
+
+import pytest
+from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableLambda
+
 from pipeline.digest_generator import DigestGenerator
+from shared.config import PipelineConfig
 from shared.constants import SourceType
-from shared.models import CollectedItem
+from shared.models import CollectedItem, RankedItem
 
 
 def _item(source_type=SourceType.REDDIT, metadata=None, author=None):
@@ -12,6 +20,47 @@ def _item(source_type=SourceType.REDDIT, metadata=None, author=None):
         metadata=metadata or {},
         author=author,
     )
+
+
+def _generator(check_output: str):
+    config = PipelineConfig()
+    factory = MagicMock()
+    factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content=check_output))
+    return DigestGenerator(config, factory)
+
+
+def _ranked():
+    return [
+        RankedItem(
+            item=CollectedItem(item_id="a", source_type=SourceType.RSS, title="T", url="u", text="body"), score=0.8
+        )
+    ]
+
+
+class TestGroundingCheck:
+    @pytest.mark.asyncio
+    async def test_revises_unsupported_claim(self):
+        out = json.dumps(
+            {
+                "violations": [{"claim": "$7B", "issue": "not in source", "fix": "attributed"}],
+                "corrected_digest": "보도에 따르면 대규모 투자.",
+            }
+        )
+        result = await _generator(out)._verify_grounding("정확히 $7B 투자.", _ranked())
+        assert "보도에 따르면" in result
+
+    @pytest.mark.asyncio
+    async def test_no_violation_keeps_original(self):
+        original = "근거 있는 문장."
+        out = json.dumps({"violations": [], "corrected_digest": "should be ignored"})
+        result = await _generator(out)._verify_grounding(original, _ranked())
+        assert result == original
+
+    @pytest.mark.asyncio
+    async def test_malformed_check_keeps_original(self):
+        original = "원본 다이제스트."
+        result = await _generator("not json")._verify_grounding(original, _ranked())
+        assert result == original
 
 
 class TestFormatSourceDetail:
