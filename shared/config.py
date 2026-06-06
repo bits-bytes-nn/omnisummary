@@ -100,7 +100,9 @@ class PipelineConfig(BaseModel):
         "- Write natural, idiomatic Korean — NOT translationese. Avoid stiff translated-English "
         "patterns: drop redundant pronouns (그것은/이것은), avoid overusing passive voice and "
         "'~에 대해/~에 의해/~을 통해', don't calque English connectives. Read each sentence aloud — "
-        "if it sounds like a machine translation, rewrite it the way a Korean tech writer would say it."
+        "if it sounds like a machine translation, rewrite it the way a Korean tech writer would say it.\n"
+        "- Use the plain declarative '~다' columnist register consistently (e.g. '~했다', '~이다'); "
+        "NEVER the honorific '~입니다/~습니다'. Do not mix the two registers."
     )
     # Audience/domain the ranking and digest prompts target. Configurable so the pipeline can
     # be reused across domains without forking the prompts.
@@ -121,7 +123,8 @@ class PipelineConfig(BaseModel):
     # The date is a fixed, defensible ~3-years-out target (Jensen Huang's call / tail of Amodei's
     # "1-3 years"); tune it here. Empty date disables the intro.
     agi_countdown_date: str = "2029-01-01"
-    agi_countdown_template: str = "AGI 등장 {days}일 전입니다. "
+    # Plain declarative ('~다') to match the columnist body voice — not honorific ('~입니다').
+    agi_countdown_template: str = "AGI 등장 {days}일 전이다. "
     item_text_max_tokens: int = 8000
     ranking_batch_size: int = Field(default=40, ge=1)
     source_slots: dict[str, int] = Field(
