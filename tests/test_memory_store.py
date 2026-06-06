@@ -1,6 +1,33 @@
+import json
 from unittest.mock import MagicMock, patch
 
 from shared.memory import AgentCoreMemoryStore, LocalMemoryStore, create_memory_store
+
+
+def _store() -> AgentCoreMemoryStore:
+    with patch("shared.memory.boto3.client"):
+        return AgentCoreMemoryStore("m", actor_id="a")
+
+
+class TestFitToLimit:
+    def test_small_state_unchanged_and_valid(self):
+        store = _store()
+        state = {"ranked_items": [{"item": {"text": "hi"}, "score": 0.5}], "collected_items": {}, "digest_result": None}
+        out = store._fit_to_limit(state)
+        assert json.loads(out) == state  # valid JSON, unchanged
+
+    def test_oversized_state_sheds_to_valid_json_under_limit(self):
+        store = _store()
+        big = "x" * 200_000
+        state = {
+            "ranked_items": [{"item": {"item_id": f"i{n}", "text": big}, "score": 0.5} for n in range(20)],
+            "collected_items": {f"i{n}": {"text": big} for n in range(20)},
+            "digest_result": {"digest_text": big, "content": {"lead": big, "headline_index": 1, "items": []}},
+        }
+        out = store._fit_to_limit(state)
+        parsed = json.loads(out)  # must be valid JSON (never byte-sliced)
+        assert len(out) <= store.MAX_EVENT_TEXT
+        assert "ranked_items" in parsed  # still a well-formed snapshot dict
 
 
 class TestLocalMemoryStore:

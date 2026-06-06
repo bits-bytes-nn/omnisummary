@@ -54,18 +54,25 @@ class TestDailyVisualMaker:
                 assert await maker.run(_items()) is False
 
     @pytest.mark.asyncio
-    async def test_happy_path_posts(self):
+    async def test_visual_draws_the_headline_not_editor_pick(self):
+        # The headline is authoritative: even if the editor returns a different item_number,
+        # the visual must depict the digest headline (so image and lead stay in sync).
+        from shared.models import DigestContent, DigestItem
+
         maker = _maker()
-        plan = {"skip": False, "item_number": 2, "research": [], "instruction": "a 4-panel cartoon"}
+        plan = {"skip": False, "item_number": 3, "research": [], "instruction": "draw"}  # editor drifts
+        content = DigestContent(
+            lead="lead", headline_index=1, items=[DigestItem(title="t", url="http://e.com/2", body="b")]
+        )  # headline maps to ranked Story 2 by URL
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
             with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(
                     return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw"))
                 )
                 with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
-                    result = await maker.run(_items())
+                    result = await maker.run(_items(), content)
         assert result is True
-        # the chosen source must be item #2
+        # source must be the headline (Story 2), NOT the editor's item_number=3
         args, kwargs = maker.generator.generate.call_args
         assert "Story 2" in args[1]
 

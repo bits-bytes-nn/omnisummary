@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from urllib.parse import urlparse
 
 from langchain_core.output_parsers import StrOutputParser
@@ -36,6 +36,7 @@ class DigestGenerator:
         ranked_items: list[RankedItem],
         all_items: list[CollectedItem],
         trends_context: str = "",
+        today: date | None = None,
     ) -> DigestResult:
         if not ranked_items:
             logger.warning("No ranked items to generate digest from")
@@ -70,6 +71,8 @@ class DigestGenerator:
         if self.config.enable_grounding_check:
             content = await self._verify_grounding(content, ranked_items, trends_context)
 
+        self._prepend_countdown(content, today or date.today())
+
         digest_text = render_digest_text(content)
         logger.info("Digest generated successfully (%d items, %d characters)", len(content.items), len(digest_text))
 
@@ -82,10 +85,32 @@ class DigestGenerator:
             total_ranked=len(ranked_items),
         )
 
+    def _prepend_countdown(self, content: DigestContent, today: date) -> None:
+        """Prepend the tongue-in-cheek 'AGI N days away' intro to the lead. The day count is
+        computed in code (never the LLM) from the configured fixed D-day, so it's accurate and
+        ticks down daily. No-op once the date passes, if disabled, or if the lead already has it."""
+        target = self.config.agi_countdown_date
+        template = self.config.agi_countdown_template
+        if not target or not template or not content.lead:
+            return
+        try:
+            days = (date.fromisoformat(target) - today).days
+        except ValueError:
+            return
+        if days <= 0:
+            return
+        intro = template.format(days=days)
+        if not content.lead.startswith(intro):
+            content.lead = intro + content.lead
+
     def _parse_content(self, raw: str) -> DigestContent:
         try:
             data = json.loads(extract_json_from_llm_output(raw))
-            return DigestContent.model_validate(data)
+            content = DigestContent.model_validate(data)
+            # The prompt makes items[0] the headline (lead + image are about it); pin the index
+            # to 1 so a stray LLM value can't point the lead and the visual at different stories.
+            content.headline_index = 1
+            return content
         except Exception:
             logger.warning("Failed to parse digest content JSON; returning minimal content", exc_info=True)
             return DigestContent(lead=raw.strip()[:1000], headline_index=1, items=[])

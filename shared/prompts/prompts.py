@@ -120,7 +120,7 @@ write clean prose only; do not add *bold*, _italic_, backticks, bullets, or link
 Produce ONLY this JSON object:
 ```json
 {{{{
-  "lead": "3-5 sentence opening: the day's single most important angle, in the voice above. Connect the headline story to its ongoing trend arc (use the trend ammunition below — how many days running, how many times it has recurred) and deliver a sharp, grounded take. Pick ONE thesis; do not force unrelated stories under it.",
+  "lead": "3-5 sentence opening that works as a standalone post (it leads the digest AND is the caption under today's image). Open with ONE natural sentence that situates the reader in today's AI/ML landscape — a real observation, NOT a label like '오늘의 다이제스트' and NO emoji — then go straight into the headline story (the one named by headline_index, which is also what the image depicts), connecting it to its ongoing trend arc (use the trend ammunition below) with a sharp, grounded take in the voice above. Pick ONE thesis.",
   "headline_index": 1,
   "items": [
     {{{{
@@ -134,8 +134,11 @@ Produce ONLY this JSON object:
 ```
 
 Rules:
-- `headline_index` is 1-based into `items` and names the story `lead` is primarily about; this is \
-also the story that will be illustrated, so pick the most topical, visually expressible one.
+- The FIRST item (`items[0]`) is today's HEADLINE: put it first, write the `lead` about it, and \
+set `headline_index` to 1. The lead, the headline item, and the image all depict this ONE story, \
+so they stay in sync. Choose as the headline the story that is both important AND visually \
+expressible — favor a news / industry / release / drama story over a dry deep-technical or purely \
+academic one, which rarely makes a good image. Order the remaining items by importance after it.
 - If two ranked items are the SAME underlying story (same companies/event), MERGE them into one \
 item (keep the most informative URL) rather than emitting near-duplicates; use the freed slot for \
 a distinct story or emit fewer items.
@@ -212,47 +215,41 @@ Rules:
 
 
 class VisualEditorPrompt(BasePrompt):
-    """Pick ONE digest story worth a fun daily visual and decide how to render it.
-    Returns skip=true when no story is a good fit (e.g. a dry, purely-technical day)."""
+    """Brief the daily visual for the marked HEADLINE story. The headline is chosen upstream
+    (the digest's lead is about it), so the editor doesn't pick the story — it decides how to
+    illustrate it: research + format + image instruction. So image, lead, and headline stay in sync."""
 
     input_variables: list[str] = ["items_text", "audience", "on_image_language"]
 
     system_prompt_template: str = """\
-You are the visual editor for {audience}. Pick the SINGLE story that makes the most entertaining, \
-shareable image. Strongly favor lighter, more visual subjects — news, industry moves, company \
-drama, surprising releases, cultural/community moments — which parody and illustrate well. Avoid \
-deep-technical or purely academic items (benchmarks, kernels, quantization, architecture papers): \
-they rarely yield a striking image, so skip them even if they top the digest. A marked headline is \
-only a hint, not a requirement — overrule it when a lighter story would make a better visual. Aim \
-for a striking, on-point image with genuine wit. Skip only if NO story is a good visual fit today.
+You are the visual editor for {audience}. Illustrate today's HEADLINE story (marked below) — set \
+`item_number` to it. The headline is also what the digest's lead is about, so the image and the \
+lead stay about the same story. Aim for a striking, on-point, shareable image with genuine wit.
 
 Produce ONLY a JSON object:
 ```json
 {{{{
   "skip": false,
-  "item_number": 2,
+  "item_number": 1,
   "research": [
     {{{{"source": "news|community|papers", "query": "a focused query"}}}}
   ],
-  "format": "one-line: e.g. 'single-panel meme', '4-panel cartoon', 'parody movie poster'",
+  "format": "one-line: e.g. '4-panel cartoon', 'parody movie poster', 'satirical illustration'",
   "instruction": "a rich natural-language brief for the image: what to depict, the joke/angle, the format, recognizable real-world cues (people, logos) to include, and that any on-image text must be {on_image_language}"
 }}}}
 ```
 
 Rules:
-- `research`: choose 1-3 steps that best enrich THIS story — pick the SOURCE per step by what the
+- `item_number`: the marked headline. Only return {{{{"skip": true}}}} if the headline genuinely
+  cannot be illustrated at all (very rare); otherwise always produce a brief for it.
+- `research`: choose 1-3 steps that best enrich the visual — pick the SOURCE per step by what the
   content needs: `papers` (Semantic Scholar) for a research/technical claim, `community` (Reddit/X/
-  HN/Substack) for reactions/memes/sentiment, `news` for industry/company/policy framing. Mix freely
-  (e.g. a paper story → papers + community); use fewer steps for a thin story. Return [] to skip research.
-- Choose the format freely based on what makes THIS story funniest: a one-shot meme/parody/
-  illustration OR an N-panel cartoon.
-- Be faithful to the real facts; the humor is in framing, not fabrication.
-- Prefer a story under-covered in the digest body, but it MUST be one of the items that actually
-  appears in the published digest so readers have textual grounding; never pick a
-  ranked-but-undigested story.
+  HN/Substack) for reactions/memes/sentiment, `news` for industry/company/policy framing. Mix freely;
+  use fewer steps for a thin story. Return [] to skip research.
+- Choose the format that best lands this story's angle: a one-shot parody/illustration OR an N-panel
+  cartoon. Be faithful to the real facts; the humor is in the framing, never fabrication.
 - Express the joke or contradiction through imagery, not a stock meme catchphrase baked into the
   on-image text; any meme reference belongs in the spoken caption.
-- If skipping, return {{{{"skip": true}}}} and nothing else matters.
 - Output ONLY the JSON object."""
 
     human_prompt_template: str = "Today's digest stories:\n\n{items_text}"
