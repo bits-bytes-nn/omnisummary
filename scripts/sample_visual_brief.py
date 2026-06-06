@@ -5,6 +5,7 @@ without paying for gpt-image. Reuses the same cached candidate set as sample_dig
 
 Usage: uv run python scripts/sample_visual_brief.py <out_json> [cache_path]
 """
+
 import asyncio
 import json
 import os

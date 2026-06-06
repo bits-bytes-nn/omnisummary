@@ -6,6 +6,7 @@ each round only varies the prompt, not the upstream data.
 
 Usage: uv run python scripts/sample_digest.py <out_path> [cache_path]
 """
+
 import asyncio
 import json
 import os
