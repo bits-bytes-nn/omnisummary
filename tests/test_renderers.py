@@ -1,6 +1,8 @@
 from output.renderers import (
     SLACK_MAX_BLOCKS_PER_MESSAGE,
+    SLACK_MAX_SECTION_CHARS,
     THREADS_MAX_POST_CHARS,
+    render_agent_blocks,
     render_slack_blocks,
     render_threads_posts,
 )
@@ -67,3 +69,25 @@ class TestThreadsPosts:
         root, replies = render_threads_posts(_content(3, lead="나" * 700))
         assert len(root) <= THREADS_MAX_POST_CHARS
         assert all(len(r) <= THREADS_MAX_POST_CHARS for r in replies)
+
+
+class TestAgentBlocks:
+    def test_wraps_text_in_section(self):
+        chunks = render_agent_blocks("안녕하세요 *굵게* 답변입니다.")
+        assert chunks[0][0]["type"] == "section"
+        assert chunks[0][0]["text"]["text"] == "안녕하세요 *굵게* 답변입니다."
+
+    def test_empty_text_returns_empty_chunk(self):
+        assert render_agent_blocks("") == [[]]
+
+    def test_long_text_split_into_section_sized_blocks(self):
+        text = "\n\n".join(["가" * 2000, "나" * 2000, "다" * 2000])
+        chunks = render_agent_blocks(text)
+        all_blocks = [b for c in chunks for b in c]
+        assert all(len(b["text"]["text"]) <= SLACK_MAX_SECTION_CHARS for b in all_blocks)
+
+    def test_single_oversized_paragraph_is_hard_split(self):
+        chunks = render_agent_blocks("x" * (SLACK_MAX_SECTION_CHARS * 2 + 50))
+        all_blocks = [b for c in chunks for b in c]
+        assert all(len(b["text"]["text"]) <= SLACK_MAX_SECTION_CHARS for b in all_blocks)
+        assert len(all_blocks) >= 3

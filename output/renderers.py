@@ -4,8 +4,37 @@ from shared import DigestContent
 
 # Slack caps a single message at 50 blocks; chunk item blocks across messages under it.
 SLACK_MAX_BLOCKS_PER_MESSAGE = 45
+# A single Slack section's text field is capped at 3000 chars.
+SLACK_MAX_SECTION_CHARS = 2900
 # Threads caps each post at 500 characters.
 THREADS_MAX_POST_CHARS = 500
+
+
+def render_agent_blocks(text: str) -> list[list[dict]]:
+    """Wrap a free-form agent mrkdwn reply in Block Kit section blocks. The agent's output
+    has no fixed structure, so this just paragraph-packs the text into <=3000-char sections
+    (keeping the agent's own *bold*/`code`/<links>) and chunks under the per-message block
+    cap. A generic wrapper — it does not parse or restructure the content."""
+    paragraphs = [p for p in text.split("\n\n") if p.strip()]
+    sections: list[str] = []
+    current = ""
+    for para in paragraphs:
+        if len(para) > SLACK_MAX_SECTION_CHARS:
+            if current:
+                sections.append(current)
+                current = ""
+            for i in range(0, len(para), SLACK_MAX_SECTION_CHARS):
+                sections.append(para[i : i + SLACK_MAX_SECTION_CHARS])
+        elif len(current) + len(para) + 2 > SLACK_MAX_SECTION_CHARS:
+            sections.append(current)
+            current = para
+        else:
+            current = f"{current}\n\n{para}" if current else para
+    if current:
+        sections.append(current)
+
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": s}} for s in sections]
+    return _chunk_blocks(blocks) if blocks else [[]]
 
 
 def _item_blocks(item, *, with_divider: bool) -> list[dict]:

@@ -90,9 +90,11 @@ class TestSendSlackMessage:
         monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb")
         client = MagicMock()
         with patch.object(app_module, "WebClient", return_value=client):
-            with patch.object(app_module, "_split_message", return_value=["a", "b", "c"]):
+            with patch.object(app_module, "render_agent_blocks", return_value=[["b1"], ["b2"], ["b3"]]):
                 app_module._send_slack_message("C", "long", "")
         assert client.chat_postMessage.call_count == 3
+        # posts Block Kit blocks, not plain-text chunks
+        assert client.chat_postMessage.call_args_list[0].kwargs["blocks"] == ["b1"]
 
 
 class TestInvoke:

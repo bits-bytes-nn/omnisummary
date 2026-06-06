@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pipeline.trend_tracker import TRENDS_KEY, TrendTracker, from_markdown, to_markdown
+from pipeline.trend_tracker import TRENDS_KEY, TrendTracker
 from shared.config import PipelineConfig
 from shared.models import Trend, TrendEvidence, TrendMemory, TrendStatus
 
@@ -140,8 +140,7 @@ class TestUpdateTrends:
     async def test_malformed_llm_output_no_crash(self, monkeypatch):
         store = _FakeStore()
         tracker = _patched_tracker(store, "not json at all", monkeypatch)
-        result = await tracker.update_trends("d", "2026-06-05")
-        assert "# Active Trends" in result
+        await tracker.update_trends("d", "2026-06-05")
         memory = TrendMemory.model_validate_json(store.data[TRENDS_KEY])
         assert memory.trends == []
 
@@ -231,88 +230,3 @@ class TestGetTrendsContext:
         store = _FakeStore({TRENDS_KEY: TrendMemory().model_dump_json()})
         tracker = TrendTracker(PipelineConfig(), MagicMock(), store)
         assert tracker.get_trends_context() == ""
-
-
-class TestMarkdownRender:
-    def test_to_markdown_shape(self):
-        memory = TrendMemory(
-            trends=[
-                Trend(
-                    id="t",
-                    title="My Trend",
-                    status=TrendStatus.ACTIVE,
-                    first_seen="2026-06-01",
-                    last_seen="2026-06-05",
-                    evidence=[TrendEvidence(date="2026-06-05", summary="something happened")],
-                )
-            ]
-        )
-        md = to_markdown(memory)
-        assert "# Active Trends" in md
-        assert "## My Trend" in md
-        assert "- Status: active" in md
-        assert "- First seen: 2026-06-01" in md
-        assert "- Evidence: [2026-06-05] something happened" in md
-
-
-class TestLegacyMigration:
-    LEGACY = """# Active Trends
-
-## 1. Open Models
-- **Status**: active
-- **First seen**: 2026-05-01
-- **Last seen**: 2026-06-01
-- **Evidence**:
-  - [2026-05-01] First release.
-  - [2026-06-01] Second release.
-
-## 2. Cooling Topic
-- **Status**: cooling
-- **First seen**: 2026-04-01
-- **Last seen**: 2026-05-10
-- **Evidence**:
-  - [2026-05-10] last mention
-
-# Archived Trends (compressed)
-- [Dead Topic] (2026-01-01 ~ 2026-02-01): gone.
-"""
-
-    def test_parses_active_trends(self):
-        memory = from_markdown(self.LEGACY)
-        ids = {t.id for t in memory.trends}
-        assert "open-models" in ids
-        assert "cooling-topic" in ids
-        assert "dead-topic" not in ids
-
-    def test_parses_fields_and_evidence(self):
-        memory = from_markdown(self.LEGACY)
-        t = memory.by_id("open-models")
-        assert t is not None
-        assert t.status == TrendStatus.ACTIVE
-        assert t.first_seen == "2026-05-01"
-        assert t.last_seen == "2026-06-01"
-        assert len(t.evidence) == 2
-        assert t.evidence[1].summary == "Second release."
-
-    def test_drops_trends_missing_dates(self):
-        bad = "# Active Trends\n\n## Bad\n- **Status**: active\n"
-        memory = from_markdown(bad)
-        assert memory.trends == []
-
-    def test_garbage_input_starts_fresh(self):
-        memory = from_markdown("totally unrelated text\nno trends here")
-        assert memory.trends == []
-
-
-class TestMigrationOnLoad:
-    @pytest.mark.asyncio
-    async def test_loads_legacy_when_json_absent(self, monkeypatch):
-        store = _FakeStore({"trends.md": TestLegacyMigration.LEGACY})
-        obs = [{"trend_id": "open-models", "new_title": "", "summary": "today's evidence"}]
-        tracker = _patched_tracker(store, obs, monkeypatch, trend_cooling_days=60, trend_retention_days=120)
-        await tracker.update_trends("d", "2026-06-05")
-
-        memory = TrendMemory.model_validate_json(store.data[TRENDS_KEY])
-        t = memory.by_id("open-models")
-        assert t is not None
-        assert t.evidence[-1].summary == "today's evidence"

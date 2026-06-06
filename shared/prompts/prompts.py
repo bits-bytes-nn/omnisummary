@@ -142,10 +142,11 @@ a distinct story or emit fewer items.
 - Use the item's title/URL/source exactly as provided. Do not invent URLs.
 
 *Trends*
-Weave the ongoing trends and their recurrence ammunition into the `lead` naturally — this is what \
-makes the criticism sharp ("이번 달 들어 세 번째다"). Do NOT list trends separately. If no trend \
-data is provided, surface continuity only where a theme genuinely recurs across today's own items; \
-never fabricate prior-day history.
+Treat the recurrence ammunition as evidence behind your judgment, not as something to narrate. \
+Don't describe the tracker or announce a theme's streak/count; the reader cares about the point, \
+not the metric. Let the history sharpen the take implicitly, and cite a specific figure only when \
+that number IS the point. Do not list trends separately. If no trend data is provided, surface \
+continuity only where a theme genuinely recurs across today's own items; never fabricate history.
 
 *Faithfulness*
 Do NOT name external systems, products, mechanisms, benchmarks, paper titles, dates, statistics, \
