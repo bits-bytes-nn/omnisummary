@@ -93,44 +93,64 @@ def _chunk_blocks(blocks: list[dict]) -> list[list[dict]]:
     return chunks or [[]]
 
 
-def _split_to_limit(text: str, max_len: int = THREADS_MAX_POST_CHARS) -> list[str]:
-    """Split plain text into <=max_len posts on sentence/space boundaries when possible."""
-    text = text.strip()
-    if len(text) <= max_len:
-        return [text] if text else []
-    chunks: list[str] = []
-    remaining = text
-    while len(remaining) > max_len:
-        window = remaining[:max_len]
-        cut = max(window.rfind(". "), window.rfind("。"), window.rfind("\n"), window.rfind(" "))
-        if cut <= 0:
-            cut = max_len
+_SENTENCE_END = ("다.", "다!", "다?", ". ", "。", "! ", "? ", "…")
+
+
+def _sentences(text: str) -> list[str]:
+    """Split prose into sentences without losing characters, breaking only AFTER a
+    sentence-ending boundary (Korean '다.' / '?' / '!' or '. '). Whitespace-only tails
+    are dropped. Used so a post is trimmed at a clean sentence, never mid-word."""
+    out: list[str] = []
+    start = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        matched = next((e for e in _SENTENCE_END if text.startswith(e, i)), None)
+        if matched:
+            end = i + len(matched)
+            out.append(text[start:end].strip())
+            start = end
+            i = end
         else:
-            cut += 1
-        chunks.append(remaining[:cut].strip())
-        remaining = remaining[cut:].strip()
-    if remaining:
-        chunks.append(remaining)
-    return chunks
+            i += 1
+    if text[start:].strip():
+        out.append(text[start:].strip())
+    return [s for s in out if s]
+
+
+def _fit_one_post(title: str, body: str, implication: str, url: str, max_len: int = THREADS_MAX_POST_CHARS) -> str:
+    """Build ONE Threads post for an item that fits within max_len — title and URL are always
+    kept; body/implication sentences are dropped from the end until it fits, so nothing is cut
+    mid-sentence and the link is never split. Each item maps to exactly one reply."""
+    fixed = [p for p in (title.strip(),) if p]
+    tail = [url.strip()] if url.strip() else []
+
+    def assemble(prose: list[str]) -> str:
+        return "\n\n".join(fixed + ([" ".join(prose)] if prose else []) + tail)
+
+    prose = _sentences(body) + (_sentences(implication) if implication else [])
+    while prose and len(assemble(prose)) > max_len:
+        prose.pop()
+    post = assemble(prose)
+    if len(post) <= max_len:
+        return post
+    # Title + URL alone already overflow (rare): hard-cap the title, keep the URL intact.
+    room = max_len - (len(url.strip()) + 2 if url.strip() else 0)
+    capped_title = title.strip()[: max(0, room)].rstrip()
+    return "\n\n".join([p for p in (capped_title, url.strip()) if p])
 
 
 def render_threads_posts(content: DigestContent) -> tuple[str, list[str]]:
-    """Render DigestContent for Threads: a root text (the lead, capped to one post) and a
-    reply chain — one reply per item (title + body + implication + URL), each plain text and
-    split if it exceeds the 500-char cap. No Slack markup (Threads renders none)."""
-    root_chunks = _split_to_limit(content.lead)
-    root = root_chunks[0] if root_chunks else content.lead[:THREADS_MAX_POST_CHARS]
+    """Render DigestContent for Threads: a root text (the lead) and a reply chain with
+    EXACTLY ONE reply per item (title + body + implication + URL). Each reply is trimmed to
+    fit Threads' 500-char cap at a clean sentence boundary — never mid-word — keeping the
+    title and URL. No Slack markup (Threads renders none)."""
+    lead = content.lead.strip()
+    if len(lead) > THREADS_MAX_POST_CHARS:
+        kept = _sentences(lead)
+        while kept and len("".join(kept)) + len(kept) > THREADS_MAX_POST_CHARS:
+            kept.pop()
+        lead = " ".join(kept) if kept else lead[:THREADS_MAX_POST_CHARS]
 
-    replies: list[str] = []
-    # If the lead overflowed one post, carry the remainder as the first reply(ies).
-    replies.extend(root_chunks[1:])
-
-    for item in content.items:
-        parts = [item.title, item.body]
-        if item.implication:
-            parts.append(item.implication)
-        if item.url:
-            parts.append(item.url)
-        post = "\n\n".join(p for p in parts if p)
-        replies.extend(_split_to_limit(post))
-    return root, replies
+    replies = [_fit_one_post(item.title, item.body, item.implication or "", item.url) for item in content.items]
+    return lead, replies
