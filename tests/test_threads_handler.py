@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from output import threads_handler
-from output.threads_handler import _split_text, post_to_threads
+from output.threads_handler import _is_media_not_found, _split_text, post_to_threads
 
 
 class TestSplitText:
@@ -78,3 +78,34 @@ class TestPostToThreads:
                 new=AsyncMock(side_effect=httpx.HTTPStatusError("err", request=req, response=resp)),
             ):
                 assert await post_to_threads(root_text="R") is False
+
+    @pytest.mark.asyncio
+    async def test_reply_retries_on_media_not_found(self, monkeypatch):
+        # The just-published root isn't instantly addressable as a reply target; the first
+        # reply attempt 400s with code 24 and must be retried, not dropped.
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 0)
+        req = httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads")
+        resp = httpx.Response(400, request=req, json={"error": {"code": 24, "error_subcode": 4279009}})
+        not_found = httpx.HTTPStatusError("media not found", request=req, response=resp)
+
+        calls = {"n": 0}
+
+        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
+            if reply_to_id:
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise not_found  # first reply attempt: target not indexed yet
+            return "id"
+
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
+                ok = await post_to_threads(root_text="R", replies=["only reply"])
+        assert ok is True
+        assert calls["n"] == 2  # failed once, retried once
+
+    def test_is_media_not_found_detects_code_24(self):
+        req = httpx.Request("POST", "https://x")
+        resp = httpx.Response(400, request=req, json={"error": {"code": 24}})
+        assert _is_media_not_found(httpx.HTTPStatusError("e", request=req, response=resp))
+        other = httpx.Response(400, request=req, json={"error": {"code": 100}})
+        assert not _is_media_not_found(httpx.HTTPStatusError("e", request=req, response=other))
