@@ -52,7 +52,10 @@ class DailyVisualMaker:
             logger.info("OPENAI_API_KEY not set, skipping daily visual")
             return False
 
-        headline_index = content.headline_index if content else 0
+        # content.headline_index is 1-based into the LLM's curated content.items (which may be
+        # merged/reordered), so map it back to a ranked_items position by URL before using it as
+        # the editor's hint; 0 = no hint.
+        headline_index = self._headline_ranked_index(content, ranked_items)
         try:
             plan = await self._pick_story(ranked_items, headline_index)
         except Exception:
@@ -84,6 +87,19 @@ class DailyVisualMaker:
         slack_ok = await self._post(image_bytes, brief)
         await self._post_threads(image_bytes, brief, content)
         return slack_ok
+
+    @staticmethod
+    def _headline_ranked_index(content: DigestContent | None, ranked_items: list[RankedItem]) -> int:
+        if not content or not content.items:
+            return 0
+        idx = content.headline_index
+        if not (1 <= idx <= len(content.items)):
+            return 0
+        url = content.items[idx - 1].url
+        for i, r in enumerate(ranked_items, start=1):
+            if r.item.url == url:
+                return i
+        return 0
 
     async def _pick_story(self, ranked_items: list[RankedItem], headline_index: int = 0) -> dict:
         # The headline is a hint only — the editor favors lighter/visual stories and may

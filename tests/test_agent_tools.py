@@ -223,7 +223,7 @@ class TestRecallTrends:
 class TestMakeVisual:
     @pytest.mark.asyncio
     async def test_disabled_without_openai_key(self):
-        with patch("shared.resolve_secret", return_value=""):
+        with patch.object(agent_tools, "resolve_secret", return_value=""):
             result = await agent_tools.make_visual._tool_func("a slide about X")
         assert "disabled" in result.lower()
 
@@ -247,7 +247,7 @@ class TestMakeVisual:
             return True
 
         try:
-            with patch("shared.resolve_secret", return_value="key"):
+            with patch.object(agent_tools, "resolve_secret", return_value="key"):
                 with patch("agent.visuals.VisualGenerator", return_value=gen):
                     with patch("agent.agent_tools._build_llm_factory", return_value=(MagicMock(), MagicMock())):
                         with patch("output.slack_handler.send_image_to_slack", side_effect=fake_upload):
@@ -265,7 +265,7 @@ class TestMakeVisual:
         agent_tools.state_manager.clear()
         agent_tools.delivery_context.channel_id = "C1"  # past the early channel guard
         try:
-            with patch("shared.resolve_secret", return_value="key"):
+            with patch.object(agent_tools, "resolve_secret", return_value="key"):
                 result = await agent_tools.make_visual._tool_func("draw it", item_number=99)
             assert "not found" in result
         finally:

@@ -95,11 +95,14 @@ class TestContentAggregator:
         result = ContentAggregator().aggregate(items)
         assert len(result) == 1
 
-    def test_title_dedup_merges_metadata(self):
+    def test_title_dedup_keeps_survivor_metadata_fills_only_missing(self):
+        # The kept (first) item's own metadata must NOT be overwritten by a later duplicate;
+        # the duplicate only fills keys the survivor lacks.
         items = [
             _item(url="http://a.com", title="Same Title", metadata={"src": "rss"}),
-            _item(url="http://b.com", title="Same Title", metadata={"src": "web"}),
+            _item(url="http://b.com", title="Same Title", metadata={"src": "web", "extra": "x"}),
         ]
         result = ContentAggregator().aggregate(items)
         assert len(result) == 1
-        assert result[0].metadata["src"] == "web"
+        assert result[0].metadata["src"] == "rss"  # survivor's own value preserved
+        assert result[0].metadata["extra"] == "x"  # missing key filled from the duplicate

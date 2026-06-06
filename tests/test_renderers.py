@@ -90,6 +90,28 @@ class TestThreadsPosts:
         assert len(root) <= THREADS_MAX_POST_CHARS
         assert all(len(r) <= THREADS_MAX_POST_CHARS for r in replies)
 
+    def test_unterminated_body_word_trimmed_not_dropped(self):
+        # A long body with NO sentence boundary must be word-trimmed into the post (keeping
+        # title + URL), not dropped entirely down to title+URL.
+        body = "가나다 " * 300  # ~1200 chars, no sentence-ending punctuation
+        content = DigestContent(
+            lead="리드.",
+            headline_index=1,
+            items=[DigestItem(title="스토리", url="http://e.com/x", body=body)],
+        )
+        _, replies = render_threads_posts(content)
+        assert len(replies) == 1
+        post = replies[0]
+        assert len(post) <= THREADS_MAX_POST_CHARS
+        assert "스토리" in post and "http://e.com/x" in post
+        assert "가나다" in post  # body present, not dropped
+        assert not post.split("\n\n")[1].endswith("가나")  # trimmed on a word boundary
+
+    def test_unterminated_long_lead_word_trimmed_not_mid_word(self):
+        root, _ = render_threads_posts(_content(1, lead="가나다라 " * 200))  # no sentence end
+        assert len(root) <= THREADS_MAX_POST_CHARS
+        assert not root.endswith("가나")  # cut on a space, never mid-word
+
 
 class TestAgentBlocks:
     def test_wraps_text_in_section(self):

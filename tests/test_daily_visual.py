@@ -168,6 +168,29 @@ class TestDailyVisualMaker:
                 context = await maker._gather_context(research)
         assert context == "NEWS"
 
+    def test_headline_ranked_index_maps_by_url(self):
+        # content.headline_index is into the curated content.items; it must map back to the
+        # matching ranked_items position by URL, not be used directly as a ranked index.
+        from shared.models import DigestContent, DigestItem
+
+        ranked = _items(3)  # urls http://e.com/1..3
+        content = DigestContent(
+            lead="l",
+            headline_index=1,  # first (and only) curated item ...
+            items=[DigestItem(title="t", url="http://e.com/3", body="b")],  # ... which is ranked #3
+        )
+        assert DailyVisualMaker._headline_ranked_index(content, ranked) == 3
+
+    def test_headline_ranked_index_zero_when_unmatched(self):
+        from shared.models import DigestContent, DigestItem
+
+        ranked = _items(2)
+        content = DigestContent(
+            lead="l", headline_index=1, items=[DigestItem(title="t", url="http://x/none", body="b")]
+        )
+        assert DailyVisualMaker._headline_ranked_index(content, ranked) == 0
+        assert DailyVisualMaker._headline_ranked_index(None, ranked) == 0
+
     @pytest.mark.asyncio
     async def test_pick_story_parses_prose_wrapped_json(self):
         # Real path: the editor LLM returns prose-wrapped JSON; _pick_story must extract it.
