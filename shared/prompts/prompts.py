@@ -298,7 +298,7 @@ Produce ONLY a JSON object:
 ```json
 {{{{
   "title": "short title in {caption_language}",
-  "caption": "1-2 line {caption_language} caption summarizing the visual (shown alongside the image)",
+  "caption": "a fact-rich {caption_language} caption (2-4 sentences, shown alongside the image): explain the concrete facts behind the visual — the actual names, numbers, dates, and what really happened — drawn from the source material and the research/context, not a description of the picture",
   "orientation": "one of: {orientations} — choose the aspect ratio that best fits THIS visual",
   "prompt": "a single rich English prompt for the image model: describe the full composition, layout, panels/sections, labels, style, and what each element conveys — accurate to the source material, legible, minimal text, {style_aesthetic}"
 }}}}
@@ -336,6 +336,11 @@ Rules:
 - {caption_language} for the `title`/`caption` (shown alongside the image in Slack). But ALL text that
   appears INSIDE the image — labels, speech bubbles, signs — must be {on_image_language} and quoted
   exactly in the prompt (e.g. text reads "SHIP IT").
+- The `caption` carries the real story, so the visual can be playful while the reader still gets the
+  facts. Ground every claim in the source material or the research/context — cite the specific names,
+  figures, dates, and events that actually appear there. State ONLY facts present in those inputs;
+  never invent or guess a detail to fill the caption. If the context is thin, write a shorter caption
+  rather than padding it with unverified specifics.
 - HARD CAP on on-image text: at most ONE short headline (<=5 words) plus at most ONE small tag line
   on the image; never more than two text blocks total. The single point must read from the imagery
   + headline alone, with the caption only confirming it — if the joke needs a second caption-like

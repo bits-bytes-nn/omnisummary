@@ -67,7 +67,7 @@ class TestVisualBrief:
 
     def test_overlong_caption_rejected(self):
         with pytest.raises(ValidationError):
-            VisualBrief(title="T", caption="x" * 301, prompt="P")
+            VisualBrief(title="T", caption="x" * 601, prompt="P")
 
 
 class TestTrendMomentum:

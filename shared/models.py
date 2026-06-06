@@ -52,7 +52,7 @@ class DigestResult(BaseModel):
 
 class VisualBrief(BaseModel):
     title: str = Field(min_length=1, max_length=100)
-    caption: str = Field(min_length=1, max_length=300)
+    caption: str = Field(min_length=1, max_length=600)
     prompt: str = Field(min_length=1, max_length=4000)
     # The synopsis chooses the aspect ratio that fits the visual (a wide 4-panel strip,
     # a square meme, a tall infographic); the generator maps it to a supported size.
