@@ -86,9 +86,11 @@ class DailyVisualMaker:
         return slack_ok
 
     async def _pick_story(self, ranked_items: list[RankedItem], headline_index: int = 0) -> dict:
+        # The headline is a hint only — the editor favors lighter/visual stories and may
+        # overrule it, so the visual is no longer locked to the lead's (often deep-tech) topic.
         items_text = "\n".join(
             f"{i}. [{r.item.source_type.value}] {r.item.title}"
-            + (" ← TODAY'S HEADLINE (illustrate this one)" if i == headline_index else "")
+            + (" ← today's headline (hint only)" if i == headline_index else "")
             for i, r in enumerate(ranked_items, start=1)
         )
         chain = VisualEditorPrompt.get_prompt() | self.llm | StrOutputParser()
@@ -100,16 +102,10 @@ class DailyVisualMaker:
             }
         )
         try:
-            plan = json.loads(extract_json_from_llm_output(raw))
+            return json.loads(extract_json_from_llm_output(raw))
         except json.JSONDecodeError:
             logger.warning("Daily visual editor returned unparseable JSON", exc_info=True)
             return {}
-        # The lead and the visual must depict the same story, so the digest's headline wins
-        # over the editor's own pick when one is provided.
-        if 1 <= headline_index <= len(ranked_items):
-            plan["item_number"] = headline_index
-            plan["skip"] = False
-        return plan
 
     async def _gather_context(self, research: list[dict]) -> str:
         """Run the editor's chosen research steps and concatenate the findings. Each step

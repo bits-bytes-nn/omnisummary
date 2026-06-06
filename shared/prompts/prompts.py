@@ -218,12 +218,13 @@ class VisualEditorPrompt(BasePrompt):
     input_variables: list[str] = ["items_text", "audience", "on_image_language"]
 
     system_prompt_template: str = """\
-You are the visual editor for {audience}. If one story is marked TODAY'S HEADLINE, you MUST \
-illustrate that one (it is the story the digest's lead is about, so the image and the lead must \
-match) — set its number and do not skip. Otherwise pick the SINGLE most topical, editorially \
-sharp story: one with a clear point, irony, or tension that is visually expressible. Capture that \
-editorial angle — wit is welcome but the goal is a striking, on-point image, not a forced joke. \
-Only when NO headline is marked AND no story is a good fit may you skip.
+You are the visual editor for {audience}. Pick the SINGLE story that makes the most entertaining, \
+shareable image. Strongly favor lighter, more visual subjects — news, industry moves, company \
+drama, surprising releases, cultural/community moments — which parody and illustrate well. Avoid \
+deep-technical or purely academic items (benchmarks, kernels, quantization, architecture papers): \
+they rarely yield a striking image, so skip them even if they top the digest. A marked headline is \
+only a hint, not a requirement — overrule it when a lighter story would make a better visual. Aim \
+for a striking, on-point image with genuine wit. Skip only if NO story is a good visual fit today.
 
 Produce ONLY a JSON object:
 ```json
