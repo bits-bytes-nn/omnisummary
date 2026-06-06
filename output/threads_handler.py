@@ -99,15 +99,16 @@ async def _publish_post(
 async def post_to_threads(
     *,
     root_text: str,
-    body_text: str = "",
+    replies: list[str] | None = None,
     image_bytes: bytes | None = None,
     image_bucket: str = "",
     image_key: str = "",
     request_timeout: int = 60,
 ) -> bool:
-    """Post a digest to Threads as a root post (image + summary) followed by a reply
-    chain carrying the full body, split into 500-char posts. Best-effort: missing
-    credentials or any API failure is logged and skipped, never raising to the caller."""
+    """Post a digest to Threads as a root post (image + lead) followed by a reply chain — one
+    pre-rendered reply per story. Each reply is re-split here as a safety net so nothing exceeds
+    the 500-char cap. Best-effort: missing credentials or any API failure is logged and skipped,
+    never raising to the caller."""
     token = resolve_secret("THREADS_ACCESS_TOKEN", "threads-access-token")
     user_id = resolve_secret("THREADS_USER_ID", "threads-user-id")
     if not token or not user_id:
@@ -121,17 +122,20 @@ async def post_to_threads(
         except Exception as e:
             logger.warning("Failed to host Threads image on S3, posting text-only: %s", e)
 
+    posts: list[str] = []
+    for reply in replies or []:
+        posts.extend(_split_text(reply))
+
     try:
         async with httpx.AsyncClient(timeout=request_timeout) as client:
-            root_id = await _publish_post(client, user_id, token, text=root_text, image_url=image_url)
-            logger.info("Posted Threads root '%s'", root_id)
-
-            reply_to = root_id
-            chunks = _split_text(body_text)
-            for i, chunk in enumerate(chunks, start=1):
-                reply_to = await _publish_post(client, user_id, token, text=chunk, reply_to_id=reply_to)
-                logger.debug("Posted Threads reply %d/%d", i, len(chunks))
-        logger.info("Successfully posted digest to Threads (%d reply posts)", len(chunks))
+            reply_to = await _publish_post(
+                client, user_id, token, text=root_text[:THREADS_MAX_TEXT_LENGTH], image_url=image_url
+            )
+            logger.info("Posted Threads root '%s'", reply_to)
+            for i, post in enumerate(posts, start=1):
+                reply_to = await _publish_post(client, user_id, token, text=post, reply_to_id=reply_to)
+                logger.debug("Posted Threads reply %d/%d", i, len(posts))
+        logger.info("Successfully posted digest to Threads (%d reply posts)", len(posts))
         return True
     except httpx.HTTPStatusError as e:
         logger.warning("Threads API error: %s — %s", e.response.status_code, e.response.text[:300])

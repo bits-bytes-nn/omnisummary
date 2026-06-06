@@ -104,72 +104,56 @@ Categories: {ranking_categories}"""
 
 
 class DigestPrompt(BasePrompt):
-    input_variables: list[str] = ["items_text", "trends_context", "language_rules", "audience"]
+    input_variables: list[str] = ["items_text", "trends_context", "language_rules", "audience", "voice_guidance"]
 
     system_prompt_template: str = """\
-You are a daily digest editor for {audience}. Write like a sharp, opinionated tech columnist — \
-connecting dots between stories and telling practitioners what matters and why.
+You are a daily digest editor for {audience}. You return STRUCTURED CONTENT as JSON — never \
+Slack markup, headings, or formatting characters. Downstream code renders it per channel, so \
+write clean prose only; do not add *bold*, _italic_, backticks, bullets, or links yourself.
+
+*Voice*
+{voice_guidance}
 
 *Language*
 {language_rules}
 
-*Slack Formatting*
-Slack mrkdwn only: *bold*, _italic_, `code`, <url|text>. \
-NEVER use **bold**, ## headings, ---, ***, or ___.
-BOLD SAFETY: never put a space just inside the * markers — write *규모* not *규모 *. \
-In Korean, attach particles directly after the closing marker (*설계*가, not *설계* 가, \
-and never *설계 *가). When unsure, leave the text unbolded rather than risk a broken marker.
-Technical identifiers (quant names like Q4_K_M, IQ4_XS, file/flag/model names) must be written \
-verbatim with NO inserted spaces and wrapped in `backticks`; never break an identifier across a \
-space (write `Q4_K_M`, never `Q4_ K_M`).
+Produce ONLY this JSON object:
+```json
+{{{{
+  "lead": "3-5 sentence opening: the day's single most important angle, in the voice above. Connect the headline story to its ongoing trend arc (use the trend ammunition below — how many days running, how many times it has recurred) and deliver a sharp, grounded take. Pick ONE thesis; do not force unrelated stories under it.",
+  "headline_index": 1,
+  "items": [
+    {{{{
+      "title": "the Korean display title for this story",
+      "url": "the item's URL exactly as provided",
+      "body": "2-4 Korean sentences: what this is, why it matters, and the key technical detail or context.",
+      "implication": "ONE sharp closing line in Korean — vary the angle across items (a prediction, a contrarian caveat, a concrete 'watch X', a 'what breaks if...', a question); never repeat the same template."
+    }}}}
+  ]
+}}}}
+```
 
-*Per-Item Format*
-1. *<url|한글 제목>* followed by the Source Detail field as provided (backtick-wrapped source tags + emoji metrics).
-2. Core content in 2-3 sentences (in Korean): what this is and why it matters.
-3. Technical detail or context in 1-2 sentences (in Korean).
-4. Implications in 1-2 sentences (in Korean), wrapped in italic as its OWN line:
-   put `_` at the very start and the closing `_` at the very end of the line (before the
-   line break), e.g. `_...시사점 문장._` — never attach a Korean particle right after the
-   closing `_` (Slack won't render `_X_가`). If the sentence can't end cleanly at `_`,
-   leave it unitalicized rather than emit a broken marker.
-ONLY item 4 uses italic. 6-8 sentences per item.
-If two ranked items are the SAME underlying story (same companies/event), MERGE them into one \
-item with both links inline rather than writing two near-duplicate entries; use the freed slot \
-for a distinct story or omit it.
-VARY the implications sentence — do NOT end every item with the same template \
-(avoid repeating "...실무자라면 ~할 필요가 있다" across items). Mix the angle and ending: \
-a sharp prediction, a contrarian caveat, a concrete "watch X", a "what breaks if...", \
-a question. Each item's closing should read differently from the others.
-
-*Hyperlinks*
-Titles must be clickable. Inline-link papers/repos naturally. No separate links section.
+Rules:
+- `headline_index` is 1-based into `items` and names the story `lead` is primarily about; this is \
+also the story that will be illustrated, so pick the most topical, visually expressible one.
+- If two ranked items are the SAME underlying story (same companies/event), MERGE them into one \
+item (keep the most informative URL) rather than emitting near-duplicates; use the freed slot for \
+a distinct story or emit fewer items.
+- Use the item's title/URL/source exactly as provided. Do not invent URLs.
 
 *Trends*
-If provided, weave ongoing trends into commentary naturally. Do NOT list trends separately. \
-If trends_context is empty, still surface continuity by noting when a story extends a theme \
-visible across today's own items (e.g. a technique or constraint appearing in multiple entries); \
-do not fabricate prior-day trends.
+Weave the ongoing trends and their recurrence ammunition into the `lead` naturally — this is what \
+makes the criticism sharp ("이번 달 들어 세 번째다"). Do NOT list trends separately. If no trend \
+data is provided, surface continuity only where a theme genuinely recurs across today's own items; \
+never fabricate prior-day history.
 
 *Faithfulness*
-Do NOT name external systems, products, or mechanisms (acronyms, protocols, kernels, specs, \
-dates, simultaneity claims) that are not present in the provided item text or trends_context. \
-If you draw a parallel, ground it only in the supplied items; never invent a named referent \
-(a protocol/kernel/spec/product) just to complete an analogy. Mark cross-story timing as \
-inferred (e.g. "보도가 잇따랐다") unless an explicit date is in the source.
-Do NOT state a specific numeric statistic, a named blog-post/paper title, or a calendar date \
-unless that exact value appears verbatim in the item text; if a figure or title is implied but \
-not present, omit it or attribute it explicitly (e.g. "보도에 따르면"). Distinguish verified \
-(in item text) vs reported (attributed) vs inferred — never present an inferred number or \
-proper-noun title with a definite verb like "공개했다/밝혔다" unless the value is in the source.
-
-*Structure*
-- Opening 3-5 sentences: pick ONE angle and only invoke stories that genuinely fit it; do NOT \
-force unrelated stories under a single umbrella thesis. If the day's items don't share a theme, \
-open on the single most important story rather than a strained synthesis. Write like a \
-columnist — why this matters, what it reveals, what people are getting wrong. Don't cover every story.
-- Each item per the format above.
-- Optional closing (1 sentence max).
-- Blank line between items."""
+Do NOT name external systems, products, mechanisms, benchmarks, paper titles, dates, statistics, \
+or simultaneity/causation claims that are not present verbatim in the provided item text or trend \
+data. If a figure or title is implied but not present, omit it or attribute it ("보도에 따르면", \
+"~로 알려졌다"). Never present an inferred number or proper-noun title with a definite verb \
+("공개했다/밝혔다") unless the value is in the source. General framing and opinion are fine; \
+invented specifics are not."""
 
     human_prompt_template: str = (
         "Here are today's top ranked items:\n\n{items_text}\n\n" "Ongoing trends from recent days:\n\n{trends_context}"
@@ -233,10 +217,12 @@ class VisualEditorPrompt(BasePrompt):
     input_variables: list[str] = ["items_text", "audience", "on_image_language"]
 
     system_prompt_template: str = """\
-You are the visual editor for {audience}. From today's stories, pick the SINGLE one \
-that would make the most entertaining, shareable visual — a meme, parody, illustration, or a \
-short cartoon. Prefer news / industry / drama / surprising releases (they parody well) over dry \
-technical papers. If NO story is a good fit today, skip — do not force it.
+You are the visual editor for {audience}. If one story is marked TODAY'S HEADLINE, you MUST \
+illustrate that one (it is the story the digest's lead is about, so the image and the lead must \
+match) — set its number and do not skip. Otherwise pick the SINGLE most topical, editorially \
+sharp story: one with a clear point, irony, or tension that is visually expressible. Capture that \
+editorial angle — wit is welcome but the goal is a striking, on-point image, not a forced joke. \
+Only when NO headline is marked AND no story is a good fit may you skip.
 
 Produce ONLY a JSON object:
 ```json
@@ -367,10 +353,11 @@ class GroundingCheckPrompt(BasePrompt):
     input_variables: list[str] = ["digest_text", "sources"]
 
     system_prompt_template: str = """\
-You are a fact-checker for an AI/ML digest. You receive a drafted digest and the SOURCE items it \
-was written from. Find specific claims in the digest that are NOT supported by the sources and \
-fix ONLY those — keep everything else byte-for-byte identical (wording, Slack mrkdwn, links, \
-italics, structure, language).
+You are a fact-checker for an AI/ML digest. You receive a drafted digest as labelled lines \
+(LEAD:, ITEM N BODY:, ITEM N IMPLICATION:) and the SOURCE items it was written from. Find \
+specific claims that are NOT supported by the sources and fix ONLY those — keep everything else \
+byte-for-byte identical (wording, structure, the line labels, language). Preserve every label \
+exactly so the lines can be matched back.
 
 Unsupported = a concrete specific not present in any source's text: a number/statistic, a date, \
 a named product/protocol/system/benchmark/paper title, or a simultaneity/causation claim that the \
@@ -387,7 +374,7 @@ Return ONLY this JSON:
   "violations": [
     {{{{"claim": "the exact unsupported phrase", "issue": "why it isn't in the sources", "fix": "how you revised it"}}}}
   ],
-  "corrected_digest": "the full digest text with only the unsupported claims revised; identical elsewhere"
+  "corrected_digest": "the full labelled digest text with only the unsupported claims revised; identical elsewhere, every label preserved"
 }}}}
 ```
 If there are no violations, return an empty violations list and the digest unchanged."""

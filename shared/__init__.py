@@ -19,6 +19,8 @@ from .logger import get_correlation_id, is_running_in_aws, logger, set_correlati
 from .memory import AgentCoreMemoryStore, LocalMemoryStore, MemoryStore, create_memory_store
 from .models import (
     CollectedItem,
+    DigestContent,
+    DigestItem,
     DigestResult,
     HealthReport,
     RankedItem,
@@ -72,6 +74,8 @@ __all__ = [
     "Config",
     "DigestPrompt",
     "GroundingCheckPrompt",
+    "DigestContent",
+    "DigestItem",
     "DigestResult",
     "HealthReport",
     "SourceHealth",

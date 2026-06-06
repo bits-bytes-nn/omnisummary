@@ -143,7 +143,7 @@ async def run_pipeline(
         try:
             from pipeline.daily_visual import DailyVisualMaker
 
-            posted = await DailyVisualMaker(config, llm_factory).run(ranked_items, digest.digest_text)
+            posted = await DailyVisualMaker(config, llm_factory).run(ranked_items, digest.content)
             logger.info("Daily visual %s", "posted" if posted else "skipped")
         except Exception:
             logger.warning("Daily visual step failed (non-fatal)", exc_info=True)

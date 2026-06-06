@@ -42,9 +42,32 @@ class RankedItem(BaseModel):
     categories: list[str] = Field(default_factory=list)
 
 
+class DigestItem(BaseModel):
+    """One story in the digest, as plain prose. Renderers add channel-specific markup
+    (Slack Block Kit, Threads plain text); the LLM never writes Slack mrkdwn itself."""
+
+    title: str  # Korean display title
+    url: str
+    source_tag: str = ""  # e.g. "r/LocalLLaMA", "@karpathy", "arxiv.org" — set by code
+    metrics: str = ""  # e.g. "👍 +44", "▶️ 12,000" — set by code
+    body: str  # 2-4 sentences: what it is and why it matters
+    implication: str = ""  # one sharp closing line (Gruber voice)
+
+
+class DigestContent(BaseModel):
+    """Structured digest the digest LLM returns. `lead` is the columnist take connecting
+    the headline to its trend arc; `headline_index` (1-based into items) is the story the
+    lead is about and the one the daily visual depicts."""
+
+    lead: str
+    headline_index: int = 1
+    items: list[DigestItem] = Field(default_factory=list)
+
+
 class DigestResult(BaseModel):
     digest_text: str
     ranked_items: list[RankedItem]
+    content: DigestContent | None = None
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     total_collected: int = 0
     total_ranked: int = 0

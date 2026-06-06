@@ -10,6 +10,7 @@ from langchain_core.output_parsers import StrOutputParser
 from agent.visuals import VisualGenerator
 from shared import (
     BedrockLanguageModelFactory,
+    DigestContent,
     RankedItem,
     VisualBrief,
     VisualEditorPrompt,
@@ -44,15 +45,16 @@ class DailyVisualMaker:
             style_aesthetic=config.pipeline.visual_synopsis_style_aesthetic,
         )
 
-    async def run(self, ranked_items: list[RankedItem], digest_text: str = "") -> bool:
+    async def run(self, ranked_items: list[RankedItem], content: DigestContent | None = None) -> bool:
         if not ranked_items:
             return False
         if not resolve_secret("OPENAI_API_KEY", "openai-api-key"):
             logger.info("OPENAI_API_KEY not set, skipping daily visual")
             return False
 
+        headline_index = content.headline_index if content else 0
         try:
-            plan = await self._pick_story(ranked_items)
+            plan = await self._pick_story(ranked_items, headline_index)
         except Exception:
             # Best-effort: a visual failure must never block the digest, so catch broadly here.
             logger.warning("Daily visual editor failed", exc_info=True)
@@ -80,12 +82,14 @@ class DailyVisualMaker:
             return False
 
         slack_ok = await self._post(image_bytes, brief)
-        await self._post_threads(image_bytes, brief, digest_text)
+        await self._post_threads(image_bytes, brief, content)
         return slack_ok
 
-    async def _pick_story(self, ranked_items: list[RankedItem]) -> dict:
+    async def _pick_story(self, ranked_items: list[RankedItem], headline_index: int = 0) -> dict:
         items_text = "\n".join(
-            f"{i}. [{r.item.source_type.value}] {r.item.title}" for i, r in enumerate(ranked_items, start=1)
+            f"{i}. [{r.item.source_type.value}] {r.item.title}"
+            + (" ← TODAY'S HEADLINE (illustrate this one)" if i == headline_index else "")
+            for i, r in enumerate(ranked_items, start=1)
         )
         chain = VisualEditorPrompt.get_prompt() | self.llm | StrOutputParser()
         raw = await chain.ainvoke(
@@ -96,10 +100,16 @@ class DailyVisualMaker:
             }
         )
         try:
-            return json.loads(extract_json_from_llm_output(raw))
+            plan = json.loads(extract_json_from_llm_output(raw))
         except json.JSONDecodeError:
             logger.warning("Daily visual editor returned unparseable JSON", exc_info=True)
             return {}
+        # The lead and the visual must depict the same story, so the digest's headline wins
+        # over the editor's own pick when one is provided.
+        if 1 <= headline_index <= len(ranked_items):
+            plan["item_number"] = headline_index
+            plan["skip"] = False
+        return plan
 
     async def _gather_context(self, research: list[dict]) -> str:
         """Run the editor's chosen research steps and concatenate the findings. Each step
@@ -142,18 +152,25 @@ class DailyVisualMaker:
             bot_token=bot_token,
         )
 
-    async def _post_threads(self, image_bytes: bytes, brief: VisualBrief, digest_text: str) -> bool:
+    async def _post_threads(self, image_bytes: bytes, brief: VisualBrief, content: DigestContent | None) -> bool:
         if not self.config.pipeline.enable_threads_post:
             return False
+        from output.renderers import render_threads_posts
         from output.threads_handler import post_to_threads
 
+        # Root = visual image + the digest lead; replies = one per story. When no structured
+        # content is available, fall back to the visual's own title/caption as the root.
+        if content and content.items:
+            root_text, replies = render_threads_posts(content)
+        else:
+            root_text, replies = f"{brief.title}\n\n{brief.caption}", []
+
         bucket = self.config.aws.state_bucket_name or os.environ.get("STATE_BUCKET", "")
-        root_text = f"{brief.title}\n\n{brief.caption}"
         prefix = self.config.aws.s3_prefix.rstrip("/") + "/" if self.config.aws.s3_prefix else ""
         image_key = f"{prefix}threads/{hashlib.sha256(image_bytes).hexdigest()[:16]}.png"
         return await post_to_threads(
             root_text=root_text,
-            body_text=digest_text,
+            replies=replies,
             image_bytes=image_bytes,
             image_bucket=bucket,
             image_key=image_key,

@@ -45,7 +45,8 @@ class TestVisualRun:
         ranked = [MagicMock()]
         mgr = MagicMock()
         mgr.get_ranked_items.return_value = ranked
-        mgr.get_digest_text.return_value = "DIGEST"
+        content = MagicMock()
+        mgr.get_content.return_value = content
         maker_instance = MagicMock()
         maker_instance.run = AsyncMock(return_value=True)
         with patch("lambda_handlers.visual_handler.Config.load", return_value=config):
@@ -55,4 +56,4 @@ class TestVisualRun:
                         with patch("lambda_handlers.visual_handler.BedrockLanguageModelFactory"):
                             with patch("lambda_handlers.visual_handler.DailyVisualMaker", return_value=maker_instance):
                                 await visual_handler._run()
-        maker_instance.run.assert_awaited_once_with(ranked, "DIGEST")
+        maker_instance.run.assert_awaited_once_with(ranked, content)

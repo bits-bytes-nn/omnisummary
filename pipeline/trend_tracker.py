@@ -74,7 +74,32 @@ class TrendTracker:
             return ""
         today = date.today()
         visible.sort(key=lambda t: t.momentum(today, self.config.trend_momentum_half_life_days), reverse=True)
-        return to_markdown(TrendMemory(trends=visible))
+        return self._render_ammunition(visible, today)
+
+    @staticmethod
+    def _render_ammunition(trends: list[Trend], today: date) -> str:
+        """Render visible trends with the recurrence facts the digest lead uses for sharp,
+        grounded criticism: days the trend has been running, how many distinct days it has
+        recurred, and its most recent note. Computed in code from evidence — never invented."""
+        lines: list[str] = []
+        for t in trends:
+            dates = sorted({ev.date for ev in t.evidence})
+            facts: list[str] = []
+            try:
+                first = date.fromisoformat(t.first_seen) if t.first_seen else None
+            except ValueError:
+                first = None
+            if first is not None:
+                facts.append(f"{(today - first).days + 1}일째 추적 중")
+            if len(dates) > 1:
+                facts.append(f"최근 {len(dates)}개 다른 날 재등장")
+            month_hits = sum(1 for d in dates if d[:7] == today.isoformat()[:7])
+            if month_hits > 1:
+                facts.append(f"이번 달 {month_hits}회")
+            gist = t.evidence[-1].summary if t.evidence else ""
+            fact_str = f" [{', '.join(facts)}]" if facts else ""
+            lines.append(f"- {t.title}{fact_str}: {gist}" if gist else f"- {t.title}{fact_str}")
+        return "\n".join(lines)
 
     async def update_trends(self, digest_text: str, today_date: str) -> str:
         memory = self._load_memory()

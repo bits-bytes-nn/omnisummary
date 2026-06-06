@@ -45,7 +45,7 @@ class TestPostToThreads:
 
         with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
             with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
-                ok = await post_to_threads(root_text="ROOT", body_text="a" * 1100)
+                ok = await post_to_threads(root_text="ROOT", replies=["a" * 1100])
 
         assert ok is True
         # root has no reply_to_id; subsequent posts chain onto the prior id
@@ -60,7 +60,7 @@ class TestPostToThreads:
             with patch.object(threads_handler, "_upload_image_for_hosting", return_value="https://s3/img.png") as up:
                 with patch.object(threads_handler, "_publish_post", new=AsyncMock(return_value="rid")) as pub:
                     ok = await post_to_threads(
-                        root_text="R", body_text="", image_bytes=b"PNG", image_bucket="b", image_key="k.png"
+                        root_text="R", replies=[], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
                     )
         assert ok is True
         up.assert_called_once()

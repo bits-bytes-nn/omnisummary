@@ -225,7 +225,7 @@ class TestGetTrendsContext:
         tracker = TrendTracker(config, MagicMock(), store)
         ctx = tracker.get_trends_context()
         assert "Gone" not in ctx
-        assert ctx.index("## High") < ctx.index("## Low")
+        assert ctx.index("High") < ctx.index("Low")
 
     def test_empty_when_no_visible_trends(self):
         store = _FakeStore({TRENDS_KEY: TrendMemory().model_dump_json()})

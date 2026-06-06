@@ -85,10 +85,17 @@ class TestDailyVisualMaker:
         up.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_threads_enabled_fans_out_with_digest_text(self):
+    async def test_threads_enabled_fans_out_with_content(self):
+        from shared.models import DigestContent, DigestItem
+
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
         plan = {"skip": False, "item_number": 1, "research": [], "instruction": "x"}
+        content = DigestContent(
+            lead="오늘의 리드.",
+            headline_index=1,
+            items=[DigestItem(title="스토리", url="http://e.com/1", body="본문.")],
+        )
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
             with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(
@@ -96,9 +103,11 @@ class TestDailyVisualMaker:
                 )
                 with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
                     with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=True)) as th:
-                        await maker.run(_items(), digest_text="FULL DIGEST BODY")
+                        await maker.run(_items(), content)
         th.assert_awaited_once()
-        assert th.await_args.kwargs["body_text"] == "FULL DIGEST BODY"
+        # root carries the digest lead; replies carry the per-item story
+        assert th.await_args.kwargs["root_text"] == "오늘의 리드."
+        assert any("스토리" in r for r in th.await_args.kwargs["replies"])
         assert th.await_args.kwargs["image_bytes"] == b"PNG"
 
     @pytest.mark.asyncio

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from shared import CollectedItem, DigestResult, RankedItem, logger
+from shared import CollectedItem, DigestContent, DigestResult, RankedItem, logger
 
 
 class DigestStateManager:
@@ -41,6 +41,9 @@ class DigestStateManager:
 
     def get_digest_text(self) -> str:
         return self._digest_result.digest_text if self._digest_result else ""
+
+    def get_content(self) -> DigestContent | None:
+        return self._digest_result.content if self._digest_result else None
 
     def get_item_count(self) -> int:
         return len(self._ranked_items)
