@@ -116,6 +116,12 @@ class PipelineConfig(BaseModel):
         "NEVER attack a person (no ad hominem, no insults). Confident and concise; ground every "
         "barb in the supplied facts and trend history, never in vibes."
     )
+    # Tongue-in-cheek "AGI countdown" intro prepended to the digest lead (code computes the day
+    # count from agi_countdown_date — never the LLM — so it stays accurate and ticks down daily).
+    # The date is a fixed, defensible ~3-years-out target (Jensen Huang's call / tail of Amodei's
+    # "1-3 years"); tune it here. Empty date disables the intro.
+    agi_countdown_date: str = "2029-01-01"
+    agi_countdown_template: str = "AGI 등장 {days}일 전입니다. "
     item_text_max_tokens: int = 8000
     ranking_batch_size: int = Field(default=40, ge=1)
     source_slots: dict[str, int] = Field(

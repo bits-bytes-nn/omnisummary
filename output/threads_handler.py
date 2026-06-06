@@ -13,10 +13,12 @@ THREADS_MAX_TEXT_LENGTH = 500
 # Meta processes the media container asynchronously; publishing too early fails.
 THREADS_MEDIA_PROCESS_WAIT_SEC = 30
 # After an image root is published it isn't immediately addressable as a reply target;
-# replies to it can 400 with "media not found" until Meta finishes indexing. Retry the
-# reply-chain link a few times with this backoff before giving up.
-THREADS_REPLY_RETRY_ATTEMPTS = 5
-THREADS_REPLY_RETRY_BACKOFF_SEC = 6
+# replies to it can 400 with "media not found" until Meta finishes indexing (observed to take
+# well over 30s for image roots). Wait once before the first reply, then retry the link with
+# backoff over a generous window before giving up.
+THREADS_REPLY_INITIAL_WAIT_SEC = 15
+THREADS_REPLY_RETRY_ATTEMPTS = 8
+THREADS_REPLY_RETRY_BACKOFF_SEC = 15
 # How long the hosted-image presigned URL stays valid — must outlast the
 # create-container + media-processing window with margin.
 THREADS_IMAGE_URL_TTL_SEC = 900
@@ -133,6 +135,10 @@ async def post_to_threads(
                 client, user_id, token, text=root_text[:THREADS_MAX_TEXT_LENGTH], image_url=image_url
             )
             logger.info("Posted Threads root '%s'", reply_to)
+            # An image root needs time to become addressable as a reply target; wait once
+            # up front so the first reply usually lands without burning retry attempts.
+            if image_url and posts:
+                await asyncio.sleep(THREADS_REPLY_INITIAL_WAIT_SEC)
             for i, post in enumerate(posts, start=1):
                 reply_to = await _publish_reply_with_retry(client, user_id, token, post, reply_to)
                 logger.debug("Posted Threads reply %d/%d", i, len(posts))

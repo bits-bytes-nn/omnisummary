@@ -130,31 +130,35 @@ def _truncate_at_word(text: str, max_len: int) -> str:
 
 
 def _fit_one_post(title: str, body: str, implication: str, url: str, max_len: int = THREADS_MAX_POST_CHARS) -> str:
-    """Build ONE Threads post for an item that fits within max_len — title and URL are always
-    kept; body/implication sentences are dropped from the end until it fits, never cut
-    mid-sentence and the link is never split. If even one sentence won't fit, the body is
-    word-trimmed (not dropped whole). Each item maps to exactly one reply."""
+    """Build ONE Threads post for an item that fits within max_len. Title and URL are always
+    kept; the implication (the voice line) is preserved over body — body sentences are dropped
+    from the end first, and the implication only goes if title+implication+URL still overflow.
+    Nothing is cut mid-sentence and the link is never split. Each item maps to exactly one reply."""
     fixed = [p for p in (title.strip(),) if p]
     tail = [url.strip()] if url.strip() else []
+    impl = implication.strip()
 
-    def assemble(body_text: str) -> str:
-        return "\n\n".join(fixed + ([body_text] if body_text else []) + tail)
+    def assemble(prose: str) -> str:
+        return "\n\n".join(fixed + ([prose] if prose else []) + tail)
 
-    sentences = _sentences(body) + (_sentences(implication) if implication else [])
-    while sentences and len(assemble(" ".join(sentences))) > max_len:
-        sentences.pop()
-    if sentences:
-        return assemble(" ".join(sentences))
+    body_sents = _sentences(body)
+    # Drop body sentences from the end while keeping the implication appended.
+    while body_sents:
+        prose = " ".join(body_sents + ([impl] if impl else []))
+        if len(assemble(prose)) <= max_len:
+            return assemble(prose)
+        body_sents.pop()
+    # No body sentence fits alongside the implication. Keep the implication alone if it fits.
+    if impl and len(assemble(impl)) <= max_len:
+        return assemble(impl)
 
-    # No whole sentence fits. Keep title + URL, and fill remaining room with a word-trimmed
-    # slice of the body rather than dropping it entirely.
+    # Even the implication won't fit. Word-trim the body into the remaining room (never drop
+    # it to bare title+URL), or word-trim the title if title+URL alone overflow.
     room = max_len - len(assemble("")) - 2
     if room > 0 and body.strip():
         return assemble(_truncate_at_word(body, room))
-    post = assemble("")
-    if len(post) <= max_len:
-        return post
-    # Title + URL alone overflow (rare): word-trim the title, keep the URL intact.
+    if len(assemble("")) <= max_len:
+        return assemble("")
     room = max_len - (len(url.strip()) + 2 if url.strip() else 0)
     return "\n\n".join([p for p in (_truncate_at_word(title, max(0, room)), url.strip()) if p])
 

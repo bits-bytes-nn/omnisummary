@@ -52,10 +52,10 @@ class DailyVisualMaker:
             logger.info("OPENAI_API_KEY not set, skipping daily visual")
             return False
 
-        # content.headline_index is 1-based into the LLM's curated content.items (which may be
-        # merged/reordered), so map it back to a ranked_items position by URL before using it as
-        # the editor's hint; 0 = no hint.
-        headline_index = self._headline_ranked_index(content, ranked_items)
+        # The visual MUST depict the digest's headline so the image and the lead stay in sync.
+        # content.headline_index is into the curated content.items (may be merged/reordered), so
+        # map it back to a ranked_items position by URL; fall back to the top-ranked item.
+        headline_index = self._headline_ranked_index(content, ranked_items) or 1
         try:
             plan = await self._pick_story(ranked_items, headline_index)
         except Exception:
@@ -63,16 +63,13 @@ class DailyVisualMaker:
             logger.warning("Daily visual editor failed", exc_info=True)
             return False
 
-        if not plan or plan.get("skip"):
-            logger.info("Daily visual: no suitable story today, skipping")
+        if plan.get("skip"):
+            logger.info("Daily visual: editor could not illustrate the headline, skipping")
             return False
 
-        item_number = plan.get("item_number", 0)
-        if not (1 <= item_number <= len(ranked_items)):
-            logger.info("Daily visual: editor returned invalid item_number %s, skipping", item_number)
-            return False
-
-        ranked = ranked_items[item_number - 1]
+        # The headline is authoritative; the editor only briefs HOW to draw it. Ignore any
+        # off-headline item_number the editor might return.
+        ranked = ranked_items[headline_index - 1]
         source = f"{ranked.item.title}\n\n{ranked.item.text}"
         context = await self._gather_context(plan.get("research", []))
         instruction = plan.get("instruction", "") or f"A fun visual about: {ranked.item.title}"
@@ -102,11 +99,11 @@ class DailyVisualMaker:
         return 0
 
     async def _pick_story(self, ranked_items: list[RankedItem], headline_index: int = 0) -> dict:
-        # The headline is a hint only — the editor favors lighter/visual stories and may
-        # overrule it, so the visual is no longer locked to the lead's (often deep-tech) topic.
+        # The editor briefs the marked HEADLINE (it doesn't choose the story); the visual must
+        # match the lead, which is about this same headline.
         items_text = "\n".join(
             f"{i}. [{r.item.source_type.value}] {r.item.title}"
-            + (" ← today's headline (hint only)" if i == headline_index else "")
+            + (" ← TODAY'S HEADLINE — illustrate this one" if i == headline_index else "")
             for i, r in enumerate(ranked_items, start=1)
         )
         chain = VisualEditorPrompt.get_prompt() | self.llm | StrOutputParser()
