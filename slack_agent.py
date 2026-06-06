@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.getLevelName(os.getenv("LOG_LEVEL", "INFO")))
 from agent import create_digest_agent
 from agent.agent_tools import DeliveryContext, request_context, state_manager
 from agent.tool_state import DigestStateManager
-from output.slack_handler import _split_message
+from output.renderers import render_agent_blocks
 from shared import LOGGING_TRUNCATION_CHARS, Config, LocalPaths, logger, sanitize_slack_mrkdwn
 
 
@@ -124,9 +124,8 @@ def main() -> None:
                 delivery = DeliveryContext(channel_id=channel_id, thread_ts=thread_ts or "")
                 with request_context(state_manager, delivery):
                     response = sanitize_slack_mrkdwn(str(agent(user_text)))
-                chunks = _split_message(response)
-                for chunk in chunks:
-                    say(text=chunk, thread_ts=thread_ts)
+                for blocks in render_agent_blocks(response):
+                    say(blocks=blocks, text=response[:200], thread_ts=thread_ts)
             except Exception as e:
                 logger.error("Agent error: %s", e)
                 say(text=f"Error processing request: {e}", thread_ts=thread_ts)

@@ -10,7 +10,7 @@ from slack_sdk.web import WebClient
 from agent import create_digest_agent
 from agent.agent_tools import DeliveryContext, request_context
 from agent.tool_state import DigestStateManager
-from output.slack_handler import _split_message
+from output.renderers import render_agent_blocks
 from shared import create_memory_store, logger, sanitize_slack_mrkdwn, set_correlation_id
 
 app = BedrockAgentCoreApp()
@@ -49,9 +49,8 @@ def _send_slack_message(channel: str, text: str, thread_ts: str = "") -> None:
             return
 
     client = WebClient(token=bot_token)
-    chunks = _split_message(text)
-    for chunk in chunks:
-        kwargs: dict[str, Any] = {"channel": channel, "text": chunk}
+    for blocks in render_agent_blocks(text):
+        kwargs: dict[str, Any] = {"channel": channel, "blocks": blocks, "text": text[:200]}
         if thread_ts:
             kwargs["thread_ts"] = thread_ts
         client.chat_postMessage(**kwargs)

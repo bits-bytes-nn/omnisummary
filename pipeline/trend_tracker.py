@@ -22,11 +22,7 @@ from shared.config import PipelineConfig
 from shared.state_store import StateStore
 
 TRENDS_KEY = "trends.json"
-LEGACY_TRENDS_KEY = "trends.md"
 
-_TITLE_HEADING = re.compile(r"^#{1,3}\s*(?:\d+\.\s*)?(.+?)\s*$")
-_FIELD = re.compile(r"^-\s*\*\*(?P<key>[^*]+)\*\*:\s*(?P<value>.*)$")
-_EVIDENCE_ENTRY = re.compile(r"^-\s*\[(?P<date>\d{4}-\d{2}-\d{2})\]\s*(?P<summary>.*)$")
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
 
@@ -57,12 +53,6 @@ class TrendTracker:
                 self._memory = TrendMemory()
                 return self._memory
 
-        legacy = self.state_store.read(LEGACY_TRENDS_KEY) if self.state_store.exists(LEGACY_TRENDS_KEY) else None
-        if legacy:
-            self._memory = from_markdown(legacy)
-            logger.info("Migrated %d trends from legacy '%s'", len(self._memory.trends), LEGACY_TRENDS_KEY)
-            return self._memory
-
         logger.info("No existing trends found, starting fresh")
         self._memory = TrendMemory()
         return self._memory
@@ -74,9 +64,34 @@ class TrendTracker:
             return ""
         today = date.today()
         visible.sort(key=lambda t: t.momentum(today, self.config.trend_momentum_half_life_days), reverse=True)
-        return to_markdown(TrendMemory(trends=visible))
+        return self._render_ammunition(visible, today)
 
-    async def update_trends(self, digest_text: str, today_date: str) -> str:
+    @staticmethod
+    def _render_ammunition(trends: list[Trend], today: date) -> str:
+        """Render visible trends with the recurrence facts the digest lead uses for sharp,
+        grounded criticism: days the trend has been running, how many distinct days it has
+        recurred, and its most recent note. Computed in code from evidence — never invented."""
+        lines: list[str] = []
+        for t in trends:
+            dates = sorted({ev.date for ev in t.evidence})
+            facts: list[str] = []
+            try:
+                first = date.fromisoformat(t.first_seen) if t.first_seen else None
+            except ValueError:
+                first = None
+            if first is not None:
+                facts.append(f"{(today - first).days + 1}일째 추적 중")
+            if len(dates) > 1:
+                facts.append(f"최근 {len(dates)}개 다른 날 재등장")
+            month_hits = sum(1 for d in dates if d[:7] == today.isoformat()[:7])
+            if month_hits > 1:
+                facts.append(f"이번 달 {month_hits}회")
+            gist = t.evidence[-1].summary if t.evidence else ""
+            fact_str = f" [{', '.join(facts)}]" if facts else ""
+            lines.append(f"- {t.title}{fact_str}: {gist}" if gist else f"- {t.title}{fact_str}")
+        return "\n".join(lines)
+
+    async def update_trends(self, digest_text: str, today_date: str) -> None:
         memory = self._load_memory()
 
         existing_summary = self._render_existing(memory)
@@ -109,7 +124,6 @@ class TrendTracker:
         self._memory = memory
         await asyncio.to_thread(self.state_store.write, TRENDS_KEY, memory.model_dump_json())
         logger.info("Persisted %d trends to '%s'", len(memory.trends), TRENDS_KEY)
-        return to_markdown(memory)
 
     @staticmethod
     def _render_existing(memory: TrendMemory) -> str:
@@ -207,86 +221,3 @@ class TrendTracker:
             slug = f"{base}-{counter}"
             counter += 1
         return slug
-
-
-def to_markdown(memory: TrendMemory) -> str:
-    lines: list[str] = ["# Active Trends", ""]
-    for trend in memory.trends:
-        lines.append(f"## {trend.title}")
-        lines.append(f"- Status: {trend.status.value}")
-        lines.append(f"- First seen: {trend.first_seen}")
-        lines.append(f"- Last seen: {trend.last_seen}")
-        for ev in trend.evidence:
-            lines.append(f"- Evidence: [{ev.date}] {ev.summary}")
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def from_markdown(text: str) -> TrendMemory:
-    """Best-effort parse of the legacy trends.md markdown into structured trends.
-
-    Tolerates the old `## N. Title`, `- **Status**:`, `- **Evidence**:` shape; any
-    trend missing dates is dropped. Used once during migration to trends.json.
-    """
-    trends: list[Trend] = []
-    used_ids: set[str] = set()
-    current: Trend | None = None
-    in_evidence = False
-
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-
-        if stripped.startswith("#"):
-            lowered = stripped.lower()
-            if lowered.startswith("# archived"):
-                current = None
-                in_evidence = False
-                continue
-            if lowered.startswith("# active"):
-                continue
-            heading = _TITLE_HEADING.match(stripped)
-            if heading:
-                title = heading.group(1).strip()
-                slug = TrendTracker._make_slug(title, used_ids)
-                used_ids.add(slug)
-                current = Trend(id=slug, title=title)
-                trends.append(current)
-                in_evidence = False
-            continue
-
-        if current is None:
-            continue
-
-        field = _FIELD.match(stripped)
-        if field:
-            key = field.group("key").strip().lower()
-            value = field.group("value").strip()
-            if key == "status":
-                in_evidence = False
-                try:
-                    current.status = TrendStatus(value.lower())
-                except ValueError:
-                    pass
-            elif key == "first seen":
-                in_evidence = False
-                current.first_seen = value
-            elif key == "last seen":
-                in_evidence = False
-                current.last_seen = value
-            elif key == "evidence":
-                in_evidence = True
-            else:
-                in_evidence = False
-            continue
-
-        if in_evidence:
-            entry = _EVIDENCE_ENTRY.match(stripped)
-            if entry:
-                current.evidence.append(TrendEvidence(date=entry.group("date"), summary=entry.group("summary").strip()))
-
-    valid = [t for t in trends if t.first_seen and t.last_seen]
-    if len(valid) != len(trends):
-        logger.warning("Dropped %d legacy trends with missing dates during migration", len(trends) - len(valid))
-    return TrendMemory(trends=valid)

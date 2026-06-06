@@ -91,18 +91,31 @@ async def send_digest_to_slack(digest: DigestResult, config: SlackConfig) -> boo
 
     today = datetime.now().strftime("%Y-%m-%d")
     n_stories = len(digest.ranked_items)
-    header = f":satellite: *OmniSummary* — {today} · {n_stories} stories\n"
-    message_text = header + "\n" + digest.digest_text
-
+    header = f":satellite: OmniSummary — {today} · {n_stories} stories"
     client = AsyncWebClient(token=bot_token)
-    chunks = _split_message(message_text)
 
     try:
-        for i, chunk in enumerate(chunks):
+        if digest.content and digest.content.items:
+            from output.renderers import render_slack_blocks
+
+            block_chunks = render_slack_blocks(digest.content, header=header)
+            for i, blocks in enumerate(block_chunks):
+                fallback = header if i == 0 else f"{header} (cont. {i + 1})"
+                await client.chat_postMessage(channel=channel_id, blocks=blocks, text=fallback)
+            logger.info(
+                "Successfully sent digest to Slack channel '%s' (%d Block Kit message(s))",
+                channel_id,
+                len(block_chunks),
+            )
+            return True
+
+        # Fallback: no structured content (e.g. empty-digest day) — send plain mrkdwn text.
+        text_chunks = _split_message(
+            f":satellite: *OmniSummary* — {today} · {n_stories} stories\n\n" + digest.digest_text
+        )
+        for chunk in text_chunks:
             await client.chat_postMessage(channel=channel_id, text=chunk, mrkdwn=True)
-            if len(chunks) > 1:
-                logger.debug("Sent Slack message chunk %d/%d", i + 1, len(chunks))
-        logger.info("Successfully sent digest to Slack channel '%s' (%d message(s))", channel_id, len(chunks))
+        logger.info("Successfully sent digest to Slack channel '%s' (%d text message(s))", channel_id, len(text_chunks))
         return True
     except SlackApiError as e:
         logger.warning("Failed to send digest to Slack: %s", e.response["error"])

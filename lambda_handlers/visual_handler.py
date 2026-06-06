@@ -37,10 +37,10 @@ async def _run() -> None:
         return
     state = DigestStateManager.load_from_dict(data)
     ranked_items = state.get_ranked_items()
-    digest_text = state.get_digest_text()
+    content = state.get_content()
 
     session = boto3.Session(region_name=config.aws.bedrock_region)
     factory = BedrockLanguageModelFactory(boto_session=session, region_name=config.aws.bedrock_region)
 
-    posted = await DailyVisualMaker(config, factory).run(ranked_items, digest_text)
+    posted = await DailyVisualMaker(config, factory).run(ranked_items, content)
     logger.info("Daily visual %s", "posted" if posted else "skipped")

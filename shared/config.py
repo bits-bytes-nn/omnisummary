@@ -102,6 +102,16 @@ class PipelineConfig(BaseModel):
     # be reused across domains without forking the prompts.
     ranking_audience_description: str = "a daily digest aimed at practicing ML engineers"
     digest_audience_description: str = "ML engineers"
+    # Editorial voice for the digest lead/implications. John Gruber (Daring Fireball): informed,
+    # dry, cynical, genuinely funny — critiquing ideas/decisions/hypocrisy, never attacking a
+    # person. Configurable so the tone can be retuned without forking the prompt.
+    digest_voice_guidance: str = (
+        "Write like John Gruber (Daring Fireball): professional and well-informed, with dry wit "
+        "and earned cynicism, genuinely funny. Be sharp and opinionated — call out hype, "
+        "contradiction, and hypocrisy directly — but critique ideas, decisions, and behavior, "
+        "NEVER attack a person (no ad hominem, no insults). Confident and concise; ground every "
+        "barb in the supplied facts and trend history, never in vibes."
+    )
     item_text_max_tokens: int = 8000
     ranking_batch_size: int = Field(default=40, ge=1)
     source_slots: dict[str, int] = Field(
