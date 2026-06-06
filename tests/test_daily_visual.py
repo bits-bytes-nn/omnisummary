@@ -112,8 +112,10 @@ class TestDailyVisualMaker:
                     with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=True)) as th:
                         await maker.run(_items(), content)
         th.assert_awaited_once()
-        # root carries the digest lead; replies carry the per-item story
-        assert th.await_args.kwargs["root_text"] == "오늘의 리드."
+        # root carries the AGI countdown intro (prepended at post time) + the digest lead;
+        # replies carry the per-item story
+        root = th.await_args.kwargs["root_text"]
+        assert root.startswith("AGI 등장") and "오늘의 리드." in root
         assert any("스토리" in r for r in th.await_args.kwargs["replies"])
         assert th.await_args.kwargs["image_bytes"] == b"PNG"
 

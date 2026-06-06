@@ -9,6 +9,7 @@ from .constants import (
 )
 from .formatting import (
     YOUTUBE_VIEWS_EMOJI,
+    agi_countdown_intro,
     clean_rss_feed_name,
     format_collected_item,
     format_origin_label,
@@ -62,6 +63,7 @@ __all__ = [
     "DOMAIN_TO_SOURCE",
     "LOGGING_TRUNCATION_CHARS",
     "YOUTUBE_VIEWS_EMOJI",
+    "agi_countdown_intro",
     "clean_rss_feed_name",
     "format_collected_item",
     "format_origin_label",

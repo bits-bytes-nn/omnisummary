@@ -120,7 +120,7 @@ async def run_pipeline(
     trends_context = trend_tracker.get_trends_context()
 
     generator = DigestGenerator(config.pipeline, llm_factory)
-    digest = await generator.generate(ranked_items, items, trends_context=trends_context, today=digest_date)
+    digest = await generator.generate(ranked_items, items, trends_context=trends_context)
     logger.info("Generated digest with %d ranked items", len(digest.ranked_items))
 
     if dry_run:

@@ -46,36 +46,24 @@ def _content(lead="정확히 $7B 투자.", body="본문.", implication="시사�
 
 
 class TestAgiCountdown:
-    def test_prepends_day_count(self):
+    def test_computes_day_count(self):
         from datetime import date
 
-        gen = _generator("")
-        gen.config.agi_countdown_date = "2029-01-01"
-        gen.config.agi_countdown_template = "AGI 등장 {days}일 전입니다. "
-        content = _content(lead="본론 시작.")
-        gen._prepend_countdown(content, date(2026, 1, 1))
-        assert content.lead == "AGI 등장 1096일 전입니다. 본론 시작."
+        from shared import agi_countdown_intro
 
-    def test_idempotent_and_past_date_noop(self):
+        assert (
+            agi_countdown_intro("2029-01-01", "AGI 등장 {days}일 전이다. ", date(2026, 1, 1))
+            == "AGI 등장 1096일 전이다. "
+        )
+
+    def test_empty_past_date_or_disabled(self):
         from datetime import date
 
-        gen = _generator("")
-        content = _content(lead="본론.")
-        gen._prepend_countdown(content, date(2026, 1, 1))
-        gen._prepend_countdown(content, date(2026, 1, 1))  # second call must not double-prepend
-        assert content.lead.count("AGI 등장") == 1
-        past = _content(lead="본론.")
-        gen._prepend_countdown(past, date(2030, 1, 1))  # D-day passed → no intro
-        assert past.lead == "본론."
+        from shared import agi_countdown_intro
 
-    def test_disabled_when_date_empty(self):
-        from datetime import date
-
-        gen = _generator("")
-        gen.config.agi_countdown_date = ""
-        content = _content(lead="본론.")
-        gen._prepend_countdown(content, date(2026, 1, 1))
-        assert content.lead == "본론."
+        assert agi_countdown_intro("2029-01-01", "x{days}", date(2030, 1, 1)) == ""  # D-day passed
+        assert agi_countdown_intro("", "x{days}", date(2026, 1, 1)) == ""  # disabled
+        assert agi_countdown_intro("not-a-date", "x{days}", date(2026, 1, 1)) == ""  # malformed
 
 
 class TestGroundingCheck:
