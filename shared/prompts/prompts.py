@@ -145,7 +145,10 @@ a question. Each item's closing should read differently from the others.
 Titles must be clickable. Inline-link papers/repos naturally. No separate links section.
 
 *Trends*
-If provided, weave ongoing trends into commentary naturally. Do NOT list trends separately.
+If provided, weave ongoing trends into commentary naturally. Do NOT list trends separately. \
+If trends_context is empty, still surface continuity by noting when a story extends a theme \
+visible across today's own items (e.g. a technique or constraint appearing in multiple entries); \
+do not fabricate prior-day trends.
 
 *Faithfulness*
 Do NOT name external systems, products, or mechanisms (acronyms, protocols, kernels, specs, \
@@ -153,10 +156,17 @@ dates, simultaneity claims) that are not present in the provided item text or tr
 If you draw a parallel, ground it only in the supplied items; never invent a named referent \
 (a protocol/kernel/spec/product) just to complete an analogy. Mark cross-story timing as \
 inferred (e.g. "보도가 잇따랐다") unless an explicit date is in the source.
+Do NOT state a specific numeric statistic, a named blog-post/paper title, or a calendar date \
+unless that exact value appears verbatim in the item text; if a figure or title is implied but \
+not present, omit it or attribute it explicitly (e.g. "보도에 따르면"). Distinguish verified \
+(in item text) vs reported (attributed) vs inferred — never present an inferred number or \
+proper-noun title with a definite verb like "공개했다/밝혔다" unless the value is in the source.
 
 *Structure*
-- Opening 3-5 sentences: pick ONE angle, write like a columnist — why this matters, \
-what it reveals, what people are getting wrong. Don't cover every story.
+- Opening 3-5 sentences: pick ONE angle and only invoke stories that genuinely fit it; do NOT \
+force unrelated stories under a single umbrella thesis. If the day's items don't share a theme, \
+open on the single most important story rather than a strained synthesis. Write like a \
+columnist — why this matters, what it reveals, what people are getting wrong. Don't cover every story.
 - Each item per the format above.
 - Optional closing (1 sentence max).
 - Blank line between items."""
@@ -243,7 +253,9 @@ Rules:
 - Choose the format freely based on what makes THIS story funniest: a one-shot meme/parody/
   illustration OR an N-panel cartoon.
 - Be faithful to the real facts; the humor is in framing, not fabrication.
-- Prefer a story NOT already given the most space in the digest body, to add variety.
+- Prefer a story under-covered in the digest body, but it MUST be one of the items that actually
+  appears in the published digest so readers have textual grounding; never pick a
+  ranked-but-undigested story.
 - Do not hardcode internet meme catchphrases (e.g. "X has entered the chat", "this is fine") as
   on-image text — express the contradiction through imagery; any meme reference belongs in the
   spoken caption, not baked into the image prompt.
@@ -303,7 +315,10 @@ reading the caption. Work through these general decisions and bake the answers i
    sequence). Let the story decide; don't force a template. Vary the visual genre across days — do
    not default to the same poster/serif/centered template every time; let each story pick a
    distinct treatment (screenshot mockup, diagram, before/after split, comic) so consecutive daily
-   visuals don't look alike.
+   visuals don't look alike. Do NOT produce a centered-figure propaganda/recruitment poster with
+   top+bottom serif banners unless the story is specifically about a poster/campaign; for
+   political/irony stories prefer a non-poster treatment (split-screen contrast, faux-screenshot,
+   news-chyron mockup, before/after) so the genre rotates.
 4. LEGIBILITY — The whole composition must fit the {image_size} frame with nothing cropped; leave
    margins. Few elements, clear focal point.
 
@@ -317,6 +332,8 @@ Rules:
   + headline alone, with the caption only confirming it — if the joke needs a second caption-like
   line to land, carry that contrast VISUALLY (e.g. a contradicting object/gesture in frame) and
   move the explanatory line into the {caption_language} caption instead.
+  Brand/identity labels on badges/caps count toward the two-block cap; if a logo is rendered, do
+  not also add a separate wordmark badge bearing the same name.
 - {style_guidance}
 - {humor_guidance}
 - Output ONLY the JSON object."""
