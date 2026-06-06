@@ -263,9 +263,13 @@ class TestMakeVisual:
     @pytest.mark.asyncio
     async def test_unknown_item_number(self, monkeypatch):
         agent_tools.state_manager.clear()
-        with patch("shared.resolve_secret", return_value="key"):
-            result = await agent_tools.make_visual._tool_func("draw it", item_number=99)
-        assert "not found" in result
+        agent_tools.delivery_context.channel_id = "C1"  # past the early channel guard
+        try:
+            with patch("shared.resolve_secret", return_value="key"):
+                result = await agent_tools.make_visual._tool_func("draw it", item_number=99)
+            assert "not found" in result
+        finally:
+            agent_tools.delivery_context.channel_id = ""
 
 
 class TestRequestContext:

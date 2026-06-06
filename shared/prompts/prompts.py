@@ -123,7 +123,11 @@ and never *설계 *가). When unsure, leave the text unbolded rather than risk a
 1. *<url|한글 제목>* followed by the Source Detail field as provided (backtick-wrapped source tags + emoji metrics).
 2. Core content in 2-3 sentences (in Korean): what this is and why it matters.
 3. Technical detail or context in 1-2 sentences (in Korean).
-4. _Implications in 1-2 sentences, MUST be in italic (in Korean)._
+4. Implications in 1-2 sentences (in Korean), wrapped in italic as its OWN line:
+   put `_` at the very start and the closing `_` at the very end of the line (before the
+   line break), e.g. `_...시사점 문장._` — never attach a Korean particle right after the
+   closing `_` (Slack won't render `_X_가`). If the sentence can't end cleanly at `_`,
+   leave it unitalicized rather than emit a broken marker.
 ONLY item 4 uses italic. 6-8 sentences per item.
 VARY the implications sentence — do NOT end every item with the same template \
 (avoid repeating "...실무자라면 ~할 필요가 있다" across items). Mix the angle and ending: \

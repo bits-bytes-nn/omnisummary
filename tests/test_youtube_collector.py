@@ -148,12 +148,15 @@ class TestApiPath:
         assert items == []
 
     @pytest.mark.asyncio
-    async def test_unresolvable_channel_returns_empty(self, monkeypatch):
+    async def test_unresolvable_channel_raises_for_health(self, monkeypatch):
+        # An unresolvable channel must register as a FAILURE (not silent EMPTY) so a
+        # blackholed channel is distinguishable from one with no recent uploads. With a
+        # single configured channel, gather(raise_if_all_failed=True) propagates.
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
         collector = YouTubeCollector(_config())
         with patch.object(collector, "_resolve_channel_id", return_value=""):
-            items = await collector.collect()
-        assert items == []
+            with pytest.raises(RuntimeError, match="resolve canonical channel ID"):
+                await collector.collect()
 
 
 class TestRssFallback:

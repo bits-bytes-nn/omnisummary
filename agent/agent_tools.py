@@ -225,6 +225,7 @@ async def recall_trends(query: str) -> str:
     """
     from datetime import date
 
+    from pipeline.trend_tracker import TRENDS_KEY
     from shared import TrendMemory, create_state_store
 
     config = Config.load()
@@ -234,7 +235,7 @@ async def recall_trends(query: str) -> str:
     def _load() -> TrendMemory:
         try:
             store = create_state_store(config)
-            raw = store.read("trends.json") if store.exists("trends.json") else None
+            raw = store.read(TRENDS_KEY) if store.exists(TRENDS_KEY) else None
         except Exception as e:
             logger.warning("Failed to open trend store for recall: %s", e)
             return TrendMemory()
@@ -294,6 +295,11 @@ async def make_visual(instruction: str, item_number: int = 0, context: str = "")
     if not await asyncio.to_thread(resolve_secret, "OPENAI_API_KEY", "openai-api-key"):
         return "Visualization is disabled (OPENAI_API_KEY not configured)."
 
+    # Fail fast before the paid image generation if there's nowhere to post it.
+    delivery = current_delivery_context()
+    if not delivery.channel_id:
+        return "No Slack channel is set for delivery; skipping image generation."
+
     state = current_state_manager()
     source = ""
     if item_number:
@@ -323,10 +329,6 @@ async def make_visual(instruction: str, item_number: int = 0, context: str = "")
     except Exception as e:
         logger.error("Visualization failed: %s", e, exc_info=True)
         return f"Visualization failed: {e}"
-
-    delivery = current_delivery_context()
-    if not delivery.channel_id:
-        return "Visual generated but no Slack channel is set for delivery."
 
     visual_title = brief.title
     caption = brief.caption

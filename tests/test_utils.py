@@ -212,3 +212,15 @@ class TestSanitizeSlackMrkdwn:
         out = sanitize_slack_mrkdwn("추론 특화 *MAI-Thinking-1* (35B)과 코드 특화 *MAI-Code-1-Flash* (5B)")
         assert "*MAI-Thinking-1*" in out and "*MAI-Thinking-1 *" not in out
         assert "*MAI-Code-1-Flash*" in out and "특화*MAI-Code" not in out
+
+    def test_english_italic_padded(self):
+        # Multi-word english italic touching neighbours gets boundary spaces.
+        assert sanitize_slack_mrkdwn("a_italic phrase_b") == "a _italic phrase_ b"
+
+    def test_snake_case_not_treated_as_italic(self):
+        # A single ASCII token with underscores is an identifier, not emphasis.
+        assert sanitize_slack_mrkdwn("see config_value_here today") == "see config_value_here today"
+
+    def test_italic_no_space_inside_markers(self):
+        out = sanitize_slack_mrkdwn("text _ padded phrase _ end")
+        assert "_ padded" not in out and "phrase _" not in out
