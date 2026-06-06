@@ -12,6 +12,11 @@ THREADS_API_BASE = "https://graph.threads.net/v1.0"
 THREADS_MAX_TEXT_LENGTH = 500
 # Meta processes the media container asynchronously; publishing too early fails.
 THREADS_MEDIA_PROCESS_WAIT_SEC = 30
+# After an image root is published it isn't immediately addressable as a reply target;
+# replies to it can 400 with "media not found" until Meta finishes indexing. Retry the
+# reply-chain link a few times with this backoff before giving up.
+THREADS_REPLY_RETRY_ATTEMPTS = 5
+THREADS_REPLY_RETRY_BACKOFF_SEC = 6
 # How long the hosted-image presigned URL stays valid — must outlast the
 # create-container + media-processing window with margin.
 THREADS_IMAGE_URL_TTL_SEC = 900
@@ -96,6 +101,33 @@ async def _publish_post(
     return await _publish_container(client, user_id, token, creation_id)
 
 
+def _is_media_not_found(exc: httpx.HTTPStatusError) -> bool:
+    # A just-published post isn't instantly addressable as a reply target — Meta returns
+    # code 24 / subcode 4279009 ("media not found") until indexing completes.
+    try:
+        err = exc.response.json().get("error", {})
+        return err.get("code") == 24 or err.get("error_subcode") == 4279009
+    except Exception:
+        return False
+
+
+async def _publish_reply_with_retry(
+    client: httpx.AsyncClient, user_id: str, token: str, text: str, reply_to_id: str
+) -> str:
+    last: httpx.HTTPStatusError | None = None
+    for attempt in range(1, THREADS_REPLY_RETRY_ATTEMPTS + 1):
+        try:
+            return await _publish_post(client, user_id, token, text=text, reply_to_id=reply_to_id)
+        except httpx.HTTPStatusError as e:
+            if not _is_media_not_found(e) or attempt == THREADS_REPLY_RETRY_ATTEMPTS:
+                raise
+            last = e
+            logger.info("Reply target not indexed yet (attempt %d), retrying", attempt)
+            await asyncio.sleep(THREADS_REPLY_RETRY_BACKOFF_SEC)
+    assert last is not None
+    raise last
+
+
 async def post_to_threads(
     *,
     root_text: str,
@@ -133,7 +165,7 @@ async def post_to_threads(
             )
             logger.info("Posted Threads root '%s'", reply_to)
             for i, post in enumerate(posts, start=1):
-                reply_to = await _publish_post(client, user_id, token, text=post, reply_to_id=reply_to)
+                reply_to = await _publish_reply_with_retry(client, user_id, token, post, reply_to)
                 logger.debug("Posted Threads reply %d/%d", i, len(posts))
         logger.info("Successfully posted digest to Threads (%d reply posts)", len(posts))
         return True
