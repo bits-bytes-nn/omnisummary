@@ -246,11 +246,12 @@ Rules:
   content needs: `papers` (Semantic Scholar) for a research/technical claim, `community` (Reddit/X/
   HN/Substack) for reactions/memes/sentiment, `news` for industry/company/policy framing. Mix freely;
   use fewer steps for a thin story. Return [] to skip research.
-- Choose the format that best lands this story's angle, and genuinely consider BOTH a one-shot
-  (parody poster / satirical illustration) AND a multi-panel comic — don't default to single-frame.
-  When the story has a sequence, a reversal, or a setup-and-payoff (a promise then a contradiction,
-  a before/after, cause→effect), a 4-panel comic usually lands harder; reach for it in those cases.
-  Be faithful to the real facts; the humor is in the framing, never fabrication.
+- Let the STORY pick the format — there is no default and no preferred format. A single striking
+  frame (parody poster, satirical illustration, one-panel scene) is best when the point lands in one
+  image; a multi-panel comic is best only when the story genuinely has a sequence, reversal, or
+  setup-and-payoff (promise→contradiction, before/after, cause→effect). Match the form to the
+  content; don't force either a one-shot or an N-panel. Be faithful to the real facts; the humor is
+  in the framing, never fabrication.
 - Express the joke or contradiction through imagery, not a stock meme catchphrase baked into the
   on-image text; any meme reference belongs in the spoken caption.
 - Output ONLY the JSON object."""
