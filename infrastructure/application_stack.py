@@ -38,6 +38,8 @@ class OmniSummaryApplicationStack(Stack):
         slack_channel_id: str = "",
         tavily_api_key: str = "",
         openai_api_key: str = "",
+        threads_access_token: str = "",
+        threads_user_id: str = "",
         agentcore_image_ref: str = "",
         digest_image_ref: str = "",
         **kwargs,
@@ -60,6 +62,8 @@ class OmniSummaryApplicationStack(Stack):
             "slack-channel-id": slack_channel_id,
             "tavily-api-key": tavily_api_key,
             "openai-api-key": openai_api_key,
+            "threads-access-token": threads_access_token,
+            "threads-user-id": threads_user_id,
         }
         # CloudFormation cannot create SecureString SSM parameters (AWS::SSM::Parameter
         # supports only String/StringList). These hold low-sensitivity API tokens; access
@@ -202,6 +206,31 @@ class OmniSummaryApplicationStack(Stack):
                 minute=config.aws.digest_cron_minute,
             ),
             targets=[targets.LambdaFunction(digest_lambda)],
+        )
+
+        # Threads long-lived tokens expire after 60 days; refresh on a schedule well
+        # inside that window so the self-posting token never lapses. Same image (carries
+        # shared + httpx); writes the renewed token back to SSM.
+        threads_refresh_lambda = lambda_.DockerImageFunction(
+            self,
+            "ThreadsRefreshLambda",
+            function_name=f"{project_name}-{stage}-threads-refresh",
+            code=lambda_.DockerImageCode.from_ecr(
+                foundation.ecr_repo,
+                tag_or_digest=digest_tag_or_digest,
+                cmd=["lambda_handlers.threads_refresh_handler.handler"],
+            ),
+            timeout=Duration.minutes(1),
+            memory_size=256,
+            role=foundation.lambda_role,
+            environment={"PROJECT_NAME": project_name, "STAGE": stage},
+        )
+        events.Rule(
+            self,
+            "ThreadsTokenRefreshRule",
+            rule_name=f"{project_name}-{stage}-threads-refresh",
+            schedule=events.Schedule.rate(Duration.days(config.aws.threads_token_refresh_days)),
+            targets=[targets.LambdaFunction(threads_refresh_lambda)],
         )
 
         CfnOutput(self, "SlackWebhookUrl", value=f"{api.url}slack/events")

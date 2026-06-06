@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import os
 
 from langchain_core.output_parsers import StrOutputParser
 
@@ -42,7 +44,7 @@ class DailyVisualMaker:
             style_aesthetic=config.pipeline.visual_synopsis_style_aesthetic,
         )
 
-    async def run(self, ranked_items: list[RankedItem]) -> bool:
+    async def run(self, ranked_items: list[RankedItem], digest_text: str = "") -> bool:
         if not ranked_items:
             return False
         if not resolve_secret("OPENAI_API_KEY", "openai-api-key"):
@@ -77,7 +79,9 @@ class DailyVisualMaker:
             logger.warning("Daily visual generation failed", exc_info=True)
             return False
 
-        return await self._post(image_bytes, brief)
+        slack_ok = await self._post(image_bytes, brief)
+        await self._post_threads(image_bytes, brief, digest_text)
+        return slack_ok
 
     async def _pick_story(self, ranked_items: list[RankedItem]) -> dict:
         items_text = "\n".join(
@@ -121,6 +125,8 @@ class DailyVisualMaker:
         return await _tavily_search(query, topic="news")
 
     async def _post(self, image_bytes: bytes, brief: VisualBrief) -> bool:
+        if not self.config.pipeline.enable_slack_post:
+            return False
         from output.slack_handler import send_image_to_slack
 
         title = brief.title
@@ -134,4 +140,21 @@ class DailyVisualMaker:
             title=title,
             comment=f"{emoji} *{title}*\n{caption}",
             bot_token=bot_token,
+        )
+
+    async def _post_threads(self, image_bytes: bytes, brief: VisualBrief, digest_text: str) -> bool:
+        if not self.config.pipeline.enable_threads_post:
+            return False
+        from output.threads_handler import post_to_threads
+
+        bucket = self.config.aws.state_bucket_name or os.environ.get("STATE_BUCKET", "")
+        root_text = f"{brief.title}\n\n{brief.caption}"
+        prefix = self.config.aws.s3_prefix.rstrip("/") + "/" if self.config.aws.s3_prefix else ""
+        image_key = f"{prefix}threads/{hashlib.sha256(image_bytes).hexdigest()[:16]}.png"
+        return await post_to_threads(
+            root_text=root_text,
+            body_text=digest_text,
+            image_bytes=image_bytes,
+            image_bucket=bucket,
+            image_key=image_key,
         )

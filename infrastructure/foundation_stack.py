@@ -167,6 +167,15 @@ class OmniSummaryFoundationStack(Stack):
                 resources=[f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:runtime/*"],
             )
         )
+        # The Threads token-refresh Lambda writes the renewed token back to its own SSM param.
+        self.lambda_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["ssm:PutParameter"],
+                resources=[
+                    f"arn:aws:ssm:{self.region}:{self.account}:parameter/{project_name}/{stage}/threads-access-token"
+                ],
+            )
+        )
 
         self.alerts_topic = sns.Topic(self, "AlertsTopic", topic_name=f"{project_name}-{stage}-alerts")
         if alert_email:

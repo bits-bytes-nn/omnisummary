@@ -152,6 +152,10 @@ class PipelineConfig(BaseModel):
     trend_max_evidence: int = Field(default=5, ge=1)
     trend_max_active_trends: int = Field(default=10, ge=1)
     trend_momentum_half_life_days: float = Field(default=7.0, gt=0)
+    # Delivery channels for the digest, each independently toggleable. Slack on by default;
+    # Threads off until its access token / user id are provisioned in SSM.
+    enable_slack_post: bool = True
+    enable_threads_post: bool = False
     enable_daily_visual: bool = True
     image_model: str = "gpt-image-2"
     # orientation -> gpt-image size. The synopsis brief picks the orientation that fits the
@@ -236,6 +240,8 @@ class AWSConfig(BaseModel):
     # EventBridge cron is UTC. 10:00 UTC = 19:00 KST (daily 7pm).
     digest_cron_hour: str = "10"
     digest_cron_minute: str = "0"
+    # Threads long-lived tokens expire after 60 days; refresh comfortably inside that window.
+    threads_token_refresh_days: int = Field(default=50, ge=1, le=59)
     api_throttle_rate_limit: int = Field(default=20, ge=1)
     api_throttle_burst_limit: int = Field(default=10, ge=1)
     waf_rate_limit: int = Field(default=2000, ge=100)

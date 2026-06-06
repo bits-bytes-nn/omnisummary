@@ -129,19 +129,21 @@ async def run_pipeline(
 
     await trend_tracker.update_trends(digest.digest_text, digest_date.isoformat())
 
-    success = await send_digest_to_slack(digest, config.slack)
-    if success:
-        logger.info("Digest sent to Slack successfully")
-    else:
-        logger.error("Failed to send digest to Slack")
+    if config.pipeline.enable_slack_post:
+        success = await send_digest_to_slack(digest, config.slack)
+        if success:
+            logger.info("Digest sent to Slack successfully")
+        else:
+            logger.error("Failed to send digest to Slack")
 
     # In AWS the digest Lambda fires a separate visual Lambda (off the critical path);
     # locally we run it inline so `uv run python main.py` still produces the visual.
+    # The visual step also fans out to Threads (when enabled), so it carries the digest text.
     if config.pipeline.enable_daily_visual and not is_running_in_aws():
         try:
             from pipeline.daily_visual import DailyVisualMaker
 
-            posted = await DailyVisualMaker(config, llm_factory).run(ranked_items)
+            posted = await DailyVisualMaker(config, llm_factory).run(ranked_items, digest.digest_text)
             logger.info("Daily visual %s", "posted" if posted else "skipped")
         except Exception:
             logger.warning("Daily visual step failed (non-fatal)", exc_info=True)

@@ -70,6 +70,52 @@ class TestDailyVisualMaker:
         assert "Story 2" in args[1]
 
     @pytest.mark.asyncio
+    async def test_slack_disabled_skips_upload(self):
+        maker = _maker()
+        maker.config.pipeline.enable_slack_post = False
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "x"}
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = AsyncMock(
+                    return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw"))
+                )
+                with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)) as up:
+                    result = await maker.run(_items())
+        assert result is False
+        up.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_threads_enabled_fans_out_with_digest_text(self):
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = True
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "x"}
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = AsyncMock(
+                    return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw"))
+                )
+                with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
+                    with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=True)) as th:
+                        await maker.run(_items(), digest_text="FULL DIGEST BODY")
+        th.assert_awaited_once()
+        assert th.await_args.kwargs["body_text"] == "FULL DIGEST BODY"
+        assert th.await_args.kwargs["image_bytes"] == b"PNG"
+
+    @pytest.mark.asyncio
+    async def test_threads_disabled_by_default(self):
+        maker = _maker()
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "x"}
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = AsyncMock(
+                    return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw"))
+                )
+                with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
+                    with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=True)) as th:
+                        await maker.run(_items())
+        th.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_generation_failure_returns_false(self):
         maker = _maker()
         plan = {"skip": False, "item_number": 1, "instruction": "draw"}
