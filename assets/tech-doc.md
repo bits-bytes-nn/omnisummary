@@ -263,7 +263,7 @@ IpReputation), EventBridge 일일 크론(설정 기반 시/분), AgentCore Runti
 로직, 헬스 리포트, logger, 메모리 스토어(로컬 + AgentCore 모킹), 다이제스트 핸들러 알림, 에이전트 도구,
 visuals, AgentCore 엔트리포인트(`agent_runtime/app.py` — 상태 로드·Slack 토큰 env/SSM 해석·invoke
 해피패스/예외 처리·correlation ID), trend_tracker(trim/evidence-cap/archived-merge), 그리고 CDK
-assertion(`aws-cdk.assertions`로 두 스택 검증). 현재 301개 테스트, 커버리지 게이트 55%.
+assertion(`aws-cdk.assertions`로 두 스택 검증). 300+ 테스트, 커버리지 게이트 55%.
 
 `.github/workflows/ci.yml`: lint(ruff), 포맷 체크(black `--check`), mypy 타입 체크, 테스트 + 커버리지 게이트,
 오프라인 `cdk synth`(`scripts/ci_synth.py`, 더미 계정 — AWS 자격증명 불필요), Docker 빌드(amd64,
