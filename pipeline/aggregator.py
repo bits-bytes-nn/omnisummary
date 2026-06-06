@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import re
-import unicodedata
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from shared import CollectedItem, logger
+from shared import CollectedItem, logger, normalize_title
 
 _TRACKING_PARAM_PREFIXES = ("utm_",)
 _TRACKING_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src", "ref_url"}
@@ -29,7 +27,7 @@ class ContentAggregator:
         deduplicated: list[CollectedItem] = []
         title_dupes = 0
         for item in url_deduped:
-            norm = self._normalize_title(item.title)
+            norm = normalize_title(item.title)
             if norm in seen_titles:
                 logger.debug(
                     "Duplicate title skipped: '%s' (same as '%s')",
@@ -76,13 +74,6 @@ class ContentAggregator:
         ]
         query = urlencode(sorted(kept))
         return urlunsplit(("https", host, path, query, ""))
-
-    @staticmethod
-    def _normalize_title(title: str) -> str:
-        title = unicodedata.normalize("NFKC", title)
-        title = re.sub(r"<[^>]+>", "", title)
-        title = re.sub(r"[^\w\s]", "", title.lower())
-        return re.sub(r"\s+", " ", title).strip()
 
     @staticmethod
     def _normalize_metadata(metadata: dict) -> dict:

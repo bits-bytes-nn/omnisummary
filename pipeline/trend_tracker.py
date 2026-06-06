@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import date
@@ -87,6 +88,12 @@ class TrendTracker:
             }
         )
 
+        # Idempotency: drop any evidence already stamped with today's date so a re-run
+        # (Lambda retry, manual re-run) replaces the day's contribution instead of
+        # appending reworded duplicates. Dates are code-stamped, never from the LLM.
+        for trend in memory.trends:
+            trend.evidence = [ev for ev in trend.evidence if ev.date != today_date]
+
         observations = self._parse_observations(raw)
         logger.info("Trend classifier returned %d observations", len(observations))
         for obs in observations:
@@ -95,7 +102,7 @@ class TrendTracker:
         self._run_lifecycle(memory, today_date)
 
         self._memory = memory
-        self.state_store.write(TRENDS_KEY, memory.model_dump_json())
+        await asyncio.to_thread(self.state_store.write, TRENDS_KEY, memory.model_dump_json())
         logger.info("Persisted %d trends to '%s'", len(memory.trends), TRENDS_KEY)
         return to_markdown(memory)
 

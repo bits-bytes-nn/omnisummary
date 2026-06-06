@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import unicodedata
 from urllib.parse import urlparse
 
 from .constants import SourceType
@@ -8,6 +10,16 @@ from .utils import truncate_text_by_tokens
 
 YOUTUBE_VIEWS_EMOJI = ":arrow_forward:"
 RSS_NAME_DELIMITERS = (" - ", " — ")
+
+
+def normalize_title(title: str) -> str:
+    """Normalize a title for dedup/clustering: strip HTML, lowercase, drop punctuation,
+    collapse whitespace. Shared by the aggregator (title dedup) and ranker (topic-coherent
+    batching) so both agree on what 'the same title' means."""
+    title = unicodedata.normalize("NFKC", title)
+    title = re.sub(r"<[^>]+>", "", title)
+    title = re.sub(r"[^\w\s]", "", title.lower())
+    return re.sub(r"\s+", " ", title).strip()
 
 
 def format_collected_item(

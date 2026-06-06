@@ -7,7 +7,7 @@ Proactive AI/ML daily digest system that collects content from multiple sources,
 - **Multi-source collection**: Reddit (public .rss feed via proxy), YouTube, X/Twitter (via RSSHub), RSS/Substack, Web Search (Tavily)
 - **LLM-powered ranking**: Claude Opus 4.8, multi-axis evaluation with source-slot + per-origin diversity caps
 - **Editorial digest**: Claude Sonnet 4.6 Korean editorial with cross-day trend tracking
-- **Follow-up agent**: autonomous Slack-based Strands agent — freely composes analysis, paper/community/news search, cross-day recall, and free-form image generation (1-page slide / comic / diagram / infographic via OpenAI gpt-image)
+- **Follow-up agent**: autonomous Slack-based Strands agent — freely composes analysis, paper/community/news search, cross-day recall, and free-form image generation (1-page slide / comic / diagram / infographic via OpenAI gpt-image-2)
 - **AgentCore-centric**: digest state persisted in Bedrock AgentCore Memory; agent runs on AgentCore Runtime
 - **Operational excellence**: per-source health checks → SNS email alerts, structured JSON logging with correlation IDs, CloudWatch alarms, AWS WAF on the API
 - **AWS deployment**: Lambda + EventBridge cron + Bedrock AgentCore (Runtime + Memory) + ECS (RSSHub)
@@ -157,7 +157,7 @@ Each collector runs async in parallel. Lookback window is configurable per sourc
 
 ### 4. Trend Tracking
 
-`TrendTracker` maintains `trends.md` with active/cooling/archived trends. Updated after each digest. Feeds context into digest generation for cross-day narrative continuity.
+`TrendTracker` maintains structured trends in `trends.json` (slug-id `Trend` objects with dated evidence). The LLM only classifies today's items into existing/new trends; code owns all bookkeeping — date stamping, active/cooling/archived lifecycle, recency-decay momentum, and evidence/active caps. Active+cooling trends (momentum-sorted) feed the next digest for cross-day continuity.
 
 ### 5. Digest Generation
 
@@ -177,8 +177,8 @@ Autonomous Strands Agent (on Bedrock AgentCore Runtime, reads digest state from 
 | `search_papers(query)` | Semantic Scholar API |
 | `search_community(query)` | Tavily (Reddit, X, HN, Substack) |
 | `search_related_news(query)` | Tavily (general news) |
-| `recall_trends(query)` | Cross-day semantic recall from AgentCore Memory |
-| `make_visual(instruction, item_number, context)` | Free-form image from a natural-language instruction (1-page slide / comic / diagram / infographic) → posted to Slack via OpenAI gpt-image |
+| `recall_trends(query)` | Keyword match over the structured `trends.json` (active/cooling), momentum-ranked |
+| `make_visual(instruction, item_number, context)` | Free-form image from a natural-language instruction (1-page slide / comic / diagram / infographic) → posted to Slack via OpenAI gpt-image-2 |
 
 ## AWS Deployment
 
@@ -198,7 +198,7 @@ Resources created:
 - **Lambda**: Slack event handler, 60s timeout
 - **API Gateway** + **AWS WAFv2**: `POST /slack/events` with rate-limit + managed rules + throttling
 - **EventBridge**: Daily cron (config-driven hour/minute)
-- **Bedrock AgentCore**: Runtime (follow-up agent, arm64) + **Memory** (digest state, trends)
+- **Bedrock AgentCore**: Runtime (follow-up agent, arm64) + **Memory** (digest snapshot for the follow-up agent)
 - **ECS Fargate**: RSSHub container
 - **S3**: trends + RSSHub sync data
 - **DynamoDB**: Slack event deduplication
@@ -260,24 +260,24 @@ omnisummary/
 ├── Dockerfile                  # Lambda (amd64)
 ├── Dockerfile.agentcore        # AgentCore (arm64)
 ├── collectors/                 # Source collectors
-├── pipeline/                   # Aggregator, Ranker, DigestGenerator, TrendTracker
+├── pipeline/                   # Aggregator, Ranker, DigestGenerator, TrendTracker, DailyVisual
 ├── agent/                      # Strands agent + tools
 ├── agent_runtime/              # Bedrock AgentCore HTTP server
-├── shared/                     # Config, models, utils, prompts, state store
+├── shared/                     # Config, models, formatting, prompts, state store, AgentCore memory
 ├── output/                     # Slack handler
-├── lambda_handlers/            # AWS Lambda handlers
+├── lambda_handlers/            # AWS Lambda handlers (digest, slack events, daily visual)
 ├── infrastructure/             # CDK stacks
 ├── scripts/                    # Deploy, RSSHub sync
 ├── cloudflare-proxy/           # CF Worker proxy
 ├── config/                     # YAML configuration
-├── tests/                      # Unit + CDK tests (301)
+├── tests/                      # Unit + CDK assertion tests
 └── assets/                     # tech-doc.md, architecture + concept diagrams
 ```
 
 ## Testing & CI
 
 ```bash
-uv run python -m pytest tests/ -v        # 301 tests (unit + CDK assertions)
+uv run python -m pytest tests/ -v        # unit + CDK assertion tests
 uv run black --check . && uv run ruff check .
 uv run python scripts/ci_synth.py        # offline CDK synth
 ```

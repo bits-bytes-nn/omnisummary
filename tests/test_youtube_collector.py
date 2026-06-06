@@ -184,17 +184,21 @@ class TestRssFallback:
 
 
 class TestResolveChannelId:
-    def test_resolves_from_channel_id_quoted(self):
+    def test_resolves_canonical_channel_id(self):
         collector = YouTubeCollector(_config())
-        resp = MagicMock(text='...{"channelId":"UC1234567890abcdef"}...')
+        cid = "UC" + "a1b2c3d4e5f6g7h8i9j0k1"  # UC + exactly 22 base64url chars
+        resp = MagicMock(text=f'...{{"channelId":"{cid}"}}...')
         with patch.object(collector._sync_client, "get", return_value=resp):
-            assert collector._resolve_channel_id("https://youtube.com/@x") == "UC1234567890abcdef"
+            assert collector._resolve_channel_id("https://youtube.com/@x") == cid
 
-    def test_resolves_from_channel_id_param(self):
+    def test_rejects_noncanonical_channel_id(self):
+        # too-short UC ids and the loose channel_id= param no longer resolve — they
+        # would have produced a malformed UU... uploads playlist and a silent empty result.
         collector = YouTubeCollector(_config())
-        resp = MagicMock(text='<link href="...channel_id=UCfromparam">')
-        with patch.object(collector._sync_client, "get", return_value=resp):
-            assert collector._resolve_channel_id("https://youtube.com/@x") == "UCfromparam"
+        for text in ('...{"channelId":"UC1234567890abcdef"}...', '<link href="...channel_id=UCfromparam">'):
+            resp = MagicMock(text=text)
+            with patch.object(collector._sync_client, "get", return_value=resp):
+                assert collector._resolve_channel_id("https://youtube.com/@x") == ""
 
     def test_returns_empty_on_no_match(self):
         collector = YouTubeCollector(_config())

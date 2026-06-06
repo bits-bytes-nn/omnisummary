@@ -258,7 +258,7 @@ def build_architecture():
         c.arrow(rcol, a + NH, rcol, b, col)
     c.node(RSX, rows[3], "DynamoDB\ndedup (TTL)", BLUE, BLUE_S)
     c.arrow(RX + NW, rows[3] + NH / 2, RSX, rows[3] + NH / 2, BLUE_S, dashed=True)
-    c.node(RSX, rows[4], "Tools → OpenAI\ngpt-image → Slack", GREY, GREY_S, 12)
+    c.node(RSX, rows[4], "Tools → OpenAI\ngpt-image-2 → Slack", GREY, GREY_S, 12)
     c.arrow(RX + NW, rows[4] + NH / 2, RSX, rows[4] + NH / 2, GREY_S)
     # runtime reads memory: clean horizontal across the gap at the memory row
     c.arrow(RX, rows[4] + NH / 2, SX + NW, rows[4] + NH / 2, PURPLE_S, dashed=True, label="reads state")

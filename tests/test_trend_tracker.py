@@ -110,6 +110,33 @@ class TestUpdateTrends:
         assert len(memory.trends[0].evidence) == 1
 
     @pytest.mark.asyncio
+    async def test_rerun_same_date_reworded_does_not_double_append(self, monkeypatch):
+        # The real failure mode: a re-run of the same date yields a REWORDED summary.
+        # Same-date evidence is dropped before re-ingest, so the count stays at 1.
+        existing = TrendMemory(
+            trends=[
+                Trend(
+                    id="agents",
+                    title="Agents",
+                    first_seen="2026-06-05",
+                    last_seen="2026-06-05",
+                    evidence=[TrendEvidence(date="2026-06-05", summary="first wording")],
+                )
+            ]
+        )
+        store = _FakeStore({TRENDS_KEY: existing.model_dump_json()})
+        obs = [{"trend_id": "agents", "new_title": "", "summary": "completely different wording"}]
+        tracker = _patched_tracker(store, obs, monkeypatch)
+        await tracker.update_trends("d", "2026-06-05")
+
+        memory = TrendMemory.model_validate_json(store.data[TRENDS_KEY])
+        t = memory.by_id("agents")
+        assert t is not None
+        same_date = [ev for ev in t.evidence if ev.date == "2026-06-05"]
+        assert len(same_date) == 1
+        assert same_date[0].summary == "completely different wording"
+
+    @pytest.mark.asyncio
     async def test_malformed_llm_output_no_crash(self, monkeypatch):
         store = _FakeStore()
         tracker = _patched_tracker(store, "not json at all", monkeypatch)
