@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -10,7 +9,7 @@ import httpx
 from strands import tool
 from tavily import AsyncTavilyClient
 
-from shared import LOGGING_TRUNCATION_CHARS, Config, format_collected_item, logger, retry_async
+from shared import LOGGING_TRUNCATION_CHARS, Config, format_collected_item, logger, resolve_secret, retry_async
 
 from .tool_state import DigestStateManager
 
@@ -54,7 +53,9 @@ def request_context(state: DigestStateManager, delivery: DeliveryContext):
 
 
 def _get_tavily_client() -> AsyncTavilyClient | None:
-    api_key = os.getenv("TAVILY_API_KEY", "")
+    # env first, then SSM SecureString — so search works in the AgentCore runtime and the
+    # visual Lambda, which carry the key in SSM rather than the environment.
+    api_key = resolve_secret("TAVILY_API_KEY", "tavily-api-key")
     if not api_key:
         return None
 
@@ -129,13 +130,7 @@ def get_detail(item_number: int, query: str = "") -> str:
     return detail
 
 
-@tool
-async def search_papers(query: str) -> str:
-    """Search for related academic papers on Semantic Scholar.
-
-    Args:
-        query: Search query for finding related papers
-    """
+async def _search_papers(query: str) -> str:
     agent_config = Config.load().agent
     async with httpx.AsyncClient(timeout=agent_config.search_request_timeout) as client:
 
@@ -190,6 +185,16 @@ async def search_papers(query: str) -> str:
 
         logger.info("Found %d papers for query '%s'", len(papers), query)
         return "\n\n".join(results)
+
+
+@tool
+async def search_papers(query: str) -> str:
+    """Search for related academic papers on Semantic Scholar.
+
+    Args:
+        query: Search query for finding related papers
+    """
+    return await _search_papers(query)
 
 
 @tool

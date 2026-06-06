@@ -243,13 +243,19 @@ Produce ONLY a JSON object:
 {{{{
   "skip": false,
   "item_number": 2,
-  "search_query": "a focused web query for extra context to enrich the visual",
+  "research": [
+    {{{{"source": "news|community|papers", "query": "a focused query"}}}}
+  ],
   "format": "one-line: e.g. 'single-panel meme', '4-panel cartoon', 'parody movie poster'",
   "instruction": "a rich natural-language brief for the image: what to depict, the joke/angle, the format, recognizable real-world cues (people, logos) to include, and that any on-image text must be {on_image_language}"
 }}}}
 ```
 
 Rules:
+- `research`: choose 1-3 steps that best enrich THIS story — pick the SOURCE per step by what the
+  content needs: `papers` (Semantic Scholar) for a research/technical claim, `community` (Reddit/X/
+  HN/Substack) for reactions/memes/sentiment, `news` for industry/company/policy framing. Mix freely
+  (e.g. a paper story → papers + community); use fewer steps for a thin story. Return [] to skip research.
 - Choose the format freely based on what makes THIS story funniest: a one-shot meme/parody/
   illustration OR an N-panel cartoon.
 - Be faithful to the real facts; the humor is in framing, not fabrication.

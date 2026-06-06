@@ -38,7 +38,7 @@ async def main() -> None:
     logger.info("Editor picked item #%d: %s", n, chosen.item.title)
 
     source = f"{chosen.item.title}\n\n{chosen.item.text}"
-    context = await maker._gather_context(plan.get("search_query", ""))
+    context = await maker._gather_context(plan.get("research", []))
     # Let the editor's own format/instruction drive it; just nudge toward a 4-panel comic.
     instruction = "A 4-panel comic. " + plan.get("instruction", "")
 

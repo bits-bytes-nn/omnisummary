@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 from langchain_core.output_parsers import StrOutputParser
@@ -66,7 +67,7 @@ class DailyVisualMaker:
 
         ranked = ranked_items[item_number - 1]
         source = f"{ranked.item.title}\n\n{ranked.item.text}"
-        context = await self._gather_context(plan.get("search_query", ""))
+        context = await self._gather_context(plan.get("research", []))
         instruction = plan.get("instruction", "") or f"A fun visual about: {ranked.item.title}"
 
         try:
@@ -96,24 +97,28 @@ class DailyVisualMaker:
             logger.warning("Daily visual editor returned unparseable JSON", exc_info=True)
             return {}
 
-    async def _gather_context(self, query: str) -> str:
-        if not query:
+    async def _gather_context(self, research: list[dict]) -> str:
+        """Run the editor's chosen research steps and concatenate the findings. Each step
+        names a source the LLM picked for THIS story — papers (Semantic Scholar), community
+        (Reddit/X/HN/Substack), or news — dispatched to the same backends the agent uses.
+        Best-effort: a failed or unknown step is skipped, never blocking the visual."""
+        steps = [s for s in (research or []) if isinstance(s, dict) and s.get("query")]
+        if not steps:
             return ""
-        try:
-            from tavily import AsyncTavilyClient
+        results = await asyncio.gather(*(self._run_research_step(s) for s in steps), return_exceptions=True)
+        blocks = [r for r in results if isinstance(r, str) and r]
+        return "\n\n".join(blocks)
 
-            api_key = resolve_secret("TAVILY_API_KEY", "tavily-api-key")
-            if not api_key:
-                return ""
-            client = AsyncTavilyClient(api_key=api_key)
-            max_results = self.config.pipeline.visual_context_max_results
-            preview_chars = self.config.pipeline.visual_context_preview_chars
-            response = await client.search(query=query, max_results=max_results, topic="news")
-            results = response.get("results", [])
-            return "\n\n".join(f"- {r.get('title', '')}: {r.get('content', '')[:preview_chars]}" for r in results)
-        except Exception:
-            logger.warning("Daily visual context search failed", exc_info=True)
-            return ""
+    async def _run_research_step(self, step: dict) -> str:
+        from agent.agent_tools import _search_papers, _tavily_search
+
+        query = step["query"]
+        source = str(step.get("source", "news")).lower()
+        if source == "papers":
+            return await _search_papers(query)
+        if source == "community":
+            return await _tavily_search(query, include_domains=self.config.agent.community_search_domains)
+        return await _tavily_search(query, topic="news")
 
     async def _post(self, image_bytes: bytes, brief: VisualBrief) -> bool:
         from output.slack_handler import send_image_to_slack
