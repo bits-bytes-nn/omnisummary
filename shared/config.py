@@ -81,6 +81,10 @@ class PipelineConfig(BaseModel):
     min_score: float = Field(default=0.6, ge=0.0, le=1.0)
     ranking_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     digest_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
+    # Post-generation faithfulness pass: verify the digest's specific claims against the
+    # source items and surgically revise unsupported ones (prompt rules alone couldn't
+    # move the faithfulness score). Best-effort; disable to skip the extra LLM call.
+    enable_grounding_check: bool = True
     # Language rules injected into the digest prompt's *Language* block. Defaults to the
     # Korean editorial rules + translation glossary; other deployments can override to
     # write the digest in another language without forking the prompt.
@@ -150,8 +154,15 @@ class PipelineConfig(BaseModel):
     trend_momentum_half_life_days: float = Field(default=7.0, gt=0)
     enable_daily_visual: bool = True
     image_model: str = "gpt-image-2"
-    # Portrait by default so multi-panel comics aren't cropped in a square frame.
-    image_size: str = Field(default="1024x1536", pattern=r"^\d+x\d+$")
+    # orientation -> gpt-image size. The synopsis brief picks the orientation that fits the
+    # visual (wide strip / tall infographic / square meme); not locked to one aspect ratio.
+    image_sizes: dict[str, str] = Field(
+        default_factory=lambda: {
+            "square": "1024x1024",
+            "landscape": "1536x1024",
+            "portrait": "1024x1536",
+        }
+    )
     visual_synopsis_source_max_tokens: int = Field(default=2000, ge=1)
     visual_synopsis_context_max_tokens: int = Field(default=1500, ge=1)
     visual_context_max_results: int = Field(default=5, ge=1)
@@ -224,7 +235,8 @@ class AWSConfig(BaseModel):
     subnet_ids: list[str] = Field(default_factory=list)
     state_bucket_name: str = ""
     s3_prefix: str = ""
-    digest_cron_hour: str = "13"
+    # EventBridge cron is UTC. 10:00 UTC = 19:00 KST (daily 7pm).
+    digest_cron_hour: str = "10"
     digest_cron_minute: str = "0"
     api_throttle_rate_limit: int = Field(default=20, ge=1)
     api_throttle_burst_limit: int = Field(default=10, ge=1)

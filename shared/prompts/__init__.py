@@ -1,6 +1,7 @@
 from .prompts import (
     BasePrompt,
     DigestPrompt,
+    GroundingCheckPrompt,
     RankingPrompt,
     RefineQueryPrompt,
     TrendClassifyPrompt,
@@ -11,6 +12,7 @@ from .prompts import (
 __all__ = [
     "BasePrompt",
     "DigestPrompt",
+    "GroundingCheckPrompt",
     "RankingPrompt",
     "RefineQueryPrompt",
     "TrendClassifyPrompt",

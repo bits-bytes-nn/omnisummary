@@ -275,7 +275,7 @@ class VisualSynopsisPrompt(BasePrompt):
         "instruction",
         "source",
         "context",
-        "image_size",
+        "orientations",
         "caption_language",
         "on_image_language",
         "style_guidance",
@@ -293,6 +293,7 @@ Produce ONLY a JSON object:
 {{{{
   "title": "short title in {caption_language}",
   "caption": "1-2 line {caption_language} caption summarizing the visual (shown alongside the image)",
+  "orientation": "one of: {orientations} — choose the aspect ratio that best fits THIS visual",
   "prompt": "a single rich English prompt for the image model: describe the full composition, layout, panels/sections, labels, style, and what each element conveys — accurate to the source material, legible, minimal text, {style_aesthetic}"
 }}}}
 ```
@@ -319,8 +320,10 @@ reading the caption. Work through these general decisions and bake the answers i
    top+bottom serif banners unless the story is specifically about a poster/campaign; for
    political/irony stories prefer a non-poster treatment (split-screen contrast, faux-screenshot,
    news-chyron mockup, before/after) so the genre rotates.
-4. LEGIBILITY — The whole composition must fit the {image_size} frame with nothing cropped; leave
-   margins. Few elements, clear focal point.
+4. ORIENTATION — Choose `orientation` from ({orientations}) to fit the composition: a wide
+   multi-panel strip or before/after split → landscape; a tall infographic/poster → portrait;
+   a single balanced frame/meme → square. Do not default to one ratio; pick what the layout needs.
+   The whole composition must fit that frame with nothing cropped; leave margins, clear focal point.
 
 Rules:
 - Be faithful to the actual facts; the humor/angle is in framing, never in fabrication.
@@ -342,3 +345,40 @@ Rules:
         "Visualization request:\n{instruction}\n\nSource material:\n{source}\n\n"
         "Additional research/context (may be empty):\n{context}"
     )
+
+
+class GroundingCheckPrompt(BasePrompt):
+    """Post-generation faithfulness pass: given the drafted digest and the source items it
+    was written from, surgically fix only the claims NOT supported by the sources (attribute
+    or soften them), leaving everything else byte-for-byte. Prompt rules alone could not move
+    the faithfulness score, so this is a code-invoked verification step over the real sources."""
+
+    input_variables: list[str] = ["digest_text", "sources"]
+
+    system_prompt_template: str = """\
+You are a fact-checker for an AI/ML digest. You receive a drafted digest and the SOURCE items it \
+was written from. Find specific claims in the digest that are NOT supported by the sources and \
+fix ONLY those — keep everything else byte-for-byte identical (wording, Slack mrkdwn, links, \
+italics, structure, language).
+
+Unsupported = a concrete specific not present in any source's text: a number/statistic, a date, \
+a named product/protocol/system/benchmark/paper title, or a simultaneity/causation claim that the \
+sources do not state. General framing, opinion, and the columnist voice are NOT violations — do \
+not flatten them.
+
+For each unsupported claim, MINIMALLY revise: attribute it ("보도에 따르면", "~로 알려졌다"), soften \
+to inference, or drop the specific — whichever preserves the sentence with the least change. Never \
+introduce NEW facts. Never rewrite supported sentences.
+
+Return ONLY this JSON:
+```json
+{{{{
+  "violations": [
+    {{{{"claim": "the exact unsupported phrase", "issue": "why it isn't in the sources", "fix": "how you revised it"}}}}
+  ],
+  "corrected_digest": "the full digest text with only the unsupported claims revised; identical elsewhere"
+}}}}
+```
+If there are no violations, return an empty violations list and the digest unchanged."""
+
+    human_prompt_template: str = "DRAFT DIGEST:\n{digest_text}\n\nSOURCE ITEMS:\n{sources}"

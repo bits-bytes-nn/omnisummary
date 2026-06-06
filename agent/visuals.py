@@ -45,7 +45,7 @@ class VisualGenerator:
         brief_model: LanguageModelId,
         *,
         image_model: str = "gpt-image-2",
-        image_size: str = "1024x1536",
+        image_sizes: dict[str, str] | None = None,
         source_max_tokens: int = 2000,
         context_max_tokens: int = 1500,
         caption_language: str = "Korean",
@@ -67,7 +67,12 @@ class VisualGenerator:
     ) -> None:
         self.llm = llm_factory.get_model(brief_model)
         self.image_model = image_model
-        self.image_size = image_size
+        # orientation -> gpt-image size; the brief picks the orientation that fits the visual.
+        self.image_sizes = image_sizes or {
+            "square": "1024x1024",
+            "landscape": "1536x1024",
+            "portrait": "1024x1536",
+        }
         self.source_max_tokens = source_max_tokens
         self.context_max_tokens = context_max_tokens
         self.caption_language = caption_language
@@ -84,7 +89,7 @@ class VisualGenerator:
                 "instruction": instruction,
                 "source": truncate_text_by_tokens(source, self.source_max_tokens),
                 "context": truncate_text_by_tokens(context, self.context_max_tokens),
-                "image_size": self.image_size,
+                "orientations": ", ".join(self.image_sizes),
                 "caption_language": self.caption_language,
                 "on_image_language": self.on_image_language,
                 "style_guidance": self.style_guidance,
@@ -96,20 +101,21 @@ class VisualGenerator:
         logger.info("Generated visual brief '%s'", brief.title[: LOGGING_TRUNCATION_CHARS["brief_title"]])
         return brief
 
-    def render(self, prompt: str) -> bytes:
+    def render(self, brief: VisualBrief) -> bytes:
         api_key = resolve_secret("OPENAI_API_KEY", "openai-api-key")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY not configured — visualization disabled")
         from openai import OpenAI
 
-        if not prompt:
+        if not brief.prompt:
             raise ValueError("Visual brief has no image prompt")
+        size = self.image_sizes.get(brief.orientation) or next(iter(self.image_sizes.values()))
         client = OpenAI(api_key=api_key)
-        response = client.images.generate(model=self.image_model, prompt=prompt, size=self.image_size)
+        response = client.images.generate(model=self.image_model, prompt=brief.prompt, size=size)
         b64 = response.data[0].b64_json if response.data else None
         if not b64:
             raise RuntimeError("gpt-image returned no image data")
-        logger.info("Rendered visual image")
+        logger.info("Rendered visual image (%s, %s)", brief.orientation, size)
         return base64.b64decode(b64)
 
     @staticmethod
@@ -135,7 +141,7 @@ class VisualGenerator:
     async def generate(self, instruction: str, source: str, context: str = "") -> tuple[bytes, VisualBrief]:
         brief = await self.brief(instruction, source, context)
         try:
-            return self.render(brief.prompt), brief
+            return self.render(brief), brief
         except Exception as e:
             if not self._is_moderation_error(e):
                 raise
@@ -145,4 +151,4 @@ class VisualGenerator:
             logger.warning("Image moderation blocked the prompt; retrying with a softened brief")
             safe_instruction = f"{instruction}\n\n{self.moderation_softening_instruction}"
             brief = await self.brief(safe_instruction, source, context)
-            return self.render(brief.prompt), brief
+            return self.render(brief), brief

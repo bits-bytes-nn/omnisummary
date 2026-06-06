@@ -46,7 +46,7 @@ async def main() -> None:
         factory,
         config.pipeline.digest_model,
         image_model=config.pipeline.image_model,
-        image_size=config.pipeline.image_size,
+        image_sizes=config.pipeline.image_sizes,
     )
     image_bytes, brief = await generator.generate(instruction, source, context)
     logger.info("Brief title: %s", brief.title)
