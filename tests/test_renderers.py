@@ -54,16 +54,36 @@ class TestSlackBlocks:
 
 
 class TestThreadsPosts:
-    def test_root_is_lead_replies_per_item(self):
-        root, replies = render_threads_posts(_content(2))
+    def test_exactly_one_reply_per_item(self):
+        root, replies = render_threads_posts(_content(3))
         assert root == "오늘의 리드."
-        assert len(replies) == 2
+        assert len(replies) == 3  # one reply per item, never more
         assert "스토리 1" in replies[0] and "http://e.com/1" in replies[0]
 
-    def test_long_lead_overflow_carried_to_replies(self):
-        root, replies = render_threads_posts(_content(1, lead="가" * 1200))
+    def test_long_lead_truncated_not_carried(self):
+        # An overflowing lead is trimmed to one post; it does NOT spill into the reply chain.
+        root, replies = render_threads_posts(_content(2, lead="첫 문장이다. " + "가나다라마바사 " * 100))
         assert len(root) <= THREADS_MAX_POST_CHARS
-        assert len(replies) >= 2  # overflow + the one item
+        assert len(replies) == 2  # still one per item, no overflow replies
+
+    def test_long_item_fits_one_post_at_sentence_boundary(self):
+        # A body far over the cap must still be ONE reply, trimmed at a sentence end (not
+        # mid-word), with the title and URL preserved.
+        long_body = "이것은 한 문장이다. " * 80  # ~1000+ chars
+        content = DigestContent(
+            lead="리드.",
+            headline_index=1,
+            items=[DigestItem(title="긴 스토리", url="http://e.com/long", body=long_body, implication="시사점이다.")],
+        )
+        _, replies = render_threads_posts(content)
+        assert len(replies) == 1
+        post = replies[0]
+        assert len(post) <= THREADS_MAX_POST_CHARS
+        assert "긴 스토리" in post  # title kept
+        assert "http://e.com/long" in post  # url kept and intact
+        # body portion ends at a clean sentence boundary (no mid-word cut)
+        body_line = [ln for ln in post.split("\n\n") if "문장" in ln][0]
+        assert body_line.rstrip().endswith("다.")
 
     def test_all_posts_within_cap(self):
         root, replies = render_threads_posts(_content(3, lead="나" * 700))

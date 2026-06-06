@@ -22,37 +22,6 @@ THREADS_REPLY_RETRY_BACKOFF_SEC = 6
 THREADS_IMAGE_URL_TTL_SEC = 900
 
 
-def _split_text(text: str, max_len: int = THREADS_MAX_TEXT_LENGTH) -> list[str]:
-    if len(text) <= max_len:
-        return [text] if text else []
-    chunks: list[str] = []
-    current = ""
-    for paragraph in text.split("\n\n"):
-        if len(paragraph) > max_len:
-            if current:
-                chunks.append(current.strip())
-                current = ""
-            for line in paragraph.split("\n"):
-                if len(line) > max_len:
-                    for i in range(0, len(line), max_len):
-                        chunks.append(line[i : i + max_len])
-                elif len(current) + len(line) + 1 > max_len:
-                    if current:
-                        chunks.append(current.strip())
-                    current = line
-                else:
-                    current = f"{current}\n{line}" if current else line
-        elif len(current) + len(paragraph) + 2 > max_len:
-            if current:
-                chunks.append(current.strip())
-            current = paragraph
-        else:
-            current = f"{current}\n\n{paragraph}" if current else paragraph
-    if current:
-        chunks.append(current.strip())
-    return [c for c in chunks if c]
-
-
 def _upload_image_for_hosting(image_bytes: bytes, bucket: str, key: str) -> str:
     """Threads can only fetch images from a public URL (no byte upload), so host the
     PNG on S3 and hand back a short-lived presigned URL Meta can cURL once."""
@@ -154,9 +123,9 @@ async def post_to_threads(
         except Exception as e:
             logger.warning("Failed to host Threads image on S3, posting text-only: %s", e)
 
-    posts: list[str] = []
-    for reply in replies or []:
-        posts.extend(_split_text(reply))
+    # Renderer already fits each item into one <=500-char post at a sentence boundary; keep the
+    # one-item-one-reply mapping and only hard-cap as a last-resort safety net (no re-splitting).
+    posts: list[str] = [r[:THREADS_MAX_TEXT_LENGTH] for r in (replies or []) if r.strip()]
 
     try:
         async with httpx.AsyncClient(timeout=request_timeout) as client:

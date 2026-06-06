@@ -4,26 +4,7 @@ import httpx
 import pytest
 
 from output import threads_handler
-from output.threads_handler import _is_media_not_found, _split_text, post_to_threads
-
-
-class TestSplitText:
-    def test_short_text_single_chunk(self):
-        assert _split_text("hello") == ["hello"]
-
-    def test_empty_text_no_chunks(self):
-        assert _split_text("") == []
-
-    def test_long_text_respects_max_len(self):
-        chunks = _split_text("x" * 1200, max_len=500)
-        assert all(len(c) <= 500 for c in chunks)
-        assert "".join(chunks) == "x" * 1200
-
-    def test_splits_on_paragraph_boundaries(self):
-        text = "para one\n\n" + ("y" * 480) + "\n\npara three"
-        chunks = _split_text(text, max_len=500)
-        assert len(chunks) >= 2
-        assert all(len(c) <= 500 for c in chunks)
+from output.threads_handler import _is_media_not_found, post_to_threads
 
 
 class TestPostToThreads:
@@ -34,8 +15,8 @@ class TestPostToThreads:
 
     @pytest.mark.asyncio
     async def test_posts_root_and_reply_chain(self):
-        # token + user id resolve; verify the root post + one reply per body chunk,
-        # each reply threaded onto the previous post id.
+        # Root + one reply PER pre-rendered item (no re-splitting), each threaded onto the
+        # previous post id; an over-long reply is hard-capped to 500 chars, still one post.
         published: list[dict] = []
 
         async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
@@ -45,14 +26,14 @@ class TestPostToThreads:
 
         with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
             with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
-                ok = await post_to_threads(root_text="ROOT", replies=["a" * 1100])
+                ok = await post_to_threads(root_text="ROOT", replies=["reply one", "a" * 1100])
 
         assert ok is True
-        # root has no reply_to_id; subsequent posts chain onto the prior id
-        assert published[0]["reply_to_id"] == ""
-        assert published[0]["text"] == "ROOT"
+        assert len(published) == 3  # root + exactly 2 replies (one per input reply)
+        assert published[0]["reply_to_id"] == "" and published[0]["text"] == "ROOT"
         assert published[1]["reply_to_id"] == "id0"
-        assert all(p["reply_to_id"] == f"id{i - 1}" for i, p in enumerate(published) if i >= 1)
+        assert published[2]["reply_to_id"] == "id1"
+        assert len(published[2]["text"]) <= 500  # over-long reply hard-capped, not re-split
 
     @pytest.mark.asyncio
     async def test_hosts_image_and_posts_with_url(self):

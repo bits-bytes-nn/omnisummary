@@ -126,7 +126,7 @@ Produce ONLY this JSON object:
     {{{{
       "title": "the Korean display title for this story",
       "url": "the item's URL exactly as provided",
-      "body": "2-4 Korean sentences: what this is, why it matters, and the key technical detail or context.",
+      "body": "2-3 tight Korean sentences: what this is, why it matters, the key detail. Keep it compact and self-contained so the whole item reads as ONE short social post; every sentence must end completely (no trailing fragments).",
       "implication": "ONE sharp closing line in Korean — vary the angle across items (a prediction, a contrarian caveat, a concrete 'watch X', a 'what breaks if...', a question); never repeat the same template."
     }}}}
   ]
