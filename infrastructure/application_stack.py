@@ -122,7 +122,10 @@ class OmniSummaryApplicationStack(Stack):
                 tag_or_digest=digest_tag_or_digest,
                 cmd=["lambda_handlers.visual_handler.handler"],
             ),
-            timeout=Duration.minutes(5),
+            # gpt-image render (~90s) + Threads root post + reply-indexing retries (the root
+            # isn't addressable as a reply target for tens of seconds) can exceed 5 min; 10 gives
+            # the flat reply chain room to finish so comments don't get cut off by a timeout.
+            timeout=Duration.minutes(10),
             memory_size=512,
             role=foundation.lambda_role,
             vpc=foundation.vpc,

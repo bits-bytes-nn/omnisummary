@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from datetime import date
 from urllib.parse import urlparse
 
 from .constants import SourceType
@@ -10,6 +11,20 @@ from .utils import truncate_text_by_tokens
 
 YOUTUBE_VIEWS_EMOJI = ":arrow_forward:"
 RSS_NAME_DELIMITERS = (" - ", " — ")
+
+
+def agi_countdown_intro(date_str: str, template: str, today: date) -> str:
+    """The tongue-in-cheek 'AGI N days away' intro, computed in code (never the LLM) from a fixed
+    D-day so it's accurate and ticks down daily. Applied at POST time (not digest generation) so it
+    lands on every channel and every run, including reposts from an older stored digest. Returns ""
+    when disabled, malformed, or the D-day has passed."""
+    if not date_str or not template:
+        return ""
+    try:
+        days = (date.fromisoformat(date_str) - today).days
+    except ValueError:
+        return ""
+    return template.format(days=days) if days > 0 else ""
 
 
 def normalize_title(title: str) -> str:
