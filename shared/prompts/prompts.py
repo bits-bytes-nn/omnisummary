@@ -121,7 +121,9 @@ In Korean, attach particles directly after the closing marker (*설계*가, not 
 and never *설계 *가). When unsure, leave the text unbolded rather than risk a broken marker.
 Technical identifiers (quant names like Q4_K_M, IQ4_XS, file/flag/model names) must be written \
 verbatim with NO inserted spaces and wrapped in `backticks`; never break an identifier across a \
-space (write `Q4_K_M`, never `Q4_ K_M`).
+space. After drafting, scan every backticked identifier and DELETE any space that sits between \
+alphanumerics or underscores (e.g. collapse `Q4_ K_M` -> `Q4_K_M`, `IQ4 _XS` -> `IQ4_XS`). An \
+identifier must contain zero internal spaces.
 
 *Per-Item Format*
 1. *<url|한글 제목>* followed by the Source Detail field as provided (backtick-wrapped source tags + emoji metrics).
@@ -139,7 +141,9 @@ for a distinct story or omit it.
 VARY the implications sentence — do NOT end every item with the same template \
 (avoid repeating "...실무자라면 ~할 필요가 있다" across items). Mix the angle and ending: \
 a sharp prediction, a contrarian caveat, a concrete "watch X", a "what breaks if...", \
-a question. Each item's closing should read differently from the others.
+a question. Each item's closing should read differently from the others. \
+At most ONE item per digest may end on an open "watch / 지켜볼 만하다 / 두고 봐야" note; \
+give the others a concrete prediction, a what-breaks consequence, or a direct recommendation.
 
 *Hyperlinks*
 Titles must be clickable. Inline-link papers/repos naturally. No separate links section.
@@ -161,12 +165,21 @@ unless that exact value appears verbatim in the item text; if a figure or title 
 not present, omit it or attribute it explicitly (e.g. "보도에 따르면"). Distinguish verified \
 (in item text) vs reported (attributed) vs inferred — never present an inferred number or \
 proper-noun title with a definite verb like "공개했다/밝혔다" unless the value is in the source.
+NEVER attribute a claim to a specific publication (e.g. "Financial Times 보도에 따르면", \
+"Reuters에 따르면") unless that outlet's name appears verbatim in the provided item text or its \
+Source Detail tags. The Source Detail tags are the ONLY permitted attribution sources; if a fact \
+is not in the item body, omit it rather than attaching a plausible-sounding outlet name.
+Do NOT manufacture causal background (designations, policy reasons, prior decisions, internal \
+motivations) that is absent from the item text, even hedged with "~라고 한다" or "~한 이후".
 
 *Structure*
 - Opening 3-5 sentences: pick ONE angle and only invoke stories that genuinely fit it; do NOT \
 force unrelated stories under a single umbrella thesis. If the day's items don't share a theme, \
 open on the single most important story rather than a strained synthesis. Write like a \
-columnist — why this matters, what it reveals, what people are getting wrong. Don't cover every story.
+columnist — why this matters, what it reveals, what people are getting wrong. Don't cover every story. \
+If the lede story is the only non-technical item, keep the opening to 2-3 sentences and resist \
+editorializing beyond what the merged item's own text supports — a single dramatic story should not \
+be inflated with unverified background to justify a long lede.
 - Each item per the format above.
 - Optional closing (1 sentence max).
 - Blank line between items."""
@@ -259,6 +272,10 @@ Rules:
 - Do not hardcode internet meme catchphrases (e.g. "X has entered the chat", "this is fine") as
   on-image text — express the contradiction through imagery; any meme reference belongs in the
   spoken caption, not baked into the image prompt.
+- When the chosen item's point is a CONTRADICTION or HYPOCRISY (the digest lede frames two opposing
+  actions by one actor), the visual MUST stage BOTH sides in frame (split-screen, before/after, or
+  one figure with two faces/hands) — do not depict only one side. The single point is the tension
+  between them, not either action alone; spell this out in the instruction.
 - If skipping, return {{{{"skip": true}}}} and nothing else matters.
 - Output ONLY the JSON object."""
 
@@ -315,10 +332,11 @@ reading the caption. Work through these general decisions and bake the answers i
    sequence). Let the story decide; don't force a template. Vary the visual genre across days — do
    not default to the same poster/serif/centered template every time; let each story pick a
    distinct treatment (screenshot mockup, diagram, before/after split, comic) so consecutive daily
-   visuals don't look alike. Do NOT produce a centered-figure propaganda/recruitment poster with
-   top+bottom serif banners unless the story is specifically about a poster/campaign; for
-   political/irony stories prefer a non-poster treatment (split-screen contrast, faux-screenshot,
-   news-chyron mockup, before/after) so the genre rotates.
+   visuals don't look alike. Do NOT produce any centered-single-figure movie/propaganda/recruitment
+   POSTER (regardless of font style — serif, distressed block, stencil) with a top title banner and
+   bottom tagline banner unless the story is specifically about a poster/campaign. For
+   political/irony/hypocrisy stories you MUST use a non-poster treatment (split-screen contrast,
+   faux-screenshot, news-chyron mockup, before/after) so the genre rotates.
 4. LEGIBILITY — The whole composition must fit the {image_size} frame with nothing cropped; leave
    margins. Few elements, clear focal point.
 
@@ -334,6 +352,10 @@ Rules:
   move the explanatory line into the {caption_language} caption instead.
   Brand/identity labels on badges/caps count toward the two-block cap; if a logo is rendered, do
   not also add a separate wordmark badge bearing the same name.
+  Genre conventions do NOT extend the cap: a parody poster may have a title OR a tagline plus the
+  title, but NEVER a third element (rating bug, credits block, release-date strip, "RATED X" joke).
+  Any such genre-flavored extra text must be cut from the prompt and, if funny, moved to the
+  {caption_language} caption.
 - {style_guidance}
 - {humor_guidance}
 - Output ONLY the JSON object."""
