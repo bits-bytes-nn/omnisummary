@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Callable
 from datetime import date
 from urllib.parse import urlparse
 
 from .constants import SourceType
 from .models import CollectedItem
-from .utils import truncate_text_by_tokens
 
 YOUTUBE_VIEWS_EMOJI = ":arrow_forward:"
 RSS_NAME_DELIMITERS = (" - ", " — ")
@@ -49,16 +49,17 @@ def format_collected_item(
     index: int,
     max_tokens: int,
     fields: list[tuple[str, str]],
+    truncate: Callable[[str, int], str],
     text_label: str = "Text",
 ) -> str:
     """Render a CollectedItem as a labelled `=== Item N ===` block for LLM input.
 
     `fields` are the leading "Label: value" lines in the caller's chosen order
-    (Title, Source, Author, Score, ...); the body text (truncated to `max_tokens`)
-    is appended last under `text_label`. Shared so the ranker, digest generator,
-    and agent get_detail tool stay in lockstep.
+    (Title, Source, Author, Score, ...); the body text (truncated to `max_tokens` via the
+    caller's `truncate` callable — bound to the Bedrock CountTokens-based truncator) is appended
+    last under `text_label`. Shared so the ranker, digest generator, and agent stay in lockstep.
     """
-    snippet = truncate_text_by_tokens(item.text, max_tokens)
+    snippet = truncate(item.text, max_tokens)
     lines = [f"=== Item {index} ==="]
     lines.extend(f"{label}: {value}" for label, value in fields)
     lines.append(f"{text_label}:\n{snippet}")

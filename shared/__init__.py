@@ -54,7 +54,6 @@ from .utils import (
     resolve_secret,
     retry_async,
     sanitize_slack_mrkdwn,
-    truncate_text_by_tokens,
 )
 
 __all__ = [
@@ -113,6 +112,5 @@ __all__ = [
     "parse_feed_published_date",
     "retry_async",
     "sanitize_slack_mrkdwn",
-    "truncate_text_by_tokens",
     "resolve_secret",
 ]

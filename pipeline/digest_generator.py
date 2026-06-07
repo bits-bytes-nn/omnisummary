@@ -21,7 +21,6 @@ from shared import (
     extract_json_from_llm_output,
     format_collected_item,
     logger,
-    truncate_text_by_tokens,
 )
 from shared.config import PipelineConfig
 
@@ -30,7 +29,11 @@ class DigestGenerator:
 
     def __init__(self, config: PipelineConfig, llm_factory: BedrockLanguageModelFactory) -> None:
         self.config = config
+        self.llm_factory = llm_factory
         self.llm = llm_factory.get_model(config.digest_model)
+
+    def _truncate(self, text: str, max_tokens: int) -> str:
+        return self.llm_factory.truncate_to_tokens(text, max_tokens, self.config.digest_model)
 
     async def generate(
         self,
@@ -129,7 +132,7 @@ class DigestGenerator:
         Best-effort: any failure keeps the original content."""
         try:
             sources = "\n\n".join(
-                f"[{i + 1}] {r.item.title}\n{truncate_text_by_tokens(r.item.text, self.config.item_text_max_tokens)}"
+                f"[{i + 1}] {r.item.title}\n{self._truncate(r.item.text, self.config.item_text_max_tokens)}"
                 for i, r in enumerate(ranked_items)
             )
             if trends_context:
@@ -166,7 +169,13 @@ class DigestGenerator:
                 ("Author", item.author or "Unknown"),
             ]
             parts.append(
-                format_collected_item(item, index=i + 1, max_tokens=self.config.item_text_max_tokens, fields=fields)
+                format_collected_item(
+                    item,
+                    index=i + 1,
+                    max_tokens=self.config.item_text_max_tokens,
+                    fields=fields,
+                    truncate=self._truncate,
+                )
             )
         return "\n".join(parts)
 

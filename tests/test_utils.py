@@ -12,7 +12,6 @@ from shared.utils import (
     resolve_secret,
     retry_async,
     sanitize_slack_mrkdwn,
-    truncate_text_by_tokens,
 )
 
 
@@ -86,17 +85,6 @@ class TestParseFeedPublishedDate:
         entry.get = lambda k, d=None: None
         result = parse_feed_published_date(entry)
         assert result is None
-
-
-class TestTruncateTextByTokens:
-    def test_short_text_unchanged(self):
-        text = "Hello world"
-        assert truncate_text_by_tokens(text, max_tokens=100) == text
-
-    def test_long_text_truncated(self):
-        text = "word " * 1000
-        result = truncate_text_by_tokens(text, max_tokens=10)
-        assert len(result) < len(text)
 
 
 class TestExtractJsonFromLlmOutput:
