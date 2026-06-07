@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+from datetime import datetime
 from typing import Any
 
 import boto3
@@ -14,6 +16,21 @@ from output.renderers import render_agent_blocks
 from shared import create_memory_store, logger, sanitize_slack_mrkdwn, set_correlation_id
 
 app = BedrockAgentCoreApp()
+
+
+def _emit_agent_error_metric() -> None:
+    """Emit a CloudWatch EMF error metric so a systemic agent break is alarmable — the runtime
+    catches its own exceptions and replies with text, so nothing else would record a failure."""
+    emf = {
+        "_aws": {
+            "Timestamp": int(datetime.now().timestamp() * 1000),
+            "CloudWatchMetrics": [
+                {"Namespace": "OmniSummary", "Dimensions": [[]], "Metrics": [{"Name": "AgentErrors"}]}
+            ],
+        },
+        "AgentErrors": 1,
+    }
+    print(json.dumps(emf))
 
 
 def _load_latest_state() -> DigestStateManager:
@@ -78,6 +95,7 @@ def invoke(payload: dict[str, Any]) -> str:
             response = sanitize_slack_mrkdwn(response)
         except Exception as e:
             logger.error("Agent execution failed: %s", e, exc_info=True)
+            _emit_agent_error_metric()
             response = f"Error processing request: {e}"
 
     if channel_id:

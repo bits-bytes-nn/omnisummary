@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from aws_cdk import RemovalPolicy, Stack, Tags
+from aws_cdk import Duration, RemovalPolicy, Stack, Tags
 from aws_cdk import aws_codebuild as codebuild
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_ec2 as ec2
@@ -13,6 +13,7 @@ from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_servicediscovery as sd
 from aws_cdk import aws_sns as sns
 from aws_cdk import aws_sns_subscriptions as subs
+from aws_cdk import aws_sqs as sqs
 from aws_cdk.aws_bedrockagentcore import CfnMemory
 from constructs import Construct
 
@@ -181,6 +182,16 @@ class OmniSummaryFoundationStack(Stack):
         if alert_email:
             self.alerts_topic.add_subscription(subs.EmailSubscription(alert_email))
         self.alerts_topic.grant_publish(self.lambda_role)
+
+        # Dead-letter queue for failed async (EventBridge / fire-and-forget) Lambda invokes. Lives
+        # here, with the shared lambda_role, so the on_failure send grant stays intra-stack (an
+        # app-stack DLQ would make foundation depend on the app stack — a cycle).
+        self.async_dlq = sqs.Queue(
+            self,
+            "AsyncInvokeDLQ",
+            queue_name=f"{project_name}-{stage}-async-dlq",
+            retention_period=Duration.days(14),
+        )
 
         memory_exec_role = iam.Role(
             self,
