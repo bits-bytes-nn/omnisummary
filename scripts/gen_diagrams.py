@@ -2,7 +2,7 @@
 """Generate the Excalidraw concept diagram (hand-drawn style).
 
 Render with:
-  node scripts/render_excalidraw.mjs assets/concept-pipeline.excalidraw assets/concept-pipeline.png
+  node scripts/render_excalidraw.mjs docs/diagrams/concept-pipeline.excalidraw docs/diagrams/concept-pipeline.png
 
 (render_excalidraw.mjs screenshots the font-embedded SVG in a headless browser so the
 hand-drawn Virgil font is preserved; the plain `excalidraw-to-png` PNG path rasterizes
@@ -266,5 +266,5 @@ def build_architecture():
 
 
 if __name__ == "__main__":
-    n = build_architecture().save("assets/architecture.excalidraw")
+    n = build_architecture().save("docs/diagrams/architecture.excalidraw")
     print(f"architecture.excalidraw: {n} elements")

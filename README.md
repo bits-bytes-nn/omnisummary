@@ -14,9 +14,9 @@ Proactive AI/ML daily digest system that collects content from multiple sources,
 
 ## Architecture
 
-![OmniSummary Architecture](assets/architecture.png)
+![OmniSummary Architecture](docs/diagrams/architecture.png)
 
-![How the digest works](assets/concept-pipeline.png)
+![How the digest works](docs/diagrams/concept-pipeline.png)
 
 ## Quick Start
 
