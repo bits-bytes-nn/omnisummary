@@ -1,35 +1,21 @@
-<div align="center">
+# OmniSummary
 
-# 🗞️ OmniSummary
-
-**A proactive AI/ML daily digest — multi-source collection, LLM ranking, and a Korean editorial digest delivered to Slack, with a Bedrock AgentCore follow-up agent for deep dives.**
-
-Daily pipeline on AWS · Bedrock AgentCore (Runtime + Memory) · powered by Amazon Bedrock (Claude).
-
-[![CI](https://github.com/bits-bytes-nn/omnisummary/actions/workflows/ci.yml/badge.svg)](https://github.com/bits-bytes-nn/omnisummary/actions/workflows/ci.yml)
-![Python](https://img.shields.io/badge/python-3.12%2B-blue)
-![AWS CDK](https://img.shields.io/badge/IaC-AWS%20CDK-orange)
-![Bedrock](https://img.shields.io/badge/LLM-Amazon%20Bedrock%20(Claude)-green)
-
-🇰🇷 [한국어 README](./README.ko.md)
-
-![OmniSummary Architecture](docs/diagrams/architecture.png)
-
-</div>
-
----
+Proactive AI/ML daily digest system that collects content from multiple sources, ranks by importance using LLM, generates editorial-style digests, and delivers via Slack and Threads. Includes a follow-up agent for deep-dive analysis on specific items.
 
 ## Features
 
 - **Multi-source collection**: Reddit (public .rss feed via proxy), YouTube, X/Twitter (via RSSHub), RSS/Substack, Web Search (Tavily)
 - **LLM-powered ranking**: Claude Opus 4.8, multi-axis evaluation with source-slot + per-origin diversity caps
 - **Editorial digest**: Claude Sonnet 4.6 Korean editorial with cross-day trend tracking
+- **Multi-channel delivery**: structured digest rendered per channel — Slack (Block Kit) and Threads (image root + flat reply chain), each independently toggleable
 - **Follow-up agent**: autonomous Slack-based Strands agent — freely composes analysis, paper/community/news search, cross-day recall, and free-form image generation (1-page slide / comic / diagram / infographic via OpenAI gpt-image-2)
 - **AgentCore-centric**: digest state persisted in Bedrock AgentCore Memory; agent runs on AgentCore Runtime
 - **Operational excellence**: per-source health checks → SNS email alerts, structured JSON logging with correlation IDs, CloudWatch alarms, AWS WAF on the API
 - **AWS deployment**: Lambda + EventBridge cron + Bedrock AgentCore (Runtime + Memory) + ECS (RSSHub)
 
 ## Architecture
+
+![OmniSummary Architecture](docs/diagrams/architecture.png)
 
 ![How the digest works](docs/diagrams/concept-pipeline.png)
 
@@ -107,6 +93,8 @@ SLACK_CHANNEL_ID=C...
 TAVILY_API_KEY=tvly-...
 YOUTUBE_API_KEY=AIza...            # Optional, falls back to RSS
 OPENAI_API_KEY=sk-...              # Optional, enables make_visual (free-form images)
+THREADS_ACCESS_TOKEN=...           # Optional, enables Threads delivery (auto-refreshed to SSM)
+THREADS_USER_ID=...                # Optional, Threads target user id
 ALERT_EMAIL=you@example.com        # Optional, source-health alerts
 CLOUDFLARE_PROXY_URL=https://...   # For AWS deployment (YouTube fallback)
 CLOUDFLARE_PROXY_TOKEN=...
@@ -176,13 +164,17 @@ Each collector runs async in parallel. Lookback window is configurable per sourc
 
 ### 5. Digest Generation
 
-`DigestGenerator` uses Claude Sonnet to produce Korean editorial digest:
+`DigestGenerator` uses Claude Sonnet to produce a Korean editorial digest as a structured `DigestContent` (Pydantic: `lead`, `headline_index`, `items[]` each with title/url/source_tag/metrics/body/implication):
 
-- Opening: one editorial angle, not a summary of all items
+- Opening: one editorial angle, not a summary of all items; an "AGI countdown" intro line is prepended in code (not the LLM)
 - Per item: source tag + engagement metrics, core content, technical detail, implications (italic)
-- Slack mrkdwn formatting with `sanitize_slack_mrkdwn()` post-processing
+- The LLM writes only the prose; code stamps source tags/metrics. No Slack markup here — per-channel renderers (`output/renderers.py`) emit Slack **Block Kit** and **Threads** posts. `render_digest_text` produces the plain-prose system-of-record `digest_text` for trends/memory/agent. (`sanitize_slack_mrkdwn()` is used only on the free-form agent path.)
 
-### 6. Follow-up Agent
+### 6. Daily Visual
+
+`DailyVisualMaker` (best-effort, async off the digest critical path) illustrates the **headline** (`items[0]`, the lead's story) so the image, lead, and text stay in sync. The editor briefs *how* to draw it, preferring light/news topics over deep-tech and choosing the orientation freely per image, then `VisualGenerator` renders it via OpenAI gpt-image-2 and posts to Slack (and Threads when enabled).
+
+### 7. Follow-up Agent
 
 Autonomous Strands Agent (on Bedrock AgentCore Runtime, reads digest state from AgentCore Memory). It freely composes these 6 single-purpose tools to satisfy a request — e.g. "turn item 1 into a 1-page slide" → `get_detail` → optional `search_*` for grounding → `make_visual`:
 
@@ -210,15 +202,18 @@ AWS_PROFILE=<profile> uv run cdk deploy --all -a "uv run python scripts/deploy.p
 
 Resources created:
 - **Lambda** (Docker): Digest pipeline, 15min timeout
+- **Lambda** (Docker): Daily visual, 10min timeout (async, off the digest critical path)
 - **Lambda**: Slack event handler, 60s timeout
+- **Lambda** (Docker): Threads token refresh (~50-day EventBridge schedule, writes the renewed 60-day token back to SSM)
 - **API Gateway** + **AWS WAFv2**: `POST /slack/events` with rate-limit + managed rules + throttling
-- **EventBridge**: Daily cron (config-driven hour/minute)
+- **EventBridge**: Daily digest cron (config-driven hour/minute) + Threads token-refresh schedule
 - **Bedrock AgentCore**: Runtime (follow-up agent, arm64) + **Memory** (digest snapshot for the follow-up agent)
 - **ECS Fargate**: RSSHub container
-- **S3**: trends + RSSHub sync data
+- **S3**: trends + RSSHub sync data + Threads image hosting
 - **DynamoDB**: Slack event deduplication
-- **SNS**: source-health alert topic (email)
-- **CloudWatch**: structured logs + error/5xx alarms
+- **SQS**: async DLQ — digest/visual Lambdas run `retry_attempts=0` (a retry would double-post to Threads, which has no idempotency key); failures land here for replay
+- **SNS**: alert topic (email)
+- **CloudWatch**: structured logs + 12 alarms (per-Lambda Errors ×4 + Timeout ×4, API 5xx, EmptyDigest, async DLQ, AgentErrors); all Lambdas have one-month log retention
 - **ECR**: Docker images (amd64 for Lambda, arm64 for AgentCore)
 
 ### Docker Images
@@ -265,6 +260,7 @@ crontab -e
 | Semantic Scholar | Paper search | Free |
 | YouTube Data API v3 | Video metadata | Free (10K units/day) |
 | Slack | Delivery + agent | Free |
+| Threads (Meta) | Delivery (image root + reply chain) | Free |
 
 ## Project Structure
 
@@ -279,14 +275,14 @@ omnisummary/
 ├── agent/                      # Strands agent + tools
 ├── agent_runtime/              # Bedrock AgentCore HTTP server
 ├── shared/                     # Config, models, formatting, prompts, state store, AgentCore memory
-├── output/                     # Slack handler
-├── lambda_handlers/            # AWS Lambda handlers (digest, slack events, daily visual)
+├── output/                     # Per-channel renderers + Slack & Threads handlers
+├── lambda_handlers/            # AWS Lambda handlers (digest, slack events, daily visual, threads refresh)
 ├── infrastructure/             # CDK stacks
 ├── scripts/                    # Deploy, RSSHub sync
 ├── cloudflare-proxy/           # CF Worker proxy
 ├── config/                     # YAML configuration
 ├── tests/                      # Unit + CDK assertion tests
-└── docs/                       # diagrams/ (architecture, concept-pipeline)
+└── docs/                       # tech-doc.md + diagrams/ (architecture + concept)
 ```
 
 ## Testing & CI
