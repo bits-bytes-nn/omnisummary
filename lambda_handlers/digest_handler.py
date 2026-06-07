@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from datetime import datetime, timedelta
 from typing import Any
@@ -17,6 +18,25 @@ from shared import (
     logger,
     set_correlation_id,
 )
+
+METRIC_NAMESPACE = "OmniSummary"
+DIGEST_ITEMS_METRIC = "DigestItemsPublished"
+
+
+def _emit_digest_items_metric(count: int) -> None:
+    """Emit the published-item count as a CloudWatch EMF metric on stdout. A CDK alarm fires
+    when this is 0 or missing — catching the 'ran clean but produced an empty digest' (or didn't
+    run at all) failure that no error/timeout alarm would surface."""
+    emf = {
+        "_aws": {
+            "Timestamp": int(datetime.now().timestamp() * 1000),
+            "CloudWatchMetrics": [
+                {"Namespace": METRIC_NAMESPACE, "Dimensions": [[]], "Metrics": [{"Name": DIGEST_ITEMS_METRIC}]}
+            ],
+        },
+        DIGEST_ITEMS_METRIC: count,
+    }
+    print(json.dumps(emf))
 
 
 def _maybe_alert(health: HealthReport) -> None:
@@ -75,9 +95,13 @@ async def _run() -> None:
 
     if not collected_items:
         logger.warning("No items collected. Exiting.")
+        _emit_digest_items_metric(0)
         return
 
     result = await run_pipeline(config, llm_factory, collected_items, digest_date=digest_date)
+
+    published = len(result[1]) if result and result[1] else 0
+    _emit_digest_items_metric(published)
 
     if result:
         items, ranked_items, digest = result

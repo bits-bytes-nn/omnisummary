@@ -292,6 +292,24 @@ class OmniSummaryApplicationStack(Stack):
         )
         api_alarm.add_alarm_action(alarm_action)
 
+        # Symptomless failure: the digest ran with no error/timeout but published an empty digest,
+        # OR didn't run at all that day. The EMF metric appears once per daily run, so a 25h window
+        # with missing-data=BREACHING catches both a 0 count and a skipped run.
+        empty_digest = cloudwatch.Metric(
+            namespace="OmniSummary",
+            metric_name="DigestItemsPublished",
+            period=Duration.hours(25),
+            statistic="Maximum",
+        ).create_alarm(
+            self,
+            "EmptyDigestAlarm",
+            threshold=1,
+            comparison_operator=cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+            evaluation_periods=1,
+            treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
+        )
+        empty_digest.add_alarm_action(alarm_action)
+
     def _attach_waf(self, api: apigw.RestApi, project_name: str, stage: str, rate_limit: int) -> None:
         managed_groups = [
             ("AWSManagedRulesCommonRuleSet", 1),

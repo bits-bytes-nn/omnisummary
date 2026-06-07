@@ -34,11 +34,11 @@ OmniSummary는 능동형(proactive) AI/ML 일일 다이제스트 시스템입니
 
 파이프라인 개념도(수집 → 랭킹 → 다이제스트 → 전달, 후속 에이전트 루프):
 
-![How the digest works](concept-pipeline.png)
+![How the digest works](diagrams/concept-pipeline.png)
 
 AWS 아키텍처(두 경로 — 스케줄 다이제스트 / 인터랙티브 후속):
 
-![AWS architecture](architecture.png)
+![AWS architecture](diagrams/architecture.png)
 
 ## 2. 저장소 구조
 
