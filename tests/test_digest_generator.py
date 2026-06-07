@@ -56,12 +56,23 @@ class TestAgiCountdown:
             == "AGI 등장 1096일 전이다. "
         )
 
+    def test_counts_up_after_d_day(self):
+        from datetime import date
+
+        from shared import agi_countdown_intro
+
+        before, after = "D-{days}", "D+{days}"
+        assert agi_countdown_intro("2029-01-01", before, date(2029, 1, 1), after) == "D+0"  # D-day
+        assert agi_countdown_intro("2029-01-01", before, date(2029, 1, 11), after) == "D+10"  # after
+        assert agi_countdown_intro("2029-01-01", before, date(2028, 12, 22), after) == "D-10"  # before
+
     def test_empty_past_date_or_disabled(self):
         from datetime import date
 
         from shared import agi_countdown_intro
 
-        assert agi_countdown_intro("2029-01-01", "x{days}", date(2030, 1, 1)) == ""  # D-day passed
+        # past D-day with NO after_template → empty (countup opt-in)
+        assert agi_countdown_intro("2029-01-01", "x{days}", date(2030, 1, 1)) == ""
         assert agi_countdown_intro("", "x{days}", date(2026, 1, 1)) == ""  # disabled
         assert agi_countdown_intro("not-a-date", "x{days}", date(2026, 1, 1)) == ""  # malformed
 

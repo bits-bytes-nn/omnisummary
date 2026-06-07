@@ -276,7 +276,7 @@ class OmniSummaryApplicationStack(Stack):
 
     def _add_alarms(
         self,
-        lambdas: dict[str, lambda_.IFunction],
+        lambdas: dict[str, lambda_.Function],
         api: apigw.RestApi,
         foundation: OmniSummaryFoundationStack,
         async_dlq: sqs.Queue,

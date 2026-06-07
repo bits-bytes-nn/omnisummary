@@ -133,6 +133,10 @@ class TestApplicationStack:
         # 4 lambdas (digest, slack, visual, threads-refresh) × (errors + timeout) + api 5xx
         # + empty-digest + async-DLQ + agent-errors = 12
         app.resource_count_is("AWS::CloudWatch::Alarm", 12)
+        # the symptomless-failure alarms specifically exist (count alone wouldn't catch a swap)
+        app.has_resource_properties("AWS::CloudWatch::Alarm", {"MetricName": "DigestItemsPublished"})
+        app.has_resource_properties("AWS::CloudWatch::Alarm", {"MetricName": "AgentErrors"})
+        app.has_resource_properties("AWS::CloudWatch::Alarm", {"MetricName": "ApproximateNumberOfMessagesVisible"})
 
     def test_openai_ssm_param(self, templates):
         _, app = templates

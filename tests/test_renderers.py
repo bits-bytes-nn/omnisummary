@@ -90,6 +90,23 @@ class TestThreadsPosts:
         assert len(root) <= THREADS_MAX_POST_CHARS
         assert all(len(r) <= THREADS_MAX_POST_CHARS for r in replies)
 
+    def test_implication_preserved_over_body_when_trimming(self):
+        # When body + implication don't both fit, body sentences are dropped first; the
+        # implication (the voice line) must survive.
+        long_body = "이것은 긴 본문 문장이다. " * 40  # ~600+ chars
+        content = DigestContent(
+            lead="리드.",
+            headline_index=1,
+            items=[
+                DigestItem(title="스토리", url="http://e.com/x", body=long_body, implication="이것이 핵심 시사점이다.")
+            ],
+        )
+        _, replies = render_threads_posts(content)
+        assert len(replies) == 1
+        post = replies[0]
+        assert len(post) <= THREADS_MAX_POST_CHARS
+        assert "이것이 핵심 시사점이다." in post  # implication kept even as body is trimmed away
+
     def test_unterminated_body_word_trimmed_not_dropped(self):
         # A long body with NO sentence boundary must be word-trimmed into the post (keeping
         # title + URL), not dropped entirely down to title+URL.
@@ -119,8 +136,10 @@ class TestAgentBlocks:
         assert chunks[0][0]["type"] == "section"
         assert chunks[0][0]["text"]["text"] == "안녕하세요 *굵게* 답변입니다."
 
-    def test_empty_text_returns_empty_chunk(self):
-        assert render_agent_blocks("") == [[]]
+    def test_empty_text_returns_no_chunks(self):
+        # Empty input → no chunks so callers post nothing (never blocks=[], which Slack rejects).
+        assert render_agent_blocks("") == []
+        assert render_agent_blocks("   \n\n  ") == []
 
     def test_long_text_split_into_section_sized_blocks(self):
         text = "\n\n".join(["가" * 2000, "나" * 2000, "다" * 2000])

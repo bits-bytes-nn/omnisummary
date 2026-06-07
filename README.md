@@ -1,6 +1,23 @@
-# OmniSummary
+<div align="center">
 
-Proactive AI/ML daily digest system that collects content from multiple sources, ranks by importance using LLM, generates editorial-style digests, and delivers via Slack. Includes a follow-up agent for deep-dive analysis on specific items.
+# 🗞️ OmniSummary
+
+**A proactive AI/ML daily digest — multi-source collection, LLM ranking, and a Korean editorial digest delivered to Slack, with a Bedrock AgentCore follow-up agent for deep dives.**
+
+Daily pipeline on AWS · Bedrock AgentCore (Runtime + Memory) · powered by Amazon Bedrock (Claude).
+
+[![CI](https://github.com/bits-bytes-nn/omnisummary/actions/workflows/ci.yml/badge.svg)](https://github.com/bits-bytes-nn/omnisummary/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.12%2B-blue)
+![AWS CDK](https://img.shields.io/badge/IaC-AWS%20CDK-orange)
+![Bedrock](https://img.shields.io/badge/LLM-Amazon%20Bedrock%20(Claude)-green)
+
+🇰🇷 [한국어 README](./README.ko.md)
+
+![OmniSummary Architecture](docs/diagrams/architecture.png)
+
+</div>
+
+---
 
 ## Features
 
@@ -13,8 +30,6 @@ Proactive AI/ML daily digest system that collects content from multiple sources,
 - **AWS deployment**: Lambda + EventBridge cron + Bedrock AgentCore (Runtime + Memory) + ECS (RSSHub)
 
 ## Architecture
-
-![OmniSummary Architecture](docs/diagrams/architecture.png)
 
 ![How the digest works](docs/diagrams/concept-pipeline.png)
 
@@ -271,7 +286,7 @@ omnisummary/
 ├── cloudflare-proxy/           # CF Worker proxy
 ├── config/                     # YAML configuration
 ├── tests/                      # Unit + CDK assertion tests
-└── assets/                     # tech-doc.md, architecture + concept diagrams
+└── docs/                       # diagrams/ (architecture, concept-pipeline)
 ```
 
 ## Testing & CI

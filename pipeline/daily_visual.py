@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import json
 import os
-from datetime import date
 
 from langchain_core.output_parsers import StrOutputParser
 
@@ -15,7 +14,6 @@ from shared import (
     RankedItem,
     VisualBrief,
     VisualEditorPrompt,
-    agi_countdown_intro,
     extract_json_from_llm_output,
     logger,
     resolve_secret,
@@ -169,20 +167,13 @@ class DailyVisualMaker:
         from output.renderers import render_threads_posts
         from output.threads_handler import post_to_threads
 
-        # Root = visual image + the digest lead; replies = one per story. When no structured
-        # content is available, fall back to the visual's own title/caption as the root.
+        # Root = visual image + the digest lead (which already carries the AGI-countdown intro,
+        # prepended at digest generation); replies = one per story. When no structured content is
+        # available, fall back to the visual's own title/caption as the root.
         if content and content.items:
             root_text, replies = render_threads_posts(content)
         else:
             root_text, replies = f"{brief.title}\n\n{brief.caption}", []
-
-        # Prepend the AGI countdown at POST time (computed from today), so it lands regardless of
-        # which digest produced the content — including reposts from an older stored snapshot.
-        intro = agi_countdown_intro(
-            self.config.pipeline.agi_countdown_date, self.config.pipeline.agi_countdown_template, date.today()
-        )
-        if intro and not root_text.startswith(intro):
-            root_text = intro + root_text
 
         bucket = self.config.aws.state_bucket_name or os.environ.get("STATE_BUCKET", "")
         prefix = self.config.aws.s3_prefix.rstrip("/") + "/" if self.config.aws.s3_prefix else ""

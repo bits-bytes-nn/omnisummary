@@ -34,7 +34,9 @@ def render_agent_blocks(text: str) -> list[list[dict]]:
         sections.append(current)
 
     blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": s}} for s in sections]
-    return _chunk_blocks(blocks) if blocks else [[]]
+    # Empty/whitespace input → no chunks (callers post nothing); never [[]], which would send an
+    # invalid empty blocks=[] to Slack.
+    return _chunk_blocks(blocks) if blocks else []
 
 
 def _item_blocks(item, *, with_divider: bool) -> list[dict]:

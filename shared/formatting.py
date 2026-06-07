@@ -13,18 +13,24 @@ YOUTUBE_VIEWS_EMOJI = ":arrow_forward:"
 RSS_NAME_DELIMITERS = (" - ", " — ")
 
 
-def agi_countdown_intro(date_str: str, template: str, today: date) -> str:
-    """The tongue-in-cheek 'AGI N days away' intro, computed in code (never the LLM) from a fixed
-    D-day so it's accurate and ticks down daily. Applied at POST time (not digest generation) so it
-    lands on every channel and every run, including reposts from an older stored digest. Returns ""
-    when disabled, malformed, or the D-day has passed."""
+def agi_countdown_intro(date_str: str, template: str, today: date, after_template: str = "") -> str:
+    """The tongue-in-cheek AGI-countdown intro, computed in code (never the LLM) from a fixed D-day
+    so it's accurate and ticks daily. Applied at POST time so it lands on every channel and run.
+    Before the D-day: counts DOWN via `template` ({days} = days remaining). On/after the D-day:
+    counts UP via `after_template` ({days} = days since), a self-aware nod that the prediction blew
+    past. Returns "" when disabled/malformed, or after the D-day if no after_template is set."""
     if not date_str or not template:
         return ""
     try:
-        days = (date.fromisoformat(date_str) - today).days
+        target = date.fromisoformat(date_str)
     except ValueError:
         return ""
-    return template.format(days=days) if days > 0 else ""
+    days = (target - today).days
+    if days > 0:
+        return template.format(days=days)
+    if after_template:
+        return after_template.format(days=-days)
+    return ""
 
 
 def normalize_title(title: str) -> str:
