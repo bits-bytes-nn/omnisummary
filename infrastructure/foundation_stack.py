@@ -107,7 +107,9 @@ class OmniSummaryFoundationStack(Stack):
             resources=[f"arn:aws:ssm:{self.region}:{self.account}:parameter/{project_name}/{stage}/*"],
         )
         bedrock_invoke_statement = iam.PolicyStatement(
-            actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+            # CountTokens powers token counting/truncation (replaces the local tiktoken heuristic);
+            # without it the calls AccessDeny and silently fall back to a char/4 estimate.
+            actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:CountTokens"],
             resources=[
                 "arn:aws:bedrock:*::foundation-model/*",
                 f"arn:aws:bedrock:*:{self.account}:inference-profile/*",
