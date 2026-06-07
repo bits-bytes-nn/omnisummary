@@ -9,6 +9,9 @@ from aws_cdk import aws_cloudwatch_actions as cw_actions
 from aws_cdk import aws_events as events
 from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_lambda as lambda_
+from aws_cdk import aws_lambda_destinations as destinations
+from aws_cdk import aws_logs as logs
+from aws_cdk import aws_sqs as sqs
 from aws_cdk import aws_ssm as ssm
 from aws_cdk import aws_wafv2 as wafv2
 from aws_cdk.aws_bedrockagentcore import CfnRuntime
@@ -110,6 +113,12 @@ class OmniSummaryApplicationStack(Stack):
         # not redeploy the function after a new push; a digest forces the update.
         digest_tag_or_digest = (digest_image_ref or "latest").lstrip("@")
 
+        # DLQ for failed async Lambda invokes (defined in foundation so the on_failure send grant
+        # on the shared lambda_role stays intra-stack). With retry_attempts=0, a failed run lands
+        # here for inspection/replay instead of auto-retrying (a retry would double-post to Threads,
+        # which has no idempotency key).
+        async_dlq = foundation.async_dlq
+
         # Daily-visual Lambda: invoked asynchronously by the digest Lambda so its
         # LLM-editor + Tavily + gpt-image work (~1-2 min) stays off the digest's
         # critical path. Same image, loads ranked items from AgentCore Memory.
@@ -130,6 +139,11 @@ class OmniSummaryApplicationStack(Stack):
             role=foundation.lambda_role,
             vpc=foundation.vpc,
             vpc_subnets=foundation.vpc_subnets,
+            # No auto-retry: a retry would re-post the whole Threads thread (no idempotency key).
+            # Failures go to the DLQ for manual replay instead.
+            retry_attempts=0,
+            on_failure=destinations.SqsDestination(async_dlq),
+            log_retention=logs.RetentionDays.ONE_MONTH,
             environment={
                 "AWS_BEDROCK_REGION": bedrock_region,
                 "PROJECT_NAME": project_name,
@@ -152,6 +166,11 @@ class OmniSummaryApplicationStack(Stack):
             role=foundation.lambda_role,
             vpc=foundation.vpc,
             vpc_subnets=foundation.vpc_subnets,
+            # No auto-retry on the daily cron invoke: the pipeline is not idempotent (a retry
+            # re-posts the digest). A failure goes to the DLQ for inspection/manual replay.
+            retry_attempts=0,
+            on_failure=destinations.SqsDestination(async_dlq),
+            log_retention=logs.RetentionDays.ONE_MONTH,
             environment={
                 "STATE_BUCKET": foundation.state_bucket.bucket_name,
                 "S3_PREFIX": f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state",
@@ -175,6 +194,7 @@ class OmniSummaryApplicationStack(Stack):
             timeout=Duration.seconds(60),
             memory_size=128,
             role=foundation.lambda_role,
+            log_retention=logs.RetentionDays.ONE_MONTH,
             environment={
                 "AGENTCORE_RUNTIME_ARN": agentcore_runtime.attr_agent_runtime_arn,
                 "DDB_TABLE_NAME": foundation.dedup_table.table_name,
@@ -225,6 +245,7 @@ class OmniSummaryApplicationStack(Stack):
             timeout=Duration.minutes(1),
             memory_size=256,
             role=foundation.lambda_role,
+            log_retention=logs.RetentionDays.ONE_MONTH,
             environment={"PROJECT_NAME": project_name, "STAGE": stage},
         )
         events.Rule(
@@ -246,6 +267,7 @@ class OmniSummaryApplicationStack(Stack):
             },
             api,
             foundation,
+            async_dlq,
         )
 
         CfnOutput(self, "SlackWebhookUrl", value=f"{api.url}slack/events")
@@ -257,6 +279,7 @@ class OmniSummaryApplicationStack(Stack):
         lambdas: dict[str, lambda_.IFunction],
         api: apigw.RestApi,
         foundation: OmniSummaryFoundationStack,
+        async_dlq: sqs.Queue,
     ) -> None:
         alarm_action = cw_actions.SnsAction(foundation.alerts_topic)
         for name, fn in lambdas.items():
@@ -309,6 +332,35 @@ class OmniSummaryApplicationStack(Stack):
             treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
         )
         empty_digest.add_alarm_action(alarm_action)
+
+        # Any message in the async DLQ means a digest/visual run failed (retries are off) and is
+        # waiting for inspection/replay — alarm so it doesn't sit unnoticed.
+        dlq_alarm = async_dlq.metric_approximate_number_of_messages_visible(period=Duration.minutes(5)).create_alarm(
+            self,
+            "AsyncDLQAlarm",
+            threshold=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            evaluation_periods=1,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+        dlq_alarm.add_alarm_action(alarm_action)
+
+        # The AgentCore runtime (CfnRuntime, not a Lambda) catches its own exceptions and replies
+        # with an error message, so a systemic agent break is otherwise invisible. It emits an
+        # OmniSummary/AgentErrors EMF metric on failure; alarm on it.
+        agent_errors = cloudwatch.Metric(
+            namespace="OmniSummary",
+            metric_name="AgentErrors",
+            period=Duration.minutes(5),
+            statistic="Sum",
+        ).create_alarm(
+            self,
+            "AgentErrorsAlarm",
+            threshold=1,
+            evaluation_periods=1,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+        agent_errors.add_alarm_action(alarm_action)
 
     def _attach_waf(self, api: apigw.RestApi, project_name: str, stage: str, rate_limit: int) -> None:
         managed_groups = [
