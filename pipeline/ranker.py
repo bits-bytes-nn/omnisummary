@@ -29,7 +29,11 @@ class ContentRanker:
 
     def __init__(self, config: PipelineConfig, llm_factory: BedrockLanguageModelFactory) -> None:
         self.config = config
+        self.llm_factory = llm_factory
         self.llm = llm_factory.get_model(config.ranking_model)
+
+    def _truncate(self, text: str, max_tokens: int) -> str:
+        return self.llm_factory.truncate_to_tokens(text, max_tokens, self.config.ranking_model)
 
     async def rank(self, items: list[CollectedItem]) -> list[RankedItem]:
         if not items:
@@ -223,7 +227,13 @@ class ContentRanker:
             if engagement:
                 fields.append(("Engagement", engagement))
             parts.append(
-                format_collected_item(item, index=i + 1, max_tokens=self.config.item_text_max_tokens, fields=fields)
+                format_collected_item(
+                    item,
+                    index=i + 1,
+                    max_tokens=self.config.item_text_max_tokens,
+                    fields=fields,
+                    truncate=self._truncate,
+                )
             )
         return "\n".join(parts)
 

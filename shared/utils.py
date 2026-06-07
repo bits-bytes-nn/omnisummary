@@ -12,7 +12,6 @@ import boto3
 from botocore.config import Config as BotoConfig
 from langchain_aws import ChatBedrock, ChatBedrockConverse
 from pydantic import BaseModel
-from tiktoken import get_encoding
 
 from .constants import LanguageModelId
 from .logger import logger
@@ -126,8 +125,6 @@ _LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
 ModelIdT = TypeVar("ModelIdT")
 ModelInfoT = TypeVar("ModelInfoT")
 WrapperT = TypeVar("WrapperT")
-
-MAX_TOKENS: int = 150000
 
 
 class BaseBedrockModelFactory(Generic[ModelIdT, ModelInfoT, WrapperT], ABC):
@@ -258,6 +255,41 @@ class BedrockLanguageModelFactory(
 
     def _get_model_info_dict(self) -> dict[LanguageModelId, LanguageModelInfo]:
         return _LANGUAGE_MODEL_INFO
+
+    def count_tokens(self, text: str, model_id: LanguageModelId | None = None) -> int:
+        """Authoritative token count via the Bedrock CountTokens API (not a local heuristic).
+        CountTokens requires the BASE foundation-model id, so the cross-region 'global.'/'us.'
+        prefix is stripped. Falls back to a conservative char estimate only if the API errors."""
+        base_id = (model_id or LanguageModelId.CLAUDE_V4_6_SONNET).value
+        base_id = base_id.split(".", 1)[1] if base_id.split(".", 1)[0] in ("global", "us", "eu", "apac") else base_id
+        try:
+            resp = self._client.count_tokens(
+                modelId=base_id,
+                input={"converse": {"messages": [{"role": "user", "content": [{"text": text}]}]}},
+            )
+            return int(resp["inputTokens"])
+        except Exception as e:
+            logger.warning("Bedrock count_tokens failed (%s); using char/4 estimate", e)
+            return len(text) // 4
+
+    def truncate_to_tokens(self, text: str, max_tokens: int, model_id: LanguageModelId | None = None) -> str:
+        """Truncate text to <= max_tokens, measured by the Bedrock CountTokens API. Binary-searches
+        the character cut point (O(log n) API calls) since CountTokens counts but can't decode token
+        boundaries. Cuts on a whitespace boundary near the found point so words aren't split."""
+        if not text or self.count_tokens(text, model_id) <= max_tokens:
+            return text
+        lo, hi, best = 0, len(text), 0
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if self.count_tokens(text[:mid], model_id) <= max_tokens:
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        cut = text.rfind(" ", 0, best)
+        truncated = text[: cut if cut > best // 2 else best].rstrip()
+        logger.warning("Text truncated to <=%d tokens (%d chars)", max_tokens, len(truncated))
+        return truncated
 
     def get_model(self, model_id: LanguageModelId, **kwargs: Any) -> ChatBedrock | ChatBedrockConverse:
         model_info = self.get_model_info(model_id)
@@ -474,17 +506,6 @@ async def retry_async(
                 await asyncio.sleep(backoff_sec * attempt)
     assert last_error is not None
     raise last_error
-
-
-def truncate_text_by_tokens(text: str, max_tokens: int = MAX_TOKENS) -> str:
-    encoding = get_encoding("cl100k_base")
-    tokens = encoding.encode(text)
-    if len(tokens) <= max_tokens:
-        return text
-    truncated_tokens = tokens[:max_tokens]
-    truncated = encoding.decode(truncated_tokens)
-    logger.warning("Text truncated from %d to %d tokens", len(tokens), len(truncated_tokens))
-    return truncated
 
 
 _CJK = "가-힣぀-ヿ一-鿿"

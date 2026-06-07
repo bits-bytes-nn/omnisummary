@@ -108,7 +108,8 @@ def get_detail(item_number: int, query: str = "") -> str:
         return f"Item {item_number} not found. Today's digest has {total} items."
 
     item = ranked.item
-    max_tokens = Config.load().agent.detail_max_tokens
+    factory, config = _build_llm_factory()
+    max_tokens = config.agent.detail_max_tokens
     fields = [
         ("Title", item.title),
         ("Source", item.source_type.value),
@@ -119,7 +120,12 @@ def get_detail(item_number: int, query: str = "") -> str:
         ("Reasoning", ranked.reasoning),
     ]
     detail = format_collected_item(
-        item, index=item_number, max_tokens=max_tokens, fields=fields, text_label="Content"
+        item,
+        index=item_number,
+        max_tokens=max_tokens,
+        fields=fields,
+        truncate=lambda t, n: factory.truncate_to_tokens(t, n, config.agent.model_id),
+        text_label="Content",
     ).rstrip("\n")
     if query:
         detail += f"\n\nUser question: {query}"

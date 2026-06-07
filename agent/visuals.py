@@ -14,7 +14,6 @@ from shared import (
     extract_json_from_llm_output,
     logger,
     resolve_secret,
-    truncate_text_by_tokens,
 )
 from shared.config import LanguageModelId
 
@@ -65,6 +64,8 @@ class VisualGenerator:
         ),
         style_aesthetic: str = "clean modern style",
     ) -> None:
+        self.llm_factory = llm_factory
+        self.brief_model = brief_model
         self.llm = llm_factory.get_model(brief_model)
         self.image_model = image_model
         # orientation -> gpt-image size; the brief picks the orientation that fits the visual.
@@ -87,8 +88,8 @@ class VisualGenerator:
         raw = await chain.ainvoke(
             {
                 "instruction": instruction,
-                "source": truncate_text_by_tokens(source, self.source_max_tokens),
-                "context": truncate_text_by_tokens(context, self.context_max_tokens),
+                "source": self.llm_factory.truncate_to_tokens(source, self.source_max_tokens, self.brief_model),
+                "context": self.llm_factory.truncate_to_tokens(context, self.context_max_tokens, self.brief_model),
                 "orientations": ", ".join(self.image_sizes),
                 "caption_language": self.caption_language,
                 "on_image_language": self.on_image_language,
