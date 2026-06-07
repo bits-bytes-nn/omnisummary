@@ -198,7 +198,6 @@ class OmniSummaryApplicationStack(Stack):
         slack_resource.add_method("POST", apigw.LambdaIntegration(slack_lambda))
 
         self._attach_waf(api, project_name, stage, config.aws.waf_rate_limit)
-        self._add_alarms(digest_lambda, slack_lambda, api, foundation)
 
         events.Rule(
             self,
@@ -236,27 +235,52 @@ class OmniSummaryApplicationStack(Stack):
             targets=[targets.LambdaFunction(threads_refresh_lambda)],
         )
 
+        # Alarm on ALL Lambdas (incl. visual + threads-refresh, which run best-effort and would
+        # otherwise fail silently) and the API. Created here so every Lambda already exists.
+        self._add_alarms(
+            {
+                "Digest": digest_lambda,
+                "SlackEvent": slack_lambda,
+                "Visual": visual_lambda,
+                "ThreadsRefresh": threads_refresh_lambda,
+            },
+            api,
+            foundation,
+        )
+
         CfnOutput(self, "SlackWebhookUrl", value=f"{api.url}slack/events")
         CfnOutput(self, "AgentCoreArn", value=agentcore_runtime.attr_agent_runtime_arn)
         CfnOutput(self, "StateBucket", value=foundation.state_bucket.bucket_name)
 
     def _add_alarms(
         self,
-        digest_lambda: lambda_.IFunction,
-        slack_lambda: lambda_.IFunction,
+        lambdas: dict[str, lambda_.IFunction],
         api: apigw.RestApi,
         foundation: OmniSummaryFoundationStack,
     ) -> None:
         alarm_action = cw_actions.SnsAction(foundation.alerts_topic)
-        for name, fn in (("Digest", digest_lambda), ("SlackEvent", slack_lambda)):
-            alarm = fn.metric_errors(period=Duration.minutes(5)).create_alarm(
+        for name, fn in lambdas.items():
+            # Crashes (raised exceptions) — Errors metric.
+            errors = fn.metric_errors(period=Duration.minutes(5)).create_alarm(
                 self,
                 f"{name}ErrorsAlarm",
                 threshold=1,
                 evaluation_periods=1,
                 treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
             )
-            alarm.add_alarm_action(alarm_action)
+            errors.add_alarm_action(alarm_action)
+            # Timeouts don't count as Errors, so also alarm when max Duration nears the configured
+            # timeout (90%). Catches the visual-Lambda "ran out of time mid Threads post" case.
+            timeout_ms = fn.timeout.to_milliseconds() if fn.timeout else 0
+            if timeout_ms:
+                duration = fn.metric_duration(period=Duration.minutes(5), statistic="Maximum").create_alarm(
+                    self,
+                    f"{name}TimeoutAlarm",
+                    threshold=timeout_ms * 0.9,
+                    evaluation_periods=1,
+                    treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+                )
+                duration.add_alarm_action(alarm_action)
 
         api_5xx = api.metric_server_error(period=Duration.minutes(5))
         api_alarm = api_5xx.create_alarm(

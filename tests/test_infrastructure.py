@@ -130,8 +130,8 @@ class TestApplicationStack:
 
     def test_cloudwatch_alarms(self, templates):
         _, app = templates
-        # 2 lambda error alarms + 1 api 5xx alarm
-        app.resource_count_is("AWS::CloudWatch::Alarm", 3)
+        # 4 lambdas (digest, slack, visual, threads-refresh) × (errors + timeout) + 1 api 5xx
+        app.resource_count_is("AWS::CloudWatch::Alarm", 9)
 
     def test_openai_ssm_param(self, templates):
         _, app = templates
