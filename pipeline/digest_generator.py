@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from urllib.parse import urlparse
 
 from langchain_core.output_parsers import StrOutputParser
@@ -16,6 +16,7 @@ from shared import (
     GroundingCheckPrompt,
     RankedItem,
     SourceType,
+    agi_countdown_intro,
     clean_rss_feed_name,
     extract_json_from_llm_output,
     format_collected_item,
@@ -36,6 +37,7 @@ class DigestGenerator:
         ranked_items: list[RankedItem],
         all_items: list[CollectedItem],
         trends_context: str = "",
+        today: date | None = None,
     ) -> DigestResult:
         if not ranked_items:
             logger.warning("No ranked items to generate digest from")
@@ -69,6 +71,18 @@ class DigestGenerator:
 
         if self.config.enable_grounding_check:
             content = await self._verify_grounding(content, ranked_items, trends_context)
+
+        # Prepend the AGI countdown to the lead at generation time, using the digest's own date
+        # (the single KST clock for the run) so the day count is consistent with trend stamps and
+        # lands on every channel via the stored content — not just one renderer.
+        intro = agi_countdown_intro(
+            self.config.agi_countdown_date,
+            self.config.agi_countdown_template,
+            today or datetime.now(UTC).date(),
+            self.config.agi_countdown_after,
+        )
+        if intro and content.lead and not content.lead.startswith(intro):
+            content.lead = intro + content.lead
 
         digest_text = render_digest_text(content)
         logger.info("Digest generated successfully (%d items, %d characters)", len(content.items), len(digest_text))

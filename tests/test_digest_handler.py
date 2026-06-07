@@ -1,3 +1,4 @@
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from lambda_handlers import digest_handler
@@ -64,6 +65,34 @@ class TestRun:
                                         await digest_handler._run()
         persist.assert_called_once()
         trigger.assert_called_once()
+
+    async def test_emits_published_count_metric(self):
+        config = _config()
+        items = [MagicMock()]
+        health = HealthReport(sources=[SourceHealth(name="rss", item_count=1, status=SourceStatus.OK)])
+        result = (items, [MagicMock(), MagicMock()], MagicMock())  # 2 ranked items
+        with patch("lambda_handlers.digest_handler.Config.load", return_value=config):
+            with patch("lambda_handlers.digest_handler.boto3.Session"):
+                with patch("lambda_handlers.digest_handler.BedrockLanguageModelFactory"):
+                    with patch(
+                        "lambda_handlers.digest_handler.run_collectors_with_health",
+                        new=AsyncMock(return_value=(items, health)),
+                    ):
+                        with patch("lambda_handlers.digest_handler._maybe_alert"):
+                            with patch(
+                                "lambda_handlers.digest_handler.run_pipeline", new=AsyncMock(return_value=result)
+                            ):
+                                with patch("lambda_handlers.digest_handler.persist_digest"):
+                                    with patch("lambda_handlers.digest_handler._trigger_visual"):
+                                        with patch("lambda_handlers.digest_handler._emit_digest_items_metric") as emit:
+                                            await digest_handler._run()
+        emit.assert_called_once_with(2)
+
+    def test_emit_metric_writes_emf_doc(self, capsys):
+        digest_handler._emit_digest_items_metric(3)
+        doc = json.loads(capsys.readouterr().out.strip())
+        assert doc["DigestItemsPublished"] == 3
+        assert doc["_aws"]["CloudWatchMetrics"][0]["Namespace"] == "OmniSummary"
 
     async def test_rsshub_base_url_override_from_env(self, monkeypatch):
         monkeypatch.setenv("RSSHUB_BASE_URL", "http://example.local:1200")

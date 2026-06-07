@@ -124,7 +124,10 @@ class PipelineConfig(BaseModel):
     # "1-3 years"); tune it here. Empty date disables the intro.
     agi_countdown_date: str = "2029-01-01"
     # Plain declarative ('~다') to match the columnist body voice — not honorific ('~입니다').
+    # Before the D-day it counts down; on/after it, agi_countdown_after counts up (the prediction
+    # blew past — a self-aware joke). Empty agi_countdown_date disables the intro entirely.
     agi_countdown_template: str = "AGI 등장 {days}일 전이다. "
+    agi_countdown_after: str = "AGI 등장 예정일 D+{days}일째, 아직이다. "
     item_text_max_tokens: int = 8000
     ranking_batch_size: int = Field(default=40, ge=1)
     source_slots: dict[str, int] = Field(

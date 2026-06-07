@@ -57,12 +57,15 @@ class TrendTracker:
         self._memory = TrendMemory()
         return self._memory
 
-    def get_trends_context(self) -> str:
+    def get_trends_context(self, today: date | None = None) -> str:
         memory = self._load_memory()
         visible = [t for t in memory.trends if t.status != TrendStatus.ARCHIVED]
         if not visible:
             return ""
-        today = date.today()
+        # Use the run's digest date (KST) as the single clock so the recurrence facts agree with
+        # the evidence dates (also KST-stamped); date.today() would be UTC and off by a day at the
+        # 19:00-KST run boundary.
+        today = today or date.today()
         visible.sort(key=lambda t: t.momentum(today, self.config.trend_momentum_half_life_days), reverse=True)
         return self._render_ammunition(visible, today)
 

@@ -230,3 +230,21 @@ class TestGetTrendsContext:
         store = _FakeStore({TRENDS_KEY: TrendMemory().model_dump_json()})
         tracker = TrendTracker(PipelineConfig(), MagicMock(), store)
         assert tracker.get_trends_context() == ""
+
+    def test_ammunition_uses_supplied_clock(self):
+        # The recurrence facts must be computed against the passed-in digest date (KST), not
+        # date.today() (UTC) — otherwise day counts are off by one at the run boundary.
+        trends = [
+            Trend(
+                id="t",
+                title="T",
+                status=TrendStatus.ACTIVE,
+                first_seen="2026-06-01",
+                last_seen="2026-06-10",
+                evidence=[TrendEvidence(date="2026-06-10", summary="s")],
+            )
+        ]
+        store = _FakeStore({TRENDS_KEY: TrendMemory(trends=trends).model_dump_json()})
+        tracker = TrendTracker(PipelineConfig(), MagicMock(), store)
+        ctx = tracker.get_trends_context(today=date(2026, 6, 10))
+        assert "10일째 추적 중" in ctx  # (2026-06-10 - 2026-06-01).days + 1 = 10, from the supplied date
