@@ -1,20 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 import time
 
-import boto3
 import feedparser
-from botocore.exceptions import ClientError
-from pydantic import ValidationError
 
 from shared import CollectedItem, SourceType, generate_item_id, logger, parse_feed_published_date
 from shared.config import RSSHubCollectorConfig
 from shared.constants import TWITTER_PLATFORMS
 
-from .base import BaseCollector, cutoff_datetime
+from .base import BaseCollector, cutoff_datetime, load_items_from_s3
 
 
 class RSSHubCollector(BaseCollector):
@@ -26,7 +21,7 @@ class RSSHubCollector(BaseCollector):
             logger.info("RSSHub collector is disabled, skipping")
             return []
 
-        s3_items = self._load_from_s3()
+        s3_items = load_items_from_s3("rsshub_items.json")
         if s3_items is not None:
             return s3_items
 
@@ -175,27 +170,3 @@ class RSSHubCollector(BaseCollector):
         if platform_lower in TWITTER_PLATFORMS:
             return SourceType.X
         return SourceType.WEB
-
-    @staticmethod
-    def _load_from_s3() -> list[CollectedItem] | None:
-        bucket = os.environ.get("STATE_BUCKET", "")
-        if not bucket:
-            return None
-
-        prefix = os.environ.get("S3_PREFIX", "").rstrip("/")
-        base_prefix = prefix.rsplit("/", 1)[0] if "/" in prefix else prefix
-        s3_key = f"{base_prefix}/rsshub_items.json" if base_prefix else "rsshub_items.json"
-
-        try:
-            s3 = boto3.client("s3")
-            resp = s3.get_object(Bucket=bucket, Key=s3_key)
-            data = json.loads(resp["Body"].read().decode("utf-8"))
-            items = [CollectedItem.model_validate(item) for item in data]
-            logger.info("Loaded %d RSSHub items from 's3://%s/%s'", len(items), bucket, s3_key)
-            return items
-        except ClientError:
-            logger.info("No RSSHub items found in S3, falling back to live collection")
-            return None
-        except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as e:
-            logger.warning("Failed to load RSSHub items from S3: %s", e)
-            return None

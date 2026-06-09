@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from datetime import datetime
 
@@ -12,9 +11,9 @@ from youtube_transcript_api._errors import YouTubeTranscriptApiException
 
 from shared import CollectedItem, SourceType, logger, parse_feed_published_date, resolve_secret, retry_async
 from shared.config import YouTubeCollectorConfig
-from shared.proxy import get_proxied_url, is_proxy_configured
+from shared.proxy import get_proxied_url
 
-from .base import BaseCollector, cutoff_datetime, gather_collector_results
+from .base import BaseCollector, cutoff_datetime, gather_collector_results, load_items_from_s3
 
 YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
 # Canonical YouTube channel ID: "UC" + 22 base64url chars. The uploads playlist is the
@@ -51,6 +50,14 @@ class YouTubeCollector(BaseCollector):
         if not self.config.channels:
             logger.info("No YouTube channels configured, skipping")
             return []
+
+        # YouTube blocks transcript fetches from datacenter (Lambda) IPs, so a local sync script
+        # collects videos WITH transcripts on a residential IP and parks them in S3 (same pattern
+        # as RSSHub/X). In AWS we read that file; live collection from Lambda still works for the
+        # metadata but yields transcript-less items, so the S3 file is strongly preferred.
+        s3_items = load_items_from_s3("youtube_items.json")
+        if s3_items is not None:
+            return s3_items
 
         tasks = [self._collect_channel(ch) for ch in self.config.channels]
         items = await gather_collector_results(tasks, labels=self.config.channels, raise_if_all_failed=True)
@@ -288,26 +295,21 @@ class YouTubeCollector(BaseCollector):
             return ""
 
     def _get_transcript(self, video_id: str) -> str:
+        # Run by the local sync (residential IP); YouTube blocks transcript fetches from
+        # datacenter IPs, so in AWS this fails and the item keeps its description as body.
+        # Try the configured language first, then fall back to ANY transcript the video has
+        # (non-English channels, auto-generated tracks) so a missing 'en' track isn't an empty body.
         try:
-            if is_proxy_configured():
-                proxy_url = get_proxied_url(
-                    f"https://www.youtube.com/api/timedtext?v={video_id}&lang={self.config.transcript_language}"
-                )
-                resp = self._sync_client.get(proxy_url, timeout=self.config.transcript_timeout)
-                if resp.status_code == 200 and resp.text.strip():
-
-                    try:
-                        data = json.loads(resp.text)
-                        if isinstance(data, dict) and "events" in data:
-                            return " ".join(
-                                e.get("segs", [{}])[0].get("utf8", "") for e in data["events"] if e.get("segs")
-                            )
-                    except (json.JSONDecodeError, KeyError) as e:
-                        logger.debug("Failed to parse proxied transcript JSON for video '%s': %s", video_id, e)
-
             ytt_api = YouTubeTranscriptApi()
-            transcript = ytt_api.fetch(video_id)
-            return " ".join(snippet.text for snippet in transcript.snippets)
+            try:
+                fetched = ytt_api.fetch(video_id, languages=(self.config.transcript_language,))
+            except YouTubeTranscriptApiException:
+                available = ytt_api.list(video_id)
+                codes = [t.language_code for t in available]
+                if not codes:
+                    raise
+                fetched = available.find_transcript(codes).fetch()
+            return " ".join(snippet.text for snippet in fetched.snippets)
         except (
             YouTubeTranscriptApiException,
             httpx.HTTPError,

@@ -6,6 +6,7 @@ import pytest
 from collectors.youtube import YouTubeCollector
 from shared.config import YouTubeCollectorConfig
 from shared.constants import SourceType
+from shared.models import CollectedItem
 
 
 def _config(**kwargs) -> YouTubeCollectorConfig:
@@ -160,6 +161,38 @@ class TestApiPath:
                     await collector.collect()
 
 
+class TestS3Preload:
+    @pytest.mark.asyncio
+    async def test_prefers_s3_items_when_present(self, monkeypatch):
+        # When a local sync has parked transcript-bearing items in S3, AWS reads those and
+        # skips live collection entirely (which would yield transcript-less metadata).
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config())
+        parked = [
+            CollectedItem(
+                item_id="vS3",
+                source_type=SourceType.YOUTUBE,
+                title="From S3",
+                url="https://y/v",
+                text="full transcript",
+            )
+        ]
+        with patch("collectors.youtube.load_items_from_s3", return_value=parked):
+            with patch.object(collector, "_collect_channel", new=AsyncMock()) as live:
+                items = await collector.collect()
+        assert [i.item_id for i in items] == ["vS3"]
+        live.assert_not_called()  # S3 hit → no live collection
+
+    @pytest.mark.asyncio
+    async def test_live_collection_when_no_s3(self, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config())
+        with patch("collectors.youtube.load_items_from_s3", return_value=None):
+            with patch.object(collector, "_collect_channel", new=AsyncMock(return_value=[])):
+                items = await collector.collect()
+        assert items == []
+
+
 class TestRssFallback:
     @pytest.mark.asyncio
     async def test_rss_fallback_when_no_api_key(self, monkeypatch):
@@ -244,26 +277,34 @@ class TestResolveChannelIdViaApi:
 class TestTranscript:
     def test_transcript_failure_returns_empty(self):
         collector = YouTubeCollector(_config())
-        with patch("collectors.youtube.is_proxy_configured", return_value=False):
-            with patch("collectors.youtube.YouTubeTranscriptApi", side_effect=RuntimeError("boom")):
-                assert collector._get_transcript("vid") == ""
+        with patch("collectors.youtube.YouTubeTranscriptApi", side_effect=RuntimeError("boom")):
+            assert collector._get_transcript("vid") == ""
 
-    def test_proxied_transcript_uses_configured_language(self):
+    def test_fetch_uses_configured_language_first(self):
         collector = YouTubeCollector(_config(transcript_language="ko"))
-        captured: dict[str, str] = {}
+        api = MagicMock()
+        api.fetch.return_value = MagicMock(snippets=[MagicMock(text="안녕")])
+        with patch("collectors.youtube.YouTubeTranscriptApi", return_value=api):
+            out = collector._get_transcript("vid")
+        assert out == "안녕"
+        assert api.fetch.call_args.kwargs["languages"] == ("ko",)
 
-        def fake_get(url, timeout):
-            captured["url"] = url
-            resp = MagicMock()
-            resp.status_code = 200
-            resp.text = '{"events": [{"segs": [{"utf8": "hello"}]}]}'
-            return resp
+    def test_falls_back_to_any_available_language(self):
+        from youtube_transcript_api._errors import YouTubeTranscriptApiException
 
-        with patch("collectors.youtube.is_proxy_configured", return_value=True):
-            with patch("collectors.youtube.get_proxied_url", side_effect=lambda u: u):
-                with patch.object(collector._sync_client, "get", side_effect=fake_get):
-                    collector._get_transcript("vid")
-        assert "lang=ko" in captured["url"]
+        collector = YouTubeCollector(_config(transcript_language="en"))
+        api = MagicMock()
+        # Configured 'en' missing → raise, then fall back to listed languages.
+        api.fetch.side_effect = YouTubeTranscriptApiException("no en")
+        track = MagicMock(language_code="ko")
+        listing = MagicMock()
+        listing.__iter__ = lambda self: iter([track])
+        listing.find_transcript.return_value.fetch.return_value = MagicMock(snippets=[MagicMock(text="대체")])
+        api.list.return_value = listing
+        with patch("collectors.youtube.YouTubeTranscriptApi", return_value=api):
+            out = collector._get_transcript("vid")
+        assert out == "대체"
+        assert api.list.return_value.find_transcript.call_args.args[0] == ["ko"]
 
     @pytest.mark.asyncio
     async def test_fetch_transcript_times_out_and_skips(self):
