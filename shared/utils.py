@@ -16,6 +16,11 @@ from pydantic import BaseModel
 from .constants import LanguageModelId
 from .logger import logger
 
+# Model used for the Bedrock CountTokens API. Only some base models expose CountTokens
+# (Sonnet does; Opus 4.8 does not), but the Claude family shares a tokenizer, so counting
+# with a supported model is accurate for all of them and avoids per-model failures.
+TOKEN_COUNT_MODEL = LanguageModelId.CLAUDE_V4_6_SONNET
+
 
 class LanguageModelInfo(BaseModel):
     context_window_size: int
@@ -258,9 +263,13 @@ class BedrockLanguageModelFactory(
 
     def count_tokens(self, text: str, model_id: LanguageModelId | None = None) -> int:
         """Authoritative token count via the Bedrock CountTokens API (not a local heuristic).
-        CountTokens requires the BASE foundation-model id, so the cross-region 'global.'/'us.'
-        prefix is stripped. Falls back to a conservative char estimate only if the API errors."""
-        base_id = (model_id or LanguageModelId.CLAUDE_V4_6_SONNET).value
+
+        Only some base models expose CountTokens (e.g. Sonnet does; Opus 4.8 returns
+        'doesn't support counting tokens'). The Claude family shares a tokenizer, so we always
+        count with TOKEN_COUNT_MODEL regardless of the caller's model_id — accurate for all of
+        them and avoids per-model 'unsupported' failures. Falls back to a char estimate on error.
+        CountTokens needs the BASE id, so any cross-region 'global.'/'us.' prefix is stripped."""
+        base_id = TOKEN_COUNT_MODEL.value
         base_id = base_id.split(".", 1)[1] if base_id.split(".", 1)[0] in ("global", "us", "eu", "apac") else base_id
         try:
             resp = self._client.count_tokens(

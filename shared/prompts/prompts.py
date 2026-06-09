@@ -104,7 +104,15 @@ Categories: {ranking_categories}"""
 
 
 class DigestPrompt(BasePrompt):
-    input_variables: list[str] = ["items_text", "trends_context", "language_rules", "audience", "voice_guidance"]
+    input_variables: list[str] = [
+        "items_text",
+        "trends_context",
+        "language_rules",
+        "audience",
+        "voice_guidance",
+        "target_count",
+        "recent_leads",
+    ]
 
     system_prompt_template: str = """\
 You are a daily digest editor for {audience}. You return STRUCTURED CONTENT as JSON — never \
@@ -140,8 +148,13 @@ so they stay in sync. Choose as the headline the story that is both important AN
 expressible — favor a news / industry / release / drama story over a dry deep-technical or purely \
 academic one, which rarely makes a good image. Order the remaining items by importance after it.
 - If two ranked items are the SAME underlying story (same companies/event), MERGE them into one \
-item (keep the most informative URL) rather than emitting near-duplicates; use the freed slot for \
-a distinct story or emit fewer items.
+item (keep the most informative URL) rather than emitting near-duplicates. You are given MORE \
+candidates than needed for exactly this reason: after merging, fill the freed slot with the next \
+distinct candidate so the digest still reaches {target_count} items.
+- Aim for EXACTLY {target_count} distinct items in `items`. Pick the {target_count} strongest \
+distinct stories from the candidates; the extras are backfill for merges. Emit fewer ONLY if \
+there genuinely aren't {target_count} distinct stories among the candidates — never pad with a \
+duplicate or a near-identical take to hit the number.
 - Use the item's title/URL/source exactly as provided. Do not invent URLs.
 
 *Trends*
@@ -150,6 +163,14 @@ Don't describe the tracker or announce a theme's streak/count; the reader cares 
 not the metric. Let the history sharpen the take implicitly, and cite a specific figure only when \
 that number IS the point. Do not list trends separately. If no trend data is provided, surface \
 continuity only where a theme genuinely recurs across today's own items; never fabricate history.
+
+*Recent angles (avoid repeating)*
+These are the opening lines / theses from the last few days. Do NOT reuse the same framing, \
+opening move, or thesis; pick a genuinely different angle on today's stories. The honest take \
+varies day to day — some days it's admiration for a real advance, a sharp technical observation, \
+irony, a contrarian-but-positive read, or a quiet "this is bigger than it looks"; reach for \
+skepticism only when today's facts actually earn it. Do not default to the same beat as below:
+{recent_leads}
 
 *Faithfulness*
 Do NOT name external systems, products, mechanisms, benchmarks, paper titles, dates, statistics, \
@@ -219,7 +240,7 @@ class VisualEditorPrompt(BasePrompt):
     (the digest's lead is about it), so the editor doesn't pick the story — it decides how to
     illustrate it: research + format + image instruction. So image, lead, and headline stay in sync."""
 
-    input_variables: list[str] = ["items_text", "audience", "on_image_language"]
+    input_variables: list[str] = ["items_text", "audience", "on_image_language", "format_guidance"]
 
     system_prompt_template: str = """\
 You are the visual editor for {audience}. Illustrate today's HEADLINE story (marked below) — set \
@@ -252,6 +273,7 @@ Rules:
   setup-and-payoff (promise→contradiction, before/after, cause→effect). Match the form to the
   content; don't force either a one-shot or an N-panel. Be faithful to the real facts; the humor is
   in the framing, never fabrication.
+- VARY THE FORMAT across days: {format_guidance}
 - Express the joke or contradiction through imagery, not a stock meme catchphrase baked into the
   on-image text; any meme reference belongs in the spoken caption.
 - Output ONLY the JSON object."""

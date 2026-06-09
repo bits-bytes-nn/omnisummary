@@ -22,6 +22,15 @@ class TestCountTokens:
         # CountTokens needs the BASE model id (no cross-region global./us. prefix)
         assert client.count_tokens.call_args.kwargs["modelId"] == "anthropic.claude-sonnet-4-6"
 
+    def test_pins_supported_model_even_for_unsupported_caller(self):
+        # Opus 4.8 doesn't expose CountTokens; counting must still hit the supported Sonnet
+        # base id (shared tokenizer), not the caller's model.
+        client = MagicMock()
+        client.count_tokens.return_value = {"inputTokens": 7}
+        f = _factory(client)
+        f.count_tokens("hi", LanguageModelId.CLAUDE_V4_8_OPUS)
+        assert client.count_tokens.call_args.kwargs["modelId"] == "anthropic.claude-sonnet-4-6"
+
     def test_falls_back_to_char_estimate_on_api_error(self):
         client = MagicMock()
         client.count_tokens.side_effect = RuntimeError("throttled")

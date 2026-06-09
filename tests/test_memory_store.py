@@ -42,6 +42,21 @@ class TestLocalMemoryStore:
         store = LocalMemoryStore(tmp_path)
         assert store.get_latest_digest() is None
 
+    def test_get_recent_digests_newest_first_and_capped(self, tmp_path):
+        store = LocalMemoryStore(tmp_path)
+        for d in ("2026-06-05", "2026-06-06", "2026-06-07"):
+            store.put_digest(d, {"d": d})
+        recent = store.get_recent_digests(2)
+        assert [r["d"] for r in recent] == ["2026-06-07", "2026-06-06"]
+
+    def test_get_recent_digests_excludes_given_date(self, tmp_path):
+        # A same-day re-run must not seed dedup with today's own snapshot.
+        store = LocalMemoryStore(tmp_path)
+        for d in ("2026-06-07", "2026-06-08", "2026-06-09"):
+            store.put_digest(d, {"d": d})
+        recent = store.get_recent_digests(6, exclude_date="2026-06-09")
+        assert [r["d"] for r in recent] == ["2026-06-08", "2026-06-07"]
+
 
 class TestCreateMemoryStore:
     def test_local_when_no_memory_id(self, monkeypatch, tmp_path):

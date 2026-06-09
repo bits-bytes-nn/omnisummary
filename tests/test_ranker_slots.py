@@ -48,7 +48,7 @@ class TestOriginCap:
             _ranked(0.88, SourceType.YOUTUBE, item_id="v2", channel="chanA"),
             _ranked(0.86, SourceType.YOUTUBE, item_id="v3", channel="chanA"),
         ]
-        selected = ranker._apply_source_slots(items)
+        selected = ranker._apply_source_slots(items, ranker.config.top_n)
         # No distinct origins to diversify into, so the fallback fills up to the SOURCE cap
         # (1 slot x 2 multiplier = 2) — bounded monopoly, never all 3.
         assert len(selected) == 2
@@ -67,7 +67,7 @@ class TestOriginCap:
             _ranked(0.88, SourceType.YOUTUBE, item_id="v2", channel="chanB"),
             _ranked(0.86, SourceType.YOUTUBE, item_id="v3", channel="chanC"),
         ]
-        selected = ranker._apply_source_slots(items)
+        selected = ranker._apply_source_slots(items, ranker.config.top_n)
         channels = {r.item.metadata["channel_url"] for r in selected}
         assert len(selected) == 3
         assert channels == {"chanA", "chanB", "chanC"}
@@ -87,7 +87,7 @@ class TestOriginCap:
             _ranked(0.88, SourceType.YOUTUBE, item_id="v2", channel="chanA"),
             _ranked(0.86, SourceType.YOUTUBE, item_id="v3", channel="chanA"),
         ]
-        selected = ranker._apply_source_slots(items)
+        selected = ranker._apply_source_slots(items, ranker.config.top_n)
         assert len(selected) == 2
         assert {r.item.item_id for r in selected} == {"v1", "v2"}
 
@@ -105,7 +105,7 @@ class TestOriginCap:
             _ranked(0.88, SourceType.WEB, item_id="w2"),
             _ranked(0.86, SourceType.WEB, item_id="w3"),
         ]
-        selected = ranker._apply_source_slots(items)
+        selected = ranker._apply_source_slots(items, ranker.config.top_n)
         assert len(selected) == 3
 
     def test_fallback_fills_top_n_when_origins_exhausted(self):
@@ -123,7 +123,7 @@ class TestOriginCap:
             _ranked(0.88, SourceType.X, item_id="t2", author="alice"),
             _ranked(0.86, SourceType.X, item_id="t3", author="alice"),
         ]
-        selected = ranker._apply_source_slots(items)
+        selected = ranker._apply_source_slots(items, ranker.config.top_n)
         assert len(selected) == 3  # fallback relaxes origin cap (source cap 1x5=5 allows it)
 
 

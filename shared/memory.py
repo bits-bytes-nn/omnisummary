@@ -28,6 +28,14 @@ class MemoryStore(ABC):
     @abstractmethod
     def get_latest_digest(self) -> dict[str, Any] | None: ...
 
+    def get_recent_digests(self, n: int, exclude_date: str = "") -> list[dict[str, Any]]:
+        """Return up to the n most recent digest snapshots (newest first), skipping the one for
+        exclude_date. Used to seed cross-day dedup from history so it works immediately, not only
+        after the ledger is populated by a future run; exclude_date drops today's own snapshot so
+        a same-day re-run doesn't suppress its own stories. Default base impl: just the latest."""
+        latest = self.get_latest_digest()
+        return [latest] if latest else []
+
 
 class LocalMemoryStore(MemoryStore):
     """Filesystem-backed fallback for offline development."""
@@ -48,6 +56,17 @@ class LocalMemoryStore(MemoryStore):
             return None
         logger.info("Loaded latest local digest state '%s'", files[0])
         return json.loads(files[0].read_text(encoding="utf-8"))
+
+    def get_recent_digests(self, n: int, exclude_date: str = "") -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        skip = f"digest_{exclude_date}.json" if exclude_date else ""
+        files = [p for p in sorted(self.base_dir.glob("digest_*.json"), reverse=True) if p.name != skip]
+        for path in files[: max(0, n)]:
+            try:
+                out.append(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                continue
+        return out
 
 
 class AgentCoreMemoryStore(MemoryStore):
@@ -138,9 +157,9 @@ class AgentCoreMemoryStore(MemoryStore):
         logger.warning("Digest state still over limit; storing empty snapshot")
         return json.dumps({"ranked_items": [], "digest_result": None, "collected_items": {}}, ensure_ascii=False)
 
-    def get_latest_digest(self) -> dict[str, Any] | None:
+    def _digest_session_ids(self) -> list[str]:
         sessions = self._client.list_sessions(memoryId=self.memory_id, actorId=self.actor_id, maxResults=100)
-        digest_sessions = sorted(
+        return sorted(
             (
                 s["sessionId"]
                 for s in sessions.get("sessionSummaries", [])
@@ -148,14 +167,12 @@ class AgentCoreMemoryStore(MemoryStore):
             ),
             reverse=True,
         )
-        if not digest_sessions:
-            logger.info("No digest sessions found in AgentCore Memory")
-            return None
 
+    def _load_session(self, session_id: str) -> dict[str, Any] | None:
         events = self._client.list_events(
             memoryId=self.memory_id,
             actorId=self.actor_id,
-            sessionId=digest_sessions[0],
+            sessionId=session_id,
             maxResults=1,
             includePayloads=True,
         )
@@ -163,8 +180,31 @@ class AgentCoreMemoryStore(MemoryStore):
         if not records:
             return None
         text = self._extract_text(records[0])
-        logger.info("Loaded latest digest state from AgentCore Memory (session '%s')", digest_sessions[0])
         return json.loads(text) if text else None
+
+    def get_latest_digest(self) -> dict[str, Any] | None:
+        sessions = self._digest_session_ids()
+        if not sessions:
+            logger.info("No digest sessions found in AgentCore Memory")
+            return None
+        data = self._load_session(sessions[0])
+        if data is not None:
+            logger.info("Loaded latest digest state from AgentCore Memory (session '%s')", sessions[0])
+        return data
+
+    def get_recent_digests(self, n: int, exclude_date: str = "") -> list[dict[str, Any]]:
+        skip = f"{self.DIGEST_SESSION_PREFIX}-{exclude_date}" if exclude_date else ""
+        out: list[dict[str, Any]] = []
+        session_ids = [s for s in self._digest_session_ids() if s != skip]
+        for session_id in session_ids[: max(0, n)]:
+            try:
+                data = self._load_session(session_id)
+            except Exception as e:
+                logger.warning("Failed to load digest session '%s': %s", session_id, e)
+                continue
+            if data is not None:
+                out.append(data)
+        return out
 
     @staticmethod
     def _extract_text(event: dict[str, Any]) -> str:

@@ -43,6 +43,7 @@ def main():
         slack_channel_id=os.getenv("SLACK_CHANNEL_ID", ""),
         tavily_api_key=os.getenv("TAVILY_API_KEY", ""),
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
+        youtube_api_key=os.getenv("YOUTUBE_API_KEY", ""),
         threads_access_token=os.getenv("THREADS_ACCESS_TOKEN", ""),
         threads_user_id=os.getenv("THREADS_USER_ID", ""),
         agentcore_image_ref=os.getenv("AGENTCORE_IMAGE_REF", ""),

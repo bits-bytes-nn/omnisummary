@@ -79,6 +79,17 @@ class CollectorsConfig(BaseModel):
 class PipelineConfig(BaseModel):
     top_n: int = 7
     min_score: float = Field(default=0.6, ge=0.0, le=1.0)
+    # Extra ranked candidates handed to the digest generator beyond top_n, so that when the
+    # editor MERGES same-event items (e.g. two takes on one launch) it can still backfill to
+    # exactly top_n distinct stories instead of emitting fewer. 0 disables the buffer.
+    digest_candidate_buffer: int = Field(default=3, ge=0)
+    # Days a published URL stays in the cross-day dedup ledger; an article seen within this
+    # window is skipped so the digest doesn't re-summarize the same story days apart.
+    published_url_ttl_days: int = Field(default=6, ge=1)
+    # How many recent digest leads to feed back into the prompt as "don't reuse these angles".
+    recent_leads_window: int = Field(default=5, ge=0)
+    # How many recent visual formats (orientation + style) to track for deliberate variation.
+    visual_format_window: int = Field(default=6, ge=0)
     ranking_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     digest_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     # Post-generation faithfulness pass: verify the digest's specific claims against the
@@ -112,11 +123,15 @@ class PipelineConfig(BaseModel):
     # dry, cynical, genuinely funny — critiquing ideas/decisions/hypocrisy, never attacking a
     # person. Configurable so the tone can be retuned without forking the prompt.
     digest_voice_guidance: str = (
-        "Write like John Gruber (Daring Fireball): professional and well-informed, with dry wit "
-        "and earned cynicism, genuinely funny. Be sharp and opinionated — call out hype, "
-        "contradiction, and hypocrisy directly — but critique ideas, decisions, and behavior, "
-        "NEVER attack a person (no ad hominem, no insults). Confident and concise; ground every "
-        "barb in the supplied facts and trend history, never in vibes."
+        "Write like John Gruber (Daring Fireball): professional, well-informed, dry, and "
+        "genuinely funny. Be sharp and opinionated, but LET THE STORY CHOOSE THE ANGLE — some "
+        "days the honest take is admiration for a real advance, a sharp technical observation, "
+        "irony, a contrarian-but-positive read, or a quiet 'this is bigger than it looks'; other "
+        "days it is skepticism of hype, contradiction, or hypocrisy. Do NOT default to cynicism "
+        "or a hype-vs-reality frame — reach for it only when today's facts genuinely earn it. "
+        "Critique ideas, decisions, and behavior, NEVER a person (no ad hominem, no insults). "
+        "Confident and concise; ground every take in the supplied facts and trend history, never "
+        "in vibes."
     )
     # Tongue-in-cheek "AGI countdown" intro prepended to the digest lead (code computes the day
     # count from agi_countdown_date — never the LLM — so it stays accurate and ticks down daily).

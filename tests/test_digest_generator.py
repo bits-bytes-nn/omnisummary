@@ -103,6 +103,20 @@ class TestGroundingCheck:
         assert result.lead == "원본 다이제스트."
 
 
+class TestFormatRecentLeads:
+    def test_bullets_recent_leads(self):
+        from pipeline.digest_generator import _format_recent_leads
+
+        out = _format_recent_leads(["어제 리드.", "그제 리드."])
+        assert out == "- 어제 리드.\n- 그제 리드."
+
+    def test_empty_when_none(self):
+        from pipeline.digest_generator import _format_recent_leads
+
+        assert "No recent digests" in _format_recent_leads([])
+        assert "No recent digests" in _format_recent_leads(["", "  "])
+
+
 def _source_detail(item) -> str:
     tag, metrics = DigestGenerator._source_tag_and_metrics(item)
     return " · ".join(p for p in (tag, metrics) if p)

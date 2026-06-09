@@ -35,10 +35,11 @@ class ContentRanker:
     def _truncate(self, text: str, max_tokens: int) -> str:
         return self.llm_factory.truncate_to_tokens(text, max_tokens, self.config.ranking_model)
 
-    async def rank(self, items: list[CollectedItem]) -> list[RankedItem]:
+    async def rank(self, items: list[CollectedItem], select_count: int | None = None) -> list[RankedItem]:
         if not items:
             logger.warning("No items to rank")
             return []
+        limit = select_count or self.config.top_n
 
         logger.info("Ranking %d items with model '%s'", len(items), self.config.ranking_model.value)
 
@@ -75,7 +76,7 @@ class ContentRanker:
                 [f"{s:.2f}" for s in sorted(scores, reverse=True)[:5]],
             )
 
-        selected = self._apply_source_slots(above_threshold)
+        selected = self._apply_source_slots(above_threshold, limit)
 
         logger.info(
             "Ranked %d items → %d above min_score %.2f → %d selected (with source slots)",
@@ -144,10 +145,10 @@ class ContentRanker:
                     ranked.score,
                 )
 
-    def _apply_source_slots(self, above_threshold: list[RankedItem]) -> list[RankedItem]:
+    def _apply_source_slots(self, above_threshold: list[RankedItem], limit: int) -> list[RankedItem]:
         source_slots = self.config.source_slots
         if not source_slots:
-            return above_threshold[: self.config.top_n]
+            return above_threshold[:limit]
 
         selected: list[RankedItem] = []
         selected_ids: set[str] = set()
@@ -172,7 +173,7 @@ class ContentRanker:
         for source_key, slot_count in source_slots.items():
             taken = 0
             for item in above_threshold:
-                if taken >= slot_count or len(selected) >= self.config.top_n:
+                if taken >= slot_count or len(selected) >= limit:
                     break
                 if item.item.source_type.value != source_key or item.item.item_id in selected_ids:
                     continue
@@ -181,7 +182,7 @@ class ContentRanker:
                 record(item, source_key)
                 taken += 1
 
-        if len(selected) < self.config.top_n:
+        if len(selected) < limit:
             for item in above_threshold:
                 if item.item.item_id in selected_ids:
                     continue
@@ -190,13 +191,13 @@ class ContentRanker:
                 if source_counts[src] >= cap or origin_at_cap(item):
                     continue
                 record(item, src)
-                if len(selected) >= self.config.top_n:
+                if len(selected) >= limit:
                     break
 
-        # Final fallback: if diversity caps left the digest below top_n while valid
+        # Final fallback: if diversity caps left the digest below the limit while valid
         # candidates remain, relax the per-origin cap (keep the source cap) so a quiet
         # day with few distinct origins still fills the digest.
-        if len(selected) < self.config.top_n:
+        if len(selected) < limit:
             for item in above_threshold:
                 if item.item.item_id in selected_ids:
                     continue
@@ -205,11 +206,11 @@ class ContentRanker:
                 if source_counts[src] >= cap:
                     continue
                 record(item, src)
-                if len(selected) >= self.config.top_n:
+                if len(selected) >= limit:
                     break
 
         selected.sort(key=lambda r: (-r.score, r.item.item_id))
-        return selected[: self.config.top_n]
+        return selected[:limit]
 
     def _format_items(self, items: list[CollectedItem]) -> str:
         parts: list[str] = []

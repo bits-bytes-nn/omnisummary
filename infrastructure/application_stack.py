@@ -41,6 +41,7 @@ class OmniSummaryApplicationStack(Stack):
         slack_channel_id: str = "",
         tavily_api_key: str = "",
         openai_api_key: str = "",
+        youtube_api_key: str = "",
         threads_access_token: str = "",
         threads_user_id: str = "",
         agentcore_image_ref: str = "",
@@ -65,6 +66,7 @@ class OmniSummaryApplicationStack(Stack):
             "slack-channel-id": slack_channel_id,
             "tavily-api-key": tavily_api_key,
             "openai-api-key": openai_api_key,
+            "youtube-api-key": youtube_api_key,
             "threads-access-token": threads_access_token,
             "threads-user-id": threads_user_id,
         }
@@ -131,10 +133,10 @@ class OmniSummaryApplicationStack(Stack):
                 tag_or_digest=digest_tag_or_digest,
                 cmd=["lambda_handlers.visual_handler.handler"],
             ),
-            # gpt-image render (~90s) + Threads root post + reply-indexing retries (the root
-            # isn't addressable as a reply target for tens of seconds) can exceed 5 min; 10 gives
-            # the flat reply chain room to finish so comments don't get cut off by a timeout.
-            timeout=Duration.minutes(10),
+            # gpt-image render (~4 min) + Threads root post + reply-indexing retries (an IMAGE
+            # root isn't addressable as a reply target for several MINUTES) can exceed 10 min; 15
+            # (the Lambda max) gives the flat reply chain room to finish so comments aren't cut off.
+            timeout=Duration.minutes(15),
             memory_size=512,
             role=foundation.lambda_role,
             vpc=foundation.vpc,
@@ -149,6 +151,11 @@ class OmniSummaryApplicationStack(Stack):
                 "PROJECT_NAME": project_name,
                 "STAGE": stage,
                 "MEMORY_ID": foundation.memory_id,
+                # The visual maker reads/writes visual_formats.json (format-variation history)
+                # via the StateStore; without these it falls through to the config-profile
+                # branch and crashes on the 'research' profile, which doesn't exist in Lambda.
+                "STATE_BUCKET": foundation.state_bucket.bucket_name,
+                "S3_PREFIX": f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state",
             },
         )
 

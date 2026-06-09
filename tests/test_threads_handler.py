@@ -85,6 +85,32 @@ class TestPostToThreads:
         assert ok is True
         assert calls["n"] == 2  # failed once, retried once
 
+    @pytest.mark.asyncio
+    async def test_one_failing_reply_does_not_abandon_the_rest(self, monkeypatch):
+        # A single reply that exhausts its indexing retries must not drop the remaining replies
+        # — otherwise the thread posts a half-finished comment chain ("댓글이 달리다 말았다").
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 0)
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_ATTEMPTS", 2)
+        req = httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads")
+        resp = httpx.Response(400, request=req, json={"error": {"code": 24, "error_subcode": 4279009}})
+        not_found = httpx.HTTPStatusError("media not found", request=req, response=resp)
+
+        seen: list[str] = []
+
+        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
+            if reply_to_id:
+                seen.append(text)
+                if text == "second":  # second reply never indexes
+                    raise not_found
+            return "rid"
+
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
+                ok = await post_to_threads(root_text="R", replies=["first", "second", "third"])
+        assert ok is True
+        # first and third land; second is attempted (and retried) but never blocks the others
+        assert "first" in seen and "third" in seen
+
     def test_is_media_not_found_detects_code_24(self):
         req = httpx.Request("POST", "https://x")
         resp = httpx.Response(400, request=req, json={"error": {"code": 24}})

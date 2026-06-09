@@ -41,6 +41,7 @@ class DigestGenerator:
         all_items: list[CollectedItem],
         trends_context: str = "",
         today: date | None = None,
+        recent_leads: list[str] | None = None,
     ) -> DigestResult:
         if not ranked_items:
             logger.warning("No ranked items to generate digest from")
@@ -52,9 +53,14 @@ class DigestGenerator:
                 total_ranked=0,
             )
 
+        # The ranker over-selects (top_n + buffer); the editor merges same-event items and
+        # then emits exactly target_count distinct stories, backfilling from the buffer so a
+        # merge never shrinks the digest below the target.
+        target_count = min(self.config.top_n, len(ranked_items))
         logger.info(
-            "Generating digest from %d ranked items (model: %s)",
+            "Generating digest from %d candidates → target %d items (model: %s)",
             len(ranked_items),
+            target_count,
             self.config.digest_model.value,
         )
 
@@ -67,6 +73,8 @@ class DigestGenerator:
                 "language_rules": self.config.digest_language_rules,
                 "audience": self.config.digest_audience_description,
                 "voice_guidance": self.config.digest_voice_guidance,
+                "target_count": target_count,
+                "recent_leads": _format_recent_leads(recent_leads),
             }
         )
         content = self._parse_content(raw)
@@ -206,6 +214,15 @@ class DigestGenerator:
             tag = f"`{domain}`" if domain else "`Web`"
 
         return tag, " · ".join(metrics)
+
+
+def _format_recent_leads(recent_leads: list[str] | None) -> str:
+    """Render the last few days' leads as a bulleted block for the anti-repetition prompt
+    input. Generic — names no phrase to ban, just 'here are recent openings, differ from them'."""
+    leads = [ln.strip() for ln in (recent_leads or []) if ln and ln.strip()]
+    if not leads:
+        return "(No recent digests — no prior angles to avoid.)"
+    return "\n".join(f"- {ln}" for ln in leads)
 
 
 def render_digest_text(content: DigestContent) -> str:

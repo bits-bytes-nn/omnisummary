@@ -12,13 +12,16 @@ from shared import (
     BedrockLanguageModelFactory,
     DigestContent,
     RankedItem,
+    RollingLog,
     VisualBrief,
     VisualEditorPrompt,
+    create_state_store,
     extract_json_from_llm_output,
     logger,
     resolve_secret,
 )
 from shared.config import Config
+from shared.history_store import VISUAL_FORMATS_KEY
 
 
 class DailyVisualMaker:
@@ -30,6 +33,15 @@ class DailyVisualMaker:
     def __init__(self, config: Config, llm_factory: BedrockLanguageModelFactory) -> None:
         self.config = config
         self.llm = llm_factory.get_model(config.pipeline.digest_model)
+        # Format-variation history is best-effort: if the state store can't be created
+        # (misconfigured bucket/profile), degrade to no history rather than crash the visual.
+        try:
+            self.format_log: RollingLog | None = RollingLog(
+                create_state_store(config), VISUAL_FORMATS_KEY, config.pipeline.visual_format_window
+            )
+        except Exception:
+            logger.warning("Visual format history unavailable (state store init failed)", exc_info=True)
+            self.format_log = None
         self.generator = VisualGenerator(
             llm_factory,
             config.pipeline.digest_model,
@@ -56,8 +68,10 @@ class DailyVisualMaker:
         # content.headline_index is into the curated content.items (may be merged/reordered), so
         # map it back to a ranked_items position by URL; fall back to the top-ranked item.
         headline_index = self._headline_ranked_index(content, ranked_items) or 1
+        recent_formats = self.format_log.entries() if self.format_log else []
+        preferred_orientation = self._least_recent_orientation(recent_formats)
         try:
-            plan = await self._pick_story(ranked_items, headline_index)
+            plan = await self._pick_story(ranked_items, headline_index, recent_formats, preferred_orientation)
         except Exception:
             # Best-effort: a visual failure must never block the digest, so catch broadly here.
             logger.warning("Daily visual editor failed", exc_info=True)
@@ -73,6 +87,14 @@ class DailyVisualMaker:
         source = f"{ranked.item.title}\n\n{ranked.item.text}"
         context = await self._gather_context(plan.get("research", []))
         instruction = plan.get("instruction", "") or f"A fun visual about: {ranked.item.title}"
+        # The art-director picks orientation, but it anchors to the same one for days. Steer it to
+        # the least-recently-used aspect ratio so consecutive visuals actually vary in shape.
+        if preferred_orientation:
+            instruction += (
+                f"\n\nVARY THE FORMAT: recent daily visuals used {self._recent_orientations(recent_formats)}. "
+                f"Make TODAY visually different — use a '{preferred_orientation}' orientation and a different "
+                "composition (panel count / genre) than those."
+            )
 
         try:
             image_bytes, brief = await self.generator.generate(instruction, source, context)
@@ -83,7 +105,47 @@ class DailyVisualMaker:
 
         slack_ok = await self._post(image_bytes, brief)
         await self._post_threads(image_bytes, brief, content)
+        # Record the chosen format so tomorrow can deliberately differ. Best-effort.
+        if self.format_log:
+            try:
+                self.format_log.append({"orientation": brief.orientation, "format": plan.get("format", "")})
+            except Exception:
+                logger.warning("Failed to record visual format history (non-fatal)", exc_info=True)
         return slack_ok
+
+    def _least_recent_orientation(self, recent_formats: list[dict]) -> str:
+        """Return an orientation not used in the recent window (least-recently-used), so the
+        next visual differs in shape. Empty when no orientations are configured."""
+        all_orientations = list(self.config.pipeline.image_sizes)
+        if not all_orientations:
+            return ""
+        used = [f.get("orientation", "") for f in recent_formats]
+        unused = [o for o in all_orientations if o not in used]
+        if unused:
+            return unused[0]
+        # All used recently → pick the one used longest ago (earliest in the window).
+        for entry in used:
+            if entry in all_orientations:
+                return entry
+        return all_orientations[0]
+
+    @staticmethod
+    def _recent_orientations(recent_formats: list[dict]) -> str:
+        seen = [f.get("orientation", "") for f in recent_formats if f.get("orientation")]
+        return ", ".join(seen) if seen else "none recorded"
+
+    @staticmethod
+    def _format_guidance(recent_formats: list[dict], preferred_orientation: str) -> str:
+        if not recent_formats:
+            return "No recent visuals on record — pick whatever format fits this story best."
+        recent = "; ".join(
+            f"{f.get('orientation', '?')}/{f.get('format', '?')}" for f in recent_formats if f.get("orientation")
+        )
+        line = f"Recent daily visuals (most recent last): {recent}. Deliberately differ TODAY — "
+        if preferred_orientation:
+            line += f"prefer a '{preferred_orientation}' orientation and "
+        line += "choose a composition/genre you have NOT used recently so consecutive visuals don't look alike."
+        return line
 
     @staticmethod
     def _headline_ranked_index(content: DigestContent | None, ranked_items: list[RankedItem]) -> int:
@@ -98,7 +160,13 @@ class DailyVisualMaker:
                 return i
         return 0
 
-    async def _pick_story(self, ranked_items: list[RankedItem], headline_index: int = 0) -> dict:
+    async def _pick_story(
+        self,
+        ranked_items: list[RankedItem],
+        headline_index: int = 0,
+        recent_formats: list[dict] | None = None,
+        preferred_orientation: str = "",
+    ) -> dict:
         # The editor briefs the marked HEADLINE (it doesn't choose the story); the visual must
         # match the lead, which is about this same headline.
         items_text = "\n".join(
@@ -112,6 +180,7 @@ class DailyVisualMaker:
                 "items_text": items_text,
                 "audience": self.config.pipeline.visual_audience_description,
                 "on_image_language": self.config.pipeline.visual_on_image_language,
+                "format_guidance": self._format_guidance(recent_formats or [], preferred_orientation),
             }
         )
         try:

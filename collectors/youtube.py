@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 from datetime import datetime
 
@@ -11,7 +10,7 @@ import httpx
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import YouTubeTranscriptApiException
 
-from shared import CollectedItem, SourceType, logger, parse_feed_published_date, retry_async
+from shared import CollectedItem, SourceType, logger, parse_feed_published_date, resolve_secret, retry_async
 from shared.config import YouTubeCollectorConfig
 from shared.proxy import get_proxied_url, is_proxy_configured
 
@@ -21,15 +20,25 @@ YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
 # Canonical YouTube channel ID: "UC" + 22 base64url chars. The uploads playlist is the
 # same ID with the "UC" prefix swapped to "UU", so a valid UC id is required.
 _CHANNEL_ID_PATTERN = re.compile(r'"channelId":"(UC[a-zA-Z0-9_-]{22})"')
+# Extract the @handle from a channel URL (e.g. https://www.youtube.com/@AndrejKarpathy).
+_HANDLE_PATTERN = re.compile(r"/@([A-Za-z0-9_.-]+)")
 
 
 class YouTubeCollector(BaseCollector):
     def __init__(self, config: YouTubeCollectorConfig):
         self.config = config
-        self.api_key = os.getenv("YOUTUBE_API_KEY", "")
+        self._api_key: str | None = None
         # Reuse one pooled sync client across channel-id resolution and transcript fetches
         # so warm Lambda containers keep connections alive instead of opening one per call.
         self._sync_client = httpx.Client(follow_redirects=True)
+
+    @property
+    def api_key(self) -> str:
+        # Resolved lazily (env first, then SSM /{project}/{stage}/youtube-api-key) so
+        # construction stays pure — no network I/O until the collector actually runs.
+        if self._api_key is None:
+            self._api_key = resolve_secret("YOUTUBE_API_KEY", "youtube-api-key")
+        return self._api_key
 
     def __del__(self) -> None:
         # Release pooled sockets when the collector is garbage-collected so warm Lambda
@@ -56,19 +65,21 @@ class YouTubeCollector(BaseCollector):
         return await self._collect_via_rss(channel_url)
 
     async def _collect_via_api(self, channel_url: str) -> list[CollectedItem]:
-        channel_id = await self._resolve_channel_id_async(channel_url)
-        if not channel_id:
-            # Raise (not return []) so an unresolvable channel registers as a FAILURE in
-            # the health report, not a healthy-but-empty channel. YouTube serves a
-            # consent/JS-shell page to datacenter IPs with no canonical UC id, which would
-            # otherwise blackhole the channel silently forever.
-            raise RuntimeError(f"Could not resolve canonical channel ID for '{channel_url}'")
-
-        uploads_playlist = f"UU{channel_id[2:]}"
         cutoff = cutoff_datetime(self.config.lookback_hours, self.config.reference_time)
         items: list[CollectedItem] = []
 
         async with httpx.AsyncClient(timeout=self.config.request_timeout) as client:
+            channel_id = await self._resolve_channel_id_via_api(channel_url, client)
+            if not channel_id:
+                # Fall back to the page scrape only if the API couldn't resolve (e.g. a URL with
+                # no @handle). The API path works from datacenter IPs; the scrape does not.
+                channel_id = await self._resolve_channel_id_async(channel_url)
+            if not channel_id:
+                # Raise (not return []) so an unresolvable channel registers as a FAILURE in
+                # the health report, not a healthy-but-empty channel.
+                raise RuntimeError(f"Could not resolve canonical channel ID for '{channel_url}'")
+
+            uploads_playlist = f"UU{channel_id[2:]}"
             response = await retry_async(
                 lambda: client.get(
                     f"{YOUTUBE_API_BASE}/playlistItems",
@@ -211,6 +222,36 @@ class YouTubeCollector(BaseCollector):
                 logger.warning("Failed to process YouTube RSS entry", exc_info=True)
 
         return items
+
+    async def _resolve_channel_id_via_api(self, channel_url: str, client: httpx.AsyncClient) -> str:
+        """Resolve the canonical UC channel ID through the YouTube Data API's forHandle
+        lookup. Unlike scraping the watch page (blocked / JS-shell on datacenter IPs), this
+        works from Lambda. Returns "" if there's no @handle or the lookup fails."""
+        match = _HANDLE_PATTERN.search(channel_url)
+        if not match:
+            return ""
+        handle = match.group(1)
+        try:
+            resp = await retry_async(
+                lambda: client.get(
+                    f"{YOUTUBE_API_BASE}/channels",
+                    params={"part": "id", "forHandle": handle, "key": self.api_key},
+                ),
+                max_retries=self.config.max_retries,
+                backoff_sec=self.config.retry_backoff_sec,
+                retry_on=(httpx.HTTPError,),
+                description=f"YouTube channels forHandle '{handle}'",
+            )
+            if resp.status_code != 200:
+                logger.warning("YouTube channels.forHandle '%s' returned %d", handle, resp.status_code)
+                return ""
+            items = resp.json().get("items", [])
+            if items:
+                return items[0].get("id", "")
+            logger.warning("YouTube channels.forHandle '%s' found no channel", handle)
+        except (httpx.HTTPError, ValueError, KeyError) as e:
+            logger.warning("YouTube channels.forHandle '%s' failed: %s", handle, e)
+        return ""
 
     async def _resolve_channel_id_async(self, channel_url: str) -> str:
         try:

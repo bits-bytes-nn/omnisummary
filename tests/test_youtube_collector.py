@@ -60,7 +60,7 @@ class TestApiPath:
         ctx.__aenter__ = AsyncMock(return_value=client)
         ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
+        with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
             with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
                 with patch.object(collector, "_get_transcript", return_value="full transcript"):
                     items = await collector.collect()
@@ -83,7 +83,7 @@ class TestApiPath:
         ctx.__aenter__ = AsyncMock(return_value=client)
         ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
+        with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
             with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
                 items = await collector.collect()
 
@@ -102,7 +102,7 @@ class TestApiPath:
         ctx.__aenter__ = AsyncMock(return_value=client)
         ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
+        with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
             with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
                 items = await collector.collect()
         assert items == []
@@ -123,7 +123,7 @@ class TestApiPath:
         ctx.__aenter__ = AsyncMock(return_value=client)
         ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
+        with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
             with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
                 items = await collector.collect()
         assert items == []
@@ -142,7 +142,7 @@ class TestApiPath:
         ctx.__aenter__ = AsyncMock(return_value=client)
         ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
+        with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
             with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
                 items = await collector.collect()
         assert items == []
@@ -154,9 +154,10 @@ class TestApiPath:
         # single configured channel, gather(raise_if_all_failed=True) propagates.
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
         collector = YouTubeCollector(_config())
-        with patch.object(collector, "_resolve_channel_id", return_value=""):
-            with pytest.raises(RuntimeError, match="resolve canonical channel ID"):
-                await collector.collect()
+        with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="")):
+            with patch.object(collector, "_resolve_channel_id", return_value=""):
+                with pytest.raises(RuntimeError, match="resolve canonical channel ID"):
+                    await collector.collect()
 
 
 class TestRssFallback:
@@ -208,6 +209,36 @@ class TestResolveChannelId:
         resp = MagicMock(text="no ids here")
         with patch.object(collector._sync_client, "get", return_value=resp):
             assert collector._resolve_channel_id("https://youtube.com/@x") == ""
+
+
+class TestResolveChannelIdViaApi:
+    @pytest.mark.asyncio
+    async def test_resolves_handle_via_data_api(self, monkeypatch):
+        # The API forHandle lookup works from datacenter IPs where the page scrape is blocked.
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config())
+        client = AsyncMock()
+        client.get.return_value = _resp(200, {"items": [{"id": "UCabc123"}]})
+        cid = await collector._resolve_channel_id_via_api("https://www.youtube.com/@AndrejKarpathy", client)
+        assert cid == "UCabc123"
+        assert client.get.call_args.kwargs["params"]["forHandle"] == "AndrejKarpathy"
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_handle(self, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config())
+        client = AsyncMock()
+        cid = await collector._resolve_channel_id_via_api("https://www.youtube.com/channel/UCx", client)
+        assert cid == ""
+        client.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_empty_items(self, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config())
+        client = AsyncMock()
+        client.get.return_value = _resp(200, {"items": []})
+        assert await collector._resolve_channel_id_via_api("https://www.youtube.com/@x", client) == ""
 
 
 class TestTranscript:

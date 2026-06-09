@@ -8,18 +8,52 @@ _TRACKING_PARAM_PREFIXES = ("utm_",)
 _TRACKING_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src", "ref_url"}
 
 
+def normalize_url(url: str) -> str:
+    # Collapse trivial variants (scheme, host case, trailing slash, tracking
+    # params, fragment) so the same article from two sources — or the same article
+    # seen on different days — dedups on URL.
+    if not url:
+        return url
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return url
+    if not parts.netloc:
+        return url.strip()
+    host = parts.netloc.lower().removeprefix("www.")
+    path = parts.path.rstrip("/") or "/"
+    kept = [
+        (k, v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if not k.lower().startswith(_TRACKING_PARAM_PREFIXES) and k.lower() not in _TRACKING_PARAMS
+    ]
+    query = urlencode(sorted(kept))
+    return urlunsplit(("https", host, path, query, ""))
+
+
 class ContentAggregator:
 
-    def aggregate(self, items: list[CollectedItem]) -> list[CollectedItem]:
+    def aggregate(self, items: list[CollectedItem], exclude_urls: set[str] | None = None) -> list[CollectedItem]:
+        # Drop anything already published on a recent day (cross-day dedup): the caller
+        # passes normalized URLs from the published-URL ledger so the same article isn't
+        # re-summarized days apart. Excluding here (before ranking) also saves ranker tokens.
+        exclude = exclude_urls or set()
+        cross_day_skipped = 0
         seen_urls: dict[str, CollectedItem] = {}
 
         for item in items:
             key = self._normalize_url(item.url)
+            if key in exclude:
+                cross_day_skipped += 1
+                continue
             if key in seen_urls:
                 logger.debug("Duplicate URL skipped: '%s'", item.url)
                 self._fill_missing_metadata(seen_urls[key], item)
             else:
                 seen_urls[key] = item
+
+        if cross_day_skipped:
+            logger.info("Skipped %d item(s) already published on a recent day", cross_day_skipped)
 
         url_deduped = list(seen_urls.values())
 
@@ -60,27 +94,7 @@ class ContentAggregator:
         for k, v in dupe.metadata.items():
             kept.metadata.setdefault(k, v)
 
-    @staticmethod
-    def _normalize_url(url: str) -> str:
-        # Collapse trivial variants (scheme, host case, trailing slash, tracking
-        # params, fragment) so the same article from two sources dedups on URL.
-        if not url:
-            return url
-        try:
-            parts = urlsplit(url.strip())
-        except ValueError:
-            return url
-        if not parts.netloc:
-            return url.strip()
-        host = parts.netloc.lower().removeprefix("www.")
-        path = parts.path.rstrip("/") or "/"
-        kept = [
-            (k, v)
-            for k, v in parse_qsl(parts.query, keep_blank_values=True)
-            if not k.lower().startswith(_TRACKING_PARAM_PREFIXES) and k.lower() not in _TRACKING_PARAMS
-        ]
-        query = urlencode(sorted(kept))
-        return urlunsplit(("https", host, path, query, ""))
+    _normalize_url = staticmethod(normalize_url)
 
     @staticmethod
     def _normalize_metadata(metadata: dict) -> dict:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -33,6 +34,20 @@ class StateStore(ABC):
 
     @abstractmethod
     def exists(self, key: str) -> bool: ...
+
+    def read_json(self, key: str, default: Any = None) -> Any:
+        """Read and parse a JSON blob; return default on missing/corrupt content."""
+        raw = self.read(key)
+        if not raw:
+            return default
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            logger.warning("State key '%s' held invalid JSON; using default", key)
+            return default
+
+    def write_json(self, key: str, value: Any) -> None:
+        self.write(key, json.dumps(value, ensure_ascii=False))
 
 
 class LocalStateStore(StateStore):

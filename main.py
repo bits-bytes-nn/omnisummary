@@ -16,6 +16,7 @@ from collectors import (
 )
 from output import send_digest_to_slack
 from pipeline import ContentAggregator, ContentRanker, DigestGenerator, TrendTracker
+from pipeline.aggregator import normalize_url
 from shared import (
     BedrockLanguageModelFactory,
     CollectedItem,
@@ -23,14 +24,19 @@ from shared import (
     DigestResult,
     HealthReport,
     LocalPaths,
+    PublishedUrlLedger,
     RankedItem,
+    RollingLog,
     SourceHealth,
     SourceStatus,
+    agi_countdown_intro,
     create_memory_store,
     create_state_store,
     is_running_in_aws,
     logger,
+    published_urls_from_snapshots,
 )
+from shared.history_store import RECENT_LEADS_KEY
 
 
 def _build_collector_tasks(
@@ -99,28 +105,52 @@ async def run_pipeline(
     digest_date: date,
     dry_run: bool = False,
 ) -> tuple[list[CollectedItem], list[RankedItem], DigestResult] | tuple[None, None, None]:
+    state_store = create_state_store(config)
+    ledger = PublishedUrlLedger(state_store, config.pipeline.published_url_ttl_days)
+    leads_log = RollingLog(state_store, RECENT_LEADS_KEY, config.pipeline.recent_leads_window)
+
+    # Cross-day dedup draws from BOTH the ledger AND recent AgentCore Memory snapshots, so it
+    # self-heals from existing history (and survives a lost/empty ledger) rather than only
+    # suppressing dupes for runs after the ledger is first populated. URLs are normalized to the
+    # ledger's canonical form so http/https + trailing-slash variants of a past story still match.
+    exclude_urls = ledger.recent_urls(digest_date)
+    try:
+        # Skip today's own snapshot (exclude_date) so a same-day re-run reproduces today's digest
+        # rather than suppressing the very stories it just published.
+        snapshots = create_memory_store().get_recent_digests(
+            config.pipeline.published_url_ttl_days, exclude_date=digest_date.isoformat()
+        )
+        exclude_urls |= {normalize_url(u) for u in published_urls_from_snapshots(snapshots)}
+    except Exception:
+        logger.warning("Could not seed cross-day dedup from memory snapshots (non-fatal)", exc_info=True)
+
     aggregator = ContentAggregator()
-    items = aggregator.aggregate(collected_items)
-    logger.info("Aggregated %d unique items", len(items))
+    items = aggregator.aggregate(collected_items, exclude_urls=exclude_urls)
+    logger.info("Aggregated %d unique items (excluding %d recently-published URLs)", len(items), len(exclude_urls))
 
     if not items:
         logger.warning("No items to process after aggregation")
         return None, None, None
 
+    # Over-select (top_n + buffer) so the digest editor can backfill after merging same-event
+    # items and still land on exactly top_n distinct stories.
+    select_count = config.pipeline.top_n + config.pipeline.digest_candidate_buffer
     ranker = ContentRanker(config.pipeline, llm_factory)
-    ranked_items = await ranker.rank(items)
+    ranked_items = await ranker.rank(items, select_count=select_count)
     logger.info("Ranked %d items (from %d)", len(ranked_items), len(items))
 
     if not ranked_items:
         logger.warning("No items passed ranking threshold")
         return None, None, None
 
-    state_store = create_state_store(config)
     trend_tracker = TrendTracker(config.pipeline, llm_factory, state_store)
     trends_context = trend_tracker.get_trends_context(today=digest_date)
 
+    recent_leads = [e.get("lead", "") for e in leads_log.entries()]
     generator = DigestGenerator(config.pipeline, llm_factory)
-    digest = await generator.generate(ranked_items, items, trends_context=trends_context, today=digest_date)
+    digest = await generator.generate(
+        ranked_items, items, trends_context=trends_context, today=digest_date, recent_leads=recent_leads
+    )
     logger.info("Generated digest with %d ranked items", len(digest.ranked_items))
 
     if dry_run:
@@ -128,6 +158,19 @@ async def run_pipeline(
         return items, ranked_items, digest
 
     await trend_tracker.update_trends(digest.digest_text, digest_date.isoformat())
+
+    # Record the stories that became TODAY'S digest of record so future runs don't re-publish
+    # them, and remember the lead so the next digest avoids repeating the same opening angle.
+    # Recorded at generation (post trend-update) — the same content.items the snapshot carries
+    # and the visual Lambda delivers — not gated on downstream delivery, which is async/
+    # best-effort and alarmed separately. The lead is stored WITHOUT the AGI-countdown prefix
+    # (a fixed daily template) so the novelty signal is the editorial angle, not the boilerplate.
+    try:
+        if digest.content and digest.content.items:
+            ledger.record([normalize_url(it.url) for it in digest.content.items], digest_date)
+            leads_log.append({"date": digest_date.isoformat(), "lead": _editorial_lead(config, digest, digest_date)})
+    except Exception:
+        logger.warning("Failed to update published-URL / leads history (non-fatal)", exc_info=True)
 
     if config.pipeline.enable_slack_post:
         success = await send_digest_to_slack(digest, config.slack)
@@ -151,6 +194,19 @@ async def run_pipeline(
     if not is_running_in_aws():
         persist_digest(items, ranked_items, digest, digest_date, base_dir=Path(LocalPaths.DIGEST_STATE_DIR.value))
     return items, ranked_items, digest
+
+
+def _editorial_lead(config: Config, digest: DigestResult, digest_date: date) -> str:
+    """The digest lead with the AGI-countdown prefix removed, so recent-leads novelty compares
+    the editorial angle (not the fixed daily countdown template every lead starts with)."""
+    lead = digest.content.lead if digest.content else ""
+    intro = agi_countdown_intro(
+        config.pipeline.agi_countdown_date,
+        config.pipeline.agi_countdown_template,
+        digest_date,
+        config.pipeline.agi_countdown_after,
+    )
+    return lead[len(intro) :] if intro and lead.startswith(intro) else lead
 
 
 def persist_digest(

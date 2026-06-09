@@ -14,10 +14,11 @@ THREADS_MAX_TEXT_LENGTH = 500
 THREADS_MEDIA_PROCESS_WAIT_SEC = 30
 # After an image root is published it isn't immediately addressable as a reply target;
 # replies to it can 400 with "media not found" until Meta finishes indexing (observed to take
-# well over 30s for image roots). Wait once before the first reply, then retry the link with
-# backoff over a generous window before giving up.
-THREADS_REPLY_INITIAL_WAIT_SEC = 15
-THREADS_REPLY_RETRY_ATTEMPTS = 8
+# well over 3 minutes for image roots). Wait once before the first reply, then retry the link
+# with backoff over a generous window before giving up. The Lambda timeout (15 min) bounds the
+# total; render (~4 min) + this budget (~5 min) leaves margin.
+THREADS_REPLY_INITIAL_WAIT_SEC = 30
+THREADS_REPLY_RETRY_ATTEMPTS = 18
 THREADS_REPLY_RETRY_BACKOFF_SEC = 15
 # How long the hosted-image presigned URL stays valid — must outlast the
 # create-container + media-processing window with margin.
@@ -140,11 +141,18 @@ async def post_to_threads(
             if image_url and posts:
                 await asyncio.sleep(THREADS_REPLY_INITIAL_WAIT_SEC)
             # All replies hang off the ROOT (a flat thread), not off each other — otherwise
-            # they nest as reply-of-reply and only the first shows under the root.
+            # they nest as reply-of-reply and only the first shows under the root. Each reply is
+            # best-effort: a single failure (or exhausted indexing retries) must not abandon the
+            # rest, so the digest never posts a half-finished comment chain ("댓글이 달리다 말았다").
+            posted = 0
             for i, post in enumerate(posts, start=1):
-                await _publish_reply_with_retry(client, user_id, token, post, root_id)
-                logger.debug("Posted Threads reply %d/%d", i, len(posts))
-        logger.info("Successfully posted digest to Threads (%d reply posts)", len(posts))
+                try:
+                    await _publish_reply_with_retry(client, user_id, token, post, root_id)
+                    posted += 1
+                    logger.debug("Posted Threads reply %d/%d", i, len(posts))
+                except Exception as e:
+                    logger.warning("Threads reply %d/%d failed, continuing: %s", i, len(posts), e)
+        logger.info("Successfully posted digest to Threads (%d/%d reply posts)", posted, len(posts))
         return True
     except httpx.HTTPStatusError as e:
         logger.warning("Threads API error: %s — %s", e.response.status_code, e.response.text[:300])

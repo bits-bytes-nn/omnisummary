@@ -24,6 +24,19 @@ class TestContentAggregator:
         urls = {item.url for item in result}
         assert urls == {"http://a.com", "http://b.com"}
 
+    def test_excludes_recently_published_urls(self):
+        # Cross-day dedup: an article already published on a recent day is dropped, even
+        # across http/https + trailing-slash variants (exclude set holds normalized URLs).
+        from pipeline.aggregator import normalize_url
+
+        items = [
+            _item(item_id="id1", url="https://a.com/post/", title="Already published"),
+            _item(item_id="id2", url="http://b.com", title="Fresh"),
+        ]
+        exclude = {normalize_url("http://a.com/post")}
+        result = ContentAggregator().aggregate(items, exclude_urls=exclude)
+        assert {it.url for it in result} == {"http://b.com"}
+
     def test_dedup_normalizes_url_variants(self):
         # trailing slash, scheme, www, tracking params, fragment, query order
         # should all collapse to one item.
