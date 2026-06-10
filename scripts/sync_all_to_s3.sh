@@ -20,12 +20,22 @@ cd "$REPO_DIR" || exit 1
 : "${AWS_PROFILE:=research}"
 export AWS_PROFILE
 
+# cron runs with a minimal PATH that usually lacks uv (installed in ~/.local/bin or Homebrew).
+# Prepend the common install dirs, then resolve an absolute uv path so the cron job doesn't
+# die with "uv: command not found".
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+UV="$(command -v uv || true)"
+if [ -z "$UV" ]; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] uv not found on PATH ($PATH) — aborting" >&2
+  exit 127
+fi
+
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
 rc=0
 for sync in sync_rsshub_to_s3 sync_youtube_to_s3; do
   log "Starting ${sync}..."
-  if uv run python "scripts/${sync}.py"; then
+  if "$UV" run python "scripts/${sync}.py"; then
     log "${sync} OK"
   else
     log "${sync} FAILED (continuing)"
