@@ -61,6 +61,11 @@ Use these as lenses, not a formula. Apply holistic judgment.
 5. Research Significance — notable papers with novel contributions.
 6. Source Authority — recognized researchers/institutions get a small bonus.
 
+Judge an item on the SUBSTANCE of what it says, not on its FORM. A video/podcast/conference-talk \
+transcript reads as loose conversational prose rather than tight written prose — do NOT penalize \
+it for that; a substantive talk or interview from a credible source is as valuable as an equivalent \
+article. Score the ideas, not the medium.
+
 *Hard Filters (score 0.3 or below)*
 Product/service promotion, thin content, beginner questions, memes, self-promotional posts without substance.
 

@@ -79,6 +79,11 @@ class CollectorsConfig(BaseModel):
 class PipelineConfig(BaseModel):
     top_n: int = 7
     min_score: float = Field(default=0.6, ge=0.0, le=1.0)
+    # Per-source safety net: a source with a guaranteed slot whose BEST item falls just below
+    # min_score (within this grace band) still gets that one item considered, so a source the
+    # absolute-scoring prompt systematically under-rates (e.g. video/podcast transcripts vs
+    # articles) isn't shut out entirely. 0 disables the grace (strict threshold for all).
+    source_slot_score_grace: float = Field(default=0.1, ge=0.0, le=0.5)
     # Extra ranked candidates handed to the digest generator beyond top_n, so that when the
     # editor MERGES same-event items (e.g. two takes on one launch) it can still backfill to
     # exactly top_n distinct stories instead of emitting fewer. 0 disables the buffer.

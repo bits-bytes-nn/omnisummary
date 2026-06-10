@@ -59,6 +59,7 @@ class ContentRanker:
         self._apply_origin_weights(ranked_items)
 
         above_threshold = [r for r in ranked_items if r.score >= self.config.min_score]
+        above_threshold.extend(self._grace_candidates(ranked_items, above_threshold))
         above_threshold.sort(key=lambda r: (-r.score, r.item.item_id))
 
         source_scores: dict[str, list[float]] = {}
@@ -144,6 +145,34 @@ class ContentRanker:
                     original,
                     ranked.score,
                 )
+
+    def _grace_candidates(self, ranked_items: list[RankedItem], above_threshold: list[RankedItem]) -> list[RankedItem]:
+        """Per-source safety net: for each source that has a guaranteed slot but landed NOTHING
+        above min_score, admit its single best item if it's within source_slot_score_grace of the
+        threshold. The absolute-scoring prompt systematically under-rates conversational sources
+        (video/podcast transcripts vs tight articles); this keeps a strong-but-0.55 item eligible
+        without lowering the global bar for everyone. Generalizes to any under-scored source."""
+        grace = self.config.source_slot_score_grace
+        if not grace or not self.config.source_slots:
+            return []
+        floor = self.config.min_score - grace
+        have_above = {r.item.source_type.value for r in above_threshold}
+        extra: list[RankedItem] = []
+        for src, slot in self.config.source_slots.items():
+            if slot < 1 or src in have_above:
+                continue
+            candidates = [r for r in ranked_items if r.item.source_type.value == src and floor <= r.score]
+            if candidates:
+                best = max(candidates, key=lambda r: r.score)
+                extra.append(best)
+                logger.info(
+                    "Source '%s' had nothing above %.2f; admitting best item at %.2f (grace floor %.2f)",
+                    src,
+                    self.config.min_score,
+                    best.score,
+                    floor,
+                )
+        return extra
 
     def _apply_source_slots(self, above_threshold: list[RankedItem], limit: int) -> list[RankedItem]:
         source_slots = self.config.source_slots
