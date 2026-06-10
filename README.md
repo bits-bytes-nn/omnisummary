@@ -115,8 +115,10 @@ uv run python main.py --dry-run --sources rss --interactive
 # Slack agent (Socket Mode)
 uv run python slack_agent.py
 
-# RSSHub S3 sync (for AWS)
-uv run python scripts/sync_rsshub_to_s3.py
+# Local→S3 sync for sources that block datacenter IPs (X/RSSHub + YouTube transcripts)
+./scripts/sync_all_to_s3.sh                  # runs both; one failing won't block the other
+uv run python scripts/sync_rsshub_to_s3.py   # X/RSSHub only
+uv run python scripts/sync_youtube_to_s3.py  # YouTube (with transcripts) only
 ```
 
 ### CLI Options
@@ -242,13 +244,19 @@ npx wrangler deploy
 
 ### Local Cron Setup
 
-RSSHub (X/Twitter) data must be synced from local to S3 before AWS digest runs:
+X/Twitter (RSSHub) **and** YouTube transcripts block datacenter (Lambda) IPs, so both must be
+collected locally on a residential IP and synced to S3 before the AWS digest runs. The digest
+Lambda reads the parked `*_items.json` files. Schedule the unified sync a few minutes before the
+digest's EventBridge time:
 
 ```bash
-# Add to crontab
 crontab -e
-50 21 * * * cd /path/to/omnisummary && .venv/bin/python scripts/sync_rsshub_to_s3.py >> /tmp/rsshub_sync.log 2>&1
+# 07:50 KST daily, ~10 min before an 08:00 digest. Runs both syncs; one failing won't block the other.
+50 7 * * * /path/to/omnisummary/scripts/sync_all_to_s3.sh >> /tmp/omnisummary-sync.log 2>&1
 ```
+
+`sync_all_to_s3.sh` defaults `AWS_PROFILE=research` and requires the local RSSHub Docker container
+(`http://localhost:1200`) to be up for the X sync; YouTube needs `YOUTUBE_API_KEY` in `.env`.
 
 ### External Services
 
