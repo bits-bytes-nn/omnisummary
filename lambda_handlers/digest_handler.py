@@ -15,6 +15,7 @@ from shared import (
     Config,
     HealthReport,
     SourceStatus,
+    format_alarm,
     logger,
     set_correlation_id,
 )
@@ -46,11 +47,15 @@ def _maybe_alert(health: HealthReport) -> None:
     failed = [s.name for s in health.sources if s.status == SourceStatus.FAILED]
     try:
         sns = boto3.client("sns")
-        sns.publish(
-            TopicArn=topic_arn,
-            Subject=f"[omnisummary] {len(failed)} source(s) failed",
-            Message="Source health report:\n\n" + health.summary(),
+        subject, message = format_alarm(
+            event="Source Health",
+            status="ALERT",
+            fields={
+                "Failed sources": ", ".join(failed),
+                "Report": health.summary(),
+            },
         )
+        sns.publish(TopicArn=topic_arn, Subject=subject, Message=message)
         logger.warning("Published SNS alert for failed sources: %s", failed)
     except Exception as e:
         logger.error("Failed to publish SNS alert: %s", e)

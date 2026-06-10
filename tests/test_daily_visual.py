@@ -6,13 +6,32 @@ from pipeline.daily_visual import DailyVisualMaker
 from shared.config import Config
 from shared.constants import SourceType
 from shared.models import CollectedItem, RankedItem, VisualBrief
+from shared.state_store import StateStore
+
+
+class _MemoryStore(StateStore):
+    """In-memory state store so visual tests don't read/write the repo's digest_state dir
+    (which made format/idempotency history order-dependent across runs)."""
+
+    def __init__(self) -> None:
+        self._d: dict[str, str] = {}
+
+    def read(self, key: str) -> str | None:
+        return self._d.get(key)
+
+    def write(self, key: str, content: str) -> None:
+        self._d[key] = content
+
+    def exists(self, key: str) -> bool:
+        return key in self._d
 
 
 def _maker() -> DailyVisualMaker:
     config = Config()
     factory = MagicMock()
     factory.get_model.return_value = MagicMock()
-    maker = DailyVisualMaker(config, factory)
+    with patch("pipeline.daily_visual.create_state_store", return_value=_MemoryStore()):
+        maker = DailyVisualMaker(config, factory)
     return maker
 
 
@@ -118,6 +137,98 @@ class TestDailyVisualMaker:
         assert root == "오늘의 리드."
         assert any("스토리" in r for r in th.await_args.kwargs["replies"])
         assert th.await_args.kwargs["image_bytes"] == b"PNG"
+
+    @pytest.mark.asyncio
+    async def test_threads_skipped_when_already_posted_today(self):
+        # A same-day re-run (or async Lambda retry) must not re-post the root+replies set.
+        from datetime import date
+
+        from shared.models import DigestContent, DigestItem
+
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = True
+        maker.threads_ledger.mark(date(2026, 6, 10))  # today already posted
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "x"}
+        content = DigestContent(
+            lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
+        )
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = AsyncMock(
+                    return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw"))
+                )
+                with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
+                    with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=True)) as th:
+                        await maker.run(_items(), content, today=date(2026, 6, 10))
+        th.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_threads_force_republish_bypasses_guard(self):
+        from datetime import date
+
+        from shared.models import DigestContent, DigestItem
+
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = True
+        maker.threads_ledger.mark(date(2026, 6, 10))
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "x"}
+        content = DigestContent(
+            lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
+        )
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = AsyncMock(
+                    return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw"))
+                )
+                with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
+                    with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=True)) as th:
+                        await maker.run(_items(), content, today=date(2026, 6, 10), force_republish=True)
+        th.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_threads_marks_ledger_after_successful_post(self):
+        from datetime import date
+
+        from shared.models import DigestContent, DigestItem
+
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = True
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "x"}
+        content = DigestContent(
+            lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
+        )
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = AsyncMock(
+                    return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw"))
+                )
+                with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
+                    with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=True)):
+                        await maker.run(_items(), content, today=date(2026, 6, 10))
+        assert maker.threads_ledger.already_posted(date(2026, 6, 10))
+
+    @pytest.mark.asyncio
+    async def test_threads_not_marked_when_post_fails(self):
+        # A failed Threads post must stay retryable — don't burn the idempotency marker.
+        from datetime import date
+
+        from shared.models import DigestContent, DigestItem
+
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = True
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "x"}
+        content = DigestContent(
+            lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
+        )
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = AsyncMock(
+                    return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw"))
+                )
+                with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
+                    with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=False)):
+                        await maker.run(_items(), content, today=date(2026, 6, 10))
+        assert not maker.threads_ledger.already_posted(date(2026, 6, 10))
 
     @pytest.mark.asyncio
     async def test_threads_disabled_by_default(self):

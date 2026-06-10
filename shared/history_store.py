@@ -24,6 +24,34 @@ def published_urls_from_snapshots(snapshots: list[dict[str, Any]]) -> set[str]:
 PUBLISHED_URLS_KEY = "published_urls.json"
 RECENT_LEADS_KEY = "recent_leads.json"
 VISUAL_FORMATS_KEY = "visual_formats.json"
+THREADS_POSTED_KEY = "threads_posted.json"
+
+
+class ThreadsPostLedger:
+    """Idempotency marker for the daily Threads post. Records the dates a digest has already
+    been published to Threads so a re-run — a same-day manual `main.py`, or an automatic
+    async retry of the visual Lambda after a timeout — doesn't post the whole root+replies
+    set again. Persisted as a capped list of ISO dates in the StateStore."""
+
+    MAX_DATES = 30
+
+    def __init__(self, store: StateStore) -> None:
+        self.store = store
+
+    def _dates(self) -> list[str]:
+        data = self.store.read_json(THREADS_POSTED_KEY, default=[]) or []
+        return [d for d in data if isinstance(d, str)] if isinstance(data, list) else []
+
+    def already_posted(self, today: date) -> bool:
+        return today.isoformat() in self._dates()
+
+    def mark(self, today: date) -> None:
+        dates = self._dates()
+        iso = today.isoformat()
+        if iso in dates:
+            return
+        dates.append(iso)
+        self.store.write_json(THREADS_POSTED_KEY, dates[-self.MAX_DATES :])
 
 
 class PublishedUrlLedger:

@@ -35,7 +35,9 @@ class TestMaybeAlert:
         sns.publish.assert_called_once()
         kwargs = sns.publish.call_args.kwargs
         assert kwargs["TopicArn"] == "arn:aws:sns:::topic"
-        assert "1 source(s) failed" in kwargs["Subject"]
+        # Unified project alarm format: "[omnisummary] Source Health — ALERT".
+        assert kwargs["Subject"] == "[omnisummary] Source Health — ALERT"
+        assert "reddit" in kwargs["Message"]
         assert "[FAILED] reddit" in kwargs["Message"]
 
     def test_publish_error_is_swallowed(self, monkeypatch):

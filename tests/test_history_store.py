@@ -1,9 +1,11 @@
-from datetime import date
+from datetime import date, timedelta
 
 from shared.history_store import (
     PUBLISHED_URLS_KEY,
+    THREADS_POSTED_KEY,
     PublishedUrlLedger,
     RollingLog,
+    ThreadsPostLedger,
     published_urls_from_snapshots,
 )
 from shared.state_store import StateStore
@@ -82,6 +84,40 @@ class TestPublishedUrlsFromSnapshots:
         ]
         assert published_urls_from_snapshots(snaps) == set()
         assert published_urls_from_snapshots([]) == set()
+
+
+class TestThreadsPostLedger:
+    def test_mark_then_already_posted(self):
+        ledger = ThreadsPostLedger(_MemStore())
+        today = date(2026, 6, 10)
+        assert ledger.already_posted(today) is False
+        ledger.mark(today)
+        assert ledger.already_posted(today) is True
+
+    def test_other_day_not_posted(self):
+        ledger = ThreadsPostLedger(_MemStore())
+        ledger.mark(date(2026, 6, 10))
+        assert ledger.already_posted(date(2026, 6, 11)) is False
+
+    def test_mark_is_idempotent(self):
+        store = _MemStore()
+        ledger = ThreadsPostLedger(store)
+        ledger.mark(date(2026, 6, 10))
+        ledger.mark(date(2026, 6, 10))
+        assert store.read_json(THREADS_POSTED_KEY) == ["2026-06-10"]
+
+    def test_dates_are_capped(self):
+        store = _MemStore()
+        ledger = ThreadsPostLedger(store)
+        for d in range(1, 1 + ThreadsPostLedger.MAX_DATES + 5):
+            ledger.mark(date(2026, 1, 1) + timedelta(days=d))
+        assert len(store.read_json(THREADS_POSTED_KEY)) == ThreadsPostLedger.MAX_DATES
+
+    def test_corrupt_blob_degrades_to_not_posted(self):
+        store = _MemStore()
+        store.write(THREADS_POSTED_KEY, "{ not json")
+        ledger = ThreadsPostLedger(store)
+        assert ledger.already_posted(date(2026, 6, 10)) is False
 
 
 class TestRollingLog:

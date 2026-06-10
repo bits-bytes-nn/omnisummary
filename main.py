@@ -104,6 +104,7 @@ async def run_pipeline(
     collected_items: list[CollectedItem],
     digest_date: date,
     dry_run: bool = False,
+    force_republish: bool = False,
 ) -> tuple[list[CollectedItem], list[RankedItem], DigestResult] | tuple[None, None, None]:
     state_store = create_state_store(config)
     ledger = PublishedUrlLedger(state_store, config.pipeline.published_url_ttl_days)
@@ -190,7 +191,9 @@ async def run_pipeline(
         try:
             from pipeline.daily_visual import DailyVisualMaker
 
-            posted = await DailyVisualMaker(config, llm_factory).run(ranked_items, digest.content)
+            posted = await DailyVisualMaker(config, llm_factory).run(
+                ranked_items, digest.content, today=digest_date, force_republish=force_republish
+            )
             logger.info("Daily visual %s", "posted" if posted else "skipped")
         except Exception:
             logger.warning("Daily visual step failed (non-fatal)", exc_info=True)
@@ -237,6 +240,11 @@ async def main() -> None:
     parser.add_argument("--top-n", type=int, help="Override top_n from config")
     parser.add_argument("--date", type=str, help="Digest date (YYYY-MM-DD). Defaults to today")
     parser.add_argument("--interactive", action="store_true", help="Enter agent chat mode after digest")
+    parser.add_argument(
+        "--force-republish",
+        action="store_true",
+        help="Re-post to Threads even if today's digest was already posted (bypass idempotency guard)",
+    )
     args = parser.parse_args()
 
     config = Config.load()
@@ -274,7 +282,14 @@ async def main() -> None:
         logger.warning("No items collected. Exiting.")
         return
 
-    result = await run_pipeline(config, llm_factory, collected_items, digest_date=digest_date, dry_run=args.dry_run)
+    result = await run_pipeline(
+        config,
+        llm_factory,
+        collected_items,
+        digest_date=digest_date,
+        dry_run=args.dry_run,
+        force_republish=args.force_republish,
+    )
     logger.info("OmniSummary pipeline completed")
 
     if args.interactive and result and result[0] is not None:

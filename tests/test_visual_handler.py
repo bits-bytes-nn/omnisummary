@@ -40,6 +40,7 @@ class TestVisualRun:
     async def test_runs_maker_with_ranked_items(self):
         config = MagicMock()
         config.pipeline.enable_daily_visual = True
+        config.aws.timezone = "Asia/Seoul"
         store = MagicMock()
         store.get_latest_digest.return_value = {"some": "state"}
         ranked = [MagicMock()]
@@ -56,4 +57,8 @@ class TestVisualRun:
                         with patch("lambda_handlers.visual_handler.BedrockLanguageModelFactory"):
                             with patch("lambda_handlers.visual_handler.DailyVisualMaker", return_value=maker_instance):
                                 await visual_handler._run()
-        maker_instance.run.assert_awaited_once_with(ranked, content)
+        # today is computed from config.aws.timezone and passed as a keyword.
+        maker_instance.run.assert_awaited_once()
+        args, kwargs = maker_instance.run.call_args
+        assert args == (ranked, content)
+        assert "today" in kwargs

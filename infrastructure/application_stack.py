@@ -117,8 +117,9 @@ class OmniSummaryApplicationStack(Stack):
 
         # DLQ for failed async Lambda invokes (defined in foundation so the on_failure send grant
         # on the shared lambda_role stays intra-stack). With retry_attempts=0, a failed run lands
-        # here for inspection/replay instead of auto-retrying (a retry would double-post to Threads,
-        # which has no idempotency key).
+        # here for inspection/replay instead of auto-retrying. The visual handler also carries a
+        # per-date Threads idempotency marker (ThreadsPostLedger), so even a retry after a
+        # POST-publish timeout won't double-post; retry_attempts=0 keeps that belt-and-suspenders.
         async_dlq = foundation.async_dlq
 
         # Daily-visual Lambda: invoked asynchronously by the digest Lambda so its
@@ -141,7 +142,8 @@ class OmniSummaryApplicationStack(Stack):
             role=foundation.lambda_role,
             vpc=foundation.vpc,
             vpc_subnets=foundation.vpc_subnets,
-            # No auto-retry: a retry would re-post the whole Threads thread (no idempotency key).
+            # No auto-retry: the ThreadsPostLedger idempotency marker already blocks a re-post,
+            # and retry_attempts=0 avoids re-running the costly gpt-image render on failure.
             # Failures go to the DLQ for manual replay instead.
             retry_attempts=0,
             on_failure=destinations.SqsDestination(async_dlq),

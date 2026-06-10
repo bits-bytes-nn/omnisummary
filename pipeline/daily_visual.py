@@ -4,6 +4,8 @@ import asyncio
 import hashlib
 import json
 import os
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from langchain_core.output_parsers import StrOutputParser
 
@@ -21,7 +23,7 @@ from shared import (
     resolve_secret,
 )
 from shared.config import Config
-from shared.history_store import VISUAL_FORMATS_KEY
+from shared.history_store import VISUAL_FORMATS_KEY, ThreadsPostLedger
 
 
 class DailyVisualMaker:
@@ -36,12 +38,15 @@ class DailyVisualMaker:
         # Format-variation history is best-effort: if the state store can't be created
         # (misconfigured bucket/profile), degrade to no history rather than crash the visual.
         try:
+            store = create_state_store(config)
             self.format_log: RollingLog | None = RollingLog(
-                create_state_store(config), VISUAL_FORMATS_KEY, config.pipeline.visual_format_window
+                store, VISUAL_FORMATS_KEY, config.pipeline.visual_format_window
             )
+            self.threads_ledger: ThreadsPostLedger | None = ThreadsPostLedger(store)
         except Exception:
             logger.warning("Visual format history unavailable (state store init failed)", exc_info=True)
             self.format_log = None
+            self.threads_ledger = None
         self.generator = VisualGenerator(
             llm_factory,
             config.pipeline.digest_model,
@@ -57,7 +62,14 @@ class DailyVisualMaker:
             style_aesthetic=config.pipeline.visual_synopsis_style_aesthetic,
         )
 
-    async def run(self, ranked_items: list[RankedItem], content: DigestContent | None = None) -> bool:
+    async def run(
+        self,
+        ranked_items: list[RankedItem],
+        content: DigestContent | None = None,
+        *,
+        today: date | None = None,
+        force_republish: bool = False,
+    ) -> bool:
         if not ranked_items:
             return False
         if not resolve_secret("OPENAI_API_KEY", "openai-api-key"):
@@ -104,7 +116,7 @@ class DailyVisualMaker:
             return False
 
         slack_ok = await self._post(image_bytes, brief)
-        await self._post_threads(image_bytes, brief, content)
+        await self._post_threads(image_bytes, brief, content, today=today, force_republish=force_republish)
         # Record the chosen format so tomorrow can deliberately differ. Best-effort.
         if self.format_log:
             try:
@@ -230,11 +242,27 @@ class DailyVisualMaker:
             bot_token=bot_token,
         )
 
-    async def _post_threads(self, image_bytes: bytes, brief: VisualBrief, content: DigestContent | None) -> bool:
+    async def _post_threads(
+        self,
+        image_bytes: bytes,
+        brief: VisualBrief,
+        content: DigestContent | None,
+        *,
+        today: date | None = None,
+        force_republish: bool = False,
+    ) -> bool:
         if not self.config.pipeline.enable_threads_post:
             return False
         from output.renderers import render_threads_posts
         from output.threads_handler import post_to_threads
+
+        # Idempotency: a same-day re-run (manual `main.py`) or an automatic async retry of the
+        # visual Lambda after a timeout would otherwise post the whole root+replies set again.
+        # Skip if today's digest already went to Threads, unless explicitly forced.
+        post_date = today or datetime.now(ZoneInfo(self.config.aws.timezone)).date()
+        if self.threads_ledger and not force_republish and self.threads_ledger.already_posted(post_date):
+            logger.info("Threads digest for %s already posted, skipping (use force to re-publish)", post_date)
+            return False
 
         # Root = visual image + the digest lead (which already carries the AGI-countdown intro,
         # prepended at digest generation); replies = one per story. When no structured content is
@@ -247,10 +275,18 @@ class DailyVisualMaker:
         bucket = self.config.aws.state_bucket_name or os.environ.get("STATE_BUCKET", "")
         prefix = self.config.aws.s3_prefix.rstrip("/") + "/" if self.config.aws.s3_prefix else ""
         image_key = f"{prefix}threads/{hashlib.sha256(image_bytes).hexdigest()[:16]}.png"
-        return await post_to_threads(
+        posted = await post_to_threads(
             root_text=root_text,
             replies=replies,
             image_bytes=image_bytes,
             image_bucket=bucket,
             image_key=image_key,
         )
+        # Mark the date BEFORE returning so an automatic async retry after a *post-publish*
+        # timeout won't re-post. Only mark on success — a failed post should be retryable.
+        if posted and self.threads_ledger:
+            try:
+                self.threads_ledger.mark(post_date)
+            except Exception:
+                logger.warning("Failed to record Threads post marker (non-fatal)", exc_info=True)
+        return posted

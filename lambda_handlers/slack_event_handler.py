@@ -120,9 +120,32 @@ def _post_fallback(channel: str, thread_ts: str) -> None:
         token = _resolve_slack_bot_token()
         if not token:
             return
+        # Mirror the family's Slack error convention (see scholar-lens
+        # notifier/bot): a header line + a muted retry hint, rather than one
+        # bare warning sentence.
         kwargs: dict[str, Any] = {
             "channel": channel,
-            "text": ":warning: Sorry, I couldn't process that request. Please mention me again in a moment.",
+            "text": "Sorry, I couldn't process that request.",
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": ":x: I couldn't process that request",
+                        "emoji": True,
+                    },
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": ":arrows_counterclockwise: Please mention me "
+                            "again in a moment, or check the logs if it keeps happening.",
+                        }
+                    ],
+                },
+            ],
         }
         if thread_ts:
             kwargs["thread_ts"] = thread_ts

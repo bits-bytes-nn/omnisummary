@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Callable
-from datetime import date
+from datetime import UTC, date, datetime
 from urllib.parse import urlparse
 
 from .constants import SourceType
@@ -11,6 +11,48 @@ from .models import CollectedItem
 
 YOUTUBE_VIEWS_EMOJI = ":arrow_forward:"
 RSS_NAME_DELIMITERS = (" - ", " — ")
+
+
+def format_alarm(
+    *,
+    event: str,
+    status: str,
+    fields: dict[str, str],
+    project: str = "omnisummary",
+    timestamp: datetime | None = None,
+) -> tuple[str, str]:
+    """Build a ``(subject, message)`` pair in the project family's unified alarm
+    format, shared verbatim across tech-digest/paper-bridge/scholar-lens:
+
+        Subject: [<project>] <event> — <STATUS>
+
+        <event> <STATUS>
+
+        Key:   Value
+
+        — 2026-06-10 04:12:00 UTC
+
+    ``status`` is a short uppercase state (``FAILED``/``ALERT``). ``fields`` is an
+    ordered mapping; single-line values render as an aligned ``Key: Value`` block,
+    multi-line values render under their own ``Key:`` header. Omit a row by leaving
+    it out of the dict.
+    """
+    ts = (timestamp or datetime.now(UTC)).strftime("%Y-%m-%d %H:%M:%S")
+    subject = f"[{project}] {event} — {status}"
+
+    inline = {k: v for k, v in fields.items() if "\n" not in v}
+    block = {k: v for k, v in fields.items() if "\n" in v}
+
+    lines = [f"{event} {status}", ""]
+    if inline:
+        width = max(len(k) for k in inline)
+        lines += [f"{k + ':':<{width + 1}} {v}" for k, v in inline.items()]
+    for k, v in block.items():
+        lines += ["", f"{k}:", v.strip("\n")]
+    lines.append("")
+    lines.append(f"— {ts} UTC")
+
+    return subject, "\n".join(lines)
 
 
 def agi_countdown_intro(date_str: str, template: str, today: date, after_template: str = "") -> str:

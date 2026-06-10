@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import boto3
 
@@ -42,5 +44,6 @@ async def _run() -> None:
     session = boto3.Session(region_name=config.aws.bedrock_region)
     factory = BedrockLanguageModelFactory(boto_session=session, region_name=config.aws.bedrock_region)
 
-    posted = await DailyVisualMaker(config, factory).run(ranked_items, content)
+    today = datetime.now(ZoneInfo(config.aws.timezone)).date()
+    posted = await DailyVisualMaker(config, factory).run(ranked_items, content, today=today)
     logger.info("Daily visual %s", "posted" if posted else "skipped")
