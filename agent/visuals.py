@@ -88,8 +88,8 @@ class VisualGenerator:
         raw = await chain.ainvoke(
             {
                 "instruction": instruction,
-                "source": self.llm_factory.truncate_to_tokens(source, self.source_max_tokens, self.brief_model),
-                "context": self.llm_factory.truncate_to_tokens(context, self.context_max_tokens, self.brief_model),
+                "source": self.llm_factory.truncate_to_tokens(source, self.source_max_tokens),
+                "context": self.llm_factory.truncate_to_tokens(context, self.context_max_tokens),
                 "orientations": ", ".join(self.image_sizes),
                 "caption_language": self.caption_language,
                 "on_image_language": self.on_image_language,

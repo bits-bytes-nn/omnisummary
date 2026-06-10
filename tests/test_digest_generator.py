@@ -103,6 +103,32 @@ class TestGroundingCheck:
         assert result.lead == "원본 다이제스트."
 
 
+class TestTargetCountTrim:
+    @pytest.mark.asyncio
+    async def test_overemitted_items_trimmed_to_target(self):
+        from datetime import date
+
+        # The LLM ignores "EXACTLY target_count" and emits 5 items; with top_n=3 the digest must
+        # trim deterministically to 3 (headline retained) rather than trusting prompt compliance.
+        emitted = {
+            "lead": "리드.",
+            "headline_index": 1,
+            "items": [{"title": f"T{i}", "url": f"u{i}", "body": "본문.", "implication": "시사점."} for i in range(5)],
+        }
+        config = PipelineConfig(enable_grounding_check=False, top_n=3)
+        factory = MagicMock()
+        factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content=json.dumps(emitted)))
+        gen = DigestGenerator(config, factory)
+        ranked = [
+            RankedItem(
+                item=CollectedItem(item_id=f"i{i}", source_type=SourceType.RSS, title=f"T{i}", url=f"u{i}"), score=0.8
+            )
+            for i in range(5)
+        ]
+        result = await gen.generate(ranked, [r.item for r in ranked], today=date(2030, 1, 1))
+        assert len(result.content.items) == 3  # trimmed to top_n
+
+
 class TestFormatRecentLeads:
     def test_bullets_recent_leads(self):
         from pipeline.digest_generator import _format_recent_leads

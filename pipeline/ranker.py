@@ -33,7 +33,7 @@ class ContentRanker:
         self.llm = llm_factory.get_model(config.ranking_model)
 
     def _truncate(self, text: str, max_tokens: int) -> str:
-        return self.llm_factory.truncate_to_tokens(text, max_tokens, self.config.ranking_model)
+        return self.llm_factory.truncate_to_tokens(text, max_tokens)
 
     async def rank(self, items: list[CollectedItem], select_count: int | None = None) -> list[RankedItem]:
         if not items:
@@ -59,8 +59,12 @@ class ContentRanker:
         self._apply_origin_weights(ranked_items)
 
         above_threshold = [r for r in ranked_items if r.score >= self.config.min_score]
-        above_threshold.extend(self._grace_candidates(ranked_items, above_threshold))
+        grace = self._grace_candidates(ranked_items, above_threshold)
+        above_threshold.extend(grace)
         above_threshold.sort(key=lambda r: (-r.score, r.item.item_id))
+        # Grace items are below min_score; they may ONLY fill their own source's guaranteed slot,
+        # never the relaxed fallback fill (which would pad a quiet day with several weak items).
+        grace_ids = {r.item.item_id for r in grace}
 
         source_scores: dict[str, list[float]] = {}
         for r in ranked_items:
@@ -77,7 +81,7 @@ class ContentRanker:
                 [f"{s:.2f}" for s in sorted(scores, reverse=True)[:5]],
             )
 
-        selected = self._apply_source_slots(above_threshold, limit)
+        selected = self._apply_source_slots(above_threshold, limit, grace_ids)
 
         logger.info(
             "Ranked %d items → %d above min_score %.2f → %d selected (with source slots)",
@@ -174,7 +178,10 @@ class ContentRanker:
                 )
         return extra
 
-    def _apply_source_slots(self, above_threshold: list[RankedItem], limit: int) -> list[RankedItem]:
+    def _apply_source_slots(
+        self, above_threshold: list[RankedItem], limit: int, grace_ids: set[str] | None = None
+    ) -> list[RankedItem]:
+        grace_ids = grace_ids or set()
         source_slots = self.config.source_slots
         if not source_slots:
             return above_threshold[:limit]
@@ -213,7 +220,7 @@ class ContentRanker:
 
         if len(selected) < limit:
             for item in above_threshold:
-                if item.item.item_id in selected_ids:
+                if item.item.item_id in selected_ids or item.item.item_id in grace_ids:
                     continue
                 src = item.item.source_type.value
                 cap = source_slots.get(src, DEFAULT_SOURCE_SLOT) * self.config.source_cap_multiplier
@@ -225,10 +232,11 @@ class ContentRanker:
 
         # Final fallback: if diversity caps left the digest below the limit while valid
         # candidates remain, relax the per-origin cap (keep the source cap) so a quiet
-        # day with few distinct origins still fills the digest.
+        # day with few distinct origins still fills the digest. Grace items (below min_score)
+        # are excluded here — they only earn their own source's guaranteed slot, not filler.
         if len(selected) < limit:
             for item in above_threshold:
-                if item.item.item_id in selected_ids:
+                if item.item.item_id in selected_ids or item.item.item_id in grace_ids:
                     continue
                 src = item.item.source_type.value
                 cap = source_slots.get(src, DEFAULT_SOURCE_SLOT) * self.config.source_cap_multiplier

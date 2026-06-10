@@ -33,7 +33,7 @@ class DigestGenerator:
         self.llm = llm_factory.get_model(config.digest_model)
 
     def _truncate(self, text: str, max_tokens: int) -> str:
-        return self.llm_factory.truncate_to_tokens(text, max_tokens, self.config.digest_model)
+        return self.llm_factory.truncate_to_tokens(text, max_tokens)
 
     async def generate(
         self,
@@ -78,6 +78,13 @@ class DigestGenerator:
             }
         )
         content = self._parse_content(raw)
+        # Hard upper-bound: the prompt asks for EXACTLY target_count, but a model can over-emit.
+        # Trim deterministically so the digest never exceeds the target (fewer is allowed when the
+        # editor genuinely found fewer distinct stories). headline_index is pinned to 1, so the
+        # headline is always retained.
+        if len(content.items) > target_count:
+            logger.info("Digest emitted %d items; trimming to target %d", len(content.items), target_count)
+            content.items = content.items[:target_count]
         self._fill_source_metadata(content, ranked_items)
 
         if self.config.enable_grounding_check:

@@ -219,3 +219,32 @@ class TestDailyVisualMaker:
         maker = _maker()
         maker.llm = RunnableLambda(lambda _: AIMessage(content="no json here at all"))
         assert await maker._pick_story(_items()) == {}
+
+
+class TestFormatRotation:
+    def test_least_recent_orientation_picks_unused(self):
+        maker = _maker()  # image_sizes default: square, landscape, portrait
+        # Recent used landscape + portrait (oldest-first); square is unused → pick it.
+        recent = [{"orientation": "landscape"}, {"orientation": "portrait"}]
+        assert maker._least_recent_orientation(recent) == "square"
+
+    def test_least_recent_orientation_all_used_picks_oldest(self):
+        maker = _maker()
+        # All three used; entries are oldest-first, so the first (portrait) is least-recent.
+        recent = [{"orientation": "portrait"}, {"orientation": "square"}, {"orientation": "landscape"}]
+        assert maker._least_recent_orientation(recent) == "portrait"
+
+    def test_least_recent_orientation_empty_history(self):
+        maker = _maker()
+        assert maker._least_recent_orientation([]) in ("square", "landscape", "portrait")
+
+    def test_format_guidance_empty_history(self):
+        maker = _maker()
+        assert "No recent visuals" in maker._format_guidance([], "")
+
+    def test_format_guidance_lists_recent_and_preferred(self):
+        maker = _maker()
+        recent = [{"orientation": "landscape", "format": "poster"}]
+        out = maker._format_guidance(recent, "square")
+        assert "landscape/poster" in out
+        assert "square" in out  # preferred orientation surfaced

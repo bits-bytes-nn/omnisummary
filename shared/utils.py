@@ -261,13 +261,13 @@ class BedrockLanguageModelFactory(
     def _get_model_info_dict(self) -> dict[LanguageModelId, LanguageModelInfo]:
         return _LANGUAGE_MODEL_INFO
 
-    def count_tokens(self, text: str, model_id: LanguageModelId | None = None) -> int:
+    def count_tokens(self, text: str) -> int:
         """Authoritative token count via the Bedrock CountTokens API (not a local heuristic).
 
         Only some base models expose CountTokens (e.g. Sonnet does; Opus 4.8 returns
         'doesn't support counting tokens'). The Claude family shares a tokenizer, so we always
-        count with TOKEN_COUNT_MODEL regardless of the caller's model_id — accurate for all of
-        them and avoids per-model 'unsupported' failures. Falls back to a char estimate on error.
+        count with TOKEN_COUNT_MODEL regardless of the caller's model — accurate for all of them
+        and avoids per-model 'unsupported' failures. Falls back to a char estimate on error.
         CountTokens needs the BASE id, so any cross-region 'global.'/'us.' prefix is stripped."""
         base_id = TOKEN_COUNT_MODEL.value
         base_id = base_id.split(".", 1)[1] if base_id.split(".", 1)[0] in ("global", "us", "eu", "apac") else base_id
@@ -281,16 +281,16 @@ class BedrockLanguageModelFactory(
             logger.warning("Bedrock count_tokens failed (%s); using char/4 estimate", e)
             return len(text) // 4
 
-    def truncate_to_tokens(self, text: str, max_tokens: int, model_id: LanguageModelId | None = None) -> str:
+    def truncate_to_tokens(self, text: str, max_tokens: int) -> str:
         """Truncate text to <= max_tokens, measured by the Bedrock CountTokens API. Binary-searches
         the character cut point (O(log n) API calls) since CountTokens counts but can't decode token
         boundaries. Cuts on a whitespace boundary near the found point so words aren't split."""
-        if not text or self.count_tokens(text, model_id) <= max_tokens:
+        if not text or self.count_tokens(text) <= max_tokens:
             return text
         lo, hi, best = 0, len(text), 0
         while lo <= hi:
             mid = (lo + hi) // 2
-            if self.count_tokens(text[:mid], model_id) <= max_tokens:
+            if self.count_tokens(text[:mid]) <= max_tokens:
                 best = mid
                 lo = mid + 1
             else:

@@ -124,7 +124,7 @@ def get_detail(item_number: int, query: str = "") -> str:
         index=item_number,
         max_tokens=max_tokens,
         fields=fields,
-        truncate=lambda t, n: factory.truncate_to_tokens(t, n, config.agent.model_id),
+        truncate=lambda t, n: factory.truncate_to_tokens(t, n),
         text_label="Content",
     ).rstrip("\n")
     if query:

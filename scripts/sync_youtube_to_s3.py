@@ -22,8 +22,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Collect live (residential IP) — never read back a parked S3 file during the sync itself.
+# Collect live (residential IP) — never read back a parked S3 file during the sync itself,
+# and never route through the Cloudflare proxy (the whole point is to collect from this
+# residential IP, not a datacenter one). Mirrors sync_rsshub_to_s3.py.
 os.environ.pop("STATE_BUCKET", None)
+os.environ.pop("CLOUDFLARE_PROXY_URL", None)
+os.environ.pop("CLOUDFLARE_PROXY_TOKEN", None)
 
 from collectors.youtube import YouTubeCollector
 from shared import Config, logger

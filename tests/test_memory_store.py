@@ -57,6 +57,15 @@ class TestLocalMemoryStore:
         recent = store.get_recent_digests(6, exclude_date="2026-06-09")
         assert [r["d"] for r in recent] == ["2026-06-08", "2026-06-07"]
 
+    def test_get_recent_digests_after_date_bounds_window(self, tmp_path):
+        # after_date floors the seed to the TTL window so a stale snapshot outside it (here the
+        # 06-01 one, before the 06-05 floor) can't suppress a legitimately-recurring story.
+        store = LocalMemoryStore(tmp_path)
+        for d in ("2026-06-01", "2026-06-06", "2026-06-08"):
+            store.put_digest(d, {"d": d})
+        recent = store.get_recent_digests(10, after_date="2026-06-05")
+        assert [r["d"] for r in recent] == ["2026-06-08", "2026-06-06"]  # 06-01 excluded
+
 
 class TestCreateMemoryStore:
     def test_local_when_no_memory_id(self, monkeypatch, tmp_path):
@@ -152,3 +161,21 @@ class TestAgentCoreMemoryStore:
         store, client = self._store()
         client.list_sessions.return_value = {"sessionSummaries": []}
         assert store.get_latest_digest() is None
+
+    def test_get_recent_digests_excludes_and_date_bounds(self):
+        # Production path: newest-first, drops exclude_date (today) and anything before after_date.
+        store, client = self._store()
+        client.list_sessions.return_value = {
+            "sessionSummaries": [
+                {"sessionId": "digest-2026-06-02"},  # before floor → dropped
+                {"sessionId": "digest-2026-06-07"},
+                {"sessionId": "digest-2026-06-08"},
+                {"sessionId": "digest-2026-06-09"},  # exclude_date → dropped
+                {"sessionId": "trend-2026-06-08"},  # non-digest → ignored
+            ]
+        }
+        client.list_events.side_effect = lambda **kw: {
+            "events": [{"payload": [{"conversational": {"content": {"text": json.dumps({"sid": kw["sessionId"]})}}}]}]
+        }
+        recent = store.get_recent_digests(10, exclude_date="2026-06-09", after_date="2026-06-05")
+        assert [r["sid"] for r in recent] == ["digest-2026-06-08", "digest-2026-06-07"]

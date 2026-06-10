@@ -28,11 +28,13 @@ class MemoryStore(ABC):
     @abstractmethod
     def get_latest_digest(self) -> dict[str, Any] | None: ...
 
-    def get_recent_digests(self, n: int, exclude_date: str = "") -> list[dict[str, Any]]:
+    def get_recent_digests(self, n: int, exclude_date: str = "", after_date: str = "") -> list[dict[str, Any]]:
         """Return up to the n most recent digest snapshots (newest first), skipping the one for
-        exclude_date. Used to seed cross-day dedup from history so it works immediately, not only
-        after the ledger is populated by a future run; exclude_date drops today's own snapshot so
-        a same-day re-run doesn't suppress its own stories. Default base impl: just the latest."""
+        exclude_date and any dated strictly before after_date (ISO). Used to seed cross-day dedup
+        from history so it works immediately, not only after the ledger is populated by a future
+        run; exclude_date drops today's own snapshot (same-day re-run keeps its stories) and
+        after_date bounds the seed to the SAME window the ledger uses, so a story that legitimately
+        recurs after the TTL isn't suppressed by a stale snapshot. Base impl: just the latest."""
         latest = self.get_latest_digest()
         return [latest] if latest else []
 
@@ -57,10 +59,15 @@ class LocalMemoryStore(MemoryStore):
         logger.info("Loaded latest local digest state '%s'", files[0])
         return json.loads(files[0].read_text(encoding="utf-8"))
 
-    def get_recent_digests(self, n: int, exclude_date: str = "") -> list[dict[str, Any]]:
+    def get_recent_digests(self, n: int, exclude_date: str = "", after_date: str = "") -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         skip = f"digest_{exclude_date}.json" if exclude_date else ""
-        files = [p for p in sorted(self.base_dir.glob("digest_*.json"), reverse=True) if p.name != skip]
+        floor = f"digest_{after_date}.json" if after_date else ""
+        files = [
+            p
+            for p in sorted(self.base_dir.glob("digest_*.json"), reverse=True)
+            if p.name != skip and (not floor or p.name >= floor)
+        ]
         for path in files[: max(0, n)]:
             try:
                 out.append(json.loads(path.read_text(encoding="utf-8")))
@@ -192,10 +199,12 @@ class AgentCoreMemoryStore(MemoryStore):
             logger.info("Loaded latest digest state from AgentCore Memory (session '%s')", sessions[0])
         return data
 
-    def get_recent_digests(self, n: int, exclude_date: str = "") -> list[dict[str, Any]]:
+    def get_recent_digests(self, n: int, exclude_date: str = "", after_date: str = "") -> list[dict[str, Any]]:
         skip = f"{self.DIGEST_SESSION_PREFIX}-{exclude_date}" if exclude_date else ""
+        # Session ids sort as 'digest-YYYY-MM-DD', so a lexical >= on the suffix bounds by date.
+        floor = f"{self.DIGEST_SESSION_PREFIX}-{after_date}" if after_date else ""
         out: list[dict[str, Any]] = []
-        session_ids = [s for s in self._digest_session_ids() if s != skip]
+        session_ids = [s for s in self._digest_session_ids() if s != skip and (not floor or s >= floor)]
         for session_id in session_ids[: max(0, n)]:
             try:
                 data = self._load_session(session_id)

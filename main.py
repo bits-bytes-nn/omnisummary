@@ -115,10 +115,14 @@ async def run_pipeline(
     # ledger's canonical form so http/https + trailing-slash variants of a past story still match.
     exclude_urls = ledger.recent_urls(digest_date)
     try:
-        # Skip today's own snapshot (exclude_date) so a same-day re-run reproduces today's digest
-        # rather than suppressing the very stories it just published.
+        # Seed the same TTL window the ledger uses: skip today's own snapshot (exclude_date) so a
+        # same-day re-run keeps its stories, and floor at digest_date - ttl (after_date) so a story
+        # that legitimately recurs past the window isn't suppressed by a stale snapshot.
+        ttl = config.pipeline.published_url_ttl_days
         snapshots = create_memory_store().get_recent_digests(
-            config.pipeline.published_url_ttl_days, exclude_date=digest_date.isoformat()
+            ttl,
+            exclude_date=digest_date.isoformat(),
+            after_date=(digest_date - timedelta(days=ttl)).isoformat(),
         )
         exclude_urls |= {normalize_url(u) for u in published_urls_from_snapshots(snapshots)}
     except Exception:

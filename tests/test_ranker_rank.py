@@ -131,3 +131,39 @@ class TestRankEndToEnd:
         ranker = ContentRanker(config, factory)
         result = await ranker.rank(items)
         assert {r.item.item_id for r in result} == {f"i{n}" for n in range(10)}
+
+
+class TestGraceIntegration:
+    @pytest.mark.asyncio
+    async def test_grace_item_reaches_final_selection(self):
+        # A source with a guaranteed slot but only a sub-threshold best item (within grace)
+        # still lands in the digest via its own slot, end-to-end through rank().
+        items = _items([("r1", SourceType.RSS), ("y1", SourceType.YOUTUBE)])
+        ranker = _ranker(
+            _rankings({"r1": 0.80, "y1": 0.55}),
+            top_n=5,
+            min_score=0.6,
+            source_slot_score_grace=0.1,
+            source_slots={"rss": 1, "youtube": 1},
+        )
+        result = await ranker.rank(items)
+        assert {r.item.item_id for r in result} == {"r1", "y1"}
+
+    @pytest.mark.asyncio
+    async def test_grace_item_does_not_fill_fallback_slots(self):
+        # Quiet day: one strong RSS item + sub-threshold grace items in two slotted sources.
+        # Grace items take ONLY their own guaranteed slot — they must NOT be pulled into the
+        # relaxed fallback fill to pad the digest toward top_n.
+        items = _items([("r1", SourceType.RSS), ("y1", SourceType.YOUTUBE), ("x1", SourceType.X)])
+        ranker = _ranker(
+            _rankings({"r1": 0.90, "y1": 0.55, "x1": 0.55}),
+            top_n=5,
+            min_score=0.6,
+            source_slot_score_grace=0.1,
+            source_slots={"rss": 1, "youtube": 1, "x": 1},
+            source_cap_multiplier=3,  # fallback could otherwise pull extra items per source
+        )
+        result = await ranker.rank(items)
+        # Each appears exactly once via its own slot; no duplication / fallback padding.
+        ids = sorted(r.item.item_id for r in result)
+        assert ids == ["r1", "x1", "y1"]

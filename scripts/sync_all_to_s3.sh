@@ -10,8 +10,8 @@
 #   - For X/RSSHub: the local RSSHub Docker container must be up (http://localhost:1200).
 #   - AWS creds: AWS_PROFILE (config.yaml uses `research`) or S3_SYNC_ACCESS_KEY_ID/SECRET in .env.
 #
-# Cron example (07:50 KST daily, ~10 min before a 08:00 digest) — `crontab -e`:
-#   50 7 * * * /Users/youngmki/Projects/omnisummary/scripts/sync_all_to_s3.sh >> /tmp/omnisummary-sync.log 2>&1
+# Cron example (18:30 KST daily, ~30 min before the 19:00 KST = 10:00 UTC digest) — `crontab -e`:
+#   30 18 * * * /Users/youngmki/Projects/omnisummary/scripts/sync_all_to_s3.sh >> /tmp/omnisummary-sync.log 2>&1
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
