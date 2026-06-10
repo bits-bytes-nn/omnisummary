@@ -84,21 +84,71 @@ pipeline:
     youtube: 1
 ```
 
-Required environment variables (`.env`):
+Environment variables (`.env`) — see `.env.template`. **Required** to run at all; everything else is optional and degrades gracefully (the feature is skipped with a log line if its key is absent):
 
 ```
-SLACK_BOT_TOKEN=xoxb-...
-SLACK_APP_TOKEN=xapp-...           # Socket Mode (slack_agent.py)
-SLACK_CHANNEL_ID=C...
-TAVILY_API_KEY=tvly-...
-YOUTUBE_API_KEY=AIza...            # Optional, falls back to RSS
-OPENAI_API_KEY=sk-...              # Optional, enables make_visual (free-form images)
-THREADS_ACCESS_TOKEN=...           # Optional, enables Threads delivery (auto-refreshed to SSM)
-THREADS_USER_ID=...                # Optional, Threads target user id
-ALERT_EMAIL=you@example.com        # Optional, source-health alerts
-CLOUDFLARE_PROXY_URL=https://...   # For AWS deployment (YouTube fallback)
+# --- Required ---
+SLACK_BOT_TOKEN=xoxb-...           # digest delivery + agent (skip only with enable_slack_post=false)
+SLACK_CHANNEL_ID=C...              # target channel for the digest
+TAVILY_API_KEY=tvly-...            # web_search collector + agent community/news search
+
+# --- Required only for the listed feature ---
+SLACK_APP_TOKEN=xapp-...           # Socket Mode — only for `slack_agent.py` (local agent)
+SLACK_SIGNING_SECRET=...           # only for AWS Slack-events API Gateway path
+YOUTUBE_API_KEY=AIza...            # YouTube collector (without it: RSS fallback, no transcripts)
+OPENAI_API_KEY=sk-...              # daily visual + agent make_visual (without it: no images)
+THREADS_ACCESS_TOKEN=...           # Threads delivery (60-day token; auto-refreshed to SSM in AWS)
+THREADS_USER_ID=...                # Threads target user id
+ALERT_EMAIL=you@example.com        # source-health SNS email alerts (AWS)
+CLOUDFLARE_PROXY_URL=https://...   # AWS only — Reddit/.rss + YouTube RSS from datacenter IPs
 CLOUDFLARE_PROXY_TOKEN=...
+TWITTER_AUTH_TOKEN=...             # X/Twitter via RSSHub — x.com `auth_token` cookie (see RSSHub below)
+TWITTER_CT0=...                    # x.com `ct0` cookie
+S3_SYNC_ACCESS_KEY_ID=...          # optional — dedicated creds for the local→S3 sync (else AWS_PROFILE)
+S3_SYNC_SECRET_ACCESS_KEY=...
 ```
+
+> Secrets are **never baked into images**. For AWS, `scripts/deploy.py` reads these from `.env` and CDK writes them to SSM Parameter Store (`/{project}/{stage}/<name>`); the Lambdas/agent resolve them at runtime via `resolve_secret()` (env → SSM). Update a secret by re-deploying, or edit the SSM parameter directly.
+
+### Setup Checklist
+
+Minimum to produce a digest **locally** (Slack delivery, no X/visual):
+
+1. `uv sync` and copy the template files (above).
+2. Fill `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID`, `TAVILY_API_KEY` in `.env`.
+3. Ensure AWS Bedrock access in your region (`aws.bedrock_region`, default `us-west-2`) — the ranker/digest LLMs run on Bedrock even for a local run. Set `AWS_PROFILE` or standard AWS creds.
+4. `uv run python main.py --dry-run --sources rss reddit` → prints the digest.
+
+Add each optional capability by setting its key(s):
+
+| Want… | Set | Notes |
+|-------|-----|-------|
+| YouTube items **with transcripts** | `YOUTUBE_API_KEY` + run the local sync | Transcripts only fetch from a residential IP; see RSSHub/sync below |
+| X/Twitter items | RSSHub container (X cookies) + run the local sync | See **RSSHub Container** |
+| Daily visual / agent images | `OPENAI_API_KEY` | gpt-image-2 |
+| Threads delivery | `THREADS_ACCESS_TOKEN` + `THREADS_USER_ID` + `enable_threads_post: true` | Token is long-lived (60d), auto-refreshed in AWS |
+| Slack on/off, Threads on/off | `pipeline.enable_slack_post` / `enable_threads_post` | Independently toggleable in `config.yaml` |
+
+### RSSHub Container (X/Twitter)
+
+X/Twitter is collected through a local [RSSHub](https://docs.rsshub.app/) container, which needs your x.com session cookies to read timelines: **`auth_token`** and **`ct0`**.
+
+Get them from a logged-in browser on x.com (on macOS, F12 may be remapped — open DevTools from the menu or shortcut instead):
+- **Chrome**: ⌥⌘I (or View → Developer → Developer Tools) → **Application** tab → Storage → **Cookies** → `https://x.com` → copy the `auth_token` and `ct0` values.
+- **Safari**: enable Develop menu first (Settings → Advanced → "Show features for web developers"), then ⌥⌘I → **Storage** tab → Cookies → `x.com`.
+- **Firefox**: ⌥⌘I → **Storage** tab → Cookies → `x.com`.
+
+```bash
+docker run -d --name rsshub --restart unless-stopped -p 1200:1200 \
+  -e NODE_ENV=production -e CACHE_TYPE=memory \
+  -e TWITTER_AUTH_TOKEN='<auth_token>' \
+  -e TWITTER_CT0='<ct0>' \
+  diygod/rsshub:latest
+
+curl -s "http://localhost:1200/twitter/user/karpathy" | head   # smoke test
+```
+
+Without the cookies the container still starts, but X feeds return empty. Cookies expire periodically — if the RSSHub failure rate climbs (logged as a warning), refresh them and recreate the container. In AWS this same image runs on ECS Fargate (cookies via `TWITTER_AUTH_TOKEN`/`TWITTER_CT0` env at deploy).
 
 ### Local Usage
 
@@ -139,10 +189,10 @@ Each collector runs async in parallel. Lookback window is configurable per sourc
 
 | Collector | Source | Method |
 |-----------|--------|--------|
-| `RedditCollector` | Reddit public `.rss` feed | via Cloudflare proxy (no API/app needed) |
-| `YouTubeCollector` | YouTube Data API v3 / RSS fallback | Direct or proxy |
+| `RedditCollector` | Reddit public `.rss` feed | direct-first, Cloudflare-proxy fallback (no API/app needed) |
+| `YouTubeCollector` | YouTube Data API v3 (channel id via `forHandle`) | reads S3 `youtube_items.json` in AWS (transcripts blocked from datacenter IPs); else live |
 | `RSSCollector` | RSS/Atom feeds | feedparser |
-| `RSSHubCollector` | X/Twitter via RSSHub | Local Docker or S3 sync |
+| `RSSHubCollector` | X/Twitter via RSSHub | reads S3 `rsshub_items.json` in AWS; else local Docker (`localhost:1200`) |
 | `WebSearchCollector` | Tavily API | Direct, with LLM query refinement |
 
 ### 2. Aggregation
@@ -204,7 +254,7 @@ AWS_PROFILE=<profile> uv run cdk deploy --all -a "uv run python scripts/deploy.p
 
 Resources created:
 - **Lambda** (Docker): Digest pipeline, 15min timeout
-- **Lambda** (Docker): Daily visual, 10min timeout (async, off the digest critical path)
+- **Lambda** (Docker): Daily visual, 15min timeout (async, off the digest critical path; gpt-image render + Threads image-root reply-indexing can take several minutes)
 - **Lambda**: Slack event handler, 60s timeout
 - **Lambda** (Docker): Threads token refresh (~50-day EventBridge schedule, writes the renewed 60-day token back to SSM)
 - **API Gateway** + **AWS WAFv2**: `POST /slack/events` with rate-limit + managed rules + throttling
@@ -249,14 +299,18 @@ collected locally on a residential IP and synced to S3 before the AWS digest run
 Lambda reads the parked `*_items.json` files. Schedule the unified sync a few minutes before the
 digest's EventBridge time:
 
+The AWS digest cron is `aws.digest_cron_hour`/`minute` interpreted as **UTC** (EventBridge), e.g. the default `10:00 UTC` = `19:00 KST`. Schedule the local sync a bit before that:
+
 ```bash
 crontab -e
-# 07:50 KST daily, ~10 min before an 08:00 digest. Runs both syncs; one failing won't block the other.
-50 7 * * * /path/to/omnisummary/scripts/sync_all_to_s3.sh >> /tmp/omnisummary-sync.log 2>&1
+# 18:30 KST daily, 30 min before a 19:00 KST (10:00 UTC) digest. Runs both syncs; one failing won't block the other.
+30 18 * * * /path/to/omnisummary/scripts/sync_all_to_s3.sh >> /tmp/omnisummary-sync.log 2>&1
 ```
 
-`sync_all_to_s3.sh` defaults `AWS_PROFILE=research` and requires the local RSSHub Docker container
-(`http://localhost:1200`) to be up for the X sync; YouTube needs `YOUTUBE_API_KEY` in `.env`.
+`sync_all_to_s3.sh` defaults `AWS_PROFILE=research`, prepends common `uv` install dirs to `PATH`
+(cron runs with a minimal PATH), and requires the local RSSHub container (`http://localhost:1200`,
+with X cookies) up for the X sync; YouTube needs `YOUTUBE_API_KEY` in `.env`. Logs to
+`/tmp/omnisummary-sync.log`. Each sync is independent — RSSHub being down never blocks the YouTube sync.
 
 ### External Services
 
