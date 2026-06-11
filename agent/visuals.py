@@ -72,7 +72,7 @@ class VisualGenerator:
 
     async def brief(self, instruction: str, source: str, context: str = "") -> VisualBrief:
         chain = VisualSynopsisPrompt.get_prompt() | self.llm
-        brief = await chain.ainvoke(
+        result = await chain.ainvoke(
             {
                 "instruction": instruction,
                 "source": self.llm_factory.truncate_to_tokens(source, self.source_max_tokens),
@@ -85,6 +85,9 @@ class VisualGenerator:
                 "style_aesthetic": self.style_aesthetic,
             }
         )
+        # with_structured_output is typed as returning dict | BaseModel; re-validate so the
+        # type is concretely VisualBrief (and a dict-shaped return is coerced consistently).
+        brief = VisualBrief.model_validate(result)
         logger.info("Generated visual brief '%s'", brief.title[: LOGGING_TRUNCATION_CHARS["brief_title"]])
         return brief
 
