@@ -58,7 +58,15 @@ class ContentRanker:
         ranked_items: list[RankedItem] = [r for batch in results for r in batch]
         self._apply_origin_weights(ranked_items)
 
-        above_threshold = [r for r in ranked_items if r.score >= self.config.min_score]
+        # Pinned items (user-specified via --pin-url) are guaranteed a slot regardless of score
+        # or diversity caps — they're kept aside and prepended after slotting fills the rest.
+        pinned = [r for r in ranked_items if r.item.metadata.get("pinned")]
+        pinned.sort(key=lambda r: (-r.score, r.item.item_id))
+        pinned_ids = {r.item.item_id for r in pinned}
+
+        above_threshold = [
+            r for r in ranked_items if r.score >= self.config.min_score and r.item.item_id not in pinned_ids
+        ]
         grace = self._grace_candidates(ranked_items, above_threshold)
         above_threshold.extend(grace)
         above_threshold.sort(key=lambda r: (-r.score, r.item.item_id))
@@ -81,8 +89,14 @@ class ContentRanker:
                 [f"{s:.2f}" for s in sorted(scores, reverse=True)[:5]],
             )
 
-        selected = self._apply_source_slots(above_threshold, limit, grace_ids)
+        # Reserve slots for the pinned items so the source-slotting fills only the remainder,
+        # then prepend the pinned items so they always lead and never get crowded out.
+        remaining = max(0, limit - len(pinned))
+        filled = self._apply_source_slots(above_threshold, remaining, grace_ids)
+        selected = pinned + filled
 
+        if pinned:
+            logger.info("Force-included %d pinned item(s): %s", len(pinned), [r.item.url for r in pinned])
         logger.info(
             "Ranked %d items → %d above min_score %.2f → %d selected (with source slots)",
             len(items),

@@ -95,6 +95,11 @@ class PipelineConfig(BaseModel):
     recent_leads_window: int = Field(default=5, ge=0)
     # How many recent visual formats (orientation + style) to track for deliberate variation.
     visual_format_window: int = Field(default=6, ge=0)
+    # Target share of recent visuals that should be multi-panel (vs a single frame). The editor
+    # leans single-frame on its own, so when the recent window falls below this the prompt nudges
+    # toward a multi-panel composition; above it, toward a single frame. A soft steer, not a quota:
+    # the story still decides. 0 disables the nudge entirely (pure editor choice).
+    visual_multi_panel_target_ratio: float = Field(default=0.34, ge=0.0, le=1.0)
     ranking_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     digest_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
     # Post-generation faithfulness pass: verify the digest's specific claims against the

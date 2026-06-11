@@ -186,6 +186,31 @@ class TestDailyVisualMaker:
         th.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_force_republish_failure_keeps_prior_mark(self):
+        # A force-republish that FAILS must not wipe out the date's existing successful-post
+        # mark (only a mark WE added in this run is rolled back).
+        from datetime import date
+
+        from shared.models import DigestContent, DigestItem
+
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = True
+        maker.threads_ledger.mark(date(2026, 6, 10))  # prior successful post
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "x"}
+        content = DigestContent(
+            lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
+        )
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = AsyncMock(
+                    return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw"))
+                )
+                with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
+                    with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=False)):
+                        await maker.run(_items(), content, today=date(2026, 6, 10), force_republish=True)
+        assert maker.threads_ledger.already_posted(date(2026, 6, 10))  # prior mark preserved
+
+    @pytest.mark.asyncio
     async def test_threads_marks_ledger_after_successful_post(self):
         from datetime import date
 
@@ -209,7 +234,7 @@ class TestDailyVisualMaker:
 
     @pytest.mark.asyncio
     async def test_threads_not_marked_when_post_fails(self):
-        # A failed Threads post must stay retryable — don't burn the idempotency marker.
+        # A failed Threads post must stay retryable — the optimistic claim is rolled back.
         from datetime import date
 
         from shared.models import DigestContent, DigestItem
@@ -227,6 +252,62 @@ class TestDailyVisualMaker:
                 )
                 with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
                     with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=False)):
+                        await maker.run(_items(), content, today=date(2026, 6, 10))
+        assert not maker.threads_ledger.already_posted(date(2026, 6, 10))
+
+    @pytest.mark.asyncio
+    async def test_threads_date_claimed_before_post_runs(self):
+        # The concurrency fix: the date must already be marked at the moment post_to_threads
+        # is entered, so a racing concurrent invocation sees it taken and skips.
+        from datetime import date
+
+        from shared.models import DigestContent, DigestItem
+
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = True
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "x"}
+        content = DigestContent(
+            lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
+        )
+        claimed_during_post: list[bool] = []
+
+        async def _post(**_kwargs):
+            claimed_during_post.append(maker.threads_ledger.already_posted(date(2026, 6, 10)))
+            return True
+
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = AsyncMock(
+                    return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw"))
+                )
+                with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
+                    with patch("output.threads_handler.post_to_threads", new=_post):
+                        await maker.run(_items(), content, today=date(2026, 6, 10))
+        assert claimed_during_post == [True]
+
+    @pytest.mark.asyncio
+    async def test_threads_marker_rolled_back_when_post_raises(self):
+        # An exception mid-post must roll the claim back so the date stays retryable.
+        from datetime import date
+
+        from shared.models import DigestContent, DigestItem
+
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = True
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "x"}
+        content = DigestContent(
+            lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
+        )
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = AsyncMock(
+                    return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw"))
+                )
+                with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
+                    with patch(
+                        "output.threads_handler.post_to_threads",
+                        new=AsyncMock(side_effect=RuntimeError("boom")),
+                    ):
                         await maker.run(_items(), content, today=date(2026, 6, 10))
         assert not maker.threads_ledger.already_posted(date(2026, 6, 10))
 
@@ -359,3 +440,35 @@ class TestFormatRotation:
         out = maker._format_guidance(recent, "square")
         assert "landscape/poster" in out
         assert "square" in out  # preferred orientation surfaced
+
+
+class TestPanelNudge:
+    def test_nudges_toward_multi_when_recent_skews_single(self):
+        maker = _maker()
+        recent = [{"orientation": "square", "multi_panel": False} for _ in range(5)]
+        out = maker._panel_nudge(recent, 0.34)
+        assert "MULTI-PANEL" in out
+
+    def test_nudges_toward_single_when_recent_skews_multi(self):
+        maker = _maker()
+        recent = [{"orientation": "square", "multi_panel": True} for _ in range(5)]
+        out = maker._panel_nudge(recent, 0.34)
+        assert "single striking frame" in out
+
+    def test_no_nudge_when_disabled(self):
+        maker = _maker()
+        recent = [{"orientation": "square", "multi_panel": False}]
+        assert maker._panel_nudge(recent, 0.0) == ""
+
+    def test_no_nudge_without_panel_history(self):
+        # Old entries predate the multi_panel field → no basis to nudge.
+        maker = _maker()
+        recent = [{"orientation": "square", "format": "poster"}]
+        assert maker._panel_nudge(recent, 0.34) == ""
+
+    def test_format_guidance_appends_nudge(self):
+        maker = _maker()
+        recent = [{"orientation": "landscape", "format": "poster", "multi_panel": False}]
+        out = maker._format_guidance(recent, "square", 0.34)
+        assert "landscape/poster" in out
+        assert "MULTI-PANEL" in out

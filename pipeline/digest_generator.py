@@ -81,10 +81,11 @@ class DigestGenerator:
         # Hard upper-bound: the prompt asks for EXACTLY target_count, but a model can over-emit.
         # Trim deterministically so the digest never exceeds the target (fewer is allowed when the
         # editor genuinely found fewer distinct stories). headline_index is pinned to 1, so the
-        # headline is always retained.
+        # headline is always retained. Pinned URLs are kept even if they'd fall past the cutoff,
+        # so a user-pinned story the editor ranked low isn't trimmed out of the digest.
         if len(content.items) > target_count:
             logger.info("Digest emitted %d items; trimming to target %d", len(content.items), target_count)
-            content.items = content.items[:target_count]
+            content.items = self._trim_keeping_pinned(content.items, target_count, ranked_items)
         self._fill_source_metadata(content, ranked_items)
 
         if self.config.enable_grounding_check:
@@ -125,6 +126,29 @@ class DigestGenerator:
         except Exception:
             logger.warning("Failed to parse digest content JSON; returning minimal content", exc_info=True)
             return DigestContent(lead=raw.strip()[:1000], headline_index=1, items=[])
+
+    @staticmethod
+    def _trim_keeping_pinned(items: list, target_count: int, ranked_items: list[RankedItem]) -> list:
+        """Trim to target_count but never drop a user-pinned item. Walk the items in the editor's
+        emitted order and keep them, except skip a non-pinned item once the remaining slots are
+        all needed by pinned items still ahead — so every pinned item survives while order (and
+        thus the headline at items[0]) is otherwise preserved."""
+        pinned_urls = {r.item.url for r in ranked_items if r.item.metadata.get("pinned")}
+        if not pinned_urls or len(items) <= target_count:
+            return items[:target_count]
+        kept: list = []
+        for i, it in enumerate(items):
+            if len(kept) >= target_count:
+                break
+            remaining_pinned = sum(
+                1 for later in items[i:] if later.url in pinned_urls and later not in kept and later is not it
+            )
+            slots_left = target_count - len(kept)
+            # Skip this non-pinned item only if keeping it would crowd out a pinned item still ahead.
+            if it.url not in pinned_urls and slots_left <= remaining_pinned:
+                continue
+            kept.append(it)
+        return kept
 
     def _fill_source_metadata(self, content: DigestContent, ranked_items: list[RankedItem]) -> None:
         """Code owns the source tag/metrics (not the LLM): match each item to its ranked
@@ -183,6 +207,12 @@ class DigestGenerator:
                 ("Source Detail", " · ".join(p for p in (tag, metrics) if p) or item.source_type.value),
                 ("Author", item.author or "Unknown"),
             ]
+            # A pinned item (user-requested via --pin-url) must appear in the digest regardless
+            # of its score, so flag it for the editor; code also protects it from the trim below.
+            if item.metadata.get("pinned"):
+                fields.insert(
+                    0, ("MUST INCLUDE", "user-pinned — keep this item in the digest, do not drop or merge it away")
+                )
             parts.append(
                 format_collected_item(
                     item,

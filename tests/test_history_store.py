@@ -119,6 +119,20 @@ class TestThreadsPostLedger:
         ledger = ThreadsPostLedger(store)
         assert ledger.already_posted(date(2026, 6, 10)) is False
 
+    def test_unmark_rolls_back_a_claimed_date(self):
+        # Optimistic claim then failure → unmark restores retryability.
+        ledger = ThreadsPostLedger(_MemStore())
+        ledger.mark(date(2026, 6, 10))
+        ledger.unmark(date(2026, 6, 10))
+        assert ledger.already_posted(date(2026, 6, 10)) is False
+
+    def test_unmark_is_noop_for_unknown_date(self):
+        store = _MemStore()
+        ledger = ThreadsPostLedger(store)
+        ledger.mark(date(2026, 6, 10))
+        ledger.unmark(date(2026, 6, 11))  # never claimed
+        assert store.read_json(THREADS_POSTED_KEY) == ["2026-06-10"]
+
 
 class TestRollingLog:
     def test_append_caps_to_max_entries(self):

@@ -31,7 +31,13 @@ class ThreadsPostLedger:
     """Idempotency marker for the daily Threads post. Records the dates a digest has already
     been published to Threads so a re-run — a same-day manual `main.py`, or an automatic
     async retry of the visual Lambda after a timeout — doesn't post the whole root+replies
-    set again. Persisted as a capped list of ISO dates in the StateStore."""
+    set again. Persisted as a capped list of ISO dates in the StateStore.
+
+    The caller marks the date BEFORE starting the (multi-minute) post and rolls back via
+    unmark() if the post fails, so concurrent invocations racing the same date don't all
+    pass the already_posted() check during the long publish window. This narrows but does
+    not fully close the check-then-act race: the StateStore read-modify-write is not atomic,
+    so it defends against accidental duplicate invocations rather than guaranteeing a lock."""
 
     MAX_DATES = 30
 
@@ -52,6 +58,15 @@ class ThreadsPostLedger:
             return
         dates.append(iso)
         self.store.write_json(THREADS_POSTED_KEY, dates[-self.MAX_DATES :])
+
+    def unmark(self, today: date) -> None:
+        """Remove a date marked optimistically before a post that then failed, so the post
+        stays retryable. No-op if the date isn't recorded."""
+        iso = today.isoformat()
+        dates = self._dates()
+        if iso not in dates:
+            return
+        self.store.write_json(THREADS_POSTED_KEY, [d for d in dates if d != iso])
 
 
 class PublishedUrlLedger:

@@ -2,44 +2,44 @@ import base64
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain_core.runnables import RunnableLambda
+from pydantic import ValidationError
 
-from agent.visuals import VisualGenerator, _parse_brief
+from agent.visuals import VisualGenerator
 from shared.constants import LanguageModelId
 from shared.models import VisualBrief
 
 
-class TestParseBrief:
-    def test_extracts_embedded_json(self):
-        raw = 'Here is the brief:\n```json\n{"title": "T", "caption": "C", "prompt": "draw X"}\n```\nDone.'
-        brief = _parse_brief(raw)
-        assert brief == VisualBrief(title="T", caption="C", prompt="draw X")
+class TestVisualBriefValidation:
+    # The brief is now returned via Bedrock structured output (with_structured_output),
+    # so schema enforcement lives in the VisualBrief model rather than a hand JSON parser.
+    def test_rejects_empty_field(self):
+        with pytest.raises(ValidationError):
+            VisualBrief(title="", caption="c", prompt="p")
 
-    def test_raises_without_json(self):
-        with pytest.raises(ValueError):
-            _parse_brief("no json here")
-
-    def test_raises_on_missing_required_field(self):
-        # A malformed brief missing required fields must surface as a ValueError, not
-        # render garbage via silent .get() defaults.
-        with pytest.raises(ValueError):
-            _parse_brief('{"title": "only title"}')
-
-    def test_raises_on_empty_field(self):
-        # Empty title/caption/prompt are rejected at parse time so a runaway LLM parse
-        # can't produce a garbage brief that only fails downstream at image generation.
-        with pytest.raises(ValueError):
-            _parse_brief('{"title": "", "caption": "c", "prompt": "p"}')
-
-    def test_raises_on_overlong_prompt(self):
-        long_prompt = "x" * 5000
-        with pytest.raises(ValueError):
-            _parse_brief(f'{{"title": "t", "caption": "c", "prompt": "{long_prompt}"}}')
+    def test_rejects_overlong_prompt(self):
+        with pytest.raises(ValidationError):
+            VisualBrief(title="t", caption="c", prompt="x" * 5000)
 
 
 def _generator() -> VisualGenerator:
     factory = MagicMock()
-    factory.get_model.return_value = MagicMock()
+    factory.get_model.return_value.with_structured_output.return_value = MagicMock()
     return VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET)
+
+
+class TestBrief:
+    @pytest.mark.asyncio
+    async def test_returns_structured_brief(self):
+        # with_structured_output yields a validated VisualBrief; brief() returns it as-is,
+        # with no text-JSON parsing in between.
+        factory = MagicMock()
+        out = VisualBrief(title="T", caption="C", prompt="draw X", orientation="landscape")
+        factory.get_model.return_value.with_structured_output.return_value = RunnableLambda(lambda _: out)
+        factory.truncate_to_tokens.side_effect = lambda text, _: text
+        gen = VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET)
+        brief = await gen.brief("a 1-page slide", "source text", "context")
+        assert brief == out
 
 
 class TestVisualGenerator:

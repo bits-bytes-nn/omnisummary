@@ -37,6 +37,18 @@ class TestContentAggregator:
         result = ContentAggregator().aggregate(items, exclude_urls=exclude)
         assert {it.url for it in result} == {"http://b.com"}
 
+    def test_pinned_item_bypasses_cross_day_dedup(self):
+        # A user-pinned URL must survive even if it's in the recently-published exclude set.
+        from pipeline.aggregator import normalize_url
+
+        items = [
+            _item(item_id="id1", url="https://a.com/post/", title="Pinned", metadata={"pinned": True}),
+            _item(item_id="id2", url="http://b.com", title="Fresh"),
+        ]
+        exclude = {normalize_url("http://a.com/post")}
+        result = ContentAggregator().aggregate(items, exclude_urls=exclude)
+        assert {it.url for it in result} == {"https://a.com/post/", "http://b.com"}
+
     def test_dedup_normalizes_url_variants(self):
         # trailing slash, scheme, www, tracking params, fragment, query order
         # should all collapse to one item.

@@ -1,32 +1,16 @@
 from __future__ import annotations
 
 import base64
-import json
-
-from langchain_core.output_parsers import StrOutputParser
-from pydantic import ValidationError
 
 from shared import (
     LOGGING_TRUNCATION_CHARS,
     BedrockLanguageModelFactory,
     VisualBrief,
     VisualSynopsisPrompt,
-    extract_json_from_llm_output,
     logger,
     resolve_secret,
 )
 from shared.config import LanguageModelId
-
-
-def _parse_brief(raw: str) -> VisualBrief:
-    try:
-        data = json.loads(extract_json_from_llm_output(raw))
-    except json.JSONDecodeError as e:
-        raise ValueError(f"No valid JSON object in visual brief output: {e}") from e
-    try:
-        return VisualBrief.model_validate(data)
-    except ValidationError as e:
-        raise ValueError(f"Visual brief is missing required fields: {e}") from e
 
 
 class VisualGenerator:
@@ -66,7 +50,10 @@ class VisualGenerator:
     ) -> None:
         self.llm_factory = llm_factory
         self.brief_model = brief_model
-        self.llm = llm_factory.get_model(brief_model)
+        # Bind the VisualBrief schema as a tool so Bedrock returns a validated object instead
+        # of free text: the brief's `prompt` is up to 4000 chars of free-form copy that often
+        # contains unescaped quotes/newlines, which broke hand-parsing the model's JSON.
+        self.llm = llm_factory.get_model(brief_model).with_structured_output(VisualBrief)
         self.image_model = image_model
         # orientation -> gpt-image size; the brief picks the orientation that fits the visual.
         self.image_sizes = image_sizes or {
@@ -84,8 +71,8 @@ class VisualGenerator:
         self.style_aesthetic = style_aesthetic
 
     async def brief(self, instruction: str, source: str, context: str = "") -> VisualBrief:
-        chain = VisualSynopsisPrompt.get_prompt() | self.llm | StrOutputParser()
-        raw = await chain.ainvoke(
+        chain = VisualSynopsisPrompt.get_prompt() | self.llm
+        brief = await chain.ainvoke(
             {
                 "instruction": instruction,
                 "source": self.llm_factory.truncate_to_tokens(source, self.source_max_tokens),
@@ -98,7 +85,6 @@ class VisualGenerator:
                 "style_aesthetic": self.style_aesthetic,
             }
         )
-        brief = _parse_brief(raw)
         logger.info("Generated visual brief '%s'", brief.title[: LOGGING_TRUNCATION_CHARS["brief_title"]])
         return brief
 

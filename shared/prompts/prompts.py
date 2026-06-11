@@ -161,6 +161,9 @@ distinct stories from the candidates; the extras are backfill for merges. Emit f
 there genuinely aren't {target_count} distinct stories among the candidates — never pad with a \
 duplicate or a near-identical take to hit the number.
 - Use the item's title/URL/source exactly as provided. Do not invent URLs.
+- Any item tagged "MUST INCLUDE" is user-pinned: it MUST appear in `items` (don't drop it, and \
+don't merge it away into another item). If it's the most important story, make it the headline; \
+otherwise place it by importance among the rest.
 
 *Trends*
 Treat the recurrence ammunition as evidence behind your judgment, not as something to narrate. \
@@ -261,6 +264,7 @@ Produce ONLY a JSON object:
     {{{{"source": "news|community|papers", "query": "a focused query"}}}}
   ],
   "format": "one-line: e.g. '4-panel cartoon', 'parody movie poster', 'satirical illustration'",
+  "multi_panel": false,
   "instruction": "a rich natural-language brief for the image: what to depict, the joke/angle, the format, recognizable real-world cues (people, logos) to include, and that any on-image text must be {on_image_language}"
 }}}}
 ```
@@ -278,6 +282,8 @@ Rules:
   setup-and-payoff (promise→contradiction, before/after, cause→effect). Match the form to the
   content; don't force either a one-shot or an N-panel. Be faithful to the real facts; the humor is
   in the framing, never fabrication.
+- Set `multi_panel` true when the format you chose is a multi-panel sequence (a 2+ panel comic/strip),
+  false for any single-frame composition (poster, one-panel scene, infographic, illustration).
 - VARY THE FORMAT across days: {format_guidance}
 - Express the joke or contradiction through imagery, not a stock meme catchphrase baked into the
   on-image text; any meme reference belongs in the spoken caption.
@@ -309,15 +315,11 @@ You are an art director. Turn the requested visualization into a single, concret
 image model can render in one image. Honor the user's instruction about format (e.g. a one-page \
 presentation slide, an N-panel comic, a concept diagram, an infographic, a poster).
 
-Produce ONLY a JSON object:
-```json
-{{{{
-  "title": "short title in {caption_language}",
-  "caption": "a fact-rich {caption_language} caption (2-4 sentences, shown alongside the image): explain the concrete facts behind the visual — the actual names, numbers, dates, and what really happened — drawn from the source material and the research/context, not a description of the picture",
-  "orientation": "one of: {orientations} — choose the aspect ratio that best fits THIS visual",
-  "prompt": "a single rich English prompt for the image model: describe the full composition, layout, panels/sections, labels, style, and what each element conveys — accurate to the source material, legible, minimal text, {style_aesthetic}"
-}}}}
-```
+Fill these fields:
+- title: short title in {caption_language}
+- caption: a fact-rich {caption_language} caption (2-4 sentences, shown alongside the image): explain the concrete facts behind the visual — the actual names, numbers, dates, and what really happened — drawn from the source material and the research/context, not a description of the picture
+- orientation: one of {orientations} — choose the aspect ratio that best fits THIS visual
+- prompt: a single rich English prompt for the image model: describe the full composition, layout, panels/sections, labels, style, and what each element conveys — accurate to the source material, legible, minimal text, {style_aesthetic}
 
 Think like an editor BEFORE you describe pixels. A good visual is understandable on its own —
 a viewer should grasp the subject, the context, and the one point within a few seconds, WITHOUT
@@ -356,8 +358,7 @@ Rules:
   comic: at most one short line (caption or speech bubble) per panel. Push any longer explanation
   into the {caption_language} caption rather than onto the image.
 - {style_guidance}
-- {humor_guidance}
-- Output ONLY the JSON object."""
+- {humor_guidance}"""
 
     human_prompt_template: str = (
         "Visualization request:\n{instruction}\n\nSource material:\n{source}\n\n"

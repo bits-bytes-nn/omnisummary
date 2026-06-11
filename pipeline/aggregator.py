@@ -43,7 +43,9 @@ class ContentAggregator:
 
         for item in items:
             key = self._normalize_url(item.url)
-            if key in exclude:
+            # Pinned items (user-specified via --pin-url) bypass cross-day dedup: the user
+            # asked for this exact URL today, even if it was published in a recent digest.
+            if key in exclude and not item.metadata.get("pinned"):
                 cross_day_skipped += 1
                 continue
             if key in seen_urls:

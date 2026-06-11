@@ -128,6 +128,51 @@ class TestTargetCountTrim:
         result = await gen.generate(ranked, [r.item for r in ranked], today=date(2030, 1, 1))
         assert len(result.content.items) == 3  # trimmed to top_n
 
+    @pytest.mark.asyncio
+    async def test_pinned_item_survives_trim(self):
+        from datetime import date
+
+        # The editor emits the pinned item LAST (u4); top_n=3 would normally trim it out, but a
+        # pinned URL must survive the trim.
+        emitted = {
+            "lead": "리드.",
+            "headline_index": 1,
+            "items": [{"title": f"T{i}", "url": f"u{i}", "body": "본문.", "implication": "시사점."} for i in range(5)],
+        }
+        config = PipelineConfig(enable_grounding_check=False, top_n=3)
+        factory = MagicMock()
+        factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content=json.dumps(emitted)))
+        gen = DigestGenerator(config, factory)
+        ranked = [
+            RankedItem(
+                item=CollectedItem(
+                    item_id=f"i{i}",
+                    source_type=SourceType.RSS,
+                    title=f"T{i}",
+                    url=f"u{i}",
+                    metadata={"pinned": True} if i == 4 else {},
+                ),
+                score=0.8,
+            )
+            for i in range(5)
+        ]
+        result = await gen.generate(ranked, [r.item for r in ranked], today=date(2030, 1, 1))
+        urls = [it.url for it in result.content.items]
+        assert len(urls) == 3
+        assert "u4" in urls  # pinned survived
+        assert urls[0] == "u0"  # headline preserved at front
+
+    def test_trim_keeping_pinned_no_pins_is_plain_slice(self):
+        ranked = [
+            RankedItem(
+                item=CollectedItem(item_id=f"i{i}", source_type=SourceType.RSS, title="T", url=f"u{i}"), score=0.5
+            )
+            for i in range(5)
+        ]
+        items = [DigestItem(title="T", url=f"u{i}", body="b") for i in range(5)]
+        kept = DigestGenerator._trim_keeping_pinned(items, 3, ranked)
+        assert [it.url for it in kept] == ["u0", "u1", "u2"]
+
 
 class TestFormatRecentLeads:
     def test_bullets_recent_leads(self):

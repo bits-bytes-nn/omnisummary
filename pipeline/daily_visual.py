@@ -120,7 +120,13 @@ class DailyVisualMaker:
         # Record the chosen format so tomorrow can deliberately differ. Best-effort.
         if self.format_log:
             try:
-                self.format_log.append({"orientation": brief.orientation, "format": plan.get("format", "")})
+                self.format_log.append(
+                    {
+                        "orientation": brief.orientation,
+                        "format": plan.get("format", ""),
+                        "multi_panel": bool(plan.get("multi_panel", False)),
+                    }
+                )
             except Exception:
                 logger.warning("Failed to record visual format history (non-fatal)", exc_info=True)
         return slack_ok
@@ -147,7 +153,28 @@ class DailyVisualMaker:
         return ", ".join(seen) if seen else "none recorded"
 
     @staticmethod
-    def _format_guidance(recent_formats: list[dict], preferred_orientation: str) -> str:
+    def _panel_nudge(recent_formats: list[dict], target_ratio: float) -> str:
+        """Soft-steer the single-vs-multi-panel mix. The editor leans single-frame on its own,
+        so when the recent multi-panel share is below target, nudge toward a multi-panel
+        sequence; when above, toward a single frame. Empty string when there's no history or
+        the nudge is disabled (target 0) — the story decides on its own."""
+        if target_ratio <= 0 or not recent_formats:
+            return ""
+        flagged = [f for f in recent_formats if "multi_panel" in f]
+        if not flagged:
+            return ""
+        share = sum(1 for f in flagged if f.get("multi_panel")) / len(flagged)
+        if share < target_ratio:
+            return (
+                " Recent visuals have skewed to single-frame compositions; if this story has any "
+                "sequence, reversal, or setup-and-payoff, lean toward a MULTI-PANEL comic today."
+            )
+        return " Recent visuals have leaned multi-panel; prefer a single striking frame today unless the story truly needs a sequence."
+
+    @classmethod
+    def _format_guidance(
+        cls, recent_formats: list[dict], preferred_orientation: str, panel_target_ratio: float = 0.0
+    ) -> str:
         if not recent_formats:
             return "No recent visuals on record — pick whatever format fits this story best."
         recent = "; ".join(
@@ -157,7 +184,7 @@ class DailyVisualMaker:
         if preferred_orientation:
             line += f"prefer a '{preferred_orientation}' orientation and "
         line += "choose a composition/genre you have NOT used recently so consecutive visuals don't look alike."
-        return line
+        return line + cls._panel_nudge(recent_formats, panel_target_ratio)
 
     @staticmethod
     def _headline_ranked_index(content: DigestContent | None, ranked_items: list[RankedItem]) -> int:
@@ -192,7 +219,11 @@ class DailyVisualMaker:
                 "items_text": items_text,
                 "audience": self.config.pipeline.visual_audience_description,
                 "on_image_language": self.config.pipeline.visual_on_image_language,
-                "format_guidance": self._format_guidance(recent_formats or [], preferred_orientation),
+                "format_guidance": self._format_guidance(
+                    recent_formats or [],
+                    preferred_orientation,
+                    self.config.pipeline.visual_multi_panel_target_ratio,
+                ),
             }
         )
         try:
@@ -275,18 +306,42 @@ class DailyVisualMaker:
         bucket = self.config.aws.state_bucket_name or os.environ.get("STATE_BUCKET", "")
         prefix = self.config.aws.s3_prefix.rstrip("/") + "/" if self.config.aws.s3_prefix else ""
         image_key = f"{prefix}threads/{hashlib.sha256(image_bytes).hexdigest()[:16]}.png"
-        posted = await post_to_threads(
-            root_text=root_text,
-            replies=replies,
-            image_bytes=image_bytes,
-            image_bucket=bucket,
-            image_key=image_key,
-        )
-        # Mark the date BEFORE returning so an automatic async retry after a *post-publish*
-        # timeout won't re-post. Only mark on success — a failed post should be retryable.
-        if posted and self.threads_ledger:
+
+        # Claim the date BEFORE the multi-minute post so concurrent invocations (e.g. a client
+        # that retried a timed-out invoke) see it already taken and skip, instead of all passing
+        # the already_posted() check above and each posting. Roll back if the post fails so a
+        # genuine failure stays retryable — but only if WE added the mark, so a force-republish
+        # failure doesn't wipe out a prior day's successful-post record.
+        was_marked = bool(self.threads_ledger and self.threads_ledger.already_posted(post_date))
+        if self.threads_ledger and not was_marked:
             try:
                 self.threads_ledger.mark(post_date)
             except Exception:
                 logger.warning("Failed to record Threads post marker (non-fatal)", exc_info=True)
+
+        try:
+            posted = await post_to_threads(
+                root_text=root_text,
+                replies=replies,
+                image_bytes=image_bytes,
+                image_bucket=bucket,
+                image_key=image_key,
+            )
+        except Exception:
+            # Best-effort like the rest of the visual path: roll the claim back so the post
+            # stays retryable, log, and don't let a Threads failure escape into run().
+            logger.warning("Threads post failed", exc_info=True)
+            if not was_marked:
+                self._release_threads_marker(post_date)
+            return False
+        if not posted and not was_marked:
+            self._release_threads_marker(post_date)
         return posted
+
+    def _release_threads_marker(self, post_date: date) -> None:
+        if not self.threads_ledger:
+            return
+        try:
+            self.threads_ledger.unmark(post_date)
+        except Exception:
+            logger.warning("Failed to roll back Threads post marker (non-fatal)", exc_info=True)

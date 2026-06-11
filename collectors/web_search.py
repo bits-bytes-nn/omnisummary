@@ -210,6 +210,71 @@ class WebSearchCollector(BaseCollector):
         return unique
 
 
+def _title_from_url(url: str) -> str:
+    """Fallback title when the extractor returns none. The last path segment works for
+    article-style URLs (.../post/some-headline → 'some headline'); for URLs whose tail is an
+    opaque id (YouTube /watch?v=ID, X /user/status/ID) it would be meaningless, so fall back
+    to the host. The ranker/digest still see the full extracted body either way."""
+    parsed = urlparse(url)
+    host = parsed.netloc.lower().removeprefix("www.")
+    slug = parsed.path.rstrip("/").rsplit("/", 1)[-1]
+    opaque = (not slug) or slug.isdigit() or slug in {"watch", "status", "video", "v"}
+    if opaque:
+        return host or url
+    return slug.replace("-", " ").replace("_", " ").strip() or host or url
+
+
+async def fetch_pinned_items(urls: list[str]) -> list[CollectedItem]:
+    """Fetch user-specified URLs (via `--pin-url`) as CollectedItems so the pipeline can
+    force them into the digest regardless of ranking score. Uses Tavily extract to pull the
+    page text. Best-effort: a URL that can't be fetched is logged and skipped, never aborting
+    the run. The returned items carry metadata['pinned']=True so the ranker can guarantee them
+    a slot."""
+    urls = [u.strip() for u in (urls or []) if u and u.strip()]
+    if not urls:
+        return []
+    api_key = await asyncio.to_thread(resolve_secret, "TAVILY_API_KEY", "tavily-api-key")
+    if not api_key:
+        logger.warning("TAVILY_API_KEY not set, cannot fetch pinned URLs")
+        return []
+
+    client = AsyncTavilyClient(api_key=api_key)
+    items: list[CollectedItem] = []
+    try:
+        response = await client.extract(urls=urls, format="text")
+    except Exception:
+        logger.warning("Failed to extract pinned URLs", exc_info=True)
+        return []
+
+    for result in response.get("results", []):
+        url = result.get("url", "")
+        content = result.get("raw_content") or result.get("content") or ""
+        if not url:
+            continue
+        # Prefer the extractor's own title (it reads the page's <title>/og:title, so YouTube
+        # videos and articles get their real headline); fall back to the URL slug only when
+        # absent. A pinned item is included regardless of score.
+        title = (result.get("title") or "").strip() or _title_from_url(url)
+        items.append(
+            CollectedItem(
+                item_id=generate_item_id(url),
+                source_type=WebSearchCollector._detect_source_type(url),
+                title=title,
+                url=url,
+                text=content,
+                metadata={"pinned": True},
+            )
+        )
+        logger.info("Fetched pinned URL: '%s' (%s)", url, title)
+
+    # Surface exactly which pinned URLs didn't come back, so a silently-missing pin is visible.
+    fetched_urls = {it.url for it in items}
+    missing = [u for u in urls if u not in fetched_urls]
+    if missing:
+        logger.warning("%d of %d pinned URL(s) could not be fetched: %s", len(missing), len(urls), missing)
+    return items
+
+
 def _parse_date(date_str: str) -> datetime | None:
     try:
         return datetime.fromisoformat(date_str.replace("Z", "+00:00"))

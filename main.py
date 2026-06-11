@@ -245,6 +245,12 @@ async def main() -> None:
         action="store_true",
         help="Re-post to Threads even if today's digest was already posted (bypass idempotency guard)",
     )
+    parser.add_argument(
+        "--pin-url",
+        nargs="+",
+        default=None,
+        help="One or more URLs to force into the digest's top stories regardless of ranking score",
+    )
     args = parser.parse_args()
 
     config = Config.load()
@@ -277,6 +283,13 @@ async def main() -> None:
     collected_items, health = await run_collectors_with_health(config, llm_factory, args.sources)
     logger.info("Collected %d total items", len(collected_items))
     logger.info("Source health report:\n%s", health.summary())
+
+    if args.pin_url:
+        from collectors.web_search import fetch_pinned_items
+
+        pinned = await fetch_pinned_items(args.pin_url)
+        logger.info("Fetched %d pinned item(s) from %d URL(s)", len(pinned), len(args.pin_url))
+        collected_items = pinned + collected_items
 
     if not collected_items:
         logger.warning("No items collected. Exiting.")
