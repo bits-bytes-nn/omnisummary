@@ -140,7 +140,7 @@ Produce ONLY this JSON object:
       "title": "the Korean display title for this story",
       "url": "the item's URL exactly as provided",
       "body": "2-3 tight Korean sentences: what this is, why it matters, the key detail. Keep it compact and self-contained so the whole item reads as ONE short social post; every sentence must end completely (no trailing fragments).",
-      "implication": "ONE sharp closing line in Korean — vary the angle across items (a prediction, a contrarian caveat, a concrete 'watch X', a 'what breaks if...', a question); never repeat the same template."
+      "implication": "ONE sharp, provocative closing line in Korean that takes a real stance — but VARY THE SHAPE across items so the digest never reads as the same beat repeated: a pointed assertion (no question mark), an open question to the reader, a falsifiable prediction, a single damning detail/number, an invitation to disagree, or a quiet line that just lets a heavy fact land. Do NOT end every item with a question, and do NOT reuse the same shape used by another item today. Provocation is in the angle, never in invented facts."
     }}}}
   ]
 }}}}
