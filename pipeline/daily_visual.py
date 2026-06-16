@@ -108,6 +108,16 @@ class DailyVisualMaker:
                 "composition (panel count / genre) than those."
             )
 
+        # The recurring mascot appears only when the editor judged it fits this story (use_character).
+        # Inject the character sheet so the image model draws the SAME person; identity rides on the
+        # signature props, so it survives the daily-varying art style.
+        use_character = bool(plan.get("use_character", False)) and self.config.pipeline.visual_character_enabled
+        if use_character:
+            instruction += (
+                "\n\nFEATURE THE RECURRING CHARACTER as a witness reacting inside this scene "
+                f"(do not just draw him in a void): {self.config.pipeline.visual_character_sheet}"
+            )
+
         try:
             image_bytes, brief = await self.generator.generate(instruction, source, context)
         except Exception:
@@ -125,6 +135,7 @@ class DailyVisualMaker:
                         "orientation": brief.orientation,
                         "format": plan.get("format", ""),
                         "multi_panel": bool(plan.get("multi_panel", False)),
+                        "use_character": use_character,
                     }
                 )
             except Exception:
@@ -153,17 +164,24 @@ class DailyVisualMaker:
         return ", ".join(seen) if seen else "none recorded"
 
     @staticmethod
-    def _panel_nudge(recent_formats: list[dict], target_ratio: float) -> str:
+    def _ratio_share(recent_formats: list[dict], key: str) -> float | None:
+        """Share of recent entries (that carry `key`) where it's truthy. None when no entry
+        records the key yet — so a nudge has no basis and is skipped."""
+        flagged = [f for f in recent_formats if key in f]
+        if not flagged:
+            return None
+        return sum(1 for f in flagged if f.get(key)) / len(flagged)
+
+    @classmethod
+    def _panel_nudge(cls, recent_formats: list[dict], target_ratio: float) -> str:
         """Soft-steer the single-vs-multi-panel mix. The editor leans single-frame on its own,
         so when the recent multi-panel share is below target, nudge toward a multi-panel
-        sequence; when above, toward a single frame. Empty string when there's no history or
-        the nudge is disabled (target 0) — the story decides on its own."""
-        if target_ratio <= 0 or not recent_formats:
+        sequence; when above, toward a single frame. Empty when no history / disabled (target 0)."""
+        if target_ratio <= 0:
             return ""
-        flagged = [f for f in recent_formats if "multi_panel" in f]
-        if not flagged:
+        share = cls._ratio_share(recent_formats, "multi_panel")
+        if share is None:
             return ""
-        share = sum(1 for f in flagged if f.get("multi_panel")) / len(flagged)
         if share < target_ratio:
             return (
                 " Recent visuals have skewed to single-frame compositions; if this story has any "
@@ -172,8 +190,25 @@ class DailyVisualMaker:
         return " Recent visuals have leaned multi-panel; prefer a single striking frame today unless the story truly needs a sequence."
 
     @classmethod
+    def _character_nudge(cls, recent_formats: list[dict], target_ratio: float) -> str:
+        """Soft-steer how often the recurring character appears, toward target_ratio. Empty when
+        no history / disabled (target 0) — and the editor still skips him when the story doesn't fit."""
+        if target_ratio <= 0:
+            return ""
+        share = cls._ratio_share(recent_formats, "use_character")
+        if share is None:
+            return ""
+        if share < target_ratio:
+            return " The recurring character hasn't appeared lately; if he'd fit this story as a reacting witness, bring him in today."
+        return " The recurring character has appeared often lately; lean toward a character-free concept visual today unless he genuinely fits."
+
+    @classmethod
     def _format_guidance(
-        cls, recent_formats: list[dict], preferred_orientation: str, panel_target_ratio: float = 0.0
+        cls,
+        recent_formats: list[dict],
+        preferred_orientation: str,
+        panel_target_ratio: float = 0.0,
+        character_target_ratio: float = 0.0,
     ) -> str:
         if not recent_formats:
             return "No recent visuals on record — pick whatever format fits this story best."
@@ -184,7 +219,11 @@ class DailyVisualMaker:
         if preferred_orientation:
             line += f"prefer a '{preferred_orientation}' orientation and "
         line += "choose a composition/genre you have NOT used recently so consecutive visuals don't look alike."
-        return line + cls._panel_nudge(recent_formats, panel_target_ratio)
+        return (
+            line
+            + cls._panel_nudge(recent_formats, panel_target_ratio)
+            + cls._character_nudge(recent_formats, character_target_ratio)
+        )
 
     @staticmethod
     def _headline_ranked_index(content: DigestContent | None, ranked_items: list[RankedItem]) -> int:
@@ -223,6 +262,11 @@ class DailyVisualMaker:
                     recent_formats or [],
                     preferred_orientation,
                     self.config.pipeline.visual_multi_panel_target_ratio,
+                    (
+                        self.config.pipeline.visual_character_target_ratio
+                        if self.config.pipeline.visual_character_enabled
+                        else 0.0
+                    ),
                 ),
             }
         )

@@ -265,6 +265,7 @@ Produce ONLY a JSON object:
   ],
   "format": "one-line: e.g. '4-panel cartoon', 'parody movie poster', 'satirical illustration'",
   "multi_panel": false,
+  "use_character": false,
   "instruction": "a rich natural-language brief for the image: what to depict, the joke/angle, the format, recognizable real-world cues (people, logos) to include, and that any on-image text must be {on_image_language}"
 }}}}
 ```
@@ -284,6 +285,10 @@ Rules:
   in the framing, never fabrication.
 - Set `multi_panel` true when the format you chose is a multi-panel sequence (a 2+ panel comic/strip),
   false for any single-frame composition (poster, one-panel scene, infographic, illustration).
+- Set `use_character` true ONLY when the digest's recurring narrator-mascot would naturally fit THIS
+  story as a reacting witness in the scene (e.g. a human-interest, drama, policy, or 'this affects all
+  of us' story) — and false when a pure concept/diagram/screenshot visual serves the story better (a
+  dry architecture or benchmark explainer). It's a sometimes character, not a daily fixture.
 - VARY THE FORMAT across days: {format_guidance}
 - Express the joke or contradiction through imagery, not a stock meme catchphrase baked into the
   on-image text; any meme reference belongs in the spoken caption.

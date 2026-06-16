@@ -472,3 +472,60 @@ class TestPanelNudge:
         out = maker._format_guidance(recent, "square", 0.34)
         assert "landscape/poster" in out
         assert "MULTI-PANEL" in out
+
+
+class TestCharacterNudge:
+    def test_nudges_to_bring_character_when_absent(self):
+        maker = _maker()
+        recent = [{"orientation": "square", "use_character": False} for _ in range(4)]
+        out = maker._character_nudge(recent, 0.5)
+        assert "recurring character" in out and "bring him in" in out
+
+    def test_nudges_away_when_overused(self):
+        maker = _maker()
+        recent = [{"orientation": "square", "use_character": True} for _ in range(4)]
+        out = maker._character_nudge(recent, 0.5)
+        assert "character-free" in out
+
+    def test_no_nudge_when_disabled(self):
+        maker = _maker()
+        recent = [{"orientation": "square", "use_character": False}]
+        assert maker._character_nudge(recent, 0.0) == ""
+
+    def test_no_nudge_without_character_history(self):
+        maker = _maker()
+        recent = [{"orientation": "square", "format": "poster"}]
+        assert maker._character_nudge(recent, 0.5) == ""
+
+
+class TestCharacterInjection:
+    @pytest.mark.asyncio
+    async def test_character_sheet_injected_when_editor_opts_in(self):
+        maker = _maker()
+        maker.config.pipeline.visual_character_enabled = True
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "draw it", "use_character": True}
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = AsyncMock(
+                    return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw"))
+                )
+                with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
+                    await maker.run(_items())
+        instruction = maker.generator.generate.call_args[0][0]
+        assert "RECURRING CHARACTER" in instruction
+        assert "cardigan" in instruction  # the sheet's signature props came through
+
+    @pytest.mark.asyncio
+    async def test_character_not_injected_when_globally_disabled(self):
+        maker = _maker()
+        maker.config.pipeline.visual_character_enabled = False
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "draw it", "use_character": True}
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = AsyncMock(
+                    return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw"))
+                )
+                with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
+                    await maker.run(_items())
+        instruction = maker.generator.generate.call_args[0][0]
+        assert "RECURRING CHARACTER" not in instruction
