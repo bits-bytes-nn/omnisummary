@@ -123,7 +123,12 @@ class PipelineConfig(BaseModel):
         "'~에 대해/~에 의해/~을 통해', don't calque English connectives. Read each sentence aloud — "
         "if it sounds like a machine translation, rewrite it the way a Korean tech writer would say it.\n"
         "- Use the plain declarative '~다' columnist register consistently (e.g. '~했다', '~이다'); "
-        "NEVER the honorific '~입니다/~습니다'. Do not mix the two registers."
+        "NEVER the honorific '~입니다/~습니다'. Do not mix the two registers.\n"
+        "- Do NOT end a sentence with a colon to introduce an enumeration ('핵심은 세 가지다: ...'); "
+        "Korean prose does not terminate sentences this way. Either finish the sentence and start a "
+        "new one ('핵심은 세 가지다. 첫째는 ...'), or fold the list into a single flowing sentence "
+        "('하드웨어 안전 장치, 동결된 보상 함수, 가동률·토큰 소비율을 묶은 보상 설계가 핵심이다'). "
+        "Keep colons out of mid-prose entirely."
     )
     # Audience/domain the ranking and digest prompts target. Configurable so the pipeline can
     # be reused across domains without forking the prompts.

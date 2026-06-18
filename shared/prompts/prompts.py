@@ -362,6 +362,9 @@ Rules:
   For a single-frame visual: at most one short headline plus one optional tag line. For an N-panel
   comic: at most one short line (caption or speech bubble) per panel. Push any longer explanation
   into the {caption_language} caption rather than onto the image.
+- NEVER label the same panel twice. Give each panel EITHER a top header OR a bottom caption, not
+  both — and never the same words in both (a header "THE CONCEPT" with a caption "The concept." is
+  forbidden duplication). Pick one placement per panel and say each line only once in the whole image.
 - {style_guidance}
 - {humor_guidance}"""
 
