@@ -2,7 +2,7 @@
 
 # 🗞️ OmniSummary
 
-**능동형 AI/ML 데일리 다이제스트 — 멀티 소스 수집, LLM 랭킹, 한국어 에디토리얼 다이제스트를 Slack으로 전달하고, 심화 분석용 Bedrock AgentCore 후속 에이전트까지.**
+**능동형 AI/ML 데일리 다이제스트 — 멀티 소스 수집, LLM 랭킹, 한국어 에디토리얼 다이제스트를 Slack과 Threads로 전달하고, Slack 멘션으로 작동하는 딥 리서치 에이전트가 웹·논문·커뮤니티를 조사해 페르소나 보이스의 인용 기반 리포트를 게시.**
 
 AWS 위 일간 파이프라인 · Bedrock AgentCore (Runtime + Memory) · Amazon Bedrock (Claude) 기반.
 
@@ -24,7 +24,8 @@ AWS 위 일간 파이프라인 · Bedrock AgentCore (Runtime + Memory) · Amazon
 - **멀티 소스 수집**: Reddit(프록시 경유 공개 .rss 피드), YouTube, X/Twitter(RSSHub 경유), RSS/Substack, 웹 검색(Tavily)
 - **LLM 기반 랭킹**: Claude Opus 4.8, 소스 슬롯 + 출처별 다양성 캡을 적용한 다축(multi-axis) 평가
 - **에디토리얼 다이제스트**: Claude Sonnet 4.6 한국어 에디토리얼, 일자 간 트렌드 추적 포함
-- **후속 에이전트**: Slack 기반 자율 Strands 에이전트 — 분석, 논문/커뮤니티/뉴스 검색, 일자 간 회상, 자유 형식 이미지 생성(1페이지 슬라이드 / 만화 / 다이어그램 / 인포그래픽, OpenAI gpt-image-2 경유)을 자유롭게 조합
+- **멀티 채널 전달**: 구조화된 다이제스트를 채널별로 렌더링 — Slack(Block Kit)과 Threads(이미지 루트 + 평면 답글 체인), 각각 독립적으로 on/off
+- **딥 리서치 에이전트**: Slack 멘션으로 작동하는 자율 Strands 에이전트 — 쿼리를 재작성하고, 웹/논문/커뮤니티/블로그를 가로질러 조사한 뒤, 다이제스트와 동일한 내레이터 보이스로 인용 기반 한국어 리포트를 작성해 Slack(기본) 또는 Threads(명시적 요청 시)에 게시하고, 출처 기사의 OG 이미지를 첨부
 - **AgentCore 중심**: 다이제스트 상태를 Bedrock AgentCore Memory에 보존하고, 에이전트는 AgentCore Runtime에서 실행
 - **운영 우수성**: 소스별 헬스 체크 → SNS 이메일 알림, 상관 ID가 붙는 구조화된 JSON 로깅, CloudWatch 알람, API에 AWS WAF
 - **AWS 배포**: Lambda + EventBridge cron + Bedrock AgentCore(Runtime + Memory) + ECS(RSSHub)
@@ -102,11 +103,11 @@ pipeline:
 
 ```
 SLACK_BOT_TOKEN=xoxb-...
-SLACK_APP_TOKEN=xapp-...           # Socket Mode (slack_agent.py)
 SLACK_CHANNEL_ID=C...
 TAVILY_API_KEY=tvly-...
+SLACK_SIGNING_SECRET=...           # 선택, Slack 이벤트 API Gateway 경로(딥 리서치 에이전트 인바운드 이벤트 검증)
 YOUTUBE_API_KEY=AIza...            # 선택, 없으면 RSS로 폴백
-OPENAI_API_KEY=sk-...              # 선택, make_visual(자유 형식 이미지) 활성화
+OPENAI_API_KEY=sk-...              # 선택, 데일리 비주얼 gpt-image 렌더
 ALERT_EMAIL=you@example.com        # 선택, 소스 헬스 알림
 CLOUDFLARE_PROXY_URL=https://...   # AWS 배포용 (YouTube 폴백)
 CLOUDFLARE_PROXY_TOKEN=...
@@ -121,11 +122,9 @@ uv run python main.py --dry-run --sources rss reddit
 # Slack 전달과 함께 실행
 uv run python main.py
 
-# 대화형 에이전트 모드
-uv run python main.py --dry-run --sources rss --interactive
-
-# Slack 에이전트 (Socket Mode)
-uv run python slack_agent.py
+# 딥 리서치 에이전트 (로컬): 주제를 조사하고, 게시 대신 렌더링된 리포트를 출력
+uv run python research_cli.py "<주제>" --dry-run
+uv run python research_cli.py "<주제>" --channel both --dry-run   # Slack + Threads 미리보기
 
 # RSSHub S3 동기화 (AWS용)
 uv run python scripts/sync_rsshub_to_s3.py
@@ -139,7 +138,6 @@ uv run python scripts/sync_rsshub_to_s3.py
 | `--dry-run` | Slack 전달 생략, 콘솔 출력 |
 | `--top-n 5` | 선택 항목 수 재정의 |
 | `--date 2026-03-28` | 다이제스트 날짜 지정 (기본: 오늘 KST) |
-| `--interactive` | 다이제스트 후 에이전트 대화 모드 진입 |
 
 ## 파이프라인 단계
 
@@ -182,18 +180,21 @@ uv run python scripts/sync_rsshub_to_s3.py
 - 항목별: 소스 태그 + 인게이지먼트 지표, 핵심 내용, 기술적 세부, 함의(이탤릭)
 - `sanitize_slack_mrkdwn()` 후처리로 Slack mrkdwn 포매팅
 
-### 6. 후속 에이전트(Follow-up Agent)
+### 6. 딥 리서치 에이전트(Deep-Research Agent)
 
-자율 Strands 에이전트(Bedrock AgentCore Runtime에서 실행, AgentCore Memory에서 다이제스트 상태를 읽음). 요청을 만족시키기 위해 아래 6개의 단일 목적 도구를 자유롭게 조합합니다 — 예: "1번 항목을 1페이지 슬라이드로" → `get_detail` → 근거 확보를 위한 선택적 `search_*` → `make_visual`:
+자율 Strands 에이전트(Bedrock AgentCore Runtime에서 실행)로, AI/ML 주제가 담긴 Slack 멘션으로 작동합니다. 쿼리를 재작성하고, 여러 소스를 가로질러 조사한 뒤, 다이제스트의 내레이터 보이스로 인용 기반 한국어 리포트를 작성해 Slack(기본) 또는 Threads(명시적 요청 시)에 전달하고, 가장 적합한 출처의 OG 이미지를 첨부합니다. 아래 7개의 단일 목적 도구를 자유롭게 조합합니다 — 예: "diffusion LLM 최신 동향" → `web_search`/`search_papers`/`community_search` → `read_url` → `attach_image` → `deliver_report`:
 
 | 도구 | 기능 |
 |------|----------|
-| `get_detail(item_number)` | 랭킹 메타데이터를 포함한 항목 전체 분석 |
+| `web_search(query, recency)` | Tavily 공개 웹; 최신 뉴스는 `recency="news"` |
+| `community_search(query)` | Tavily (Reddit, X, HN, Substack) |
 | `search_papers(query)` | Semantic Scholar API |
-| `search_community(query)` | Tavily (Reddit, X, HN, Substack) |
-| `search_related_news(query)` | Tavily (일반 뉴스) |
+| `read_url(url)` | 1차 출처 전문 가져오기 + 추출 (Tavily extract) |
 | `recall_trends(query)` | 구조화된 `trends.json`(active/cooling)에 대한 키워드 매칭, 모멘텀 순위 |
-| `make_visual(instruction, item_number, context)` | 자연어 지시로부터 자유 형식 이미지(1페이지 슬라이드 / 만화 / 다이어그램 / 인포그래픽) 생성 → OpenAI gpt-image-2 경유로 Slack에 게시 |
+| `attach_image(source_url)` | 출처의 OG 이미지를 내려받아 전달용으로 준비 |
+| `deliver_report(report, channel)` | 리포트 렌더링 + 게시 — Slack(기본) 또는 Threads |
+
+전달은 (프롬프트 규칙이 아니라) 코드에서 채널을 인식해 처리합니다: Slack은 Block Kit(`render_agent_blocks`, `:satellite: OmniSummary Deep Research` 헤더), Threads는 루트 + 평면 답글 체인으로 `'---'`로 구분된 ≤500자 게시물(`render_threads_research`). 에이전트가 전달 없이 종료하면 런타임이 리포트를 Slack에 폴백 게시합니다.
 
 ## AWS 배포
 
@@ -213,7 +214,7 @@ AWS_PROFILE=<profile> uv run cdk deploy --all -a "uv run python scripts/deploy.p
 - **Lambda**: Slack 이벤트 핸들러, 60초 타임아웃
 - **API Gateway** + **AWS WAFv2**: 레이트 리밋 + 매니지드 룰 + 스로틀링이 적용된 `POST /slack/events`
 - **EventBridge**: 일간 cron (설정 기반 시/분)
-- **Bedrock AgentCore**: Runtime(후속 에이전트, arm64) + **Memory**(후속 에이전트용 다이제스트 스냅샷)
+- **Bedrock AgentCore**: Runtime(딥 리서치 에이전트, arm64) + **Memory**(다이제스트 스냅샷, `recall_trends`가 읽음)
 - **ECS Fargate**: RSSHub 컨테이너
 - **S3**: 트렌드 + RSSHub 동기화 데이터
 - **DynamoDB**: Slack 이벤트 중복 제거
@@ -270,17 +271,17 @@ crontab -e
 
 ```
 omnisummary/
-├── main.py                     # CLI 진입점
-├── slack_agent.py              # Slack Socket Mode 에이전트
+├── main.py                     # CLI 진입점 (다이제스트 파이프라인)
+├── research_cli.py             # 딥 리서치 에이전트 로컬 실행 (--dry-run)
 ├── Dockerfile                  # Lambda (amd64)
 ├── Dockerfile.agentcore        # AgentCore (arm64)
 ├── collectors/                 # 소스 컬렉터
 ├── pipeline/                   # Aggregator, Ranker, DigestGenerator, TrendTracker, DailyVisual
-├── agent/                      # Strands 에이전트 + 도구
-├── agent_runtime/              # Bedrock AgentCore HTTP 서버
-├── shared/                     # 설정, 모델, 포매팅, 프롬프트, 상태 저장소, AgentCore 메모리
-├── output/                     # Slack 핸들러
-├── lambda_handlers/            # AWS Lambda 핸들러 (digest, slack events, daily visual)
+├── agent/                      # 딥 리서치 Strands 에이전트 (research_agent + research_tools), VisualGenerator, DigestStateManager
+├── agent_runtime/              # Bedrock AgentCore HTTP 서버 (딥 리서치 엔트리포인트)
+├── shared/                     # 설정, 모델, 포매팅, 프롬프트, 상태 저장소, AgentCore 메모리, research(검색), media(OG 이미지)
+├── output/                     # 채널별 렌더러 + Slack & Threads 핸들러 + 전달 라우팅
+├── lambda_handlers/            # AWS Lambda 핸들러 (digest, slack events, daily visual, threads refresh)
 ├── infrastructure/             # CDK 스택
 ├── scripts/                    # 배포, RSSHub 동기화
 ├── cloudflare-proxy/           # CF Worker 프록시

@@ -50,11 +50,11 @@
           <mxGeometry x="300" y="640" width="68" height="68" as="geometry"/>
         </mxCell>
 
-        <mxCell id="agent_grp" value="Interactive follow-up path" style="rounded=1;fillColor=#F5FFF7;strokeColor=#4AB87A;dashed=1;verticalAlign=top;fontStyle=1;fontColor=#2F8F5C;" vertex="1" parent="1">
+        <mxCell id="agent_grp" value="Deep research path" style="rounded=1;fillColor=#F5FFF7;strokeColor=#4AB87A;dashed=1;verticalAlign=top;fontStyle=1;fontColor=#2F8F5C;" vertex="1" parent="1">
           <mxGeometry x="760" y="80" width="680" height="740" as="geometry"/>
         </mxCell>
 
-        <mxCell id="user" value="Slack user&#10;@mention" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4A154B;strokeColor=#2E0D2F;fontColor=#FFFFFF;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="user" value="Slack user&#10;@mention (topic)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4A154B;strokeColor=#2E0D2F;fontColor=#FFFFFF;fontStyle=1;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="800" y="124" width="130" height="56" as="geometry"/>
         </mxCell>
         <mxCell id="waf" value="AWS WAF&#10;rate-limit + managed rules" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F54749;gradientDirection=north;fillColor=#C7131F;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.waf;" vertex="1" parent="1">
@@ -71,16 +71,16 @@
           <mxGeometry x="1260" y="252" width="68" height="68" as="geometry"/>
         </mxCell>
 
-        <mxCell id="runtime" value="Bedrock AgentCore Runtime&#10;Strands agent (Sonnet 4.6)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
+        <mxCell id="runtime" value="Bedrock AgentCore Runtime&#10;Deep research agent (Sonnet 4.6)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
           <mxGeometry x="1010" y="390" width="68" height="68" as="geometry"/>
         </mxCell>
-        <mxCell id="tools" value="Agent tools&#10;get_detail · search_papers&#10;search_community · search_related_news&#10;recall_trends · make_visual (free-form image)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#888888;align=center;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="tools" value="Agent tools&#10;web_search · community_search · search_papers&#10;read_url · recall_trends&#10;attach_image (OG image) · deliver_report" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#888888;align=center;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="1130" y="384" width="280" height="80" as="geometry"/>
         </mxCell>
-        <mxCell id="openai" value="OpenAI gpt-image&#10;(slide/comic/diagram)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#10A37F;strokeColor=#0A6E55;fontColor=#FFFFFF;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="openai" value="OG image fetch&#10;(source article → attach)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#10A37F;strokeColor=#0A6E55;fontColor=#FFFFFF;fontStyle=1;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="1130" y="520" width="280" height="50" as="geometry"/>
         </mxCell>
-        <mxCell id="slack2" value="Slack thread reply&#10;text + uploaded image" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4A154B;strokeColor=#2E0D2F;fontColor=#FFFFFF;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="slack2" value="Slack thread reply / Threads&#10;cited report + OG image" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4A154B;strokeColor=#2E0D2F;fontColor=#FFFFFF;fontStyle=1;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="1130" y="620" width="280" height="50" as="geometry"/>
         </mxCell>
 

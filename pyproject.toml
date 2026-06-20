@@ -44,7 +44,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["shared*", "collectors*", "pipeline*", "agent*", "agent_runtime*", "output*", "lambda_handlers*"]
+include = ["shared*", "collectors*", "pipeline*", "agent*", "agent_runtime*", "output*"]
 exclude = ["tests*", "references*", "config*"]
 
 [tool.black]

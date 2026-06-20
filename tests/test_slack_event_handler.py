@@ -1,12 +1,33 @@
+import ast
 import hashlib
 import hmac
 import json
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from lambda_handlers import slack_event_handler as h
 
 SIGNING_SECRET = "test-signing-secret"
+
+
+def test_handler_has_no_sibling_package_imports():
+    # This handler ships as a standalone zip containing ONLY lambda_handlers/, so importing any
+    # sibling package (shared, agent, output, pipeline, ...) fails at cold start with
+    # ImportModuleError. Guard against reintroducing such an import (regression: 'No module named
+    # shared'). The test env CAN import shared, so a runtime import test wouldn't catch it — scan
+    # the source instead.
+    forbidden = {"shared", "agent", "output", "pipeline", "collectors", "agent_runtime", "infrastructure"}
+    src = Path(h.__file__).read_text()
+    tree = ast.parse(src)
+    bad: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if node.module.split(".")[0] in forbidden:
+                bad.append(node.module)
+        elif isinstance(node, ast.Import):
+            bad += [n.name for n in node.names if n.name.split(".")[0] in forbidden]
+    assert not bad, f"slack_event_handler must not import sibling packages (not in its zip): {bad}"
 
 
 def _signed_headers(body: str, secret: str = SIGNING_SECRET, ts: str | None = None) -> dict[str, str]:
@@ -96,7 +117,26 @@ class TestAsyncInvocation:
             "event_id": "Ev1",
         }
         with patch.object(h, "_is_duplicate_event", return_value=False):
-            with patch.object(h.boto3, "client") as mock_client:
-                resp = h.handler(event, MagicMock())
+            with patch.object(h, "_post_ack") as ack:
+                with patch.object(h.boto3, "client") as mock_client:
+                    resp = h.handler(event, MagicMock())
         assert resp["statusCode"] == 200
         mock_client.return_value.invoke_agent_runtime.assert_called_once()
+        # The user gets an immediate acknowledgement before the multi-minute runtime call.
+        ack.assert_called_once_with("C1", "1.0")
+
+    def test_ack_posts_to_thread(self, monkeypatch):
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+        client = MagicMock()
+        with patch("slack_sdk.web.WebClient", return_value=client):
+            h._post_ack("C9", "ts-1")
+        client.chat_postMessage.assert_called_once()
+        kwargs = client.chat_postMessage.call_args.kwargs
+        assert kwargs["channel"] == "C9"
+        assert kwargs["thread_ts"] == "ts-1"
+        assert ":hourglass_flowing_sand:" in kwargs["blocks"][1]["elements"][0]["text"]
+
+    def test_ack_noop_without_channel(self):
+        with patch("slack_sdk.web.WebClient") as wc:
+            h._post_ack("", "")
+        wc.assert_not_called()

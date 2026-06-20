@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import time
@@ -10,10 +11,12 @@ from typing import Any
 
 import boto3
 
-# Use the shared logger so records carry correlation_id (via _CorrelationFilter) for
-# continuity from API Gateway through the async AgentCore invocation. Imported directly
-# from shared.logger to avoid pulling the heavy shared package __init__ at cold start.
-from shared.logger import logger
+# This handler is packaged as a standalone zip containing ONLY lambda_handlers/, so it MUST NOT
+# import from `shared` (or any sibling package) — those aren't in the zip and the import fails at
+# cold start with ImportModuleError. A self-contained stdlib logger keeps the ingress dependency-free.
+logger = logging.getLogger("omnisummary.slack_events")
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO)
 
 SIGNATURE_EXPIRATION_SEC = int(os.environ.get("SLACK_SIGNATURE_EXPIRATION_SEC", "300"))
 EVENT_DEDUP_TTL_SEC = int(os.environ.get("EVENT_DEDUPLICATION_TTL_SEC", "300"))
@@ -87,6 +90,11 @@ def _handle_async_invocation(event: dict[str, Any], context: Any) -> dict[str, A
 
         clean_text = re.sub(r"<@[A-Z0-9]+>\s*", "", text).strip()
 
+        # Immediate acknowledgement so the user knows the request was received — deep research
+        # takes minutes, so without this the thread stays silent. Mirrors scholar-lens' ack
+        # convention (intent line + hourglass "I'll post the result here when it's ready").
+        _post_ack(channel, thread_ts)
+
         agentcore_client.invoke_agent_runtime(
             agentRuntimeArn=agentcore_arn,
             qualifier="DEFAULT",
@@ -109,6 +117,45 @@ def _handle_async_invocation(event: dict[str, Any], context: Any) -> dict[str, A
         # timeout). Post a visible fallback to the originating thread.
         _post_fallback(channel, thread_ts)
         return {"statusCode": 500, "body": f"Error: {e}"}
+
+
+def _post_ack(channel: str, thread_ts: str) -> None:
+    """Post an immediate 'research started' acknowledgement to the originating thread, so the
+    user gets feedback during the multi-minute run. Mirrors scholar-lens' ack format (an intent
+    line + a muted hourglass hint). Best-effort: never blocks the runtime invocation."""
+    if not channel:
+        return
+    try:
+        from slack_sdk.web import WebClient
+
+        token = _resolve_slack_bot_token()
+        if not token:
+            return
+        kwargs: dict[str, Any] = {
+            "channel": channel,
+            "text": "딥 리서치를 시작합니다.",
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": ":satellite: *딥 리서치*를 시작합니다."},
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": ":hourglass_flowing_sand: 자료를 모으고 정리하는 중입니다 — "
+                            "완료되면 이 스레드에 결과를 올려 드릴게요.",
+                        }
+                    ],
+                },
+            ],
+        }
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+        WebClient(token=token).chat_postMessage(**kwargs)
+    except Exception as e:
+        logger.error("Failed to post ack message: %s", e)
 
 
 def _post_fallback(channel: str, thread_ts: str) -> None:
