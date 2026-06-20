@@ -1,6 +1,7 @@
 import ast
 import hashlib
 import hmac
+import importlib.util
 import json
 import time
 from pathlib import Path
@@ -11,23 +12,31 @@ from lambda_handlers import slack_event_handler as h
 SIGNING_SECRET = "test-signing-secret"
 
 
-def test_handler_has_no_sibling_package_imports():
-    # This handler ships as a standalone zip containing ONLY lambda_handlers/, so importing any
-    # sibling package (shared, agent, output, pipeline, ...) fails at cold start with
-    # ImportModuleError. Guard against reintroducing such an import (regression: 'No module named
-    # shared'). The test env CAN import shared, so a runtime import test wouldn't catch it — scan
-    # the source instead.
-    forbidden = {"shared", "agent", "output", "pipeline", "collectors", "agent_runtime", "infrastructure"}
+def test_handler_imports_nothing_outside_the_zip():
+    # This handler ships as a standalone zip containing ONLY lambda_handlers/ — no sibling packages
+    # (shared, agent, ...) AND no third-party deps (slack_sdk, httpx, ...). Importing either crashes
+    # at cold start: 'No module named shared' (sibling) / 'No module named slack_sdk' (third-party),
+    # which 502s the Slack ingress. boto3 + the stdlib are the only things present in the Lambda
+    # runtime. The test env CAN import these, so scan the source instead of importing at runtime.
+    allowed = {"boto3"}  # present in the AWS Lambda Python runtime
     src = Path(h.__file__).read_text()
     tree = ast.parse(src)
     bad: list[str] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module:
-            if node.module.split(".")[0] in forbidden:
-                bad.append(node.module)
+        names: list[str] = []
+        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            names = [node.module]
         elif isinstance(node, ast.Import):
-            bad += [n.name for n in node.names if n.name.split(".")[0] in forbidden]
-    assert not bad, f"slack_event_handler must not import sibling packages (not in its zip): {bad}"
+            names = [n.name for n in node.names]
+        for name in names:
+            top = name.split(".")[0]
+            if top in allowed:
+                continue
+            # Anything resolved from site-packages isn't in the zip (only stdlib + boto3 are).
+            spec = importlib.util.find_spec(top)
+            if spec and "site-packages" in (spec.origin or ""):
+                bad.append(name)
+    assert not bad, f"slack_event_handler must import only stdlib + boto3 (zip has nothing else): {bad}"
 
 
 def _signed_headers(body: str, secret: str = SIGNING_SECRET, ts: str | None = None) -> dict[str, str]:
@@ -125,18 +134,37 @@ class TestAsyncInvocation:
         # The user gets an immediate acknowledgement before the multi-minute runtime call.
         ack.assert_called_once_with("C1", "1.0")
 
-    def test_ack_posts_to_thread(self, monkeypatch):
+    def test_ack_posts_to_thread_via_stdlib(self, monkeypatch):
+        # ack must post with stdlib urllib (no slack_sdk — not in the zip). Capture the request.
         monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
-        client = MagicMock()
-        with patch("slack_sdk.web.WebClient", return_value=client):
-            h._post_ack("C9", "ts-1")
-        client.chat_postMessage.assert_called_once()
-        kwargs = client.chat_postMessage.call_args.kwargs
-        assert kwargs["channel"] == "C9"
-        assert kwargs["thread_ts"] == "ts-1"
-        assert ":hourglass_flowing_sand:" in kwargs["blocks"][1]["elements"][0]["text"]
+        captured = {}
 
-    def test_ack_noop_without_channel(self):
-        with patch("slack_sdk.web.WebClient") as wc:
+        class _Resp:
+            def read(self):
+                return b'{"ok": true}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout=0):
+            captured["url"] = req.full_url
+            captured["auth"] = req.headers.get("Authorization")
+            captured["body"] = json.loads(req.data.decode())
+            return _Resp()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            h._post_ack("C9", "ts-1")
+        assert captured["url"] == "https://slack.com/api/chat.postMessage"
+        assert captured["auth"] == "Bearer xoxb-test"
+        assert captured["body"]["channel"] == "C9"
+        assert captured["body"]["thread_ts"] == "ts-1"
+        assert ":hourglass_flowing_sand:" in captured["body"]["blocks"][1]["elements"][0]["text"]
+
+    def test_ack_noop_without_channel(self, monkeypatch):
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+        with patch("urllib.request.urlopen") as urlopen:
             h._post_ack("", "")
-        wc.assert_not_called()
+        urlopen.assert_not_called()

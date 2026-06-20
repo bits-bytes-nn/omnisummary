@@ -119,84 +119,73 @@ def _handle_async_invocation(event: dict[str, Any], context: Any) -> dict[str, A
         return {"statusCode": 500, "body": f"Error: {e}"}
 
 
+def _slack_post_message(channel: str, text: str, blocks: list[dict[str, Any]], thread_ts: str) -> None:
+    """POST to chat.postMessage with stdlib urllib only. This handler ships as a standalone zip
+    with NO third-party deps (no slack_sdk), so we must not import it — doing so crashed _post_ack
+    at runtime ('No module named slack_sdk'). Best-effort: any failure is logged, never raised."""
+    import urllib.request
+
+    if not channel:
+        return
+    token = _resolve_slack_bot_token()
+    if not token:
+        return
+    payload: dict[str, Any] = {"channel": channel, "text": text, "blocks": blocks}
+    if thread_ts:
+        payload["thread_ts"] = thread_ts
+    req = urllib.request.Request(
+        "https://slack.com/api/chat.postMessage",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    if not result.get("ok"):
+        logger.error("Slack chat.postMessage failed: %s", result.get("error"))
+
+
 def _post_ack(channel: str, thread_ts: str) -> None:
     """Post an immediate 'research started' acknowledgement to the originating thread, so the
     user gets feedback during the multi-minute run. Mirrors scholar-lens' ack format (an intent
     line + a muted hourglass hint). Best-effort: never blocks the runtime invocation."""
-    if not channel:
-        return
-    try:
-        from slack_sdk.web import WebClient
-
-        token = _resolve_slack_bot_token()
-        if not token:
-            return
-        kwargs: dict[str, Any] = {
-            "channel": channel,
-            "text": "딥 리서치를 시작합니다.",
-            "blocks": [
+    blocks = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": ":satellite: *딥 리서치*를 시작합니다."}},
+        {
+            "type": "context",
+            "elements": [
                 {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": ":satellite: *딥 리서치*를 시작합니다."},
-                },
-                {
-                    "type": "context",
-                    "elements": [
-                        {
-                            "type": "mrkdwn",
-                            "text": ":hourglass_flowing_sand: 자료를 모으고 정리하는 중입니다 — "
-                            "완료되면 이 스레드에 결과를 올려 드릴게요.",
-                        }
-                    ],
-                },
+                    "type": "mrkdwn",
+                    "text": ":hourglass_flowing_sand: 자료를 모으고 정리하는 중입니다 — "
+                    "완료되면 이 스레드에 결과를 올려 드릴게요.",
+                }
             ],
-        }
-        if thread_ts:
-            kwargs["thread_ts"] = thread_ts
-        WebClient(token=token).chat_postMessage(**kwargs)
+        },
+    ]
+    try:
+        _slack_post_message(channel, "딥 리서치를 시작합니다.", blocks, thread_ts)
     except Exception as e:
         logger.error("Failed to post ack message: %s", e)
 
 
 def _post_fallback(channel: str, thread_ts: str) -> None:
-    if not channel:
-        return
-    try:
-        from slack_sdk.web import WebClient
-
-        token = _resolve_slack_bot_token()
-        if not token:
-            return
-        # Mirror the family's Slack error convention (see scholar-lens
-        # notifier/bot): a header line + a muted retry hint, rather than one
-        # bare warning sentence.
-        kwargs: dict[str, Any] = {
-            "channel": channel,
-            "text": "Sorry, I couldn't process that request.",
-            "blocks": [
+    # Mirror the family's Slack error convention (see scholar-lens notifier/bot): a header line
+    # + a muted retry hint, rather than one bare warning sentence.
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": ":x: I couldn't process that request", "emoji": True}},
+        {
+            "type": "context",
+            "elements": [
                 {
-                    "type": "header",
-                    "text": {
-                        "type": "plain_text",
-                        "text": ":x: I couldn't process that request",
-                        "emoji": True,
-                    },
-                },
-                {
-                    "type": "context",
-                    "elements": [
-                        {
-                            "type": "mrkdwn",
-                            "text": ":arrows_counterclockwise: Please mention me "
-                            "again in a moment, or check the logs if it keeps happening.",
-                        }
-                    ],
-                },
+                    "type": "mrkdwn",
+                    "text": ":arrows_counterclockwise: Please mention me "
+                    "again in a moment, or check the logs if it keeps happening.",
+                }
             ],
-        }
-        if thread_ts:
-            kwargs["thread_ts"] = thread_ts
-        WebClient(token=token).chat_postMessage(**kwargs)
+        },
+    ]
+    try:
+        _slack_post_message(channel, "Sorry, I couldn't process that request.", blocks, thread_ts)
     except Exception as e:
         logger.error("Failed to post fallback message: %s", e)
 
