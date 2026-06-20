@@ -9,11 +9,10 @@ import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from slack_sdk.web import WebClient
 
-from agent import create_digest_agent
-from agent.agent_tools import DeliveryContext, request_context
-from agent.tool_state import DigestStateManager
+from agent import create_research_agent
+from agent.research_tools import DeliveryContext, request_context
 from output.renderers import render_agent_blocks
-from shared import create_memory_store, logger, sanitize_slack_mrkdwn, set_correlation_id
+from shared import logger, sanitize_slack_mrkdwn, set_correlation_id
 
 app = BedrockAgentCoreApp()
 
@@ -33,38 +32,29 @@ def _emit_agent_error_metric() -> None:
     print(json.dumps(emf))
 
 
-def _load_latest_state() -> DigestStateManager:
-    state = DigestStateManager()
-    memory = create_memory_store()
-    data = memory.get_latest_digest()
-    if not data:
-        logger.warning("No digest state available in AgentCore Memory")
-        return state
-
-    state.load_from(DigestStateManager.load_from_dict(data))
-    logger.info("Loaded %d items from AgentCore Memory", state.get_item_count())
-    return state
+def _resolve_bot_token() -> str:
+    bot_token = os.environ.get("SLACK_BOT_TOKEN", "")
+    if bot_token:
+        return bot_token
+    project = os.environ.get("PROJECT_NAME", "omnisummary")
+    stage = os.environ.get("STAGE", "dev")
+    region = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2"))
+    try:
+        return boto3.client("ssm", region_name=region).get_parameter(
+            Name=f"/{project}/{stage}/slack-bot-token",
+            WithDecryption=True,
+        )["Parameter"]["Value"]
+    except Exception as e:
+        logger.error("Failed to get Slack token: %s", e)
+        return ""
 
 
 def _send_slack_message(channel: str, text: str, thread_ts: str = "") -> None:
-
-    bot_token = os.environ.get("SLACK_BOT_TOKEN", "")
+    """Fallback delivery: post the agent's final text to Slack when the agent finished without
+    calling deliver_report. The happy path delivers through the deliver_report tool instead."""
+    bot_token = _resolve_bot_token()
     if not bot_token:
-        project = os.environ.get("PROJECT_NAME", "omnisummary")
-        stage = os.environ.get("STAGE", "dev")
-        region = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2"))
-        ssm = boto3.client("ssm", region_name=region)
-        try:
-            bot_token = ssm.get_parameter(
-                Name=f"/{project}/{stage}/slack-bot-token",
-                WithDecryption=True,
-            )[
-                "Parameter"
-            ]["Value"]
-        except Exception as e:
-            logger.error("Failed to get Slack token: %s", e)
-            return
-
+        return
     client = WebClient(token=bot_token)
     for blocks in render_agent_blocks(text):
         kwargs: dict[str, Any] = {"channel": channel, "blocks": blocks, "text": text[:200]}
@@ -82,24 +72,26 @@ def invoke(payload: dict[str, Any]) -> str:
     set_correlation_id(payload.get("correlation_id") or None)
     logger.info("AgentCore invoked: prompt='%s', channel='%s'", prompt[:100], channel_id)
 
-    state = _load_latest_state()
     delivery = DeliveryContext(channel_id=channel_id, thread_ts=thread_ts)
+    agent = create_research_agent()
 
-    agent = create_digest_agent()
-
-    # contextvar-scoped per-invocation state: a warm container handling concurrent
-    # invocations can't leak one request's channel/state into another.
-    with request_context(state, delivery):
+    # contextvar-scoped per-invocation delivery: a warm container handling concurrent
+    # invocations can't leak one request's channel into another.
+    with request_context(delivery):
         try:
-            response = str(agent(prompt))
-            response = sanitize_slack_mrkdwn(response)
+            response = sanitize_slack_mrkdwn(str(agent(prompt)))
         except Exception as e:
             logger.error("Agent execution failed: %s", e, exc_info=True)
             _emit_agent_error_metric()
             response = f"Error processing request: {e}"
 
-    if channel_id:
-        _send_slack_message(channel_id, response, thread_ts)
+        # Slack is the always-available channel: if it wasn't successfully delivered (the agent
+        # never called deliver_report, or a Slack deliver failed even though Threads succeeded),
+        # post to Slack so the user always gets something there. Prefer the actual report the
+        # agent produced (staged on the context) over its terminal one-line confirmation.
+        if channel_id and "slack" not in delivery.delivered_channels:
+            fallback_text = delivery.last_report or response
+            _send_slack_message(channel_id, sanitize_slack_mrkdwn(fallback_text), thread_ts)
 
     return response
 

@@ -35,7 +35,7 @@ jobs:
       - name: Black format check
         run: uv run black --check .
       - name: Mypy type-check
-        run: uv run mypy shared/ collectors/ pipeline/ agent/ agent_runtime/ output/ lambda_handlers/ infrastructure/ main.py
+        run: uv run mypy shared/ collectors/ pipeline/ agent/ agent_runtime/ output/ lambda_handlers/ infrastructure/ main.py __main__.py research_cli.py
 
   test:
     name: Tests & coverage
@@ -53,8 +53,8 @@ jobs:
       - name: Run tests with coverage
         run: >
           uv run python -m pytest tests/
-          --cov=collectors --cov=pipeline --cov=shared --cov=main
-          --cov=lambda_handlers --cov=output --cov=agent
+          --cov=collectors --cov=pipeline --cov=shared --cov=main --cov=research_cli
+          --cov=lambda_handlers --cov=output --cov=agent --cov=agent_runtime
           --cov-report=term-missing --cov-report=xml
           --cov-fail-under=55
       - name: Upload coverage
@@ -96,3 +96,16 @@ jobs:
           provenance: false
           push: false
           tags: omnisummary-digest:ci
+      # Build the agentcore image so a missing COPY or unresolved dep in the deep-research
+      # runtime is caught in CI rather than at AgentCore cold-start. The runtime's import graph
+      # (agent_runtime.app -> output.delivery -> shared.research/media) is separately exercised
+      # by tests/test_agentcore_app.py on the host.
+      - name: Build agentcore image (deep-research runtime)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.agentcore
+          platforms: linux/arm64
+          provenance: false
+          push: false
+          tags: omnisummary-agentcore:ci

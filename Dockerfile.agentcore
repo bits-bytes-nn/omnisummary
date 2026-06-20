@@ -14,7 +14,6 @@ COPY pipeline/ ./pipeline/
 COPY collectors/ ./collectors/
 COPY output/ ./output/
 COPY config/ ./config/
-COPY main.py ./
 
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir . && \

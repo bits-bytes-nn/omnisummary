@@ -51,6 +51,7 @@ async def send_image_to_slack(
     comment: str = "",
     thread_ts: str = "",
     bot_token: str = "",
+    file_ext: str = "png",
 ) -> bool:
     token = bot_token or resolve_secret("SLACK_BOT_TOKEN", "slack-bot-token")
     channel_id = channel_id or resolve_secret("SLACK_CHANNEL_ID", "slack-channel-id")
@@ -64,7 +65,7 @@ async def send_image_to_slack(
             "channel": channel_id,
             "content": image_bytes,
             "title": title,
-            "filename": f"{title}.png",
+            "filename": f"{title}.{file_ext}",
         }
         if comment:
             kwargs["initial_comment"] = comment

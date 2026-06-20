@@ -84,6 +84,18 @@ class VisualBrief(BaseModel):
     orientation: Literal["square", "landscape", "portrait"] = "portrait"
 
 
+class ImageAsset(BaseModel):
+    """A representative image downloaded from a source page (its og:image / twitter:image),
+    carried through to Slack/Threads delivery. `source_url` is the article the image belongs
+    to (shown for attribution); `image_url` is where the image bytes came from."""
+
+    data: bytes
+    source_url: str
+    image_url: str
+    content_type: str = "image/png"
+    alt: str = ""
+
+
 class TrendEvidence(BaseModel):
     date: str  # YYYY-MM-DD, stamped by code from the digest date (never the LLM)
     summary: str

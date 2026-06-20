@@ -23,29 +23,9 @@ if "bedrock_agentcore" not in sys.modules:
     sys.modules["bedrock_agentcore"] = _pkg
     sys.modules["bedrock_agentcore.runtime"] = _runtime_mod
 
-from agent.agent_tools import _request_delivery, _request_state  # noqa: E402
 from agent_runtime import app as app_module  # noqa: E402
+from output.delivery import _request_delivery  # noqa: E402
 from shared.logger import get_correlation_id  # noqa: E402
-
-
-class TestLoadLatestState:
-    def test_returns_empty_state_when_memory_has_no_digest(self):
-        memory = MagicMock()
-        memory.get_latest_digest.return_value = None
-        with patch.object(app_module, "create_memory_store", return_value=memory):
-            state = app_module._load_latest_state()
-        assert state.get_item_count() == 0
-
-    def test_loads_state_from_memory(self):
-        # A populated source manager whose contents must be copied into the returned state.
-        source = app_module.DigestStateManager()
-        source._ranked_items = [object(), object(), object()]  # 3 ranked items
-        memory = MagicMock()
-        memory.get_latest_digest.return_value = {"ranked_items": [], "collected_items": {}}
-        with patch.object(app_module, "create_memory_store", return_value=memory):
-            with patch.object(app_module.DigestStateManager, "load_from_dict", return_value=source):
-                state = app_module._load_latest_state()
-        assert state.get_item_count() == 3
 
 
 class TestSendSlackMessage:
@@ -93,7 +73,6 @@ class TestSendSlackMessage:
             with patch.object(app_module, "render_agent_blocks", return_value=[["b1"], ["b2"], ["b3"]]):
                 app_module._send_slack_message("C", "long", "")
         assert client.chat_postMessage.call_count == 3
-        # posts Block Kit blocks, not plain-text chunks
         assert client.chat_postMessage.call_args_list[0].kwargs["blocks"] == ["b1"]
 
 
@@ -103,81 +82,86 @@ class TestInvoke:
         agent.return_value = response
         return agent
 
-    def test_happy_path_binds_request_context_and_posts(self):
-        agent = self._agent("digest answer")
-        state = MagicMock()
+    def test_binds_delivery_context_and_falls_back_when_undelivered(self):
+        # The agent answered but never called deliver_report, so the runtime posts the fallback.
+        agent = self._agent("research answer")
         captured: dict[str, object] = {}
 
         def fake_agent_call(prompt):
-            # request_context must be active during the agent call
-            captured["state"] = _request_state.get()
             captured["delivery"] = _request_delivery.get()
-            return "digest answer"
+            return "research answer"
 
         agent.side_effect = fake_agent_call
 
-        with patch.object(app_module, "_load_latest_state", return_value=state):
-            with patch.object(app_module, "create_digest_agent", return_value=agent):
-                with patch.object(app_module, "_send_slack_message") as send:
-                    result = app_module.invoke(
-                        {"prompt": "explain 1", "channel_id": "C9", "thread_ts": "t1", "correlation_id": "corr-xyz"}
-                    )
+        with patch.object(app_module, "create_research_agent", return_value=agent):
+            with patch.object(app_module, "_send_slack_message") as send:
+                result = app_module.invoke(
+                    {"prompt": "research X", "channel_id": "C9", "thread_ts": "t1", "correlation_id": "corr-xyz"}
+                )
 
-        assert result == "digest answer"
-        assert captured["state"] is state
+        assert result == "research answer"
         assert captured["delivery"].channel_id == "C9"
         assert captured["delivery"].thread_ts == "t1"
-        send.assert_called_once_with("C9", "digest answer", "t1")
-        # contextvars are reset once the request finishes
-        assert _request_state.get() is None
+        send.assert_called_once_with("C9", "research answer", "t1")
+        # contextvar is reset once the request finishes
         assert _request_delivery.get() is None
+
+    def test_no_fallback_when_slack_already_delivered(self):
+        # When the agent delivered to Slack via the tool, the runtime must NOT double-post.
+        def fake_agent_call(prompt):
+            _request_delivery.get().delivered_channels.add("slack")
+            return "delivered already"
+
+        agent = MagicMock(side_effect=fake_agent_call)
+        with patch.object(app_module, "create_research_agent", return_value=agent):
+            with patch.object(app_module, "_send_slack_message") as send:
+                result = app_module.invoke({"prompt": "p", "channel_id": "C"})
+        assert result == "delivered already"
+        send.assert_not_called()
 
     def test_propagates_correlation_id(self):
         agent = self._agent("ok")
-        with patch.object(app_module, "_load_latest_state", return_value=MagicMock()):
-            with patch.object(app_module, "create_digest_agent", return_value=agent):
-                with patch.object(app_module, "_send_slack_message"):
-                    app_module.invoke({"prompt": "p", "channel_id": "C", "correlation_id": "fixed-corr"})
+        with patch.object(app_module, "create_research_agent", return_value=agent):
+            with patch.object(app_module, "_send_slack_message"):
+                app_module.invoke({"prompt": "p", "channel_id": "C", "correlation_id": "fixed-corr"})
         assert get_correlation_id() == "fixed-corr"
 
     def test_does_not_post_when_no_channel(self):
         agent = self._agent("answer")
-        with patch.object(app_module, "_load_latest_state", return_value=MagicMock()):
-            with patch.object(app_module, "create_digest_agent", return_value=agent):
-                with patch.object(app_module, "_send_slack_message") as send:
-                    result = app_module.invoke({"prompt": "p", "channel_id": ""})
+        with patch.object(app_module, "create_research_agent", return_value=agent):
+            with patch.object(app_module, "_send_slack_message") as send:
+                result = app_module.invoke({"prompt": "p", "channel_id": ""})
         assert result == "answer"
         send.assert_not_called()
 
-    def test_agent_exception_is_caught_and_sanitized(self):
+    def test_agent_exception_is_caught_and_posts_fallback(self):
         agent = MagicMock()
         agent.side_effect = RuntimeError("boom")
-        with patch.object(app_module, "_load_latest_state", return_value=MagicMock()):
-            with patch.object(app_module, "create_digest_agent", return_value=agent):
-                with patch.object(app_module, "_send_slack_message") as send:
-                    with patch.object(app_module, "sanitize_slack_mrkdwn", side_effect=lambda t: t) as sanitize:
-                        result = app_module.invoke({"prompt": "p", "channel_id": "C"})
-        # error message is returned (not raised) and still posted to the channel
+        with patch.object(app_module, "create_research_agent", return_value=agent):
+            with patch.object(app_module, "_send_slack_message") as send:
+                with patch.object(app_module, "_emit_agent_error_metric") as emit:
+                    result = app_module.invoke({"prompt": "p", "channel_id": "C"})
         assert "Error processing request" in result
         assert "boom" in result
         send.assert_called_once()
-        # the error path skips the success-path sanitize call
-        sanitize.assert_not_called()
+        emit.assert_called_once()  # the EMF error metric is the only alarmable signal
 
-    def test_sanitizes_successful_response(self):
-        agent = self._agent("**raw**")
-        with patch.object(app_module, "_load_latest_state", return_value=MagicMock()):
-            with patch.object(app_module, "create_digest_agent", return_value=agent):
-                with patch.object(app_module, "_send_slack_message"):
-                    with patch.object(app_module, "sanitize_slack_mrkdwn", return_value="*clean*") as sanitize:
-                        result = app_module.invoke({"prompt": "p", "channel_id": "C"})
-        sanitize.assert_called_once()
-        assert result == "*clean*"
+    def test_slack_fallback_fires_when_only_threads_delivered(self):
+        # Threads succeeded but Slack never did → Slack is the always-available channel, so the
+        # runtime must still post the report text there.
+        def fake_agent_call(prompt):
+            _request_delivery.get().delivered_channels.add("threads")
+            return "report text"
+
+        agent = MagicMock(side_effect=fake_agent_call)
+        with patch.object(app_module, "create_research_agent", return_value=agent):
+            with patch.object(app_module, "_send_slack_message") as send:
+                app_module.invoke({"prompt": "p", "channel_id": "C"})
+        send.assert_called_once()
 
 
 @pytest.fixture(autouse=True)
 def _reset_request_context():
     # Defensive: ensure no test leaks request-scoped contextvars into the next.
     yield
-    _request_state.set(None)
     _request_delivery.set(None)

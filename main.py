@@ -239,7 +239,6 @@ async def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Run without sending to Slack")
     parser.add_argument("--top-n", type=int, help="Override top_n from config")
     parser.add_argument("--date", type=str, help="Digest date (YYYY-MM-DD). Defaults to today")
-    parser.add_argument("--interactive", action="store_true", help="Enter agent chat mode after digest")
     parser.add_argument(
         "--force-republish",
         action="store_true",
@@ -295,7 +294,7 @@ async def main() -> None:
         logger.warning("No items collected. Exiting.")
         return
 
-    result = await run_pipeline(
+    await run_pipeline(
         config,
         llm_factory,
         collected_items,
@@ -304,37 +303,6 @@ async def main() -> None:
         force_republish=args.force_republish,
     )
     logger.info("OmniSummary pipeline completed")
-
-    if args.interactive and result and result[0] is not None:
-        _run_interactive(*result)
-
-
-def _run_interactive(items: list[CollectedItem], ranked_items: list[RankedItem], digest: DigestResult) -> None:
-    from agent import create_digest_agent
-    from agent.agent_tools import state_manager
-
-    state_manager.store_digest(items, ranked_items, digest)
-
-    logger.info("Entering interactive agent mode (%d items). Type 'quit' to exit.", state_manager.get_item_count())
-    print("\n=== OmniSummary Agent ===")
-    print(f"Loaded {state_manager.get_item_count()} digest items. Type 'quit' to exit.")
-    print("Examples: '1번 자세히', '1번 관련 논문', '1번 커뮤니티 반응'\n")
-
-    agent = create_digest_agent()
-
-    while True:
-        try:
-            query = input("> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            break
-        if not query or query in ("quit", "exit", "q"):
-            break
-        try:
-            response = agent(query)
-            print(f"\n{response}\n")
-        except Exception as e:
-            logger.error("Agent error: %s", e)
-            print(f"\nError: {e}\n")
 
 
 if __name__ == "__main__":

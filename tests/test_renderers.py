@@ -2,9 +2,12 @@ from output.renderers import (
     SLACK_MAX_BLOCKS_PER_MESSAGE,
     SLACK_MAX_SECTION_CHARS,
     THREADS_MAX_POST_CHARS,
+    _strip_slack_mrkdwn,
     render_agent_blocks,
+    render_research_blocks,
     render_slack_blocks,
     render_threads_posts,
+    render_threads_research,
 )
 from shared.models import DigestContent, DigestItem
 
@@ -152,3 +155,136 @@ class TestAgentBlocks:
         all_blocks = [b for c in chunks for b in c]
         assert all(len(b["text"]["text"]) <= SLACK_MAX_SECTION_CHARS for b in all_blocks)
         assert len(all_blocks) >= 3
+
+    def test_oversize_paragraph_never_splits_a_link(self):
+        # A long paragraph with a Slack link straddling the section boundary must not be cleaved:
+        # no produced block may contain a '<' without its matching '>'.
+        link = "<https://example.com/very/long/path/with_underscores|클릭하세요>"
+        para = "가" * (SLACK_MAX_SECTION_CHARS - 10) + link + "나" * 200
+        chunks = render_agent_blocks(para)
+        for c in chunks:
+            for b in c:
+                t = b["text"]["text"]
+                assert t.count("<") == t.count(">")  # balanced — no half-link
+
+
+class TestResearchBlocks:
+    def test_first_block_is_header(self):
+        chunks = render_research_blocks("본문이다.", header=":satellite: Deep Research")
+        assert chunks[0][0]["type"] == "header"
+        assert chunks[0][0]["text"]["text"] == ":satellite: Deep Research"
+
+    def test_divider_before_numbered_heading(self):
+        report = "도입부 문장이다.\n\n*1. 첫 섹션*\n\n첫 섹션 본문이다.\n\n*2. 둘째 섹션*\n\n둘째 본문이다."
+        blocks = [b for c in render_research_blocks(report, header="H") for b in c]
+        types = [b["type"] for b in blocks]
+        # header first, then a divider precedes each "*N. ...*" heading
+        assert types[0] == "header"
+        assert types.count("divider") == 2
+
+    def test_sections_under_char_cap(self):
+        report = "\n\n".join(["가" * 2500, "*1. 섹션*", "나" * 2500])
+        blocks = [b for c in render_research_blocks(report, header="H") for b in c]
+        for b in blocks:
+            if b["type"] == "section":
+                assert len(b["text"]["text"]) <= SLACK_MAX_SECTION_CHARS
+
+    def test_empty_report_still_has_header(self):
+        chunks = render_research_blocks("   ", header="H")
+        assert chunks[0][0]["type"] == "header"
+
+
+class TestStripSlackMrkdwn:
+    def test_link_becomes_label_and_url(self):
+        assert _strip_slack_mrkdwn("<https://x.com|엑스>") == "엑스 (https://x.com)"
+
+    def test_bare_angle_link(self):
+        assert _strip_slack_mrkdwn("<https://x.com>") == "https://x.com"
+
+    def test_drops_bold_italic_code(self):
+        assert _strip_slack_mrkdwn("*굵게* _기울임_ `코드`") == "굵게 기울임 코드"
+
+    def test_strips_leading_bullets_and_headings(self):
+        assert _strip_slack_mrkdwn("- 항목\n## 제목") == "항목\n제목"
+
+    def test_preserves_underscores_in_linked_url(self):
+        # Regression: the [*_`] strip must not corrupt URLs (arxiv/github/query params use '_').
+        assert _strip_slack_mrkdwn("<https://arxiv.org/abs/2_3_4|논문>") == "논문 (https://arxiv.org/abs/2_3_4)"
+
+    def test_preserves_underscores_in_bare_url(self):
+        out = _strip_slack_mrkdwn("참고 https://github.com/a_b/c_d *굵게*")
+        assert "https://github.com/a_b/c_d" in out
+        assert "굵게" in out and "*" not in out
+
+
+class TestThreadsResearch:
+    def test_root_and_replies_under_cap(self):
+        report = "\n\n".join(["문장 하나다. " * 20 for _ in range(4)])
+        root, replies = render_threads_research(report)
+        assert len(root) <= THREADS_MAX_POST_CHARS
+        assert all(len(r) <= THREADS_MAX_POST_CHARS for r in replies)
+        assert len(replies) >= 1
+
+    def test_strips_markdown_for_threads(self):
+        root, replies = render_threads_research("리드 *굵게* 본문이다. <https://x.com|링크> 참고하라.")
+        joined = root + " " + " ".join(replies)
+        assert "*" not in joined
+        assert "<https" not in joined
+        assert "링크 (https://x.com)" in joined
+
+    def test_max_posts_caps_total_count(self):
+        # A long report must not fan out past the cap (root + replies <= max_posts).
+        report = "\n\n".join(f"섹션 {i} 문장이다. " * 8 for i in range(30))
+        root, replies = render_threads_research(report, max_posts=8)
+        assert 1 + len(replies) <= 8
+        # no Slack pointer — the Threads post stands on its own
+        assert "Slack" not in (root + " ".join(replies))
+
+    def test_no_cap_when_max_posts_zero(self):
+        report = "\n\n".join(f"섹션 {i} 문장이다. " * 8 for i in range(30))
+        _, replies = render_threads_research(report, max_posts=0)
+        assert 1 + len(replies) > 8  # uncapped
+
+    def test_oversize_sentence_word_trimmed(self):
+        report = "단어 " * 400  # one giant "sentence" with no terminator, >500 chars
+        root, replies = render_threads_research(report)
+        assert len(root) <= THREADS_MAX_POST_CHARS
+        assert all(len(r) <= THREADS_MAX_POST_CHARS for r in replies)
+
+    def test_short_report_single_root_no_replies(self):
+        root, replies = render_threads_research("짧은 보고서다.")
+        assert root == "짧은 보고서다."
+        assert replies == []
+
+    def test_long_sections_stay_separate(self):
+        # Two substantial sections (each above the root-merge threshold) stay as separate posts.
+        a = "첫째 문단이다. " * 10
+        b = "둘째 문단이다. " * 10
+        root, replies = render_threads_research(f"{a}\n\n{b}")
+        assert root.startswith("첫째")
+        assert any(r.startswith("둘째") for r in replies)
+
+    def test_agent_delimiters_define_posts(self):
+        # When the agent marks boundaries with '---', each block is ONE post — number + heading +
+        # body stay together, not split on the internal blank line.
+        report = "1/2 첫 포스트 본문이다.\n\n부연 설명이다.\n---\n2/2 둘째 포스트 본문이다."
+        root, replies = render_threads_research(report, max_posts=8)
+        assert root.startswith("1/2")
+        assert "부연 설명이다." in root  # stayed in the same post despite the blank line
+        assert len(replies) == 1
+        assert replies[0].startswith("2/2")
+
+    def test_oversize_delimited_post_is_resplit(self):
+        # An agent-delimited post over 500 chars is re-split so the cap holds.
+        big = "문장이다. " * 120  # >500 chars, multiple sentences
+        root, replies = render_threads_research(f"1/1 {big}\n---\n끝.", max_posts=8)
+        assert len(root) <= THREADS_MAX_POST_CHARS
+        assert all(len(r) <= THREADS_MAX_POST_CHARS for r in replies)
+
+    def test_long_sentence_preserves_trailing_url(self):
+        # Regression: an over-length sentence ending in a citation URL must keep the URL.
+        long = "이것은 매우 긴 문장이다 " * 30 + "출처는 https://arxiv.org/abs/2401.00001 이다"
+        root, replies = render_threads_research(long)
+        joined = root + " " + " ".join(replies)
+        assert "https://arxiv.org/abs/2401.00001" in joined
+        assert len(root) <= THREADS_MAX_POST_CHARS

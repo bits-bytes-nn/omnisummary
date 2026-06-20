@@ -9,6 +9,7 @@ from langchain_core.output_parsers import StrOutputParser
 from pydantic import ValidationError
 
 from shared import (
+    TRENDS_KEY,
     BedrockLanguageModelFactory,
     Trend,
     TrendClassifyPrompt,
@@ -21,7 +22,7 @@ from shared import (
 from shared.config import PipelineConfig
 from shared.state_store import StateStore
 
-TRENDS_KEY = "trends.json"
+__all__ = ["TRENDS_KEY", "TrendTracker"]
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 

@@ -1,4 +1,4 @@
-from .agent import create_digest_agent
+from .research_agent import create_research_agent
 from .tool_state import DigestStateManager
 
-__all__ = ["DigestStateManager", "create_digest_agent"]
+__all__ = ["DigestStateManager", "create_research_agent"]

@@ -23,7 +23,6 @@ dependencies = [
     "youtube-transcript-api>=1.2.2",
     "yt-dlp>=2025.10.22",
     "boto3-stubs~=1.42.63",
-    "black>=26.3.0",
 ]
 
 [project.optional-dependencies]
@@ -33,7 +32,7 @@ dev = [
     "pytest-cov>=4.1.0",
     "aws-cdk-lib>=2.180.0",
     "constructs>=10.0.0",
-    "black>=23.12.0",
+    "black>=26.3.0",
     "mypy>=1.7.0",
     "ruff>=0.1.9",
     "types-PyYAML>=6.0",
@@ -45,7 +44,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["shared*", "collectors*", "pipeline*", "agent*", "output*"]
+include = ["shared*", "collectors*", "pipeline*", "agent*", "agent_runtime*", "output*", "lambda_handlers*"]
 exclude = ["tests*", "references*", "config*"]
 
 [tool.black]
@@ -79,9 +78,7 @@ ignore = ["E501", "B008", "C901", "UP042", "UP046"]
 # Entrypoint scripts mutate sys.path before importing local packages.
 # C408: diagram generator uses dict(...) kwargs-builder style intentionally.
 "scripts/*.py" = ["E402", "C408"]
-"slack_agent.py" = ["E402"]
-# W291: trailing whitespace is intentional inside multi-line prompt string literals.
-"agent/agent.py" = ["W291"]
+"research_cli.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.12"

@@ -1,6 +1,6 @@
 # OmniSummary
 
-Proactive AI/ML daily digest system that collects content from multiple sources, ranks by importance using LLM, generates editorial-style digests, and delivers via Slack and Threads. Includes a follow-up agent for deep-dive analysis on specific items.
+Proactive AI/ML daily digest system that collects content from multiple sources, ranks by importance using LLM, generates editorial-style digests, and delivers via Slack and Threads. Includes a Slack-triggered deep-research agent that researches a topic across the web, papers, and community, then posts a persona-voiced, cited report.
 
 ## Features
 
@@ -8,7 +8,7 @@ Proactive AI/ML daily digest system that collects content from multiple sources,
 - **LLM-powered ranking**: Claude Opus 4.8, multi-axis evaluation with source-slot + per-origin diversity caps
 - **Editorial digest**: Claude Sonnet 4.6 Korean editorial with cross-day trend tracking
 - **Multi-channel delivery**: structured digest rendered per channel — Slack (Block Kit) and Threads (image root + flat reply chain), each independently toggleable
-- **Follow-up agent**: autonomous Slack-based Strands agent — freely composes analysis, paper/community/news search, cross-day recall, and free-form image generation (1-page slide / comic / diagram / infographic via OpenAI gpt-image-2)
+- **Deep-research agent**: autonomous Slack-triggered Strands agent — rewrites the query, researches across web/papers/community/blogs, writes a persona-voiced cited report (same narrator as the digest), and posts to Slack (default) or Threads (on explicit request), attaching the source article's OG image
 - **AgentCore-centric**: digest state persisted in Bedrock AgentCore Memory; agent runs on AgentCore Runtime
 - **Operational excellence**: per-source health checks → SNS email alerts, structured JSON logging with correlation IDs, CloudWatch alarms, AWS WAF on the API
 - **AWS deployment**: Lambda + EventBridge cron + Bedrock AgentCore (Runtime + Memory) + ECS (RSSHub)
@@ -93,10 +93,9 @@ SLACK_CHANNEL_ID=C...              # target channel for the digest
 TAVILY_API_KEY=tvly-...            # web_search collector + agent community/news search
 
 # --- Required only for the listed feature ---
-SLACK_APP_TOKEN=xapp-...           # Socket Mode — only for `slack_agent.py` (local agent)
-SLACK_SIGNING_SECRET=...           # only for AWS Slack-events API Gateway path
+SLACK_SIGNING_SECRET=...           # Slack-events API Gateway path (verifies the deep-research agent's inbound events)
 YOUTUBE_API_KEY=AIza...            # YouTube collector (without it: RSS fallback, no transcripts)
-OPENAI_API_KEY=sk-...              # daily visual + agent make_visual (without it: no images)
+OPENAI_API_KEY=sk-...              # daily visual gpt-image render (without it: no daily visual)
 THREADS_ACCESS_TOKEN=...           # Threads delivery (60-day token; auto-refreshed to SSM in AWS)
 THREADS_USER_ID=...                # Threads target user id
 ALERT_EMAIL=you@example.com        # source-health SNS email alerts (AWS)
@@ -159,11 +158,9 @@ uv run python main.py --dry-run --sources rss reddit
 # Run with Slack delivery
 uv run python main.py
 
-# Interactive agent mode
-uv run python main.py --dry-run --sources rss --interactive
-
-# Slack agent (Socket Mode)
-uv run python slack_agent.py
+# Deep-research agent (local): research a topic, print the rendered report instead of posting
+uv run python research_cli.py "<topic>" --dry-run
+uv run python research_cli.py "<topic>" --channel both --dry-run   # preview Slack + Threads
 
 # Local→S3 sync for sources that block datacenter IPs (X/RSSHub + YouTube transcripts)
 ./scripts/sync_all_to_s3.sh                  # runs both; one failing won't block the other
@@ -179,7 +176,6 @@ uv run python scripts/sync_youtube_to_s3.py  # YouTube (with transcripts) only
 | `--dry-run` | Skip Slack delivery, print to console |
 | `--top-n 5` | Override number of items to select |
 | `--date 2026-03-28` | Set digest date (default: today KST) |
-| `--interactive` | Enter agent chat mode after digest |
 
 ## Pipeline Stages
 
@@ -226,18 +222,21 @@ Each collector runs async in parallel. Lookback window is configurable per sourc
 
 `DailyVisualMaker` (best-effort, async off the digest critical path) illustrates the **headline** (`items[0]`, the lead's story) so the image, lead, and text stay in sync. The editor briefs *how* to draw it, preferring light/news topics over deep-tech and choosing the orientation freely per image, then `VisualGenerator` renders it via OpenAI gpt-image-2 and posts to Slack (and Threads when enabled).
 
-### 7. Follow-up Agent
+### 7. Deep-Research Agent
 
-Autonomous Strands Agent (on Bedrock AgentCore Runtime, reads digest state from AgentCore Memory). It freely composes these 6 single-purpose tools to satisfy a request — e.g. "turn item 1 into a 1-page slide" → `get_detail` → optional `search_*` for grounding → `make_visual`:
+Autonomous Strands Agent (on Bedrock AgentCore Runtime), triggered by a Slack mention with an AI/ML topic. It rewrites the query, researches across sources, writes a cited Korean report in the digest's narrator voice, and delivers it to Slack (default) or Threads (on explicit request), attaching the best source's OG image. It freely composes these 7 single-purpose tools — e.g. "diffusion LLM 최신 동향" → `web_search`/`search_papers`/`community_search` → `read_url` → `attach_image` → `deliver_report`:
 
 | Tool | Function |
 |------|----------|
-| `get_detail(item_number)` | Full item analysis with ranking metadata |
+| `web_search(query, recency)` | Tavily open web; `recency="news"` for recent news |
+| `community_search(query)` | Tavily (Reddit, X, HN, Substack) |
 | `search_papers(query)` | Semantic Scholar API |
-| `search_community(query)` | Tavily (Reddit, X, HN, Substack) |
-| `search_related_news(query)` | Tavily (general news) |
+| `read_url(url)` | Fetch + extract a primary source's full text (Tavily extract) |
 | `recall_trends(query)` | Keyword match over the structured `trends.json` (active/cooling), momentum-ranked |
-| `make_visual(instruction, item_number, context)` | Free-form image from a natural-language instruction (1-page slide / comic / diagram / infographic) → posted to Slack via OpenAI gpt-image-2 |
+| `attach_image(source_url)` | Download a source's OG image and stage it for delivery |
+| `deliver_report(report, channel)` | Render + post the report — Slack (default) or Threads |
+
+Delivery is channel-aware in code (not prompt rules): Slack via Block Kit (`render_agent_blocks`), Threads via a root + flat reply chain ≤500 chars (`render_threads_research`). If the agent finishes without delivering, the runtime posts the report to Slack as a fallback.
 
 ## AWS Deployment
 
@@ -259,7 +258,7 @@ Resources created:
 - **Lambda** (Docker): Threads token refresh (~50-day EventBridge schedule, writes the renewed 60-day token back to SSM)
 - **API Gateway** + **AWS WAFv2**: `POST /slack/events` with rate-limit + managed rules + throttling
 - **EventBridge**: Daily digest cron (config-driven hour/minute) + Threads token-refresh schedule
-- **Bedrock AgentCore**: Runtime (follow-up agent, arm64) + **Memory** (digest snapshot for the follow-up agent)
+- **Bedrock AgentCore**: Runtime (deep-research agent, arm64) + **Memory** (digest snapshot, read by `recall_trends`)
 - **ECS Fargate**: RSSHub container
 - **S3**: trends + RSSHub sync data + Threads image hosting
 - **DynamoDB**: Slack event deduplication
@@ -328,16 +327,16 @@ with X cookies) up for the X sync; YouTube needs `YOUTUBE_API_KEY` in `.env`. Lo
 
 ```
 omnisummary/
-├── main.py                     # CLI entry point
-├── slack_agent.py              # Slack Socket Mode agent
+├── main.py                     # CLI entry point (digest pipeline)
+├── research_cli.py             # Deep-research agent local runner (--dry-run)
 ├── Dockerfile                  # Lambda (amd64)
 ├── Dockerfile.agentcore        # AgentCore (arm64)
 ├── collectors/                 # Source collectors
 ├── pipeline/                   # Aggregator, Ranker, DigestGenerator, TrendTracker, DailyVisual
-├── agent/                      # Strands agent + tools
-├── agent_runtime/              # Bedrock AgentCore HTTP server
-├── shared/                     # Config, models, formatting, prompts, state store, AgentCore memory
-├── output/                     # Per-channel renderers + Slack & Threads handlers
+├── agent/                      # Deep-research Strands agent (research_agent + research_tools), VisualGenerator, DigestStateManager
+├── agent_runtime/              # Bedrock AgentCore HTTP server (deep-research entrypoint)
+├── shared/                     # Config, models, formatting, prompts, state store, AgentCore memory, research (search), media (OG image)
+├── output/                     # Per-channel renderers + Slack & Threads handlers + delivery routing
 ├── lambda_handlers/            # AWS Lambda handlers (digest, slack events, daily visual, threads refresh)
 ├── infrastructure/             # CDK stacks
 ├── scripts/                    # Deploy, RSSHub sync

@@ -97,8 +97,8 @@ class AgentCoreMemoryStore(MemoryStore):
         self._client = boto3.client("bedrock-agentcore", region_name=region)
 
     MAX_EVENT_TEXT = 100_000
-    # When even the ranked set overflows, cap each item's stored body. The follow-up
-    # agent re-truncates to ~2000 tokens via get_detail, so this loses nothing it uses.
+    # When even the ranked set overflows, cap each item's stored body. The digest snapshot
+    # only needs enough text for cross-day dedup/recall, so a per-item cap loses nothing used.
     RANKED_TEXT_CAP = 12_000
 
     def put_digest(self, digest_date: str, state: dict[str, Any]) -> None:

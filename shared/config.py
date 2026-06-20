@@ -8,6 +8,24 @@ from pydantic import BaseModel, Field
 
 from .constants import RSSHUB_PORT, LanguageModelId
 
+# Korean prose conventions shared by EVERY Korean-output surface (daily digest + deep research,
+# Slack + Threads). Kept in one place so the two features can't drift apart on register, anti-
+# translationese, or the colon-enumeration ban. Composed into digest_language_rules and the
+# research agent's <language> block.
+KOREAN_STYLE_RULES: str = (
+    "- Write natural, idiomatic Korean — NOT translationese. Avoid stiff translated-English "
+    "patterns: drop redundant pronouns (그것은/이것은), avoid overusing passive voice and "
+    "'~에 대해/~에 의해/~을 통해', don't calque English connectives. Read each sentence aloud — "
+    "if it sounds like a machine translation, rewrite it the way a Korean tech writer would say it.\n"
+    "- Use the plain declarative '~다' columnist register consistently (e.g. '~했다', '~이다'); "
+    "NEVER the honorific '~입니다/~습니다'. Do not mix the two registers.\n"
+    "- Do NOT end a sentence with a colon to introduce an enumeration ('핵심은 세 가지다: ...'); "
+    "Korean prose does not terminate sentences this way. Either finish the sentence and start a "
+    "new one ('핵심은 세 가지다. 첫째는 ...'), or fold the list into a single flowing sentence "
+    "('하드웨어 안전 장치, 동결된 보상 함수, 가동률·토큰 소비율을 묶은 보상 설계가 핵심이다'). "
+    "Keep colons out of mid-prose entirely."
+)
+
 
 class BaseCollectorConfig(BaseModel):
     enabled: bool = True
@@ -118,17 +136,7 @@ class PipelineConfig(BaseModel):
         "- General words MUST be Korean: practitioner → 실무자, implication → 시사점, "
         "release → 출시/공개, breakthrough → 돌파구, approach → 접근법, ecosystem → 생태계.\n"
         "- If the original item title is in English, translate it to Korean for the display text.\n"
-        "- Write natural, idiomatic Korean — NOT translationese. Avoid stiff translated-English "
-        "patterns: drop redundant pronouns (그것은/이것은), avoid overusing passive voice and "
-        "'~에 대해/~에 의해/~을 통해', don't calque English connectives. Read each sentence aloud — "
-        "if it sounds like a machine translation, rewrite it the way a Korean tech writer would say it.\n"
-        "- Use the plain declarative '~다' columnist register consistently (e.g. '~했다', '~이다'); "
-        "NEVER the honorific '~입니다/~습니다'. Do not mix the two registers.\n"
-        "- Do NOT end a sentence with a colon to introduce an enumeration ('핵심은 세 가지다: ...'); "
-        "Korean prose does not terminate sentences this way. Either finish the sentence and start a "
-        "new one ('핵심은 세 가지다. 첫째는 ...'), or fold the list into a single flowing sentence "
-        "('하드웨어 안전 장치, 동결된 보상 함수, 가동률·토큰 소비율을 묶은 보상 설계가 핵심이다'). "
-        "Keep colons out of mid-prose entirely."
+        + KOREAN_STYLE_RULES
     )
     # Audience/domain the ranking and digest prompts target. Configurable so the pipeline can
     # be reused across domains without forking the prompts.
@@ -300,12 +308,10 @@ class PipelineConfig(BaseModel):
 
 class AgentConfig(BaseModel):
     model_id: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
-    enable_interactive: bool = True
     community_search_domains: list[str] = Field(
         default_factory=lambda: ["twitter.com", "x.com", "reddit.com", "news.ycombinator.com", "substack.com"]
     )
     search_result_limit: int = Field(default=5, ge=1)
-    detail_max_tokens: int = Field(default=2000, ge=1)
     search_content_preview_chars: int = Field(default=300, ge=1)
     search_request_timeout: int = Field(default=30, ge=1)
     search_max_retries: int = Field(default=3, ge=1)
@@ -316,6 +322,22 @@ class AgentConfig(BaseModel):
     boto_read_timeout: int = Field(default=300, ge=1)
     boto_connect_timeout: int = Field(default=60, ge=1)
     boto_max_attempts: int = Field(default=3, ge=1)
+    # Deep-research soft knobs the agent follows as guidance (interpolated into its prompt, so
+    # editing these actually changes behavior — they are not enforced loop bounds).
+    research_breadth: int = Field(default=4, ge=1)
+    research_max_iterations: int = Field(default=3, ge=1)
+    research_slack_target_words: int = Field(default=1500, ge=200)
+    # Hard cap on the number of Threads posts (root + replies) a research report may become.
+    # Code-enforced so a too-long report can't fan out into dozens of public posts even if the
+    # agent ignores the prompt's "write a short Threads version" instruction.
+    research_max_threads_posts: int = Field(default=8, ge=1)
+    # Hard cap on a single page's extracted text (read_url tool).
+    research_content_cap_chars: int = Field(default=50000, ge=1000)
+    # OG-image attachment (deep-research delivery only).
+    og_image_timeout_sec: int = Field(default=10, ge=1)
+    og_image_max_bytes: int = Field(default=8_000_000, ge=10_000)
+    # Cap how many images one research run may stage, bounding per-invocation memory.
+    research_max_staged_images: int = Field(default=4, ge=1)
 
 
 class SlackConfig(BaseModel):

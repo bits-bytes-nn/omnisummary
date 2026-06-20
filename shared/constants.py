@@ -67,6 +67,11 @@ TWITTER_PLATFORMS: tuple[str, ...] = ("x", "twitter")
 # Single source of truth so config and infrastructure can't drift.
 RSSHUB_PORT: int = 1200
 
+# State-store key for the cross-day trends artifact, read by both the digest pipeline
+# (TrendTracker) and the research agent (recall_trends). A shared-core artifact, so its key
+# lives in the core rather than in either consuming workload.
+TRENDS_KEY: str = "trends.json"
+
 # Character limits applied to titles/queries when written to log lines. Centralized so
 # log verbosity can be tuned in one place instead of scattered slice literals.
 LOGGING_TRUNCATION_CHARS: dict[str, int] = {

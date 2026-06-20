@@ -344,8 +344,8 @@ class TestDailyVisualMaker:
             {"source": "community", "query": "reactions"},
             {"source": "news", "query": "launch"},
         ]
-        with patch("agent.agent_tools._search_papers", new=AsyncMock(return_value="PAPERS")) as papers:
-            with patch("agent.agent_tools._tavily_search", new=AsyncMock(side_effect=["COMMUNITY", "NEWS"])) as tav:
+        with patch("shared.research._search_papers", new=AsyncMock(return_value="PAPERS")) as papers:
+            with patch("shared.research._tavily_search", new=AsyncMock(side_effect=["COMMUNITY", "NEWS"])) as tav:
                 context = await maker._gather_context(research)
 
         assert "PAPERS" in context and "COMMUNITY" in context and "NEWS" in context
@@ -364,8 +364,8 @@ class TestDailyVisualMaker:
         # A backend that raises must be skipped, not abort the whole gather.
         maker = _maker()
         research = [{"source": "papers", "query": "q1"}, {"source": "news", "query": "q2"}]
-        with patch("agent.agent_tools._search_papers", new=AsyncMock(side_effect=RuntimeError("boom"))):
-            with patch("agent.agent_tools._tavily_search", new=AsyncMock(return_value="NEWS")):
+        with patch("shared.research._search_papers", new=AsyncMock(side_effect=RuntimeError("boom"))):
+            with patch("shared.research._tavily_search", new=AsyncMock(return_value="NEWS")):
                 context = await maker._gather_context(research)
         assert context == "NEWS"
 

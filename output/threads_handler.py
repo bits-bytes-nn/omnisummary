@@ -25,11 +25,12 @@ THREADS_REPLY_RETRY_BACKOFF_SEC = 15
 THREADS_IMAGE_URL_TTL_SEC = 900
 
 
-def _upload_image_for_hosting(image_bytes: bytes, bucket: str, key: str) -> str:
-    """Threads can only fetch images from a public URL (no byte upload), so host the
-    PNG on S3 and hand back a short-lived presigned URL Meta can cURL once."""
+def _upload_image_for_hosting(image_bytes: bytes, bucket: str, key: str, content_type: str = "image/png") -> str:
+    """Threads can only fetch images from a public URL (no byte upload), so host the image on
+    S3 and hand back a short-lived presigned URL Meta can cURL once. The ContentType must match
+    the real image type or Meta may reject/mis-render it."""
     s3 = boto3.client("s3")
-    s3.put_object(Bucket=bucket, Key=key, Body=image_bytes, ContentType="image/png")
+    s3.put_object(Bucket=bucket, Key=key, Body=image_bytes, ContentType=content_type)
     return s3.generate_presigned_url(
         "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=THREADS_IMAGE_URL_TTL_SEC
     )
@@ -107,6 +108,7 @@ async def post_to_threads(
     image_bytes: bytes | None = None,
     image_bucket: str = "",
     image_key: str = "",
+    image_content_type: str = "image/png",
     request_timeout: int = 60,
 ) -> bool:
     """Post a digest to Threads as a root post (image + lead) followed by a reply chain — one
@@ -122,7 +124,9 @@ async def post_to_threads(
     image_url = ""
     if image_bytes and image_bucket and image_key:
         try:
-            image_url = await asyncio.to_thread(_upload_image_for_hosting, image_bytes, image_bucket, image_key)
+            image_url = await asyncio.to_thread(
+                _upload_image_for_hosting, image_bytes, image_bucket, image_key, image_content_type
+            )
         except Exception as e:
             logger.warning("Failed to host Threads image on S3, posting text-only: %s", e)
 

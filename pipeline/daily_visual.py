@@ -289,7 +289,7 @@ class DailyVisualMaker:
         return "\n\n".join(blocks)
 
     async def _run_research_step(self, step: dict) -> str:
-        from agent.agent_tools import _search_papers, _tavily_search
+        from shared.research import _search_papers, _tavily_search
 
         query = step["query"]
         source = str(step.get("source", "news")).lower()
