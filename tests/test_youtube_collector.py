@@ -74,6 +74,56 @@ class TestApiPath:
         assert item.metadata["view_count"] == 1234
 
     @pytest.mark.asyncio
+    async def test_keeps_fresh_video_listed_below_a_stale_one(self, monkeypatch):
+        # Regression: the uploads playlist is NOT reliably newest-first. With max_per_channel=1,
+        # taking only the top row dropped a fresh in-window video that sat below a stale one
+        # (the Dwarkesh miss). Over-fetch + sort-by-date must surface the fresh video instead.
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config(max_videos_per_channel=1))
+
+        # Playlist order: STALE first (out of the 24h window), FRESH second (in window).
+        videos_payload = {
+            "items": [
+                {
+                    "id": "stale000001",
+                    "snippet": {
+                        "title": "Old Pinned Talk",
+                        "description": "d",
+                        "channelTitle": "Ch",
+                        "publishedAt": "2026-05-01T00:00:00Z",
+                    },
+                    "statistics": {"viewCount": "5"},
+                },
+                {
+                    "id": "fresh000001",
+                    "snippet": {
+                        "title": "Brand New Episode",
+                        "description": "d",
+                        "channelTitle": "Ch",
+                        "publishedAt": "2026-06-02T18:00:00Z",
+                    },
+                    "statistics": {"viewCount": "9"},
+                },
+            ]
+        }
+        client = AsyncMock()
+        client.get.side_effect = [
+            _resp(200, _playlist_payload("stale000001", "fresh000001")),
+            _resp(200, videos_payload),
+        ]
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=client)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
+            with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
+                with patch.object(collector, "_get_transcript", return_value=""):
+                    items = await collector.collect()
+
+        assert len(items) == 1
+        assert items[0].item_id == "fresh000001"  # the fresh one, not the stale top-of-playlist row
+
+    @pytest.mark.asyncio
     async def test_non_200_returns_empty(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
         collector = YouTubeCollector(_config())

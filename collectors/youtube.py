@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 
 import feedparser
 import httpx
@@ -21,6 +21,21 @@ YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
 _CHANNEL_ID_PATTERN = re.compile(r'"channelId":"(UC[a-zA-Z0-9_-]{22})"')
 # Extract the @handle from a channel URL (e.g. https://www.youtube.com/@AndrejKarpathy).
 _HANDLE_PATTERN = re.compile(r"/@([A-Za-z0-9_.-]+)")
+# Fetch this many recent uploads per channel, THEN filter to the lookback window and keep the
+# latest max_videos_per_channel. The uploads playlist / RSS feed is NOT reliably newest-first
+# (a scheduled/premiered video can sit below older ones), so taking only the top max_per_channel
+# rows would drop a fresh video that ranks below a stale one — which is why low-cadence channels
+# like Dwarkesh kept getting missed. Over-fetch + sort-by-date fixes that.
+_CHANNEL_FETCH_DEPTH = 15
+
+
+def _latest_within_window(items: list[CollectedItem], limit: int) -> list[CollectedItem]:
+    """From the over-fetched per-channel items (already filtered to the lookback window), keep the
+    `limit` most recent by published_at. Items with no published_at sort last (a missing date can't
+    out-rank a real recent one). Decouples 'how many we look at' from 'how many we keep'."""
+    _floor = datetime.min.replace(tzinfo=UTC)
+    ordered = sorted(items, key=lambda i: i.published_at or _floor, reverse=True)
+    return ordered[:limit]
 
 
 class YouTubeCollector(BaseCollector):
@@ -93,7 +108,7 @@ class YouTubeCollector(BaseCollector):
                     params={
                         "part": "snippet",
                         "playlistId": uploads_playlist,
-                        "maxResults": self.config.max_videos_per_channel,
+                        "maxResults": _CHANNEL_FETCH_DEPTH,
                         "key": self.api_key,
                     },
                 ),
@@ -145,6 +160,10 @@ class YouTubeCollector(BaseCollector):
                 logger.warning("YouTube videos details for '%s' returned malformed JSON", channel_url, exc_info=True)
                 return []
 
+            # Build window-filtered records WITHOUT transcripts first; the playlist isn't reliably
+            # newest-first, so collect every in-window video, then keep the latest N and fetch
+            # transcripts only for those (transcript calls are the expensive part).
+            in_window: list[CollectedItem] = []
             for video in details_data.get("items", []):
                 try:
                     snippet = video["snippet"]
@@ -158,16 +177,13 @@ class YouTubeCollector(BaseCollector):
                     if published_at and published_at < cutoff:
                         continue
 
-                    transcript = await self._fetch_transcript(video_id)
-                    text = transcript or snippet.get("description", "")
-
-                    items.append(
+                    in_window.append(
                         CollectedItem(
                             item_id=video_id,
                             source_type=SourceType.YOUTUBE,
                             title=snippet.get("title", ""),
                             url=f"https://www.youtube.com/watch?v={video_id}",
-                            text=text,
+                            text=snippet.get("description", ""),
                             author=snippet.get("channelTitle", ""),
                             published_at=published_at,
                             metadata={
@@ -176,9 +192,18 @@ class YouTubeCollector(BaseCollector):
                             },
                         )
                     )
-                    logger.info("Collected YouTube video: '%s'", snippet.get("title", ""))
                 except (KeyError, ValueError, TypeError, AttributeError):
                     logger.warning("Failed to process YouTube video '%s'", video.get("id", ""), exc_info=True)
+
+            # Keep the latest N within the window, THEN fetch transcripts only for those.
+            kept = _latest_within_window(in_window, self.config.max_videos_per_channel)
+            for item in kept:
+                video_id = item.url.rsplit("=", 1)[-1]
+                transcript = await self._fetch_transcript(video_id)
+                if transcript:
+                    item.text = transcript
+                logger.info("Collected YouTube video: '%s'", item.title)
+                items.append(item)
 
         return items
 
@@ -192,9 +217,12 @@ class YouTubeCollector(BaseCollector):
         feed = await asyncio.to_thread(feedparser.parse, get_proxied_url(rss_url))
 
         cutoff = cutoff_datetime(self.config.lookback_hours, self.config.reference_time)
-        items: list[CollectedItem] = []
 
-        for entry in feed.entries[: self.config.max_videos_per_channel]:
+        # The RSS feed isn't reliably newest-first either, so scan a fixed depth of entries,
+        # collect every in-window one (no transcript yet), then keep the latest N and fetch
+        # transcripts only for those — same over-fetch+sort approach as the API path.
+        in_window: list[CollectedItem] = []
+        for entry in feed.entries[:_CHANNEL_FETCH_DEPTH]:
             try:
                 video_id = entry.get("yt_videoid", "")
                 if not video_id:
@@ -209,24 +237,29 @@ class YouTubeCollector(BaseCollector):
                 if published_at and published_at < cutoff:
                     continue
 
-                transcript = await self._fetch_transcript(video_id)
-                text = transcript or entry.get("summary", "")
-
-                items.append(
+                in_window.append(
                     CollectedItem(
                         item_id=video_id,
                         source_type=SourceType.YOUTUBE,
                         title=entry.get("title", ""),
                         url=f"https://www.youtube.com/watch?v={video_id}",
-                        text=text,
+                        text=entry.get("summary", ""),
                         author=entry.get("author", ""),
                         published_at=published_at,
                         metadata={"channel_url": channel_url},
                     )
                 )
-                logger.info("Collected YouTube video: '%s'", entry.get("title", ""))
             except (KeyError, ValueError, TypeError, AttributeError):
                 logger.warning("Failed to process YouTube RSS entry", exc_info=True)
+
+        items: list[CollectedItem] = []
+        for item in _latest_within_window(in_window, self.config.max_videos_per_channel):
+            video_id = item.url.rsplit("=", 1)[-1]
+            transcript = await self._fetch_transcript(video_id)
+            if transcript:
+                item.text = transcript
+            logger.info("Collected YouTube video: '%s'", item.title)
+            items.append(item)
 
         return items
 
