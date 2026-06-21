@@ -276,7 +276,11 @@ class PipelineConfig(BaseModel):
     )
     # Default aesthetic injected into the image-generation prompt. Configurable so the visual
     # pipeline's look can be retuned (or reused for non-AI domains) without editing the prompt.
-    visual_synopsis_style_aesthetic: str = "clean modern style"
+    visual_synopsis_style_aesthetic: str = (
+        "clean, modern, polished illustration with sound craftsmanship — correct proportions and "
+        "perspective, coherent anatomy for any figures, balanced composition, and a deliberate, "
+        "harmonious color palette; aim for a professionally art-directed look, never sloppy or distorted"
+    )
     # Appended to the instruction when the image model's moderation blocks the first render,
     # to soften tone before a single retry. Configurable so ops can retune the safe-for-work
     # guidance without editing code.
@@ -302,7 +306,13 @@ class PipelineConfig(BaseModel):
         "green over a cream tee; loose brown corduroy pants; mismatched cozy socks; and a battered "
         "notebook of scribbled predictions with exactly one circled in red. Warm, bright, charming "
         "— never a dark-room hacker. He reacts to today's story (wonder, a skeptical squint, "
-        "fired-up conviction) as a witness inside the scene, not as a replacement for depicting it."
+        "fired-up conviction) as a witness inside the scene, not as a replacement for depicting it. "
+        "RENDER HIM WELL: correct, natural human anatomy and proportions — a normal head-to-body "
+        "ratio, properly shaped hands with five fingers, arms and legs at believable lengths and "
+        "angles, a balanced stance with weight that reads as physically real. No distorted limbs, "
+        "no oversized head, no melted or extra fingers, no broken perspective. He should look like a "
+        "polished, professionally-drawn character — appealing and anatomically sound — in whatever "
+        "art style the day calls for."
     )
 
 
