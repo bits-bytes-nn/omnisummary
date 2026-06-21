@@ -21,8 +21,8 @@ KOREAN_STYLE_RULES: str = (
     "NEVER the honorific '~입니다/~습니다'. Do not mix the two registers.\n"
     "- Do NOT end a sentence with a colon to introduce an enumeration ('핵심은 세 가지다: ...'); "
     "Korean prose does not terminate sentences this way. Either finish the sentence and start a "
-    "new one ('핵심은 세 가지다. 첫째는 ...'), or fold the list into a single flowing sentence "
-    "('하드웨어 안전 장치, 동결된 보상 함수, 가동률·토큰 소비율을 묶은 보상 설계가 핵심이다'). "
+    "new one ('핵심은 세 가지다. 첫째는 ...'), or fold the items into a single flowing sentence "
+    "(list them with '·' or commas inside one clause that ends in a normal verb). "
     "Keep colons out of mid-prose entirely."
 )
 
@@ -167,7 +167,7 @@ class PipelineConfig(BaseModel):
         "mood — and not every item is a debunking.\n"
         "OPTIONAL SEASONING (each at most once per digest, only if it lands naturally — skip when "
         "forced): a one-line statement of the creed on a genuinely huge day; a wry scientific or "
-        "sci-fi aside on an ordinary detail; a first-person flash ('솔직히', '내기 걸어도 좋다'). "
+        "sci-fi aside on an ordinary detail; a brief first-person flash of candor or conviction. "
         "These are rare spices, never the main course; most lines carry none.\n"
         "CRAFT — Spice is in the FRAMING, never the facts: sharpen the angle and contrast, but never "
         "state an inference as a reported fact; mark a sharp reading as judgment ('~로 읽힌다', "
@@ -330,7 +330,7 @@ class AgentConfig(BaseModel):
     # Hard cap on the number of Threads posts (root + replies) a research report may become.
     # Code-enforced so a too-long report can't fan out into dozens of public posts even if the
     # agent ignores the prompt's "write a short Threads version" instruction.
-    research_max_threads_posts: int = Field(default=8, ge=1)
+    research_max_threads_posts: int = Field(default=6, ge=1)
     # Hard cap on a single page's extracted text (read_url tool).
     research_content_cap_chars: int = Field(default=50000, ge=1000)
     # OG-image attachment (deep-research delivery only).

@@ -146,14 +146,23 @@ class TestInvoke:
         send.assert_called_once()
         emit.assert_called_once()  # the EMF error metric is the only alarmable signal
 
-    def test_slack_fallback_fires_when_only_threads_delivered(self):
-        # Threads succeeded but Slack never did → Slack is the always-available channel, so the
-        # runtime must still post the report text there.
+    def test_no_slack_fallback_when_threads_only_delivered(self):
+        # A Threads-only request that succeeded on Threads must NOT also dump the report into
+        # Slack — the fallback fires only when NOTHING was delivered.
         def fake_agent_call(prompt):
             _request_delivery.get().delivered_channels.add("threads")
             return "report text"
 
         agent = MagicMock(side_effect=fake_agent_call)
+        with patch.object(app_module, "create_research_agent", return_value=agent):
+            with patch.object(app_module, "_send_slack_message") as send:
+                app_module.invoke({"prompt": "p", "channel_id": "C"})
+        send.assert_not_called()
+
+    def test_slack_fallback_fires_when_nothing_delivered(self):
+        # The agent never called deliver_report → fallback posts the report to Slack so the user
+        # always gets something.
+        agent = self._agent("report text")
         with patch.object(app_module, "create_research_agent", return_value=agent):
             with patch.object(app_module, "_send_slack_message") as send:
                 app_module.invoke({"prompt": "p", "channel_id": "C"})

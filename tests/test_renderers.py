@@ -274,11 +274,16 @@ class TestThreadsResearch:
         assert len(replies) == 1
         assert replies[0].startswith("2/2")
 
-    def test_oversize_delimited_post_is_resplit(self):
-        # An agent-delimited post over 500 chars is re-split so the cap holds.
-        big = "문장이다. " * 120  # >500 chars, multiple sentences
-        root, replies = render_threads_research(f"1/1 {big}\n---\n끝.", max_posts=8)
+    def test_oversize_delimited_post_is_trimmed_to_one(self):
+        # An agent-delimited post over 500 chars is TRIMMED to one post (heading kept), not fanned
+        # out — so the 'N/M 소제목' line never orphans and the post count matches the agent's.
+        heading = "3/4 마스터카드의 전략"
+        big = heading + "\n\n" + "문장이다. " * 120  # >500 chars, multiple body sentences
+        root, replies = render_threads_research(f"{big}\n---\n4/4 끝이다.", max_posts=8)
+        assert root.startswith(heading)  # heading stays attached to its body, not orphaned
         assert len(root) <= THREADS_MAX_POST_CHARS
+        assert len(replies) == 1  # exactly the agent's 2 posts → 1 root + 1 reply, no fan-out
+        assert replies[0].startswith("4/4")
         assert all(len(r) <= THREADS_MAX_POST_CHARS for r in replies)
 
     def test_long_sentence_preserves_trailing_url(self):

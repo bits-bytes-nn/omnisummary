@@ -150,20 +150,20 @@ def _post_ack(channel: str, thread_ts: str) -> None:
     user gets feedback during the multi-minute run. Mirrors scholar-lens' ack format (an intent
     line + a muted hourglass hint). Best-effort: never blocks the runtime invocation."""
     blocks = [
-        {"type": "section", "text": {"type": "mrkdwn", "text": ":satellite: *딥 리서치*를 시작합니다."}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": ":satellite: *Deep research* started."}},
         {
             "type": "context",
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": ":hourglass_flowing_sand: 자료를 모으고 정리하는 중입니다 — "
-                    "완료되면 이 스레드에 결과를 올려 드릴게요.",
+                    "text": ":hourglass_flowing_sand: Gathering and synthesizing sources — "
+                    "I'll post the result in this thread when it's ready.",
                 }
             ],
         },
     ]
     try:
-        _slack_post_message(channel, "딥 리서치를 시작합니다.", blocks, thread_ts)
+        _slack_post_message(channel, "Deep research started.", blocks, thread_ts)
     except Exception as e:
         logger.error("Failed to post ack message: %s", e)
 
@@ -172,7 +172,10 @@ def _post_fallback(channel: str, thread_ts: str) -> None:
     # Mirror the family's Slack error convention (see scholar-lens notifier/bot): a header line
     # + a muted retry hint, rather than one bare warning sentence.
     blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": ":x: I couldn't process that request", "emoji": True}},
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": ":x: I couldn't process that request", "emoji": True},
+        },
         {
             "type": "context",
             "elements": [

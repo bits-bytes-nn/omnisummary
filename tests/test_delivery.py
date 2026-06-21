@@ -17,14 +17,18 @@ def _img(content_type="image/jpeg"):
     )
 
 
-class TestImageCaption:
-    def test_uses_alt_and_source(self):
-        cap = dlv._image_caption(_img())
-        assert "A Title" in cap and "https://src/article" in cap
-
-    def test_blank_alt_falls_back(self):
-        cap = dlv._image_caption(ImageAsset(data=b"x", source_url="https://s", image_url="https://i", alt=""))
-        assert "관련 이미지" in cap
+class TestDeliverSlackImages:
+    @pytest.mark.asyncio
+    async def test_image_uploaded_without_caption(self):
+        # The OG image is posted as a bare file upload — no "이미지: <url>" caption text.
+        d = DeliveryContext(channel_id="C9", staged_images=[_img()])
+        client = MagicMock()
+        client.chat_postMessage = AsyncMock()
+        with patch("output.slack_handler.send_image_to_slack", new=AsyncMock()) as si:
+            with patch.object(dlv, "AsyncWebClient", return_value=client):
+                with patch.object(dlv, "resolve_secret", return_value="xoxb"):
+                    await dlv.deliver_research_report("본문이다.", channel="slack", delivery=d)
+        assert "comment" not in si.await_args.kwargs
 
 
 class TestDryRun:

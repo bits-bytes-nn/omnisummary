@@ -345,14 +345,35 @@ def _pack_by_sentence(text: str) -> list[str]:
     return posts
 
 
-def _split_oversize_post(post: str) -> list[str]:
-    """Safety net: a single agent-delimited post that exceeds 500 chars is re-split at sentence
-    boundaries (preserving trailing citation URLs) so the Threads cap is never violated."""
+def _trim_oversize_post(post: str) -> str:
+    """Safety net: a single agent-delimited post over 500 chars is TRIMMED down to ONE post, not
+    fanned out into several. Fanning out (the old behavior) flushed on the blank line under the
+    heading, orphaning the 'N/M 소제목' line into its own post and scattering the body across
+    unnumbered posts — the choppy mess this guards against. Instead: keep the first line (the
+    'N/M 소제목' heading) and its blank line, then drop trailing body sentences from the end until
+    the whole post fits, preserving a trailing citation URL on the last kept sentence."""
     if len(post) <= THREADS_MAX_POST_CHARS:
-        return [post]
-    logger.info("Threads research post exceeds %d chars, re-splitting", THREADS_MAX_POST_CHARS)
-    pieces = _pack_by_sentence(post)
-    return pieces or [_trim_long_sentence(post, THREADS_MAX_POST_CHARS)]
+        return post
+    logger.info("Threads research post exceeds %d chars, trimming to fit", THREADS_MAX_POST_CHARS)
+    head, _, body = post.partition("\n")
+    heading = head.strip()
+    body = body.strip()
+    if not body:
+        # No heading/body split (one long line) — trim it as a single sentence run.
+        return _trim_long_sentence(post, THREADS_MAX_POST_CHARS)
+    room = THREADS_MAX_POST_CHARS - len(heading) - 2  # reserve "heading\n\n"
+    sentences = _sentences(body) or [body]
+    kept: list[str] = []
+    for sentence in sentences:
+        candidate = " ".join(kept + [sentence])
+        if len(candidate) > room and kept:
+            break
+        kept.append(sentence)
+    trimmed = " ".join(kept).strip()
+    if not trimmed or len(trimmed) > room:
+        # Even the first body sentence overflows the room — word/URL-trim it to fit.
+        trimmed = _trim_long_sentence(sentences[0], max(0, room))
+    return f"{heading}\n\n{trimmed}".strip()
 
 
 def render_threads_research(report: str, *, max_posts: int = 0) -> tuple[str, list[str]]:
@@ -368,9 +389,9 @@ def render_threads_research(report: str, *, max_posts: int = 0) -> tuple[str, li
 
     if _THREADS_POST_DELIMITER.search(plain):
         raw_posts = [p.strip() for p in _THREADS_POST_DELIMITER.split(plain) if p.strip()]
-        posts: list[str] = []
-        for p in raw_posts:
-            posts.extend(_split_oversize_post(p))
+        # Each agent-delimited block is exactly ONE post: keep the heading + body together and only
+        # trim (never fan out) when it overflows, so the 'N/M 소제목' line never orphans.
+        posts = [_trim_oversize_post(p) for p in raw_posts]
     else:
         posts = _pack_by_sentence(plain)
 

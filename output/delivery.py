@@ -59,14 +59,9 @@ def request_context(delivery: DeliveryContext):
         _request_delivery.reset(token)
 
 
-def _image_caption(image: ImageAsset) -> str:
-    base = image.alt.strip() or "관련 이미지"
-    return f"{base}\n이미지: {image.source_url}"
-
-
 async def _deliver_slack(report: str, delivery: DeliveryContext, *, bot_token: str = "") -> bool:
-    """Post a research report to Slack: the staged OG images first (each as a file upload with
-    a source-credit caption), then the mrkdwn report as Block Kit messages. Best-effort."""
+    """Post a research report to Slack: the staged OG images first (each as a bare file upload,
+    no caption), then the mrkdwn report as Block Kit messages. Best-effort."""
     from output.slack_handler import send_image_to_slack
 
     token = bot_token or resolve_secret("SLACK_BOT_TOKEN", "slack-bot-token")
@@ -80,7 +75,6 @@ async def _deliver_slack(report: str, delivery: DeliveryContext, *, bot_token: s
             image.data,
             channel_id=channel_id,
             title=image.alt[:100] or "research image",
-            comment=_image_caption(image),
             thread_ts=delivery.thread_ts,
             bot_token=token,
             file_ext=extension_for(image.content_type),

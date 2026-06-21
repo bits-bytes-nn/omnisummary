@@ -85,11 +85,12 @@ def invoke(payload: dict[str, Any]) -> str:
             _emit_agent_error_metric()
             response = f"Error processing request: {e}"
 
-        # Slack is the always-available channel: if it wasn't successfully delivered (the agent
-        # never called deliver_report, or a Slack deliver failed even though Threads succeeded),
-        # post to Slack so the user always gets something there. Prefer the actual report the
-        # agent produced (staged on the context) over its terminal one-line confirmation.
-        if channel_id and "slack" not in delivery.delivered_channels:
+        # Fallback ONLY when the agent delivered to NO channel at all (it never called
+        # deliver_report, or every delivery failed) — so the user always gets something. Do NOT
+        # fall back to Slack just because Slack wasn't a target: a Threads-only request that
+        # succeeded on Threads must not also dump the (Threads-formatted) report into Slack.
+        # Prefer the actual report the agent produced over its terminal one-line confirmation.
+        if channel_id and not delivery.delivered_channels:
             fallback_text = delivery.last_report or response
             _send_slack_message(channel_id, sanitize_slack_mrkdwn(fallback_text), thread_ts)
 
