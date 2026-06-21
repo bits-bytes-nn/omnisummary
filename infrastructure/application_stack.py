@@ -204,6 +204,12 @@ class OmniSummaryApplicationStack(Stack):
             memory_size=128,
             role=foundation.lambda_role,
             log_retention=logs.RetentionDays.ONE_MONTH,
+            # The handler fires the (minutes-long) AgentCore runtime without awaiting its result,
+            # so a self-invoke that errored should NOT auto-retry — a retry re-runs the whole deep
+            # research, double-posting to Slack/Threads. retry_attempts=0 + DLQ matches the digest/
+            # visual Lambdas; failures land in the DLQ for inspection instead of silent re-runs.
+            retry_attempts=0,
+            on_failure=destinations.SqsDestination(async_dlq),
             environment={
                 "AGENTCORE_RUNTIME_ARN": agentcore_runtime.attr_agent_runtime_arn,
                 "DDB_TABLE_NAME": foundation.dedup_table.table_name,

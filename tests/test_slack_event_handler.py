@@ -16,9 +16,10 @@ def test_handler_imports_nothing_outside_the_zip():
     # This handler ships as a standalone zip containing ONLY lambda_handlers/ — no sibling packages
     # (shared, agent, ...) AND no third-party deps (slack_sdk, httpx, ...). Importing either crashes
     # at cold start: 'No module named shared' (sibling) / 'No module named slack_sdk' (third-party),
-    # which 502s the Slack ingress. boto3 + the stdlib are the only things present in the Lambda
-    # runtime. The test env CAN import these, so scan the source instead of importing at runtime.
-    allowed = {"boto3"}  # present in the AWS Lambda Python runtime
+    # which 502s the Slack ingress. boto3 + botocore (boto3's own dependency, always co-installed in
+    # the Lambda runtime) + the stdlib are the only things present. The test env CAN import these, so
+    # scan the source instead of importing at runtime.
+    allowed = {"boto3", "botocore"}  # present in the AWS Lambda Python runtime (botocore ships with boto3)
     src = Path(h.__file__).read_text()
     tree = ast.parse(src)
     bad: list[str] = []
@@ -133,6 +134,39 @@ class TestAsyncInvocation:
         mock_client.return_value.invoke_agent_runtime.assert_called_once()
         # The user gets an immediate acknowledgement before the multi-minute runtime call.
         ack.assert_called_once_with("C1", "1.0")
+
+    def test_read_timeout_is_treated_as_successful_dispatch(self, monkeypatch):
+        # invoke_agent_runtime blocks for minutes; we fire it with a short read timeout and do
+        # NOT await the streamed result (the runtime delivers to Slack itself). A ReadTimeoutError
+        # therefore means "dispatched OK" → 200 and NO error fallback, so the async self-invoke
+        # never retries and double-runs the research.
+        from botocore.exceptions import ReadTimeoutError
+
+        monkeypatch.setenv("AGENTCORE_RUNTIME_ARN", "arn:aws:bedrock-agentcore:::runtime/x")
+        event = {"action": "invoke_agentcore", "text": "<@U1> research", "channel": "C1", "event_id": "Ev2"}
+        client = MagicMock()
+        client.invoke_agent_runtime.side_effect = ReadTimeoutError(endpoint_url="https://x")
+        with patch.object(h, "_is_duplicate_event", return_value=False):
+            with patch.object(h, "_post_ack"):
+                with patch.object(h, "_post_fallback") as fallback:
+                    with patch.object(h.boto3, "client", return_value=client):
+                        resp = h.handler(event, MagicMock())
+        assert resp["statusCode"] == 200
+        fallback.assert_not_called()  # a read timeout is success, not a failure
+
+    def test_real_dispatch_error_posts_fallback(self, monkeypatch):
+        # A genuine dispatch failure (bad ARN, throttle) must still surface a fallback to the user.
+        monkeypatch.setenv("AGENTCORE_RUNTIME_ARN", "arn:aws:bedrock-agentcore:::runtime/x")
+        event = {"action": "invoke_agentcore", "text": "<@U1> research", "channel": "C1", "event_id": "Ev3"}
+        client = MagicMock()
+        client.invoke_agent_runtime.side_effect = RuntimeError("AccessDenied")
+        with patch.object(h, "_is_duplicate_event", return_value=False):
+            with patch.object(h, "_post_ack"):
+                with patch.object(h, "_post_fallback") as fallback:
+                    with patch.object(h.boto3, "client", return_value=client):
+                        resp = h.handler(event, MagicMock())
+        assert resp["statusCode"] == 500
+        fallback.assert_called_once()
 
     def test_ack_posts_to_thread_via_stdlib(self, monkeypatch):
         # ack must post with stdlib urllib (no slack_sdk — not in the zip). Capture the request.

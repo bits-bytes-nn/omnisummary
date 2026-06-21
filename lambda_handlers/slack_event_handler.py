@@ -10,6 +10,8 @@ import time
 from typing import Any
 
 import boto3
+from botocore.config import Config as BotoConfig
+from botocore.exceptions import ReadTimeoutError
 
 # This handler is packaged as a standalone zip containing ONLY lambda_handlers/, so it MUST NOT
 # import from `shared` (or any sibling package) — those aren't in the zip and the import fails at
@@ -86,7 +88,17 @@ def _handle_async_invocation(event: dict[str, Any], context: Any) -> dict[str, A
 
     try:
         agentcore_arn = os.environ["AGENTCORE_RUNTIME_ARN"]
-        agentcore_client = boto3.client("bedrock-agentcore")
+        # invoke_agent_runtime is a SYNCHRONOUS, streaming call that blocks until the agent
+        # finishes — but deep research takes minutes, far beyond this Lambda's 60s timeout. The
+        # runtime delivers its own result to Slack/Threads (via the deliver_report tool), so we
+        # only need to START it, not await the response body. Use a short read timeout and treat
+        # the resulting ReadTimeoutError as "successfully fired": the runtime keeps running on its
+        # own after we disconnect. Without this the Lambda times out, which (a) trips the Errors +
+        # Timeout alarms and (b) makes the async self-invoke RETRY, double-running the research.
+        agentcore_client = boto3.client(
+            "bedrock-agentcore",
+            config=BotoConfig(read_timeout=5, connect_timeout=5, retries={"max_attempts": 0}),
+        )
 
         clean_text = re.sub(r"<@[A-Z0-9]+>\s*", "", text).strip()
 
@@ -95,26 +107,31 @@ def _handle_async_invocation(event: dict[str, Any], context: Any) -> dict[str, A
         # convention (intent line + hourglass "I'll post the result here when it's ready").
         _post_ack(channel, thread_ts)
 
-        agentcore_client.invoke_agent_runtime(
-            agentRuntimeArn=agentcore_arn,
-            qualifier="DEFAULT",
-            payload=json.dumps(
-                {
-                    "prompt": clean_text,
-                    "channel_id": channel,
-                    "thread_ts": thread_ts,
-                }
-            ),
-        )
+        try:
+            agentcore_client.invoke_agent_runtime(
+                agentRuntimeArn=agentcore_arn,
+                qualifier="DEFAULT",
+                payload=json.dumps(
+                    {
+                        "prompt": clean_text,
+                        "channel_id": channel,
+                        "thread_ts": thread_ts,
+                    }
+                ),
+            )
+        except ReadTimeoutError:
+            # Expected: the request reached the runtime and it's now working; we intentionally
+            # don't wait for the (minutes-long) streamed response. NOT a failure.
+            logger.info("AgentCore invocation dispatched for event '%s' (not awaiting result)", event_id)
+            return {"statusCode": 200, "body": "OK"}
 
-        logger.info("AgentCore invocation completed for event '%s'", event_id)
+        logger.info("AgentCore invocation returned synchronously for event '%s'", event_id)
         return {"statusCode": 200, "body": "OK"}
 
     except Exception as e:
         logger.error("AgentCore invocation failed: %s", e, exc_info=True)
-        # The outer Slack request already got 200, so without this the user sees
-        # nothing when the runtime invocation itself throws (throttle, cold-start
-        # timeout). Post a visible fallback to the originating thread.
+        # A real dispatch failure (bad ARN, throttle, access denied) — the outer Slack request
+        # already got 200, so post a visible fallback to the originating thread.
         _post_fallback(channel, thread_ts)
         return {"statusCode": 500, "body": f"Error: {e}"}
 
