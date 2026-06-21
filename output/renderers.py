@@ -315,6 +315,9 @@ def _trim_long_sentence(sentence: str, max_len: int) -> str:
 # boundaries are the AGENT's choice (number + heading + body stay in ONE post) rather than
 # the renderer guessing from blank lines.
 _THREADS_POST_DELIMITER = re.compile(r"\n\s*---\s*\n")
+# A delimiter line at the very START of the report (no preceding newline) the split regex can't
+# see — strip it so a leading "---" never contaminates the first post as literal text.
+_THREADS_LEADING_DELIMITER = re.compile(r"^\s*---\s*\n")
 
 
 def _pack_by_sentence(text: str) -> list[str]:
@@ -358,22 +361,37 @@ def _trim_oversize_post(post: str) -> str:
     head, _, body = post.partition("\n")
     heading = head.strip()
     body = body.strip()
-    if not body:
-        # No heading/body split (one long line) — trim it as a single sentence run.
-        return _trim_long_sentence(post, THREADS_MAX_POST_CHARS)
     room = THREADS_MAX_POST_CHARS - len(heading) - 2  # reserve "heading\n\n"
+    if not body or room <= 0:
+        # No heading/body split (one long line), or the heading alone already fills the post so
+        # there's no body room to preserve — trim the whole post as one run (keeps a trailing URL).
+        return _trim_long_sentence(post, THREADS_MAX_POST_CHARS)
+    # A research post ends in a citation URL; reserve room for it so trimming the prose from the
+    # end never drops the source. Keep leading sentences that fit, then re-append the citation.
+    body_urls = _URL_RE.findall(body)
+    citation = body_urls[-1].rstrip(").,") if body_urls else ""
+    prose_room = room - (len(citation) + 1) if citation else room
     sentences = _sentences(body) or [body]
     kept: list[str] = []
     for sentence in sentences:
+        # Don't double-count the citation: a sentence that is just the trailing URL is folded in
+        # via `citation` below, not packed here.
+        if citation and sentence.strip().rstrip(").,") == citation:
+            continue
         candidate = " ".join(kept + [sentence])
-        if len(candidate) > room and kept:
+        if len(candidate) > prose_room and kept:
             break
         kept.append(sentence)
     trimmed = " ".join(kept).strip()
-    if not trimmed or len(trimmed) > room:
-        # Even the first body sentence overflows the room — word/URL-trim it to fit.
-        trimmed = _trim_long_sentence(sentences[0], max(0, room))
-    return f"{heading}\n\n{trimmed}".strip()
+    if not trimmed or len(trimmed) > max(0, prose_room):
+        # Even the first body sentence overflows the room — word-trim it to fit the prose room.
+        trimmed = _truncate_at_word(sentences[0], max(0, prose_room))
+    if citation and citation not in trimmed:
+        trimmed = f"{trimmed} {citation}".strip()
+    result = f"{heading}\n\n{trimmed}".strip()
+    # Final guard: the post is GUARANTEED <=500 chars regardless of heading/body pathology, so the
+    # downstream API truncation in post_to_threads never has to blind-cut (and dry-run matches prod).
+    return result if len(result) <= THREADS_MAX_POST_CHARS else _trim_long_sentence(post, THREADS_MAX_POST_CHARS)
 
 
 def render_threads_research(report: str, *, max_posts: int = 0) -> tuple[str, list[str]]:
@@ -386,6 +404,9 @@ def render_threads_research(report: str, *, max_posts: int = 0) -> tuple[str, li
     `max_posts` (>0) hard-caps the total post count (root + replies) so a too-long report can't
     fan out into dozens of public posts; excess posts are dropped. Returns (root_text, replies)."""
     plain = _strip_slack_mrkdwn(report).strip()
+    # A leading "---" (delimiter as the report's first line) isn't matched by the split regex,
+    # which requires a preceding newline; drop it so it can't ride into the first post as text.
+    plain = _THREADS_LEADING_DELIMITER.sub("", plain).strip()
 
     if _THREADS_POST_DELIMITER.search(plain):
         raw_posts = [p.strip() for p in _THREADS_POST_DELIMITER.split(plain) if p.strip()]
@@ -396,7 +417,9 @@ def render_threads_research(report: str, *, max_posts: int = 0) -> tuple[str, li
         posts = _pack_by_sentence(plain)
 
     if not posts:
-        return plain[:THREADS_MAX_POST_CHARS], []
+        # Empty/whitespace report → no post (caller skips delivery). Returning ("", []) here would
+        # make post_to_threads create an empty TEXT container, which Meta's API rejects with a 400.
+        return "", []
     if max_posts > 0 and len(posts) > max_posts:
         logger.info("Threads research: %d posts exceed cap %d, truncating", len(posts), max_posts)
         posts = posts[:max_posts]

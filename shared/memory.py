@@ -93,7 +93,7 @@ class AgentCoreMemoryStore(MemoryStore):
     ) -> None:
         self.memory_id = memory_id
         self.actor_id = actor_id
-        region = region_name or os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-west-2"))
+        region = region_name or os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2"))
         self._client = boto3.client("bedrock-agentcore", region_name=region)
 
     MAX_EVENT_TEXT = 100_000

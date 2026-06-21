@@ -149,7 +149,7 @@ def _post_ack(channel: str, thread_ts: str) -> None:
     """Post an immediate 'research started' acknowledgement to the originating thread, so the
     user gets feedback during the multi-minute run. Mirrors scholar-lens' ack format (an intent
     line + a muted hourglass hint). Best-effort: never blocks the runtime invocation."""
-    blocks = [
+    blocks: list[dict[str, Any]] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": ":satellite: *Deep research* started."}},
         {
             "type": "context",
@@ -171,7 +171,7 @@ def _post_ack(channel: str, thread_ts: str) -> None:
 def _post_fallback(channel: str, thread_ts: str) -> None:
     # Mirror the family's Slack error convention (see scholar-lens notifier/bot): a header line
     # + a muted retry hint, rather than one bare warning sentence.
-    blocks = [
+    blocks: list[dict[str, Any]] = [
         {
             "type": "header",
             "text": {"type": "plain_text", "text": ":x: I couldn't process that request", "emoji": True},

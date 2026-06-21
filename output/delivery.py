@@ -107,6 +107,10 @@ async def _deliver_threads(report: str, delivery: DeliveryContext) -> bool:
 
     max_posts = Config.load().agent.research_max_threads_posts
     root_text, replies = render_threads_research(report, max_posts=max_posts)
+    if not root_text.strip():
+        # Empty report → nothing to post. An empty root would 400 the Threads API; skip cleanly.
+        logger.warning("Research report rendered to empty Threads root; skipping Threads delivery.")
+        return False
 
     image_bytes = None
     image_bucket = ""

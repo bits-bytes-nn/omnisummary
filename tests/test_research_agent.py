@@ -71,7 +71,27 @@ class TestAgentToolInjection:
 
             create_research_agent()
 
-        assert len(captured.get("tools")) == 7
+        # Assert tool IDENTITIES, not a magic count — a 1-for-1 wrong swap would pass a count check.
+        from agent.research_tools import (
+            attach_image,
+            community_search,
+            deliver_report,
+            read_url,
+            recall_trends,
+            search_papers,
+            web_search,
+        )
+
+        expected = {
+            web_search,
+            community_search,
+            search_papers,
+            read_url,
+            recall_trends,
+            attach_image,
+            deliver_report,
+        }
+        assert set(captured.get("tools")) == expected
 
 
 class TestVoiceInjection:

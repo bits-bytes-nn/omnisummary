@@ -106,7 +106,7 @@ AWS 아키텍처(두 경로 — 스케줄 다이제스트 / Slack 트리거 딥 
 | `model_id` | 에이전트 모델(기본 Sonnet 4.6) |
 | `research_breadth`, `research_max_iterations` | 프롬프트에 주입되는 검색 폭(쿼리 수)·깊이(라운드 수) 가이던스 |
 | `research_slack_target_words` | Slack 리포트 목표 분량(단어) 가이던스 |
-| `research_max_threads_posts` | Threads 게시물(root+reply) 총수 **하드 캡**(기본 8) — 너무 긴 리포트가 공개 게시물 수십 개로 퍼지지 않게 코드가 트림 |
+| `research_max_threads_posts` | Threads 게시물(root+reply) 총수 **하드 캡**(기본 6) — 너무 긴 리포트가 공개 게시물 수십 개로 퍼지지 않게 코드가 트림 |
 | `research_content_cap_chars` | `read_url` 한 페이지 추출 텍스트 상한(기본 50000) |
 | `research_max_staged_images` | 한 리서치 실행이 stage할 수 있는 OG 이미지 수 캡(기본 4, per-invocation 메모리 bound) |
 | `og_image_timeout_sec`, `og_image_max_bytes` | OG 이미지 fetch 타임아웃·최대 바이트(스트리밍 중 초과 시 중단) |
@@ -477,7 +477,7 @@ uv run python main.py --dry-run --sources rss reddit   # 부분 dry run
 uv run python main.py                                   # 전체 파이프라인 + Slack
 uv run python -m pytest tests/ -v                       # 테스트
 uv run black --check . && uv run ruff check .           # lint/format
-uv run mypy shared/ collectors/ pipeline/ agent/ output/ lambda_handlers/ main.py
+uv run mypy shared/ collectors/ pipeline/ agent/ agent_runtime/ output/ lambda_handlers/ infrastructure/ main.py __main__.py research_cli.py
 uv run python scripts/ci_synth.py                       # 오프라인 CDK synth
 # 프로파일은 config.aws.profile에서 오며, 환경 변수로 재정의할 수 있다 (기본값 research)
 AWS_PROFILE=${AWS_PROFILE:-research} uv run cdk deploy --all -a "uv run python scripts/deploy.py"

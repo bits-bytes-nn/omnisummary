@@ -138,6 +138,18 @@ class TestDeliverThreads:
         assert kw["image_key"].endswith(".webp")  # extension derived from content_type
 
     @pytest.mark.asyncio
+    async def test_empty_report_skips_threads_api(self):
+        # An empty report must not call post_to_threads (an empty root 400s the Threads API).
+        d = DeliveryContext(channel_id="C")
+        with patch("output.threads_handler.post_to_threads", new=AsyncMock()) as pt:
+            with patch.object(dlv.Config, "load") as load:
+                load.return_value.agent.research_max_threads_posts = 6
+                ok = await dlv.deliver_research_report("   \n\n ", channel="threads", delivery=d)
+        assert ok is False
+        pt.assert_not_awaited()
+        assert "threads" not in d.delivered_channels
+
+    @pytest.mark.asyncio
     async def test_no_images_text_only(self):
         d = DeliveryContext(channel_id="C")
         with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=True)) as pt:

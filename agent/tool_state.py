@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 from shared import CollectedItem, DigestContent, DigestResult, RankedItem, logger
 
 
@@ -39,19 +36,11 @@ class DigestStateManager:
     def get_ranked_items(self) -> list[RankedItem]:
         return self._ranked_items
 
-    def get_digest_text(self) -> str:
-        return self._digest_result.digest_text if self._digest_result else ""
-
     def get_content(self) -> DigestContent | None:
         return self._digest_result.content if self._digest_result else None
 
     def get_item_count(self) -> int:
         return len(self._ranked_items)
-
-    def load_from(self, other: DigestStateManager) -> None:
-        self._collected_items = dict(other._collected_items)
-        self._ranked_items = list(other._ranked_items)
-        self._digest_result = other._digest_result
 
     def export_state(self) -> dict:
         # Only the ranked items (and the collected items they reference) are ever read
@@ -77,12 +66,6 @@ class DigestStateManager:
         self._collected_items.clear()
         self._ranked_items.clear()
         self._digest_result = None
-
-    def save_to_file(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data = self.export_state()
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        logger.info("Saved digest state to '%s'", path)
 
     @classmethod
     def load_from_dict(cls, data: dict) -> DigestStateManager:
@@ -110,20 +93,4 @@ class DigestStateManager:
         if digest_data:
             manager._digest_result = DigestResult.model_validate(digest_data)
 
-        return manager
-
-    @classmethod
-    def load_from_file(cls, path: Path) -> DigestStateManager:
-        if not path.exists():
-            logger.warning("Digest state file not found: '%s'", path)
-            return cls()
-
-        data = json.loads(path.read_text(encoding="utf-8"))
-        manager = cls.load_from_dict(data)
-        logger.info(
-            "Loaded digest state from '%s': %d collected, %d ranked",
-            path,
-            len(manager._collected_items),
-            len(manager._ranked_items),
-        )
         return manager

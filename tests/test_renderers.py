@@ -293,3 +293,34 @@ class TestThreadsResearch:
         joined = root + " " + " ".join(replies)
         assert "https://arxiv.org/abs/2401.00001" in joined
         assert len(root) <= THREADS_MAX_POST_CHARS
+
+    def test_oversize_delimited_post_with_huge_heading_stays_under_cap(self):
+        # Regression: a delimited post whose HEADING line alone exceeds 500 chars must still be
+        # trimmed to <=500 (the heading-only-overflow branch), never returned over-cap.
+        huge_heading = "가" * 600
+        root, replies = render_threads_research(f"{huge_heading}\n\n짧은 본문이다.\n---\n2/2 다음이다.")
+        assert len(root) <= THREADS_MAX_POST_CHARS
+        assert all(len(r) <= THREADS_MAX_POST_CHARS for r in replies)
+
+    def test_oversize_delimited_post_keeps_trailing_citation(self):
+        # The delimited oversize path (_trim_oversize_post) must preserve a citation URL that sits
+        # on the LAST body sentence even as earlier sentences are kept and the post is trimmed.
+        url = "https://arxiv.org/abs/2406.12345"
+        body = "이것은 본문 문장이다. " * 40 + f"핵심 출처는 {url} 이다."
+        root, replies = render_threads_research(f"1/2 긴 섹션\n\n{body}\n---\n2/2 짧은 마무리다.")
+        assert len(root) <= THREADS_MAX_POST_CHARS
+        assert url in root  # citation on the trailing sentence survives the trim
+
+    def test_leading_delimiter_does_not_contaminate_first_post(self):
+        # A "---" as the report's very first line must be stripped, not baked into the root post.
+        root, replies = render_threads_research("---\n1/2 첫 포스트다.\n\n본문이다.\n---\n2/2 둘째다.")
+        assert not root.startswith("---")
+        assert root.startswith("1/2")
+        assert len(replies) == 1
+
+    def test_empty_report_returns_empty_root_no_replies(self):
+        # An empty/whitespace report must yield ("", []) so the caller skips the Threads API
+        # (an empty TEXT container 400s). Previously this returned a stray empty root.
+        root, replies = render_threads_research("   \n\n  ")
+        assert root == ""
+        assert replies == []

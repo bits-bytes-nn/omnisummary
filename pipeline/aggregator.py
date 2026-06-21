@@ -41,7 +41,20 @@ class ContentAggregator:
         cross_day_skipped = 0
         seen_urls: dict[str, CollectedItem] = {}
 
+        # Drop items missing a url or title up front. They can't be linked or rendered in the
+        # digest, and worse, every empty-url item normalizes to the same "" key — so without this
+        # they'd dedup against EACH OTHER and silently swallow siblings. Explicit boundary check.
+        malformed = 0
+        usable: list[CollectedItem] = []
         for item in items:
+            if not item.url.strip() or not item.title.strip():
+                malformed += 1
+                continue
+            usable.append(item)
+        if malformed:
+            logger.warning("Dropped %d item(s) missing a url or title before dedup", malformed)
+
+        for item in usable:
             key = self._normalize_url(item.url)
             # Pinned items (user-specified via --pin-url) bypass cross-day dedup: the user
             # asked for this exact URL today, even if it was published in a recent digest.

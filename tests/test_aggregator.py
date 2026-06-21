@@ -96,6 +96,19 @@ class TestContentAggregator:
         result = ContentAggregator().aggregate(items)
         assert len(result) == 5
 
+    def test_drops_items_missing_url_or_title(self):
+        # Empty-url items all normalize to the same "" key and would dedup against each other,
+        # silently swallowing siblings; empty-title items can't render. Both are dropped up front.
+        items = [
+            _item(item_id="ok", url="http://real.com", title="Real"),
+            _item(item_id="nourl", url="", title="Has title but no URL"),
+            _item(item_id="notitle", url="http://x.com", title="   "),
+            _item(item_id="ok2", url="http://other.com", title="Another"),
+        ]
+        result = ContentAggregator().aggregate(items)
+        urls = {i.url for i in result}
+        assert urls == {"http://real.com", "http://other.com"}
+
     def test_deduplicates_by_title(self):
         items = [
             _item(url="http://a.com", title="LiteLLM 공급망 공격에 대한 분 단위 대응 기록"),
