@@ -93,24 +93,116 @@ class TestFetchPinnedItems:
         assert "policy on the ai exponential" in items[0].title
 
     @pytest.mark.asyncio
-    async def test_prefers_extractor_title_for_youtube(self):
-        # YouTube /watch?v=ID has no useful slug; the extractor's title must win.
-        client = MagicMock()
-        client.extract = AsyncMock(
-            return_value={
-                "results": [
-                    {
-                        "url": "https://www.youtube.com/watch?v=haK1KoQWm18",
-                        "title": "Claude Fable 5 - Full Breakdown",
-                        "raw_content": "transcript text",
+    async def test_youtube_pin_uses_data_api_not_tavily(self):
+        # YouTube URLs route to the YouTube Data API, never Tavily (whose extractor only sees a
+        # video page's metadata, never its content). Title + description come from the API; the
+        # transcript is best-effort and may be empty (datacenter IP block), leaving the description.
+        api_resp = MagicMock(status_code=200)
+        api_resp.json.return_value = {
+            "items": [
+                {
+                    "snippet": {
+                        "title": "The data black hole at the center of AI",
+                        "description": "It is easy to forget how much data these models train on.",
+                        "channelTitle": "Dwarkesh Patel",
                     }
-                ]
-            }
-        )
+                }
+            ]
+        }
+        http_client = AsyncMock()
+        http_client.get = AsyncMock(return_value=api_resp)
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=http_client)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+
+        tavily = MagicMock()
+        tavily.extract = AsyncMock()
         with patch("collectors.web_search.resolve_secret", return_value="key"):
-            with patch("collectors.web_search.AsyncTavilyClient", return_value=client):
-                items = await fetch_pinned_items(["https://www.youtube.com/watch?v=haK1KoQWm18"])
-        assert items[0].title == "Claude Fable 5 - Full Breakdown"
+            with patch("collectors.web_search.httpx.AsyncClient", return_value=ctx):
+                with patch("collectors.web_search.fetch_youtube_transcript", return_value=""):
+                    with patch("collectors.web_search.AsyncTavilyClient", return_value=tavily):
+                        items = await fetch_pinned_items(["https://www.youtube.com/watch?v=4pG3SJQPAwk"])
+        assert len(items) == 1
+        assert items[0].title == "The data black hole at the center of AI"
+        assert items[0].author == "Dwarkesh Patel"
+        assert items[0].source_type == SourceType.YOUTUBE
+        assert items[0].metadata["pinned"] is True
+        assert items[0].text == "It is easy to forget how much data these models train on."
+        tavily.extract.assert_not_called()  # YouTube never touches Tavily
+
+    @pytest.mark.asyncio
+    async def test_youtube_pin_prefers_transcript_over_description(self):
+        api_resp = MagicMock(status_code=200)
+        api_resp.json.return_value = {
+            "items": [{"snippet": {"title": "T", "description": "short desc", "channelTitle": "Ch"}}]
+        }
+        http_client = AsyncMock()
+        http_client.get = AsyncMock(return_value=api_resp)
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=http_client)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        with patch("collectors.web_search.resolve_secret", return_value="key"):
+            with patch("collectors.web_search.httpx.AsyncClient", return_value=ctx):
+                with patch("collectors.web_search.fetch_youtube_transcript", return_value="full transcript"):
+                    items = await fetch_pinned_items(["https://youtu.be/4pG3SJQPAwk"])
+        assert items[0].text == "full transcript"  # transcript wins when present
+
+    @pytest.mark.asyncio
+    async def test_mixed_pins_route_youtube_and_tavily_separately(self):
+        api_resp = MagicMock(status_code=200)
+        api_resp.json.return_value = {"items": [{"snippet": {"title": "Vid", "description": "d", "channelTitle": "C"}}]}
+        http_client = AsyncMock()
+        http_client.get = AsyncMock(return_value=api_resp)
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=http_client)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        tavily = MagicMock()
+        tavily.extract = AsyncMock(return_value={"results": [{"url": "https://example.com/post", "raw_content": "b"}]})
+        with patch("collectors.web_search.resolve_secret", return_value="key"):
+            with patch("collectors.web_search.httpx.AsyncClient", return_value=ctx):
+                with patch("collectors.web_search.fetch_youtube_transcript", return_value=""):
+                    with patch("collectors.web_search.AsyncTavilyClient", return_value=tavily):
+                        items = await fetch_pinned_items(
+                            ["https://www.youtube.com/watch?v=4pG3SJQPAwk", "https://example.com/post"]
+                        )
+        urls = {it.url for it in items}
+        assert urls == {"https://www.youtube.com/watch?v=4pG3SJQPAwk", "https://example.com/post"}
+        tavily.extract.assert_awaited_once()
+        assert tavily.extract.await_args.kwargs["urls"] == ["https://example.com/post"]  # YouTube excluded
+
+    @pytest.mark.asyncio
+    async def test_youtube_pin_non_200_is_dropped_and_surfaced(self):
+        # A YouTube pin whose Data API lookup fails (e.g. 404) must be dropped, not crash, and
+        # the missing-pin warning must fire so a silently-lost pin is visible.
+        api_resp = MagicMock(status_code=404)
+        api_resp.json.return_value = {}
+        http_client = AsyncMock()
+        http_client.get = AsyncMock(return_value=api_resp)
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=http_client)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("collectors.web_search.resolve_secret", return_value="key"):
+            with patch("collectors.web_search.httpx.AsyncClient", return_value=ctx):
+                with patch("collectors.web_search.logger") as mock_logger:
+                    items = await fetch_pinned_items(["https://www.youtube.com/watch?v=4pG3SJQPAwk"])
+        assert items == []
+        warned = " ".join(str(c.args) for c in mock_logger.warning.call_args_list)
+        assert "could not be fetched" in warned
+
+    @pytest.mark.asyncio
+    async def test_youtube_pin_empty_items_is_dropped(self):
+        api_resp = MagicMock(status_code=200)
+        api_resp.json.return_value = {"items": []}
+        http_client = AsyncMock()
+        http_client.get = AsyncMock(return_value=api_resp)
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=http_client)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        with patch("collectors.web_search.resolve_secret", return_value="key"):
+            with patch("collectors.web_search.httpx.AsyncClient", return_value=ctx):
+                items = await fetch_pinned_items(["https://www.youtube.com/watch?v=4pG3SJQPAwk"])
+        assert items == []
 
     @pytest.mark.asyncio
     async def test_empty_urls_short_circuits(self):
@@ -149,3 +241,19 @@ class TestTitleFromUrl:
         from collectors.web_search import _title_from_url
 
         assert _title_from_url("https://x.com/karpathy/status/1944435413395685866") == "x.com"
+
+
+class TestYoutubeVideoId:
+    def test_extracts_id_from_url_forms(self):
+        from collectors.web_search import _youtube_video_id
+
+        assert _youtube_video_id("https://www.youtube.com/watch?v=4pG3SJQPAwk") == "4pG3SJQPAwk"
+        assert _youtube_video_id("https://youtu.be/4pG3SJQPAwk") == "4pG3SJQPAwk"
+        assert _youtube_video_id("https://m.youtube.com/watch?v=4pG3SJQPAwk&t=10s") == "4pG3SJQPAwk"
+        assert _youtube_video_id("https://www.youtube.com/shorts/4pG3SJQPAwk") == "4pG3SJQPAwk"
+
+    def test_returns_empty_for_non_youtube(self):
+        from collectors.web_search import _youtube_video_id
+
+        assert _youtube_video_id("https://example.com/watch?v=4pG3SJQPAwk") == ""
+        assert _youtube_video_id("https://www.youtube.com/@DwarkeshPatel") == ""

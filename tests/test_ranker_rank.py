@@ -79,6 +79,20 @@ class TestRankEndToEnd:
         assert "a" in ids
 
     @pytest.mark.asyncio
+    async def test_pinned_item_force_included_even_when_ranker_omits_it(self):
+        # The ranking LLM dropped the pinned item's id entirely (hallucinated it away, or its
+        # batch failed). It never became a RankedItem, but the --pin-url guarantee must still
+        # hold: it's synthesized at min_score and force-included.
+        items = _items([("a", SourceType.RSS), ("b", SourceType.RSS)])
+        items[1].metadata = {"pinned": True}  # b is pinned but the LLM only scores a
+        ranker = _ranker(_rankings({"a": 0.9}), top_n=5, min_score=0.6, source_slots={})
+        result = await ranker.rank(items)
+        ids = {r.item.item_id for r in result}
+        assert "b" in ids  # synthesized despite the ranker never scoring it
+        b = next(r for r in result if r.item.item_id == "b")
+        assert b.score == 0.6  # min_score
+
+    @pytest.mark.asyncio
     async def test_pinned_item_leads_and_respects_top_n(self):
         # Pinned items lead the result and the total still caps at top_n.
         items = _items([(f"i{n}", SourceType.RSS) for n in range(5)])

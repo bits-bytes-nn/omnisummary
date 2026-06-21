@@ -61,6 +61,22 @@ class ContentRanker:
         # Pinned items (user-specified via --pin-url) are guaranteed a slot regardless of score
         # or diversity caps — they're kept aside and prepended after slotting fills the rest.
         pinned = [r for r in ranked_items if r.item.metadata.get("pinned")]
+        # Reconcile against the pinned INPUTS: if the ranking LLM dropped a pinned item (omitted
+        # its id, hallucinated it away, or its whole batch threw and returned []), it never became
+        # a RankedItem and the user's explicit pin would be silently lost. Synthesize a RankedItem
+        # at min_score for any such pin so the force-inclusion guarantee actually holds.
+        scored_ids = {r.item.item_id for r in ranked_items}
+        missing_pins = [it for it in items if it.metadata.get("pinned") and it.item_id not in scored_ids]
+        if missing_pins:
+            logger.warning(
+                "Ranking did not score %d pinned item(s); force-including at min_score: %s",
+                len(missing_pins),
+                [it.url for it in missing_pins],
+            )
+            pinned.extend(
+                RankedItem(item=it, score=self.config.min_score, reasoning="Pinned (not scored by ranker)")
+                for it in missing_pins
+            )
         pinned.sort(key=lambda r: (-r.score, r.item.item_id))
         pinned_ids = {r.item.item_id for r in pinned}
 

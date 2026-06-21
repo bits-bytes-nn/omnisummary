@@ -173,9 +173,11 @@ uv run python scripts/sync_youtube_to_s3.py  # YouTube (with transcripts) only
 | Flag | Description |
 |------|-------------|
 | `--sources rss reddit youtube` | Select specific sources |
-| `--dry-run` | Skip Slack delivery, print to console |
+| `--dry-run` | Skip delivery, print to console |
 | `--top-n 5` | Override number of items to select |
 | `--date 2026-03-28` | Set digest date (default: today KST) |
+| `--pin-url <url> [<url> ...]` | Force URL(s) into the top stories regardless of ranking score (YouTube URLs resolved via the YouTube Data API, others via Tavily). Local CLI only. |
+| `--force-republish` | Re-post today's digest even if already posted (bypass the Threads idempotency guard) |
 
 ## Pipeline Stages
 
@@ -236,7 +238,7 @@ Autonomous Strands Agent (on Bedrock AgentCore Runtime), triggered by a Slack me
 | `attach_image(source_url)` | Download a source's OG image and stage it for delivery |
 | `deliver_report(report, channel)` | Render + post the report — Slack (default) or Threads |
 
-Delivery is channel-aware in code (not prompt rules): Slack via Block Kit (`render_agent_blocks`), Threads via a root + flat reply chain ≤500 chars (`render_threads_research`). If the agent finishes without delivering, the runtime posts the report to Slack as a fallback.
+Delivery is channel-aware in code (not prompt rules): Slack via Block Kit (`render_research_blocks`), Threads via a root + flat reply chain ≤500 chars (`render_threads_research`). If the agent finishes without delivering, the runtime posts the report to Slack as a fallback via `render_agent_blocks`.
 
 ## AWS Deployment
 

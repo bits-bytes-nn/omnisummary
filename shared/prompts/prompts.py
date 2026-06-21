@@ -263,7 +263,7 @@ Produce ONLY a JSON object:
   "research": [
     {{{{"source": "news|community|papers", "query": "a focused query"}}}}
   ],
-  "format": "one-line: e.g. '4-panel cartoon', 'parody movie poster', 'satirical illustration'",
+  "format": "one-line: e.g. '4-panel cartoon', 'parody movie poster', 'concept diagram', 'before/after split', 'annotated screenshot'",
   "multi_panel": false,
   "use_character": false,
   "instruction": "a rich natural-language brief for the image: what to depict, the joke/angle, the format, recognizable real-world cues (people, logos) to include, and that any on-image text must be {on_image_language}"

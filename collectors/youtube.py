@@ -330,30 +330,37 @@ class YouTubeCollector(BaseCollector):
     def _get_transcript(self, video_id: str) -> str:
         # Run by the local sync (residential IP); YouTube blocks transcript fetches from
         # datacenter IPs, so in AWS this fails and the item keeps its description as body.
-        # Try the configured language first, then fall back to ANY transcript the video has
-        # (non-English channels, auto-generated tracks) so a missing 'en' track isn't an empty body.
+        return fetch_youtube_transcript(video_id, self.config.transcript_language)
+
+
+def fetch_youtube_transcript(video_id: str, language: str = "en") -> str:
+    """Fetch a video's transcript text (shared by the collector and the --pin-url path). Try the
+    given language first, then fall back to ANY transcript the video has (non-English channels,
+    auto-generated tracks) so a missing track isn't an empty body. Best-effort: any failure
+    (incl. the IpBlocked YouTube throws from datacenter IPs) degrades to "" so the caller keeps
+    the video's description as body rather than failing the whole collect."""
+    try:
+        ytt_api = YouTubeTranscriptApi()
         try:
-            ytt_api = YouTubeTranscriptApi()
-            try:
-                fetched = ytt_api.fetch(video_id, languages=(self.config.transcript_language,))
-            except YouTubeTranscriptApiException:
-                available = ytt_api.list(video_id)
-                codes = [t.language_code for t in available]
-                if not codes:
-                    raise
-                fetched = available.find_transcript(codes).fetch()
-            return " ".join(snippet.text for snippet in fetched.snippets)
-        except (
-            YouTubeTranscriptApiException,
-            httpx.HTTPError,
-            ValueError,
-            KeyError,
-            TypeError,
-            AttributeError,
-            RuntimeError,
-        ) as e:
-            # RuntimeError is retained intentionally: youtube_transcript_api raises a variety
-            # of runtime failures (region blocks, parser quirks) and transcript fetch is
-            # best-effort — it must degrade to "" rather than fail the whole channel collect.
-            logger.warning("Could not fetch transcript for video '%s': %s", video_id, e)
-            return ""
+            fetched = ytt_api.fetch(video_id, languages=(language,))
+        except YouTubeTranscriptApiException:
+            available = ytt_api.list(video_id)
+            codes = [t.language_code for t in available]
+            if not codes:
+                raise
+            fetched = available.find_transcript(codes).fetch()
+        return " ".join(snippet.text for snippet in fetched.snippets)
+    except (
+        YouTubeTranscriptApiException,
+        httpx.HTTPError,
+        ValueError,
+        KeyError,
+        TypeError,
+        AttributeError,
+        RuntimeError,
+    ) as e:
+        # RuntimeError is retained intentionally: youtube_transcript_api raises a variety
+        # of runtime failures (region blocks, parser quirks) and transcript fetch is
+        # best-effort — it must degrade to "" rather than fail the whole channel collect.
+        logger.warning("Could not fetch transcript for video '%s': %s", video_id, e)
+        return ""

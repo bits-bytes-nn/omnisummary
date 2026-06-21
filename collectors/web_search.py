@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Literal
 from urllib.parse import urlparse
 
+import httpx
 from langchain_core.output_parsers import StrOutputParser
 from tavily import AsyncTavilyClient
 
@@ -25,6 +27,7 @@ from shared import (
 from shared.config import WebSearchCollectorConfig
 
 from .base import BaseCollector, cutoff_datetime, gather_collector_results
+from .youtube import YOUTUBE_API_BASE, fetch_youtube_transcript
 
 
 class WebSearchCollector(BaseCollector):
@@ -224,15 +227,69 @@ def _title_from_url(url: str) -> str:
     return slug.replace("-", " ").replace("_", " ").strip() or host or url
 
 
-async def fetch_pinned_items(urls: list[str]) -> list[CollectedItem]:
-    """Fetch user-specified URLs (via `--pin-url`) as CollectedItems so the pipeline can
-    force them into the digest regardless of ranking score. Uses Tavily extract to pull the
-    page text. Best-effort: a URL that can't be fetched is logged and skipped, never aborting
-    the run. The returned items carry metadata['pinned']=True so the ranker can guarantee them
-    a slot."""
-    urls = [u.strip() for u in (urls or []) if u and u.strip()]
-    if not urls:
-        return []
+_YOUTUBE_ID_RE = re.compile(r"(?:v=|/shorts/|youtu\.be/|/embed/)([A-Za-z0-9_-]{11})")
+_YOUTUBE_HOSTS = {"youtube.com", "m.youtube.com", "youtu.be"}
+
+
+def _youtube_video_id(url: str) -> str:
+    """Pull the 11-char video id out of any YouTube URL form (watch?v=, youtu.be/, /shorts/,
+    /embed/). Returns "" for a non-YouTube or id-less URL so the caller routes it to Tavily.
+    (DOMAIN_TO_SOURCE doesn't map youtube.com — it's the collector's own source — so match on
+    the host directly rather than _detect_source_type.)"""
+    host = urlparse(url).netloc.lower().removeprefix("www.")
+    if host not in _YOUTUBE_HOSTS:
+        return ""
+    match = _YOUTUBE_ID_RE.search(url)
+    return match.group(1) if match else ""
+
+
+async def _fetch_youtube_pinned(url: str, video_id: str) -> CollectedItem | None:
+    """Resolve a pinned YouTube URL through the YouTube Data API + transcript API instead of
+    Tavily. Tavily's extractor only returns a video page's metadata, never the spoken content,
+    and YouTube videos are a common pin target — so go to the source: title + description from
+    the Data API, then the transcript (best-effort; YouTube blocks transcript fetches from
+    datacenter IPs, so it may be empty, in which case the description carries the body)."""
+    api_key = await asyncio.to_thread(resolve_secret, "YOUTUBE_API_KEY", "youtube-api-key")
+    if not api_key:
+        logger.warning("YOUTUBE_API_KEY not set, cannot fetch pinned YouTube URL '%s'", url)
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{YOUTUBE_API_BASE}/videos",
+                params={"part": "snippet", "id": video_id, "key": api_key},
+            )
+        if resp.status_code != 200:
+            logger.warning("YouTube Data API returned %d for pinned '%s'", resp.status_code, url)
+            return None
+        results = resp.json().get("items", [])
+        if not results:
+            logger.warning("YouTube Data API found no video for pinned '%s'", url)
+            return None
+        snippet = results[0].get("snippet", {})
+    except (httpx.HTTPError, ValueError, KeyError) as e:
+        logger.warning("Failed to fetch pinned YouTube URL '%s': %s", url, e)
+        return None
+
+    title = (snippet.get("title") or "").strip() or _title_from_url(url)
+    body = snippet.get("description", "")
+    transcript = await asyncio.to_thread(fetch_youtube_transcript, video_id)
+    if transcript:
+        body = transcript
+    logger.info("Fetched pinned YouTube URL: '%s' (%s)", url, title)
+    return CollectedItem(
+        item_id=generate_item_id(url),
+        source_type=SourceType.YOUTUBE,
+        title=title,
+        url=url,
+        text=body,
+        author=snippet.get("channelTitle", ""),
+        metadata={"pinned": True},
+    )
+
+
+async def _fetch_tavily_pinned(urls: list[str]) -> list[CollectedItem]:
+    """Resolve non-YouTube pinned URLs via Tavily extract (page text)."""
     api_key = await asyncio.to_thread(resolve_secret, "TAVILY_API_KEY", "tavily-api-key")
     if not api_key:
         logger.warning("TAVILY_API_KEY not set, cannot fetch pinned URLs")
@@ -251,9 +308,8 @@ async def fetch_pinned_items(urls: list[str]) -> list[CollectedItem]:
         content = result.get("raw_content") or result.get("content") or ""
         if not url:
             continue
-        # Prefer the extractor's own title (it reads the page's <title>/og:title, so YouTube
-        # videos and articles get their real headline); fall back to the URL slug only when
-        # absent. A pinned item is included regardless of score.
+        # Prefer the extractor's own title (it reads the page's <title>/og:title); fall back to
+        # the URL slug only when absent. A pinned item is included regardless of score.
         title = (result.get("title") or "").strip() or _title_from_url(url)
         items.append(
             CollectedItem(
@@ -266,6 +322,28 @@ async def fetch_pinned_items(urls: list[str]) -> list[CollectedItem]:
             )
         )
         logger.info("Fetched pinned URL: '%s' (%s)", url, title)
+    return items
+
+
+async def fetch_pinned_items(urls: list[str]) -> list[CollectedItem]:
+    """Fetch user-specified URLs (via `--pin-url`) as CollectedItems so the pipeline can force
+    them into the digest regardless of ranking score. YouTube URLs go through the YouTube Data
+    API (Tavily only sees a video page's metadata, never its content); everything else goes
+    through Tavily extract. Best-effort: a URL that can't be fetched is logged and skipped,
+    never aborting the run. Returned items carry metadata['pinned']=True so the ranker
+    guarantees them a slot."""
+    urls = [u.strip() for u in (urls or []) if u and u.strip()]
+    if not urls:
+        return []
+
+    youtube_pins = {u: vid for u in urls if (vid := _youtube_video_id(u))}
+    other_urls = [u for u in urls if u not in youtube_pins]
+
+    items: list[CollectedItem] = []
+    yt_results = await asyncio.gather(*(_fetch_youtube_pinned(u, vid) for u, vid in youtube_pins.items()))
+    items.extend(it for it in yt_results if it is not None)
+    if other_urls:
+        items.extend(await _fetch_tavily_pinned(other_urls))
 
     # Surface exactly which pinned URLs didn't come back, so a silently-missing pin is visible.
     fetched_urls = {it.url for it in items}

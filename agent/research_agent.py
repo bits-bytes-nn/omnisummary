@@ -173,9 +173,10 @@ FAILURE. Because the URL eats into the 500-char budget, write a SHORTER body so 
 where that source's fact first carries the argument; later posts that lean on the same source do NOT \
 re-print its URL. So most posts carry exactly one fresh URL, some carry none (when they build on an \
 already-cited source), and no URL appears twice in the whole thread. Across the thread you still draw \
-on the same body of sources you cite on Slack — just each listed a single time. Example tail of a post:
-  ...Money20/20 유럽에서 첫 실거래를 시연했다.
-  https://example.com/agentic-commerce
+on the same body of sources you cite on Slack — just each listed a single time. Example tail of a post \
+(placeholder — the sentence carries YOUR topic's key fact, the URL is the source it came from):
+  ...<핵심 수치나 사건을 담은 마지막 문장>.
+  https://example.com/source
   Hard limits: at most {research_max_threads_posts} posts total (root + replies); each whole post \
 (소제목 + 본문) must be <=500 characters. Write a FULL flowing body paragraph filled toward the \
 ceiling with real narrative explanation — the same detailed/kind/easy voice as Slack — NOT clipped \
