@@ -164,13 +164,16 @@ previous one established, with a connective that points back at it; don't restar
   - Do NOT cram a whole section into one post then jump to an unrelated one. Let the argument breathe \
 across posts in order; a post may end mid-thought and the next continues it.
   - The 소제목 is a sequence signpost for one flowing essay, not a chapter title for an independent unit.
-  CITATIONS ARE MANDATORY ON THREADS TOO — this is not optional and not Slack-only. Every post that \
-states a concrete fact (a number, a launch, a named product/partnership, a quote) MUST end with the \
-bare source URL it came from, on its own line after the body. A Threads post asserting facts with NO \
-URL is a FAILURE. Because the URL eats into the 500-char budget, write a SHORTER body so the post \
-(소제목 + 본문 + URL) still fits under 500 — never drop the URL to make room for more prose; drop \
-prose to make room for the URL. Reuse the same sources you cite on Slack; do not strip them just \
-because the format is tighter. Example tail of a post:
+  CITATIONS ARE MANDATORY ON THREADS TOO — this is not optional and not Slack-only. A fact-bearing \
+post (a number, a launch, a named product/partnership, a quote) ends with the bare source URL it \
+came from, on its own line after the body. A post that asserts facts with NO supporting URL is a \
+FAILURE. Because the URL eats into the 500-char budget, write a SHORTER body so the post (소제목 + \
+본문 + URL) still fits under 500 — drop prose to make room for the URL, never the reverse.
+  CITE EACH SOURCE ONCE — no duplicate URLs across the thread. A given URL belongs in the ONE post \
+where that source's fact first carries the argument; later posts that lean on the same source do NOT \
+re-print its URL. So most posts carry exactly one fresh URL, some carry none (when they build on an \
+already-cited source), and no URL appears twice in the whole thread. Across the thread you still draw \
+on the same body of sources you cite on Slack — just each listed a single time. Example tail of a post:
   ...Money20/20 유럽에서 첫 실거래를 시연했다.
   https://example.com/agentic-commerce
   Hard limits: at most {research_max_threads_posts} posts total (root + replies); each whole post \
