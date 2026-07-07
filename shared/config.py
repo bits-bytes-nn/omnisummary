@@ -65,7 +65,7 @@ class WebSearchCollectorConfig(BaseCollectorConfig):
     trend_searches: list[TrendSearch] = Field(default_factory=list)
     max_results_per_query: int = 10
     lookback_hours: int = 72
-    refine_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
+    refine_model: LanguageModelId = LanguageModelId.CLAUDE_V5_SONNET
     max_refine_queries: int = 3
     min_search_score: float = Field(default=0.3, ge=0.0, le=1.0)
 
@@ -118,8 +118,8 @@ class PipelineConfig(BaseModel):
     # toward a multi-panel composition; above it, toward a single frame. A soft steer, not a quota:
     # the story still decides. 0 disables the nudge entirely (pure editor choice).
     visual_multi_panel_target_ratio: float = Field(default=0.34, ge=0.0, le=1.0)
-    ranking_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
-    digest_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
+    ranking_model: LanguageModelId = LanguageModelId.CLAUDE_V5_SONNET
+    digest_model: LanguageModelId = LanguageModelId.CLAUDE_V5_SONNET
     # Post-generation faithfulness pass: verify the digest's specific claims against the
     # source items and surgically revise unsupported ones (prompt rules alone couldn't
     # move the faithfulness score). Best-effort; disable to skip the extra LLM call.
@@ -232,7 +232,7 @@ class PipelineConfig(BaseModel):
         "0.9+: field-defining. 0.8-0.89: very important. 0.7-0.79: notable. "
         "0.6-0.69: worth noting (digest bar). <0.6: low value."
     )
-    trend_model: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
+    trend_model: LanguageModelId = LanguageModelId.CLAUDE_V5_SONNET
     trend_retention_days: int = Field(default=30, ge=1)
     trend_cooling_days: int = Field(default=7, ge=1)
     trend_max_evidence: int = Field(default=5, ge=1)
@@ -317,7 +317,7 @@ class PipelineConfig(BaseModel):
 
 
 class AgentConfig(BaseModel):
-    model_id: LanguageModelId = LanguageModelId.CLAUDE_V4_6_SONNET
+    model_id: LanguageModelId = LanguageModelId.CLAUDE_V5_SONNET
     community_search_domains: list[str] = Field(
         default_factory=lambda: ["twitter.com", "x.com", "reddit.com", "news.ycombinator.com", "substack.com"]
     )

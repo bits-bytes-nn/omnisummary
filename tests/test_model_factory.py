@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from shared.constants import LanguageModelId
-from shared.utils import _LANGUAGE_MODEL_INFO, BedrockLanguageModelFactory
+from shared.utils import _LANGUAGE_MODEL_INFO, TOKEN_COUNT_MODEL, BedrockLanguageModelFactory
 
 
 def _factory(client=None):
@@ -20,7 +20,7 @@ class TestCountTokens:
         client.count_tokens.return_value = {"inputTokens": 42}
         f = _factory(client)
         assert f.count_tokens("some text") == 42
-        assert client.count_tokens.call_args.kwargs["modelId"] == "anthropic.claude-sonnet-4-6"
+        assert client.count_tokens.call_args.kwargs["modelId"] == TOKEN_COUNT_MODEL.value
 
     def test_falls_back_to_char_estimate_on_api_error(self):
         client = MagicMock()
@@ -61,8 +61,34 @@ class TestTemperatureGating:
         cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-4-6", True)
         assert "temperature" in cfg
 
-    def test_non_cross_region_opus_48_omits_temperature(self):
+    def test_non_cross_region_opus_48_omits_temperature_and_top_k(self):
+        # Models that reject sampling params must omit BOTH temperature and top_k on the
+        # non-converse (ChatBedrock) path, or Bedrock 400s.
         f = _factory()
         info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_8_OPUS]
         cfg = f._build_model_config(info, "anthropic.claude-opus-4-8", False)
         assert "temperature" not in cfg["model_kwargs"]
+        assert "top_k" not in cfg["model_kwargs"]
+
+    def test_non_cross_region_sonnet_46_includes_top_k(self):
+        # A sampling-param-accepting model DOES get top_k on the non-converse path.
+        f = _factory()
+        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
+        cfg = f._build_model_config(info, "anthropic.claude-sonnet-4-6", False)
+        assert cfg["model_kwargs"]["top_k"] == BedrockLanguageModelFactory.DEFAULT_TOP_K
+
+    def test_sonnet_5_omits_temperature(self):
+        # Sonnet 5 rejects non-default sampling params (400), same as Opus 4.7/4.8. It is now
+        # the default digest/agent/trend model, so lock the gating in explicitly.
+        f = _factory()
+        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
+        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", True)
+        assert "temperature" not in cfg
+        assert cfg["max_tokens"] > 0
+
+    def test_sonnet_5_omits_top_k_on_non_converse(self):
+        f = _factory()
+        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
+        cfg = f._build_model_config(info, "anthropic.claude-sonnet-5", False)
+        assert "temperature" not in cfg["model_kwargs"]
+        assert "top_k" not in cfg["model_kwargs"]

@@ -1,6 +1,6 @@
-# OmniSummary — 기술 문서
+# OmniSummary — 설계 문서
 
-> OmniSummary의 상세한 line-by-line 기술 레퍼런스를 담은 단일 문서입니다.
+> OmniSummary의 상세한 line-by-line 설계·기술 레퍼런스를 담은 단일 문서입니다.
 > 상위 수준 개요는 `README.md`와 `.claude/CLAUDE.md`에 있고, 이 문서는 심화 레퍼런스입니다.
 
 ## 1. 개요
@@ -20,7 +20,7 @@ OmniSummary는 능동형(proactive) AI/ML 일일 다이제스트 시스템입니
    → 집계기 (URL + 제목 중복 제거)
    → 랭커 (Bedrock Claude Opus 4.8, 소스 슬롯 + origin 다양성)
    → 트렌드 트래커 (구조화 trends.json, StateStore)
-   → 다이제스트 생성기 (Bedrock Claude Sonnet 4.6, 한국어 구조화 DigestContent)
+   → 다이제스트 생성기 (Bedrock Claude Sonnet 5, 한국어 구조화 DigestContent)
    → 채널별 렌더링 → Slack(Block Kit) + Threads 전달
    → AgentCore Memory (다이제스트 스냅샷)
    → 데일리 비주얼 Lambda 비동기 트리거 (gpt-image-2)
@@ -61,7 +61,7 @@ AWS 아키텍처(두 경로 — 스케줄 다이제스트 / Slack 트리거 딥 
 `.env`(로컬) 또는 SSM Parameter Store의 `/{project}/{stage}/{name}` 경로(AWS)에서 옵니다.
 
 **우선순위.** `config.yaml`의 값이 Pydantic 필드 기본값을 재정의합니다. 모델 ID는 코드에 하드코딩되어 있지
-않습니다 — 예컨대 `PipelineConfig`는 `ranking_model`/`digest_model` 둘 다 Sonnet 4.6을 기본값으로 두지만,
+않습니다 — 예컨대 `PipelineConfig`는 `ranking_model`/`digest_model` 둘 다 Sonnet 5를 기본값으로 두지만,
 `config.yaml`이 `ranking_model`을 Opus 4.8로 올려 잡고 있어 실제 배포에서 랭킹은 Opus 4.8로 돕니다.
 아래 표기는 `config.yaml` 기준 실효값입니다.
 
@@ -82,7 +82,7 @@ AWS 아키텍처(두 경로 — 스케줄 다이제스트 / Slack 트리거 딥 
 
 | 영역 | 필드 | 설명 |
 |------|------|------|
-| 모델 | `ranking_model`(실효 Opus 4.8), `digest_model`(Sonnet 4.6), `trend_model` | 단계별 모델 |
+| 모델 | `ranking_model`(실효 Opus 4.8), `digest_model`(Sonnet 5), `trend_model` | 단계별 모델 |
 | 랭킹 | `ranking_batch_size`, `engagement_tiers`, `ranking_categories`, `ranking_duplicate_score_penalty`, `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치·참여도 보정·카테고리·점수 루브릭 |
 | 선정/다양성 | `top_n`, `min_score`, `source_slot_score_grace`(기본 0.1), `source_slots`, `source_cap_multiplier`, `max_per_origin`, `origin_weights`, `origin_weight_default`, `origin_weight_nudge` | 상위 N·소스 슬롯·grace 밴드(슬롯 보유 소스가 min_score 위 항목이 전무하면 grace 밴드 내 최선 1건 구제)·origin 상한·가산 보정 |
 | 다이제스트 버퍼/중복 | `digest_candidate_buffer`(기본 3), `published_url_ttl_days`(기본 6), `recent_leads_window`(기본 5) | 랭커 오버선정 버퍼(에디터가 동일 사건 병합 후 backfill)·cross-day dedup 원장 TTL·반복 방지용 최근 lead 윈도 |
@@ -103,7 +103,7 @@ AWS 아키텍처(두 경로 — 스케줄 다이제스트 / Slack 트리거 딥 
 
 | 필드 | 설명 |
 |------|------|
-| `model_id` | 에이전트 모델(기본 Sonnet 4.6) |
+| `model_id` | 에이전트 모델(기본 Sonnet 5) |
 | `research_breadth`, `research_max_iterations` | 프롬프트에 주입되는 검색 폭(쿼리 수)·깊이(라운드 수) 가이던스 |
 | `research_slack_target_words` | Slack 리포트 목표 분량(단어) 가이던스 |
 | `research_max_threads_posts` | Threads 게시물(root+reply) 총수 **하드 캡**(기본 6) — 너무 긴 리포트가 공개 게시물 수십 개로 퍼지지 않게 코드가 트림 |
@@ -216,7 +216,7 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 - **생명주기:** 날짜 기반 상태(active/cooling/archived), momentum 감쇠 랭킹, active 캡 아카이브 (§7 참조).
 
 ### 4. 다이제스트 생성기 (`digest_generator.py`)
-- **처리:** Claude Sonnet 4.6로 `DigestPrompt` → **구조화 `DigestContent`**(Pydantic: `lead`, 항상 1인 `headline_index`, `items[]` 각각 title/url/source_tag/metrics/body/implication). LLM은 산문(lead·body·implication)만 작성하고, source tag·metrics는 코드(`_fill_source_metadata`)가 URL로 매칭해 채움.
+- **처리:** Claude Sonnet 5로 `DigestPrompt` → **구조화 `DigestContent`**(Pydantic: `lead`, 항상 1인 `headline_index`, `items[]` 각각 title/url/source_tag/metrics/body/implication). LLM은 산문(lead·body·implication)만 작성하고, source tag·metrics는 코드(`_fill_source_metadata`)가 URL로 매칭해 채움.
 - **target_count + recent_leads:** `generate(..., recent_leads=...)`. 프롬프트에 `target_count`(`min(top_n, 후보수)`)와 `recent_leads`(최근 며칠 lead — "이 오프닝 각은 피하라", 특정 문구를 금지하지 않고 일반화)를 함께 넣음. 에디터는 오버선정된 후보를 병합해 정확히 target_count개의 distinct 스토리를 내되, **모델이 초과 emit하면 코드가 target_count로 트림**(프롬프트 신뢰가 아니라 결정론적 상한; headline_index는 1로 고정되어 헤드라인은 항상 보존).
 - **Slack 마크업 없음:** 다이제스트 경로는 `sanitize_slack_mrkdwn`을 호출하지 **않음**(그 정규화는 이제 딥 리서치 경로 전용 — `output/delivery.py`의 `_deliver_slack`이 모델이 흘린 마크업을 1차로 보정하고, `agent_runtime/app.py` 폴백이 동일 정규화를 적용). 채널별 마크업은 각 렌더러가 붙임.
 - **시스템 오브 레코드:** `render_digest_text`가 구조화 콘텐츠를 평문 산문으로 렌더해 `digest_text`를 만들고, 이는 트렌드 분류기·AgentCore 스냅샷이 사용.
@@ -256,10 +256,12 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 - **반환:** 모델 역량(`_LANGUAGE_MODEL_INFO`)에 맞게 구성된 `ChatBedrock`/`ChatBedrockConverse`.
 - **구성 역량:** thinking, 1M 컨텍스트, 성능 레이턴시, 프롬프트 캐싱.
 - **리전:** `BedrockCrossRegionModelHelper`가 가능 시 `global.`/`apac.` inference-profile ID를 해석.
-- **모델 ID:** `shared/constants.py`(`LanguageModelId`)에 열거; 최신은 Opus 4.8 / Sonnet 4.6.
+- **모델 ID:** `shared/constants.py`(`LanguageModelId`)에 열거; 최신은 Opus 4.8 / Sonnet 5.
+- **샘플링 파라미터 게이팅:** Sonnet 5·Opus 4.7/4.8은 비기본 `temperature`/`top_k`/`top_p`를 400으로 거부하므로, 해당 모델은 `LanguageModelInfo.supports_temperature=False`로 표시하고 팩토리가 `temperature`와 `top_k`를 함께 생략한다.
 
 **토큰 카운트.** `count_tokens(text)` / `truncate_to_tokens(text, max_tokens)`
-- Bedrock CountTokens API로 권위 있는 카운트(로컬 휴리스틱 아님). 일부 베이스 모델만 CountTokens를 노출(Sonnet은 지원, Opus 4.8은 미지원 — AccessDenied/'doesn't support counting tokens')하므로, Claude 패밀리가 토크나이저를 공유하는 점을 이용해 **호출자 모델과 무관하게 항상 `TOKEN_COUNT_MODEL`(Sonnet)로 카운트**. `model_id` 파라미터는 두 함수에서 제거됨.
+- Bedrock CountTokens API로 권위 있는 카운트(로컬 휴리스틱 아님). 일부 베이스 모델만 CountTokens를 노출(Sonnet 4.6은 지원, Opus 4.8은 미지원 — AccessDenied/'doesn't support counting tokens')하므로, **호출자 모델과 무관하게 항상 `TOKEN_COUNT_MODEL`(Sonnet 4.6)로 카운트**. `model_id` 파라미터는 두 함수에서 제거됨.
+- **토크나이저 주의:** `TOKEN_COUNT_MODEL`은 안정적으로 CountTokens를 지원하는 Sonnet 4.6으로 고정돼 있다. Sonnet 5는 토크나이저가 달라 같은 텍스트를 더 많은 토큰으로 세므로, 이 카운트는 Sonnet 5 실제 사용량을 약간 과소평가한다 — `item_text_max_tokens` 컷은 (더 넉넉한) 상한이 되므로 컨텍스트 초과 위험은 없고 보수적이다.
 - cross-region `global.`/`us.` 등 프리픽스는 베이스 id로 스트립. 오류 시 char/4 추정으로 폴백. `truncate_to_tokens`는 문자 컷 지점을 이진 탐색.
 
 **시크릿 헬퍼.** `resolve_secret(env_var, ssm_suffix)`
@@ -334,7 +336,7 @@ Slack 멘션으로 트리거되는 **자율 딥 리서치** 에이전트. 자유
 다이제스트 항목에 묶이지 않는다(예전 "후속 에이전트"는 제거됨).
 
 **구성 (`agent/research_agent.py`의 `create_research_agent`).**
-- `BedrockModel`(기본 Sonnet 4.6, `config.agent.model_id`)을 streaming + `temperature=0.0` + `CacheConfig(strategy="auto")`(§6 캐싱 참조)로 구성하고 7개 도구로 Strands `Agent`를 만든다. `max_tokens`는 `_LANGUAGE_MODEL_INFO`에서 모델 역량으로, 미등록 모델이면 `_DEFAULT_MAX_OUTPUT_TOKENS`(64000)로 폴백. cross-region inference-profile id는 `BedrockCrossRegionModelHelper`로 해석.
+- `BedrockModel`(기본 Sonnet 5, `config.agent.model_id`)을 streaming + `CacheConfig(strategy="auto")`(§6 캐싱 참조)로 구성하고 7개 도구로 Strands `Agent`를 만든다. `max_tokens`는 `_LANGUAGE_MODEL_INFO`에서 모델 역량으로, 미등록 모델이면 `_DEFAULT_MAX_OUTPUT_TOKENS`(64000)로 폴백. cross-region inference-profile id는 `BedrockCrossRegionModelHelper`로 해석.
 - AWS에선 env 리전, 로컬에선 `config.aws.bedrock_region`/`profile`로 boto 세션을 만들고 `boto_read_timeout`/`boto_connect_timeout`/`boto_max_attempts`를 적용.
 
 **`SYSTEM_PROMPT_TEMPLATE`.** 자율 에이전트 철학을 따르되 리서치 리포트에 특화된 구획을 가진다:
@@ -377,7 +379,7 @@ ingress 흐름:
 - payload의 `correlation_id`로 correlation id 시드.
 - `DeliveryContext(channel_id, thread_ts)`를 만들고 `create_research_agent()`로 에이전트 생성.
 - `request_context(delivery)`로 contextvar 스코프(동시 invoke가 한 요청의 채널을 다른 요청으로 누출하지 않게) 안에서 에이전트 실행. 응답은 `sanitize_slack_mrkdwn`. 예외 시 `_emit_agent_error_metric`(EMF `OmniSummary/AgentErrors`)을 찍고 오류 텍스트로 응답.
-- **Slack 폴백:** Slack은 항상 가용한 채널이므로 `"slack" not in delivery.delivered_channels`(에이전트가 `deliver_report`를 끝내 호출하지 않았거나 Slack 전달이 실패)면 `_send_slack_message`로 게시한다. 이때 한 줄 확인 메시지가 아니라 `delivery.last_report`(실제 리포트)를 우선 사용하고, `render_agent_blocks`(폴백 전용 래퍼) + `sanitize_slack_mrkdwn`으로 게시.
+- **Slack 폴백:** 에이전트가 **어떤 채널에도 전달하지 못했을 때만**(`channel_id and not delivery.delivered_channels` — `deliver_report`를 끝내 호출 안 했거나 모든 전달이 실패) `_send_slack_message`로 게시해 사용자가 최소한 무언가는 받게 한다. Slack이 타깃이 아니었다는 이유만으로는 폴백하지 않는다 — Threads 전용 요청이 Threads에 성공했으면 (Threads 포맷) 리포트를 Slack에 중복 투척하면 안 되기 때문. 이때 한 줄 확인 메시지가 아니라 `delivery.last_report`(실제 리포트)를 우선 사용하고, `sanitize_slack_mrkdwn`으로 게시(`_send_slack_message`가 `render_agent_blocks` 폴백 래퍼 사용).
 
 ### 9.4 OG 이미지 첨부 (`shared/media/og_image.py`)
 - **`fetch_og_image(url)`:** 페이지를 브라우저 UA로 fetch해 og:image/twitter:image 메타(`og:image`→`og:image:url`→`twitter:image`→`twitter:image:src` 우선순위)를 파싱하고 상대 URL은 페이지 URL로 절대화. 이미지는 **스트리밍**으로 받아 oversize 바디를 다 버퍼링하지 않고 중간에 중단(Content-Length 선검사 + 스트림 누적 검사, `og_image_max_bytes`/`og_image_timeout_sec`). 렌더 가능한 래스터 타입(jpeg/png/webp/gif)만 통과 — SVG 등 벡터/이색 타입은 Slack 프리뷰/Threads fetcher가 못 다뤄 제외. 어떤 오류·미존재·비이미지·oversize도 `None` 반환(절대 raise 안 함). 반환 `ImageAsset(data, source_url, image_url, content_type, alt)`.
@@ -452,7 +454,7 @@ ingress 흐름:
 
 ## 13. 테스트 & CI/CD
 
-**테스트 (`tests/`, pytest, `asyncio_mode=auto`).** 300+ 테스트, 커버리지 게이트 55%. 커버 영역:
+**테스트 (`tests/`, pytest, `asyncio_mode=auto`).** 500+ 테스트, 커버리지 게이트 55%. 커버 영역:
 - 수집기(모킹한 HTTP/feedparser).
 - Slack 이벤트 핸들러(서명 검증/중복 제거 + **형제 패키지 import 금지 가드** `test_handler_has_no_sibling_package_imports`).
 - 집계기, 랭커 파싱 + 슬롯/origin-cap 로직.
@@ -474,7 +476,7 @@ ingress 흐름:
 
 ```bash
 uv run python main.py --dry-run --sources rss reddit   # 부분 dry run
-uv run python main.py                                   # 전체 파이프라인 + Slack
+uv run python main.py                                   # 전체 파이프라인 + 전달(현재 설정: Threads)
 uv run python -m pytest tests/ -v                       # 테스트
 uv run black --check . && uv run ruff check .           # lint/format
 uv run mypy shared/ collectors/ pipeline/ agent/ agent_runtime/ output/ lambda_handlers/ infrastructure/ main.py __main__.py research_cli.py

@@ -83,7 +83,7 @@ class ContentRanker:
         above_threshold = [
             r for r in ranked_items if r.score >= self.config.min_score and r.item.item_id not in pinned_ids
         ]
-        grace = self._grace_candidates(ranked_items, above_threshold)
+        grace = self._grace_candidates(ranked_items, above_threshold, pinned)
         above_threshold.extend(grace)
         above_threshold.sort(key=lambda r: (-r.score, r.item.item_id))
         # Grace items are below min_score; they may ONLY fill their own source's guaranteed slot,
@@ -180,22 +180,36 @@ class ContentRanker:
                     ranked.score,
                 )
 
-    def _grace_candidates(self, ranked_items: list[RankedItem], above_threshold: list[RankedItem]) -> list[RankedItem]:
+    def _grace_candidates(
+        self, ranked_items: list[RankedItem], above_threshold: list[RankedItem], pinned: list[RankedItem]
+    ) -> list[RankedItem]:
         """Per-source safety net: for each source that has a guaranteed slot but landed NOTHING
         above min_score, admit its single best item if it's within source_slot_score_grace of the
         threshold. The absolute-scoring prompt systematically under-rates conversational sources
         (video/podcast transcripts vs tight articles); this keeps a strong-but-0.55 item eligible
-        without lowering the global bar for everyone. Generalizes to any under-scored source."""
+        without lowering the global bar for everyone. Generalizes to any under-scored source.
+
+        Pinned items are already guaranteed a slot, so a source they cover is NOT empty — treat it
+        as covered and exclude pinned ids from the candidate pool. Otherwise a pinned item that is
+        its source's only above-threshold entry (it's stripped from above_threshold) makes the
+        source look shut out, and grace would re-admit the pin itself (double emission) or pad the
+        source with a below-threshold filler it should not get."""
         grace = self.config.source_slot_score_grace
         if not grace or not self.config.source_slots:
             return []
         floor = self.config.min_score - grace
+        pinned_ids = {r.item.item_id for r in pinned}
         have_above = {r.item.source_type.value for r in above_threshold}
+        have_above |= {r.item.source_type.value for r in pinned}
         extra: list[RankedItem] = []
         for src, slot in self.config.source_slots.items():
             if slot < 1 or src in have_above:
                 continue
-            candidates = [r for r in ranked_items if r.item.source_type.value == src and floor <= r.score]
+            candidates = [
+                r
+                for r in ranked_items
+                if r.item.source_type.value == src and floor <= r.score and r.item.item_id not in pinned_ids
+            ]
             if candidates:
                 best = max(candidates, key=lambda r: r.score)
                 extra.append(best)

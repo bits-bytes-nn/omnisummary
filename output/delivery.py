@@ -30,6 +30,10 @@ class DeliveryContext:
     dry_run: bool = False
     staged_images: list[ImageAsset] = field(default_factory=list)
     delivered_channels: set[str] = field(default_factory=set)
+    # Content hashes of images already uploaded to Slack this invocation, so a retried
+    # deliver_report (after a mid-delivery failure that left the channel un-recorded) doesn't
+    # re-upload the same image bytes.
+    _slack_uploaded_image_hashes: set[str] = field(default_factory=set)
     # The last report text handed to deliver_report — so the runtime fallback can re-post the
     # actual report to Slack, not the agent's terminal one-line confirmation.
     last_report: str = ""
@@ -71,6 +75,9 @@ async def _deliver_slack(report: str, delivery: DeliveryContext, *, bot_token: s
         return False
 
     for image in delivery.staged_images:
+        img_hash = hashlib.sha256(image.data).hexdigest()
+        if img_hash in delivery._slack_uploaded_image_hashes:
+            continue  # already uploaded on a prior (partially-failed) attempt — don't duplicate
         await send_image_to_slack(
             image.data,
             channel_id=channel_id,
@@ -79,6 +86,7 @@ async def _deliver_slack(report: str, delivery: DeliveryContext, *, bot_token: s
             bot_token=token,
             file_ext=extension_for(image.content_type),
         )
+        delivery._slack_uploaded_image_hashes.add(img_hash)
 
     # Enforce the prompt's Slack-mrkdwn contract in code: repair any markup the model slipped
     # (## headings, **bold**, [text](url), emoji) so this primary path matches the fallback path.

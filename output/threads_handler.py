@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import boto3
@@ -15,11 +16,19 @@ THREADS_MEDIA_PROCESS_WAIT_SEC = 30
 # After an image root is published it isn't immediately addressable as a reply target;
 # replies to it can 400 with "media not found" until Meta finishes indexing (observed to take
 # well over 3 minutes for image roots). Wait once before the first reply, then retry the link
-# with backoff over a generous window before giving up. The Lambda timeout (15 min) bounds the
-# total; render (~4 min) + this budget (~5 min) leaves margin.
+# with backoff over a generous window before giving up.
+#
+# "media not found" means the ROOT isn't indexed yet — a condition ALL replies share, not a
+# per-reply problem. So the indexing wait is bounded by a single SHARED deadline across the whole
+# chain (THREADS_INDEXING_BUDGET_SEC), not by a fresh per-reply budget. Otherwise, if the root
+# never indexes, each of N replies would burn attempts×backoff independently (e.g. 5×270s ≈ 22min)
+# and blow the 15-min Lambda timeout mid-chain — the exact half-finished chain this guards against.
 THREADS_REPLY_INITIAL_WAIT_SEC = 30
 THREADS_REPLY_RETRY_ATTEMPTS = 18
 THREADS_REPLY_RETRY_BACKOFF_SEC = 15
+# Shared ceiling for total time spent waiting on root indexing across ALL replies (~4.5 min).
+# render (~4 min) + this leaves margin under the 15-min Lambda timeout.
+THREADS_INDEXING_BUDGET_SEC = 270
 # How long the hosted-image presigned URL stays valid — must outlast the
 # create-container + media-processing window with margin.
 THREADS_IMAGE_URL_TTL_SEC = 900
@@ -85,18 +94,26 @@ def _is_media_not_found(exc: httpx.HTTPStatusError) -> bool:
 
 
 async def _publish_reply_with_retry(
-    client: httpx.AsyncClient, user_id: str, token: str, text: str, reply_to_id: str
+    client: httpx.AsyncClient, user_id: str, token: str, text: str, reply_to_id: str, indexing_deadline: float
 ) -> str:
+    """Publish one reply, retrying only the "root not indexed yet" 400. Indexing retries stop at
+    the SHARED indexing_deadline (monotonic seconds) so the whole chain can't exceed the budget —
+    a per-attempt cap still applies. Non-indexing errors raise immediately."""
     last: httpx.HTTPStatusError | None = None
     for attempt in range(1, THREADS_REPLY_RETRY_ATTEMPTS + 1):
         try:
             return await _publish_post(client, user_id, token, text=text, reply_to_id=reply_to_id)
         except httpx.HTTPStatusError as e:
-            if not _is_media_not_found(e) or attempt == THREADS_REPLY_RETRY_ATTEMPTS:
+            budget_left = indexing_deadline - time.monotonic()
+            if not _is_media_not_found(e) or attempt == THREADS_REPLY_RETRY_ATTEMPTS or budget_left <= 0:
                 raise
             last = e
-            logger.info("Reply target not indexed yet (attempt %d), retrying", attempt)
-            await asyncio.sleep(THREADS_REPLY_RETRY_BACKOFF_SEC)
+            logger.info(
+                "Reply target not indexed yet (attempt %d, ~%ds indexing budget left), retrying",
+                attempt,
+                int(budget_left),
+            )
+            await asyncio.sleep(min(THREADS_REPLY_RETRY_BACKOFF_SEC, budget_left))
     assert last is not None
     raise last
 
@@ -144,6 +161,9 @@ async def post_to_threads(
             # up front so the first reply usually lands without burning retry attempts.
             if image_url and posts:
                 await asyncio.sleep(THREADS_REPLY_INITIAL_WAIT_SEC)
+            # Shared indexing deadline across ALL replies — the wait is for the root to index,
+            # a condition every reply shares, so it must not reset per reply.
+            indexing_deadline = time.monotonic() + THREADS_INDEXING_BUDGET_SEC
             # All replies hang off the ROOT (a flat thread), not off each other — otherwise
             # they nest as reply-of-reply and only the first shows under the root. Each reply is
             # best-effort: a single failure (or exhausted indexing retries) must not abandon the
@@ -151,7 +171,7 @@ async def post_to_threads(
             posted = 0
             for i, post in enumerate(posts, start=1):
                 try:
-                    await _publish_reply_with_retry(client, user_id, token, post, root_id)
+                    await _publish_reply_with_retry(client, user_id, token, post, root_id, indexing_deadline)
                     posted += 1
                     logger.debug("Posted Threads reply %d/%d", i, len(posts))
                 except Exception as e:

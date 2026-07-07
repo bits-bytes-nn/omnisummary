@@ -55,6 +55,23 @@ class TestSlackBlocks:
         assert all(len(c) <= SLACK_MAX_BLOCKS_PER_MESSAGE for c in chunks)
         assert len(chunks) > 1
 
+    def test_oversize_lead_body_implication_split_under_section_cap(self):
+        # A field longer than Slack's 3000-char section cap must be split across multiple blocks,
+        # or chat_postMessage rejects the whole message as invalid_blocks (dropping the digest).
+        huge = "문장이다. " * 900  # ~5400 chars, well over the cap
+        content = DigestContent(
+            lead=huge,
+            headline_index=1,
+            items=[DigestItem(title="스토리", url="http://e.com/x", body=huge, implication=huge)],
+        )
+        blocks = [b for chunk in render_slack_blocks(content, header="HDR") for b in chunk]
+        for b in blocks:
+            if b["type"] == "section":
+                assert len(b["text"]["text"]) <= SLACK_MAX_SECTION_CHARS
+            elif b["type"] == "rich_text":
+                for el in b["elements"][0]["elements"]:
+                    assert len(el["text"]) <= SLACK_MAX_SECTION_CHARS
+
 
 class TestThreadsPosts:
     def test_exactly_one_reply_per_item(self):
@@ -189,9 +206,10 @@ class TestResearchBlocks:
             if b["type"] == "section":
                 assert len(b["text"]["text"]) <= SLACK_MAX_SECTION_CHARS
 
-    def test_empty_report_still_has_header(self):
-        chunks = render_research_blocks("   ", header="H")
-        assert chunks[0][0]["type"] == "header"
+    def test_empty_report_renders_nothing(self):
+        # An empty/whitespace report must produce NO blocks, so the delivery loop posts nothing
+        # rather than a lonely header band with no content (matches render_agent_blocks).
+        assert render_research_blocks("   ", header="H") == []
 
 
 class TestStripSlackMrkdwn:

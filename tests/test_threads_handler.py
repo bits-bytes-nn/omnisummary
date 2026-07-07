@@ -111,6 +111,46 @@ class TestPostToThreads:
         # first and third land; second is attempted (and retried) but never blocks the others
         assert "first" in seen and "third" in seen
 
+    @pytest.mark.asyncio
+    async def test_indexing_retry_budget_shared_across_replies(self, monkeypatch):
+        # If the image root NEVER indexes, the "media not found" wait must be bounded by ONE
+        # shared budget across all replies — not a fresh budget per reply, which would multiply
+        # the wait by the reply count and blow the Lambda timeout mid-chain.
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_INITIAL_WAIT_SEC", 0)
+        monkeypatch.setattr(threads_handler, "THREADS_INDEXING_BUDGET_SEC", 100)
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 15)
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_ATTEMPTS", 1000)  # high, so the budget is the cap
+
+        clock = {"t": 0.0}
+        monkeypatch.setattr(threads_handler.time, "monotonic", lambda: clock["t"])
+
+        slept = {"total": 0.0}
+
+        async def fake_sleep(sec):
+            slept["total"] += sec
+            clock["t"] += sec  # advance the shared deadline clock as we "wait"
+
+        req = httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads")
+        resp = httpx.Response(400, request=req, json={"error": {"code": 24, "error_subcode": 4279009}})
+        not_found = httpx.HTTPStatusError("media not found", request=req, response=resp)
+
+        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
+            if reply_to_id:  # every reply: root never becomes addressable
+                raise not_found
+            return "rid"
+
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
+                with patch.object(threads_handler.asyncio, "sleep", side_effect=fake_sleep):
+                    ok = await post_to_threads(root_text="R", replies=["a", "b", "c", "d", "e"])
+
+        assert ok is True  # best-effort: chain completes (0 replies land) without raising
+        # Total indexing wait is one shared budget, not 5×. Allow one backoff of slack.
+        assert (
+            slept["total"]
+            <= threads_handler.THREADS_INDEXING_BUDGET_SEC + threads_handler.THREADS_REPLY_RETRY_BACKOFF_SEC
+        )
+
     def test_is_media_not_found_detects_code_24(self):
         req = httpx.Request("POST", "https://x")
         resp = httpx.Response(400, request=req, json={"error": {"code": 24}})

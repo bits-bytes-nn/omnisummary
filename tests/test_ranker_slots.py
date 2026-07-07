@@ -140,7 +140,7 @@ class TestSourceSlotGrace:
             _ranked(0.40, SourceType.YOUTUBE, item_id="y2", channel="c"),
             _ranked(0.80, SourceType.RSS, item_id="r1"),
         ]
-        extra = ranker._grace_candidates(ranked, [r for r in ranked if r.score >= 0.6])
+        extra = ranker._grace_candidates(ranked, [r for r in ranked if r.score >= 0.6], [])
         assert [r.item.item_id for r in extra] == ["y1"]  # best within grace, only one
 
     def test_no_grace_when_source_already_above_threshold(self):
@@ -149,18 +149,31 @@ class TestSourceSlotGrace:
             _ranked(0.70, SourceType.YOUTUBE, item_id="y1", channel="c"),
             _ranked(0.55, SourceType.YOUTUBE, item_id="y2", channel="c"),
         ]
-        extra = ranker._grace_candidates(ranked, [r for r in ranked if r.score >= 0.6])
+        extra = ranker._grace_candidates(ranked, [r for r in ranked if r.score >= 0.6], [])
         assert extra == []  # already has an above-threshold item
+
+    def test_no_grace_when_source_covered_by_pinned_item(self):
+        # A source whose only above-threshold item is pinned (stripped from above_threshold) is
+        # NOT empty — a pin covers it, so grace must not admit a below-threshold filler for it.
+        ranker = _ranker(min_score=0.6, source_slot_score_grace=0.1, source_slots={"youtube": 1})
+        ranked = [
+            _ranked(0.85, SourceType.YOUTUBE, item_id="y_pin", channel="c"),
+            _ranked(0.55, SourceType.YOUTUBE, item_id="y_weak", channel="c"),
+        ]
+        pinned = [r for r in ranked if r.item.item_id == "y_pin"]
+        # above_threshold excludes the pinned item (as rank() does), so youtube looks empty here.
+        extra = ranker._grace_candidates(ranked, [], pinned)
+        assert extra == []  # covered by the pin → no weak filler, and the pin isn't re-admitted
 
     def test_below_grace_floor_not_admitted(self):
         ranker = _ranker(min_score=0.6, source_slot_score_grace=0.1, source_slots={"youtube": 1})
         ranked = [_ranked(0.40, SourceType.YOUTUBE, item_id="y1", channel="c")]  # 0.40 < floor 0.50
-        assert ranker._grace_candidates(ranked, []) == []
+        assert ranker._grace_candidates(ranked, [], []) == []
 
     def test_grace_disabled_returns_nothing(self):
         ranker = _ranker(min_score=0.6, source_slot_score_grace=0.0, source_slots={"youtube": 1})
         ranked = [_ranked(0.55, SourceType.YOUTUBE, item_id="y1", channel="c")]
-        assert ranker._grace_candidates(ranked, []) == []
+        assert ranker._grace_candidates(ranked, [], []) == []
 
 
 class TestOriginWeights:

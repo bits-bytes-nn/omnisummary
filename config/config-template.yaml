@@ -46,7 +46,7 @@ collectors:
         topic: general
     max_results_per_query: 10
     lookback_hours: 72
-    refine_model: "anthropic.claude-sonnet-4-6"
+    refine_model: "anthropic.claude-sonnet-5"
     max_refine_queries: 3
   rsshub:
     enabled: false
@@ -60,7 +60,7 @@ pipeline:
   top_n: 5
   min_score: 0.6
   ranking_model: "anthropic.claude-opus-4-8"
-  digest_model: "anthropic.claude-sonnet-4-6"
+  digest_model: "anthropic.claude-sonnet-5"
   item_text_max_tokens: 10000
   source_slots:
     web: 1
@@ -71,7 +71,7 @@ pipeline:
   origin_weight_default: 1.0
   origin_weights: {}
     # Per-origin weight multiplier. Key = X handle, channel URL, subreddit, or feed URL.
-  trend_model: "anthropic.claude-sonnet-4-6"
+  trend_model: "anthropic.claude-sonnet-5"
   trend_retention_days: 30
   trend_cooling_days: 7
   trend_max_evidence: 5
@@ -79,7 +79,7 @@ pipeline:
   trend_momentum_half_life_days: 7.0
 
 agent:
-  model_id: "anthropic.claude-sonnet-4-6"
+  model_id: "anthropic.claude-sonnet-5"
   enable_interactive: true
 
 slack:

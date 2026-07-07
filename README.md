@@ -6,7 +6,7 @@ Proactive AI/ML daily digest system that collects content from multiple sources,
 
 - **Multi-source collection**: Reddit (public .rss feed via proxy), YouTube, X/Twitter (via RSSHub), RSS/Substack, Web Search (Tavily)
 - **LLM-powered ranking**: Claude Opus 4.8, multi-axis evaluation with source-slot + per-origin diversity caps
-- **Editorial digest**: Claude Sonnet 4.6 Korean editorial with cross-day trend tracking
+- **Editorial digest**: Claude Sonnet 5 Korean editorial with cross-day trend tracking
 - **Multi-channel delivery**: structured digest rendered per channel — Slack (Block Kit) and Threads (image root + flat reply chain), each independently toggleable
 - **Deep-research agent**: autonomous Slack-triggered Strands agent — rewrites the query, researches across web/papers/community/blogs, writes a persona-voiced cited report (same narrator as the digest), and posts to Slack (default) or Threads (on explicit request), attaching the source article's OG image
 - **AgentCore-centric**: digest state persisted in Bedrock AgentCore Memory; agent runs on AgentCore Runtime
@@ -74,7 +74,7 @@ pipeline:
   top_n: 5
   min_score: 0.6
   ranking_model: "anthropic.claude-opus-4-8"
-  digest_model: "anthropic.claude-sonnet-4-6"
+  digest_model: "anthropic.claude-sonnet-5"
   max_per_origin: 1   # cap items per channel/author/subreddit
   source_slots:
     web: 1
@@ -124,7 +124,7 @@ Add each optional capability by setting its key(s):
 |-------|-----|-------|
 | YouTube items **with transcripts** | `YOUTUBE_API_KEY` + run the local sync | Transcripts only fetch from a residential IP; see RSSHub/sync below |
 | X/Twitter items | RSSHub container (X cookies) + run the local sync | See **RSSHub Container** |
-| Daily visual / agent images | `OPENAI_API_KEY` | gpt-image-2 |
+| Daily visual (gpt-image render) | `OPENAI_API_KEY` | gpt-image-2 |
 | Threads delivery | `THREADS_ACCESS_TOKEN` + `THREADS_USER_ID` + `enable_threads_post: true` | Token is long-lived (60d), auto-refreshed in AWS |
 | Slack on/off, Threads on/off | `pipeline.enable_slack_post` / `enable_threads_post` | Independently toggleable in `config.yaml` |
 
@@ -345,7 +345,7 @@ omnisummary/
 ├── cloudflare-proxy/           # CF Worker proxy
 ├── config/                     # YAML configuration
 ├── tests/                      # Unit + CDK assertion tests
-└── docs/                       # tech-doc.md + diagrams/ (architecture + concept)
+└── docs/                       # design.md + diagrams/ (architecture + concept)
 ```
 
 ## Testing & CI

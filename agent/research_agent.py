@@ -286,15 +286,19 @@ def create_research_agent(tools: list[Any] | None = None) -> Agent:
         config.aws.bedrock_region,
     )
 
-    bedrock_model = BedrockModel(
-        boto_session=boto_session,
-        boto_client_config=boto_config,
-        model_id=resolved_model_id,
-        max_tokens=model_info.max_output_tokens if model_info else _DEFAULT_MAX_OUTPUT_TOKENS,
-        streaming=True,
-        temperature=0.0,
-        cache_config=CacheConfig(strategy="auto"),
-    )
+    model_kwargs: dict[str, Any] = {
+        "boto_session": boto_session,
+        "boto_client_config": boto_config,
+        "model_id": resolved_model_id,
+        "max_tokens": model_info.max_output_tokens if model_info else _DEFAULT_MAX_OUTPUT_TOKENS,
+        "streaming": True,
+        "cache_config": CacheConfig(strategy="auto"),
+    }
+    # Sonnet 5 / Opus 4.7/4.8 reject a non-default temperature with a 400. Send it only for
+    # models that accept sampling params (same gate the Bedrock factory uses).
+    if model_info is None or model_info.supports_temperature:
+        model_kwargs["temperature"] = 0.0
+    bedrock_model = BedrockModel(**model_kwargs)
 
     if tools is None:
         tools = [

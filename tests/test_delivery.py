@@ -30,6 +30,20 @@ class TestDeliverSlackImages:
                     await dlv.deliver_research_report("본문이다.", channel="slack", delivery=d)
         assert "comment" not in si.await_args.kwargs
 
+    @pytest.mark.asyncio
+    async def test_image_not_reuploaded_on_retry(self):
+        # If a prior attempt failed AFTER uploading the image (channel not recorded), a retried
+        # _deliver_slack must not re-upload the same image bytes.
+        d = DeliveryContext(channel_id="C9", staged_images=[_img()])
+        client = MagicMock()
+        client.chat_postMessage = AsyncMock()
+        with patch("output.slack_handler.send_image_to_slack", new=AsyncMock()) as si:
+            with patch.object(dlv, "AsyncWebClient", return_value=client):
+                with patch.object(dlv, "resolve_secret", return_value="xoxb"):
+                    await dlv._deliver_slack("본문이다.", d)
+                    await dlv._deliver_slack("본문이다.", d)  # retry
+        assert si.await_count == 1  # uploaded once across both attempts
+
 
 class TestDryRun:
     @pytest.mark.asyncio

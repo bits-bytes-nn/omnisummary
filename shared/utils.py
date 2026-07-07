@@ -80,6 +80,19 @@ _LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
         supports_prompt_caching=True,
         supports_thinking=True,
     ),
+    LanguageModelId.CLAUDE_V5_SONNET: LanguageModelInfo(
+        context_window_size=1000000,
+        # 64000 to match the rest of the registry: all pipeline/agent calls are non-streaming
+        # ainvoke, and Sonnet 5's true 128K ceiling would only raise the HTTP-timeout risk with
+        # no caller needing that much output. Bump to 128000 only alongside a streaming path.
+        max_output_tokens=64000,
+        supports_prompt_caching=True,
+        supports_thinking=True,
+        supports_1m_context_window=True,
+        # Sonnet 5 rejects non-default sampling params (temperature/top_p/top_k) with a 400,
+        # same as Opus 4.7/4.8. The factory always sends temperature=0.0, so this must be False.
+        supports_temperature=False,
+    ),
     LanguageModelId.CLAUDE_V4_OPUS: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=64000,
@@ -336,7 +349,7 @@ class BedrockLanguageModelFactory(
         if final_temperature != temperature:
             logger.debug("Adjusting temperature to 1.0 for thinking mode")
         final_max_tokens = self._validate_max_tokens(kwargs.get("max_tokens"), model_info)
-        config = self._build_base_config(resolved_model_id, use_converse, **kwargs)
+        config = self._build_base_config(resolved_model_id, use_converse, model_info, **kwargs)
         # Newer models (e.g. Opus 4.7/4.8) reject the `temperature` param entirely.
         params: dict[str, Any] = {"max_tokens": final_max_tokens}
         if model_info.supports_temperature:
@@ -358,7 +371,9 @@ class BedrockLanguageModelFactory(
         self._apply_model_features(config, model_info, use_converse, **kwargs)
         return config
 
-    def _build_base_config(self, resolved_model_id: str, use_converse: bool, **kwargs: Any) -> dict[str, Any]:
+    def _build_base_config(
+        self, resolved_model_id: str, use_converse: bool, model_info: LanguageModelInfo, **kwargs: Any
+    ) -> dict[str, Any]:
         config = {
             "model_id": resolved_model_id,
             "region_name": self.region_name,
@@ -373,10 +388,12 @@ class BedrockLanguageModelFactory(
         if use_converse:
             config.update(common_params)
         else:
-            config["model_kwargs"] = {
-                "top_k": kwargs.get("top_k", self.DEFAULT_TOP_K),
-                **common_params,
-            }
+            model_kwargs: dict[str, Any] = dict(common_params)
+            # Newer models (Sonnet 5, Opus 4.7/4.8) reject non-default sampling params — the same
+            # flag that gates `temperature` also gates `top_k`/`top_p`. Omit them there.
+            if model_info.supports_temperature:
+                model_kwargs["top_k"] = kwargs.get("top_k", self.DEFAULT_TOP_K)
+            config["model_kwargs"] = model_kwargs
         return config
 
     def _apply_model_features(

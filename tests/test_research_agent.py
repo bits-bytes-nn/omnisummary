@@ -15,7 +15,7 @@ class TestAgentPromptCaching:
             patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
             patch(
                 "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
-                return_value="global.anthropic.claude-sonnet-4-6",
+                return_value="global.anthropic.claude-sonnet-5",
             ),
         ):
             from agent.research_agent import create_research_agent
@@ -42,7 +42,7 @@ class TestAgentToolInjection:
             patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
             patch(
                 "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
-                return_value="global.anthropic.claude-sonnet-4-6",
+                return_value="global.anthropic.claude-sonnet-5",
             ),
         ):
             from agent.research_agent import create_research_agent
@@ -64,7 +64,7 @@ class TestAgentToolInjection:
             patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
             patch(
                 "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
-                return_value="global.anthropic.claude-sonnet-4-6",
+                return_value="global.anthropic.claude-sonnet-5",
             ),
         ):
             from agent.research_agent import create_research_agent
@@ -108,7 +108,7 @@ class TestVoiceInjection:
             patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
             patch(
                 "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
-                return_value="global.anthropic.claude-sonnet-4-6",
+                return_value="global.anthropic.claude-sonnet-5",
             ),
         ):
             from agent.research_agent import create_research_agent
@@ -138,6 +138,60 @@ class TestVoiceInjection:
         assert "{korean_style_rules}" in SYSTEM_PROMPT_TEMPLATE
 
 
+class TestAgentTemperatureGating:
+    def test_temperature_omitted_for_sonnet_5_default(self):
+        # config.agent.model_id defaults to Sonnet 5 (supports_temperature=False), which 400s on
+        # a non-default temperature. The agent must omit it, mirroring the Bedrock factory gate.
+        captured = {}
+
+        def fake_bedrock_model(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with (
+            patch("agent.research_agent.BedrockModel", side_effect=fake_bedrock_model),
+            patch("agent.research_agent.Agent", return_value=MagicMock(tool_names=["t"])),
+            patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
+            patch(
+                "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
+                return_value="global.anthropic.claude-sonnet-5",
+            ),
+        ):
+            from agent.research_agent import create_research_agent
+
+            create_research_agent()
+
+        assert "temperature" not in captured
+
+    def test_temperature_sent_when_model_accepts_it(self):
+        from shared.utils import LanguageModelInfo
+
+        captured = {}
+
+        def fake_bedrock_model(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        temp_ok = LanguageModelInfo(context_window_size=200000, max_output_tokens=64000, supports_temperature=True)
+        with (
+            patch("agent.research_agent.BedrockModel", side_effect=fake_bedrock_model),
+            patch("agent.research_agent.Agent", return_value=MagicMock(tool_names=["t"])),
+            patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
+            patch(
+                "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
+                return_value="global.anthropic.claude-sonnet-4-6",
+            ),
+        ):
+            import agent.research_agent as ra
+            from shared.config import Config
+
+            model_id = Config.load().agent.model_id
+            with patch.dict(ra._LANGUAGE_MODEL_INFO, {model_id: temp_ok}, clear=False):
+                ra.create_research_agent()
+
+        assert captured.get("temperature") == 0.0
+
+
 class TestAgentMaxTokensFallback:
     def test_warns_when_model_info_missing(self):
         with (
@@ -146,7 +200,7 @@ class TestAgentMaxTokensFallback:
             patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
             patch(
                 "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
-                return_value="global.anthropic.claude-sonnet-4-6",
+                return_value="global.anthropic.claude-sonnet-5",
             ),
             patch("agent.research_agent._LANGUAGE_MODEL_INFO", {}),
             patch("agent.research_agent.logger") as log,

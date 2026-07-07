@@ -109,6 +109,26 @@ class TestRankEndToEnd:
         assert "i4" in {r.item.item_id for r in result}
 
     @pytest.mark.asyncio
+    async def test_pinned_item_not_duplicated_via_grace(self):
+        # Regression: a pinned item that is its source's ONLY above-threshold entry is stripped
+        # from above_threshold, so the source looks empty to the grace path. Grace must NOT
+        # re-admit the pin (it's already guaranteed) — otherwise it appears twice AND a below-
+        # threshold filler from that source could sneak in.
+        items = _items([("a", SourceType.RSS), ("y_pin", SourceType.YOUTUBE), ("y_weak", SourceType.YOUTUBE)])
+        items[1].metadata = {"pinned": True}  # the sole strong YouTube item, pinned
+        ranker = _ranker(
+            _rankings({"a": 0.9, "y_pin": 0.85, "y_weak": 0.55}),  # y_weak in the grace band (0.5..0.6)
+            top_n=5,
+            min_score=0.6,
+            source_slot_score_grace=0.1,
+            source_slots={"web": 1, "x": 1, "rss": 1, "reddit": 1, "youtube": 1},
+        )
+        result = await ranker.rank(items)
+        ids = [r.item.item_id for r in result]
+        assert ids.count("y_pin") == 1  # pinned appears exactly once, not duplicated
+        assert "y_weak" not in ids  # source already covered by the pin → no grace filler
+
+    @pytest.mark.asyncio
     async def test_results_sorted_by_score_desc(self):
         items = _items([("a", SourceType.RSS), ("b", SourceType.REDDIT), ("c", SourceType.WEB)])
         ranker = _ranker(_rankings({"a": 0.7, "b": 0.95, "c": 0.8}), top_n=5, min_score=0.6)

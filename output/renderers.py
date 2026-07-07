@@ -90,6 +90,11 @@ def render_research_blocks(report: str, *, header: str) -> list[list[dict]]:
     then the report's prose with a divider before each numbered section heading ("*N. ...*") so
     it reads as cleanly sectioned rather than one wall of text. Paragraph-packs prose into
     <=SLACK_MAX_SECTION_CHARS sections and chunks under the per-message block cap."""
+    # Empty/whitespace report → nothing to post (never a lone header band). Mirrors
+    # render_agent_blocks / render_threads_research, which also no-op on empty input.
+    if not report.strip():
+        return []
+
     header_block = {"type": "header", "text": {"type": "plain_text", "text": header, "emoji": True}}
     blocks: list[dict] = [header_block]
 
@@ -126,6 +131,19 @@ def render_research_blocks(report: str, *, header: str) -> list[list[dict]]:
     return _chunk_blocks(blocks)
 
 
+def _mrkdwn_sections(text: str, *, wrap: str = "{}") -> list[dict]:
+    """One or more Slack `section` blocks for a mrkdwn string, splitting on the 3000-char section
+    cap so an unusually long lead/implication can't get the whole message rejected as
+    invalid_blocks. `wrap` applies emphasis to EACH piece (e.g. "_{}_" for the italic implication).
+    The split budget accounts for the wrapper so a wrapped piece still fits."""
+    body = text.strip()
+    if not body:
+        return []
+    budget = SLACK_MAX_SECTION_CHARS - (len(wrap) - 2)
+    pieces = [body] if len(body) <= budget else _split_long_paragraph(body, budget)
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": wrap.format(p)}} for p in pieces]
+
+
 def _item_blocks(item, *, with_divider: bool) -> list[dict]:
     """Block Kit blocks for one DigestItem: title link, source/metrics context,
     body as a rich_text quote (the gray vertical bar), then the implication."""
@@ -140,20 +158,22 @@ def _item_blocks(item, *, with_divider: bool) -> list[dict]:
         blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": meta}]})
 
     if item.body:
-        blocks.append(
-            {
-                "type": "rich_text",
-                "elements": [
-                    {
-                        "type": "rich_text_quote",
-                        "elements": [{"type": "text", "text": item.body}],
-                    }
-                ],
-            }
+        # Split an over-length body so no single rich_text_quote text element exceeds the section
+        # cap (which would make Slack reject the whole message as invalid_blocks).
+        body = item.body.strip()
+        pieces = (
+            [body] if len(body) <= SLACK_MAX_SECTION_CHARS else _split_long_paragraph(body, SLACK_MAX_SECTION_CHARS)
         )
+        # rich_text_quote text elements render inline (no implicit separator), so join split pieces
+        # with an explicit newline element to avoid merging words across a boundary.
+        quote_elements: list[dict] = []
+        for idx, p in enumerate(pieces):
+            if idx:
+                quote_elements.append({"type": "text", "text": "\n"})
+            quote_elements.append({"type": "text", "text": p})
+        blocks.append({"type": "rich_text", "elements": [{"type": "rich_text_quote", "elements": quote_elements}]})
 
-    if item.implication:
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"_{item.implication}_"}})
+    blocks.extend(_mrkdwn_sections(item.implication, wrap="_{}_"))
     return blocks
 
 
@@ -162,10 +182,8 @@ def render_slack_blocks(
 ) -> list[list[dict]]:
     """Render DigestContent as Slack Block Kit, split into <=SLACK_MAX_BLOCKS_PER_MESSAGE
     chunks. Returns a list of block-lists, one per chat_postMessage call."""
-    blocks: list[dict] = [
-        {"type": "header", "text": {"type": "plain_text", "text": header, "emoji": True}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": content.lead}},
-    ]
+    blocks: list[dict] = [{"type": "header", "text": {"type": "plain_text", "text": header, "emoji": True}}]
+    blocks.extend(_mrkdwn_sections(content.lead))
     if image_url:
         blocks.append({"type": "image", "image_url": image_url, "alt_text": image_alt or "daily visual"})
 
