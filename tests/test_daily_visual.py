@@ -335,6 +335,35 @@ class TestDailyVisualMaker:
                 assert await maker.run(_items()) is False
 
     @pytest.mark.asyncio
+    async def test_image_failure_still_posts_threads_text(self):
+        # Regression: an image-generation failure (e.g. OpenAI billing hard limit) must NOT sink
+        # the Threads text digest — the image is an optional attachment. Threads still posts the
+        # lead + per-story replies, with image_bytes=None (text-only container).
+        from datetime import date
+
+        from shared.models import DigestContent, DigestItem
+
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = True
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "x"}
+        content = DigestContent(
+            lead="오늘의 리드.",
+            headline_index=1,
+            items=[DigestItem(title="스토리", url="http://e.com/1", body="본문.")],
+        )
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = AsyncMock(side_effect=RuntimeError("billing hard limit"))
+                with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)) as up:
+                    with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=True)) as th:
+                        await maker.run(_items(), content, today=date(2026, 6, 10))
+        th.assert_awaited_once()
+        assert th.await_args.kwargs["root_text"] == "오늘의 리드."
+        assert th.await_args.kwargs["image_bytes"] is None  # text-only, no attachment
+        up.assert_not_called()  # Slack image upload skipped (no image)
+        assert maker.threads_ledger.already_posted(date(2026, 6, 10))  # marked as posted
+
+    @pytest.mark.asyncio
     async def test_gather_context_dispatches_by_source(self):
         # The editor agentically picks a source per research step; _gather_context routes
         # each to the matching backend (papers -> Semantic Scholar, community/news -> Tavily).

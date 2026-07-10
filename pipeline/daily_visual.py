@@ -118,17 +118,21 @@ class DailyVisualMaker:
                 f"(do not just draw him in a void): {self.config.pipeline.visual_character_sheet}"
             )
 
+        image_bytes: bytes | None = None
+        brief: VisualBrief | None = None
         try:
             image_bytes, brief = await self.generator.generate(instruction, source, context)
         except Exception:
-            # Best-effort: a visual failure must never block the digest, so catch broadly here.
-            logger.warning("Daily visual generation failed", exc_info=True)
-            return False
+            # The image is an optional attachment; its failure must NOT sink the Threads text
+            # digest, which stands on its own. Fall through with no image so _post_threads still
+            # posts the lead + per-story replies (text-only). Slack image upload is skipped below.
+            logger.warning("Daily visual generation failed; posting Threads text-only", exc_info=True)
 
         slack_ok = await self._post(image_bytes, brief)
         await self._post_threads(image_bytes, brief, content, today=today, force_republish=force_republish)
-        # Record the chosen format so tomorrow can deliberately differ. Best-effort.
-        if self.format_log:
+        # Record the chosen format so tomorrow can deliberately differ. Best-effort. Only when a
+        # brief was actually rendered — a text-only fallback has no format to record.
+        if brief and self.format_log:
             try:
                 self.format_log.append(
                     {
@@ -299,8 +303,10 @@ class DailyVisualMaker:
             return await _tavily_search(query, include_domains=self.config.agent.community_search_domains)
         return await _tavily_search(query, topic="news")
 
-    async def _post(self, image_bytes: bytes, brief: VisualBrief) -> bool:
+    async def _post(self, image_bytes: bytes | None, brief: VisualBrief | None) -> bool:
         if not self.config.pipeline.enable_slack_post:
+            return False
+        if not image_bytes or not brief:
             return False
         from output.slack_handler import send_image_to_slack
 
@@ -319,8 +325,8 @@ class DailyVisualMaker:
 
     async def _post_threads(
         self,
-        image_bytes: bytes,
-        brief: VisualBrief,
+        image_bytes: bytes | None,
+        brief: VisualBrief | None,
         content: DigestContent | None,
         *,
         today: date | None = None,
@@ -344,12 +350,16 @@ class DailyVisualMaker:
         # available, fall back to the visual's own title/caption as the root.
         if content and content.items:
             root_text, replies = render_threads_posts(content)
-        else:
+        elif brief:
             root_text, replies = f"{brief.title}\n\n{brief.caption}", []
+        else:
+            # No structured digest AND no visual brief (image generation failed) → nothing to post.
+            logger.info("No digest content or visual brief for Threads; skipping")
+            return False
 
         bucket = self.config.aws.state_bucket_name or os.environ.get("STATE_BUCKET", "")
         prefix = self.config.aws.s3_prefix.rstrip("/") + "/" if self.config.aws.s3_prefix else ""
-        image_key = f"{prefix}threads/{hashlib.sha256(image_bytes).hexdigest()[:16]}.png"
+        image_key = f"{prefix}threads/{hashlib.sha256(image_bytes).hexdigest()[:16]}.png" if image_bytes else ""
 
         # Claim the date BEFORE the multi-minute post so concurrent invocations (e.g. a client
         # that retried a timed-out invoke) see it already taken and skip, instead of all passing
