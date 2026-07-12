@@ -18,8 +18,8 @@ from shared import (
     VisualBrief,
     VisualEditorPrompt,
     create_state_store,
-    extract_json_from_llm_output,
     logger,
+    parse_json_from_llm_output,
     resolve_secret,
 )
 from shared.config import Config
@@ -275,7 +275,7 @@ class DailyVisualMaker:
             }
         )
         try:
-            return json.loads(extract_json_from_llm_output(raw))
+            return parse_json_from_llm_output(raw)
         except json.JSONDecodeError:
             logger.warning("Daily visual editor returned unparseable JSON", exc_info=True)
             return {}

@@ -16,8 +16,8 @@ from shared import (
     TrendEvidence,
     TrendMemory,
     TrendStatus,
-    extract_json_from_llm_output,
     logger,
+    parse_json_from_llm_output,
 )
 from shared.config import PipelineConfig
 from shared.state_store import StateStore
@@ -142,7 +142,7 @@ class TrendTracker:
     @staticmethod
     def _parse_observations(raw: str) -> list[dict[str, str]]:
         try:
-            data = json.loads(extract_json_from_llm_output(raw))
+            data = parse_json_from_llm_output(raw)
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning("Failed to parse trend classifier output: %s", e)
             return []

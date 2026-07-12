@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import UTC, date, datetime
 from urllib.parse import urlparse
 
@@ -18,9 +17,9 @@ from shared import (
     SourceType,
     agi_countdown_intro,
     clean_rss_feed_name,
-    extract_json_from_llm_output,
     format_collected_item,
     logger,
+    parse_json_from_llm_output,
 )
 from shared.config import PipelineConfig
 
@@ -117,7 +116,7 @@ class DigestGenerator:
 
     def _parse_content(self, raw: str) -> DigestContent:
         try:
-            data = json.loads(extract_json_from_llm_output(raw))
+            data = parse_json_from_llm_output(raw)
             content = DigestContent.model_validate(data)
             # The prompt makes items[0] the headline (lead + image are about it); pin the index
             # to 1 so a stray LLM value can't point the lead and the visual at different stories.
@@ -178,7 +177,7 @@ class DigestGenerator:
                 sources += f"\n\n[TRENDS] Verified trend-tracking history (recurrence facts):\n{trends_context}"
             chain = GroundingCheckPrompt.get_prompt() | self.llm | StrOutputParser()
             raw = await chain.ainvoke({"digest_text": _grounding_payload(content), "sources": sources})
-            data = json.loads(extract_json_from_llm_output(raw))
+            data = parse_json_from_llm_output(raw)
             violations = data.get("violations", [])
             corrected = data.get("corrected_digest", "")
             if not violations or not corrected:

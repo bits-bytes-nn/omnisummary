@@ -13,11 +13,11 @@ from shared import (
     RankedItem,
     RankingPrompt,
     SourceType,
-    extract_json_from_llm_output,
     format_collected_item,
     format_origin_label,
     logger,
     normalize_title,
+    parse_json_from_llm_output,
     resolve_origin_key,
 )
 from shared.config import PipelineConfig
@@ -330,7 +330,7 @@ class ContentRanker:
         items_by_id = {item.item_id: item for item in items}
 
         try:
-            data = json.loads(extract_json_from_llm_output(raw_output))
+            data = parse_json_from_llm_output(raw_output)
             rankings = data.get("rankings", [])
         except (json.JSONDecodeError, KeyError) as exc:
             logger.error("Failed to parse ranking LLM output: '%s'", exc)

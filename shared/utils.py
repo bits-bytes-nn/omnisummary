@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 import re
 from abc import ABC, abstractmethod
 from calendar import timegm
@@ -524,6 +525,19 @@ def extract_json_from_llm_output(raw: str) -> str:
         return text
     start, end = min(starts, key=lambda pair: pair[0])
     return text[start : end + 1]
+
+
+def parse_json_from_llm_output(raw: str) -> Any:
+    """Extract and parse the first JSON value from an LLM response, tolerating raw control
+    characters inside string values.
+
+    LLMs routinely emit unescaped newlines/tabs inside JSON string literals (a real newline
+    instead of `\\n`), which strict json.loads rejects with 'Invalid control character'.
+    strict=False permits those control chars inside strings while keeping them intact, so
+    multi-line prose survives without a lossy character-stripping pass. Callers still handle
+    JSONDecodeError for genuinely malformed output.
+    """
+    return json.loads(extract_json_from_llm_output(raw), strict=False)
 
 
 async def retry_async(

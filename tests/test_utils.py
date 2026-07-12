@@ -9,6 +9,7 @@ from shared.utils import (
     extract_json_from_llm_output,
     generate_item_id,
     parse_feed_published_date,
+    parse_json_from_llm_output,
     resolve_secret,
     retry_async,
     sanitize_slack_mrkdwn,
@@ -106,6 +107,25 @@ class TestExtractJsonFromLlmOutput:
     def test_picks_outermost_value(self):
         raw = '{"rankings": [{"item_id": "1", "score": 0.5}]}'
         assert json.loads(extract_json_from_llm_output(raw)) == {"rankings": [{"item_id": "1", "score": 0.5}]}
+
+
+class TestParseJsonFromLlmOutput:
+    def test_bare_object(self):
+        assert parse_json_from_llm_output('{"a": 1}') == {"a": 1}
+
+    def test_fenced_and_prose(self):
+        raw = 'sure:\n```json\n{"x": [1, 2]}\n```\ndone'
+        assert parse_json_from_llm_output(raw) == {"x": [1, 2]}
+
+    def test_raw_newline_in_string_value(self):
+        # Sonnet 5 emits an unescaped newline inside a string literal; strict json.loads
+        # would raise 'Invalid control character', strict=False must accept and preserve it.
+        raw = '{"body": "line one\nline two"}'
+        assert parse_json_from_llm_output(raw) == {"body": "line one\nline two"}
+
+    def test_raw_tab_in_string_value(self):
+        raw = '{"body": "col1\tcol2"}'
+        assert parse_json_from_llm_output(raw) == {"body": "col1\tcol2"}
 
 
 class TestRetryAsync:

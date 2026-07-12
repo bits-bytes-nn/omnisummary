@@ -103,6 +103,29 @@ class TestGroundingCheck:
         assert result.lead == "원본 다이제스트."
 
 
+class TestParseContent:
+    def test_parses_items_with_raw_control_chars(self):
+        # Reproduces the 2026-07-11 prod failure: Sonnet 5 emitted unescaped newlines/tabs
+        # inside string values, which strict json.loads rejected → 0-item fallback → Threads
+        # got only the lead. The lenient parse must recover all items.
+        raw = (
+            '{"lead": "리드 문장.", "headline_index": 1, "items": ['
+            '{"title": "T1", "url": "u1", "body": "본문 첫 줄.\n둘째 줄.", "implication": "시사점\t들여쓰기."},'
+            '{"title": "T2", "url": "u2", "body": "다른 본문.", "implication": "또 다른 시사점."}'
+            "]}"
+        )
+        content = _generator("")._parse_content(raw)
+        assert len(content.items) == 2
+        assert content.items[0].body == "본문 첫 줄.\n둘째 줄."
+        assert content.items[0].implication == "시사점\t들여쓰기."
+        assert content.headline_index == 1
+
+    def test_malformed_json_falls_back_to_minimal(self):
+        content = _generator("")._parse_content("totally not json")
+        assert content.items == []
+        assert content.lead == "totally not json"
+
+
 class TestTargetCountTrim:
     @pytest.mark.asyncio
     async def test_overemitted_items_trimmed_to_target(self):

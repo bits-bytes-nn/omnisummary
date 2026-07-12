@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -18,9 +17,9 @@ from shared import (
     CollectedItem,
     RefineQueryPrompt,
     SourceType,
-    extract_json_from_llm_output,
     generate_item_id,
     logger,
+    parse_json_from_llm_output,
     resolve_secret,
     retry_async,
 )
@@ -110,7 +109,7 @@ class WebSearchCollector(BaseCollector):
                     "max_queries": self.config.max_refine_queries,
                 }
             )
-            queries = json.loads(extract_json_from_llm_output(raw))
+            queries = parse_json_from_llm_output(raw)
             if isinstance(queries, list):
                 return [q for q in queries if isinstance(q, str)][: self.config.max_refine_queries]
         except Exception:
