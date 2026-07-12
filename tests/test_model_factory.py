@@ -92,3 +92,40 @@ class TestTemperatureGating:
         cfg = f._build_model_config(info, "anthropic.claude-sonnet-5", False)
         assert "temperature" not in cfg["model_kwargs"]
         assert "top_k" not in cfg["model_kwargs"]
+
+
+class TestThinkingFormat:
+    """Newer models (Sonnet 5, Opus 4.7/4.8) reject the legacy
+    thinking.type='enabled' + budget_tokens form and require adaptive thinking.
+    Guards against re-emitting the deprecated shape when thinking is enabled."""
+
+    def test_adaptive_model_emits_adaptive_thinking(self):
+        f = _factory()
+        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
+        assert info.uses_adaptive_thinking is True
+        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", True, enable_thinking=True)
+        amrf = cfg["additional_model_request_fields"]
+        assert amrf["thinking"] == {"type": "adaptive"}
+        assert "budget_tokens" not in amrf["thinking"]
+        assert amrf["output_config"]["effort"] == f.DEFAULT_THINKING_EFFORT
+
+    def test_adaptive_model_honors_thinking_effort(self):
+        f = _factory()
+        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_8_OPUS]
+        cfg = f._build_model_config(
+            info,
+            "global.anthropic.claude-opus-4-8",
+            True,
+            enable_thinking=True,
+            thinking_effort="high",
+        )
+        assert cfg["additional_model_request_fields"]["output_config"]["effort"] == "high"
+
+    def test_legacy_model_keeps_budget_form(self):
+        f = _factory()
+        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
+        assert info.uses_adaptive_thinking is False
+        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-4-6", True, enable_thinking=True)
+        thinking = cfg["additional_model_request_fields"]["thinking"]
+        assert thinking["type"] == "enabled"
+        assert thinking["budget_tokens"] == f.DEFAULT_THINKING_BUDGET_TOKENS

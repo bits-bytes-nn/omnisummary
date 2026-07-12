@@ -30,6 +30,10 @@ class LanguageModelInfo(BaseModel):
     supports_thinking: bool = False
     supports_1m_context_window: bool = False
     supports_temperature: bool = True
+    # Newer models (Sonnet 5, Opus 4.7/4.8) require the adaptive-thinking API
+    # (thinking.type="adaptive" + output_config.effort) and reject the legacy
+    # thinking.type="enabled" + budget_tokens form with a 400. Set True for those.
+    uses_adaptive_thinking: bool = False
 
 
 _LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
@@ -92,6 +96,7 @@ _LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
         # Sonnet 5 rejects non-default sampling params (temperature/top_p/top_k) with a 400,
         # same as Opus 4.7/4.8. The factory always sends temperature=0.0, so this must be False.
         supports_temperature=False,
+        uses_adaptive_thinking=True,
     ),
     LanguageModelId.CLAUDE_V4_OPUS: LanguageModelInfo(
         context_window_size=200000,
@@ -127,6 +132,7 @@ _LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
         supports_thinking=True,
         supports_1m_context_window=True,
         supports_temperature=False,
+        uses_adaptive_thinking=True,
     ),
     LanguageModelId.CLAUDE_V4_8_OPUS: LanguageModelInfo(
         context_window_size=1000000,
@@ -135,6 +141,7 @@ _LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
         supports_thinking=True,
         supports_1m_context_window=True,
         supports_temperature=False,
+        uses_adaptive_thinking=True,
     ),
     # NOTE: add new models here
 }
@@ -266,6 +273,7 @@ class BedrockLanguageModelFactory(
     DEFAULT_TEMPERATURE: ClassVar[float] = 0.0
     DEFAULT_TOP_K: ClassVar[int] = 50
     DEFAULT_THINKING_BUDGET_TOKENS: ClassVar[int] = 2048
+    DEFAULT_THINKING_EFFORT: ClassVar[str] = "medium"
     DEFAULT_LATENCY_MODE: ClassVar[str] = "normal"
 
     def _get_boto_service_name(self) -> str:
@@ -410,13 +418,24 @@ class BedrockLanguageModelFactory(
             config.setdefault("performanceConfig", {}).update({"latency": latency})
             logger.debug("Applied performance optimization (latency_mode='%s')", latency)
         if self._should_enable_thinking(enable_think, model_info):
-            budget = kwargs.get("thinking_budget_tokens", self.DEFAULT_THINKING_BUDGET_TOKENS)
-            think_config = {"thinking": {"type": "enabled", "budget_tokens": budget}}
+            if model_info.uses_adaptive_thinking:
+                # Newer models (Sonnet 5, Opus 4.7/4.8) require the adaptive form;
+                # the legacy type="enabled" + budget_tokens is rejected with a 400.
+                effort = kwargs.get("thinking_effort", self.DEFAULT_THINKING_EFFORT)
+                think_config: dict[str, Any] = {
+                    "thinking": {"type": "adaptive"},
+                    "output_config": {"effort": effort},
+                }
+                log_detail = f"effort='{effort}'"
+            else:
+                budget = kwargs.get("thinking_budget_tokens", self.DEFAULT_THINKING_BUDGET_TOKENS)
+                think_config = {"thinking": {"type": "enabled", "budget_tokens": budget}}
+                log_detail = f"budget_tokens={budget}"
             if use_converse:
                 config.setdefault("additional_model_request_fields", {}).update(think_config)
             else:
                 config.setdefault("model_kwargs", {}).update(think_config)
-            logger.debug("Applied thinking mode (budget_tokens=%d)", budget)
+            logger.debug("Applied thinking mode (%s)", log_detail)
 
     @staticmethod
     def _validate_max_tokens(max_tokens: int | None, model_info: LanguageModelInfo) -> int:
