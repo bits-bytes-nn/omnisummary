@@ -13,22 +13,21 @@ THREADS_API_BASE = "https://graph.threads.net/v1.0"
 THREADS_MAX_TEXT_LENGTH = 500
 # Meta processes the media container asynchronously; publishing too early fails.
 THREADS_MEDIA_PROCESS_WAIT_SEC = 30
-# After an image root is published it isn't immediately addressable as a reply target;
-# replies to it can 400 with "media not found" until Meta finishes indexing (observed to take
-# well over 3 minutes for image roots). Wait once before the first reply, then retry the link
-# with backoff over a generous window before giving up.
-#
-# "media not found" means the ROOT isn't indexed yet — a condition ALL replies share, not a
-# per-reply problem. So the indexing wait is bounded by a single SHARED deadline across the whole
-# chain (THREADS_INDEXING_BUDGET_SEC), not by a fresh per-reply budget. Otherwise, if the root
-# never indexes, each of N replies would burn attempts×backoff independently (e.g. 5×270s ≈ 22min)
-# and blow the 15-min Lambda timeout mid-chain — the exact half-finished chain this guards against.
-THREADS_REPLY_INITIAL_WAIT_SEC = 30
-THREADS_REPLY_RETRY_ATTEMPTS = 18
-THREADS_REPLY_RETRY_BACKOFF_SEC = 15
-# Shared ceiling for total time spent waiting on root indexing across ALL replies (~4.5 min).
-# render (~4 min) + this leaves margin under the 15-min Lambda timeout.
+# After an image root is published it isn't immediately addressable as a reply target; replies
+# to it 400 with "media not found" until Meta finishes indexing (observed to take minutes for
+# image roots). Rather than blind-retry the expensive create-container write per reply (each a
+# wasted API call + sleep), POLL the root once with a cheap GET until it's readable, then post the
+# whole reply chain without indexing retries. Readiness is a property of the ROOT, shared by every
+# reply, so it's waited for ONCE up front — bounded by a single deadline so a never-indexing root
+# can't blow the 15-min Lambda timeout mid-chain.
+THREADS_READINESS_POLL_INTERVAL_SEC = 10
+# Total time to wait for the image root to become addressable (~4.5 min). render (~4 min) + this
+# leaves margin under the 15-min Lambda timeout.
 THREADS_INDEXING_BUDGET_SEC = 270
+# Safety-net retry on the rare reply that still 400s "media not found" AFTER the readiness poll
+# said the root was up (eventual-consistency edge). Small — the poll already did the real waiting.
+THREADS_REPLY_RETRY_ATTEMPTS = 3
+THREADS_REPLY_RETRY_BACKOFF_SEC = 10
 # How long the hosted-image presigned URL stays valid — must outlast the
 # create-container + media-processing window with margin.
 THREADS_IMAGE_URL_TTL_SEC = 900
@@ -93,27 +92,48 @@ def _is_media_not_found(exc: httpx.HTTPStatusError) -> bool:
         return False
 
 
+async def _is_addressable(client: httpx.AsyncClient, post_id: str, token: str) -> bool:
+    """Cheap readiness probe: GET the post's id. A 200 means Meta has indexed it and it can now
+    be used as a reply target; a 400 'media not found' means indexing is still in flight. Any
+    other error is treated as not-ready (the caller keeps polling within its budget)."""
+    try:
+        resp = await client.get(f"{THREADS_API_BASE}/{post_id}", params={"fields": "id", "access_token": token})
+        return resp.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+async def _wait_until_addressable(client: httpx.AsyncClient, post_id: str, token: str, deadline: float) -> bool:
+    """Poll the root with cheap GETs until it's addressable as a reply target or the shared
+    deadline passes. Returns True once ready. Replaces blind create-container retries: a read poll
+    costs nothing on the write path and lets the reply chain start the instant the root indexes."""
+    while True:
+        if await _is_addressable(client, post_id, token):
+            return True
+        budget_left = deadline - time.monotonic()
+        if budget_left <= 0:
+            logger.warning("Threads root '%s' not addressable within indexing budget", post_id)
+            return False
+        logger.info("Waiting for Threads root to index (~%ds budget left)", int(budget_left))
+        await asyncio.sleep(min(THREADS_READINESS_POLL_INTERVAL_SEC, budget_left))
+
+
 async def _publish_reply_with_retry(
-    client: httpx.AsyncClient, user_id: str, token: str, text: str, reply_to_id: str, indexing_deadline: float
+    client: httpx.AsyncClient, user_id: str, token: str, text: str, reply_to_id: str
 ) -> str:
-    """Publish one reply, retrying only the "root not indexed yet" 400. Indexing retries stop at
-    the SHARED indexing_deadline (monotonic seconds) so the whole chain can't exceed the budget —
-    a per-attempt cap still applies. Non-indexing errors raise immediately."""
+    """Publish one reply. The root's readiness was already confirmed by a GET poll before the
+    chain started, so this only guards the rare eventual-consistency edge where a reply still
+    400s 'media not found'; it does a few short backoff retries. Non-indexing errors raise."""
     last: httpx.HTTPStatusError | None = None
     for attempt in range(1, THREADS_REPLY_RETRY_ATTEMPTS + 1):
         try:
             return await _publish_post(client, user_id, token, text=text, reply_to_id=reply_to_id)
         except httpx.HTTPStatusError as e:
-            budget_left = indexing_deadline - time.monotonic()
-            if not _is_media_not_found(e) or attempt == THREADS_REPLY_RETRY_ATTEMPTS or budget_left <= 0:
+            if not _is_media_not_found(e) or attempt == THREADS_REPLY_RETRY_ATTEMPTS:
                 raise
             last = e
-            logger.info(
-                "Reply target not indexed yet (attempt %d, ~%ds indexing budget left), retrying",
-                attempt,
-                int(budget_left),
-            )
-            await asyncio.sleep(min(THREADS_REPLY_RETRY_BACKOFF_SEC, budget_left))
+            logger.info("Reply target not indexed yet (attempt %d), retrying", attempt)
+            await asyncio.sleep(THREADS_REPLY_RETRY_BACKOFF_SEC)
     assert last is not None
     raise last
 
@@ -157,21 +177,21 @@ async def post_to_threads(
                 client, user_id, token, text=root_text[:THREADS_MAX_TEXT_LENGTH], image_url=image_url
             )
             logger.info("Posted Threads root '%s'", root_id)
-            # An image root needs time to become addressable as a reply target; wait once
-            # up front so the first reply usually lands without burning retry attempts.
+            # An image root needs time to become addressable as a reply target. Poll it ONCE with
+            # cheap GETs (shared across all replies — readiness is a root property) instead of
+            # blind-retrying create-container writes per reply. A TEXT root (no image) indexes
+            # ~immediately, so skip the poll there.
             if image_url and posts:
-                await asyncio.sleep(THREADS_REPLY_INITIAL_WAIT_SEC)
-            # Shared indexing deadline across ALL replies — the wait is for the root to index,
-            # a condition every reply shares, so it must not reset per reply.
-            indexing_deadline = time.monotonic() + THREADS_INDEXING_BUDGET_SEC
+                deadline = time.monotonic() + THREADS_INDEXING_BUDGET_SEC
+                await _wait_until_addressable(client, root_id, token, deadline)
             # All replies hang off the ROOT (a flat thread), not off each other — otherwise
             # they nest as reply-of-reply and only the first shows under the root. Each reply is
-            # best-effort: a single failure (or exhausted indexing retries) must not abandon the
-            # rest, so the digest never posts a half-finished comment chain ("댓글이 달리다 말았다").
+            # best-effort: a single failure must not abandon the rest, so the digest never posts a
+            # half-finished comment chain ("댓글이 달리다 말았다").
             posted = 0
             for i, post in enumerate(posts, start=1):
                 try:
-                    await _publish_reply_with_retry(client, user_id, token, post, root_id, indexing_deadline)
+                    await _publish_reply_with_retry(client, user_id, token, post, root_id)
                     posted += 1
                     logger.debug("Posted Threads reply %d/%d", i, len(posts))
                 except Exception as e:

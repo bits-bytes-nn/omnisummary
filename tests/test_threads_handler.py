@@ -1,10 +1,18 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from output import threads_handler
 from output.threads_handler import _is_media_not_found, post_to_threads
+
+
+def _ctx(obj):
+    """Wrap an object as an async context manager (stand-in for httpx.AsyncClient(...))."""
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=obj)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return cm
 
 
 class TestPostToThreads:
@@ -112,46 +120,73 @@ class TestPostToThreads:
         assert "first" in seen and "third" in seen
 
     @pytest.mark.asyncio
-    async def test_indexing_retry_budget_shared_across_replies(self, monkeypatch):
-        # If the image root NEVER indexes, the "media not found" wait must be bounded by ONE
-        # shared budget across all replies — not a fresh budget per reply, which would multiply
-        # the wait by the reply count and blow the Lambda timeout mid-chain.
-        monkeypatch.setattr(threads_handler, "THREADS_REPLY_INITIAL_WAIT_SEC", 0)
+    async def test_polls_root_readiness_before_replies(self, monkeypatch):
+        # An image root isn't instantly addressable. The handler must POLL it (cheap GET) until
+        # ready and only THEN post replies — so a reply doesn't 400 on an un-indexed root.
+        monkeypatch.setattr(threads_handler, "THREADS_READINESS_POLL_INTERVAL_SEC", 0)
+        monkeypatch.setattr(threads_handler.asyncio, "sleep", AsyncMock())
+
+        get_calls = {"n": 0}
+
+        class FakeClient:
+            async def get(self, url, params=None):
+                get_calls["n"] += 1
+                # not ready on the first probe, ready on the second
+                return httpx.Response(200 if get_calls["n"] >= 2 else 400, request=httpx.Request("GET", url))
+
+        published: list[str] = []
+
+        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
+            published.append(reply_to_id or "root")
+            return "rid"
+
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_upload_image_for_hosting", return_value="https://s3/i.png"):
+                with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
+                    with patch.object(threads_handler.httpx, "AsyncClient", return_value=_ctx(FakeClient())):
+                        ok = await post_to_threads(
+                            root_text="R", replies=["only"], image_bytes=b"P", image_bucket="b", image_key="k"
+                        )
+        assert ok is True
+        assert get_calls["n"] >= 2  # polled until ready
+        assert published == ["root", "rid"]  # reply posted after the root indexed
+
+    @pytest.mark.asyncio
+    async def test_root_never_indexes_reports_failure(self, monkeypatch):
+        # If the image root never becomes addressable within the budget, no replies land → a
+        # lone-image, story-less digest. Report failure so the ledger rollback keeps it retryable.
+        monkeypatch.setattr(threads_handler, "THREADS_READINESS_POLL_INTERVAL_SEC", 10)
         monkeypatch.setattr(threads_handler, "THREADS_INDEXING_BUDGET_SEC", 100)
-        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 15)
-        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_ATTEMPTS", 1000)  # high, so the budget is the cap
 
         clock = {"t": 0.0}
         monkeypatch.setattr(threads_handler.time, "monotonic", lambda: clock["t"])
 
-        slept = {"total": 0.0}
-
         async def fake_sleep(sec):
-            slept["total"] += sec
-            clock["t"] += sec  # advance the shared deadline clock as we "wait"
+            clock["t"] += sec
 
         req = httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads")
         resp = httpx.Response(400, request=req, json={"error": {"code": 24, "error_subcode": 4279009}})
         not_found = httpx.HTTPStatusError("media not found", request=req, response=resp)
 
+        class FakeClient:
+            async def get(self, url, params=None):
+                return httpx.Response(400, request=httpx.Request("GET", url))  # never ready
+
         async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
-            if reply_to_id:  # every reply: root never becomes addressable
+            if reply_to_id:  # the un-indexed root can't accept replies
                 raise not_found
             return "rid"
 
         with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
-            with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
-                with patch.object(threads_handler.asyncio, "sleep", side_effect=fake_sleep):
-                    ok = await post_to_threads(root_text="R", replies=["a", "b", "c", "d", "e"])
-
-        # Root posted but 0 of 5 replies landed → a lone-image, story-less digest. Report failure
-        # so the caller's ledger rollback keeps the day retryable instead of marking it "posted".
+            with patch.object(threads_handler, "_upload_image_for_hosting", return_value="https://s3/i.png"):
+                with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
+                    with patch.object(threads_handler.asyncio, "sleep", side_effect=fake_sleep):
+                        with patch.object(threads_handler.httpx, "AsyncClient", return_value=_ctx(FakeClient())):
+                            ok = await post_to_threads(
+                                root_text="R", replies=["a"], image_bytes=b"P", image_bucket="b", image_key="k"
+                            )
+        # poll never succeeds and the reply can't land → overall failure (retryable)
         assert ok is False
-        # Total indexing wait is one shared budget, not 5×. Allow one backoff of slack.
-        assert (
-            slept["total"]
-            <= threads_handler.THREADS_INDEXING_BUDGET_SEC + threads_handler.THREADS_REPLY_RETRY_BACKOFF_SEC
-        )
 
     def test_is_media_not_found_detects_code_24(self):
         req = httpx.Request("POST", "https://x")
