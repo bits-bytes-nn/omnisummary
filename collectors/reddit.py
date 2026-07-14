@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 
 from shared import CollectedItem, SourceType, generate_item_id, logger, parse_feed_published_date
@@ -10,6 +11,18 @@ from shared.proxy import parse_feed_with_fallback
 from .base import BaseCollector, cutoff_datetime
 
 RSS_BASE = "https://www.reddit.com"
+
+
+class _RetriableFeedError(RuntimeError):
+    """A transient Reddit feed failure (HTTP 429 / 5xx) worth retrying with backoff."""
+
+
+def _jittered_backoff(base_sec: float, attempt: int, seed: str) -> float:
+    """Linear backoff with deterministic per-subreddit jitter. Plain linear backoff would
+    re-synchronize concurrent retries into the same burst Reddit rate-limits; the jitter (0..base,
+    derived from the subreddit name + attempt so it needs no RNG) spreads them out."""
+    frac = int(hashlib.sha256(f"{seed}:{attempt}".encode()).hexdigest(), 16) % 1000 / 1000.0
+    return base_sec * attempt + base_sec * frac
 
 
 class RedditCollector(BaseCollector):
@@ -29,18 +42,20 @@ class RedditCollector(BaseCollector):
             logger.info("No subreddits configured, skipping")
             return []
 
-        results = await asyncio.gather(
-            *(self._collect_subreddit(sub) for sub in self.config.subreddits),
-            return_exceptions=True,
-        )
+        # Fetch subreddits SEQUENTIALLY, not via asyncio.gather: firing all feeds in one ~50ms
+        # burst from a single IP is exactly the pattern Reddit rate-limits (observed HTTP 429,
+        # one subreddit dropped per run). Serial + per-request spacing keeps us under the limit;
+        # two or three subreddits don't need parallelism.
         items: list[CollectedItem] = []
         failures: list[BaseException] = []
-        for sub, result in zip(self.config.subreddits, results, strict=True):
-            if isinstance(result, BaseException):
-                logger.warning("Reddit subreddit 'r/%s' failed: %s", sub, result)
-                failures.append(result)
-            else:
-                items.extend(result)
+        for idx, sub in enumerate(self.config.subreddits):
+            if idx:
+                await asyncio.sleep(self.config.retry_backoff_sec)
+            try:
+                items.extend(await self._collect_subreddit(sub))
+            except Exception as e:
+                logger.warning("Reddit subreddit 'r/%s' failed: %s", sub, e)
+                failures.append(e)
 
         # All subreddits failed (proxy/network/upstream outage) -> surface as a failure
         # so the health check marks Reddit FAILED and alerts, rather than a silent empty day.
@@ -55,13 +70,37 @@ class RedditCollector(BaseCollector):
         feed_url = f"{RSS_BASE}/r/{subreddit_name}/{self.config.sort}/.rss?limit={self.config.limit}"
         if self.config.sort == "top":
             feed_url += "&t=day"
-        return await asyncio.to_thread(self._parse_feed, feed_url, subreddit_name)
+        # Retry a rate-limited/transient fetch with jittered backoff instead of dropping the
+        # subreddit on the first 429. The parse itself runs in a thread (feedparser is sync).
+        last_error: Exception | None = None
+        for attempt in range(1, self.config.max_retries + 1):
+            try:
+                return await asyncio.to_thread(self._parse_feed, feed_url, subreddit_name)
+            except _RetriableFeedError as e:
+                last_error = e
+                if attempt < self.config.max_retries:
+                    delay = _jittered_backoff(self.config.retry_backoff_sec, attempt, subreddit_name)
+                    logger.warning(
+                        "Reddit 'r/%s' fetch failed (attempt %d/%d): %s; retrying in %.1fs",
+                        subreddit_name,
+                        attempt,
+                        self.config.max_retries,
+                        e,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+        assert last_error is not None
+        raise last_error
 
     def _parse_feed(self, feed_url: str, subreddit_name: str) -> list[CollectedItem]:
         feed = parse_feed_with_fallback(feed_url)
         status = feed.get("status")
         if status is not None and status >= 400:
-            raise RuntimeError(f"Reddit feed 'r/{subreddit_name}' returned HTTP {status}")
+            # 429 (rate limit) and 5xx are transient — signal a retry. 4xx (e.g. 404) is permanent.
+            msg = f"Reddit feed 'r/{subreddit_name}' returned HTTP {status}"
+            if status == 429 or status >= 500:
+                raise _RetriableFeedError(msg)
+            raise RuntimeError(msg)
         if feed.bozo and not feed.entries:
             raise RuntimeError(f"Failed to parse Reddit feed 'r/{subreddit_name}': {feed.bozo_exception}")
 

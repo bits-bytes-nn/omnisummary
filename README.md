@@ -248,9 +248,14 @@ Build and push BOTH images first (see Docker Images below), then deploy pinning 
 pushed digest. CloudFormation will not redeploy the Lambda when the image *tag* string
 is unchanged, so pass the pushed `sha256` digest via `DIGEST_IMAGE_REF`:
 
+Deploy through the repo-pinned CDK CLI (`npm install` once, then `npx cdk`) — NOT a global
+`cdk`. The CLI is pinned in `package.json` to a version compatible with the `aws-cdk-lib` in
+`pyproject.toml`; a global CLI can lag the library and fail with a cloud-assembly schema mismatch.
+
 ```bash
-export DIGEST_IMAGE_REF=sha256:<pushed-digest>   # AGENTCORE_IMAGE_REF defaults to :arm64
-AWS_PROFILE=<profile> uv run cdk deploy --all -a "uv run python scripts/deploy.py"
+npm install                                       # once — installs the pinned CDK CLI locally
+export DIGEST_IMAGE_REF=sha256:<pushed-digest>    # AGENTCORE_IMAGE_REF defaults to :arm64
+AWS_PROFILE=<profile> npx cdk deploy --all -a "uv run python scripts/deploy.py"
 ```
 
 Resources created:

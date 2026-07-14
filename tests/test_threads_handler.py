@@ -144,7 +144,9 @@ class TestPostToThreads:
                 with patch.object(threads_handler.asyncio, "sleep", side_effect=fake_sleep):
                     ok = await post_to_threads(root_text="R", replies=["a", "b", "c", "d", "e"])
 
-        assert ok is True  # best-effort: chain completes (0 replies land) without raising
+        # Root posted but 0 of 5 replies landed → a lone-image, story-less digest. Report failure
+        # so the caller's ledger rollback keeps the day retryable instead of marking it "posted".
+        assert ok is False
         # Total indexing wait is one shared budget, not 5×. Allow one backoff of slack.
         assert (
             slept["total"]

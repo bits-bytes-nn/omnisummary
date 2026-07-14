@@ -23,7 +23,7 @@ AWS 위 일간 파이프라인 · Bedrock AgentCore (Runtime + Memory) · Amazon
 
 - **멀티 소스 수집**: Reddit(프록시 경유 공개 .rss 피드), YouTube, X/Twitter(RSSHub 경유), RSS/Substack, 웹 검색(Tavily)
 - **LLM 기반 랭킹**: Claude Opus 4.8, 소스 슬롯 + 출처별 다양성 캡을 적용한 다축(multi-axis) 평가
-- **에디토리얼 다이제스트**: Claude Sonnet 4.6 한국어 에디토리얼, 일자 간 트렌드 추적 포함
+- **에디토리얼 다이제스트**: Claude Sonnet 5 한국어 에디토리얼, 일자 간 트렌드 추적 포함
 - **멀티 채널 전달**: 구조화된 다이제스트를 채널별로 렌더링 — Slack(Block Kit)과 Threads(이미지 루트 + 평면 답글 체인), 각각 독립적으로 on/off
 - **딥 리서치 에이전트**: Slack 멘션으로 작동하는 자율 Strands 에이전트 — 쿼리를 재작성하고, 웹/논문/커뮤니티/블로그를 가로질러 조사한 뒤, 다이제스트와 동일한 내레이터 보이스로 인용 기반 한국어 리포트를 작성해 Slack(기본) 또는 Threads(명시적 요청 시)에 게시하고, 출처 기사의 OG 이미지를 첨부
 - **AgentCore 중심**: 다이제스트 상태를 Bedrock AgentCore Memory에 보존하고, 에이전트는 AgentCore Runtime에서 실행
@@ -89,7 +89,7 @@ pipeline:
   top_n: 5
   min_score: 0.6
   ranking_model: "anthropic.claude-opus-4-8"
-  digest_model: "anthropic.claude-sonnet-4-6"
+  digest_model: "anthropic.claude-sonnet-5"
   max_per_origin: 1   # 채널/작성자/서브레딧당 항목 수 상한
   source_slots:
     web: 1

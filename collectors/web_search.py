@@ -354,7 +354,11 @@ async def fetch_pinned_items(urls: list[str]) -> list[CollectedItem]:
 
 def _parse_date(date_str: str) -> datetime | None:
     try:
-        return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        # Tavily often returns date-only ('2026-07-10') or tz-less ISO strings → a naive datetime.
+        # Comparing naive vs the tz-aware cutoff raises TypeError, which silently drops every such
+        # result. Assume UTC when no offset is present so date-only results still pass the window.
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
     except (ValueError, TypeError) as e:
         logger.debug("ISO date parse failed for '%s' (%s); trying RFC2822", date_str, e)
     try:

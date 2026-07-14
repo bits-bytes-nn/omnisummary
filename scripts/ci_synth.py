@@ -15,7 +15,14 @@ from shared import Config
 
 def main() -> None:
     config = Config.load()
-    env = Environment(account="123456789012", region=config.aws.region)
+    # Clear vpc_id so the foundation stack CREATES a VPC instead of Vpc.from_lookup, which needs
+    # real credentials/context and can't run against the dummy CI account. This keeps `cdk synth`
+    # (via the pinned CLI) fully offline while still exercising the CLI↔aws-cdk-lib schema handshake
+    # — the exact break a bare in-process app.synth() misses.
+    config.aws.vpc_id = ""
+    # Env-agnostic (no concrete account) so creating a VPC uses CDK's dummy AZs (Fn::GetAZs / the
+    # 2-AZ stub) instead of an STS-backed availability-zone lookup — keeps synth fully offline.
+    env = Environment(region=config.aws.region)
     app = App()
 
     foundation = OmniSummaryFoundationStack(

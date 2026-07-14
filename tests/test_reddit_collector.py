@@ -9,7 +9,9 @@ from shared.constants import SourceType
 
 
 def _config(**kwargs) -> RedditCollectorConfig:
-    base = {"subreddits": ["LocalLLaMA"], "sort": "hot", "limit": 5}
+    # retry_backoff_sec=0 keeps retries and inter-subreddit spacing instant in tests (jitter and
+    # spacing both scale by it), so a retriable-status test doesn't sleep for real.
+    base = {"subreddits": ["LocalLLaMA"], "sort": "hot", "limit": 5, "retry_backoff_sec": 0}
     base.update(kwargs)
     cfg = RedditCollectorConfig(**base)
     cfg.reference_time = datetime(2026, 6, 2, tzinfo=UTC)
@@ -116,6 +118,36 @@ class TestRedditCollect:
         with patch("collectors.reddit.parse_feed_with_fallback", side_effect=[good, bad]):
             items = await collector.collect()
         assert len(items) == 1  # one subreddit failed, the other survived
+
+    @pytest.mark.asyncio
+    async def test_retries_429_then_succeeds(self):
+        # A rate-limited (429) fetch must be retried, not dropped on the first hit. Second attempt
+        # returns a good feed → the subreddit is collected instead of lost.
+        rate_limited = _feed([], status=429)
+        good = _feed([_entry()])
+        collector = RedditCollector(_config(max_retries=3))
+        with patch("collectors.reddit.parse_feed_with_fallback", side_effect=[rate_limited, good]):
+            items = await collector.collect()
+        assert len(items) == 1
+
+    @pytest.mark.asyncio
+    async def test_429_exhausts_retries_then_fails(self):
+        # Persistent 429 across all attempts surfaces as a failure (single subreddit → total outage
+        # raises for the health alert).
+        collector = RedditCollector(_config(max_retries=2))
+        with patch("collectors.reddit.parse_feed_with_fallback", return_value=_feed([], status=429)) as mock_parse:
+            with pytest.raises(RuntimeError):
+                await collector.collect()
+        assert mock_parse.call_count == 2  # retried up to max_retries
+
+    @pytest.mark.asyncio
+    async def test_404_is_not_retried(self):
+        # A permanent 4xx (e.g. 404) must NOT be retried — fail fast.
+        collector = RedditCollector(_config(max_retries=3))
+        with patch("collectors.reddit.parse_feed_with_fallback", return_value=_feed([], status=404)) as mock_parse:
+            with pytest.raises(RuntimeError):
+                await collector.collect()
+        assert mock_parse.call_count == 1  # not retried
 
     @pytest.mark.asyncio
     async def test_builds_correct_rss_url(self):

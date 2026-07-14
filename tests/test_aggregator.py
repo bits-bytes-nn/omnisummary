@@ -133,6 +133,18 @@ class TestContentAggregator:
         result = ContentAggregator().aggregate(items)
         assert len(result) == 1
 
+    def test_pinned_item_bypasses_title_dedup(self):
+        # A pinned item sharing a normalized title with an earlier story must NOT be dropped by
+        # title dedup — otherwise the --pin-url guarantee dies before the ranker's pin-recovery
+        # (which only sees the post-aggregation list) can restore it.
+        items = [
+            _item(url="http://a.com", title="Same Title"),
+            _item(url="http://b.com", title="Same Title", metadata={"pinned": True}),
+        ]
+        result = ContentAggregator().aggregate(items)
+        urls = {it.url for it in result}
+        assert "http://b.com" in urls  # pinned survived title dedup
+
     def test_title_dedup_keeps_survivor_metadata_fills_only_missing(self):
         # The kept (first) item's own metadata must NOT be overwritten by a later duplicate;
         # the duplicate only fills keys the survivor lacks.

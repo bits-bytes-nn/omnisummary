@@ -50,7 +50,10 @@ exclude = ["tests*", "references*", "config*"]
 [tool.black]
 line-length = 120
 target-version = ["py312"]
-exclude = '''
+# force-exclude also applies when paths are passed explicitly (e.g. `black .`), so the pinned
+# CDK CLI's Python init-templates under node_modules (invalid '%name%' placeholder syntax) don't
+# fail formatting.
+force-exclude = '''
 /(
     \.git
   | \.mypy_cache
@@ -59,13 +62,14 @@ exclude = '''
   | build
   | dist
   | references
+  | node_modules
 )/
 '''
 
 [tool.ruff]
 line-length = 120
 target-version = "py312"
-exclude = [".git", ".mypy_cache", ".venv", "venv", "build", "dist", "references"]
+exclude = [".git", ".mypy_cache", ".venv", "venv", "build", "dist", "references", "node_modules"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "C4", "UP"]
@@ -93,7 +97,7 @@ warn_return_any = false
 warn_unused_configs = true
 warn_unused_ignores = false
 ignore_missing_imports = true
-exclude = "(references|tests|cdk\\.out)/"
+exclude = "(references|tests|cdk\\.out|node_modules)/"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

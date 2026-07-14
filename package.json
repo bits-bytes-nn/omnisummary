@@ -1,0 +1,12 @@
+{
+  "name": "omnisummary-cdk",
+  "private": true,
+  "description": "Pins the AWS CDK CLI so it stays compatible with the aws-cdk-lib version in pyproject.toml. Deploy via `npx cdk` (node_modules/.bin/cdk), not a global install, so a lib bump can't outrun the CLI's cloud-assembly schema support (the 2026-07 deploy break).",
+  "devDependencies": {
+    "aws-cdk": "2.1129.0"
+  },
+  "scripts": {
+    "deploy": "cdk deploy --all -a \"uv run python scripts/deploy.py\"",
+    "synth": "cdk synth -a \"uv run python scripts/ci_synth.py\""
+  }
+}

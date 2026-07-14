@@ -10,6 +10,7 @@ from shared import (
     BedrockLanguageModelFactory,
     CollectedItem,
     DigestContent,
+    DigestItem,
     DigestPrompt,
     DigestResult,
     GroundingCheckPrompt,
@@ -117,30 +118,47 @@ class DigestGenerator:
     def _parse_content(self, raw: str) -> DigestContent:
         try:
             data = parse_json_from_llm_output(raw)
-            content = DigestContent.model_validate(data)
+            if not isinstance(data, dict):
+                raise ValueError(f"Expected a JSON object, got {type(data).__name__}")
+            # Validate items INDIVIDUALLY so one malformed story (e.g. a missing url/body from an
+            # LLM slip) drops only that item — not the whole digest. Whole-object model_validate
+            # would raise on the first bad item and collapse every good story to the 0-item
+            # fallback (the same silent-empty failure class as the control-char parse bug).
+            items: list[DigestItem] = []
+            for i, raw_item in enumerate(data.get("items", []) or []):
+                try:
+                    items.append(DigestItem.model_validate(raw_item))
+                except Exception:
+                    logger.warning("Skipping malformed digest item %d: %r", i, raw_item, exc_info=True)
+            lead = data.get("lead")
+            if not isinstance(lead, str) or not lead.strip():
+                raise ValueError("Digest content is missing a usable 'lead'")
             # The prompt makes items[0] the headline (lead + image are about it); pin the index
             # to 1 so a stray LLM value can't point the lead and the visual at different stories.
-            content.headline_index = 1
-            return content
+            return DigestContent(lead=lead, headline_index=1, items=items)
         except Exception:
             logger.warning("Failed to parse digest content JSON; returning minimal content", exc_info=True)
             return DigestContent(lead=raw.strip()[:1000], headline_index=1, items=[])
 
     @staticmethod
     def _trim_keeping_pinned(items: list, target_count: int, ranked_items: list[RankedItem]) -> list:
-        """Trim to target_count but never drop a user-pinned item. Walk the items in the editor's
-        emitted order and keep them, except skip a non-pinned item once the remaining slots are
-        all needed by pinned items still ahead — so every pinned item survives while order (and
-        thus the headline at items[0]) is otherwise preserved."""
-        pinned_urls = {r.item.url for r in ranked_items if r.item.metadata.get("pinned")}
-        if not pinned_urls or len(items) <= target_count:
+        """Trim to target_count but never drop the headline (items[0]) nor a user-pinned item.
+        items[0] is the headline the lead prose and the daily visual are both written about, so it
+        MUST survive the trim — otherwise the lead/visual describe a story no longer in the digest.
+        The headline is kept first; the remaining slots preserve every pinned item, walking the
+        editor's emitted order and skipping a non-pinned item only when the slots left are all
+        needed by pinned items still ahead."""
+        if len(items) <= target_count:
             return items[:target_count]
-        kept: list = []
-        for i, it in enumerate(items):
+        pinned_urls = {r.item.url for r in ranked_items if r.item.metadata.get("pinned")}
+        # Always retain the headline; fill the rest from items[1:] preserving pins.
+        kept: list = items[:1]
+        rest = items[1:]
+        for i, it in enumerate(rest):
             if len(kept) >= target_count:
                 break
             remaining_pinned = sum(
-                1 for later in items[i:] if later.url in pinned_urls and later not in kept and later is not it
+                1 for later in rest[i:] if later.url in pinned_urls and later not in kept and later is not it
             )
             slots_left = target_count - len(kept)
             # Skip this non-pinned item only if keeping it would crowd out a pinned item still ahead.

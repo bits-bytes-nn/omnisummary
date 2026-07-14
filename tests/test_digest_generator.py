@@ -125,6 +125,31 @@ class TestParseContent:
         assert content.items == []
         assert content.lead == "totally not json"
 
+    def test_one_malformed_item_does_not_collapse_whole_digest(self):
+        # Valid JSON, valid lead, but the 2nd item is missing its required `url`. Item-level
+        # validation must drop only that item and keep the other three — NOT fall back to a
+        # 0-item digest (the same silent-empty failure class as the control-char bug).
+        raw = json.dumps(
+            {
+                "lead": "리드 문장.",
+                "items": [
+                    {"title": "T0", "url": "u0", "body": "b0"},
+                    {"title": "T1", "body": "b1"},  # missing url → invalid
+                    {"title": "T2", "url": "u2", "body": "b2"},
+                    {"title": "T3", "url": "u3", "body": "b3"},
+                ],
+            }
+        )
+        content = _generator("")._parse_content(raw)
+        assert [it.url for it in content.items] == ["u0", "u2", "u3"]
+        assert content.lead == "리드 문장."
+
+    def test_missing_lead_falls_back_to_minimal(self):
+        # Valid JSON with items but no usable lead → deterministic minimal fallback, not a crash.
+        raw = json.dumps({"items": [{"title": "T0", "url": "u0", "body": "b0"}]})
+        content = _generator("")._parse_content(raw)
+        assert content.items == []
+
 
 class TestTargetCountTrim:
     @pytest.mark.asyncio
@@ -195,6 +220,29 @@ class TestTargetCountTrim:
         items = [DigestItem(title="T", url=f"u{i}", body="b") for i in range(5)]
         kept = DigestGenerator._trim_keeping_pinned(items, 3, ranked)
         assert [it.url for it in kept] == ["u0", "u1", "u2"]
+
+    def test_headline_survives_when_pins_fill_all_slots(self):
+        # Non-pinned headline (u0) + 5 pinned (u1..u5), target=5. The headline MUST be kept —
+        # the lead prose and daily visual are about items[0]; dropping it desyncs them. One pin
+        # is squeezed out instead (pins already exceed the remaining slots).
+        ranked = [
+            RankedItem(
+                item=CollectedItem(
+                    item_id=f"i{i}",
+                    source_type=SourceType.RSS,
+                    title="T",
+                    url=f"u{i}",
+                    metadata={} if i == 0 else {"pinned": True},
+                ),
+                score=0.5,
+            )
+            for i in range(6)
+        ]
+        items = [DigestItem(title="T", url=f"u{i}", body="b") for i in range(6)]
+        kept = DigestGenerator._trim_keeping_pinned(items, 5, ranked)
+        urls = [it.url for it in kept]
+        assert len(urls) == 5
+        assert urls[0] == "u0"  # headline preserved at the front
 
 
 class TestFormatRecentLeads:

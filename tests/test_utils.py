@@ -232,3 +232,13 @@ class TestSanitizeSlackMrkdwn:
     def test_italic_no_space_inside_markers(self):
         out = sanitize_slack_mrkdwn("text _ padded phrase _ end")
         assert "_ padded" not in out and "phrase _" not in out
+
+    def test_markdown_link_with_parens_in_url_preserved(self):
+        # A citation URL containing balanced parens (Wikipedia, arXiv, DOIs) must survive the
+        # [text](url) → <url|text> conversion intact, not truncate at the first ')'.
+        out = sanitize_slack_mrkdwn("see [Foo](https://en.wikipedia.org/wiki/Foo_(bar))")
+        assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in out
+
+    def test_markdown_link_simple_url(self):
+        out = sanitize_slack_mrkdwn("[label](https://example.com/x)")
+        assert out == "<https://example.com/x|label>"

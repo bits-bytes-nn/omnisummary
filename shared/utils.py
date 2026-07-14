@@ -290,7 +290,16 @@ class BedrockLanguageModelFactory(
         'doesn't support counting tokens'). The Claude family shares a tokenizer, so we always
         count with TOKEN_COUNT_MODEL regardless of the caller's model — accurate for all of them
         and avoids per-model 'unsupported' failures. Falls back to a char estimate on error.
-        CountTokens needs the BASE id, so any cross-region 'global.'/'us.' prefix is stripped."""
+        CountTokens needs the BASE id, so any cross-region 'global.'/'us.' prefix is stripped.
+
+        Results are memoized on the factory instance keyed by a text hash: prompt-building counts
+        the same item text across ranker/digest/grounding stages, and truncate_to_tokens binary-
+        searches many overlapping prefixes — each an identical repeat call otherwise billed anew."""
+        cache = self.__dict__.setdefault("_token_count_cache", {})
+        key = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
         base_id = TOKEN_COUNT_MODEL.value
         base_id = base_id.split(".", 1)[1] if base_id.split(".", 1)[0] in ("global", "us", "eu", "apac") else base_id
         try:
@@ -298,10 +307,12 @@ class BedrockLanguageModelFactory(
                 modelId=base_id,
                 input={"converse": {"messages": [{"role": "user", "content": [{"text": text}]}]}},
             )
-            return int(resp["inputTokens"])
+            result = int(resp["inputTokens"])
         except Exception as e:
             logger.warning("Bedrock count_tokens failed (%s); using char/4 estimate", e)
             return len(text) // 4
+        cache[key] = result
+        return result
 
     def truncate_to_tokens(self, text: str, max_tokens: int) -> str:
         """Truncate text to <= max_tokens, measured by the Bedrock CountTokens API. Binary-searches
@@ -630,8 +641,11 @@ def sanitize_slack_mrkdwn(text: str) -> str:
     text = _normalize_bold_spans(text)
     text = _normalize_italic_spans(text)
 
-    text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"<\2|\1>", text)
-    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"<\2|\1>", text)
+    # URL capture allows balanced paren groups (e.g. Wikipedia 'Foo_(bar)', arXiv, DOIs) instead of
+    # stopping at the first ')', which would truncate the link and leak a stray ')' into the text.
+    _url = r"(?:[^()\s]|\([^()\s]*\))+"
+    text = re.sub(rf"!\[([^\]]*)\]\((?P<u>{_url})\)", r"<\g<u>|\1>", text)
+    text = re.sub(rf"\[([^\]]+)\]\((?P<u>{_url})\)", r"<\g<u>|\1>", text)
 
     text = re.sub(
         r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF"

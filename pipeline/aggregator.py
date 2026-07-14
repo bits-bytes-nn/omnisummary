@@ -77,7 +77,11 @@ class ContentAggregator:
         title_dupes = 0
         for item in url_deduped:
             norm = normalize_title(item.title)
-            if norm in seen_titles:
+            # Pinned items (user-specified via --pin-url) bypass title dedup too — mirroring the
+            # URL-dedup bypass above. Otherwise a pin sharing a normalized title with an
+            # earlier-inserted story is dropped here, before the ranker's pin-recovery can see it,
+            # silently defeating the --pin-url force-inclusion guarantee.
+            if norm in seen_titles and not item.metadata.get("pinned"):
                 logger.debug(
                     "Duplicate title skipped: '%s' (same as '%s')",
                     item.title[:60],

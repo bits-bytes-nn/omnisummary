@@ -77,8 +77,16 @@ jobs:
         run: uv python install 3.12
       - name: Install dependencies
         run: uv sync --extra dev
-      - name: Synthesize CDK (offline, dummy account)
-        run: uv run python scripts/ci_synth.py
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install pinned CDK CLI
+        run: npm ci || npm install
+      # Run synth through the repo-pinned CDK CLI (not a bare app.synth()) so the CLI↔aws-cdk-lib
+      # cloud-assembly schema handshake is exercised — the exact drift that broke a deploy in 2026-07.
+      - name: Synthesize CDK via pinned CLI (offline)
+        run: npx cdk synth -a "uv run python scripts/ci_synth.py"
 
   docker:
     name: Docker build

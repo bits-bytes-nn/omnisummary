@@ -176,6 +176,12 @@ async def post_to_threads(
                     logger.debug("Posted Threads reply %d/%d", i, len(posts))
                 except Exception as e:
                     logger.warning("Threads reply %d/%d failed, continuing: %s", i, len(posts), e)
+        # If there were stories to post but NONE landed (e.g. the image root never indexed within
+        # the budget), the digest is a lone image with no stories. Report failure so the caller's
+        # ledger rollback keeps the day retryable instead of marking a broken digest "posted".
+        if posts and posted == 0:
+            logger.warning("Threads root posted but all %d reply posts failed — reporting failure", len(posts))
+            return False
         logger.info("Successfully posted digest to Threads (%d/%d reply posts)", posted, len(posts))
         return True
     except httpx.HTTPStatusError as e:

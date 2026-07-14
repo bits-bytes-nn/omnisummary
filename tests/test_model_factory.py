@@ -45,6 +45,16 @@ class TestCountTokens:
         f = _factory(client)
         assert f.truncate_to_tokens("short", 100) == "short"
 
+    def test_count_tokens_memoizes_identical_text(self):
+        # The same text is counted many times (prompt building across stages, truncate's binary
+        # search); repeat calls must hit the instance cache, not re-bill the Bedrock API.
+        client = MagicMock()
+        client.count_tokens.return_value = {"inputTokens": 7}
+        f = _factory(client)
+        assert f.count_tokens("repeated") == 7
+        assert f.count_tokens("repeated") == 7
+        assert client.count_tokens.call_count == 1  # second call served from cache
+
 
 class TestTemperatureGating:
     def test_opus_48_omits_temperature(self):

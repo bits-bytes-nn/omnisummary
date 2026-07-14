@@ -62,6 +62,22 @@ class TestParseResults:
         items = c._parse_results({"results": [r]}, trend_name="t")
         assert len(items) == 1
 
+    def test_date_only_published_date_is_kept(self):
+        # Tavily often returns a date-only 'published_date' ('2026-06-03'), which parses to a naive
+        # datetime; comparing it to the tz-aware cutoff used to raise TypeError and silently drop
+        # the result. It must now be treated as UTC and kept when recent.
+        c = _collector(min_search_score=0.0)
+        r = {
+            "url": "https://example.com/d",
+            "title": "date-only",
+            "content": "x",
+            "score": 0.9,
+            "published_date": "2026-06-03",
+        }
+        items = c._parse_results({"results": [r]}, trend_name="t")
+        assert len(items) == 1
+        assert items[0].published_at.tzinfo is not None
+
 
 class TestCollect:
     @pytest.mark.asyncio
