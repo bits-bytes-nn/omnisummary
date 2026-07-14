@@ -75,7 +75,26 @@ class RedditCollector(BaseCollector):
         last_error: Exception | None = None
         for attempt in range(1, self.config.max_retries + 1):
             try:
-                return await asyncio.to_thread(self._parse_feed, feed_url, subreddit_name)
+                # feedparser.parse has no timeout; bound each attempt so a hung fetch doesn't block
+                # its worker thread indefinitely. A timeout is transient → retried like a 429/5xx.
+                return await asyncio.wait_for(
+                    asyncio.to_thread(self._parse_feed, feed_url, subreddit_name),
+                    timeout=self.config.request_timeout,
+                )
+            except TimeoutError:
+                last_error = _RetriableFeedError(
+                    f"Reddit 'r/{subreddit_name}' timed out after {self.config.request_timeout}s"
+                )
+                if attempt < self.config.max_retries:
+                    delay = _jittered_backoff(self.config.retry_backoff_sec, attempt, subreddit_name)
+                    logger.warning(
+                        "Reddit 'r/%s' fetch timed out (attempt %d/%d); retrying in %.1fs",
+                        subreddit_name,
+                        attempt,
+                        self.config.max_retries,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
             except _RetriableFeedError as e:
                 last_error = e
                 if attempt < self.config.max_retries:

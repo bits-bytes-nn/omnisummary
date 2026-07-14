@@ -63,7 +63,7 @@ class ContentAggregator:
                 continue
             if key in seen_urls:
                 logger.debug("Duplicate URL skipped: '%s'", item.url)
-                self._fill_missing_metadata(seen_urls[key], item)
+                seen_urls[key] = self._pick_survivor(seen_urls[key], item)
             else:
                 seen_urls[key] = item
 
@@ -82,12 +82,18 @@ class ContentAggregator:
             # earlier-inserted story is dropped here, before the ranker's pin-recovery can see it,
             # silently defeating the --pin-url force-inclusion guarantee.
             if norm in seen_titles and not item.metadata.get("pinned"):
+                prev = seen_titles[norm]
                 logger.debug(
                     "Duplicate title skipped: '%s' (same as '%s')",
                     item.title[:60],
-                    seen_titles[norm].title[:60],
+                    prev.title[:60],
                 )
-                self._fill_missing_metadata(seen_titles[norm], item)
+                survivor = self._pick_survivor(prev, item)
+                if survivor is not prev:
+                    # A later duplicate has richer content; swap it in at the survivor's position
+                    # so the digest reads the fuller text (order otherwise preserved).
+                    seen_titles[norm] = survivor
+                    deduplicated[deduplicated.index(prev)] = survivor
                 title_dupes += 1
             else:
                 seen_titles[norm] = item
@@ -105,6 +111,26 @@ class ContentAggregator:
         )
 
         return deduplicated
+
+    @classmethod
+    def _pick_survivor(cls, incumbent: CollectedItem, dupe: CollectedItem) -> CollectedItem:
+        """Choose which of two duplicates to keep, then back-fill the loser's metadata onto it.
+
+        The ranker and digest read the survivor's `text`, so keep whichever body is richer rather
+        than blindly keeping the first-seen item (a thin Reddit .rss link-post would otherwise beat
+        the same article's full-text RSS/web entry just because its collector ran first). A pinned
+        item always wins; otherwise the meaningfully-longer body wins; ties keep the incumbent so
+        collector order still breaks ties deterministically."""
+        if dupe.metadata.get("pinned") and not incumbent.metadata.get("pinned"):
+            winner, loser = dupe, incumbent
+        elif incumbent.metadata.get("pinned"):
+            winner, loser = incumbent, dupe
+        elif len((dupe.text or "").strip()) > len((incumbent.text or "").strip()):
+            winner, loser = dupe, incumbent
+        else:
+            winner, loser = incumbent, dupe
+        cls._fill_missing_metadata(winner, loser)
+        return winner
 
     @staticmethod
     def _fill_missing_metadata(kept: CollectedItem, dupe: CollectedItem) -> None:

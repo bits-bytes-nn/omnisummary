@@ -50,3 +50,23 @@ class TestReachability:
                 with patch.object(c, "_parse_feed", return_value=[]):
                     items = await c.collect()
         assert items == []  # reachable but no recent posts -> empty (not raised)
+
+    @pytest.mark.asyncio
+    async def test_hung_feed_times_out_and_is_skipped(self, monkeypatch):
+        # A feed host that never returns must not block its worker forever — a per-feed timeout
+        # skips it (empty), and since it's the only account, collect() returns empty (not hangs).
+        import time
+
+        monkeypatch.delenv("STATE_BUCKET", raising=False)
+        c = RSSHubCollector(_config(request_timeout=1))
+        resp = MagicMock(status_code=200)
+
+        def _hang(*args, **kwargs):
+            time.sleep(5)  # exceeds request_timeout=1
+            return []
+
+        with patch("collectors.rsshub.load_items_from_s3", return_value=None):
+            with patch("httpx.get", return_value=resp):
+                with patch.object(c, "_parse_feed", side_effect=_hang):
+                    items = await c.collect()
+        assert items == []  # hung feed skipped, not raised, not hung

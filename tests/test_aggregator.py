@@ -145,6 +145,37 @@ class TestContentAggregator:
         urls = {it.url for it in result}
         assert "http://b.com" in urls  # pinned survived title dedup
 
+    def test_url_dedup_prefers_richer_body(self):
+        # Same URL from two collectors: the thin first-seen item must NOT win over a later
+        # duplicate with a full body (the ranker/digest read the survivor's text).
+        items = [
+            _item(url="http://a.com/x", title="A", text=""),
+            _item(url="http://a.com/x", title="A", text="full article body with real content"),
+        ]
+        result = ContentAggregator().aggregate(items)
+        assert len(result) == 1
+        assert result[0].text == "full article body with real content"
+
+    def test_title_dedup_prefers_richer_body(self):
+        items = [
+            _item(url="http://a.com", title="Same Title", text="short"),
+            _item(url="http://b.com", title="Same Title", text="a much longer and richer body text"),
+        ]
+        result = ContentAggregator().aggregate(items)
+        assert len(result) == 1
+        assert result[0].text == "a much longer and richer body text"
+
+    def test_dedup_tie_keeps_first_seen(self):
+        # Equal-length bodies → collector order breaks the tie (first-seen wins), preserving
+        # deterministic behavior.
+        items = [
+            _item(url="http://a.com", title="Same", text="aaaa", metadata={"who": "first"}),
+            _item(url="http://b.com", title="Same", text="bbbb", metadata={"who": "second"}),
+        ]
+        result = ContentAggregator().aggregate(items)
+        assert len(result) == 1
+        assert result[0].metadata["who"] == "first"
+
     def test_title_dedup_keeps_survivor_metadata_fills_only_missing(self):
         # The kept (first) item's own metadata must NOT be overwritten by a later duplicate;
         # the duplicate only fills keys the survivor lacks.

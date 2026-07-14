@@ -105,7 +105,16 @@ class RSSHubCollector(BaseCollector):
         feed_path = self._build_feed_path(username, platform)
         feed_url = f"{self.config.base_url.rstrip('/')}/{feed_path}"
         logger.info("Collecting RSSHub feed: '%s'", feed_url)
-        return await asyncio.to_thread(self._parse_feed, feed_url, username, platform)
+        # feedparser.parse has no built-in timeout; bound it (as RSSCollector does) so one hung
+        # feed host can't block its worker thread indefinitely and starve the digest's time budget.
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._parse_feed, feed_url, username, platform),
+                timeout=self.config.request_timeout,
+            )
+        except TimeoutError:
+            logger.warning("RSSHub feed '%s' timed out after %ds, skipping", feed_url, self.config.request_timeout)
+            return []
 
     @staticmethod
     def _build_feed_path(username: str, platform: str) -> str:

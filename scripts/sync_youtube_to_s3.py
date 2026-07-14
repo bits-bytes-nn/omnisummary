@@ -11,7 +11,6 @@ Run locally via cron (e.g., daily before the AWS digest pipeline):
 """
 
 import asyncio
-import json
 import os
 import sys
 
@@ -29,6 +28,7 @@ os.environ.pop("STATE_BUCKET", None)
 os.environ.pop("CLOUDFLARE_PROXY_URL", None)
 os.environ.pop("CLOUDFLARE_PROXY_TOKEN", None)
 
+from collectors.base import dump_items_envelope
 from collectors.youtube import YouTubeCollector
 from shared import Config, logger
 
@@ -49,7 +49,7 @@ async def main() -> None:
 
     with_transcript = sum(1 for it in items if it.text and it.text.strip())
     logger.info("Collected %d YouTube items (%d with transcript/body text)", len(items), with_transcript)
-    data = [item.model_dump(mode="json") for item in items]
+    payload = dump_items_envelope(items)
 
     bucket = config.aws.state_bucket_name
     prefix = config.aws.s3_prefix
@@ -59,7 +59,7 @@ async def main() -> None:
 
         out = Path("digest_state/youtube_items.json")
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        out.write_text(payload, encoding="utf-8")
         logger.info("Saved %d items to '%s'", len(items), out)
         return
 
@@ -79,11 +79,7 @@ async def main() -> None:
             region_name=config.aws.region,
         )
     s3 = session.client("s3")
-    s3.put_object(
-        Bucket=bucket,
-        Key=s3_key,
-        Body=json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"),
-    )
+    s3.put_object(Bucket=bucket, Key=s3_key, Body=payload.encode("utf-8"))
     logger.info("Uploaded %d YouTube items to 's3://%s/%s'", len(items), bucket, s3_key)
 
 
