@@ -162,6 +162,21 @@ class TestAgentCoreMemoryStore:
         client.list_sessions.return_value = {"sessionSummaries": []}
         assert store.get_latest_digest() is None
 
+    def test_get_latest_digest_follows_pagination(self):
+        # The true latest session is on the SECOND page. A single-page (maxResults=100) lookup
+        # would miss it and serve a stale snapshot; pagination must collect all pages first.
+        store, client = self._store()
+        page1 = {"sessionSummaries": [{"sessionId": "digest-2026-06-01"}], "nextToken": "tok"}
+        page2 = {"sessionSummaries": [{"sessionId": "digest-2026-06-30"}]}
+        client.list_sessions.side_effect = [page1, page2]
+        client.list_events.return_value = {
+            "events": [{"payload": [{"conversational": {"content": {"text": '{"x": 1}'}}}]}]
+        }
+        result = store.get_latest_digest()
+        assert result == {"x": 1}
+        assert client.list_events.call_args.kwargs["sessionId"] == "digest-2026-06-30"  # newest across pages
+        assert client.list_sessions.call_count == 2
+
     def test_get_recent_digests_excludes_and_date_bounds(self):
         # Production path: newest-first, drops exclude_date (today) and anything before after_date.
         store, client = self._store()

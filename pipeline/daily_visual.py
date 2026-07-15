@@ -18,6 +18,7 @@ from shared import (
     VisualBrief,
     VisualEditorPrompt,
     create_state_store,
+    get_correlation_id,
     logger,
     parse_json_from_llm_output,
     resolve_secret,
@@ -366,10 +367,13 @@ class DailyVisualMaker:
         # the already_posted() check above and each posting. Roll back if the post fails so a
         # genuine failure stays retryable — but only if WE added the mark, so a force-republish
         # failure doesn't wipe out a prior day's successful-post record.
+        # run_id scopes marker ownership: a rollback only releases the marker THIS run wrote, so a
+        # concurrent invocation's failure can't erase the marker of one that succeeded.
+        run_id = get_correlation_id() or ""
         was_marked = bool(self.threads_ledger and self.threads_ledger.already_posted(post_date))
         if self.threads_ledger and not was_marked:
             try:
-                self.threads_ledger.mark(post_date)
+                self.threads_ledger.mark(post_date, run_id)
             except Exception:
                 logger.warning("Failed to record Threads post marker (non-fatal)", exc_info=True)
 
@@ -386,16 +390,16 @@ class DailyVisualMaker:
             # stays retryable, log, and don't let a Threads failure escape into run().
             logger.warning("Threads post failed", exc_info=True)
             if not was_marked:
-                self._release_threads_marker(post_date)
+                self._release_threads_marker(post_date, run_id)
             return False
         if not posted and not was_marked:
-            self._release_threads_marker(post_date)
+            self._release_threads_marker(post_date, run_id)
         return posted
 
-    def _release_threads_marker(self, post_date: date) -> None:
+    def _release_threads_marker(self, post_date: date, run_id: str = "") -> None:
         if not self.threads_ledger:
             return
         try:
-            self.threads_ledger.unmark(post_date)
+            self.threads_ledger.unmark(post_date, run_id)
         except Exception:
             logger.warning("Failed to roll back Threads post marker (non-fatal)", exc_info=True)

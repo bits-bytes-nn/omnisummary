@@ -31,42 +31,64 @@ class ThreadsPostLedger:
     """Idempotency marker for the daily Threads post. Records the dates a digest has already
     been published to Threads so a re-run — a same-day manual `main.py`, or an automatic
     async retry of the visual Lambda after a timeout — doesn't post the whole root+replies
-    set again. Persisted as a capped list of ISO dates in the StateStore.
+    set again. Persisted as a capped {date: owner_run_id} map in the StateStore.
 
     The caller marks the date BEFORE starting the (multi-minute) post and rolls back via
     unmark() if the post fails, so concurrent invocations racing the same date don't all
-    pass the already_posted() check during the long publish window. This narrows but does
-    not fully close the check-then-act race: the StateStore read-modify-write is not atomic,
-    so it defends against accidental duplicate invocations rather than guaranteeing a lock."""
+    pass the already_posted() check during the long publish window.
+
+    unmark() is OWNERSHIP-SCOPED: it only releases a marker this run wrote (matching run_id).
+    Without that, invocation B failing could delete the marker invocation A wrote for a post
+    that SUCCEEDED — and the next scheduled run would then re-post a duplicate digest. The
+    StateStore read-modify-write is still not atomic (no lock), but ownership scoping closes
+    the specific 'a peer's failure erases my success' hole."""
 
     MAX_DATES = 30
 
     def __init__(self, store: StateStore) -> None:
         self.store = store
 
-    def _dates(self) -> list[str]:
-        data = self.store.read_json(THREADS_POSTED_KEY, default=[]) or []
-        return [d for d in data if isinstance(d, str)] if isinstance(data, list) else []
+    def _marks(self) -> dict[str, str]:
+        """Return {iso_date: owner_run_id}, tolerating the legacy list-of-dates format."""
+        data = self.store.read_json(THREADS_POSTED_KEY, default={})
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
+        if isinstance(data, list):  # legacy: bare ISO dates, no owner
+            return {d: "" for d in data if isinstance(d, str)}
+        return {}
+
+    def _write(self, marks: dict[str, str]) -> None:
+        # Cap to the most recent MAX_DATES by ISO date (lexicographic == chronological).
+        trimmed = dict(sorted(marks.items())[-self.MAX_DATES :])
+        self.store.write_json(THREADS_POSTED_KEY, trimmed)
 
     def already_posted(self, today: date) -> bool:
-        return today.isoformat() in self._dates()
+        return today.isoformat() in self._marks()
 
-    def mark(self, today: date) -> None:
-        dates = self._dates()
+    def mark(self, today: date, run_id: str = "") -> None:
+        marks = self._marks()
         iso = today.isoformat()
-        if iso in dates:
+        if iso in marks:
             return
-        dates.append(iso)
-        self.store.write_json(THREADS_POSTED_KEY, dates[-self.MAX_DATES :])
+        marks[iso] = run_id
+        self._write(marks)
 
-    def unmark(self, today: date) -> None:
-        """Remove a date marked optimistically before a post that then failed, so the post
-        stays retryable. No-op if the date isn't recorded."""
+    def unmark(self, today: date, run_id: str = "") -> None:
+        """Release a date marked optimistically before a post that then failed, so the post
+        stays retryable. Only releases a marker THIS run owns (its run_id) — never a marker a
+        concurrent run wrote for a post that may have succeeded. No-op if absent or not owned."""
         iso = today.isoformat()
-        dates = self._dates()
-        if iso not in dates:
+        marks = self._marks()
+        owner = marks.get(iso)
+        if owner is None:
             return
-        self.store.write_json(THREADS_POSTED_KEY, [d for d in dates if d != iso])
+        # Own it if the run_id matches, or if the marker is unowned (legacy/empty) — the latter
+        # preserves prior single-writer behavior when no run_id is threaded through.
+        if owner and run_id and owner != run_id:
+            logger.info("Not releasing Threads marker for %s: owned by another run", iso)
+            return
+        del marks[iso]
+        self._write(marks)
 
 
 class PublishedUrlLedger:
@@ -132,7 +154,13 @@ class RollingLog:
         data = self.store.read_json(self.key, default=[]) or []
         return data if isinstance(data, list) else []
 
-    def append(self, record: dict) -> None:
+    def append(self, record: dict, dedup_key: str | None = None) -> None:
+        """Append a record, capped FIFO. When dedup_key is given, first drop any existing entry
+        whose value at that key equals this record's — so a same-day re-run (e.g.
+        --force-republish) replaces its prior entry instead of pushing a duplicate that would
+        crowd out the window (the ledger and trends paths dedup by date the same way)."""
         log = self.entries()
+        if dedup_key is not None and dedup_key in record:
+            log = [e for e in log if e.get(dedup_key) != record[dedup_key]]
         log.append(record)
         self.store.write_json(self.key, log[-self.max_entries :])

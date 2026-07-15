@@ -104,7 +104,7 @@ class TestThreadsPostLedger:
         ledger = ThreadsPostLedger(store)
         ledger.mark(date(2026, 6, 10))
         ledger.mark(date(2026, 6, 10))
-        assert store.read_json(THREADS_POSTED_KEY) == ["2026-06-10"]
+        assert store.read_json(THREADS_POSTED_KEY) == {"2026-06-10": ""}
 
     def test_dates_are_capped(self):
         store = _MemStore()
@@ -131,7 +131,28 @@ class TestThreadsPostLedger:
         ledger = ThreadsPostLedger(store)
         ledger.mark(date(2026, 6, 10))
         ledger.unmark(date(2026, 6, 11))  # never claimed
-        assert store.read_json(THREADS_POSTED_KEY) == ["2026-06-10"]
+        assert ledger.already_posted(date(2026, 6, 10)) is True
+
+    def test_unmark_only_releases_own_run_id(self):
+        # A concurrent run B failing must NOT release the marker run A wrote for a post that
+        # succeeded — otherwise the next scheduled run re-posts a duplicate digest.
+        ledger = ThreadsPostLedger(_MemStore())
+        ledger.mark(date(2026, 6, 10), run_id="run-A")
+        ledger.unmark(date(2026, 6, 10), run_id="run-B")  # B's rollback
+        assert ledger.already_posted(date(2026, 6, 10)) is True  # A's marker survives
+
+    def test_unmark_releases_matching_run_id(self):
+        ledger = ThreadsPostLedger(_MemStore())
+        ledger.mark(date(2026, 6, 10), run_id="run-A")
+        ledger.unmark(date(2026, 6, 10), run_id="run-A")
+        assert ledger.already_posted(date(2026, 6, 10)) is False
+
+    def test_legacy_list_format_is_read(self):
+        # An existing bare-list blob (pre-run_id format) must still be honored as "posted".
+        store = _MemStore()
+        store.write_json(THREADS_POSTED_KEY, ["2026-06-10"])
+        ledger = ThreadsPostLedger(store)
+        assert ledger.already_posted(date(2026, 6, 10)) is True
 
 
 class TestRollingLog:
@@ -145,3 +166,14 @@ class TestRollingLog:
 
     def test_entries_empty_when_unset(self):
         assert RollingLog(_MemStore(), "k.json", max_entries=3).entries() == []
+
+    def test_dedup_key_replaces_same_day_entry(self):
+        # A --force-republish re-run must replace the same date's lead, not append a duplicate
+        # that crowds out the anti-repetition window.
+        store = _MemStore()
+        log = RollingLog(store, "leads.json", max_entries=5)
+        log.append({"date": "2026-06-10", "lead": "first"}, dedup_key="date")
+        log.append({"date": "2026-06-10", "lead": "second"}, dedup_key="date")
+        entries = log.entries()
+        assert len(entries) == 1
+        assert entries[0]["lead"] == "second"

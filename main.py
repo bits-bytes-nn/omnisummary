@@ -173,7 +173,10 @@ async def run_pipeline(
     try:
         if digest.content and digest.content.items:
             ledger.record([normalize_url(it.url) for it in digest.content.items], digest_date)
-            leads_log.append({"date": digest_date.isoformat(), "lead": _editorial_lead(config, digest, digest_date)})
+            leads_log.append(
+                {"date": digest_date.isoformat(), "lead": _editorial_lead(config, digest, digest_date)},
+                dedup_key="date",
+            )
     except Exception:
         logger.warning("Failed to update published-URL / leads history (non-fatal)", exc_info=True)
 

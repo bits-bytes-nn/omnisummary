@@ -195,6 +195,52 @@ class TestLifecycle:
         active = {t.id for t in memory.trends if t.status == TrendStatus.ACTIVE}
         assert active == {"t2", "t3"}
 
+    @pytest.mark.asyncio
+    async def test_long_archived_trends_are_purged(self, monkeypatch):
+        # A trend last seen far beyond 2x retention must be dropped, not retained forever with
+        # its evidence (which would bloat trends.json indefinitely).
+        stale = Trend(
+            id="old",
+            title="Old",
+            first_seen="2026-01-01",
+            last_seen="2026-01-05",
+            status=TrendStatus.ARCHIVED,
+            evidence=[TrendEvidence(date="2026-01-05", summary="e")],
+        )
+        fresh = Trend(
+            id="new",
+            title="New",
+            first_seen="2026-06-01",
+            last_seen="2026-06-05",
+            evidence=[TrendEvidence(date="2026-06-05", summary="e")],
+        )
+        store = _FakeStore({TRENDS_KEY: TrendMemory(trends=[stale, fresh]).model_dump_json()})
+        tracker = _patched_tracker(store, [], monkeypatch, trend_retention_days=30)
+        await tracker.update_trends("d", "2026-06-06")  # stale is ~152 days old > 2*30
+        memory = TrendMemory.model_validate_json(store.data[TRENDS_KEY])
+        ids = {t.id for t in memory.trends}
+        assert "old" not in ids and "new" in ids
+
+
+class TestLoadRecovery:
+    def test_schema_drift_recovers_valid_trends(self):
+        # One malformed trend record must not wipe ALL history — the valid ones survive.
+        blob = json.dumps(
+            {
+                "trends": [
+                    {"id": "good", "title": "Good", "first_seen": "2026-06-01", "last_seen": "2026-06-02"},
+                    {"id": "bad"},  # missing required 'title' → invalid
+                ]
+            }
+        )
+        # A missing required field on one item makes whole-object validation fail; recovery keeps
+        # the valid trend.
+        store = _FakeStore({TRENDS_KEY: blob})
+        tracker = TrendTracker(PipelineConfig(), MagicMock(), store)
+        memory = tracker._load_memory()
+        ids = {t.id for t in memory.trends}
+        assert "good" in ids
+
 
 class TestGetTrendsContext:
     def test_excludes_archived_and_sorts_by_momentum(self):

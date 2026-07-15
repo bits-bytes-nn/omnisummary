@@ -50,13 +50,32 @@ class TrendTracker:
                 logger.info("Loaded %d trends from '%s'", len(self._memory.trends), TRENDS_KEY)
                 return self._memory
             except ValidationError as e:
-                logger.warning("Failed to parse '%s' (%s); starting fresh", TRENDS_KEY, e)
-                self._memory = TrendMemory()
+                # A single bad record (schema drift, a removed enum value) must not wipe ALL
+                # accumulated trend history. Recover per-trend: parse the raw JSON and validate
+                # each trend independently, keeping every one that still validates.
+                self._memory = self._recover_trends(raw, e)
                 return self._memory
 
         logger.info("No existing trends found, starting fresh")
         self._memory = TrendMemory()
         return self._memory
+
+    @staticmethod
+    def _recover_trends(raw: str, err: ValidationError) -> TrendMemory:
+        try:
+            data = json.loads(raw)
+            raw_trends = data.get("trends", []) if isinstance(data, dict) else []
+        except (json.JSONDecodeError, ValueError):
+            logger.warning("Trends blob is not valid JSON (%s); starting fresh", err)
+            return TrendMemory()
+        recovered: list[Trend] = []
+        for rt in raw_trends:
+            try:
+                recovered.append(Trend.model_validate(rt))
+            except ValidationError:
+                logger.warning("Dropping one unparseable trend during recovery: %r", rt)
+        logger.warning("Trends schema drift (%s); recovered %d/%d trends", err, len(recovered), len(raw_trends))
+        return TrendMemory(trends=recovered)
 
     def get_trends_context(self, today: date | None = None) -> str:
         memory = self._load_memory()
@@ -203,6 +222,29 @@ class TrendTracker:
             for trend in active[: len(active) - self.config.trend_max_active_trends]:
                 trend.status = TrendStatus.ARCHIVED
                 logger.info("Archived low-momentum trend '%s' over active cap", trend.id)
+
+        # Purge trends archived long ago. Archiving only sets status; it never removes the trend,
+        # and archived trends keep their (capped) evidence so the "drop trends with no evidence"
+        # rule above never reaches them. Without this they accumulate forever, inflating every
+        # read-modify-write of trends.json. Keep archived trends for one extra retention window
+        # (grace so a briefly-archived trend can revive), then drop.
+        if today is not None:
+            purge_age = self.config.trend_retention_days * 2
+            before = len(memory.trends)
+            memory.trends = [t for t in memory.trends if not self._is_stale_archived(t, today, purge_age)]
+            purged = before - len(memory.trends)
+            if purged:
+                logger.info("Purged %d archived trend(s) older than %d days", purged, purge_age)
+
+    @staticmethod
+    def _is_stale_archived(trend: Trend, today: date, purge_age_days: int) -> bool:
+        if trend.status != TrendStatus.ARCHIVED:
+            return False
+        try:
+            last_seen = date.fromisoformat(trend.last_seen)
+        except ValueError:
+            return False
+        return (today - last_seen).days >= purge_age_days
 
     def _compute_status(self, trend: Trend, today: date) -> TrendStatus:
         try:

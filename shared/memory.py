@@ -97,6 +97,9 @@ class AgentCoreMemoryStore(MemoryStore):
         self._client = boto3.client("bedrock-agentcore", region_name=region)
 
     MAX_EVENT_TEXT = 100_000
+    # Safety cap on list_sessions pagination (100 sessions/page) so a runaway token loop can't
+    # spin forever; 20 pages = 2000 sessions ≈ 5+ years of daily digests.
+    MAX_SESSION_PAGES = 20
     # When even the ranked set overflows, cap each item's stored body. The digest snapshot
     # only needs enough text for cross-day dedup/recall, so a per-item cap loses nothing used.
     RANKED_TEXT_CAP = 12_000
@@ -165,15 +168,30 @@ class AgentCoreMemoryStore(MemoryStore):
         return json.dumps({"ranked_items": [], "digest_result": None, "collected_items": {}}, ensure_ascii=False)
 
     def _digest_session_ids(self) -> list[str]:
-        sessions = self._client.list_sessions(memoryId=self.memory_id, actorId=self.actor_id, maxResults=100)
-        return sorted(
-            (
+        # Paginate: AgentCore doesn't guarantee newest-first ordering, so a single 100-item page
+        # can EXCLUDE the true latest session once >100 digest sessions exist (~3.3 months of daily
+        # runs, and sessions are never deleted) — get_latest_digest would then serve a stale
+        # snapshot. Follow NextToken to collect every digest session before sorting.
+        ids: list[str] = []
+        next_token: str | None = None
+        for _ in range(self.MAX_SESSION_PAGES):
+            kwargs: dict[str, Any] = {"memoryId": self.memory_id, "actorId": self.actor_id, "maxResults": 100}
+            if next_token:
+                kwargs["nextToken"] = next_token
+            resp = self._client.list_sessions(**kwargs)
+            ids.extend(
                 s["sessionId"]
-                for s in sessions.get("sessionSummaries", [])
+                for s in resp.get("sessionSummaries", [])
                 if s["sessionId"].startswith(self.DIGEST_SESSION_PREFIX)
-            ),
-            reverse=True,
-        )
+            )
+            next_token = resp.get("nextToken")
+            if not next_token:
+                break
+        else:
+            logger.warning(
+                "list_sessions hit the %d-page cap; latest-digest lookup may be incomplete", self.MAX_SESSION_PAGES
+            )
+        return sorted(ids, reverse=True)
 
     def _load_session(self, session_id: str) -> dict[str, Any] | None:
         events = self._client.list_events(
