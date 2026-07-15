@@ -42,9 +42,16 @@ class YouTubeCollector(BaseCollector):
     def __init__(self, config: YouTubeCollectorConfig):
         self.config = config
         self._api_key: str | None = None
-        # Reuse one pooled sync client across channel-id resolution and transcript fetches
-        # so warm Lambda containers keep connections alive instead of opening one per call.
-        self._sync_client = httpx.Client(follow_redirects=True)
+        self._sync_client_instance: httpx.Client | None = None
+
+    @property
+    def _sync_client(self) -> httpx.Client:
+        # Created lazily so the S3-parked path (the common AWS case, which short-circuits before
+        # any HTTP) never opens a client it won't use. Reused across channel-id resolution so a
+        # warm Lambda container keeps the connection alive instead of opening one per call.
+        if self._sync_client_instance is None:
+            self._sync_client_instance = httpx.Client(follow_redirects=True)
+        return self._sync_client_instance
 
     @property
     def api_key(self) -> str:
@@ -56,8 +63,8 @@ class YouTubeCollector(BaseCollector):
 
     def __del__(self) -> None:
         # Release pooled sockets when the collector is garbage-collected so warm Lambda
-        # containers don't leak connections across invocations.
-        client = getattr(self, "_sync_client", None)
+        # containers don't leak connections — only if a client was actually created.
+        client = getattr(self, "_sync_client_instance", None)
         if client is not None:
             client.close()
 

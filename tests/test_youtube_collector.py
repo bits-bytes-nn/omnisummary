@@ -391,3 +391,11 @@ class TestLifecycle:
         with patch.object(collector._sync_client, "close") as close:
             collector.__del__()
         close.assert_called_once()
+
+    def test_sync_client_not_created_until_used(self):
+        # The S3-parked path short-circuits before any HTTP, so the sync client must not be
+        # eagerly opened at construction — and __del__ must be a safe no-op when it never was.
+        collector = YouTubeCollector(_config())
+        assert collector._sync_client_instance is None
+        collector.__del__()  # no client created → must not raise
+        assert collector._sync_client_instance is None
