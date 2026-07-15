@@ -76,6 +76,18 @@ class TestAgiCountdown:
         assert agi_countdown_intro("", "x{days}", date(2026, 1, 1)) == ""  # disabled
         assert agi_countdown_intro("not-a-date", "x{days}", date(2026, 1, 1)) == ""  # malformed
 
+    def test_malformed_template_does_not_crash(self):
+        from datetime import date
+
+        from shared import agi_countdown_intro
+
+        # An operator typo in the config template must degrade to no intro, never raise mid-run
+        # (it's applied AFTER the expensive collect/rank/LLM work).
+        assert agi_countdown_intro("2029-01-01", "AGI {day}일 전", date(2026, 1, 1)) == ""  # wrong placeholder
+        assert agi_countdown_intro("2029-01-01", "AGI {days", date(2026, 1, 1)) == ""  # stray brace
+        # a malformed after_template on/after D-day also degrades cleanly
+        assert agi_countdown_intro("2029-01-01", "D-{days}", date(2029, 1, 2), "D+{nope}") == ""
+
 
 class TestGroundingCheck:
     @pytest.mark.asyncio
@@ -144,6 +156,22 @@ class TestParseContent:
         assert [it.url for it in content.items] == ["u0", "u2", "u3"]
         assert content.lead == "리드 문장."
 
+    def test_malformed_headline_item_falls_back_to_minimal(self):
+        # If items[0] (the headline the lead + visual are about) fails validation, keeping the
+        # rest would leave the lead/visual describing a dropped story. Fall back instead of
+        # shipping a headline/lead/visual mismatch.
+        raw = json.dumps(
+            {
+                "lead": "The headline is about the GPT-6 launch.",
+                "items": [
+                    {"title": "GPT-6 launches", "body": "no url"},  # headline invalid
+                    {"title": "T1", "url": "u1", "body": "b1"},
+                ],
+            }
+        )
+        content = _generator("")._parse_content(raw)
+        assert content.items == []  # minimal fallback — no lead/headline desync
+
     def test_missing_lead_falls_back_to_minimal(self):
         # Valid JSON with items but no usable lead → deterministic minimal fallback, not a crash.
         raw = json.dumps({"items": [{"title": "T0", "url": "u0", "body": "b0"}]})
@@ -175,6 +203,40 @@ class TestTargetCountTrim:
         ]
         result = await gen.generate(ranked, [r.item for r in ranked], today=date(2030, 1, 1))
         assert len(result.content.items) == 3  # trimmed to top_n
+
+    @pytest.mark.asyncio
+    async def test_pins_exceeding_top_n_all_survive_with_headline(self):
+        from datetime import date
+
+        # User pins 4 URLs but top_n=3. Both the non-pinned headline (u0) AND every pin (u1..u4)
+        # must survive — the target is raised to fit them rather than dropping a pin or the headline.
+        emitted = {
+            "lead": "리드.",
+            "headline_index": 1,
+            "items": [{"title": f"T{i}", "url": f"u{i}", "body": "본문.", "implication": "시사점."} for i in range(5)],
+        }
+        config = PipelineConfig(enable_grounding_check=False, top_n=3)
+        factory = MagicMock()
+        factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content=json.dumps(emitted)))
+        gen = DigestGenerator(config, factory)
+        ranked = [
+            RankedItem(
+                item=CollectedItem(
+                    item_id=f"i{i}",
+                    source_type=SourceType.RSS,
+                    title=f"T{i}",
+                    url=f"u{i}",
+                    metadata={"pinned": True} if i >= 1 else {},  # u1..u4 pinned, u0 headline
+                ),
+                score=0.8,
+            )
+            for i in range(5)
+        ]
+        result = await gen.generate(ranked, [r.item for r in ranked], today=date(2030, 1, 1))
+        urls = [it.url for it in result.content.items]
+        assert urls[0] == "u0"  # headline preserved at front
+        for pin in ("u1", "u2", "u3", "u4"):
+            assert pin in urls  # every pin survived
 
     @pytest.mark.asyncio
     async def test_pinned_item_survives_trim(self):

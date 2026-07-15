@@ -141,8 +141,9 @@ class TestInvoke:
             with patch.object(app_module, "_send_slack_message") as send:
                 with patch.object(app_module, "_emit_agent_error_metric") as emit:
                     result = app_module.invoke({"prompt": "p", "channel_id": "C"})
-        assert "Error processing request" in result
-        assert "boom" in result
+        # The raw exception must NOT leak into the user-facing response (model IDs, ARNs, etc.).
+        assert "boom" not in result
+        assert "failed" in result.lower()
         send.assert_called_once()
         emit.assert_called_once()  # the EMF error metric is the only alarmable signal
 

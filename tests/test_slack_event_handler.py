@@ -75,6 +75,14 @@ class TestSignatureVerification:
         resp = h.handler({"body": body, "headers": headers}, None)
         assert resp["statusCode"] == 401
 
+    def test_non_numeric_timestamp_rejected_cleanly(self):
+        # A malformed timestamp must fail verification (401), not raise a ValueError → 502 that
+        # Slack would then retry.
+        body = json.dumps({"type": "event_callback", "event": {"type": "app_mention"}})
+        headers = {"X-Slack-Request-Timestamp": "not-a-number", "X-Slack-Signature": "v0=abc"}
+        resp = h.handler({"body": body, "headers": headers}, None)
+        assert resp["statusCode"] == 401
+
 
 class TestAppMention:
     def test_valid_mention_invokes_runtime(self, monkeypatch):
@@ -114,6 +122,25 @@ class TestAppMention:
                     resp = h.handler({"body": body, "headers": headers}, MagicMock())
         assert resp["statusCode"] == 200
         mock_client.return_value.invoke.assert_not_called()
+
+    def test_dispatch_failure_releases_marker_and_500s(self):
+        # If the self-invoke fails AFTER the dedup marker was written, the marker must be released
+        # and a 500 returned so Slack's retry hits a clean state instead of being dropped as a dup.
+        body = json.dumps(
+            {"type": "event_callback", "event_id": "EvX", "event": {"type": "app_mention", "channel": "C1"}}
+        )
+        headers = _signed_headers(body)
+        ctx = MagicMock()
+        ctx.function_name = "fn"
+        lambda_client = MagicMock()
+        lambda_client.invoke.side_effect = RuntimeError("throttled")
+        with patch.object(h, "_verify_slack_signature", return_value=True):
+            with patch.object(h, "_is_duplicate_event", return_value=False):
+                with patch.object(h, "_release_event_marker") as release:
+                    with patch.object(h.boto3, "client", return_value=lambda_client):
+                        resp = h.handler({"body": body, "headers": headers}, ctx)
+        assert resp["statusCode"] == 500
+        release.assert_called_once_with("EvX")
 
 
 class TestAsyncInvocation:

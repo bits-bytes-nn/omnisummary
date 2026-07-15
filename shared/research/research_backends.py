@@ -18,8 +18,11 @@ def _get_tavily_client() -> AsyncTavilyClient | None:
 
 
 def _format_search_results(results: list[dict], preview_chars: int) -> str:
+    # `... or ''` (not just a .get default): Tavily returns an explicit null content/title for some
+    # pages, and `None[:n]` would raise — failing the ENTIRE query and pushing the agent toward its
+    # hallucination fallback. Coerce null to empty so one thin result doesn't sink the whole search.
     return "\n\n".join(
-        f"- {r.get('title', 'N/A')}\n  URL: {r.get('url', '')}\n  Content: {r.get('content', '')[:preview_chars]}"
+        f"- {r.get('title') or 'N/A'}\n  URL: {r.get('url') or ''}\n  Content: {(r.get('content') or '')[:preview_chars]}"
         for r in results
     )
 

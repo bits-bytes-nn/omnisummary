@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime
 from urllib.parse import urlparse
 
 from .constants import SourceType
+from .logger import logger
 from .models import CollectedItem
 
 YOUTUBE_VIEWS_EMOJI = ":arrow_forward:"
@@ -68,10 +69,16 @@ def agi_countdown_intro(date_str: str, template: str, today: date, after_templat
     except ValueError:
         return ""
     days = (target - today).days
-    if days > 0:
-        return template.format(days=days)
-    if after_template:
-        return after_template.format(days=-days)
+    # The templates are operator-editable config strings. A typo'd placeholder ({day}) or stray
+    # brace would otherwise raise KeyError/ValueError mid-generation — AFTER the expensive collect/
+    # rank/LLM work — and kill the whole run. Degrade to no intro instead.
+    try:
+        if days > 0:
+            return template.format(days=days)
+        if after_template:
+            return after_template.format(days=-days)
+    except (KeyError, IndexError, ValueError) as e:
+        logger.warning("Malformed agi_countdown template (%s); skipping intro", e)
     return ""
 
 

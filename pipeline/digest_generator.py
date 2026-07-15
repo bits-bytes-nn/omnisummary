@@ -57,6 +57,14 @@ class DigestGenerator:
         # then emits exactly target_count distinct stories, backfilling from the buffer so a
         # merge never shrinks the digest below the target.
         target_count = min(self.config.top_n, len(ranked_items))
+        # A user can pin more URLs than top_n. Both the headline (items[0]) and every pinned item
+        # must survive the trim, so raise the target to fit them all rather than silently dropping
+        # pins (violating the --pin-url guarantee) or the headline (desyncing lead/visual).
+        pin_count = sum(1 for r in ranked_items if r.item.metadata.get("pinned"))
+        min_needed = min(len(ranked_items), pin_count + 1)  # +1 reserves the headline slot
+        if min_needed > target_count:
+            logger.info("Raising digest target %d → %d to fit %d pinned item(s)", target_count, min_needed, pin_count)
+            target_count = min_needed
         logger.info(
             "Generating digest from %d candidates → target %d items (model: %s)",
             len(ranked_items),
@@ -124,12 +132,19 @@ class DigestGenerator:
             # LLM slip) drops only that item — not the whole digest. Whole-object model_validate
             # would raise on the first bad item and collapse every good story to the 0-item
             # fallback (the same silent-empty failure class as the control-char parse bug).
+            raw_items = data.get("items", []) or []
             items: list[DigestItem] = []
-            for i, raw_item in enumerate(data.get("items", []) or []):
+            for i, raw_item in enumerate(raw_items):
                 try:
                     items.append(DigestItem.model_validate(raw_item))
                 except Exception:
                     logger.warning("Skipping malformed digest item %d: %r", i, raw_item, exc_info=True)
+                    # The lead and the daily visual are BOTH written about items[0] (the headline).
+                    # If that first story is the one that fails validation, keeping the rest would
+                    # leave the lead/visual describing a story no longer in the digest. Fall back to
+                    # minimal content rather than ship a headline/lead/visual mismatch.
+                    if i == 0:
+                        raise ValueError("Headline item (items[0]) failed validation") from None
             lead = data.get("lead")
             if not isinstance(lead, str) or not lead.strip():
                 raise ValueError("Digest content is missing a usable 'lead'")

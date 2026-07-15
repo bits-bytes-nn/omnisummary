@@ -83,7 +83,8 @@ def invoke(payload: dict[str, Any]) -> str:
         except Exception as e:
             logger.error("Agent execution failed: %s", e, exc_info=True)
             _emit_agent_error_metric()
-            response = f"Error processing request: {e}"
+            # Don't leak the raw exception (model IDs, ARNs, backend error bodies) into Slack.
+            response = "Sorry — the research run failed. Please try again; details are in the logs."
 
         # Fallback ONLY when the agent delivered to NO channel at all (it never called
         # deliver_report, or every delivery failed) — so the user always gets something. Do NOT
@@ -92,7 +93,12 @@ def invoke(payload: dict[str, Any]) -> str:
         # Prefer the actual report the agent produced over its terminal one-line confirmation.
         if channel_id and not delivery.delivered_channels:
             fallback_text = delivery.last_report or response
-            _send_slack_message(channel_id, sanitize_slack_mrkdwn(fallback_text), thread_ts)
+            # This is the last-resort "always give the user something" path — a raise here (rate
+            # limit, bad channel) must not turn the whole invocation into a hard error.
+            try:
+                _send_slack_message(channel_id, sanitize_slack_mrkdwn(fallback_text), thread_ts)
+            except Exception as e:
+                logger.error("Fallback Slack post failed: %s", e, exc_info=True)
 
     return response
 

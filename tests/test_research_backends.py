@@ -17,6 +17,12 @@ class TestFormatSearchResults:
         out = rb._format_search_results([{}], preview_chars=300)
         assert "N/A" in out
 
+    def test_explicit_null_fields_do_not_raise(self):
+        # Tavily returns explicit null content/title/url for some pages. None[:n] would raise and
+        # fail the ENTIRE query (a .get default only covers a MISSING key, not a null value).
+        out = rb._format_search_results([{"title": None, "url": None, "content": None}], preview_chars=10)
+        assert "N/A" in out  # null title coerced to the N/A placeholder, no exception
+
     def test_preview_truncates_content(self):
         out = rb._format_search_results([{"title": "T", "url": "u", "content": "0123456789ABC"}], preview_chars=10)
         assert "0123456789" in out

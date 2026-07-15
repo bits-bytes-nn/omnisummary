@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 
 from shared import (
@@ -131,7 +132,9 @@ class VisualGenerator:
     async def generate(self, instruction: str, source: str, context: str = "") -> tuple[bytes, VisualBrief]:
         brief = await self.brief(instruction, source, context)
         try:
-            return self.render(brief), brief
+            # render() makes a blocking 30-120s OpenAI HTTP call; run it off the event loop so
+            # concurrent coroutines (Slack/Threads I/O) aren't frozen for the whole gpt-image render.
+            return await asyncio.to_thread(self.render, brief), brief
         except Exception as e:
             if not self._is_moderation_error(e):
                 raise
@@ -141,4 +144,4 @@ class VisualGenerator:
             logger.warning("Image moderation blocked the prompt; retrying with a softened brief")
             safe_instruction = f"{instruction}\n\n{self.moderation_softening_instruction}"
             brief = await self.brief(safe_instruction, source, context)
-            return self.render(brief), brief
+            return await asyncio.to_thread(self.render, brief), brief

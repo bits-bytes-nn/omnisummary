@@ -57,20 +57,29 @@ def _handle_slack_event(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 logger.info("Duplicate event '%s', skipping", event_id)
                 return {"statusCode": 200, "body": "OK"}
 
+            # The dedup marker was just written. If the self-invoke fails, the event would be
+            # dropped forever (Slack's retry would hit the marker and skip). Release the marker on
+            # failure and return 500 so Slack retries into a clean state. The async handler
+            # re-dedups on invocation_id, so a race here can't double-run the research.
             lambda_client = boto3.client("lambda")
-            lambda_client.invoke(
-                FunctionName=context.function_name,
-                InvocationType="Event",
-                Payload=json.dumps(
-                    {
-                        "action": "invoke_agentcore",
-                        "text": evt.get("text", ""),
-                        "channel": evt.get("channel", ""),
-                        "thread_ts": evt.get("thread_ts") or evt.get("ts", ""),
-                        "event_id": event_id,
-                    }
-                ),
-            )
+            try:
+                lambda_client.invoke(
+                    FunctionName=context.function_name,
+                    InvocationType="Event",
+                    Payload=json.dumps(
+                        {
+                            "action": "invoke_agentcore",
+                            "text": evt.get("text", ""),
+                            "channel": evt.get("channel", ""),
+                            "thread_ts": evt.get("thread_ts") or evt.get("ts", ""),
+                            "event_id": event_id,
+                        }
+                    ),
+                )
+            except Exception as e:
+                logger.error("Failed to dispatch async invocation for event '%s': %s", event_id, e)
+                _release_event_marker(event_id)
+                return {"statusCode": 500, "body": "Dispatch failed"}
 
     return {"statusCode": 200, "body": "OK"}
 
@@ -235,7 +244,13 @@ def _verify_slack_signature(headers: dict[str, str], body: str) -> bool:
     if not timestamp or not signature:
         return False
 
-    if abs(time.time() - float(timestamp)) > SIGNATURE_EXPIRATION_SEC:
+    # A malformed/attacker-supplied timestamp must fail verification cleanly (401), not raise a
+    # ValueError that becomes a 502 — which Slack would then retry.
+    try:
+        ts = float(timestamp)
+    except ValueError:
+        return False
+    if abs(time.time() - ts) > SIGNATURE_EXPIRATION_SEC:
         return False
 
     project_name = os.environ.get("PROJECT_NAME", "omnisummary")
@@ -274,3 +289,19 @@ def _is_duplicate_event(event_id: str) -> bool:
         return False
     except ddb.meta.client.exceptions.ConditionalCheckFailedException:
         return True
+    except Exception as e:
+        # A dedup-store hiccup (throttle, missing table, access error) must NOT block a real event.
+        # Fail open — a rare duplicate run is far better than silently dropping a user's mention.
+        logger.warning("Dedup check failed for '%s'; failing open: %s", event_id, e)
+        return False
+
+
+def _release_event_marker(event_id: str) -> None:
+    """Delete a dedup marker so a failed dispatch can be retried instead of dropped as a dup."""
+    table_name = os.environ.get("DDB_TABLE_NAME", "")
+    if not table_name:
+        return
+    try:
+        boto3.resource("dynamodb").Table(table_name).delete_item(Key={"event_id": event_id})
+    except Exception as e:
+        logger.warning("Failed to release dedup marker '%s': %s", event_id, e)
