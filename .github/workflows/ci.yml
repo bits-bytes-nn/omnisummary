@@ -80,7 +80,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
       - name: Install pinned CDK CLI
         run: npm ci || npm install
       # Run synth through the repo-pinned CDK CLI (not a bare app.synth()) so the CLI↔aws-cdk-lib
