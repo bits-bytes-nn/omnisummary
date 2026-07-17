@@ -48,11 +48,12 @@ class ContentRanker:
         # call over 100+ items dominated the Lambda runtime. Results are independent.
         # Sort by normalized title first so near-duplicate stories co-locate in the same
         # batch, where the prompt's same-topic clustering/dedup can still see both.
-        batch_size = self.config.ranking_batch_size
         ordered = sorted(items, key=lambda it: (normalize_title(it.title), it.item_id))
-        batches = [ordered[i : i + batch_size] for i in range(0, len(ordered), batch_size)]
+        batches = self._make_batches(ordered)
         if len(batches) > 1:
-            logger.info("Ranking in %d parallel batches of up to %d", len(batches), batch_size)
+            logger.info(
+                "Ranking in %d parallel batches (<=%d items each)", len(batches), self.config.ranking_batch_size
+            )
         results = await asyncio.gather(*(self._rank_batch(b) for b in batches))
 
         ranked_items: list[RankedItem] = [r for batch in results for r in batch]
@@ -292,6 +293,34 @@ class ContentRanker:
 
         selected.sort(key=lambda r: (-r.score, r.item.item_id))
         return selected[:limit]
+
+    def _make_batches(self, ordered: list[CollectedItem]) -> list[list[CollectedItem]]:
+        """Split ranking input into batches capped by BOTH item count (ranking_batch_size) and a
+        cumulative input-token budget. A fixed count alone can blow the model's context window:
+        ranking_batch_size(40) × item_text_max_tokens(10k) = 400k > Opus 200k, and a batch that
+        overflows fails the Converse call → _rank_batch drops the WHOLE batch silently. Bound the
+        batch by ~70% of the context window (leaving room for the system prompt + JSON output).
+        Each item's truncated-text count is cached (truncate runs anyway), so this adds no API cost."""
+        model_info = self.llm_factory.get_model_info(self.config.ranking_model)
+        window = model_info.context_window_size if model_info else 200_000
+        token_budget = int(window * 0.7)
+        count_cap = self.config.ranking_batch_size
+        batches: list[list[CollectedItem]] = []
+        current: list[CollectedItem] = []
+        current_tokens = 0
+        for item in ordered:
+            truncated = self._truncate(item.text or "", self.config.item_text_max_tokens)
+            item_tokens = self.llm_factory.count_tokens(truncated) if truncated else 0
+            # Start a new batch when adding this item would exceed either cap (but never emit an
+            # empty batch — a single item over budget still goes in its own batch).
+            if current and (len(current) >= count_cap or current_tokens + item_tokens > token_budget):
+                batches.append(current)
+                current, current_tokens = [], 0
+            current.append(item)
+            current_tokens += item_tokens
+        if current:
+            batches.append(current)
+        return batches
 
     def _format_items(self, items: list[CollectedItem]) -> str:
         parts: list[str] = []

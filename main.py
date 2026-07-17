@@ -39,6 +39,15 @@ from shared import (
 from shared.history_store import RECENT_LEADS_KEY
 
 
+def _positive_int(value: str) -> int:
+    """argparse type for a >=1 count: `--top-n 0`/negative fails loudly instead of being silently
+    ignored (truthiness check) or corrupting select_count = top_n + buffer downstream."""
+    ivalue = int(value)
+    if ivalue < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {ivalue}")
+    return ivalue
+
+
 def _build_collector_tasks(
     config: Config,
     llm_factory: BedrockLanguageModelFactory,
@@ -240,7 +249,7 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description="OmniSummary - Daily AI Digest")
     parser.add_argument("--sources", nargs="+", help="Specific sources to collect from")
     parser.add_argument("--dry-run", action="store_true", help="Run without sending to Slack")
-    parser.add_argument("--top-n", type=int, help="Override top_n from config")
+    parser.add_argument("--top-n", type=_positive_int, help="Override top_n from config (>= 1)")
     parser.add_argument("--date", type=str, help="Digest date (YYYY-MM-DD). Defaults to today")
     parser.add_argument(
         "--force-republish",
@@ -257,7 +266,7 @@ async def main() -> None:
 
     config = Config.load()
 
-    if args.top_n:
+    if args.top_n is not None:
         config.pipeline.top_n = args.top_n
 
     tz = ZoneInfo(config.aws.timezone)

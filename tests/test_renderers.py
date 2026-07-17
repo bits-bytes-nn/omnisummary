@@ -2,6 +2,8 @@ from output.renderers import (
     SLACK_MAX_BLOCKS_PER_MESSAGE,
     SLACK_MAX_SECTION_CHARS,
     THREADS_MAX_POST_CHARS,
+    _hard_split_link_safe,
+    _split_long_paragraph,
     _strip_slack_mrkdwn,
     render_agent_blocks,
     render_research_blocks,
@@ -342,3 +344,25 @@ class TestThreadsResearch:
         root, replies = render_threads_research("   \n\n  ")
         assert root == ""
         assert replies == []
+
+
+class TestHardSplitLinkSafe:
+    def test_long_link_span_isolated_not_merged(self):
+        # A cut landing inside a long <url|label> span must emit the preceding text as its own
+        # <=max_len piece and put the link on its own piece — never a merged over-cap piece.
+        para = "가" * 400 + " <http://example.com/" + "q" * 300 + "|라벨> 꼬리말."
+        pieces = _hard_split_link_safe(para, 500)
+        non_link = [p for p in pieces if "<http" not in p]
+        assert all(len(p) <= 500 for p in non_link)  # non-link pieces respect the cap
+        for p in pieces:
+            assert p.count("<") == p.count(">")  # no link cleaved across pieces
+
+    def test_bare_short_text_unchanged(self):
+        assert _hard_split_link_safe("짧은 텍스트", 500) == ["짧은 텍스트"]
+
+    def test_split_long_paragraph_keeps_slack_sections_in_bound(self):
+        # A long <url|label> straddling the 2900 budget must not yield a >2900 non-link section.
+        big = "글" * 2890 + " <http://example.com/" + "z" * 140 + "|라벨> 나머지 문장이다."
+        pieces = _split_long_paragraph(big, SLACK_MAX_SECTION_CHARS)
+        non_link = [p for p in pieces if "<http" not in p]
+        assert all(len(p) <= SLACK_MAX_SECTION_CHARS for p in non_link)

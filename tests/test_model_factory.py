@@ -55,6 +55,18 @@ class TestCountTokens:
         assert f.count_tokens("repeated") == 7
         assert client.count_tokens.call_count == 1  # second call served from cache
 
+    def test_count_tokens_degrades_after_first_failure(self):
+        # After CountTokens fails once, the rest of the run must use the char estimate WITHOUT
+        # hammering the failing API — otherwise truncate's binary search amplifies one blip into
+        # a storm of failing round-trips.
+        client = MagicMock()
+        client.count_tokens.side_effect = RuntimeError("throttled")
+        f = _factory(client)
+        assert f.count_tokens("a" * 40) == 10  # first: tries API, fails, estimates
+        assert f.count_tokens("b" * 80) == 20  # second: short-circuits to estimate
+        assert f.count_tokens("c" * 12) == 3
+        assert client.count_tokens.call_count == 1  # API called only once, then degraded
+
 
 class TestTemperatureGating:
     def test_opus_48_omits_temperature(self):

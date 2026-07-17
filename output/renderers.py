@@ -36,18 +36,31 @@ def _split_long_paragraph(para: str, max_len: int) -> list[str]:
 
 
 def _hard_split_link_safe(text: str, max_len: int) -> list[str]:
-    """Last-resort hard split that never cuts inside a `<...>` link span: extend a cut point
-    forward to the closing `>` if it would land inside an unbalanced `<`."""
+    """Last-resort hard split that never cuts INSIDE a `<...>` link span. When a cut would land
+    inside a span, emit the text BEFORE the link as its own (<=max_len) piece and put the whole
+    link span on the next piece. A link span longer than max_len can't be split without breaking
+    the link, so it becomes one over-cap piece on its own — the least-bad option, and far better
+    than merging it with preceding text (which the old 'extend end to the closing >' did, blowing
+    the cap by the length of the preceding run too)."""
     out: list[str] = []
     i = 0
     n = len(text)
     while i < n:
         end = min(i + max_len, n)
-        open_idx = text.rfind("<", i, end)
-        close_idx = text.rfind(">", i, end)
-        if open_idx > close_idx:  # cut lands inside a link span — extend to its closing '>'
-            next_close = text.find(">", end)
-            end = next_close + 1 if next_close != -1 else n
+        if end < n:  # a real cut point (not the tail)
+            open_idx = text.rfind("<", i, end)
+            close_idx = text.rfind(">", i, end)
+            if open_idx > close_idx:  # cut lands inside a link span
+                if open_idx > i:
+                    # Emit the text before the link first (guaranteed <=max_len), then restart at
+                    # the link so it lands on its own piece.
+                    out.append(text[i:open_idx])
+                    i = open_idx
+                    continue
+                # The link starts at i and overflows the window — keep the whole span intact on one
+                # piece (can't split a link); this single piece may exceed max_len by necessity.
+                next_close = text.find(">", end)
+                end = next_close + 1 if next_close != -1 else n
         out.append(text[i:end])
         i = end
     return out

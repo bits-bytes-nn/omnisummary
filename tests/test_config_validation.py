@@ -1,5 +1,29 @@
+import pytest
+from pydantic import ValidationError
+
 from shared.config import Config, PipelineConfig, YouTubeCollectorConfig
 from shared.utils import _LANGUAGE_MODEL_INFO
+
+
+class TestStrictConfig:
+    def test_unknown_key_rejected(self):
+        # A typo'd config key must fail loudly (extra="forbid"), not be silently dropped and fall
+        # back to a code default — critical for the delivery toggles.
+        with pytest.raises(ValidationError):
+            PipelineConfig(enable_thread_post=True)  # typo of enable_threads_post
+        with pytest.raises(ValidationError):
+            Config(pipeline={"min_scor": 0.5})  # typo of min_score
+
+    def test_real_config_yaml_still_loads(self):
+        # The shipped config.yaml must contain only known keys (guards against a strict-mode
+        # regression where a real key isn't modeled).
+        assert Config.load().pipeline.top_n >= 1
+
+    def test_top_n_lower_bound(self):
+        with pytest.raises(ValidationError):
+            PipelineConfig(top_n=0)
+        with pytest.raises(ValidationError):
+            PipelineConfig(top_n=-3)
 
 
 class TestConfiguredModelsAreRegistered:

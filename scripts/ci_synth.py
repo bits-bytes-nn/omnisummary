@@ -32,6 +32,10 @@ def main() -> None:
         alert_email=os.getenv("ALERT_EMAIL", "ci@example.com"),
         env=env,
     )
+    # Pass dummy NON-EMPTY values for the SAME arg set as deploy.py (incl. a sha256 image ref) so
+    # the synthesized resource graph MATCHES production — the conditional SSM-param loop and the
+    # `sha256:`-prefix image-pin branch (the exact deploy mechanism) are then exercised in CI, not
+    # only on a real deploy.
     OmniSummaryApplicationStack(
         app,
         f"{config.aws.project_name}-{config.aws.stage}-application",
@@ -39,8 +43,14 @@ def main() -> None:
         foundation=foundation,
         slack_signing_secret=os.getenv("SLACK_SIGNING_SECRET", "ci"),
         slack_bot_token=os.getenv("SLACK_BOT_TOKEN", "ci"),
+        slack_channel_id=os.getenv("SLACK_CHANNEL_ID", "ci"),
         tavily_api_key=os.getenv("TAVILY_API_KEY", "ci"),
         openai_api_key=os.getenv("OPENAI_API_KEY", "ci"),
+        youtube_api_key=os.getenv("YOUTUBE_API_KEY", "ci"),
+        threads_access_token=os.getenv("THREADS_ACCESS_TOKEN", "ci"),
+        threads_user_id=os.getenv("THREADS_USER_ID", "ci"),
+        agentcore_image_ref=os.getenv("AGENTCORE_IMAGE_REF", "sha256:" + "0" * 64),
+        digest_image_ref=os.getenv("DIGEST_IMAGE_REF", "sha256:" + "0" * 64),
         env=env,
     )
     app.synth()

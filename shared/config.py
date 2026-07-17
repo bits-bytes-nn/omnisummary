@@ -4,9 +4,19 @@ from typing import Literal
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .constants import RSSHUB_PORT, LanguageModelId
+
+
+class _StrictModel(BaseModel):
+    """Base for every config model: reject unknown keys so a typo'd config.yaml key (e.g.
+    `enable_thread_post`, `min_scor`) fails loudly at Config.load() instead of being silently
+    dropped and falling back to a code default — which for the delivery toggles would silently
+    mis-route or suppress the digest."""
+
+    model_config = ConfigDict(extra="forbid")
+
 
 # Korean prose conventions shared by EVERY Korean-output surface (daily digest + deep research,
 # Slack + Threads). Kept in one place so the two features can't drift apart on register, anti-
@@ -27,7 +37,7 @@ KOREAN_STYLE_RULES: str = (
 )
 
 
-class BaseCollectorConfig(BaseModel):
+class BaseCollectorConfig(_StrictModel):
     enabled: bool = True
     lookback_hours: int = 24
     reference_time: datetime | None = None
@@ -38,7 +48,7 @@ class BaseCollectorConfig(BaseModel):
 
 class YouTubeCollectorConfig(BaseCollectorConfig):
     channels: list[str] = Field(default_factory=list)
-    max_videos_per_channel: int = 3
+    max_videos_per_channel: int = Field(default=3, ge=1)
     resolve_timeout: int = Field(default=15, ge=1)
     transcript_timeout: int = Field(default=15, ge=1)
     transcript_language: str = Field(default="en")
@@ -47,14 +57,14 @@ class YouTubeCollectorConfig(BaseCollectorConfig):
 class RedditCollectorConfig(BaseCollectorConfig):
     subreddits: list[str] = Field(default_factory=lambda: ["MachineLearning", "artificial", "LocalLLaMA"])
     sort: Literal["hot", "top", "new"] = "hot"
-    limit: int = 20
+    limit: int = Field(default=20, ge=1)
 
 
 class RSSCollectorConfig(BaseCollectorConfig):
     feeds: list[str] = Field(default_factory=list)
 
 
-class TrendSearch(BaseModel):
+class TrendSearch(_StrictModel):
     name: str
     queries: list[str]
     domains: list[str] = Field(default_factory=list)
@@ -63,14 +73,14 @@ class TrendSearch(BaseModel):
 
 class WebSearchCollectorConfig(BaseCollectorConfig):
     trend_searches: list[TrendSearch] = Field(default_factory=list)
-    max_results_per_query: int = 10
+    max_results_per_query: int = Field(default=10, ge=1)
     lookback_hours: int = 72
     refine_model: LanguageModelId = LanguageModelId.CLAUDE_V5_SONNET
-    max_refine_queries: int = 3
+    max_refine_queries: int = Field(default=3, ge=1)
     min_search_score: float = Field(default=0.3, ge=0.0, le=1.0)
 
 
-class RSSHubAccount(BaseModel):
+class RSSHubAccount(_StrictModel):
     username: str
     platform: str
 
@@ -82,7 +92,7 @@ class RSSHubCollectorConfig(BaseCollectorConfig):
     error_rate_threshold: float = Field(default=50.0, ge=0.0, le=100.0)
 
 
-class CollectorsConfig(BaseModel):
+class CollectorsConfig(_StrictModel):
     youtube: YouTubeCollectorConfig = Field(default_factory=YouTubeCollectorConfig)
     reddit: RedditCollectorConfig = Field(default_factory=RedditCollectorConfig)
     rss: RSSCollectorConfig = Field(default_factory=RSSCollectorConfig)
@@ -94,8 +104,8 @@ class CollectorsConfig(BaseModel):
             cfg.reference_time = reference_time
 
 
-class PipelineConfig(BaseModel):
-    top_n: int = 7
+class PipelineConfig(_StrictModel):
+    top_n: int = Field(default=7, ge=1)
     min_score: float = Field(default=0.6, ge=0.0, le=1.0)
     # Per-source safety net: a source with a guaranteed slot whose BEST item falls just below
     # min_score (within this grace band) still gets that one item considered, so a source the
@@ -188,7 +198,7 @@ class PipelineConfig(BaseModel):
     # blew past — a self-aware joke). Empty agi_countdown_date disables the intro entirely.
     agi_countdown_template: str = "AGI 등장 {days}일 전이다. "
     agi_countdown_after: str = "AGI 등장 예정일 D+{days}일째, 아직이다. "
-    item_text_max_tokens: int = 8000
+    item_text_max_tokens: int = Field(default=8000, ge=1)
     ranking_batch_size: int = Field(default=40, ge=1)
     source_slots: dict[str, int] = Field(
         default_factory=lambda: {
@@ -316,7 +326,7 @@ class PipelineConfig(BaseModel):
     )
 
 
-class AgentConfig(BaseModel):
+class AgentConfig(_StrictModel):
     model_id: LanguageModelId = LanguageModelId.CLAUDE_V5_SONNET
     community_search_domains: list[str] = Field(
         default_factory=lambda: ["twitter.com", "x.com", "reddit.com", "news.ycombinator.com", "substack.com"]
@@ -350,12 +360,12 @@ class AgentConfig(BaseModel):
     research_max_staged_images: int = Field(default=4, ge=1)
 
 
-class SlackConfig(BaseModel):
+class SlackConfig(_StrictModel):
     bot_token: str = ""
     channel_id: str = ""
 
 
-class AWSConfig(BaseModel):
+class AWSConfig(_StrictModel):
     region: str = "us-east-1"
     bedrock_region: str = "us-west-2"
     profile: str = ""
@@ -376,7 +386,7 @@ class AWSConfig(BaseModel):
     waf_rate_limit: int = Field(default=2000, ge=100)
 
 
-class Config(BaseModel):
+class Config(_StrictModel):
     collectors: CollectorsConfig = Field(default_factory=CollectorsConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)

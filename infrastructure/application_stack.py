@@ -331,12 +331,15 @@ class OmniSummaryApplicationStack(Stack):
         api_alarm.add_alarm_action(alarm_action)
 
         # Symptomless failure: the digest ran with no error/timeout but published an empty digest,
-        # OR didn't run at all that day. The EMF metric appears once per daily run, so a 25h window
-        # with missing-data=BREACHING catches both a 0 count and a skipped run.
+        # OR didn't run at all that day. The EMF metric appears once per daily run; a 24h window with
+        # missing-data=BREACHING catches both a 0 count and a skipped run. NOTE: CloudWatch caps an
+        # alarm at evaluation_periods * period <= 86400s (1 day), so this MUST stay <= 24h — 25h is
+        # rejected by PutMetricAlarm at deploy. Missing-data=BREACHING already covers the skipped-run
+        # case without needing extra slack.
         empty_digest = cloudwatch.Metric(
             namespace="OmniSummary",
             metric_name="DigestItemsPublished",
-            period=Duration.hours(25),
+            period=Duration.hours(24),
             statistic="Maximum",
         ).create_alarm(
             self,

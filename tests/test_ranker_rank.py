@@ -11,9 +11,19 @@ from shared.constants import SourceType
 from shared.models import CollectedItem
 
 
+def _mock_factory() -> MagicMock:
+    """A mock LLM factory with realistic numeric token helpers so token-budget batching works.
+    count_tokens ~= chars/4; truncate is a no-op; context window is a real 200k."""
+    factory = MagicMock()
+    factory.count_tokens.side_effect = lambda text: len(text) // 4
+    factory.truncate_to_tokens.side_effect = lambda text, max_tokens: text
+    factory.get_model_info.return_value = MagicMock(context_window_size=200_000)
+    return factory
+
+
 def _ranker(raw_output: str, **overrides) -> ContentRanker:
     config = PipelineConfig(**overrides)
-    factory = MagicMock()
+    factory = _mock_factory()
     # The ranker builds: RankingPrompt.get_prompt() | self.llm | StrOutputParser().
     # A RunnableLambda standing in for the LLM returns an AIMessage that the
     # StrOutputParser unwraps to raw_output, exercising the real rank() path.
@@ -146,7 +156,7 @@ class TestRankEndToEnd:
             return AIMessage(content=_rankings({"a": 0.9}))
 
         config = PipelineConfig(top_n=5, min_score=0.6, ranking_categories=["alpha", "beta", "gamma"])
-        factory = MagicMock()
+        factory = _mock_factory()
         factory.get_model.return_value = RunnableLambda(capture)
         ranker = ContentRanker(config, factory)
         await ranker.rank(items)
@@ -164,7 +174,7 @@ class TestRankEndToEnd:
             return AIMessage(content=_rankings({"a": 0.9}))
 
         config = PipelineConfig(top_n=5, min_score=0.6, ranking_duplicate_score_penalty=penalty)
-        factory = MagicMock()
+        factory = _mock_factory()
         factory.get_model.return_value = RunnableLambda(capture)
         ranker = ContentRanker(config, factory)
         await ranker.rank(items)
@@ -180,7 +190,7 @@ class TestRankEndToEnd:
 
         items = _items([(f"i{n}", SourceType.RSS) for n in range(10)])
         config = PipelineConfig(top_n=20, min_score=0.6, source_slots={}, ranking_batch_size=3)
-        factory = MagicMock()
+        factory = _mock_factory()
 
         # Each batch's mock scores exactly the item_ids present in that batch's prompt,
         # so a correct merge yields all 10 (4 batches: 3+3+3+1).
@@ -193,6 +203,26 @@ class TestRankEndToEnd:
         ranker = ContentRanker(config, factory)
         result = await ranker.rank(items)
         assert {r.item.item_id for r in result} == {f"i{n}" for n in range(10)}
+
+    def test_batches_split_on_token_budget_not_just_count(self):
+        # Even under the item-count cap, a batch must not exceed the context-window token budget:
+        # big items force more, smaller batches so a single Converse call can't overflow.
+        config = PipelineConfig(ranking_batch_size=40, item_text_max_tokens=100_000)
+        factory = _mock_factory()
+        # count_tokens ~= chars/4; make each item ~50k tokens (200k chars) so 2 items ≈ 100k tokens,
+        # and the 70% * 200k = 140k budget forces a new batch after 2 items.
+        big_items = [
+            CollectedItem(
+                item_id=f"b{n}", source_type=SourceType.RSS, title=f"t{n}", url=f"http://e.com/{n}", text="x" * 200_000
+            )
+            for n in range(6)
+        ]
+        ranker = ContentRanker(config, factory)
+        batches = ranker._make_batches(big_items)
+        # Every batch stays within the token budget (each ~50k-token item → <=2 per 140k batch).
+        assert all(len(b) <= 3 for b in batches)
+        assert sum(len(b) for b in batches) == 6  # no item lost
+        assert len(batches) >= 3  # count-40 cap alone would have made 1 batch
 
 
 class TestGraceIntegration:

@@ -295,6 +295,12 @@ class BedrockLanguageModelFactory(
         Results are memoized on the factory instance keyed by a text hash: prompt-building counts
         the same item text across ranker/digest/grounding stages, and truncate_to_tokens binary-
         searches many overlapping prefixes — each an identical repeat call otherwise billed anew."""
+        # Once CountTokens has failed this run, stop calling it: the estimate is deterministic, so
+        # a transient throttle/region error otherwise turns truncate_to_tokens' ~log2(n)-call binary
+        # search — repeated per oversized item across ranker/digest/grounding — into a self-inflicted
+        # storm of failing round-trips + warnings. Degrade to the char estimate for the rest of the run.
+        if self.__dict__.get("_count_tokens_degraded"):
+            return len(text) // 4
         cache = self.__dict__.setdefault("_token_count_cache", {})
         key = hashlib.sha256(text.encode("utf-8")).hexdigest()
         cached = cache.get(key)
@@ -309,7 +315,8 @@ class BedrockLanguageModelFactory(
             )
             result = int(resp["inputTokens"])
         except Exception as e:
-            logger.warning("Bedrock count_tokens failed (%s); using char/4 estimate", e)
+            logger.warning("Bedrock count_tokens failed (%s); using char/4 estimate for the rest of the run", e)
+            self.__dict__["_count_tokens_degraded"] = True
             return len(text) // 4
         cache[key] = result
         return result

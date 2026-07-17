@@ -92,16 +92,16 @@ Balance topic AND platform diversity.
 *Output*
 Return JSON with ALL items.
 ```json
-{{{{
+{{
   "rankings": [
-    {{{{
+    {{
       "item_id": "...",
       "score": 0.85,
       "reasoning": "1-2 sentence justification",
       "categories": ["research"]
-    }}}}
+    }}
   ]
-}}}}
+}}
 ```
 Categories: {ranking_categories}"""
 
@@ -132,18 +132,18 @@ write clean prose only; do not add *bold*, _italic_, backticks, bullets, or link
 
 Produce ONLY this JSON object:
 ```json
-{{{{
+{{
   "lead": "3-5 sentence opening that works as a standalone post (it leads the digest AND is the caption under today's image). Open with ONE natural sentence that situates the reader in today's AI/ML landscape — a real observation, NOT a label like '오늘의 다이제스트' and NO emoji — then go straight into the headline story (the one named by headline_index, which is also what the image depicts), connecting it to its ongoing trend arc (use the trend ammunition below) with a sharp, grounded take in the voice above. Pick ONE thesis.",
   "headline_index": 1,
   "items": [
-    {{{{
+    {{
       "title": "the Korean display title for this story",
       "url": "the item's URL exactly as provided",
       "body": "2-3 tight Korean sentences: what this is, why it matters, the key detail. Keep it compact and self-contained so the whole item reads as ONE short social post; every sentence must end completely (no trailing fragments).",
       "implication": "ONE sharp, provocative closing line in Korean that takes a real stance — but VARY THE SHAPE across items so the digest never reads as the same beat repeated: a pointed assertion (no question mark), an open question to the reader, a falsifiable prediction, a single damning detail/number, an invitation to disagree, or a quiet line that just lets a heavy fact land. Do NOT end every item with a question, and do NOT reuse the same shape used by another item today. Provocation is in the angle, never in invented facts."
-    }}}}
+    }}
   ]
-}}}}
+}}
 ```
 
 Rules:
@@ -206,15 +206,15 @@ existing trends, then report which trends today's digest provides evidence for.
 
 Return ONLY a JSON object:
 ```json
-{{{{
+{{
   "observations": [
-    {{{{
+    {{
       "trend_id": "id of an existing trend to extend, or empty string if this is a new trend",
       "new_title": "concise trend title (ONLY when trend_id is empty; otherwise empty string)",
       "summary": "ONE concise English sentence describing today's evidence for this trend"
-    }}}}
+    }}
   ]
-}}}}
+}}
 ```
 
 Rules:
@@ -257,21 +257,21 @@ lead stay about the same story. Aim for a striking, on-point, shareable image wi
 
 Produce ONLY a JSON object:
 ```json
-{{{{
+{{
   "skip": false,
   "item_number": 1,
   "research": [
-    {{{{"source": "news|community|papers", "query": "a focused query"}}}}
+    {{"source": "news|community|papers", "query": "a focused query"}}
   ],
   "format": "one-line: e.g. '4-panel cartoon', 'parody movie poster', 'concept diagram', 'before/after split', 'annotated screenshot'",
   "multi_panel": false,
   "use_character": false,
   "instruction": "a rich natural-language brief for the image: what to depict, the joke/angle, the format, recognizable real-world cues (people, logos) to include, and that any on-image text must be {on_image_language}"
-}}}}
+}}
 ```
 
 Rules:
-- `item_number`: the marked headline. Only return {{{{"skip": true}}}} if the headline genuinely
+- `item_number`: the marked headline. Only return {{"skip": true}} if the headline genuinely
   cannot be illustrated at all (very rare); otherwise always produce a brief for it.
 - `research`: choose 1-3 steps that best enrich the visual — pick the SOURCE per step by what the
   content needs: `papers` (Semantic Scholar) for a research/technical claim, `community` (Reddit/X/
@@ -400,12 +400,12 @@ introduce NEW facts. Never rewrite supported sentences.
 
 Return ONLY this JSON:
 ```json
-{{{{
+{{
   "violations": [
-    {{{{"claim": "the exact unsupported phrase", "issue": "why it isn't in the sources", "fix": "how you revised it"}}}}
+    {{"claim": "the exact unsupported phrase", "issue": "why it isn't in the sources", "fix": "how you revised it"}}
   ],
   "corrected_digest": "the full labelled digest text with only the unsupported claims revised; identical elsewhere, every label preserved"
-}}}}
+}}
 ```
 If there are no violations, return an empty violations list and the digest unchanged."""
 
