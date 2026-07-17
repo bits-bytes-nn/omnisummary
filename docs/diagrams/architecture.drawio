@@ -19,17 +19,17 @@
           <mxGeometry x="300" y="116" width="68" height="68" as="geometry"/>
         </mxCell>
 
-        <mxCell id="collectors" value="Collectors (async)&#10;RSS · Reddit (OAuth) · YouTube&#10;WebSearch (Tavily) · X (RSSHub)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#888888;align=center;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="collectors" value="Collectors (async)&#10;RSS · Reddit (.rss) · YouTube&#10;WebSearch (Tavily) · X (RSSHub)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#888888;align=center;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="70" y="250" width="250" height="80" as="geometry"/>
         </mxCell>
-        <mxCell id="pipeline" value="Pipeline&#10;Aggregate → Rank (Opus 4.8)&#10;→ Trends → Digest (Sonnet 4.6)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#888888;align=center;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="pipeline" value="Pipeline&#10;Aggregate → Rank (Opus 4.8)&#10;→ Trends → Digest (Sonnet 5)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#888888;align=center;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="400" y="250" width="270" height="80" as="geometry"/>
         </mxCell>
 
         <mxCell id="rsshub" value="ECS Fargate&#10;RSSHub" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.fargate;" vertex="1" parent="1">
           <mxGeometry x="100" y="380" width="68" height="68" as="geometry"/>
         </mxCell>
-        <mxCell id="bedrock1" value="Amazon Bedrock&#10;Opus 4.8 / Sonnet 4.6" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
+        <mxCell id="bedrock1" value="Amazon Bedrock&#10;Opus 4.8 / Sonnet 5" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
           <mxGeometry x="450" y="380" width="68" height="68" as="geometry"/>
         </mxCell>
         <mxCell id="memory" value="Bedrock AgentCore&#10;Memory (digest + trends)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
@@ -71,7 +71,7 @@
           <mxGeometry x="1260" y="252" width="68" height="68" as="geometry"/>
         </mxCell>
 
-        <mxCell id="runtime" value="Bedrock AgentCore Runtime&#10;Deep research agent (Sonnet 4.6)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
+        <mxCell id="runtime" value="Bedrock AgentCore Runtime&#10;Deep research agent (Sonnet 5)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
           <mxGeometry x="1010" y="390" width="68" height="68" as="geometry"/>
         </mxCell>
         <mxCell id="tools" value="Agent tools&#10;web_search · community_search · search_papers&#10;read_url · recall_trends&#10;attach_image (OG image) · deliver_report" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#888888;align=center;fontSize=11;" vertex="1" parent="1">
