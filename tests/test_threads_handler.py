@@ -188,9 +188,71 @@ class TestPostToThreads:
         # poll never succeeds and the reply can't land → overall failure (retryable)
         assert ok is False
 
+    @pytest.mark.asyncio
+    async def test_reply_retries_on_transient_400(self, monkeypatch):
+        # A container-processing 400 that is NOT "media not found" (the 2026-07-17 failure that
+        # silently dropped one story) must be retried, not dropped on the first attempt.
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 0)
+        req = httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads")
+        resp = httpx.Response(400, request=req, json={"error": {"code": 100, "message": "processing"}})
+        transient = httpx.HTTPStatusError("bad", request=req, response=resp)
+
+        calls = {"n": 0}
+
+        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
+            if reply_to_id:
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise transient  # first attempt: transient processing failure
+            return "id"
+
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
+                ok = await post_to_threads(root_text="R", replies=["only reply"])
+        assert ok is True
+        assert calls["n"] == 2  # failed once, retried once, then succeeded
+
+    @pytest.mark.asyncio
+    async def test_reply_does_not_retry_on_auth_error(self, monkeypatch):
+        # A non-transient error (401 auth) must raise immediately — retrying wastes the budget and
+        # a bad token won't heal. The reply is dropped (best-effort) without burning 3 attempts.
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 0)
+        req = httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads")
+        resp = httpx.Response(401, request=req, json={"error": {"code": 190, "message": "bad token"}})
+        auth_err = httpx.HTTPStatusError("unauthorized", request=req, response=resp)
+
+        calls = {"n": 0}
+
+        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
+            if reply_to_id:
+                calls["n"] += 1
+                raise auth_err
+            return "id"
+
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
+                ok = await post_to_threads(root_text="R", replies=["only reply"])
+        # root posted, sole reply failed → all replies failed → overall failure (retryable)
+        assert ok is False
+        assert calls["n"] == 1  # raised on the first attempt, no retry
+
     def test_is_media_not_found_detects_code_24(self):
         req = httpx.Request("POST", "https://x")
         resp = httpx.Response(400, request=req, json={"error": {"code": 24}})
         assert _is_media_not_found(httpx.HTTPStatusError("e", request=req, response=resp))
         other = httpx.Response(400, request=req, json={"error": {"code": 100}})
         assert not _is_media_not_found(httpx.HTTPStatusError("e", request=req, response=other))
+
+    def test_is_transient_reply_error_classification(self):
+        req = httpx.Request("POST", "https://x")
+
+        def err(status, body=None):
+            resp = httpx.Response(status, request=req, json=body or {})
+            return httpx.HTTPStatusError("e", request=req, response=resp)
+
+        assert threads_handler._is_transient_reply_error(err(400, {"error": {"code": 24}}))  # media-not-found
+        assert threads_handler._is_transient_reply_error(err(400, {"error": {"code": 100}}))  # processing
+        assert threads_handler._is_transient_reply_error(err(429))
+        assert threads_handler._is_transient_reply_error(err(503))
+        assert not threads_handler._is_transient_reply_error(err(401))  # auth: don't retry
+        assert not threads_handler._is_transient_reply_error(err(403))

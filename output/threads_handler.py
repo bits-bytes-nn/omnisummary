@@ -24,8 +24,10 @@ THREADS_READINESS_POLL_INTERVAL_SEC = 10
 # Total time to wait for the image root to become addressable (~4.5 min). render (~4 min) + this
 # leaves margin under the 15-min Lambda timeout.
 THREADS_INDEXING_BUDGET_SEC = 270
-# Safety-net retry on the rare reply that still 400s "media not found" AFTER the readiness poll
-# said the root was up (eventual-consistency edge). Small — the poll already did the real waiting.
+# Safety-net retry on a reply that fails AFTER the readiness poll said the root was up: either the
+# "media not found" eventual-consistency edge, or a transient container-processing 400/429/5xx (a
+# single such 400 dropped one story from a 2026-07-17 digest). Small — the poll already did the
+# real waiting; a genuine content rejection burns these attempts but is now logged with its body.
 THREADS_REPLY_RETRY_ATTEMPTS = 3
 THREADS_REPLY_RETRY_BACKOFF_SEC = 10
 # How long the hosted-image presigned URL stays valid — must outlast the
@@ -92,6 +94,28 @@ def _is_media_not_found(exc: httpx.HTTPStatusError) -> bool:
         return False
 
 
+def _is_transient_reply_error(exc: httpx.HTTPStatusError) -> bool:
+    """True if a reply failure is worth another attempt. Meta's container-publish endpoint returns
+    transient 400s while it finishes processing a freshly-created container (distinct from the
+    'media not found' indexing case), plus the usual 429/5xx. A single such 400 silently dropped
+    one of five stories on 2026-07-17. Genuine content rejections also surface as 400 and will burn
+    the retries, but they are now logged with the response body so the cause is identifiable."""
+    if _is_media_not_found(exc):
+        return True
+    status = exc.response.status_code
+    return status == 400 or status == 429 or status >= 500
+
+
+def _error_detail(exc: httpx.HTTPStatusError) -> str:
+    """The Threads API response body, truncated — the only place Meta states WHY a post was
+    rejected (subcode / message). Logged on reply failure so a text rejection is distinguishable
+    from a transient processing error without re-running the pipeline."""
+    try:
+        return exc.response.text[:300]
+    except Exception:
+        return "<no response body>"
+
+
 async def _is_addressable(client: httpx.AsyncClient, post_id: str, token: str) -> bool:
     """Cheap readiness probe: GET the post's id. A 200 means Meta has indexed it and it can now
     be used as a reply target; a 400 'media not found' means indexing is still in flight. Any
@@ -122,17 +146,24 @@ async def _publish_reply_with_retry(
     client: httpx.AsyncClient, user_id: str, token: str, text: str, reply_to_id: str
 ) -> str:
     """Publish one reply. The root's readiness was already confirmed by a GET poll before the
-    chain started, so this only guards the rare eventual-consistency edge where a reply still
-    400s 'media not found'; it does a few short backoff retries. Non-indexing errors raise."""
+    chain started, so this guards the residual failure modes: the 'media not found' eventual-
+    consistency edge AND a transient container-processing 400/429/5xx. It does a few short backoff
+    retries; a non-transient error (e.g. auth) raises immediately. The response body is logged on
+    each retry so a genuine content rejection (which exhausts the retries) is identifiable."""
     last: httpx.HTTPStatusError | None = None
     for attempt in range(1, THREADS_REPLY_RETRY_ATTEMPTS + 1):
         try:
             return await _publish_post(client, user_id, token, text=text, reply_to_id=reply_to_id)
         except httpx.HTTPStatusError as e:
-            if not _is_media_not_found(e) or attempt == THREADS_REPLY_RETRY_ATTEMPTS:
+            if not _is_transient_reply_error(e) or attempt == THREADS_REPLY_RETRY_ATTEMPTS:
                 raise
             last = e
-            logger.info("Reply target not indexed yet (attempt %d), retrying", attempt)
+            logger.info(
+                "Reply attempt %d failed (%s), retrying: %s",
+                attempt,
+                e.response.status_code,
+                _error_detail(e),
+            )
             await asyncio.sleep(THREADS_REPLY_RETRY_BACKOFF_SEC)
     assert last is not None
     raise last
@@ -194,6 +225,14 @@ async def post_to_threads(
                     await _publish_reply_with_retry(client, user_id, token, post, root_id)
                     posted += 1
                     logger.debug("Posted Threads reply %d/%d", i, len(posts))
+                except httpx.HTTPStatusError as e:
+                    logger.warning(
+                        "Threads reply %d/%d failed (%s), continuing: %s",
+                        i,
+                        len(posts),
+                        e.response.status_code,
+                        _error_detail(e),
+                    )
                 except Exception as e:
                     logger.warning("Threads reply %d/%d failed, continuing: %s", i, len(posts), e)
         # If there were stories to post but NONE landed (e.g. the image root never indexed within
