@@ -302,27 +302,30 @@ class PipelineConfig(_StrictModel):
     # Recurring mascot = the visual embodiment of the digest's narrator persona (the singularity-
     # believing science-geek technologist). Appears only SOME days, when the editor judges it fits
     # the story — like the multi-panel nudge, character presence is a variation axis, not a daily
-    # lock. Identity rides on signature props (glasses, two-tone cardigan, prediction notebook), not
-    # exact facial pixels, so it stays recognizable across the daily-varying art styles.
+    # lock. Identity rides on a FEW signature cues (hair cowlick, retro glasses, two-tone cardigan),
+    # not an exhaustive prop list, so he reads as the same person while pose/outfit/expression vary
+    # day to day instead of converging on one identical look.
     visual_character_enabled: bool = True
     # Roughly what share of visuals should feature the character; the editor still skips it when a
     # story (e.g. a pure architecture explainer) reads better as a concept visual. 0 disables.
     visual_character_target_ratio: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Kept deliberately LEAN: an over-specified sheet (fixed outfit down to the socks, a repeated
+    # "glasses pushed up on the forehead" gag) made every render converge on the same overfit image.
+    # We fix only a small identity core and explicitly invite daily variation; framing favors a
+    # waist-up shot because full-body figures are where gpt-image proportions/hands break most.
     visual_character_sheet: str = (
         "A recurring Korean man in his late 20s — a cute, earnest tech nerd, the narrator made "
-        "visible. Keep him recognizable in ANY art style via these signatures: messy black hair "
-        "with a stubborn upward cowlick; chunky rounded retro glasses (often pushed up on the "
-        "forehead); an oversized two-tone color-blocked chunky knit cardigan in mustard and sage "
-        "green over a cream tee; loose brown corduroy pants; mismatched cozy socks; and a battered "
-        "notebook of scribbled predictions with exactly one circled in red. Warm, bright, charming "
-        "— never a dark-room hacker. He reacts to today's story (wonder, a skeptical squint, "
-        "fired-up conviction) as a witness inside the scene, not as a replacement for depicting it. "
-        "RENDER HIM WELL: correct, natural human anatomy and proportions — a normal head-to-body "
-        "ratio, properly shaped hands with five fingers, arms and legs at believable lengths and "
-        "angles, a balanced stance with weight that reads as physically real. No distorted limbs, "
-        "no oversized head, no melted or extra fingers, no broken perspective. He should look like a "
-        "polished, professionally-drawn character — appealing and anatomically sound — in whatever "
-        "art style the day calls for."
+        "visible. Keep him recognizable by just a FEW identity cues, drawn naturally: messy black "
+        "hair with an upward cowlick; chunky rounded retro glasses worn normally ON HIS EYES; and a "
+        "two-tone color-blocked knit cardigan (mustard + sage green) over a plain tee. Everything "
+        "else — exact outfit details, pose, props, expression — should VARY day to day; do not lock "
+        "him into one identical look, and do NOT repeat any single gag (e.g. glasses pushed up on "
+        "the forehead) across visuals. Warm, bright, charming — never a dark-room hacker. He reacts "
+        "to today's story (wonder, a skeptical squint, fired-up conviction) as a witness inside the "
+        "scene, not as a replacement for depicting it. Prefer a WAIST-UP or medium shot so his face "
+        "and reaction carry the moment; only show a full figure when the composition truly needs it. "
+        "Draw him with correct, natural human anatomy and proportions and well-formed hands, as a "
+        "polished, professionally-drawn character in whatever art style the day calls for."
     )
 
 
