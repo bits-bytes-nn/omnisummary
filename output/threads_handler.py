@@ -143,21 +143,29 @@ async def _wait_until_addressable(client: httpx.AsyncClient, post_id: str, token
 
 
 async def _publish_reply_with_retry(
-    client: httpx.AsyncClient, user_id: str, token: str, text: str, reply_to_id: str
+    client: httpx.AsyncClient, user_id: str, token: str, text: str, reply_to_id: str, *, indexing_deadline: float = 0.0
 ) -> str:
-    """Publish one reply. The root's readiness was already confirmed by a GET poll before the
-    chain started, so this guards the residual failure modes: the 'media not found' eventual-
-    consistency edge AND a transient container-processing 400/429/5xx. It does a few short backoff
-    retries; a non-transient error (e.g. auth) raises immediately. The response body is logged on
-    each retry so a genuine content rejection (which exhausts the retries) is identifiable."""
-    last: httpx.HTTPStatusError | None = None
-    for attempt in range(1, THREADS_REPLY_RETRY_ATTEMPTS + 1):
+    """Publish one reply. The up-front GET poll can report the root addressable (GET 200) before
+    it's usable as a REPLY TARGET — so the first replies still 400 with code-24 'media not found'
+    (a 2026-07-25 digest dropped its Opus-5 headline + one more this way; each reply burned only its
+    3 short attempts, then the root finally indexed and the rest landed). Since the FIRST reply to
+    succeed proves the root is truly ready, keep retrying the code-24 case against the SHARED
+    indexing deadline instead of a fixed short cap; genuine transient 400/429/5xx still cap at
+    THREADS_REPLY_RETRY_ATTEMPTS. A non-transient error (e.g. auth) raises immediately. The response
+    body is logged on each retry so a genuine content rejection is identifiable."""
+    attempt = 0
+    while True:
+        attempt += 1
         try:
             return await _publish_post(client, user_id, token, text=text, reply_to_id=reply_to_id)
         except httpx.HTTPStatusError as e:
-            if not _is_transient_reply_error(e) or attempt == THREADS_REPLY_RETRY_ATTEMPTS:
+            # code-24 is pure root-indexing lag: ride the shared deadline (once one reply lands the
+            # root is ready, so this only bites the first reply). Other transient errors keep the cap.
+            budget_left = indexing_deadline - time.monotonic()
+            keep_for_indexing = _is_media_not_found(e) and budget_left > THREADS_REPLY_RETRY_BACKOFF_SEC
+            capped = not _is_transient_reply_error(e) or attempt >= THREADS_REPLY_RETRY_ATTEMPTS
+            if capped and not keep_for_indexing:
                 raise
-            last = e
             logger.info(
                 "Reply attempt %d failed (%s), retrying: %s",
                 attempt,
@@ -165,8 +173,6 @@ async def _publish_reply_with_retry(
                 _error_detail(e),
             )
             await asyncio.sleep(THREADS_REPLY_RETRY_BACKOFF_SEC)
-    assert last is not None
-    raise last
 
 
 async def post_to_threads(
@@ -212,8 +218,8 @@ async def post_to_threads(
             # cheap GETs (shared across all replies — readiness is a root property) instead of
             # blind-retrying create-container writes per reply. A TEXT root (no image) indexes
             # ~immediately, so skip the poll there.
+            deadline = time.monotonic() + THREADS_INDEXING_BUDGET_SEC
             if image_url and posts:
-                deadline = time.monotonic() + THREADS_INDEXING_BUDGET_SEC
                 await _wait_until_addressable(client, root_id, token, deadline)
             # All replies hang off the ROOT (a flat thread), not off each other — otherwise
             # they nest as reply-of-reply and only the first shows under the root. Each reply is
@@ -222,7 +228,9 @@ async def post_to_threads(
             posted = 0
             for i, post in enumerate(posts, start=1):
                 try:
-                    await _publish_reply_with_retry(client, user_id, token, post, root_id)
+                    await _publish_reply_with_retry(
+                        client, user_id, token, post, root_id, indexing_deadline=deadline
+                    )
                     posted += 1
                     logger.debug("Posted Threads reply %d/%d", i, len(posts))
                 except httpx.HTTPStatusError as e:

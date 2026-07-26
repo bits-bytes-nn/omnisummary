@@ -95,10 +95,18 @@ class TestPostToThreads:
 
     @pytest.mark.asyncio
     async def test_one_failing_reply_does_not_abandon_the_rest(self, monkeypatch):
-        # A single reply that exhausts its indexing retries must not drop the remaining replies
-        # — otherwise the thread posts a half-finished comment chain ("댓글이 달리다 말았다").
-        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 0)
-        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_ATTEMPTS", 2)
+        # A single reply that exhausts the shared indexing budget must not drop the remaining
+        # replies — otherwise the thread posts a half-finished comment chain ("댓글이 달리다 말았다").
+        # A code-24 reply now rides the shared indexing deadline, so mock the clock and set a small
+        # budget: the failing reply drains it, then the rest still post (they see the budget spent).
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 10)
+        monkeypatch.setattr(threads_handler, "THREADS_INDEXING_BUDGET_SEC", 30)
+        clock = {"t": 0.0}
+        monkeypatch.setattr(threads_handler.time, "monotonic", lambda: clock["t"])
+
+        async def fake_sleep(sec):
+            clock["t"] += sec
+
         req = httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads")
         resp = httpx.Response(400, request=req, json={"error": {"code": 24, "error_subcode": 4279009}})
         not_found = httpx.HTTPStatusError("media not found", request=req, response=resp)
@@ -114,9 +122,10 @@ class TestPostToThreads:
 
         with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
             with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
-                ok = await post_to_threads(root_text="R", replies=["first", "second", "third"])
+                with patch.object(threads_handler.asyncio, "sleep", side_effect=fake_sleep):
+                    ok = await post_to_threads(root_text="R", replies=["first", "second", "third"])
         assert ok is True
-        # first and third land; second is attempted (and retried) but never blocks the others
+        # first and third land; second is attempted (and retried to the budget) but never blocks the others
         assert "first" in seen and "third" in seen
 
     @pytest.mark.asyncio
@@ -187,6 +196,73 @@ class TestPostToThreads:
                             )
         # poll never succeeds and the reply can't land → overall failure (retryable)
         assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_media_not_found_retries_past_fixed_cap_until_budget(self, monkeypatch):
+        # Regression (2026-07-25): the up-front GET poll reported the image root addressable, but
+        # it wasn't yet a valid REPLY target, so the first replies 400'd code-24 and each burned only
+        # its 3 short attempts — dropping the Opus-5 headline + one more. A code-24 reply must ride
+        # the SHARED indexing deadline (many attempts), not the fixed 3-attempt cap.
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_ATTEMPTS", 3)
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 10)
+        monkeypatch.setattr(threads_handler, "THREADS_INDEXING_BUDGET_SEC", 200)
+        clock = {"t": 0.0}
+        monkeypatch.setattr(threads_handler.time, "monotonic", lambda: clock["t"])
+
+        async def fake_sleep(sec):
+            clock["t"] += sec
+
+        req = httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads")
+        resp = httpx.Response(400, request=req, json={"error": {"code": 24, "error_subcode": 4279009}})
+        not_found = httpx.HTTPStatusError("media not found", request=req, response=resp)
+
+        calls = {"n": 0}
+
+        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
+            if reply_to_id:
+                calls["n"] += 1
+                if calls["n"] <= 6:  # indexing lags well past the fixed 3-attempt cap
+                    raise not_found
+            return "id"
+
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
+                with patch.object(threads_handler.asyncio, "sleep", side_effect=fake_sleep):
+                    ok = await post_to_threads(root_text="R", replies=["headline reply"])
+        assert ok is True
+        assert calls["n"] == 7  # retried 6 code-24 failures (past the 3-cap) then landed
+
+    @pytest.mark.asyncio
+    async def test_transient_400_still_capped_at_fixed_attempts(self, monkeypatch):
+        # A non-code-24 transient 400 (container processing) is NOT indexing lag, so it must stay
+        # capped at the fixed attempt count — not ride the long indexing deadline.
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_ATTEMPTS", 3)
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 10)
+        monkeypatch.setattr(threads_handler, "THREADS_INDEXING_BUDGET_SEC", 200)
+        clock = {"t": 0.0}
+        monkeypatch.setattr(threads_handler.time, "monotonic", lambda: clock["t"])
+
+        async def fake_sleep(sec):
+            clock["t"] += sec
+
+        req = httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads")
+        resp = httpx.Response(400, request=req, json={"error": {"code": 100, "message": "processing"}})
+        transient = httpx.HTTPStatusError("bad", request=req, response=resp)
+
+        calls = {"n": 0}
+
+        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
+            if reply_to_id:
+                calls["n"] += 1
+                raise transient  # never recovers
+            return "id"
+
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
+                with patch.object(threads_handler.asyncio, "sleep", side_effect=fake_sleep):
+                    ok = await post_to_threads(root_text="R", replies=["only reply"])
+        assert ok is False
+        assert calls["n"] == 3  # capped at the fixed attempt count, not the indexing budget
 
     @pytest.mark.asyncio
     async def test_reply_retries_on_transient_400(self, monkeypatch):
