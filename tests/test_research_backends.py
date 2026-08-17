@@ -87,8 +87,8 @@ class TestExtractUrl:
         client.extract = AsyncMock(return_value={"results": [{"raw_content": "X" * 100}]})
         client.close = AsyncMock()
         with patch.object(rb, "_get_tavily_client", return_value=client):
-            with patch.object(rb.Config, "load") as load:
-                load.return_value.agent.research_content_cap_chars = 10
+            with patch.object(rb, "get_config") as cfg:
+                cfg.return_value.agent.research_content_cap_chars = 10
                 result = await rb.extract_url("http://x")
         assert result == "X" * 10
 
@@ -99,8 +99,8 @@ class TestExtractUrl:
         client.extract = AsyncMock(return_value={"results": [{"content": "Y" * 100}]})
         client.close = AsyncMock()
         with patch.object(rb, "_get_tavily_client", return_value=client):
-            with patch.object(rb.Config, "load") as load:
-                load.return_value.agent.research_content_cap_chars = 10
+            with patch.object(rb, "get_config") as cfg:
+                cfg.return_value.agent.research_content_cap_chars = 10
                 result = await rb.extract_url("http://x")
         assert result == "Y" * 10
 

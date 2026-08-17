@@ -3,4 +3,13 @@ main = "worker.js"
 compatibility_date = "2024-01-01"
 
 [vars]
-PROXY_TOKEN = "omnisummary-proxy-2026"
+# Hosts this worker is allowed to fetch, comma-separated. Matching is exact OR suffix, so
+# "reddit.com" also covers www.reddit.com / old.reddit.com and "youtube.com" covers
+# www.youtube.com. Anything else gets 403 — an authenticated open proxy would otherwise
+# forward arbitrary traffic (incl. to internal endpoints) under this worker's IP.
+ALLOWED_HOSTS = "reddit.com,youtube.com,youtu.be,ytimg.com"
+
+# PROXY_TOKEN is NOT stored here: a [vars] entry lives in version control in plaintext.
+# Set it as a secret once per environment (prompts for the value, never written to disk):
+#   wrangler secret put PROXY_TOKEN
+# and put the same value in .env as CLOUDFLARE_PROXY_TOKEN for the collectors.

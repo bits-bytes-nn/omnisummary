@@ -41,7 +41,10 @@ def _latest_within_window(items: list[CollectedItem], limit: int) -> list[Collec
 class YouTubeCollector(BaseCollector):
     def __init__(self, config: YouTubeCollectorConfig):
         self.config = config
-        self._api_key: str | None = None
+        # Resolved once per collect() (see _resolve_api_key), never lazily per access: the SSM
+        # lookup is a blocking boto3 call, and reading it from a property inside the async fan-out
+        # stalled the whole event loop for the duration of every channel's first access.
+        self.api_key: str = ""
         self._sync_client_instance: httpx.Client | None = None
 
     @property
@@ -53,13 +56,13 @@ class YouTubeCollector(BaseCollector):
             self._sync_client_instance = httpx.Client(follow_redirects=True)
         return self._sync_client_instance
 
-    @property
-    def api_key(self) -> str:
-        # Resolved lazily (env first, then SSM /{project}/{stage}/youtube-api-key) so
-        # construction stays pure — no network I/O until the collector actually runs.
-        if self._api_key is None:
-            self._api_key = resolve_secret("YOUTUBE_API_KEY", "youtube-api-key")
-        return self._api_key
+    async def _resolve_api_key(self) -> str:
+        """Resolve the key ONCE per run (env first, then SSM /{project}/{stage}/youtube-api-key)
+        off the event loop. Construction stays pure — no I/O until the collector actually runs —
+        and the blocking SSM call never runs on the loop thread."""
+        if not self.api_key:
+            self.api_key = await asyncio.to_thread(resolve_secret, "YOUTUBE_API_KEY", "youtube-api-key")
+        return self.api_key
 
     def __del__(self) -> None:
         # Release pooled sockets when the collector is garbage-collected so warm Lambda
@@ -77,10 +80,13 @@ class YouTubeCollector(BaseCollector):
         # collects videos WITH transcripts on a residential IP and parks them in S3 (same pattern
         # as RSSHub/X). In AWS we read that file; live collection from Lambda still works for the
         # metadata but yields transcript-less items, so the S3 file is strongly preferred.
-        s3_items = load_items_from_s3("youtube_items.json")
-        if s3_items is not None:
-            return s3_items
+        parked = load_items_from_s3("youtube_items.json", max_age_hours=self.config.park_max_age_hours)
+        self.park_status = parked
+        if parked.usable:
+            return parked.items
 
+        # One resolution for the whole run, before the fan-out, so no channel task blocks the loop.
+        await self._resolve_api_key()
         tasks = [self._collect_channel(ch) for ch in self.config.channels]
         items = await gather_collector_results(tasks, labels=self.config.channels, raise_if_all_failed=True)
         logger.info("YouTube collector gathered %d items total", len(items))

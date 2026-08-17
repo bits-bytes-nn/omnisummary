@@ -20,12 +20,19 @@ jobs:
   lint:
     name: Lint & type-check
     runs-on: ubuntu-latest
+    # Every job carries a timeout: without one a hung step burns the full 6h runner default
+    # before anyone notices the build is stuck rather than slow.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
           version: ${{ env.UV_VERSION }}
+          # Cache the resolved wheels, keyed on the lockfile — a dependency change still
+          # reinstalls, so the cache can never hide a broken/unlockable dependency set.
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
       - name: Set up Python
         run: uv python install 3.12
       # Fail if uv.lock is out of date with pyproject.toml instead of silently resolving
@@ -47,12 +54,15 @@ jobs:
   test:
     name: Tests & coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
           version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
       - name: Set up Python
         run: uv python install 3.12
       - name: Install dependencies
@@ -73,12 +83,15 @@ jobs:
   synth:
     name: CDK synth
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
           version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
       - name: Set up Python
         run: uv python install 3.12
       - name: Install dependencies
@@ -87,6 +100,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
       # `npm ci` only — the `|| npm install` fallback silently ignored a stale/absent
       # package-lock.json and installed a different CDK CLI than the pinned one, defeating the
       # point of exercising the CLI<->aws-cdk-lib schema handshake.
@@ -94,16 +108,23 @@ jobs:
         run: npm ci
       # Run synth through the repo-pinned CDK CLI (not a bare app.synth()) so the CLI↔aws-cdk-lib
       # cloud-assembly schema handshake is exercised — the exact drift that broke a deploy in 2026-07.
+      # scripts/ci_synth.py synths the TRACKED config/config-template.yaml (config.yaml is
+      # gitignored, so Config.load() here would silently synth bare code defaults) with a dummy
+      # account, so this needs no AWS credentials.
       - name: Synthesize CDK via pinned CLI (offline)
         run: npx cdk synth -a "uv run python scripts/ci_synth.py"
 
   docker:
-    name: Docker build
+    name: Docker build & import check
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+      # load: true (single platform, native amd64) so the built image is in the local daemon and
+      # can actually be RUN — a build alone never executes an import, so a missing COPY or a
+      # module that only resolves on the developer's machine still shipped green.
       - name: Build digest image
         uses: docker/build-push-action@v6
         with:
@@ -111,18 +132,34 @@ jobs:
           file: Dockerfile
           platforms: linux/amd64
           provenance: false
-          push: false
+          load: true
           tags: omnisummary-digest:ci
-      # Build the agentcore image so a missing COPY or unresolved dep in the deep-research
-      # runtime is caught in CI rather than at AgentCore cold-start. The runtime's import graph
-      # (agent_runtime.app -> output.delivery -> shared.research/media) is separately exercised
-      # by tests/test_agentcore_app.py on the host.
+          cache-from: type=gha,scope=digest
+          cache-to: type=gha,mode=max,scope=digest
+      # Runs on the loaded image regardless of how much of the build was cached, so layer caching
+      # cannot skip this check. --network none + no credentials: importing a handler must be pure,
+      # so an import-time AWS call or HTTP fetch fails here instead of at cold start.
+      - name: Import-check digest image
+        run: >
+          docker run --rm --network none --entrypoint python omnisummary-digest:ci -c
+          "import lambda_handlers.digest_handler, lambda_handlers.visual_handler,
+          lambda_handlers.threads_refresh_handler, main; print('digest image imports OK')"
+      # The agentcore image is deployed as arm64, but CI builds it amd64: the base image and every
+      # dependency are multi-arch, and a native build keeps the import check runnable without QEMU
+      # emulation (a QEMU pip install blows the job budget). What this catches is arch-independent
+      # — a missing COPY or an unresolved dep in the deep-research runtime.
       - name: Build agentcore image (deep-research runtime)
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.agentcore
-          platforms: linux/arm64
+          platforms: linux/amd64
           provenance: false
-          push: false
+          load: true
           tags: omnisummary-agentcore:ci
+          cache-from: type=gha,scope=agentcore
+          cache-to: type=gha,mode=max,scope=agentcore
+      - name: Import-check agentcore image
+        run: >
+          docker run --rm --network none --entrypoint python omnisummary-agentcore:ci -c
+          "import agent_runtime.app; print('agentcore image imports OK')"

@@ -1,9 +1,10 @@
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
 
-from shared.config import Config, PipelineConfig, RedditCollectorConfig, YouTubeCollectorConfig
+from shared.config import Config, PipelineConfig, RedditCollectorConfig, YouTubeCollectorConfig, get_config
 from shared.utils import _LANGUAGE_MODEL_INFO
 
 CONFIG_TEMPLATE = Path(__file__).resolve().parent.parent / "config" / "config-template.yaml"
@@ -40,6 +41,15 @@ class TestStrictConfig:
         assert cfg.collectors.youtube.channels == []
         assert cfg.collectors.rsshub.accounts == []
 
+    def test_template_is_the_config_ci_synths(self):
+        # config/config.yaml is gitignored, so a Config.load()-based synth silently fell back to
+        # bare code defaults in CI and proved nothing about the config anyone actually deploys.
+        # Keep the CI synth pinned to the tracked template.
+        synth_src = (Path(__file__).resolve().parent.parent / "scripts" / "ci_synth.py").read_text()
+        assert "config-template.yaml" in synth_src
+        assert "Config.from_yaml(str(CONFIG_TEMPLATE))" in synth_src
+        assert "config = Config.load()" not in synth_src
+
     def test_reddit_subreddits_default_is_empty(self):
         # A live source list must come from config.yaml, never from a code default (which would
         # keep collecting if the config key were ever dropped or typo'd out).
@@ -50,6 +60,22 @@ class TestStrictConfig:
             PipelineConfig(top_n=0)
         with pytest.raises(ValidationError):
             PipelineConfig(top_n=-3)
+
+
+class TestGetConfigCache:
+    def test_parses_the_yaml_once(self):
+        # Config.load() re-reads and re-validates the whole YAML on every call; a single research
+        # run did that dozens of times (once per tool invocation). get_config() must parse once.
+        with patch.object(Config, "load", wraps=Config.load) as load:
+            first = get_config()
+            second = get_config()
+        assert first is second
+        assert load.call_count == 1
+
+    def test_cache_clear_reloads(self):
+        first = get_config()
+        get_config.cache_clear()
+        assert get_config() is not first
 
 
 class TestConfiguredModelsAreRegistered:

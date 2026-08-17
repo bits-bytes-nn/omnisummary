@@ -1,3 +1,4 @@
+import asyncio
 import json
 from unittest.mock import MagicMock
 
@@ -222,6 +223,86 @@ class TestRankEndToEnd:
         ranker = ContentRanker(config, factory)
         result = await ranker.rank(items)
         assert {r.item.item_id for r in result} == {f"i{n}" for n in range(10)}
+
+    @pytest.mark.asyncio
+    async def test_transient_batch_failure_is_retried_not_dropped(self):
+        # A throttle/5xx on the Converse call used to be swallowed into [], silently deleting a
+        # whole batch of candidates from the day's pool. It must be retried instead.
+        items = _items([("a", SourceType.RSS)])
+        attempts = {"n": 0}
+
+        def flaky(_prompt):
+            attempts["n"] += 1
+            if attempts["n"] < 3:
+                raise RuntimeError("ThrottlingException")
+            return AIMessage(content=_rankings({"a": 0.9}))
+
+        factory = _mock_factory()
+        factory.get_model.return_value = RunnableLambda(flaky)
+        config = PipelineConfig(
+            top_n=5, min_score=0.6, source_slots={}, ranking_max_retries=3, ranking_retry_backoff_sec=0
+        )
+        result = await ContentRanker(config, factory).rank(items)
+        assert [r.item.item_id for r in result] == ["a"]
+        assert attempts["n"] == 3
+
+    @pytest.mark.asyncio
+    async def test_all_batches_failing_raises(self):
+        # Nothing ranked at all is an outage, not a quiet day: raise so the run reports FAILED
+        # instead of publishing an empty digest.
+        items = _items([(f"i{n}", SourceType.RSS) for n in range(4)])
+        factory = _mock_factory()
+        factory.get_model.return_value = RunnableLambda(lambda _: (_ for _ in ()).throw(RuntimeError("bedrock down")))
+        config = PipelineConfig(
+            top_n=5, min_score=0.6, source_slots={}, ranking_batch_size=2, ranking_retry_backoff_sec=0
+        )
+        with pytest.raises(RuntimeError, match="All 2 ranking batches failed"):
+            await ContentRanker(config, factory).rank(items)
+
+    @pytest.mark.asyncio
+    async def test_one_permanently_failed_batch_is_tolerated(self):
+        import re
+
+        items = _items([(f"i{n}", SourceType.RSS) for n in range(4)])
+
+        def score_or_die(prompt_value):
+            ids = re.findall(r"ID: (i\d+)", str(prompt_value))
+            if "i0" in ids:  # the first batch never recovers
+                raise RuntimeError("ThrottlingException")
+            return AIMessage(content=_rankings(dict.fromkeys(ids, 0.8)))
+
+        factory = _mock_factory()
+        factory.get_model.return_value = RunnableLambda(score_or_die)
+        config = PipelineConfig(
+            top_n=5, min_score=0.6, source_slots={}, ranking_batch_size=2, ranking_retry_backoff_sec=0
+        )
+        result = await ContentRanker(config, factory).rank(items)
+        # The surviving batch still ranks; only the dead batch's items are missing.
+        assert {r.item.item_id for r in result} == {"i2", "i3"}
+
+    @pytest.mark.asyncio
+    async def test_bedrock_fan_out_is_bounded_by_config(self):
+        import re
+
+        items = _items([(f"i{n}", SourceType.RSS) for n in range(8)])
+        state = {"active": 0, "peak": 0}
+
+        async def score(prompt_value):
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+            await asyncio.sleep(0.01)
+            state["active"] -= 1
+            ids = re.findall(r"ID: (i\d+)", str(prompt_value))
+            return AIMessage(content=_rankings(dict.fromkeys(ids, 0.8)))
+
+        factory = _mock_factory()
+        factory.get_model.return_value = RunnableLambda(func=lambda _: None, afunc=score)
+        config = PipelineConfig(
+            top_n=20, min_score=0.6, source_slots={}, ranking_batch_size=1, ranking_max_concurrency=2
+        )
+        result = await ContentRanker(config, factory).rank(items)
+        assert len(result) == 8  # every batch still scored
+        assert state["peak"] <= 2, f"fan-out exceeded ranking_max_concurrency: peak={state['peak']}"
 
     def test_batches_split_on_token_budget_not_just_count(self):
         # Even under the item-count cap, a batch must not exceed the context-window token budget:

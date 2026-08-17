@@ -1,5 +1,7 @@
 import pytest
 
+from shared.config import get_config
+
 # Env vars a developer's shell or `.env` supplies in real runs. Any of them leaking into a test
 # changes behavior: a real SLACK_BOT_TOKEN makes a "no token configured" path take the token
 # branch, a STATE_BUCKET sends a collector to the S3 park file instead of live collection. Cleared
@@ -24,6 +26,15 @@ LEAKY_ENV_VARS = (
     "AGENTCORE_RUNTIME_ARN",
     "DDB_TABLE_NAME",
 )
+
+
+@pytest.fixture(autouse=True)
+def clear_config_cache():
+    """get_config() caches the parsed Config process-wide, so a Config built (or patched) by one
+    test would otherwise leak into the next. Cleared on both sides of every test."""
+    get_config.cache_clear()
+    yield
+    get_config.cache_clear()
 
 
 @pytest.fixture(autouse=True)

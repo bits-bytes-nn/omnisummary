@@ -1,6 +1,22 @@
 import tempfile
+from unittest.mock import MagicMock, patch
 
-from shared.state_store import LocalStateStore
+from botocore.exceptions import ClientError
+
+from shared.config import Config
+from shared.state_store import LocalStateStore, S3StateStore, create_state_store
+
+
+def _s3_session(client: MagicMock) -> MagicMock:
+    session = MagicMock()
+    session.client.return_value = client
+    return session
+
+
+def _body(content: bytes) -> dict:
+    body = MagicMock()
+    body.read.return_value = content
+    return {"Body": body}
 
 
 class TestLocalStateStore:
@@ -34,3 +50,144 @@ class TestLocalStateStore:
             store.write("file.txt", "v1")
             store.write("file.txt", "v2")
             assert store.read("file.txt") == "v2"
+
+    def test_read_json_falls_back_on_corrupt_content(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LocalStateStore(tmpdir)
+            store.write("trends.json", "{not json")
+            assert store.read_json("trends.json", default={"trends": []}) == {"trends": []}
+
+    def test_write_json_roundtrips_non_ascii(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LocalStateStore(tmpdir)
+            store.write_json("k.json", {"제목": "값"})
+            assert store.read_json("k.json") == {"제목": "값"}
+
+
+class TestS3StateStore:
+    def test_write_prefixes_key_and_encodes_utf8(self):
+        client = MagicMock()
+        store = S3StateStore(_s3_session(client), "bkt", prefix="omni/digest_state")
+        store.write("trends.json", "내용")
+        kwargs = client.put_object.call_args.kwargs
+        assert kwargs["Bucket"] == "bkt"
+        assert kwargs["Key"] == "omni/digest_state/trends.json"
+        assert kwargs["Body"] == "내용".encode()
+
+    def test_empty_prefix_writes_to_bucket_root(self):
+        client = MagicMock()
+        store = S3StateStore(_s3_session(client), "bkt")
+        store.write("trends.json", "x")
+        assert client.put_object.call_args.kwargs["Key"] == "trends.json"
+
+    def test_read_decodes_body(self):
+        client = MagicMock()
+        client.get_object.return_value = _body("내용".encode())
+        store = S3StateStore(_s3_session(client), "bkt", prefix="omni/digest_state")
+        assert store.read("trends.json") == "내용"
+        assert client.get_object.call_args.kwargs["Key"] == "omni/digest_state/trends.json"
+
+    def test_missing_key_reads_none(self):
+        client = MagicMock()
+        client.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+        store = S3StateStore(_s3_session(client), "bkt")
+        assert store.read("trends.json") is None
+
+    def test_other_client_error_reads_none_and_warns(self):
+        # A denied/throttled read must degrade to "no state" (the caller starts a fresh trend
+        # memory) rather than crashing the digest — but it must be logged, not silent.
+        client = MagicMock()
+        client.get_object.side_effect = ClientError({"Error": {"Code": "AccessDenied"}}, "GetObject")
+        store = S3StateStore(_s3_session(client), "bkt")
+        with patch("shared.state_store.logger.warning") as warn:
+            assert store.read("trends.json") is None
+        assert warn.called
+
+    def test_exists_true_and_false(self):
+        client = MagicMock()
+        store = S3StateStore(_s3_session(client), "bkt", prefix="p")
+        assert store.exists("trends.json") is True
+        client.head_object.side_effect = ClientError({"Error": {"Code": "404"}}, "HeadObject")
+        assert store.exists("trends.json") is False
+
+    def test_read_json_parses_stored_json(self):
+        client = MagicMock()
+        client.get_object.return_value = _body(b'{"trends": []}')
+        store = S3StateStore(_s3_session(client), "bkt")
+        assert store.read_json("trends.json") == {"trends": []}
+
+
+class TestCreateStateStore:
+    def test_local_fallback_without_any_bucket(self, monkeypatch):
+        monkeypatch.delenv("STATE_BUCKET", raising=False)
+        config = Config()
+        config.aws.state_bucket_name = ""
+        assert isinstance(create_state_store(config), LocalStateStore)
+
+    def test_state_bucket_env_selects_s3_outside_aws(self, monkeypatch):
+        # Regression: the store used to be gated on is_running_in_aws(), so any non-Lambda caller
+        # carrying STATE_BUCKET (agent runtime, container, local run against the real bucket)
+        # silently wrote trends.json to the local filesystem and lost every trend thread.
+        monkeypatch.setenv("STATE_BUCKET", "prod-bucket")
+        monkeypatch.setenv("S3_PREFIX", "omni/digest_state")
+        config = Config()
+        config.aws.profile = "research"
+        config.aws.region = "ap-northeast-2"
+        with patch("shared.state_store.is_running_in_aws", return_value=False):
+            with patch("boto3.Session") as session:
+                store = create_state_store(config)
+        assert isinstance(store, S3StateStore)
+        assert store.bucket == "prod-bucket"
+        assert store.prefix == "omni/digest_state"
+        # Credentials must still come from the configured profile/region outside AWS.
+        assert session.call_args.kwargs == {"profile_name": "research", "region_name": "ap-northeast-2"}
+
+    def test_in_aws_uses_ambient_session(self, monkeypatch):
+        monkeypatch.setenv("STATE_BUCKET", "prod-bucket")
+        monkeypatch.delenv("S3_PREFIX", raising=False)
+        with patch("shared.state_store.is_running_in_aws", return_value=True):
+            with patch("boto3.Session") as session:
+                store = create_state_store(Config())
+        assert isinstance(store, S3StateStore)
+        assert store.prefix == "digest_state"  # default when S3_PREFIX is unset
+        assert session.call_args.kwargs == {}  # execution role, no profile
+
+    def test_config_bucket_appends_digest_state_to_prefix(self, monkeypatch):
+        monkeypatch.delenv("STATE_BUCKET", raising=False)
+        config = Config()
+        config.aws.state_bucket_name = "cfg-bucket"
+        config.aws.s3_prefix = "omnisummary"
+        with patch("shared.state_store.is_running_in_aws", return_value=False):
+            with patch("boto3.Session"):
+                store = create_state_store(config)
+        assert isinstance(store, S3StateStore)
+        assert store.bucket == "cfg-bucket"
+        assert store.prefix == "omnisummary/digest_state"
+
+    def test_config_bucket_without_prefix(self, monkeypatch):
+        monkeypatch.delenv("STATE_BUCKET", raising=False)
+        config = Config()
+        config.aws.state_bucket_name = "cfg-bucket"
+        config.aws.s3_prefix = ""
+        with patch("shared.state_store.is_running_in_aws", return_value=False):
+            with patch("boto3.Session"):
+                store = create_state_store(config)
+        assert store.prefix == "digest_state"
+
+    def test_env_bucket_wins_over_config_bucket(self, monkeypatch):
+        monkeypatch.setenv("STATE_BUCKET", "env-bucket")
+        monkeypatch.setenv("S3_PREFIX", "root/digest_state")
+        config = Config()
+        config.aws.state_bucket_name = "cfg-bucket"
+        with patch("shared.state_store.is_running_in_aws", return_value=True):
+            with patch("boto3.Session"):
+                store = create_state_store(config)
+        assert store.bucket == "env-bucket"
+
+    def test_no_config_still_works_in_aws(self, monkeypatch):
+        monkeypatch.setenv("STATE_BUCKET", "prod-bucket")
+        with patch("shared.state_store.is_running_in_aws", return_value=True):
+            with patch("boto3.Session") as session:
+                store = create_state_store()
+        assert isinstance(store, S3StateStore)
+        assert session.call_args.kwargs == {}

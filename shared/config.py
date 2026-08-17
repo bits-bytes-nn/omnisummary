@@ -1,4 +1,5 @@
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
@@ -44,6 +45,10 @@ class BaseCollectorConfig(_StrictModel):
     request_timeout: int = Field(default=30, ge=1)
     max_retries: int = Field(default=3, ge=1)
     retry_backoff_sec: int = Field(default=5, ge=0)
+    # Age budget for a source's S3 park file (written by the local sync scripts). Beyond it the
+    # items are still used — stale beats empty — but the source is reported STALE so a stopped
+    # local cron is visible instead of looking like a healthy run.
+    park_max_age_hours: int = Field(default=36, ge=1)
 
 
 class YouTubeCollectorConfig(BaseCollectorConfig):
@@ -64,6 +69,12 @@ class RedditCollectorConfig(BaseCollectorConfig):
 
 class RSSCollectorConfig(BaseCollectorConfig):
     feeds: list[str] = Field(default_factory=list)
+    # How many feeds may be fetched at once. Each feedparser.parse parks a worker thread, so this
+    # stays at/below the default asyncio executor width (min(32, cpu+4) — 6 on a 2-vCPU Lambda);
+    # oversubscribing it made a feed's timeout expire while its parse was still queued, turning a
+    # healthy feed into a bogus FAILURE. Same bound as rsshub.max_concurrency. Worst-case wall time
+    # is ceil(feeds / max_concurrency) * request_timeout, well inside the 15-min Lambda.
+    max_concurrency: int = Field(default=5, ge=1)
 
 
 class TrendSearch(_StrictModel):
@@ -207,6 +218,14 @@ class PipelineConfig(_StrictModel):
     agi_countdown_after: str = "AGI 등장 예정일 D+{days}일째, 아직이다. "
     item_text_max_tokens: int = Field(default=8000, ge=1)
     ranking_batch_size: int = Field(default=40, ge=1)
+    # How many ranking batches may be in flight against Bedrock at once. Unbounded fan-out threw
+    # every batch at Converse simultaneously, so a large day self-throttled (ThrottlingException)
+    # and dropped whole batches of candidates.
+    ranking_max_concurrency: int = Field(default=4, ge=1)
+    # A batch that fails is RETRIED before it is given up on: a single throttle used to silently
+    # delete ~40 candidates from the day's pool with only a warning.
+    ranking_max_retries: int = Field(default=3, ge=1)
+    ranking_retry_backoff_sec: float = Field(default=5.0, ge=0)
     source_slots: dict[str, int] = Field(
         default_factory=lambda: {
             "web": 2,
@@ -421,3 +440,16 @@ class Config(_StrictModel):
         if not config_path.exists():
             return cls()
         return cls.from_yaml(str(config_path))
+
+
+@lru_cache(maxsize=1)
+def get_config() -> Config:
+    """Process-wide cached Config for READ-ONLY leaf callers (delivery, research backends, agent
+    tools, og-image). Config.load() re-reads and re-validates the whole YAML on every call, which
+    a single research run did dozens of times — once per tool invocation.
+
+    Deliberately NOT used where the Config is MUTATED (main/handlers' set_reference_time, the CI
+    synth's vpc_id, the infra tests' bucket override): those callers need their own instance, and
+    a shared cached object would leak their edits everywhere. Tests clear the cache via an autouse
+    fixture in tests/conftest.py."""
+    return Config.load()

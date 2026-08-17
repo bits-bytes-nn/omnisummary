@@ -40,6 +40,24 @@ class TestMaybeAlert:
         assert "reddit" in kwargs["Message"]
         assert "[FAILED] reddit" in kwargs["Message"]
 
+    def test_publishes_on_stale_source(self, monkeypatch):
+        # A STALE source (items served off a park file whose local sync stopped) must alert too —
+        # it isn't a FAILURE, so the has_failures-only gate stayed silent for days.
+        monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:::topic")
+        report = HealthReport(
+            sources=[
+                SourceHealth(name="rss", item_count=5, status=SourceStatus.OK),
+                SourceHealth(name="youtube", item_count=3, status=SourceStatus.STALE, detail="72.0h old"),
+            ]
+        )
+        sns = MagicMock()
+        with patch("lambda_handlers.digest_handler.boto3.client", return_value=sns):
+            digest_handler._maybe_alert(report)
+        sns.publish.assert_called_once()
+        message = sns.publish.call_args.kwargs["Message"]
+        assert "Stale sources" in message and "youtube" in message
+        assert "Failed sources" not in message  # nothing failed
+
     def test_publish_error_is_swallowed(self, monkeypatch):
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:::topic")
         sns = MagicMock()

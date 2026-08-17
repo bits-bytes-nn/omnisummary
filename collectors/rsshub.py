@@ -21,9 +21,10 @@ class RSSHubCollector(BaseCollector):
             logger.info("RSSHub collector is disabled, skipping")
             return []
 
-        s3_items = load_items_from_s3("rsshub_items.json")
-        if s3_items is not None:
-            return s3_items
+        parked = load_items_from_s3("rsshub_items.json", max_age_hours=self.config.park_max_age_hours)
+        self.park_status = parked
+        if parked.usable:
+            return parked.items
 
         if not self.config.accounts:
             logger.info("No RSSHub accounts configured, skipping")

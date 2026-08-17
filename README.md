@@ -7,10 +7,10 @@ Proactive AI/ML daily digest system that collects content from multiple sources,
 - **Multi-source collection**: Reddit (public .rss feed via proxy), YouTube, X/Twitter (via RSSHub), RSS/Substack, Web Search (Tavily)
 - **LLM-powered ranking**: Claude Opus 4.8, multi-axis evaluation with source-slot + per-origin diversity caps (a channel, subreddit, feed, X author, or web host — pinned items count toward the caps too)
 - **Editorial digest**: Claude Sonnet 5 Korean editorial with cross-day trend tracking
-- **Multi-channel delivery**: structured digest rendered per channel — Slack (Block Kit) and Threads (image root + flat reply chain), each independently toggleable
+- **Multi-channel delivery**: structured digest rendered per channel — Slack (Block Kit, sent by the digest Lambda) and Threads (image root + flat reply chain, sent by the daily-visual Lambda), each independently toggleable
 - **Deep-research agent**: autonomous Slack-triggered Strands agent — rewrites the query, researches across web/papers/community/blogs, writes a persona-voiced cited report (same narrator as the digest), and posts to Slack (default) or Threads (on explicit request), attaching the source article's OG image
 - **AgentCore-centric**: digest state persisted in Bedrock AgentCore Memory; agent runs on AgentCore Runtime
-- **Operational excellence**: per-source health checks → SNS email alerts (a total collector outage reports FAILED instead of an empty result; partial failures are tolerated), structured JSON logging with correlation IDs, CloudWatch alarms, AWS WAF on the API
+- **Operational excellence**: per-source health checks → SNS email alerts (a total collector outage reports FAILED instead of an empty result; a source served from a too-old S3 park file reports STALE, so a stopped local sync can't look healthy; partial failures are tolerated), structured JSON logging with correlation IDs, CloudWatch alarms, AWS WAF on the API
 - **AWS deployment**: Lambda + EventBridge cron + Bedrock AgentCore (Runtime + Memory) + ECS (RSSHub)
 
 ## Architecture
@@ -126,7 +126,7 @@ Add each optional capability by setting its key(s):
 | X/Twitter items | RSSHub container (X cookies) + run the local sync | See **RSSHub Container** |
 | Daily visual (gpt-image render) | `OPENAI_API_KEY` | gpt-image-2 |
 | Threads delivery | `THREADS_ACCESS_TOKEN` + `THREADS_USER_ID` + `enable_threads_post: true` | Token is long-lived (60d), auto-refreshed in AWS |
-| Slack on/off, Threads on/off | `pipeline.enable_slack_post` / `enable_threads_post` | Independently toggleable in `config.yaml` |
+| Slack on/off, Threads on/off | `pipeline.enable_slack_post` / `enable_threads_post` | Independently toggleable in `config.yaml`. Slack is posted by the digest Lambda; **Threads is posted by the daily-visual Lambda** (image + text ship as one post set), so Threads delivery needs `enable_daily_visual: true` too |
 
 ### RSSHub Container (X/Twitter)
 
@@ -222,7 +222,7 @@ Each collector runs async in parallel. Lookback window is configurable per sourc
 
 ### 6. Daily Visual
 
-`DailyVisualMaker` (best-effort, async off the digest critical path) illustrates the **headline** (`items[0]`, the lead's story) so the image, lead, and text stay in sync. The editor briefs *how* to draw it, preferring light/news topics over deep-tech and choosing the orientation freely per image, then `VisualGenerator` renders it via OpenAI gpt-image-2 and posts to Slack (and Threads when enabled).
+`DailyVisualMaker` (best-effort, async off the digest critical path) illustrates the **headline** (`items[0]`, the lead's story) so the image, lead, and text stay in sync. The editor briefs *how* to draw it, preferring light/news topics over deep-tech and choosing the orientation freely per image, then `VisualGenerator` renders it via OpenAI gpt-image-2 and posts to Slack (and, when `enable_threads_post` is on, ships the whole digest to Threads — image root + reply chain — since this Lambda owns the Threads post).
 
 ### 7. Deep-Research Agent
 
@@ -295,8 +295,20 @@ Reddit and YouTube are blocked from AWS datacenter IPs. A Cloudflare Worker acts
 ```bash
 cd cloudflare-proxy
 npx wrangler login
+# The shared token is a SECRET, not a wrangler.toml [vars] entry (that would sit in git in
+# plaintext). Set it once per environment; use the same value as CLOUDFLARE_PROXY_TOKEN in .env.
+npx wrangler secret put PROXY_TOKEN
 npx wrangler deploy
 ```
+
+The worker is deliberately not a general-purpose proxy:
+
+- **Host allowlist** — only hosts in the `ALLOWED_HOSTS` wrangler var are fetched (exact or suffix
+  match, so `reddit.com` covers `www.reddit.com`); anything else gets `403`.
+- **Fixed request headers** — a caller-supplied `headers` JSON blob is no longer merged into the
+  outbound request, so a token holder can't forge `Cookie`/`Authorization`/`Host`.
+- **Token in the query string** — kept there on purpose: both callers hand the proxied URL straight
+  to `feedparser.parse`, which cannot attach headers.
 
 ### Local Cron Setup
 
@@ -367,7 +379,11 @@ and disables the SSM client, so results don't depend on a developer's `.env` or 
 
 CI (`.github/workflows/ci.yml`): lockfile check, ruff, black `--check`, `mypy .` (whole repo),
 tests + coverage gate (scope and `fail_under` live in `pyproject.toml` `[tool.coverage.*]`),
-offline CDK synth through the pinned CLI (`npm ci`), Docker build of both images.
+offline CDK synth through the pinned CLI (`npm ci`) against the **tracked** `config-template.yaml`
+(`config.yaml` is gitignored), and a Docker build of both images followed by an **import check** —
+each image is loaded and run with `--network none` and no credentials to import its real entry
+modules, so a missing `COPY` or an import-time AWS/HTTP call fails in CI instead of at cold start.
+Every job carries a `timeout-minutes`; uv/npm caches are keyed on the lockfiles.
 
 ## License
 

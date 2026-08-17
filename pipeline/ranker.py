@@ -19,6 +19,7 @@ from shared import (
     normalize_title,
     parse_json_from_llm_output,
     resolve_origin_key,
+    retry_async,
 )
 from shared.config import PipelineConfig
 
@@ -54,9 +55,21 @@ class ContentRanker:
             logger.info(
                 "Ranking in %d parallel batches (<=%d items each)", len(batches), self.config.ranking_batch_size
             )
-        results = await asyncio.gather(*(self._rank_batch(b) for b in batches))
+        # Bound the Bedrock fan-out: created HERE (on the running loop, never at import/__init__).
+        semaphore = asyncio.Semaphore(self.config.ranking_max_concurrency)
+        results = await asyncio.gather(*(self._rank_batch(b, semaphore) for b in batches), return_exceptions=True)
 
-        ranked_items: list[RankedItem] = [r for batch in results for r in batch]
+        # A batch that failed every retry is a permanent failure. One among many is tolerated (the
+        # rest of the day's candidates still rank), but if EVERY batch failed there is nothing to
+        # rank — raise so the run reports FAILED instead of silently publishing an empty digest.
+        # Mirrors gather_collector_results(raise_if_all_failed=True).
+        failures = [r for r in results if isinstance(r, BaseException)]
+        if failures:
+            logger.warning("%d of %d ranking batches failed permanently", len(failures), len(batches))
+        if failures and len(failures) == len(results):
+            raise RuntimeError(f"All {len(failures)} ranking batches failed: {failures[0]}")
+
+        ranked_items: list[RankedItem] = [r for batch in results if not isinstance(batch, BaseException) for r in batch]
         self._apply_origin_weights(ranked_items)
 
         # Pinned items (user-specified via --pin-url) are guaranteed a slot regardless of score
@@ -130,11 +143,16 @@ class ContentRanker:
             )
         return selected
 
-    async def _rank_batch(self, items: list[CollectedItem]) -> list[RankedItem]:
+    async def _rank_batch(self, items: list[CollectedItem], semaphore: asyncio.Semaphore) -> list[RankedItem]:
+        """Score one batch, retrying the Converse call before giving up. The failure used to be
+        swallowed into [] — a single throttle or transient 5xx silently deleted a whole batch of
+        candidates from the day's pool. Now it retries, and a permanent failure PROPAGATES so
+        rank() can decide (one bad batch is tolerated; all of them is an outage)."""
         items_text = self._format_items(items)
         chain = RankingPrompt.get_prompt() | self.llm | StrOutputParser()
-        try:
-            raw_output = await chain.ainvoke(
+
+        async def _invoke() -> str:
+            return await chain.ainvoke(
                 {
                     "items_text": items_text,
                     "engagement_guidance": self._engagement_guidance(),
@@ -144,9 +162,14 @@ class ContentRanker:
                     "audience": self.config.ranking_audience_description,
                 }
             )
-        except Exception:
-            logger.warning("Ranking batch of %d items failed", len(items), exc_info=True)
-            return []
+
+        async with semaphore:
+            raw_output = await retry_async(
+                _invoke,
+                max_retries=self.config.ranking_max_retries,
+                backoff_sec=self.config.ranking_retry_backoff_sec,
+                description=f"Ranking batch of {len(items)} items",
+            )
         return self._parse_rankings(raw_output, items)
 
     def _engagement_guidance(self) -> str:

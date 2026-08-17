@@ -42,3 +42,21 @@ class TestHealthReport:
         assert SourceStatus.OK.value == "ok"
         assert SourceStatus.EMPTY.value == "empty"
         assert SourceStatus.FAILED.value == "failed"
+        assert SourceStatus.STALE.value == "stale"
+
+    def test_stale_is_reported_but_is_not_a_failure(self):
+        # A STALE source produced items off a park file whose sync has stopped: it must be listed
+        # for alerting, but must NOT flip has_failures (which drives the FAILED escalation path).
+        report = HealthReport(
+            sources=[
+                SourceHealth(name="rss", item_count=10, status=SourceStatus.OK),
+                SourceHealth(name="youtube", item_count=3, status=SourceStatus.STALE, detail="72.0h old"),
+            ]
+        )
+        assert report.has_failures is False
+        assert report.stale_sources == ["youtube"]
+        assert "[STALE] youtube: 3 items — 72.0h old" in report.summary()
+
+    def test_stale_sources_empty_when_all_healthy(self):
+        report = HealthReport(sources=[SourceHealth(name="rss", item_count=1, status=SourceStatus.OK)])
+        assert report.stale_sources == []

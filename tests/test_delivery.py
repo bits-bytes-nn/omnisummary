@@ -139,10 +139,10 @@ class TestDeliverThreads:
     async def test_passes_first_image_with_content_type_and_key(self):
         d = DeliveryContext(channel_id="C", staged_images=[_img("image/webp"), _img("image/png")])
         with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=True)) as pt:
-            with patch.object(dlv.Config, "load") as load:
-                load.return_value.aws.state_bucket_name = "bkt"
-                load.return_value.aws.s3_prefix = "omni"
-                load.return_value.agent.research_max_threads_posts = 8
+            with patch.object(dlv, "get_config") as cfg:
+                cfg.return_value.aws.state_bucket_name = "bkt"
+                cfg.return_value.aws.s3_prefix = "omni"
+                cfg.return_value.agent.research_max_threads_posts = 8
                 ok = await dlv.deliver_research_report("리드 문장이다.", channel="threads", delivery=d)
         assert ok is True
         kw = pt.await_args.kwargs
@@ -156,8 +156,8 @@ class TestDeliverThreads:
         # An empty report must not call post_to_threads (an empty root 400s the Threads API).
         d = DeliveryContext(channel_id="C")
         with patch("output.threads_handler.post_to_threads", new=AsyncMock()) as pt:
-            with patch.object(dlv.Config, "load") as load:
-                load.return_value.agent.research_max_threads_posts = 6
+            with patch.object(dlv, "get_config") as cfg:
+                cfg.return_value.agent.research_max_threads_posts = 6
                 ok = await dlv.deliver_research_report("   \n\n ", channel="threads", delivery=d)
         assert ok is False
         pt.assert_not_awaited()
@@ -195,10 +195,10 @@ class TestDeliverThreads:
         monkeypatch.delenv("STATE_BUCKET", raising=False)
         d = DeliveryContext(channel_id="C", staged_images=[_img()])
         with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=True)) as pt:
-            with patch.object(dlv.Config, "load") as load:
-                load.return_value.aws.state_bucket_name = ""
-                load.return_value.aws.s3_prefix = ""
-                load.return_value.agent.research_max_threads_posts = 8
+            with patch.object(dlv, "get_config") as cfg:
+                cfg.return_value.aws.state_bucket_name = ""
+                cfg.return_value.aws.s3_prefix = ""
+                cfg.return_value.agent.research_max_threads_posts = 8
                 ok = await dlv.deliver_research_report("리드.", channel="threads", delivery=d)
         assert ok is True
         assert pt.await_args.kwargs["image_bytes"] is None

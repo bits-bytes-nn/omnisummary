@@ -41,10 +41,13 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     project = os.environ.get("PROJECT_NAME", "omnisummary")
     stage = os.environ.get("STAGE", "dev")
     try:
+        # No Type: the parameter is CREATED by CloudFormation, and AWS::SSM::Parameter cannot
+        # create a SecureString — so it exists as a String. Passing Type=SecureString on an
+        # overwrite is a type CHANGE, which SSM rejects with ValidationException, leaving the
+        # token un-refreshed. Omitting Type keeps the existing type and only updates the value.
         boto3.client("ssm").put_parameter(
             Name=f"/{project}/{stage}/threads-access-token",
             Value=new_token,
-            Type="SecureString",
             Overwrite=True,
         )
         logger.info("Refreshed Threads access token and updated SSM")

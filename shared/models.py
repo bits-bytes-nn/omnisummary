@@ -164,6 +164,10 @@ class SourceStatus(str, Enum):
     OK = "ok"
     EMPTY = "empty"
     FAILED = "failed"
+    # The source served items from its S3 park file, but that file is too old (a stalled local
+    # sync) or could not be read at all. The run still produced items, so it is not a FAILURE —
+    # but it must not read as a healthy OK either, which is how a dead cron stayed invisible.
+    STALE = "stale"
 
 
 class SourceHealth(BaseModel):
@@ -179,6 +183,10 @@ class HealthReport(BaseModel):
     @property
     def has_failures(self) -> bool:
         return any(s.status == SourceStatus.FAILED for s in self.sources)
+
+    @property
+    def stale_sources(self) -> list[str]:
+        return [s.name for s in self.sources if s.status == SourceStatus.STALE]
 
     def summary(self) -> str:
         return "\n".join(

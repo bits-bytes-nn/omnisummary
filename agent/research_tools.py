@@ -7,7 +7,7 @@ from strands import tool
 # DeliveryContext + request scoping live in the delivery layer (output/), which owns the
 # delivery contract; re-exported here for the agent entrypoints and tools that bind them.
 from output.delivery import DeliveryContext, current_delivery_context, request_context
-from shared import Config, logger
+from shared import get_config, logger
 from shared.media import fetch_og_image
 from shared.research import _search_papers, _tavily_search, extract_url
 
@@ -46,7 +46,7 @@ async def community_search(query: str) -> str:
     Args:
         query: The search query.
     """
-    domains = Config.load().agent.community_search_domains
+    domains = get_config().agent.community_search_domains
     return await _tavily_search(query, include_domains=domains)
 
 
@@ -83,7 +83,7 @@ async def recall_trends(query: str) -> str:
 
     from shared import TRENDS_KEY, TrendMemory, create_state_store
 
-    config = Config.load()
+    config = get_config()
     top_k = config.agent.recall_memory_top_k
     half_life = config.pipeline.trend_momentum_half_life_days
 
@@ -123,7 +123,7 @@ async def attach_image(source_url: str) -> str:
         source_url: The article/source URL whose representative image to attach.
     """
     delivery = current_delivery_context()
-    limit = Config.load().agent.research_max_staged_images
+    limit = get_config().agent.research_max_staged_images
     if len(delivery.staged_images) >= limit:
         return f"Already staged the maximum of {limit} images; not attaching more."
     asset = await fetch_og_image(source_url)

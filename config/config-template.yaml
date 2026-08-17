@@ -10,6 +10,10 @@ collectors:
       # - "https://www.youtube.com/@channel_name"
     max_videos_per_channel: 3
     lookback_hours: 24
+    # YouTube/X items are collected locally (residential IP) and parked in S3; beyond this age the
+    # parked items are still used but the source is reported STALE, so a stopped local cron alerts
+    # instead of looking healthy. Every collector inherits this key.
+    park_max_age_hours: 36
   reddit:
     enabled: true
     subreddits: []
@@ -22,6 +26,9 @@ collectors:
     feeds: []
       # - "https://example.substack.com/feed"
     lookback_hours: 24
+    # Each feed parse parks a worker thread; keep this at/below the asyncio executor width so a
+    # feed's timeout measures its fetch, not its wait in the queue.
+    max_concurrency: 5
   web_search:
     enabled: true
     trend_searches:
@@ -65,6 +72,11 @@ pipeline:
   ranking_model: "anthropic.claude-opus-4-8"
   digest_model: "anthropic.claude-sonnet-5"
   item_text_max_tokens: 10000
+  # Ranking robustness: cap the in-flight Bedrock batches (a big day self-throttled otherwise) and
+  # retry a failed batch instead of silently dropping its whole slice of candidates.
+  ranking_max_concurrency: 4
+  ranking_max_retries: 3
+  ranking_retry_backoff_sec: 5
   source_slots:
     web: 1
     x: 1
@@ -80,6 +92,31 @@ pipeline:
   trend_max_evidence: 5
   trend_max_active_trends: 10
   trend_momentum_half_life_days: 7.0
+
+  # --- Delivery (values below are the code defaults) ---
+  # Slack is posted by the digest Lambda. Threads is posted by the DAILY VISUAL Lambda (the image
+  # and the text ship as one post set), so Threads delivery also needs enable_daily_visual: true.
+  enable_slack_post: true
+  enable_threads_post: false
+
+  # --- Daily visual (values below are the code defaults) ---
+  enable_daily_visual: true
+  image_model: "gpt-image-2"
+  # orientation -> gpt-image size; the editor picks the orientation that fits each visual.
+  image_sizes:
+    square: "1024x1024"
+    landscape: "1536x1024"
+    portrait: "1024x1536"
+  # Bound the gpt-image HTTP call: the SDK defaults (600s x 2 retries) can outlive the visual
+  # Lambda's 15-minute budget.
+  visual_image_timeout_sec: 300
+  visual_image_max_retries: 0
+  # How many recent visuals to track for deliberate variation (orientation + format), and the soft
+  # targets the editor is nudged toward. 0 disables a nudge entirely.
+  visual_format_window: 6
+  visual_multi_panel_target_ratio: 0.34
+  visual_character_enabled: true
+  visual_character_target_ratio: 0.5
 
 agent:
   model_id: "anthropic.claude-sonnet-5"

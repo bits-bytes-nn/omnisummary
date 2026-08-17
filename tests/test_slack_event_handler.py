@@ -229,3 +229,114 @@ class TestAsyncInvocation:
         with patch("urllib.request.urlopen") as urlopen:
             h._post_ack("", "")
         urlopen.assert_not_called()
+
+
+def _ddb(table: MagicMock) -> MagicMock:
+    """A boto3 dynamodb resource stand-in whose Table() returns `table` and whose client exposes
+    the real-shaped ConditionalCheckFailedException class."""
+    resource = MagicMock()
+    resource.Table.return_value = table
+    resource.meta.client.exceptions.ConditionalCheckFailedException = _ConditionalCheckFailed
+    return resource
+
+
+class _ConditionalCheckFailed(Exception):
+    pass
+
+
+class TestEventDedup:
+    """Exercises the real _is_duplicate_event / _release_event_marker (no patching of the function
+    under test): the conditional PutItem IS the dedup, and Slack retries every mention up to 3x."""
+
+    def test_no_table_configured_never_dedups(self, monkeypatch):
+        monkeypatch.delenv("DDB_TABLE_NAME", raising=False)
+        with patch.object(h.boto3, "resource") as resource:
+            assert h._is_duplicate_event("Ev1") is False
+        resource.assert_not_called()  # no table -> no AWS call at all
+
+    def test_first_event_writes_marker_with_ttl(self, monkeypatch):
+        monkeypatch.setenv("DDB_TABLE_NAME", "dedup")
+        table = MagicMock()
+        with patch.object(h.boto3, "resource", return_value=_ddb(table)):
+            assert h._is_duplicate_event("Ev1") is False
+        kwargs = table.put_item.call_args.kwargs
+        assert kwargs["Item"]["event_id"] == "Ev1"
+        assert kwargs["Item"]["ttl"] > int(time.time())  # marker expires, never accumulates
+        # The conditional write is what makes this atomic against Slack's concurrent retries.
+        assert kwargs["ConditionExpression"] == "attribute_not_exists(event_id)"
+
+    def test_second_event_is_a_duplicate(self, monkeypatch):
+        monkeypatch.setenv("DDB_TABLE_NAME", "dedup")
+        table = MagicMock()
+        table.put_item.side_effect = _ConditionalCheckFailed()
+        with patch.object(h.boto3, "resource", return_value=_ddb(table)):
+            assert h._is_duplicate_event("Ev1") is True
+
+    def test_dedup_store_failure_fails_open(self, monkeypatch):
+        # A throttled/missing table must not swallow a user's mention: fail open and let it run.
+        monkeypatch.setenv("DDB_TABLE_NAME", "dedup")
+        table = MagicMock()
+        table.put_item.side_effect = RuntimeError("throttled")
+        with patch.object(h.boto3, "resource", return_value=_ddb(table)):
+            with patch.object(h, "logger") as log:
+                assert h._is_duplicate_event("Ev1") is False
+        assert log.warning.called
+
+    def test_release_marker_deletes_the_key(self, monkeypatch):
+        monkeypatch.setenv("DDB_TABLE_NAME", "dedup")
+        table = MagicMock()
+        with patch.object(h.boto3, "resource", return_value=_ddb(table)):
+            h._release_event_marker("EvX")
+        assert table.delete_item.call_args.kwargs["Key"] == {"event_id": "EvX"}
+
+    def test_release_marker_noop_without_table(self, monkeypatch):
+        monkeypatch.delenv("DDB_TABLE_NAME", raising=False)
+        with patch.object(h.boto3, "resource") as resource:
+            h._release_event_marker("EvX")
+        resource.assert_not_called()
+
+    def test_release_marker_swallows_errors(self, monkeypatch):
+        monkeypatch.setenv("DDB_TABLE_NAME", "dedup")
+        table = MagicMock()
+        table.delete_item.side_effect = RuntimeError("denied")
+        with patch.object(h.boto3, "resource", return_value=_ddb(table)):
+            with patch.object(h, "logger") as log:
+                h._release_event_marker("EvX")  # must not raise into the handler
+        assert log.warning.called
+
+    def test_slack_retry_of_the_same_mention_is_dispatched_once(self, monkeypatch):
+        # End-to-end through handler(): Slack redelivers the same event_id, and only the first
+        # delivery may reach the self-invoke.
+        monkeypatch.setenv("DDB_TABLE_NAME", "dedup")
+        body = json.dumps(
+            {
+                "type": "event_callback",
+                "event_id": "EvDup",
+                "event": {"type": "app_mention", "text": "<@U1> hi", "channel": "C1", "ts": "1.0"},
+            }
+        )
+        headers = _signed_headers(body)
+        table = MagicMock()
+        seen: set[str] = set()
+
+        def put_item(**kwargs):
+            event_id = kwargs["Item"]["event_id"]
+            if event_id in seen:
+                raise _ConditionalCheckFailed()
+            seen.add(event_id)
+
+        table.put_item.side_effect = put_item
+        lambda_client = MagicMock()
+        ctx = MagicMock()
+        ctx.function_name = "fn"
+
+        def fake_client(name, *a, **k):
+            return lambda_client
+
+        with patch.object(h, "_verify_slack_signature", return_value=True):
+            with patch.object(h.boto3, "resource", return_value=_ddb(table)):
+                with patch.object(h.boto3, "client", side_effect=fake_client):
+                    first = h.handler({"body": body, "headers": headers}, ctx)
+                    second = h.handler({"body": body, "headers": headers}, ctx)
+        assert first["statusCode"] == 200 and second["statusCode"] == 200
+        assert lambda_client.invoke.call_count == 1  # the retry was suppressed

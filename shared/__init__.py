@@ -1,4 +1,4 @@
-from .config import KOREAN_STYLE_RULES, Config
+from .config import KOREAN_STYLE_RULES, Config, get_config
 from .constants import (
     DOMAIN_TO_SOURCE,
     LOGGING_TRUNCATION_CHARS,
@@ -79,6 +79,7 @@ __all__ = [
     "_LANGUAGE_MODEL_INFO",
     "CollectedItem",
     "Config",
+    "get_config",
     "KOREAN_STYLE_RULES",
     "DigestPrompt",
     "GroundingCheckPrompt",

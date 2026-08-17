@@ -1,3 +1,14 @@
+// Fetch proxy for the collectors: some sources (Reddit, YouTube) block AWS datacenter IPs but
+// allow this worker's. It is deliberately NOT a general-purpose proxy — the target host must be
+// on ALLOWED_HOSTS and the caller must present PROXY_TOKEN (a wrangler secret, never in the repo).
+const jsonResponse = (body, status) =>
+  new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+// Exact or suffix match, so "reddit.com" covers www.reddit.com / old.reddit.com without listing
+// every subdomain, while "evil-reddit.com" (a mere substring match) stays rejected.
+const isAllowedHost = (host, allowedHosts) =>
+  allowedHosts.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -7,30 +18,43 @@ export default {
       return new Response("omnisummary-proxy", { status: 200 });
     }
 
-    const authToken = url.searchParams.get("token");
-    if (authToken !== env.PROXY_TOKEN) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
+    // Token stays a QUERY parameter: both live callers hand the proxied URL straight to
+    // feedparser.parse, which cannot attach headers.
+    if (!env.PROXY_TOKEN || url.searchParams.get("token") !== env.PROXY_TOKEN) {
+      return jsonResponse({ error: "Unauthorized" }, 401);
+    }
+
+    let target;
+    try {
+      target = new URL(targetUrl);
+    } catch {
+      return jsonResponse({ error: "Invalid url parameter" }, 400);
+    }
+    if (target.protocol !== "https:" && target.protocol !== "http:") {
+      return jsonResponse({ error: "Unsupported scheme" }, 400);
+    }
+
+    const allowedHosts = (env.ALLOWED_HOSTS || "")
+      .split(",")
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean);
+    if (!isAllowedHost(target.hostname.toLowerCase(), allowedHosts)) {
+      return jsonResponse({ error: "Target host not allowed" }, 403);
     }
 
     try {
-      const headers = new Headers();
-      headers.set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
-      headers.set("Accept", request.headers.get("Accept") || "*/*");
-      headers.set("Accept-Language", "en-US,en;q=0.9");
+      // Fixed request headers only. A caller-supplied `headers` JSON blob used to be merged in
+      // verbatim, which let anyone holding the token forge Cookie/Authorization/Host on the
+      // outbound request.
+      const headers = new Headers({
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        Accept: "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+      });
 
-      const customHeaders = url.searchParams.get("headers");
-      if (customHeaders) {
-        const parsed = JSON.parse(customHeaders);
-        for (const [key, value] of Object.entries(parsed)) {
-          headers.set(key, value);
-        }
-      }
-
-      const response = await fetch(targetUrl, {
-        method: request.method,
+      const response = await fetch(target.toString(), {
+        method: request.method === "HEAD" ? "HEAD" : "GET",
         headers: headers,
         redirect: "follow",
       });
@@ -44,10 +68,7 @@ export default {
         headers: responseHeaders,
       });
     } catch (error) {
-      return new Response(JSON.stringify({ error: error.message }), {
-        status: 502,
-        headers: { "Content-Type": "application/json" },
-      });
+      return jsonResponse({ error: error.message }, 502);
     }
   },
 };

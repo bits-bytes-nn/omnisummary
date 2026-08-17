@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 from tavily import AsyncTavilyClient
 
-from shared import Config, logger, resolve_secret, retry_async
+from shared import get_config, logger, resolve_secret, retry_async
 
 SEMANTIC_SCHOLAR_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 
@@ -32,7 +32,7 @@ async def _tavily_search(query: str, *, topic: str | None = None, include_domain
     if not client:
         return "TAVILY_API_KEY not configured."
 
-    agent_config = Config.load().agent
+    agent_config = get_config().agent
     kwargs: dict = {"query": query, "max_results": agent_config.search_result_limit}
     if topic:
         kwargs["topic"] = topic
@@ -61,7 +61,7 @@ async def extract_url(url: str) -> str:
     if not client:
         return "TAVILY_API_KEY not configured."
 
-    cap = Config.load().agent.research_content_cap_chars
+    cap = get_config().agent.research_content_cap_chars
     try:
         response = await client.extract(urls=[url], format="text")
     except Exception as e:
@@ -80,7 +80,7 @@ async def extract_url(url: str) -> str:
 
 
 async def _search_papers(query: str) -> str:
-    agent_config = Config.load().agent
+    agent_config = get_config().agent
     async with httpx.AsyncClient(timeout=agent_config.search_request_timeout) as client:
 
         async def _fetch() -> httpx.Response:

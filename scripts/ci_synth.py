@@ -3,6 +3,7 @@
 
 import os
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -12,9 +13,15 @@ from infrastructure.application_stack import OmniSummaryApplicationStack
 from infrastructure.foundation_stack import OmniSummaryFoundationStack
 from shared import Config
 
+# Synth the TRACKED template, not Config.load(): config/config.yaml is gitignored, so in CI
+# Config.load() silently fell back to bare code defaults — synthesizing a stack nobody deploys
+# while a real template regression (a key CFN chokes on, a bad region) went unnoticed. The
+# template is also what a new deployment copies, so this is the config worth proving synthesizable.
+CONFIG_TEMPLATE = Path(__file__).resolve().parent.parent / "config" / "config-template.yaml"
+
 
 def main() -> None:
-    config = Config.load()
+    config = Config.from_yaml(str(CONFIG_TEMPLATE))
     # Clear vpc_id so the foundation stack CREATES a VPC instead of Vpc.from_lookup, which needs
     # real credentials/context and can't run against the dummy CI account. This keeps `cdk synth`
     # (via the pinned CLI) fully offline while still exercising the CLI↔aws-cdk-lib schema handshake

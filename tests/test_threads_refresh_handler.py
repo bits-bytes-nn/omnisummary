@@ -25,11 +25,14 @@ class TestThreadsRefreshHandler:
         assert result["statusCode"] == 200 and result["body"] == "refreshed"
         # called the refresh endpoint with the old token
         assert get.call_args.kwargs["params"]["access_token"] == "OLD_TOKEN"
-        # wrote the renewed token back as a SecureString
+        # wrote the renewed token back, overwriting in place
         put = ssm.put_parameter.call_args.kwargs
         assert put["Name"] == "/omnisummary/dev/threads-access-token"
         assert put["Value"] == "NEW_TOKEN"
-        assert put["Type"] == "SecureString" and put["Overwrite"] is True
+        assert put["Overwrite"] is True
+        # No Type: the CFN-created parameter is a String (AWS::SSM::Parameter can't make a
+        # SecureString), and sending Type=SecureString on overwrite is a rejected type change.
+        assert "Type" not in put
 
     def test_refresh_http_failure_reraises(self):
         # A silent 500 body left the token un-refreshed with no alarm until Threads delivery

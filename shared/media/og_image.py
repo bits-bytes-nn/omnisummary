@@ -5,7 +5,7 @@ from urllib.parse import urljoin
 import httpx
 from bs4 import BeautifulSoup
 
-from shared import Config, ImageAsset, logger
+from shared import ImageAsset, get_config, logger
 
 _BROWSER_HEADERS = {
     "User-Agent": (
@@ -66,7 +66,7 @@ async def fetch_og_image(url: str, *, timeout: int | None = None, max_bytes: int
     """Fetch a page's representative image (og:image / twitter:image) and download its bytes.
     Best-effort: any network error, missing tag, non-image content-type, or oversize image
     returns None. Never raises to the caller."""
-    cfg = Config.load().agent
+    cfg = get_config().agent
     timeout = timeout if timeout is not None else cfg.og_image_timeout_sec
     max_bytes = max_bytes if max_bytes is not None else cfg.og_image_max_bytes
 

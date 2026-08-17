@@ -42,21 +42,23 @@ def _emit_digest_items_metric(count: int) -> None:
 
 def _maybe_alert(health: HealthReport) -> None:
     topic_arn = os.environ.get("ALERT_SNS_TOPIC_ARN", "")
-    if not topic_arn or not health.has_failures:
-        return
     failed = [s.name for s in health.sources if s.status == SourceStatus.FAILED]
+    # A STALE source also alerts: it produced items, but off an S3 park file whose local sync has
+    # stopped (or that couldn't be read), which otherwise stays invisible for days.
+    stale = health.stale_sources
+    if not topic_arn or not (failed or stale):
+        return
     try:
         sns = boto3.client("sns")
-        subject, message = format_alarm(
-            event="Source Health",
-            status="ALERT",
-            fields={
-                "Failed sources": ", ".join(failed),
-                "Report": health.summary(),
-            },
-        )
+        fields = {}
+        if failed:
+            fields["Failed sources"] = ", ".join(failed)
+        if stale:
+            fields["Stale sources"] = ", ".join(stale)
+        fields["Report"] = health.summary()
+        subject, message = format_alarm(event="Source Health", status="ALERT", fields=fields)
         sns.publish(TopicArn=topic_arn, Subject=subject, Message=message)
-        logger.warning("Published SNS alert for failed sources: %s", failed)
+        logger.warning("Published SNS alert (failed: %s, stale: %s)", failed, stale)
     except Exception as e:
         logger.error("Failed to publish SNS alert: %s", e)
 

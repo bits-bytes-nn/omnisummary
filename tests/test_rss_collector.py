@@ -1,3 +1,5 @@
+import threading
+import time
 from datetime import UTC, datetime
 from unittest.mock import patch
 
@@ -134,6 +136,31 @@ class TestRSSCollect:
         with patch("collectors.rss.feedparser.parse", return_value=_feed([_entry()], bozo=True)):
             items = await c.collect()
         assert len(items) == 1
+
+    @pytest.mark.asyncio
+    async def test_fan_out_is_bounded_by_config(self):
+        # Every feed's feedparser.parse parks a worker thread; unbounded fan-out let a feed's
+        # timeout expire while its parse was still QUEUED, turning a healthy feed into a FAILURE.
+        feeds = [f"https://f{n}.example/feed" for n in range(8)]
+        c = RSSCollector(_config(feeds=feeds, max_concurrency=2))
+        lock = threading.Lock()
+        in_flight = 0
+        peak = 0
+
+        def _parse(url):
+            nonlocal in_flight, peak
+            with lock:
+                in_flight += 1
+                peak = max(peak, in_flight)
+            time.sleep(0.02)
+            with lock:
+                in_flight -= 1
+            return _feed([_entry()])
+
+        with patch("collectors.rss.feedparser.parse", side_effect=_parse):
+            items = await c.collect()
+        assert len(items) == 8  # every feed still collected
+        assert peak <= 2, f"fan-out exceeded max_concurrency: peak={peak}"
 
     @pytest.mark.asyncio
     async def test_raises_when_all_feeds_fail(self):

@@ -44,8 +44,12 @@ async def main() -> None:
     items = await collector.collect()
 
     if not items:
-        logger.info("No YouTube items collected")
-        return
+        # Park an EMPTY envelope rather than returning early: its `generated_at` stamp is the only
+        # proof the sync RAN. Skipping the write left yesterday's file in place, so the digest
+        # re-ingested stale items and still reported OK. This is only reached when collect()
+        # returned cleanly — a collector exception propagates and deliberately leaves the previous
+        # (good) park file untouched instead of overwriting it with nothing.
+        logger.info("No YouTube items collected; parking an empty envelope to stamp the sync time")
 
     with_transcript = sum(1 for it in items if it.text and it.text.strip())
     logger.info("Collected %d YouTube items (%d with transcript/body text)", len(items), with_transcript)

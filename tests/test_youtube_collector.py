@@ -3,10 +3,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from collectors.base import ParkedItems, ParkOutcome
 from collectors.youtube import YouTubeCollector
 from shared.config import YouTubeCollectorConfig
 from shared.constants import SourceType
 from shared.models import CollectedItem
+
+
+def _absent_park() -> ParkedItems:
+    """No S3 park file → the collector must fall through to live collection."""
+    return ParkedItems(outcome=ParkOutcome.ABSENT)
 
 
 def _config(**kwargs) -> YouTubeCollectorConfig:
@@ -223,7 +229,7 @@ class TestApiPath:
                 raise RuntimeError("quota exceeded")
             return [CollectedItem(item_id="ok", source_type=SourceType.YOUTUBE, title="t", url="https://y/ok")]
 
-        with patch("collectors.youtube.load_items_from_s3", return_value=None):
+        with patch("collectors.youtube.load_items_from_s3", return_value=_absent_park()):
             with patch.object(collector, "_collect_channel", side_effect=_collect):
                 items = await collector.collect()
         assert [i.item_id for i in items] == ["ok"]
@@ -245,20 +251,84 @@ class TestS3Preload:
                 text="full transcript",
             )
         ]
-        with patch("collectors.youtube.load_items_from_s3", return_value=parked):
+        with patch(
+            "collectors.youtube.load_items_from_s3",
+            return_value=ParkedItems(outcome=ParkOutcome.FRESH, items=parked),
+        ):
             with patch.object(collector, "_collect_channel", new=AsyncMock()) as live:
                 items = await collector.collect()
         assert [i.item_id for i in items] == ["vS3"]
         live.assert_not_called()  # S3 hit → no live collection
 
     @pytest.mark.asyncio
+    async def test_stale_park_items_are_used_and_recorded_for_health(self, monkeypatch):
+        # Stale beats empty: the parked items are still returned, but park_status must record the
+        # staleness so run_collectors_with_health can report STALE instead of OK.
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config())
+        parked = [CollectedItem(item_id="vOld", source_type=SourceType.YOUTUBE, title="t", url="https://y/v")]
+        stale = ParkedItems(outcome=ParkOutcome.STALE, items=parked, age_hours=72.0, detail="72.0h old")
+        with patch("collectors.youtube.load_items_from_s3", return_value=stale):
+            with patch.object(collector, "_collect_channel", new=AsyncMock()) as live:
+                items = await collector.collect()
+        assert [i.item_id for i in items] == ["vOld"]
+        live.assert_not_called()
+        assert collector.park_status is not None and collector.park_status.degraded is True
+
+    @pytest.mark.asyncio
+    async def test_park_age_budget_comes_from_config(self, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config(park_max_age_hours=72))
+        with patch("collectors.youtube.load_items_from_s3", return_value=_absent_park()) as load:
+            with patch.object(collector, "_collect_channel", new=AsyncMock(return_value=[])):
+                await collector.collect()
+        assert load.call_args.kwargs["max_age_hours"] == 72
+
+    @pytest.mark.asyncio
     async def test_live_collection_when_no_s3(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
         collector = YouTubeCollector(_config())
-        with patch("collectors.youtube.load_items_from_s3", return_value=None):
+        with patch("collectors.youtube.load_items_from_s3", return_value=_absent_park()):
             with patch.object(collector, "_collect_channel", new=AsyncMock(return_value=[])):
                 items = await collector.collect()
         assert items == []
+
+
+class TestApiKeyResolution:
+    @pytest.mark.asyncio
+    async def test_key_resolved_once_off_the_event_loop(self, monkeypatch):
+        # resolve_secret falls back to a BLOCKING SSM call. It used to run lazily from a property
+        # read inside the async fan-out — on the loop thread, once per channel. It must now happen
+        # exactly once per run, in a worker thread, before any channel task starts.
+        monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
+        collector = YouTubeCollector(_config(channels=[f"https://www.youtube.com/@c{n}" for n in range(4)]))
+        calls: list[tuple] = []
+
+        def _resolve(*args):
+            calls.append(args)
+            return "key-from-ssm"
+
+        with patch("collectors.youtube.load_items_from_s3", return_value=_absent_park()):
+            with patch("collectors.youtube.resolve_secret", side_effect=_resolve):
+                with patch.object(collector, "_collect_via_api", new=AsyncMock(return_value=[])) as via_api:
+                    await collector.collect()
+        assert len(calls) == 1  # once for the whole run, not once per channel
+        assert collector.api_key == "key-from-ssm"
+        assert via_api.await_count == 4  # the resolved key routed every channel to the API path
+
+    @pytest.mark.asyncio
+    async def test_parked_run_never_resolves_the_key(self, monkeypatch):
+        # The S3 park path short-circuits before any HTTP, so it must not pay for an SSM lookup.
+        monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
+        collector = YouTubeCollector(_config())
+        parked = [CollectedItem(item_id="v", source_type=SourceType.YOUTUBE, title="t", url="https://y/v")]
+        with patch(
+            "collectors.youtube.load_items_from_s3",
+            return_value=ParkedItems(outcome=ParkOutcome.FRESH, items=parked),
+        ):
+            with patch("collectors.youtube.resolve_secret") as resolve:
+                await collector.collect()
+        resolve.assert_not_called()
 
 
 class TestRssFallback:

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from aws_cdk import App, Environment
 from aws_cdk.assertions import Match, Template
@@ -7,10 +9,15 @@ from infrastructure.foundation_stack import OmniSummaryFoundationStack
 from shared import Config
 from shared.constants import RSSHUB_PORT
 
+# The TRACKED config, matching what scripts/ci_synth.py synths: config/config.yaml is gitignored,
+# so asserting against Config.load() checked a different stack locally than in CI (where it fell
+# back to bare code defaults).
+CONFIG_TEMPLATE = Path(__file__).resolve().parent.parent / "config" / "config-template.yaml"
+
 
 @pytest.fixture(scope="module")
 def templates():
-    config = Config.load()
+    config = Config.from_yaml(str(CONFIG_TEMPLATE))
     config.aws.state_bucket_name = ""  # force CDK-created bucket to assert hardening
     env = Environment(account="123456789012", region=config.aws.region)
     app = App()

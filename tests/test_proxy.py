@@ -1,6 +1,11 @@
+import re
+from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
 from shared.proxy import get_proxied_url, is_proxy_configured, parse_feed_with_fallback
+
+PROXY_DIR = Path(__file__).resolve().parent.parent / "cloudflare-proxy"
 
 # The proxy env vars are cleared for every test by the hermetic_env fixture (tests/conftest.py),
 # and set here with monkeypatch — never by mutating os.environ, which leaked across tests when a
@@ -22,6 +27,44 @@ class TestProxy:
         assert "proxy.example.com" in result
         assert "token123" in result
         assert "example.com" in result
+
+    def test_token_is_percent_encoded(self, monkeypatch):
+        # An unencoded '&'/'#' in the token would truncate the query string, so every proxied
+        # fetch would come back 401.
+        monkeypatch.setenv("CLOUDFLARE_PROXY_URL", "https://proxy.example.com")
+        monkeypatch.setenv("CLOUDFLARE_PROXY_TOKEN", "a&b#c")
+        query = parse_qs(urlparse(get_proxied_url("https://www.reddit.com/r/x/.rss")).query)
+        assert query["token"] == ["a&b#c"]
+        assert query["url"] == ["https://www.reddit.com/r/x/.rss"]
+
+
+class TestWorkerHardening:
+    """The worker is deployed from this repo, so its security posture is asserted here rather than
+    trusted to a manual `wrangler deploy` review."""
+
+    def test_token_is_not_committed_to_wrangler_vars(self):
+        toml = (PROXY_DIR / "wrangler.toml").read_text()
+        # A [vars] PROXY_TOKEN sits in version control in plaintext; it must be a wrangler secret.
+        assert not re.search(r"^\s*PROXY_TOKEN\s*=", toml, re.MULTILINE)
+        assert "wrangler secret put PROXY_TOKEN" in toml
+
+    def test_allowed_hosts_cover_the_live_callers(self):
+        toml = (PROXY_DIR / "wrangler.toml").read_text()
+        match = re.search(r'^\s*ALLOWED_HOSTS\s*=\s*"([^"]*)"', toml, re.MULTILINE)
+        assert match, "the worker needs an ALLOWED_HOSTS var to enforce its allowlist"
+        hosts = [h.strip() for h in match.group(1).split(",") if h.strip()]
+        # Suffix matching means the bare domains must cover the hosts the collectors actually
+        # proxy: www.reddit.com (reddit collector) and www.youtube.com (youtube RSS fallback).
+        for live_host in ("www.reddit.com", "www.youtube.com"):
+            assert any(live_host == h or live_host.endswith(f".{h}") for h in hosts), live_host
+
+    def test_worker_enforces_allowlist_and_drops_caller_headers(self):
+        worker = (PROXY_DIR / "worker.js").read_text()
+        assert "isAllowedHost" in worker and "ALLOWED_HOSTS" in worker
+        # No caller-supplied header blob may be merged into the outbound request.
+        assert 'searchParams.get("headers")' not in worker
+        # The token check stays on the query string (feedparser can't send headers).
+        assert 'searchParams.get("token")' in worker
 
 
 class _Feed(dict):

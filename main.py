@@ -8,6 +8,7 @@ import boto3
 
 from agent.tool_state import DigestStateManager
 from collectors import (
+    BaseCollector,
     RedditCollector,
     RSSCollector,
     RSSHubCollector,
@@ -52,7 +53,10 @@ def _build_collector_tasks(
     config: Config,
     llm_factory: BedrockLanguageModelFactory,
     sources: list[str] | None = None,
-) -> tuple[list, list[str]]:
+) -> tuple[list, list[str], list[BaseCollector]]:
+    """Build the collect() coroutines plus the collector instances behind them. The instances are
+    returned (not just the coroutines) so run_collectors_with_health can read each collector's
+    park_status afterwards and report a stalled/unreadable S3 park file as STALE."""
     collectors_map = {
         "reddit": (RedditCollector, config.collectors.reddit, {}),
         "rsshub": (RSSHubCollector, config.collectors.rsshub, {}),
@@ -66,6 +70,7 @@ def _build_collector_tasks(
     )
     tasks = []
     labels = []
+    collectors: list[BaseCollector] = []
 
     for source_name in active_sources:
         if source_name not in collectors_map:
@@ -79,8 +84,9 @@ def _build_collector_tasks(
         logger.info("Starting collector: '%s'", source_name)
         tasks.append(collector.collect())
         labels.append(source_name)
+        collectors.append(collector)
 
-    return tasks, labels
+    return tasks, labels, collectors
 
 
 async def run_collectors_with_health(
@@ -88,7 +94,7 @@ async def run_collectors_with_health(
     llm_factory: BedrockLanguageModelFactory,
     sources: list[str] | None = None,
 ) -> tuple[list[CollectedItem], HealthReport]:
-    tasks, labels = _build_collector_tasks(config, llm_factory, sources)
+    tasks, labels, collectors = _build_collector_tasks(config, llm_factory, sources)
     if not tasks:
         logger.warning("No active collectors")
         return [], HealthReport()
@@ -96,14 +102,24 @@ async def run_collectors_with_health(
     results = await asyncio.gather(*tasks, return_exceptions=True)
     items: list[CollectedItem] = []
     health: list[SourceHealth] = []
-    for label, result in zip(labels, results, strict=True):
+    for label, collector, result in zip(labels, collectors, results, strict=True):
         if isinstance(result, BaseException):
             health.append(SourceHealth(name=label, item_count=0, status=SourceStatus.FAILED, detail=str(result)[:200]))
             logger.warning("Collector '%s' failed: %s", label, result)
-        else:
-            items.extend(result)
-            status = SourceStatus.OK if result else SourceStatus.EMPTY
-            health.append(SourceHealth(name=label, item_count=len(result), status=status))
+            continue
+        items.extend(result)
+        # A source served from a too-old (or unreadable) S3 park file is neither OK nor FAILED:
+        # it produced items, but off a sync that has stopped running — report STALE so the digest
+        # Lambda alerts instead of the dead cron looking healthy for days.
+        park = collector.park_status
+        if park is not None and park.degraded:
+            health.append(
+                SourceHealth(name=label, item_count=len(result), status=SourceStatus.STALE, detail=park.detail[:200])
+            )
+            logger.warning("Collector '%s' is STALE: %s", label, park.detail)
+            continue
+        status = SourceStatus.OK if result else SourceStatus.EMPTY
+        health.append(SourceHealth(name=label, item_count=len(result), status=status))
     return items, HealthReport(sources=health)
 
 

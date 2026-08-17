@@ -6,10 +6,16 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
+from collectors.base import ParkedItems, ParkOutcome
 from collectors.rsshub import RSSHubCollector
 from shared.config import RSSHubAccount, RSSHubCollectorConfig
 from shared.constants import SourceType
 from shared.models import CollectedItem
+
+
+def _absent_park() -> ParkedItems:
+    """No S3 park file → the collector must fall through to live collection."""
+    return ParkedItems(outcome=ParkOutcome.ABSENT)
 
 
 def _item(item_id: str) -> CollectedItem:
@@ -35,7 +41,7 @@ class TestReachability:
     async def test_unreachable_service_raises(self, monkeypatch):
         monkeypatch.delenv("STATE_BUCKET", raising=False)
         c = RSSHubCollector(_config())
-        with patch("collectors.rsshub.load_items_from_s3", return_value=None):
+        with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with patch("httpx.get", side_effect=httpx.ConnectError("connection refused")):
                 with pytest.raises(RuntimeError, match="unreachable"):
                     await c.collect()
@@ -45,7 +51,7 @@ class TestReachability:
         monkeypatch.delenv("STATE_BUCKET", raising=False)
         c = RSSHubCollector(_config())
         resp = MagicMock(status_code=503)
-        with patch("collectors.rsshub.load_items_from_s3", return_value=None):
+        with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with patch("httpx.get", return_value=resp):
                 with pytest.raises(RuntimeError, match="503"):
                     await c.collect()
@@ -55,7 +61,7 @@ class TestReachability:
         monkeypatch.delenv("STATE_BUCKET", raising=False)
         c = RSSHubCollector(_config())
         resp = MagicMock(status_code=200)
-        with patch("collectors.rsshub.load_items_from_s3", return_value=None):
+        with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with patch("httpx.get", return_value=resp):
                 with patch.object(c, "_parse_feed", return_value=[]):
                     items = await c.collect()
@@ -83,7 +89,7 @@ class TestReachability:
                 return []
             return [_item("t1")]
 
-        with patch("collectors.rsshub.load_items_from_s3", return_value=None):
+        with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with patch("httpx.get", return_value=resp):
                 with patch.object(c, "_parse_feed", side_effect=_parse):
                     with patch("collectors.rsshub.logger") as log:
@@ -101,7 +107,7 @@ class TestReachability:
             _config(accounts=[RSSHubAccount(username="a", platform="x"), RSSHubAccount(username="b", platform="x")])
         )
         resp = MagicMock(status_code=200)
-        with patch("collectors.rsshub.load_items_from_s3", return_value=None):
+        with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with patch("httpx.get", return_value=resp):
                 with patch.object(c, "_parse_feed", side_effect=RuntimeError("bozo")):
                     with pytest.raises(RuntimeError, match="All 2 RSSHub feeds failed"):
@@ -120,7 +126,7 @@ class TestReachability:
                 raise RuntimeError("bozo")
             return [_item("t1")]
 
-        with patch("collectors.rsshub.load_items_from_s3", return_value=None):
+        with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with patch("httpx.get", return_value=resp):
                 with patch.object(c, "_parse_feed", side_effect=_parse):
                     items = await c.collect()
@@ -152,7 +158,7 @@ class TestFanOutBound:
                 state["active"] -= 1
             return [_item(username)]
 
-        with patch("collectors.rsshub.load_items_from_s3", return_value=None):
+        with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with patch("httpx.get", return_value=resp):
                 with patch.object(c, "_parse_feed", side_effect=_parse):
                     items = await c.collect()

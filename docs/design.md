@@ -9,7 +9,7 @@ OmniSummary는 능동형(proactive) AI/ML 일일 다이제스트 시스템입니
 
 - **수집:** 매일 정해진 스케줄에 5개 소스 계열에서 콘텐츠를 수집.
 - **처리:** 집계·중복 제거 후 LLM으로 순위를 매김.
-- **생성/전달:** 한국어 에디토리얼 다이제스트를 구조화된 `DigestContent`로 생성하고, 채널별 렌더러로 Slack(Block Kit)과 Threads에 전달.
+- **생성/전달:** 한국어 에디토리얼 다이제스트를 구조화된 `DigestContent`로 생성하고, 채널별 렌더러로 Slack(Block Kit)과 Threads에 전달. Slack은 다이제스트 Lambda가, **Threads는 데일리 비주얼 Lambda가** 게시한다(이미지와 텍스트가 한 게시물 세트로 나가야 하므로).
 - **상태 저장:** 상태를 Bedrock AgentCore Memory에 저장.
 - **딥 리서치 에이전트:** Slack 멘션으로 트리거되는 AgentCore Runtime 위의 Strands가 자유형 토픽을 받아 웹/논문/커뮤니티를 독립 리서치하고, 한국어로 합성한 출처 표기 리포트를 채널(Slack/Threads)에 전달. 다이제스트와 분리된 독립 웹 리서치임.
 - **운영 헬스:** 소스별로 리포팅되며 SNS 이메일로 알림.
@@ -21,10 +21,11 @@ OmniSummary는 능동형(proactive) AI/ML 일일 다이제스트 시스템입니
    → 랭커 (Bedrock Claude Opus 4.8, 소스 슬롯 + origin 다양성)
    → 트렌드 트래커 (구조화 trends.json, StateStore)
    → 다이제스트 생성기 (Bedrock Claude Sonnet 5, 한국어 구조화 DigestContent)
-   → 채널별 렌더링 → Slack(Block Kit) + Threads 전달
+   → 채널별 렌더링 → Slack(Block Kit) 전달 (enable_slack_post)
    → AgentCore Memory (다이제스트 스냅샷)
    → 데일리 비주얼 Lambda 비동기 트리거 (gpt-image-2)
-   → 실패한 소스가 있으면 SNS 알림
+        └→ 이 Lambda가 이미지와 함께 Threads(root + reply chain)를 게시 (enable_threads_post)
+   → FAILED 또는 STALE 소스가 있으면 SNS 알림
 
 [Slack 멘션] → [API Gateway + WAF] → [Slack 이벤트 Lambda]
    → 서명 검증 → DynamoDB 중복 제거 → 즉시 ack 게시 → 비동기 self-invoke
@@ -59,6 +60,17 @@ AWS 아키텍처(두 경로 — 스케줄 다이제스트 / Slack 트리거 딥 
 
 `config/config.yaml` → `shared/config.py`의 Pydantic 모델로 `Config.load()`를 통해 로드됩니다. 시크릿은
 `.env`(로컬) 또는 SSM Parameter Store의 `/{project}/{stage}/{name}` 경로(AWS)에서 옵니다.
+`config/config.yaml`은 gitignore 대상이고 **`config/config-template.yaml`만 추적**되므로, CI synth와
+인프라 테스트는 이 템플릿을 로드합니다(`Config.load()`는 CI에서 조용히 코드 기본값으로 떨어져 아무것도
+증명하지 못했음).
+
+**캐싱(`get_config()`).** `Config.load()`는 호출마다 YAML을 다시 읽고 전체를 재검증하므로, 리서치 1회
+실행이 도구 호출마다 이를 반복했습니다. **읽기 전용 리프 호출자**(`output/delivery.py`,
+`shared/research/research_backends.py`, `agent/research_tools.py`, `shared/media/og_image.py`)는
+`lru_cache(maxsize=1)`로 감싼 `get_config()`를 씁니다. Config를 **변경하는** 호출자
+(`main`/핸들러의 `set_reference_time`, `ci_synth`의 `vpc_id`, 인프라 테스트의 버킷 오버라이드)는
+자기 인스턴스가 필요하므로 계속 `Config.load()`/`from_yaml`을 씁니다. 테스트는 conftest의 autouse
+픽스처가 매 테스트 전후로 캐시를 비웁니다.
 
 **우선순위.** `config.yaml`의 값이 Pydantic 필드 기본값을 재정의합니다. 모델 ID는 코드에 하드코딩되어 있지
 않습니다 — 예컨대 `PipelineConfig`는 `ranking_model`/`digest_model` 둘 다 Sonnet 5를 기본값으로 두지만,
@@ -71,8 +83,8 @@ AWS 아키텍처(두 경로 — 스케줄 다이제스트 / Slack 트리거 딥 
 
 | 그룹 | 필드 | 설명 |
 |------|------|------|
-| 공통(상속) | `enabled`, `lookback_hours`, `reference_time`, `request_timeout`, `max_retries`, `retry_backoff_sec` | 활성화/조회 윈도/타임아웃/재시도 |
-| `rss` | `feeds` | RSS 피드 URL 목록 |
+| 공통(상속) | `enabled`, `lookback_hours`, `reference_time`, `request_timeout`, `max_retries`, `retry_backoff_sec`, `park_max_age_hours`(기본 36) | 활성화/조회 윈도/타임아웃/재시도/S3 park 파일 나이 예산(초과 시 항목은 쓰되 헬스 STALE) |
+| `rss` | `feeds`, `max_concurrency`(기본 5) | RSS 피드 URL 목록·동시 fetch 상한 |
 | `reddit` | `subreddits`, `sort`, `limit` | 서브레딧·정렬·개수 |
 | `youtube` | `channels`, `max_videos_per_channel`, `resolve_timeout`, `transcript_timeout`, `transcript_language` | 채널·영상 수·자막 |
 | `web_search` | `trend_searches`, `max_results_per_query`, `max_refine_queries`, `min_search_score`, `refine_model` | Tavily 검색·관련도 필터 |
@@ -83,11 +95,11 @@ AWS 아키텍처(두 경로 — 스케줄 다이제스트 / Slack 트리거 딥 
 | 영역 | 필드 | 설명 |
 |------|------|------|
 | 모델 | `ranking_model`(실효 Opus 4.8), `digest_model`(Sonnet 5), `trend_model` | 단계별 모델 |
-| 랭킹 | `ranking_batch_size`, `engagement_tiers`, `ranking_categories`, `ranking_duplicate_score_penalty`, `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치·참여도 보정·카테고리·점수 루브릭 |
+| 랭킹 | `ranking_batch_size`, `ranking_max_concurrency`(기본 4), `ranking_max_retries`(기본 3), `ranking_retry_backoff_sec`(기본 5), `engagement_tiers`, `ranking_categories`, `ranking_duplicate_score_penalty`, `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치·Bedrock fan-out 상한·배치 재시도·참여도 보정·카테고리·점수 루브릭 |
 | 선정/다양성 | `top_n`, `min_score`, `source_slot_score_grace`(기본 0.1), `source_slots`, `source_cap_multiplier`, `max_per_origin`, `origin_weights`, `origin_weight_default`, `origin_weight_nudge` | 상위 N·소스 슬롯·grace 밴드(슬롯 보유 소스가 min_score 위 항목이 전무하면 grace 밴드 내 최선 1건 구제)·origin 상한·가산 보정 |
 | 다이제스트 버퍼/중복 | `digest_candidate_buffer`(기본 3), `published_url_ttl_days`(기본 6), `recent_leads_window`(기본 5) | 랭커 오버선정 버퍼(에디터가 동일 사건 병합 후 backfill)·cross-day dedup 원장 TTL·반복 방지용 최근 lead 윈도 |
 | 트렌드 | `trend_retention_days`, `trend_cooling_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존/냉각/증거·active 캡·momentum 반감기 |
-| 전달 | `enable_slack_post`, `enable_threads_post` | 채널별 전달 on/off(각각 독립 토글; 코드 기본값은 Slack on / Threads off, 실제 상태는 배포 환경 설정에 따름) |
+| 전달 | `enable_slack_post`, `enable_threads_post` | 채널별 전달 on/off(각각 독립 토글; 코드 기본값은 Slack on / Threads off, 실제 상태는 배포 환경 설정에 따름). Slack은 다이제스트 Lambda가, **Threads는 데일리 비주얼 Lambda가** 게시 |
 | AGI 카운트다운 | `agi_countdown_date`(기본 `2029-01-01`), `agi_countdown_template` | 다이제스트 lead에 코드가 붙이는 "AGI N일 전" 인트로(D-day 전엔 카운트다운, §5.5 참조) |
 | 시각화 | `enable_daily_visual`, `image_model`, `image_sizes`, `visual_format_window`(기본 6), `visual_synopsis_source_max_tokens`, `visual_synopsis_context_max_tokens`, `visual_caption_emoji`, `visual_image_timeout_sec`(기본 300)·`visual_image_max_retries`(기본 0) | 데일리 비주얼 on/off·gpt-image 모델·orientation→size 딕셔너리·포맷 변주 추적 윈도(orientation+style)·입력 상한·캡션 이모지·gpt-image HTTP 호출 상한(SDK 기본 600s×2회는 비주얼 Lambda 15분 예산을 넘길 수 있어 config로 고정) |
 | 프롬프트 주입(하드코딩 대신 템플릿 변수) | `digest_language_rules`, `digest_voice_guidance`(Gruber 톤; 단일 냉소 프레임으로 기본 고정하지 말고 그날 사실이 정당화할 때만 각을 선택), `ranking_audience_description`, `digest_audience_description`, `visual_audience_description`, `visual_caption_language`, `visual_on_image_language`, `visual_synopsis_style_guidance`, `visual_synopsis_humor_guidance`, `visual_synopsis_style_aesthetic`, `visual_moderation_softening_instruction` | 언어/대상독자/톤·유머/미감/모더레이션 완화 문구 |
@@ -140,7 +152,7 @@ AWS 아키텍처(두 경로 — 스케줄 다이제스트 / Slack 트리거 딥 
 | `THREADS_USER_ID` | `.env` → SSM | Threads 게시 대상 사용자 ID |
 | `YOUTUBE_API_KEY` | `.env` → SSM | YouTube Data API |
 | `ALERT_EMAIL` | `.env` → 배포 시 SNS 구독 | 소스 실패 알림 |
-| `CLOUDFLARE_PROXY_URL`/`CLOUDFLARE_PROXY_TOKEN` | `.env` | Reddit/YouTube 프록시(데이터센터 IP 우회) |
+| `CLOUDFLARE_PROXY_URL`/`CLOUDFLARE_PROXY_TOKEN` | `.env` | Reddit/YouTube 프록시(데이터센터 IP 우회). 워커 쪽 값은 `wrangler secret put PROXY_TOKEN`으로 넣습니다 — `wrangler.toml`의 `[vars]`는 평문으로 버전 관리에 들어가므로 토큰을 두지 않습니다 |
 | `MEMORY_ID`, `STATE_BUCKET`, `S3_PREFIX`, `ALERT_SNS_TOPIC_ARN`, `RSSHUB_BASE_URL`, `PROJECT_NAME`, `STAGE` | CDK 주입(AWS) | 런타임 리소스 식별자 |
 
 `.env`의 시크릿은 `scripts/deploy.py`가 배포 시 SSM `/{project}/{stage}/{name}`에 적재하고, Lambda/AgentCore는
@@ -152,17 +164,20 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 **공통 계약.** 모든 수집기는 `BaseCollector.collect() -> list[CollectedItem]`을 구현하고
 `cutoff_datetime(lookback_hours, reference_time)`(`collectors/base.py`)로 필터링합니다.
 
-**S3 park 파일 로더 (`collectors/base.py` `load_items_from_s3(filename)`).** 데이터센터(Lambda) IP에서
+**S3 park 파일 로더 (`collectors/base.py` `load_items_from_s3(filename, max_age_hours)`).** 데이터센터(Lambda) IP에서
 차단되는 소스(X·YouTube)는 로컬 sync 스크립트가 거주용 IP로 항목을 수집해 S3에 미리 적재하고, AWS에선
-수집기가 라이브 fetch 대신 이 파일을 읽습니다. `STATE_BUCKET` 미설정(로컬) 또는 파일 부재 시 `None`을 반환해
-호출자가 라이브 수집으로 폴백. S3 키는 trends.json과 동일 규칙(`S3_PREFIX`의 부모 디렉터리 + 파일명).
+수집기가 라이브 fetch 대신 이 파일을 읽습니다. S3 키는 trends.json과 동일 규칙(`S3_PREFIX`의 부모 디렉터리 + 파일명).
 원래 RSSHub의 `_load_from_s3`였던 것을 이 공유 헬퍼로 일반화했습니다.
-- **신선도 봉투(staleness guard).** sync 스크립트는 `{generated_at, items}` 봉투(`dump_items_envelope`)로 적재하고, 로더는 봉투/레거시 bare-list를 모두 읽되 `generated_at`이 `S3_ITEMS_MAX_AGE_HOURS`(36h)보다 오래되면 **크게 경고**합니다. 로컬 cron이 조용히 멈춰 며칠 지난 항목을 "오늘 것"으로 재수집하는 사고를, 정상 실행처럼 보이지 않게 표면화(그래도 stale 데이터는 빈 것보다 낫다고 보고 반환). 손상된 JSON은 안전하게 `None` 폴백.
-- **빈 park 파일 처리.** 항목이 0건이고 **동시에** `S3_ITEMS_MAX_AGE_HOURS`보다 오래된 봉투는 '부재'로 취급해 `None`을 반환(→ 라이브 수집으로 폴백, 그쪽에서 전면 장애면 FAILED로 알림). 로컬 sync가 멈춰 빈 파일만 남은 상태를 '오늘은 조용했다'로 오해하지 않기 위함. 반대로 **신선한** 0건 봉투는 정말 조용한 sync 날이므로 그대로 반환해 거짓 FAILED 알림을 만들지 않음.
+- **반환 타입 `ParkedItems(outcome, items, age_hours, detail)`.** park 파일의 **나이가 데이터와 함께** 흐르도록 명시적 모델로 반환합니다(모듈 전역/threadlocal staleness 플래그 없음). `outcome`은 `absent`(버킷 미설정·객체 없음) / `fresh` / `stale` / `error`(읽기 불가)이고, 파생 프로퍼티 `usable`(fresh·stale → park 항목 사용)과 `degraded`(stale·error → 헬스 STALE)로 호출자가 분기합니다. 수집기는 결과를 `self.park_status`에 남겨 `run_collectors_with_health`가 읽습니다.
+- **신선도 봉투(staleness guard).** sync 스크립트는 `{generated_at, items}` 봉투(`dump_items_envelope`)로 적재하고, 로더는 봉투/레거시 bare-list를 모두 읽되 `generated_at`이 `park_max_age_hours`(수집기별 config, 기본 36h — 모듈 기본은 `S3_ITEMS_MAX_AGE_HOURS`)보다 오래되면 항목은 그대로 반환하되(stale이 빈 것보다 낫다) `stale`로 표시합니다. 로컬 cron이 조용히 멈춰 며칠 지난 항목을 "오늘 것"으로 재수집하는 사고가 정상 실행(OK)처럼 보이지 않고 **헬스 STALE + SNS 알림**으로 표면화됩니다.
+- **빈 park 파일 처리.** 항목이 0건이고 **동시에** 나이 예산을 넘긴 봉투는 '부재'(`absent`)로 취급합니다(→ 라이브 수집으로 폴백, 그쪽에서 전면 장애면 FAILED로 알림). 로컬 sync가 멈춰 빈 파일만 남은 상태를 '오늘은 조용했다'로 오해하지 않기 위함. 반대로 **신선한** 0건 봉투는 정말 조용한 sync 날이므로 그대로 반환해 거짓 FAILED 알림을 만들지 않음.
+- **읽기 오류 분류.** 손상 JSON·검증 실패·예기치 않은 S3 오류(AccessDenied, 스로틀 등)는 `error`로 분류해 **경고 로그 + 헬스 STALE**로 올립니다. `NoSuchKey`/`NoSuchBucket`/404만 조용한 `absent`입니다. 분류는 로그 레벨과 보고 상태만 바꾸며 **어떤 ClientError도 raise하지 않고** 항상 라이브 수집으로 폴백합니다(예전엔 권한 오류가 "파일 없음"과 똑같이 info 로그로 묻혔음).
+- **sync 스크립트의 빈 봉투 기록.** `sync_*_to_s3.py`는 항목이 0건이어도 봉투를 **항상 업로드**합니다 — `generated_at` 스탬프가 "sync가 돌았다"의 유일한 증거이기 때문. 단 이는 `collect()`가 정상 반환한 경우뿐이며, 수집기 예외는 그대로 전파되어 **직전의 좋은 park 파일을 덮어쓰지 않습니다**.
 
 **RSS** (`rss.py`)
 - **소스:** `config.collectors.rss.feeds`에 대해 feedparser 사용.
 - **메타데이터:** `feed_url`, `feed_title`.
+- **fan-out 상한(`max_concurrency`, 기본 5):** 피드마다 `feedparser.parse`가 워커 스레드를 점유하므로, 수십 개 피드를 한꺼번에 던지면 기본 asyncio executor(2 vCPU Lambda에서 6)가 초과 구독되어 **파싱이 시작되기도 전에 per-feed 타임아웃이 만료**됩니다(멀쩡한 피드가 FAILED로 집계). 세마포어는 `collect()` 안(실행 중인 루프)에서 만들고 **per-feed 타임아웃보다 먼저 획득**해 타임아웃이 큐 대기가 아니라 fetch 자체를 재게 함 — RSSHub와 동일한 패턴. 최악 wall time은 `ceil(feeds / max_concurrency) * request_timeout`.
 - **실패 신호:** 죽은 피드(HTTP 4xx/5xx, entries 없는 bozo)와 타임아웃은 빈 결과가 아니라 **예외**로 올림. `gather_collector_results(raise_if_all_failed=True)`가 **전 피드 실패일 때만** 승격시키므로, 일부 피드 장애는 로깅 후 건너뛰고(부분 허용) 전면 장애는 FAILED로 알림.
 
 **Reddit** (`reddit.py`)
@@ -181,6 +196,7 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 
 **YouTube** (`youtube.py`)
 - **소스:** AWS에선 `scripts/sync_youtube_to_s3.py`가 거주용 IP로 자막까지 수집해 적재한 `youtube_items.json`을 공유 `load_items_from_s3`로 먼저 로드(강력 선호). 없으면 `YOUTUBE_API_KEY`로 라이브 수집, 키도 없으면 프록시 경유 RSS 폴백.
+- **API 키 해석은 1회, 루프 밖에서:** `collect()`가 park 파일 확인 **후** `asyncio.to_thread`로 `resolve_secret`(env → SSM)을 **한 번** 호출하고 결과를 `self.api_key`에 둡니다. 예전엔 lazy 프로퍼티가 채널 fan-out 안에서 처음 접근될 때 블로킹 SSM 호출을 이벤트 루프 스레드에서 돌렸습니다. park 파일로 단축되는 경로는 SSM을 아예 건드리지 않습니다.
 - **채널 ID 해석:** Data API의 `forHandle` 룩업으로 @handle → canonical UC id를 해석(Lambda IP에서도 동작). 워치 페이지 HTML 스크레이프는 데이터센터 IP에서 차단되므로 API가 해석 실패할 때(예: @handle 없는 URL)만 폴백.
 - **자막 언어 폴백:** 설정 언어(`transcript_language`)를 먼저 시도하고, 없으면 영상에 존재하는 임의 자막(비영어 채널·자동 생성 트랙)으로 폴백 — 'en' 트랙 부재가 빈 본문으로 떨어지지 않게 함. 라이브(데이터센터 IP) fetch는 차단되어 본문이 description으로 떨어지므로 S3 park 파일이 선호됨.
 - **실패 신호:** API 거부(쿼터 소진·키 폐기 등 non-200), 깨진 JSON, 채널 ID 해석 실패는 빈 결과가 아니라 예외. 채널 하나의 실패는 허용되고, **모든 채널 실패**일 때만 FAILED로 승격.
@@ -206,6 +222,8 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 ### 2. 랭커 (`ranker.py`)
 - **입력:** 항목 포맷팅(engagement + origin 포함).
 - **점수 산출:** Claude Opus 4.8로 `RankingPrompt` 병렬 배치 호출 → JSON 점수 파싱.
+- **배치 재시도 & fan-out 상한:** 각 배치의 Converse 호출은 `retry_async`로 재시도합니다(`ranking_max_retries` 기본 3, `ranking_retry_backoff_sec` 기본 5초 선형 백오프). 예전엔 한 번의 스로틀/일시적 5xx가 `[]`로 삼켜져 경고 한 줄만 남기고 **후보 40건이 그날 풀에서 조용히 사라졌습니다**. 동시에 in-flight 배치 수를 `ranking_max_concurrency`(기본 4)로 묶어 큰 날에 스스로 ThrottlingException을 유발하지 않게 합니다(세마포어는 `rank()` 안, 실행 중인 루프에서 생성).
+- **전면 실패만 승격:** 재시도까지 실패한 배치가 있으면 경고하되 나머지 배치 결과로 계속 진행하고, **모든 배치가 실패**했을 때만 RuntimeError로 올려 실행이 FAILED로 잡히게 합니다(`gather_collector_results(raise_if_all_failed=True)`와 같은 규칙). 파싱 실패(모델이 JSON이 아닌 문자열 반환)는 예전처럼 빈 결과로 degrade — 핀 복구 경로가 그 배치의 핀을 min_score로 되살립니다.
 - **오버선정:** `rank(items, select_count)`은 `top_n + digest_candidate_buffer`(기본 3)만큼 선정해, 다이제스트 에디터가 동일 사건 항목을 병합한 뒤 backfill할 여유 후보를 남김.
 - **origin 가산 보정:** `origin_weights`를 가산 보정으로 적용 — `score + (weight-1.0)*origin_weight_nudge`를
   [0,1]로 클램프(곱셈 배수가 아님). 미등록 origin엔 `origin_weight_default`.
@@ -255,6 +273,7 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 - **적용 시점:** 다이제스트 **생성 시점**에 `content.lead` 앞에 붙임(`digest_generator.generate`), 그 날 실행의 KST `digest_date`로 계산. 인트로가 저장 콘텐츠의 일부가 되어 **모든 채널**(Slack Block Kit · Threads root)에 함께 나가며, 트렌드 재등장 수치와 같은 시계(날짜)를 씀.
 
 ### 5.3 Threads 전달 (`output/threads_handler.py`, `enable_threads_post`)
+- **호출자:** 다이제스트 Lambda가 아니라 **데일리 비주얼 Lambda**(`DailyVisualMaker.run`)가 게시한다 — Threads 게시물은 이미지 root + reply chain이 한 세트라 이미지를 만든 쪽이 함께 보내야 한다. 따라서 Threads 전달에는 `enable_threads_post`와 `enable_daily_visual`이 **둘 다** 필요하다.
 - **흐름(`post_to_threads`):** 이미지 root 게시 → 스토리당 reply 하나의 평탄한 chain. reply는 서로가 아니라 **모두 root에 매닮**(reply-of-reply로 중첩되면 첫 개만 보임).
 - **이미지 호스팅:** Threads는 바이트 업로드가 불가하고 **공개 URL만** fetch하므로, PNG를 S3에 올리고 단기 presigned URL을 Meta에 한 번 넘김(`_upload_image_for_hosting`).
 - **인덱싱 지연 폴링:** 방금 게시된 이미지 root는 곧바로 reply 대상이 되지 못해 Meta가 "media not found"(code 24 / subcode 4279009)를 반환할 수 있음. reply의 create-container 쓰기를 blind하게 재시도하는 대신(각 시도가 낭비 쓰기 + sleep), **값싼 GET으로 root가 addressable해질 때까지 한 번 폴링**(`_wait_until_addressable`)한 뒤 reply chain을 시작. 준비 여부는 root의 속성이라 chain 전체가 하나의 예산(`THREADS_INDEXING_BUDGET_SEC`≈270초)을 공유하며, 비주얼 Lambda 타임아웃 15분이 총량을 bound. TEXT-only root(이미지 없음)는 거의 즉시 인덱싱되므로 폴링 생략. reply에는 GET이 200을 준 뒤에도 드물게 나는 eventual-consistency 경계용 **짧은 안전망 재시도**(`_publish_reply_with_retry`, 기본 3회)만 남김.
@@ -294,6 +313,13 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 
 **(a) 트렌드 — 구조화 `trends.json` (`StateStore`, 시스템 오브 레코드)**
 
+- **스토어 선택(`create_state_store`):** `STATE_BUCKET`(env) → `config.aws.state_bucket_name` → 로컬 파일
+  폴백 순으로, **버킷 유무만** 보고 결정합니다. 예전의 `is_running_in_aws()` 플랫폼 감지는 Lambda가 아닌
+  호출자(AgentCore 런타임, 컨테이너, 실 버킷을 향한 로컬 실행)가 `STATE_BUCKET`을 들고 있어도 trends.json을
+  로컬 파일시스템에 써서 트렌드 히스토리를 통째로 잃게 만들었습니다. AWS 밖에서는 세션을
+  `config.aws.profile`/`region`으로 만들어 `.env`에 `STATE_BUCKET`을 둔 개발자가 자격증명을 잃지 않게 하고,
+  AWS 안에서는 실행 역할(기본 세션)을 씁니다. prefix 규약은 env 경로(`S3_PREFIX`가 곧 digest-state prefix)와
+  config 경로(`s3_prefix` + `/digest_state`)가 서로 다르므로 그대로 유지합니다.
 - **관리 주체:** `pipeline/trend_tracker.py`의 `TrendTracker`.
 - **LLM 역할:** `TrendClassifyPrompt`는 오늘 아이템이 기존 트렌드(id) 확장인지 신규인지 분류만 함. 부기는 전부 결정론적 Python.
 - **결정론적 부기:**
@@ -333,17 +359,22 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 ## 8. 헬스 체크 & 알림
 
 **모델 (`shared/models.py`):**
-- `SourceStatus` — `ok`/`empty`/`failed`.
+- `SourceStatus` — `ok`/`empty`/`failed`/`stale`.
 - `SourceHealth(name, item_count, status, detail)`.
-- `HealthReport(sources)` — `has_failures`, `summary()` 보유.
+- `HealthReport(sources)` — `has_failures`, `stale_sources`, `summary()` 보유. **STALE은 실패가 아니므로**
+  `has_failures`를 켜지 않습니다(FAILED 승격 경로와 분리).
 
 **소스 분류 (`run_collectors_with_health`):**
 - 예외 → FAILED(잘린 detail 포함).
+- park 파일이 `degraded`(stale = 나이 예산 초과 / error = 읽기 불가) → **STALE**(항목 수 + park detail 포함).
+  항목은 나왔지만 그 sync가 멈춰 있다는 뜻이라 OK도 FAILED도 아닌 별도 상태. `_build_collector_tasks`가
+  코루틴과 함께 **수집기 인스턴스**를 반환하고, 이 함수가 각 인스턴스의 `park_status`를 읽어 판정합니다.
 - 0 항목 → EMPTY(조용한 날엔 정상).
 - 그 외 → OK.
 
-**알림 (`_maybe_alert`, 다이제스트 Lambda):** 소스가 FAILED일 때만, 그리고 빈 항목 조기 반환 이전에
-`ALERT_SNS_TOPIC_ARN`으로 게시(아무것도 수집 못 해도 장애는 알림되도록).
+**알림 (`_maybe_alert`, 다이제스트 Lambda):** 소스가 FAILED **또는 STALE**일 때, 그리고 빈 항목 조기 반환
+이전에 `ALERT_SNS_TOPIC_ARN`으로 게시(아무것도 수집 못 해도 장애는 알림되도록). 메시지는 실패/stale 소스
+목록을 각각 분리해 담습니다 — `has_failures`만 보던 게이트에서는 죽은 로컬 cron이 며칠간 무음이었습니다.
 
 **핸들러 예외 전파.** 다이제스트·비주얼·Threads 갱신 핸들러는 실패를 로깅(correlation id 포함)한 뒤
 **다시 raise**한다. 500 body를 반환하면 Lambda 입장에선 정상 종료라 Errors 알람도, 비동기 DLQ도 절대
@@ -462,8 +493,10 @@ ingress 흐름:
   X 항목은 S3 park 파일이 공급). `connections.allow_from()`은 규칙을 foundation 쪽에 붙여 `fnd → app` 순환
   참조가 되므로 명시적 인그레스 리소스를 쓴다. Lambda SG는 기본 전체 egress라 ingress만 빠진 반쪽이었다.
 - **시크릿 처리:** 평문 `String` SSM 파라미터(CloudFormation은 SecureString 생성 불가). 보완 통제는 스코프된
-  IAM 읽기 정책이며, 더 민감한 자격증명은 Secrets Manager로 승격 권장. Threads 갱신 Lambda는 새 토큰을
-  `SecureString`으로 SSM에 직접 기록.
+  IAM 읽기 정책이며, 더 민감한 자격증명은 Secrets Manager로 승격 권장. Threads 갱신 Lambda는 갱신된 토큰을
+  `put_parameter(Overwrite=True)`로 **`Type`을 지정하지 않고** 덮어쓴다 — 파라미터는 CFN이 만든 `String`이고
+  `Type=SecureString`을 얹는 것은 타입 변경이어서 SSM이 `ValidationException`으로 거절한다(그러면 토큰이 갱신되지
+  않은 채 60일 뒤 Threads 전달이 끊긴다). `Type`을 생략하면 기존 타입을 유지하고 값만 갱신한다.
 
 ## 12. 관측성(Observability)
 
@@ -482,10 +515,14 @@ ingress 흐름:
 
 ## 13. 테스트 & CI/CD
 
-**테스트 (`tests/`, pytest, `asyncio_mode=auto`).** 620+ 테스트, 커버리지 게이트 80%(측정 ~86%). `tests/conftest.py`의 autouse 픽스처가 앰비언트 시크릿/인프라 env를 monkeypatch로 비우고 SSM 클라이언트를 막아 **hermetic**하게 만든다(개발자 `.env`/AWS 프로파일에 결과가 좌우되지 않고, 실 SSM 왕복으로 낭비하던 수십 초도 사라짐). 커버 영역:
+**테스트 (`tests/`, pytest, `asyncio_mode=auto`).** 700+ 테스트, 커버리지 게이트 80%(측정 ~90%). `tests/conftest.py`의 autouse 픽스처가 앰비언트 시크릿/인프라 env를 monkeypatch로 비우고 SSM 클라이언트를 막아 **hermetic**하게 만든다(개발자 `.env`/AWS 프로파일에 결과가 좌우되지 않고, 실 SSM 왕복으로 낭비하던 수십 초도 사라짐). 커버 영역:
 - 수집기(모킹한 HTTP/feedparser).
 - Slack 이벤트 핸들러(서명 검증/중복 제거 + **형제 패키지 import 금지 가드** `test_handler_has_no_sibling_package_imports`).
-- 집계기, 랭커 파싱 + 슬롯/origin-cap 로직.
+- 집계기, 랭커 파싱 + 슬롯/origin-cap 로직 + **배치 재시도/전면 실패 승격/fan-out 상한**.
+- **`main.run_pipeline` 오케스트레이션(`test_run_pipeline.py`)**: 집계 후 빈 입력·임계 미달 조기 반환, 원장/leads 기록과 트렌드 갱신, 원장·AgentCore 스냅샷 양쪽에서 시드하는 cross-day dedup(URL 정규화 포함), dry-run이 상태를 쓰지 않고 아무 채널에도 보내지 않음, 로컬 인라인 비주얼 실행과 그 실패의 non-fatal성. LLM/네트워크 협력자만 스텁하고 원장·롤링 로그·집계는 임시 디렉터리 StateStore로 실제 실행.
+- **`StateStore`(`test_state_store.py`)**: `S3StateStore` 키 prefix·UTF-8 인코딩·NoSuchKey vs 기타 ClientError, `create_state_store`의 버킷 기반 선택(AWS 밖에서도 `STATE_BUCKET`이면 S3 + 프로파일 세션).
+- **WebSearch `collect()`(`test_web_search.py`)**: 쿼리별 fan-out·URL dedup·per-trend domains/topic 전달, 전면 실패 승격, 부분 실패 허용, LLM 정제 2단계와 그 실패의 non-fatal성.
+- **Slack 이벤트 중복 제거(`test_slack_event_handler.py`)**: 조건부 PutItem + TTL 마커, 중복 판정, dedup 스토어 장애 시 fail-open, 마커 릴리스, Slack 재전송이 실제로 1회만 dispatch되는 end-to-end.
 - 헬스 리포트, logger.
 - 메모리 스토어(로컬 + AgentCore 모킹).
 - 다이제스트 핸들러 알림.
@@ -498,8 +535,11 @@ ingress 흐름:
 - **락파일 고정:** `uv lock --check` + 모든 잡의 `uv sync --frozen`으로, 리뷰/테스트된 것과 다른 버전이 조용히 해석되지 않게 함.
 - lint(ruff), 포맷 체크(black `--check`), **`mypy .`**(경로 열거 대신 레포 전체 — 제외는 `[tool.mypy] exclude`. 예전 열거식은 새 최상위 모듈·`scripts/`를 조용히 게이트 밖에 뒀음).
 - 테스트 + 커버리지 게이트: 범위와 `fail_under`가 `pyproject.toml`(`[tool.coverage.*]`)에 있어 커맨드라인 수정으로 좁혀지지 않음.
+- **잡 상한 & 캐시:** 모든 잡에 `timeout-minutes`(기본 6시간 러너 타임아웃으로 멈춘 빌드가 방치되지 않게), uv 휠 캐시는 `uv.lock` 키(의존성이 바뀌면 재설치되므로 깨진 의존성 집합을 캐시가 가릴 수 없음), Node는 npm 캐시.
 - **레포 고정 CDK CLI로** 오프라인 `cdk synth`(Node 22 + `npm ci`로 `package.json`에 핀된 `aws-cdk` 설치 — 예전 `npm ci || npm install` 폴백은 lock 부재/불일치를 삼키고 다른 CLI를 깔아 이 잡의 의미를 없앴음 → `npx cdk synth -a "uv run python scripts/ci_synth.py"`). 인프로세스 `app.synth()`가 아닌 실제 CLI를 태워 **CLI↔`aws-cdk-lib` cloud-assembly 스키마 핸드셰이크**를 검증(글로벌 CLI가 라이브러리보다 뒤처져 배포가 스키마 미스매치로 깨지던 클래스를 PR에서 잡음). `ci_synth`는 `vpc_id`를 비우고 env-agnostic 계정을 써 자격증명 없이 완전 오프라인.
-- Docker 빌드(digest amd64 + agentcore arm64, `--provenance=false`).
+- Docker 빌드 + **이미지 import 체크**: 두 이미지를 단일 플랫폼 `load: true`(네이티브 amd64)로 빌드해 로컬 데몬에 올린 뒤 `docker run --rm --network none --entrypoint python`으로 실제 엔트리 모듈을 import한다(digest: `lambda_handlers.*` + `main`, agentcore: `agent_runtime.app`). 빌드만으로는 import가 한 번도 실행되지 않아 COPY 누락이나 개발자 머신에서만 해석되는 모듈이 그대로 통과했다. 자격증명 없이 `--network none`이므로 **import 시점 AWS 호출/HTTP fetch가 콜드스타트가 아니라 CI에서** 깨진다. import 체크는 빌드가 얼마나 캐시됐든 로드된 이미지에 대해 항상 실행되므로 레이어 캐시가 실패를 건너뛸 수 없다. 캐시는 `type=gha`(이미지별 scope).
+  - agentcore는 배포는 arm64지만 CI는 amd64로 빌드한다(베이스·의존성 모두 멀티아치이고, QEMU 에뮬레이션 없이 import를 실행하려면 네이티브여야 한다 — QEMU 하 `pip install`은 잡 예산을 넘긴다). 이 잡이 잡는 것(COPY 누락·미해결 의존성)은 아키텍처 무관.
+- **CI는 추적되는 config로 synth:** `config/config.yaml`이 gitignore이므로 `scripts/ci_synth.py`는 `config/config-template.yaml`을 로드한다(`Config.load()`는 CI에서 코드 기본값으로 조용히 떨어져 아무도 배포하지 않는 스택을 synth했다). 인프라 assertion 테스트도 같은 템플릿을 쓴다.
 
 ## 14. 주요 명령어
 

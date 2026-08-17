@@ -109,24 +109,34 @@ class S3StateStore(StateStore):
             return False
 
 
-def create_state_store(config: Config | None = None) -> StateStore:
-    """Select the S3-backed store when running in AWS or when a state bucket is
-    configured, else the local filesystem fallback. Shared by the pipeline and the
-    follow-up agent so both read/write the same trends.json."""
+def _boto_session(config: Config | None):
+    """A session for the S3 store. In AWS the execution role is ambient, so take the default
+    session; outside AWS honour the configured profile/region — otherwise a developer with
+    STATE_BUCKET in .env would silently lose their credentials."""
     import boto3
 
+    if is_running_in_aws() or config is None:
+        return boto3.Session()
+    return boto3.Session(profile_name=config.aws.profile or None, region_name=config.aws.region)
+
+
+def create_state_store(config: Config | None = None) -> StateStore:
+    """Select the S3-backed store whenever a state bucket is configured (STATE_BUCKET env, else
+    config.aws.state_bucket_name), else the local filesystem fallback. Shared by the pipeline and
+    the deep-research agent so both read/write the same trends.json.
+
+    Gated on the BUCKET, not on is_running_in_aws(): that platform sniff meant any non-Lambda
+    caller carrying STATE_BUCKET (the agent runtime, a container, a local run against the real
+    bucket) silently wrote trends.json to the local filesystem and lost every trend thread."""
     from .constants import LocalPaths
 
-    if is_running_in_aws():
-        bucket = os.environ.get("STATE_BUCKET", "")
-        if bucket:
-            prefix = os.environ.get("S3_PREFIX", "digest_state")
-            return S3StateStore(boto3.Session(), bucket, prefix=prefix)
+    env_bucket = os.environ.get("STATE_BUCKET", "")
+    if env_bucket:
+        # S3_PREFIX is the digest-state prefix itself (set by the CDK Lambda env), unlike the
+        # config's s3_prefix, which is the bucket ROOT and gets '/digest_state' appended.
+        prefix = os.environ.get("S3_PREFIX", "digest_state")
+        return S3StateStore(_boto_session(config), env_bucket, prefix=prefix)
     if config and config.aws.state_bucket_name:
         prefix = f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state"
-        return S3StateStore(
-            boto3.Session(profile_name=config.aws.profile or None, region_name=config.aws.region),
-            config.aws.state_bucket_name,
-            prefix=prefix,
-        )
+        return S3StateStore(_boto_session(config), config.aws.state_bucket_name, prefix=prefix)
     return LocalStateStore(Path(LocalPaths.DIGEST_STATE_DIR.value))

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 from slack_sdk.web.async_client import AsyncWebClient
 
-from shared import Config, ImageAsset, logger, resolve_secret, sanitize_slack_mrkdwn
+from shared import ImageAsset, get_config, logger, resolve_secret, sanitize_slack_mrkdwn
 from shared.media import extension_for
 
 from .renderers import _strip_slack_mrkdwn, render_research_blocks, render_threads_research
@@ -113,7 +113,7 @@ async def _deliver_threads(report: str, delivery: DeliveryContext) -> bool:
     one staged image rides the root (Threads media indexing is slow; extra images stay Slack-only)."""
     from output.threads_handler import post_to_threads
 
-    max_posts = Config.load().agent.research_max_threads_posts
+    max_posts = get_config().agent.research_max_threads_posts
     root_text, replies = render_threads_research(report, max_posts=max_posts)
     if not root_text.strip():
         # Empty report → nothing to post. An empty root would 400 the Threads API; skip cleanly.
@@ -125,7 +125,7 @@ async def _deliver_threads(report: str, delivery: DeliveryContext) -> bool:
     image_key = ""
     image_content_type = "image/png"
     if delivery.staged_images:
-        config = Config.load()
+        config = get_config()
         bucket = config.aws.state_bucket_name or os.environ.get("STATE_BUCKET", "")
         if not bucket:
             # No host for the image bytes → make 'text-only' explicit at the call site rather
@@ -160,7 +160,7 @@ def _dry_run_print(report: str, channel: str, delivery: DeliveryContext) -> bool
             tag = note if channel == "threads" else f"({img.content_type})"
             print(f"  - {img.image_url} (from {img.source_url}, {len(img.data)} bytes) {tag}")
     if channel == "threads":
-        max_posts = Config.load().agent.research_max_threads_posts
+        max_posts = get_config().agent.research_max_threads_posts
         root, replies = render_threads_research(report, max_posts=max_posts)
         print(f"\n[ROOT]\n{root}\n")
         for i, r in enumerate(replies, 1):

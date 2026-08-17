@@ -24,7 +24,7 @@ class TestSearchTools:
     async def test_community_search_passes_domains(self):
         with patch.object(rt, "_tavily_search", new=AsyncMock(return_value="ok")) as tav:
             await rt.community_search._tool_func("q")
-        domains = rt.Config.load().agent.community_search_domains
+        domains = rt.get_config().agent.community_search_domains
         assert tav.await_args.kwargs.get("include_domains") == domains
 
     @pytest.mark.asyncio
@@ -99,7 +99,7 @@ class TestAttachImage:
 
     @pytest.mark.asyncio
     async def test_caps_staged_images(self):
-        limit = rt.Config.load().agent.research_max_staged_images
+        limit = rt.get_config().agent.research_max_staged_images
         delivery = DeliveryContext(
             staged_images=[ImageAsset(data=b"x", source_url="u", image_url="i") for _ in range(limit)]
         )

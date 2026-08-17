@@ -2,9 +2,11 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableLambda
 
 from collectors.web_search import WebSearchCollector, fetch_pinned_items
-from shared.config import WebSearchCollectorConfig
+from shared.config import TrendSearch, WebSearchCollectorConfig
 from shared.constants import SourceType
 
 
@@ -79,6 +81,21 @@ class TestParseResults:
         assert items[0].published_at.tzinfo is not None
 
 
+def _search_collector(*, llm_factory=None, **kwargs) -> WebSearchCollector:
+    """A collector configured with real trend searches, for exercising collect()."""
+    cfg = WebSearchCollectorConfig(
+        trend_searches=[
+            TrendSearch(name="frontier", queries=["q1", "q2"]),
+            TrendSearch(name="infra", queries=["q3"], domains=["arxiv.org"], topic="general"),
+        ],
+        retry_backoff_sec=0,
+        **kwargs,
+    )
+    cfg.reference_time = datetime(2026, 6, 3, tzinfo=UTC)
+    cfg.lookback_hours = 24
+    return WebSearchCollector(cfg, llm_factory=llm_factory)
+
+
 class TestCollect:
     @pytest.mark.asyncio
     async def test_skips_without_api_key(self, monkeypatch):
@@ -86,6 +103,121 @@ class TestCollect:
         monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "")
         c = _collector(min_search_score=0.3)
         assert await c.collect() == []
+
+    @pytest.mark.asyncio
+    async def test_disabled_collector_short_circuits(self):
+        c = _search_collector(enabled=False)
+        with patch("collectors.web_search.resolve_secret") as resolve:
+            assert await c.collect() == []
+        resolve.assert_not_called()  # a disabled source must not even resolve its key
+
+    @pytest.mark.asyncio
+    async def test_no_queries_configured_short_circuits(self, monkeypatch):
+        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        c = _collector(min_search_score=0.3)  # no trend_searches
+        assert await c.collect() == []
+
+    @pytest.mark.asyncio
+    async def test_searches_every_query_and_dedups_urls(self, monkeypatch):
+        # One query per trend query (3 total); the same URL returned twice collapses to one item.
+        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        c = _search_collector(min_search_score=0.3)
+        client = MagicMock()
+        client.search = AsyncMock(
+            side_effect=[
+                {"results": [_result(0.9, url="https://a.example/1", title="A")]},
+                {"results": [_result(0.9, url="https://a.example/1", title="A again")]},
+                {"results": [_result(0.9, url="https://b.example/2", title="B")]},
+            ]
+        )
+        c._client_instance = client
+        items = await c.collect()
+        assert client.search.await_count == 3
+        assert {i.url for i in items} == {"https://a.example/1", "https://b.example/2"}
+        # The per-trend include_domains/topic reach Tavily as configured.
+        last = client.search.await_args_list[-1].kwargs
+        assert last["include_domains"] == ["arxiv.org"] and last["topic"] == "general"
+        assert last["days"] == 1  # lookback_hours 24 -> 1 day
+
+    @pytest.mark.asyncio
+    async def test_all_queries_failing_raises(self, monkeypatch):
+        # A total Tavily outage must surface as FAILED, not a silently empty web source.
+        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        c = _search_collector(min_search_score=0.3, max_retries=1)
+        client = MagicMock()
+        client.search = AsyncMock(side_effect=RuntimeError("tavily down"))
+        c._client_instance = client
+        with pytest.raises(RuntimeError):
+            await c.collect()
+
+    @pytest.mark.asyncio
+    async def test_partial_query_failure_keeps_the_rest(self, monkeypatch):
+        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        c = _search_collector(min_search_score=0.3, max_retries=1)
+        client = MagicMock()
+        client.search = AsyncMock(
+            side_effect=[
+                RuntimeError("one query failed"),
+                {"results": [_result(0.9, url="https://ok.example/1", title="OK")]},
+                {"results": []},
+            ]
+        )
+        c._client_instance = client
+        items = await c.collect()
+        assert [i.url for i in items] == ["https://ok.example/1"]
+
+    @pytest.mark.asyncio
+    async def test_refinement_adds_llm_generated_queries(self, monkeypatch):
+        # With a refine LLM configured, collect() runs a second phase using the LLM's queries and
+        # merges the results (deduped against the broad phase).
+        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        factory = MagicMock()
+        factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content='["refined query"]'))
+        c = _search_collector(min_search_score=0.3, max_refine_queries=2, llm_factory=factory)
+        client = MagicMock()
+        client.search = AsyncMock(
+            side_effect=[
+                {"results": [_result(0.9, url="https://a.example/1", title="A")]},
+                {"results": []},
+                {"results": []},
+                {"results": [_result(0.9, url="https://refined.example/9", title="R")]},
+            ]
+        )
+        c._client_instance = client
+        items = await c.collect()
+        assert client.search.await_count == 4  # 3 broad + 1 refined
+        assert {i.url for i in items} == {"https://a.example/1", "https://refined.example/9"}
+
+    @pytest.mark.asyncio
+    async def test_refinement_skipped_when_broad_phase_empty(self, monkeypatch):
+        # Nothing to refine FROM → no extra LLM call and no extra searches.
+        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        factory = MagicMock()
+        factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content='["never used"]'))
+        c = _search_collector(min_search_score=0.3, llm_factory=factory)
+        client = MagicMock()
+        client.search = AsyncMock(return_value={"results": []})
+        c._client_instance = client
+        assert await c.collect() == []
+        assert client.search.await_count == 3  # broad only
+
+    @pytest.mark.asyncio
+    async def test_refinement_llm_failure_keeps_broad_results(self, monkeypatch):
+        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        factory = MagicMock()
+        factory.get_model.return_value = RunnableLambda(lambda _: (_ for _ in ()).throw(RuntimeError("bedrock down")))
+        c = _search_collector(min_search_score=0.3, llm_factory=factory)
+        client = MagicMock()
+        client.search = AsyncMock(
+            side_effect=[
+                {"results": [_result(0.9, url="https://a.example/1", title="A")]},
+                {"results": []},
+                {"results": []},
+            ]
+        )
+        c._client_instance = client
+        items = await c.collect()
+        assert [i.url for i in items] == ["https://a.example/1"]  # refinement is non-fatal
 
 
 class TestFetchPinnedItems:

@@ -9,13 +9,21 @@ from .logger import logger
 
 
 def get_proxied_url(target_url: str) -> str:
+    """Wrap a URL so it is fetched through the Cloudflare Worker (cloudflare-proxy/), which has a
+    residential-ish egress IP for sources that block AWS datacenter IPs.
+
+    The token rides in the QUERY STRING because the callers hand the result straight to
+    feedparser.parse, which cannot attach headers. The worker only forwards hosts on its
+    ALLOWED_HOSTS var, so proxying an unlisted host returns 403 rather than silently working."""
     proxy_base = os.getenv("CLOUDFLARE_PROXY_URL", "")
     proxy_token = os.getenv("CLOUDFLARE_PROXY_TOKEN", "")
 
     if not proxy_base or not proxy_token:
         return target_url
 
-    proxied = f"{proxy_base.rstrip('/')}/?url={quote(target_url, safe='')}&token={proxy_token}"
+    # Percent-encode BOTH values: an unencoded token containing '&' or '#' would truncate the
+    # query string and turn every proxied fetch into a 401.
+    proxied = f"{proxy_base.rstrip('/')}/?url={quote(target_url, safe='')}&token={quote(proxy_token, safe='')}"
     logger.debug("Proxying '%s' via Cloudflare Worker", target_url[:80])
     return proxied
 

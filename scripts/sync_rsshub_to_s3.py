@@ -39,8 +39,12 @@ async def main() -> None:
     items = await collector.collect()
 
     if not items:
-        logger.info("No RSSHub items collected")
-        return
+        # Park an EMPTY envelope rather than returning early: its `generated_at` stamp is the only
+        # proof the sync RAN. Skipping the write left yesterday's file in place, so the digest
+        # re-ingested stale items and still reported OK. This is only reached when collect()
+        # returned cleanly — a collector exception propagates and deliberately leaves the previous
+        # (good) park file untouched instead of overwriting it with nothing.
+        logger.info("No RSSHub items collected; parking an empty envelope to stamp the sync time")
 
     payload = dump_items_envelope(items)
 
