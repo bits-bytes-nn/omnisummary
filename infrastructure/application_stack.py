@@ -6,6 +6,7 @@ from aws_cdk import CfnOutput, Duration, Stack, Tags
 from aws_cdk import aws_apigateway as apigw
 from aws_cdk import aws_cloudwatch as cloudwatch
 from aws_cdk import aws_cloudwatch_actions as cw_actions
+from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_events as events
 from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_lambda as lambda_
@@ -193,6 +194,26 @@ class OmniSummaryApplicationStack(Stack):
             },
         )
 
+        # The digest Lambda resolves rsshub.omnisummary.local and connects to the Fargate RSSHub
+        # service, but the service's security group had no ingress rule for the Lambda's SG, so
+        # every X feed fetch silently timed out in AWS (the S3 park file is what actually supplied
+        # X items). Added from THIS stack — which already depends on foundation — so the rule is
+        # a plain ingress addition with no new SG/service and no cross-stack cycle. It is written
+        # as an explicit CfnSecurityGroupIngress rather than connections.allow_from(), because the
+        # latter attaches the rule to the RSSHub SG's own stack (foundation) and CDK then rejects
+        # the fnd -> app SG reference as a dependency cycle. The Lambda SG allows all egress by
+        # default, so ingress is the only missing half.
+        ec2.CfnSecurityGroupIngress(
+            self,
+            "RSSHubIngressFromDigestLambda",
+            group_id=foundation.rsshub_service.connections.security_groups[0].security_group_id,
+            source_security_group_id=digest_lambda.connections.security_groups[0].security_group_id,
+            ip_protocol="tcp",
+            from_port=RSSHUB_PORT,
+            to_port=RSSHUB_PORT,
+            description="Digest Lambda to RSSHub",
+        )
+
         slack_lambda = lambda_.Function(
             self,
             "SlackEventLambda",
@@ -260,6 +281,10 @@ class OmniSummaryApplicationStack(Stack):
             timeout=Duration.minutes(1),
             memory_size=256,
             role=foundation.lambda_role,
+            # The handler re-raises on failure so the Errors alarm fires; without an explicit
+            # value Lambda would retry the async (EventBridge) invoke twice, re-calling the
+            # Threads refresh endpoint. One attempt + the alarm is what we want.
+            retry_attempts=0,
             log_retention=logs.RetentionDays.ONE_MONTH,
             environment={"PROJECT_NAME": project_name, "STAGE": stage},
         )

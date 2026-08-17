@@ -31,17 +31,22 @@ class RSSCollector(BaseCollector):
                 asyncio.to_thread(self._parse_feed, feed_url),
                 timeout=self.config.request_timeout,
             )
-        except TimeoutError:
+        except TimeoutError as e:
+            # Raise (not return []) so gather_collector_results counts this as a task FAILURE:
+            # a total outage (every feed hung) then surfaces as FAILED instead of a silent empty
+            # result. One hung feed among many is still just logged there and skipped.
             logger.warning("RSS feed '%s' timed out after %ds, skipping", feed_url, self.config.request_timeout)
-            return []
+            raise RuntimeError(f"RSS feed '{feed_url}' timed out after {self.config.request_timeout}s") from e
 
     def _parse_feed(self, feed_url: str) -> list[CollectedItem]:
         feed = feedparser.parse(feed_url)
         status = feed.get("status")
         if (status is not None and status >= 400) or (feed.bozo and not feed.entries):
             reason = f"HTTP {status}" if status and status >= 400 else feed.get("bozo_exception")
-            logger.warning("Failed RSS feed '%s': %s", feed_url, reason)
-            return []
+            # A dead feed is a FAILURE, not an empty one: raising lets the all-failed check mark
+            # the whole source FAILED when every feed is dead, while a single dead feed among
+            # many is still tolerated (logged and skipped by gather_collector_results).
+            raise RuntimeError(f"Failed RSS feed '{feed_url}': {reason}")
         cutoff = cutoff_datetime(self.config.lookback_hours, self.config.reference_time)
 
         items: list[CollectedItem] = []

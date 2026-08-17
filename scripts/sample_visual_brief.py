@@ -16,7 +16,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import boto3
 
-from agent.visuals import VisualGenerator
 from pipeline import ContentAggregator, ContentRanker
 from pipeline.daily_visual import DailyVisualMaker
 from shared import BedrockLanguageModelFactory, CollectedItem, Config, logger
@@ -51,13 +50,9 @@ async def main() -> None:
             chosen = ranked[n - 1]
             source = f"{chosen.item.title}\n\n{chosen.item.text}"
             instruction = plan.get("instruction", "")
-            generator = VisualGenerator(
-                factory,
-                config.pipeline.digest_model,
-                source_max_tokens=config.pipeline.visual_synopsis_source_max_tokens,
-                context_max_tokens=config.pipeline.visual_synopsis_context_max_tokens,
-            )
-            brief = await generator.brief(instruction, source, "")
+            # Reuse the maker's generator so the sampled brief uses the exact production config
+            # (VisualGenerator carries no defaults of its own).
+            brief = await maker.generator.brief(instruction, source, "")
             out["chosen_item_title"] = chosen.item.title
             out["brief"] = brief.model_dump()
 

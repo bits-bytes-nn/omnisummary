@@ -5,12 +5,12 @@ Proactive AI/ML daily digest system that collects content from multiple sources,
 ## Features
 
 - **Multi-source collection**: Reddit (public .rss feed via proxy), YouTube, X/Twitter (via RSSHub), RSS/Substack, Web Search (Tavily)
-- **LLM-powered ranking**: Claude Opus 4.8, multi-axis evaluation with source-slot + per-origin diversity caps
+- **LLM-powered ranking**: Claude Opus 4.8, multi-axis evaluation with source-slot + per-origin diversity caps (a channel, subreddit, feed, X author, or web host — pinned items count toward the caps too)
 - **Editorial digest**: Claude Sonnet 5 Korean editorial with cross-day trend tracking
 - **Multi-channel delivery**: structured digest rendered per channel — Slack (Block Kit) and Threads (image root + flat reply chain), each independently toggleable
 - **Deep-research agent**: autonomous Slack-triggered Strands agent — rewrites the query, researches across web/papers/community/blogs, writes a persona-voiced cited report (same narrator as the digest), and posts to Slack (default) or Threads (on explicit request), attaching the source article's OG image
 - **AgentCore-centric**: digest state persisted in Bedrock AgentCore Memory; agent runs on AgentCore Runtime
-- **Operational excellence**: per-source health checks → SNS email alerts, structured JSON logging with correlation IDs, CloudWatch alarms, AWS WAF on the API
+- **Operational excellence**: per-source health checks → SNS email alerts (a total collector outage reports FAILED instead of an empty result; partial failures are tolerated), structured JSON logging with correlation IDs, CloudWatch alarms, AWS WAF on the API
 - **AWS deployment**: Lambda + EventBridge cron + Bedrock AgentCore (Runtime + Memory) + ECS (RSSHub)
 
 ## Architecture
@@ -75,7 +75,7 @@ pipeline:
   min_score: 0.6
   ranking_model: "anthropic.claude-opus-4-8"
   digest_model: "anthropic.claude-sonnet-5"
-  max_per_origin: 1   # cap items per channel/author/subreddit
+  max_per_origin: 1   # cap items per channel/author/subreddit/feed/web host
   source_slots:
     web: 1
     x: 1
@@ -269,7 +269,7 @@ Resources created:
 - **ECS Fargate**: RSSHub container
 - **S3**: trends + RSSHub sync data + Threads image hosting
 - **DynamoDB**: Slack event deduplication
-- **SQS**: async DLQ — digest/visual Lambdas run `retry_attempts=0` (a retry would double-post to Threads, which has no idempotency key); failures land here for replay
+- **SQS**: async DLQ — every Lambda runs `retry_attempts=0` (a retry would double-post to Threads, which has no idempotency key); the handlers re-raise on failure so the Errors alarm fires and digest/visual/slack failures land here for replay
 - **SNS**: alert topic (email)
 - **CloudWatch**: structured logs + 12 alarms (per-Lambda Errors ×4 + Timeout ×4, API 5xx, EmptyDigest, async DLQ, AgentErrors); all Lambdas have one-month log retention
 - **ECR**: Docker images (amd64 for Lambda, arm64 for AgentCore)
@@ -356,12 +356,18 @@ omnisummary/
 ## Testing & CI
 
 ```bash
-uv run python -m pytest tests/ -v        # unit + CDK assertion tests
-uv run black --check . && uv run ruff check .
+uv run python -m pytest tests/ -v        # unit + CDK assertion tests (hermetic: no network/AWS)
+uv run black --check . && uv run ruff check . && uv run mypy .
+uv lock --check                          # lockfile in sync with pyproject
 uv run python scripts/ci_synth.py        # offline CDK synth
 ```
 
-CI (`.github/workflows/ci.yml`): lint, format check, tests + coverage gate, CDK synth, Docker build.
+The suite is hermetic: `tests/conftest.py` clears the ambient secret/infra env vars with monkeypatch
+and disables the SSM client, so results don't depend on a developer's `.env` or AWS profile.
+
+CI (`.github/workflows/ci.yml`): lockfile check, ruff, black `--check`, `mypy .` (whole repo),
+tests + coverage gate (scope and `fail_under` live in `pyproject.toml` `[tool.coverage.*]`),
+offline CDK synth through the pinned CLI (`npm ci`), Docker build of both images.
 
 ## License
 

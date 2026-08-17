@@ -28,14 +28,21 @@ jobs:
           version: ${{ env.UV_VERSION }}
       - name: Set up Python
         run: uv python install 3.12
+      # Fail if uv.lock is out of date with pyproject.toml instead of silently resolving
+      # something newer than what was reviewed/tested.
+      - name: Check lockfile is current
+        run: uv lock --check
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --frozen --extra dev
       - name: Ruff lint
         run: uv run ruff check .
       - name: Black format check
         run: uv run black --check .
+      # Type-check the WHOLE repo (excludes live in [tool.mypy] exclude: references, tests,
+      # cdk.out, node_modules). The old explicit path list silently left new top-level modules
+      # and scripts/ unchecked.
       - name: Mypy type-check
-        run: uv run mypy shared/ collectors/ pipeline/ agent/ agent_runtime/ output/ lambda_handlers/ infrastructure/ main.py __main__.py research_cli.py
+        run: uv run mypy .
 
   test:
     name: Tests & coverage
@@ -49,14 +56,13 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --frozen --extra dev
+      # Coverage scope and the fail-under threshold live in pyproject ([tool.coverage.*]) so the
+      # gate can't be narrowed by editing a command line, and a new module is covered by default.
       - name: Run tests with coverage
         run: >
           uv run python -m pytest tests/
-          --cov=collectors --cov=pipeline --cov=shared --cov=main --cov=research_cli
-          --cov=lambda_handlers --cov=output --cov=agent --cov=agent_runtime
-          --cov-report=term-missing --cov-report=xml
-          --cov-fail-under=55
+          --cov --cov-report=term-missing --cov-report=xml
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4
@@ -76,13 +82,16 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --frozen --extra dev
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+      # `npm ci` only — the `|| npm install` fallback silently ignored a stale/absent
+      # package-lock.json and installed a different CDK CLI than the pinned one, defeating the
+      # point of exercising the CLI<->aws-cdk-lib schema handshake.
       - name: Install pinned CDK CLI
-        run: npm ci || npm install
+        run: npm ci
       # Run synth through the repo-pinned CDK CLI (not a bare app.synth()) so the CLI↔aws-cdk-lib
       # cloud-assembly schema handshake is exercised — the exact drift that broke a deploy in 2026-07.
       - name: Synthesize CDK via pinned CLI (offline)

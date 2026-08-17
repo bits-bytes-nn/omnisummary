@@ -32,7 +32,7 @@
         <mxCell id="bedrock1" value="Amazon Bedrock&#10;Opus 4.8 / Sonnet 5" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
           <mxGeometry x="450" y="380" width="68" height="68" as="geometry"/>
         </mxCell>
-        <mxCell id="memory" value="Bedrock AgentCore&#10;Memory (digest + trends)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
+        <mxCell id="memory" value="Bedrock AgentCore&#10;Memory (digest snapshot)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
           <mxGeometry x="600" y="380" width="68" height="68" as="geometry"/>
         </mxCell>
 
@@ -42,8 +42,12 @@
         <mxCell id="cw" value="CloudWatch&#10;logs + alarms" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#BC1356;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudwatch_2;" vertex="1" parent="1">
           <mxGeometry x="470" y="510" width="68" height="68" as="geometry"/>
         </mxCell>
-        <mxCell id="slack1" value="Slack channel&#10;(digest delivery)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4A154B;strokeColor=#2E0D2F;fontColor=#FFFFFF;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="slack1" value="Threads / Slack&#10;digest delivery (per config)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4A154B;strokeColor=#2E0D2F;fontColor=#FFFFFF;fontStyle=1;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="240" y="516" width="170" height="56" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="s3" value="S3 state&#10;trends.json · X/YouTube park files" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#60A337;gradientDirection=north;fillColor=#277116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
+          <mxGeometry x="170" y="640" width="68" height="68" as="geometry"/>
         </mxCell>
 
         <mxCell id="ssm" value="SSM Parameter Store&#10;scoped secrets" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.systems_manager;" vertex="1" parent="1">
@@ -93,6 +97,8 @@
         <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;" edge="1" parent="1" source="pipeline" target="slack1"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;dashed=1;" edge="1" parent="1" source="digestlambda" target="sns"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;dashed=1;" edge="1" parent="1" source="digestlambda" target="cw"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="e10" value="park files" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;dashed=1;fontSize=10;" edge="1" parent="1" source="collectors" target="s3"><mxGeometry relative="1" as="geometry"/></mxCell>
 
         <mxCell id="f1" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;" edge="1" parent="1" source="user" target="waf"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="f2" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;" edge="1" parent="1" source="waf" target="apigw"><mxGeometry relative="1" as="geometry"/></mxCell>

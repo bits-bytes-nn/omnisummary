@@ -6,6 +6,7 @@ from langchain_core.runnables import RunnableLambda
 from pydantic import ValidationError
 
 from agent.visuals import VisualGenerator
+from shared.config import PipelineConfig
 from shared.constants import LanguageModelId
 from shared.models import VisualBrief
 
@@ -22,10 +23,33 @@ class TestVisualBriefValidation:
             VisualBrief(title="t", caption="c", prompt="x" * 5000)
 
 
-def _generator() -> VisualGenerator:
+def _visual_kwargs(**overrides) -> dict:
+    """VisualGenerator takes all ten visual knobs explicitly (it keeps NO defaults of its own —
+    PipelineConfig is the single source of truth), so tests feed it the same config values
+    production does."""
+    cfg = PipelineConfig()
+    kwargs: dict = {
+        "image_model": cfg.image_model,
+        "image_sizes": cfg.image_sizes,
+        "source_max_tokens": cfg.visual_synopsis_source_max_tokens,
+        "context_max_tokens": cfg.visual_synopsis_context_max_tokens,
+        "caption_language": cfg.visual_caption_language,
+        "on_image_language": cfg.visual_on_image_language,
+        "moderation_softening_instruction": cfg.visual_moderation_softening_instruction,
+        "style_guidance": cfg.visual_synopsis_style_guidance,
+        "humor_guidance": cfg.visual_synopsis_humor_guidance,
+        "style_aesthetic": cfg.visual_synopsis_style_aesthetic,
+        "image_timeout_sec": cfg.visual_image_timeout_sec,
+        "image_max_retries": cfg.visual_image_max_retries,
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def _generator(**overrides) -> VisualGenerator:
     factory = MagicMock()
     factory.get_model.return_value.with_structured_output.return_value = MagicMock()
-    return VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET)
+    return VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET, **_visual_kwargs(**overrides))
 
 
 class TestBrief:
@@ -37,7 +61,7 @@ class TestBrief:
         out = VisualBrief(title="T", caption="C", prompt="draw X", orientation="landscape")
         factory.get_model.return_value.with_structured_output.return_value = RunnableLambda(lambda _: out)
         factory.truncate_to_tokens.side_effect = lambda text, _: text
-        gen = VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET)
+        gen = VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET, **_visual_kwargs())
         brief = await gen.brief("a 1-page slide", "source text", "context")
         assert brief == out
 
@@ -156,11 +180,7 @@ class TestVisualGenerator:
         assert not VisualGenerator._is_moderation_error(other)
 
     def test_render_uses_configured_model_and_orientation_size(self):
-        factory = MagicMock()
-        factory.get_model.return_value = MagicMock()
-        gen = VisualGenerator(
-            factory,
-            LanguageModelId.CLAUDE_V4_6_SONNET,
+        gen = _generator(
             image_model="custom-model",
             image_sizes={"square": "1024x1024", "landscape": "1536x1024", "portrait": "1024x1536"},
         )
@@ -170,8 +190,20 @@ class TestVisualGenerator:
         client = MagicMock()
         client.images.generate.return_value = resp
         with patch("agent.visuals.resolve_secret", return_value="key"):
-            with patch("openai.OpenAI", return_value=client):
+            with patch("openai.OpenAI", return_value=client) as openai_cls:
                 gen.render(VisualBrief(title="t", caption="c", prompt="draw", orientation="landscape"))
         kwargs = client.images.generate.call_args.kwargs
         assert kwargs["model"] == "custom-model"
         assert kwargs["size"] == "1536x1024"  # orientation -> mapped size
+        # The OpenAI client is bounded by config, not the SDK defaults (600s x 2 retries), which
+        # could outlive the visual Lambda's 15-min budget.
+        client_kwargs = openai_cls.call_args.kwargs
+        assert client_kwargs["timeout"] == PipelineConfig().visual_image_timeout_sec
+        assert client_kwargs["max_retries"] == PipelineConfig().visual_image_max_retries
+
+    def test_generator_requires_every_visual_knob(self):
+        # No duplicated defaults: a caller that forgets a knob fails loudly instead of silently
+        # getting a stale in-code copy (style_aesthetic had already drifted from config).
+        factory = MagicMock()
+        with pytest.raises(TypeError):
+            VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET, image_model="gpt-image-2")

@@ -99,6 +99,26 @@ warn_unused_ignores = false
 ignore_missing_imports = true
 exclude = "(references|tests|cdk\\.out|node_modules)/"
 
+[tool.coverage.run]
+# Measure EVERYTHING that isn't explicitly excluded. The CI gate used to enumerate packages
+# (--cov=collectors --cov=pipeline ...), so a newly added top-level module was silently outside
+# the gate; an omit list can only ever narrow deliberately.
+source = ["."]
+omit = [
+    "tests/*",
+    "cdk.out/*",
+    "node_modules/*",
+    "references/*",
+    ".venv/*",
+    "digest_state/*",
+    "logs/*",
+]
+
+[tool.coverage.report]
+# Set a few points BELOW the measured value (86% at the time of writing) so ordinary run-to-run
+# variance can't red the build, while a real coverage regression still does.
+fail_under = 80
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = "test_*.py"

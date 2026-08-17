@@ -16,7 +16,12 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Daily-visual Lambda, invoked asynchronously by the digest Lambda so visual
     generation (LLM editor + Tavily + gpt-image, ~1-2 min) stays off the digest's
     critical path. Loads today's ranked items from AgentCore Memory and posts one
-    fun visual to Slack. Best-effort: any failure is logged, never retried hard."""
+    fun visual to Slack/Threads.
+
+    Failures are logged and RE-RAISED so Lambda records an invocation error: that is what makes
+    the Errors alarm fire and puts the async invoke in the DLQ. Re-raising is safe because the
+    function is configured with retry_attempts=0 and the ThreadsPostLedger marker blocks a
+    duplicate post anyway."""
     set_correlation_id(getattr(context, "aws_request_id", "") or None)
     logger.info("Visual Lambda invoked")
     try:
@@ -24,7 +29,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         return {"statusCode": 200, "body": "Visual completed"}
     except Exception as e:
         logger.error("Visual Lambda failed: %s", e, exc_info=True)
-        return {"statusCode": 500, "body": f"Visual error: {e}"}
+        raise
 
 
 async def _run() -> None:

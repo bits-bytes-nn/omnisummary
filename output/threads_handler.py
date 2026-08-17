@@ -228,9 +228,7 @@ async def post_to_threads(
             posted = 0
             for i, post in enumerate(posts, start=1):
                 try:
-                    await _publish_reply_with_retry(
-                        client, user_id, token, post, root_id, indexing_deadline=deadline
-                    )
+                    await _publish_reply_with_retry(client, user_id, token, post, root_id, indexing_deadline=deadline)
                     posted += 1
                     logger.debug("Posted Threads reply %d/%d", i, len(posts))
                 except httpx.HTTPStatusError as e:

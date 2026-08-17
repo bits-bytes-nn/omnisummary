@@ -1,6 +1,8 @@
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from lambda_handlers import digest_handler
 from shared.models import HealthReport, SourceHealth, SourceStatus
 
@@ -12,11 +14,15 @@ class TestHandler:
         run.assert_called_once()
         assert result["statusCode"] == 200
 
-    def test_returns_500_on_exception(self):
+    def test_reraises_on_exception_so_alarms_and_dlq_fire(self):
+        # A returned 500 body counts as a SUCCESSFUL invocation to Lambda: neither the Errors
+        # alarm nor the async DLQ would ever see a broken digest. The failure must propagate
+        # (retry_attempts=0 means it can't re-post).
         with patch("lambda_handlers.digest_handler.asyncio.run", side_effect=RuntimeError("boom")):
-            result = digest_handler.handler({}, None)
-        assert result["statusCode"] == 500
-        assert "boom" in result["body"]
+            with patch("lambda_handlers.digest_handler.logger") as log:
+                with pytest.raises(RuntimeError, match="boom"):
+                    digest_handler.handler({}, None)
+        assert log.error.called  # still logged (with the correlation id set) before re-raising
 
 
 def _config() -> MagicMock:

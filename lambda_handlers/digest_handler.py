@@ -70,8 +70,11 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         asyncio.run(_run())
         return {"statusCode": 200, "body": "Digest pipeline completed"}
     except Exception as e:
+        # Log (with the correlation id) and then RE-RAISE: returning a 500 body made the
+        # invocation look successful to Lambda, so neither the Errors alarm nor the async DLQ
+        # ever fired on a broken digest. retry_attempts=0 means re-raising can't re-post.
         logger.error("Digest pipeline failed: %s", e, exc_info=True)
-        return {"statusCode": 500, "body": f"Pipeline error: {e}"}
+        raise
 
 
 async def _run() -> None:

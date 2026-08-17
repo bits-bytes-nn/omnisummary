@@ -133,7 +133,14 @@ def clean_rss_feed_name(feed_title: str, feed_url: str) -> str:
 
 
 def resolve_origin_key(item: CollectedItem) -> str | None:
-    """Per-origin diversity key (e.g. a single channel/subreddit/feed/account)."""
+    """Per-origin diversity key (e.g. a single channel/subreddit/feed/account/site).
+
+    Web-search items carry no channel/feed metadata, so their host stands in as the origin —
+    without it they returned None and slipped past `max_per_origin` entirely, letting one outlet
+    take several of the digest's slots. The host is normalized the same way the RSS feed-name
+    helper does it (`netloc` minus a `www.` prefix), deliberately NOT a registrable-domain /
+    public-suffix heuristic: no new dependency, and subdomains stay distinct origins.
+    """
     meta = item.metadata
     if item.source_type == SourceType.YOUTUBE:
         return meta.get("channel_url")
@@ -143,6 +150,8 @@ def resolve_origin_key(item: CollectedItem) -> str | None:
         return meta.get("feed_url")
     if item.source_type == SourceType.X:
         return item.author
+    if item.source_type == SourceType.WEB:
+        return urlparse(item.url).netloc.removeprefix("www.") or None
     return None
 
 

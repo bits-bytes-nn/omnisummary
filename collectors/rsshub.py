@@ -31,7 +31,17 @@ class RSSHubCollector(BaseCollector):
 
         await asyncio.to_thread(self._check_reachable)
 
-        coros = [self._collect_account(account.username, account.platform) for account in self.config.accounts]
+        # Bound the fan-out. Every account's feedparser.parse occupies a worker thread, and with
+        # 40+ accounts the default executor is oversubscribed: a feed's wait_for could expire
+        # while its parse had not even started, so healthy accounts looked like timeouts. The
+        # semaphore is created HERE (on the running loop, never at import/__init__) and is
+        # acquired BEFORE the per-account timeout, so the timeout measures the fetch itself
+        # rather than the queue wait. Worst case wall time is
+        # ceil(accounts / max_concurrency) * request_timeout, which stays inside the Lambda budget.
+        semaphore = asyncio.Semaphore(self.config.max_concurrency)
+        coros = [
+            self._collect_account(account.username, account.platform, semaphore) for account in self.config.accounts
+        ]
         labels = [f"{a.platform}/{a.username}" for a in self.config.accounts]
         results = await asyncio.gather(*coros, return_exceptions=True)
 
@@ -79,6 +89,11 @@ class RSSHubCollector(BaseCollector):
                 total,
                 ", ".join(empty_accounts[:10]) + ("..." if len(empty_accounts) > 10 else ""),
             )
+        # Every account failed (reachable service, but nothing could be parsed): that is an
+        # outage, not a quiet day, so surface it as FAILED instead of a silent empty result.
+        # Partial failures are tolerated — only an all-failed run raises.
+        if len(failed_accounts) == total:
+            raise RuntimeError(f"All {total} RSSHub feeds failed: {', '.join(failed_accounts[:10])}")
         return items
 
     def _check_reachable(self) -> None:
@@ -101,20 +116,23 @@ class RSSHubCollector(BaseCollector):
                     time.sleep(self.config.retry_backoff_sec * attempt)
         raise RuntimeError(f"RSSHub unreachable at {base}: {last_error}") from last_error
 
-    async def _collect_account(self, username: str, platform: str) -> list[CollectedItem]:
+    async def _collect_account(self, username: str, platform: str, semaphore: asyncio.Semaphore) -> list[CollectedItem]:
         feed_path = self._build_feed_path(username, platform)
         feed_url = f"{self.config.base_url.rstrip('/')}/{feed_path}"
-        logger.info("Collecting RSSHub feed: '%s'", feed_url)
         # feedparser.parse has no built-in timeout; bound it (as RSSCollector does) so one hung
         # feed host can't block its worker thread indefinitely and starve the digest's time budget.
-        try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(self._parse_feed, feed_url, username, platform),
-                timeout=self.config.request_timeout,
-            )
-        except TimeoutError:
-            logger.warning("RSSHub feed '%s' timed out after %ds, skipping", feed_url, self.config.request_timeout)
-            return []
+        async with semaphore:
+            logger.info("Collecting RSSHub feed: '%s'", feed_url)
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(self._parse_feed, feed_url, username, platform),
+                    timeout=self.config.request_timeout,
+                )
+            except TimeoutError as e:
+                # Counted as a failure (not an empty feed) so an all-accounts-hung RSSHub reports
+                # FAILED; one hung feed among many is still only logged and skipped by collect().
+                logger.warning("RSSHub feed '%s' timed out after %ds, skipping", feed_url, self.config.request_timeout)
+                raise RuntimeError(f"RSSHub feed '{feed_url}' timed out after {self.config.request_timeout}s") from e
 
     @staticmethod
     def _build_feed_path(username: str, platform: str) -> str:
@@ -131,8 +149,8 @@ class RSSHubCollector(BaseCollector):
     def _parse_feed(self, feed_url: str, username: str, platform: str) -> list[CollectedItem]:
         feed = feedparser.parse(feed_url)
         if feed.bozo and not feed.entries:
-            logger.warning("Failed to parse RSSHub feed '%s': %s", feed_url, feed.bozo_exception)
-            return []
+            # An unparseable feed is a failure, not an empty one — see collect()'s all-failed check.
+            raise RuntimeError(f"Failed to parse RSSHub feed '{feed_url}': {feed.bozo_exception}")
 
         cutoff = cutoff_datetime(self.config.lookback_hours, self.config.reference_time)
         source_type = self._detect_source_type(platform)

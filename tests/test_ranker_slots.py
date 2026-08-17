@@ -4,18 +4,28 @@ from shared.models import CollectedItem, RankedItem
 
 
 def _ranked(
-    score: float, source: SourceType, *, item_id: str, channel: str = "", author: str = "", sub: str = ""
+    score: float,
+    source: SourceType,
+    *,
+    item_id: str,
+    channel: str = "",
+    author: str = "",
+    sub: str = "",
+    feed: str = "",
+    url: str = "",
 ) -> RankedItem:
     metadata = {}
     if channel:
         metadata["channel_url"] = channel
     if sub:
         metadata["subreddit"] = sub
+    if feed:
+        metadata["feed_url"] = feed
     item = CollectedItem(
         item_id=item_id,
         source_type=source,
         title=f"title-{item_id}",
-        url=f"http://example.com/{item_id}",
+        url=url or f"http://example.com/{item_id}",
         author=author or None,
         metadata=metadata,
     )
@@ -92,21 +102,69 @@ class TestOriginCap:
         assert {r.item.item_id for r in selected} == {"v1", "v2"}
 
     def test_items_without_origin_not_capped(self):
+        # The no-origin guarantee still holds where an origin genuinely can't be resolved (here an
+        # RSS entry carrying no feed_url metadata): all three fill the guaranteed rss slots. Were
+        # they origin-bearing and sharing one origin, the cap would let only one through that pass
+        # and the lower-scored distinct-origin r4 would take the second slot instead.
         ranker = _ranker(
             top_n=3,
             min_score=0.5,
-            source_slots={"web": 1},
+            source_slots={"rss": 3},
+            source_cap_multiplier=1,
+            max_per_origin=1,
+        )
+        items = [
+            _ranked(0.95, SourceType.RSS, item_id="r1"),
+            _ranked(0.94, SourceType.RSS, item_id="r2"),
+            _ranked(0.93, SourceType.RSS, item_id="r3"),
+            _ranked(0.60, SourceType.RSS, item_id="r4", feed="https://other.example/feed"),
+        ]
+        selected = ranker._apply_source_slots(items, ranker.config.top_n)
+        assert {r.item.item_id for r in selected} == {"r1", "r2", "r3"}
+
+    def test_one_web_site_cannot_take_two_slots(self):
+        # Web items used to resolve to no origin at all, so a single outlet could occupy several
+        # digest slots; the host is now the origin key.
+        ranker = _ranker(
+            top_n=3,
+            min_score=0.5,
+            source_slots={"web": 1, "rss": 1},
             source_cap_multiplier=5,
             max_per_origin=1,
         )
-        # web items have no origin key -> not subject to origin cap
         items = [
-            _ranked(0.9, SourceType.WEB, item_id="w1"),
-            _ranked(0.88, SourceType.WEB, item_id="w2"),
-            _ranked(0.86, SourceType.WEB, item_id="w3"),
+            _ranked(0.95, SourceType.WEB, item_id="w1", url="https://site-a.example/1"),
+            _ranked(0.94, SourceType.WEB, item_id="w2", url="https://www.site-a.example/2"),  # same host
+            _ranked(0.93, SourceType.WEB, item_id="w3", url="https://site-b.example/3"),
+            _ranked(0.60, SourceType.RSS, item_id="r1", feed="https://f.example/feed"),
         ]
         selected = ranker._apply_source_slots(items, ranker.config.top_n)
-        assert len(selected) == 3
+        ids = {r.item.item_id for r in selected}
+        assert "w2" not in ids  # second story from site-a (www. normalized) is capped out
+        assert ids == {"w1", "w3", "r1"}
+
+
+class TestPinnedCaps:
+    def test_pinned_item_counts_toward_origin_and_source_caps(self):
+        # Pinned items are prepended by rank() and never entered this fill, so their origin went
+        # uncounted and a same-origin item landed alongside the pin.
+        ranker = _ranker(
+            top_n=3,
+            min_score=0.5,
+            source_slots={"web": 1, "rss": 1},
+            source_cap_multiplier=5,
+            max_per_origin=1,
+        )
+        pinned = [_ranked(0.99, SourceType.WEB, item_id="p1", url="https://site-a.example/pin")]
+        items = [
+            _ranked(0.95, SourceType.WEB, item_id="w1", url="https://site-a.example/1"),  # pin's host
+            _ranked(0.94, SourceType.WEB, item_id="w2", url="https://site-b.example/2"),
+            _ranked(0.93, SourceType.RSS, item_id="r1", feed="https://f.example/feed"),
+        ]
+        selected = ranker._apply_source_slots(items, ranker.config.top_n - len(pinned), None, pinned)
+        ids = {r.item.item_id for r in selected}
+        assert "w1" not in ids
+        assert ids == {"w2", "r1"}
 
     def test_fallback_fills_top_n_when_origins_exhausted(self):
         # Only one X author has items; without the relaxation pass the digest would stop

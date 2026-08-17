@@ -23,31 +23,27 @@ class VisualGenerator:
     brief (Claude via Bedrock) -> single image prompt -> gpt-image (OpenAI) -> PNG bytes.
     """
 
+    # Every knob is a REQUIRED keyword: duplicating the defaults here let them drift from
+    # PipelineConfig (the copy of `style_aesthetic` had already decayed to "clean modern style"
+    # while config shipped the real art-direction paragraph), and the drifted copy is what any
+    # partial-kwargs caller silently got. PipelineConfig is now the single source of truth.
     def __init__(
         self,
         llm_factory: BedrockLanguageModelFactory,
         brief_model: LanguageModelId,
         *,
-        image_model: str = "gpt-image-2",
-        image_sizes: dict[str, str] | None = None,
-        source_max_tokens: int = 2000,
-        context_max_tokens: int = 1500,
-        caption_language: str = "Korean",
-        on_image_language: str = "SHORT ENGLISH (the image model garbles Korean and other non-Latin glyphs)",
-        moderation_softening_instruction: str = (
-            "IMPORTANT: keep it clearly safe-for-work and good-natured. "
-            "Use brand mascots/logos and generic stylized characters rather than realistic "
-            "depictions of real named individuals; avoid anything that could read as defamatory."
-        ),
-        style_guidance: str = (
-            "Multi-panel: same characters and a single consistent, polished art style across panels; "
-            "each panel follows from the previous so the sequence reads in order without explanation."
-        ),
-        humor_guidance: str = (
-            "For comics/cartoons, aim for genuinely funny and shareable — internet-humor sensibility, "
-            "a clear setup-and-payoff, expressive characters — in a clean, modern, appealing illustration style."
-        ),
-        style_aesthetic: str = "clean modern style",
+        image_model: str,
+        image_sizes: dict[str, str],
+        source_max_tokens: int,
+        context_max_tokens: int,
+        caption_language: str,
+        on_image_language: str,
+        moderation_softening_instruction: str,
+        style_guidance: str,
+        humor_guidance: str,
+        style_aesthetic: str,
+        image_timeout_sec: int,
+        image_max_retries: int,
     ) -> None:
         self.llm_factory = llm_factory
         self.brief_model = brief_model
@@ -57,11 +53,9 @@ class VisualGenerator:
         self.llm = llm_factory.get_model(brief_model).with_structured_output(VisualBrief)
         self.image_model = image_model
         # orientation -> gpt-image size; the brief picks the orientation that fits the visual.
-        self.image_sizes = image_sizes or {
-            "square": "1024x1024",
-            "landscape": "1536x1024",
-            "portrait": "1024x1536",
-        }
+        self.image_sizes = image_sizes
+        self.image_timeout_sec = image_timeout_sec
+        self.image_max_retries = image_max_retries
         self.source_max_tokens = source_max_tokens
         self.context_max_tokens = context_max_tokens
         self.caption_language = caption_language
@@ -101,7 +95,10 @@ class VisualGenerator:
         if not brief.prompt:
             raise ValueError("Visual brief has no image prompt")
         size = self.image_sizes.get(brief.orientation) or next(iter(self.image_sizes.values()))
-        client = OpenAI(api_key=api_key)
+        # Bound the render: the SDK defaults (10-min timeout, 2 retries) can outlive the visual
+        # Lambda's 15-min budget, which shows up as a timeout with no image instead of a clean
+        # failure. Both bounds are config-driven (PipelineConfig.visual_image_*).
+        client = OpenAI(api_key=api_key, timeout=self.image_timeout_sec, max_retries=self.image_max_retries)
         response = client.images.generate(model=self.image_model, prompt=brief.prompt, size=size)
         b64 = response.data[0].b64_json if response.data else None
         if not b64:

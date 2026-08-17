@@ -76,7 +76,7 @@ AWS 아키텍처(두 경로 — 스케줄 다이제스트 / Slack 트리거 딥 
 | `reddit` | `subreddits`, `sort`, `limit` | 서브레딧·정렬·개수 |
 | `youtube` | `channels`, `max_videos_per_channel`, `resolve_timeout`, `transcript_timeout`, `transcript_language` | 채널·영상 수·자막 |
 | `web_search` | `trend_searches`, `max_results_per_query`, `max_refine_queries`, `min_search_score`, `refine_model` | Tavily 검색·관련도 필터 |
-| `rsshub` | `base_url`, `accounts`, `error_rate_threshold` | X 계정(로컬 컨테이너/S3) |
+| `rsshub` | `base_url`, `accounts`, `error_rate_threshold`, `max_concurrency` | X 계정(로컬 컨테이너/S3)·동시 fetch 상한 |
 
 ### 3.2 `pipeline`
 
@@ -89,7 +89,7 @@ AWS 아키텍처(두 경로 — 스케줄 다이제스트 / Slack 트리거 딥 
 | 트렌드 | `trend_retention_days`, `trend_cooling_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존/냉각/증거·active 캡·momentum 반감기 |
 | 전달 | `enable_slack_post`, `enable_threads_post` | 채널별 전달 on/off(각각 독립 토글; 코드 기본값은 Slack on / Threads off, 실제 상태는 배포 환경 설정에 따름) |
 | AGI 카운트다운 | `agi_countdown_date`(기본 `2029-01-01`), `agi_countdown_template` | 다이제스트 lead에 코드가 붙이는 "AGI N일 전" 인트로(D-day 전엔 카운트다운, §5.5 참조) |
-| 시각화 | `enable_daily_visual`, `image_model`, `image_sizes`, `visual_format_window`(기본 6), `visual_synopsis_source_max_tokens`, `visual_synopsis_context_max_tokens`, `visual_caption_emoji` | 데일리 비주얼 on/off·gpt-image 모델·orientation→size 딕셔너리·포맷 변주 추적 윈도(orientation+style)·입력 상한·캡션 이모지 |
+| 시각화 | `enable_daily_visual`, `image_model`, `image_sizes`, `visual_format_window`(기본 6), `visual_synopsis_source_max_tokens`, `visual_synopsis_context_max_tokens`, `visual_caption_emoji`, `visual_image_timeout_sec`(기본 300)·`visual_image_max_retries`(기본 0) | 데일리 비주얼 on/off·gpt-image 모델·orientation→size 딕셔너리·포맷 변주 추적 윈도(orientation+style)·입력 상한·캡션 이모지·gpt-image HTTP 호출 상한(SDK 기본 600s×2회는 비주얼 Lambda 15분 예산을 넘길 수 있어 config로 고정) |
 | 프롬프트 주입(하드코딩 대신 템플릿 변수) | `digest_language_rules`, `digest_voice_guidance`(Gruber 톤; 단일 냉소 프레임으로 기본 고정하지 말고 그날 사실이 정당화할 때만 각을 선택), `ranking_audience_description`, `digest_audience_description`, `visual_audience_description`, `visual_caption_language`, `visual_on_image_language`, `visual_synopsis_style_guidance`, `visual_synopsis_humor_guidance`, `visual_synopsis_style_aesthetic`, `visual_moderation_softening_instruction` | 언어/대상독자/톤·유머/미감/모더레이션 완화 문구 |
 
 캡션 언어와 이미지 내부 텍스트 언어를 분리(`visual_caption_language` vs `visual_on_image_language`)한 것은
@@ -158,10 +158,12 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 호출자가 라이브 수집으로 폴백. S3 키는 trends.json과 동일 규칙(`S3_PREFIX`의 부모 디렉터리 + 파일명).
 원래 RSSHub의 `_load_from_s3`였던 것을 이 공유 헬퍼로 일반화했습니다.
 - **신선도 봉투(staleness guard).** sync 스크립트는 `{generated_at, items}` 봉투(`dump_items_envelope`)로 적재하고, 로더는 봉투/레거시 bare-list를 모두 읽되 `generated_at`이 `S3_ITEMS_MAX_AGE_HOURS`(36h)보다 오래되면 **크게 경고**합니다. 로컬 cron이 조용히 멈춰 며칠 지난 항목을 "오늘 것"으로 재수집하는 사고를, 정상 실행처럼 보이지 않게 표면화(그래도 stale 데이터는 빈 것보다 낫다고 보고 반환). 손상된 JSON은 안전하게 `None` 폴백.
+- **빈 park 파일 처리.** 항목이 0건이고 **동시에** `S3_ITEMS_MAX_AGE_HOURS`보다 오래된 봉투는 '부재'로 취급해 `None`을 반환(→ 라이브 수집으로 폴백, 그쪽에서 전면 장애면 FAILED로 알림). 로컬 sync가 멈춰 빈 파일만 남은 상태를 '오늘은 조용했다'로 오해하지 않기 위함. 반대로 **신선한** 0건 봉투는 정말 조용한 sync 날이므로 그대로 반환해 거짓 FAILED 알림을 만들지 않음.
 
 **RSS** (`rss.py`)
 - **소스:** `config.collectors.rss.feeds`에 대해 feedparser 사용.
 - **메타데이터:** `feed_url`, `feed_title`.
+- **실패 신호:** 죽은 피드(HTTP 4xx/5xx, entries 없는 bozo)와 타임아웃은 빈 결과가 아니라 **예외**로 올림. `gather_collector_results(raise_if_all_failed=True)`가 **전 피드 실패일 때만** 승격시키므로, 일부 피드 장애는 로깅 후 건너뛰고(부분 허용) 전면 장애는 FAILED로 알림.
 
 **Reddit** (`reddit.py`)
 - **방식:** 공개 `.rss` 피드 사용 — `https://www.reddit.com/r/{sub}/{sort}/.rss`.
@@ -173,13 +175,15 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 
 **RSSHub** (`rsshub.py`)
 - **소스:** 로컬/컨테이너 RSSHub를 통한 X/Twitter 피드; S3에 사전 동기화된 스냅샷(`rsshub_items.json`, `scripts/sync_rsshub_to_s3.py`가 적재)을 공유 `load_items_from_s3`로 로드 가능.
-- **타임아웃:** 계정별 `feedparser.parse`를 `asyncio.wait_for(request_timeout)`로 감싸(RSS와 동일) 매달린 피드 호스트가 워커 스레드를 무한 점유하지 못하게 함.
-- **헬스:** 실패/빈 계정을 자체 추적하며 `error_rate_threshold` 보유.
+- **타임아웃:** 계정별 `feedparser.parse`를 `asyncio.wait_for(request_timeout)`로 감싸(RSS와 동일) 매달린 피드 호스트가 워커 스레드를 무한 점유하지 못하게 함. 타임아웃은 빈 결과가 아니라 **실패**로 집계.
+- **팬아웃 상한:** 계정 수가 40+라 모든 `parse`를 한 번에 띄우면 기본 asyncio executor가 과가입되어 아직 시작도 못 한 fetch의 `wait_for`가 먼저 만료됨. `collect()` 안에서(임포트/`__init__`이 아니라 **실행 중인 루프**에서) `asyncio.Semaphore(max_concurrency)`를 만들고 **타임아웃보다 먼저 획득**해, 타임아웃이 큐 대기가 아닌 실제 fetch를 재도록 함. 최악 벽시계 = `ceil(accounts / max_concurrency) × request_timeout`으로 Lambda 예산 안.
+- **헬스:** 실패/빈 계정을 자체 추적하며 `error_rate_threshold` 보유. 서비스 도달성(`_check_reachable`)이 OK인데 **모든 계정이 실패**하면 RuntimeError로 올려 FAILED로 알림(조용한 날과 구분). 일부 실패는 허용.
 
 **YouTube** (`youtube.py`)
 - **소스:** AWS에선 `scripts/sync_youtube_to_s3.py`가 거주용 IP로 자막까지 수집해 적재한 `youtube_items.json`을 공유 `load_items_from_s3`로 먼저 로드(강력 선호). 없으면 `YOUTUBE_API_KEY`로 라이브 수집, 키도 없으면 프록시 경유 RSS 폴백.
 - **채널 ID 해석:** Data API의 `forHandle` 룩업으로 @handle → canonical UC id를 해석(Lambda IP에서도 동작). 워치 페이지 HTML 스크레이프는 데이터센터 IP에서 차단되므로 API가 해석 실패할 때(예: @handle 없는 URL)만 폴백.
 - **자막 언어 폴백:** 설정 언어(`transcript_language`)를 먼저 시도하고, 없으면 영상에 존재하는 임의 자막(비영어 채널·자동 생성 트랙)으로 폴백 — 'en' 트랙 부재가 빈 본문으로 떨어지지 않게 함. 라이브(데이터센터 IP) fetch는 차단되어 본문이 description으로 떨어지므로 S3 park 파일이 선호됨.
+- **실패 신호:** API 거부(쿼터 소진·키 폐기 등 non-200), 깨진 JSON, 채널 ID 해석 실패는 빈 결과가 아니라 예외. 채널 하나의 실패는 허용되고, **모든 채널 실패**일 때만 FAILED로 승격.
 - **다양성:** `max_videos_per_channel=1`로 고빈도 채널이 후보 풀을 독점하지 못하게 함.
 
 **WebSearch** (`web_search.py`)
@@ -187,7 +191,7 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 - **날짜 파싱:** `_parse_date`는 Tavily의 date-only(`2026-07-10`)·tz 없는 ISO 문자열을 UTC로 정규화 — naive datetime을 tz-aware cutoff와 비교하다 TypeError로 결과가 조용히 드롭되지 않게 함.
 
 **동시 실행 & 헬스.**
-- `gather_collector_results()` — 수집기를 동시 실행하고 작업별 예외를 삼킴(로깅만, 평탄한 리스트 반환).
+- `gather_collector_results(tasks, labels, raise_if_all_failed=False)` — 작업을 동시 실행하고 작업별 예외를 로깅 후 건너뜀(평탄한 리스트 반환). `raise_if_all_failed=True`(RSS·YouTube·Reddit 수집기가 사용)면 **모든 작업이 실패했을 때만** RuntimeError를 올려 소스가 EMPTY가 아니라 FAILED로 분류되게 함 — 부분 실패 허용은 그대로.
 - `main.run_collectors_with_health()` — 헬스 리포팅용으로 동일 작업을 실행하되 `HealthReport`(§8 참조)를 반환.
   `gather_collector_results`는 다른 호출자들을 위해 그대로 유지.
 
@@ -213,7 +217,8 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
   - `max_per_origin`으로 하나의 origin 키(채널/작성자/서브레딧)가 차지하는 항목 수 제한 — 단일 채널
     독점에 대한 근본 해결책.
   - 최종 fallback: 다양성 캡 때문에 limit 미달이면 per-origin 캡만 완화(source 캡은 유지)해 origin이 적은 날에도 채움. grace 항목은 여기서 제외.
-  - origin은 `_resolve_origin_key`로 해석: YouTube→channel_url, Reddit→subreddit, RSS→feed_url, X→author.
+  - origin은 `resolve_origin_key`로 해석: YouTube→channel_url, Reddit→subreddit, RSS→feed_url, X→author, **Web→URL 호스트**(`urlparse().netloc`에서 `www.` 제거 — PSL/등록가능도메인 휴리스틱이 아니라 서브도메인은 별개 origin). 호스트 키가 없던 시절 web 항목은 origin 캡을 전부 우회해 한 매체가 여러 슬롯을 차지할 수 있었음.
+  - **핀 항목도 캡에 계수:** 핀은 `rank()`가 앞에 붙이고 이 fill을 통과하지 않아 origin/source가 계수되지 않았음 → 핀과 같은 origin 항목이 나란히 실렸다. 이제 카운터를 핀으로 **선(先)채운** 뒤 채우며, 캡 때문에 미달이면 마지막 완화 패스가 top_n까지 메움.
 
 ### 3. 트렌드 트래커 (`trend_tracker.py`)
 - **상태:** 구조화 `trends.json` 유지 — slug id, 증거 리스트.
@@ -238,9 +243,11 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 ### 5.1 데일리 비주얼 (`daily_visual.py`, `enable_daily_visual`)
 - **트리거:** 다이제스트 전송 후 실행.
 - **스토리 선택:** **헤드라인(`items[0]`)을 그림 — lead·이미지·텍스트가 한 스토리로 일치**하도록 강제. 에디터는 무엇을 그릴지(HOW)만 브리핑하며 off-headline 선택은 무시. 가벼운/뉴스성 주제를 deep-tech보다 선호. 적합하지 않으면 `skip`.
-- **포맷 변주 (`visual_formats.json`, `RollingLog`, `visual_format_window` 기본 6):** 최근 비주얼의 orientation+format을 추적하고, 가장 오래 안 쓴(least-recently-used) orientation을 에디터 프롬프트(`format_guidance`)와 생성 instruction에 주입해 연속된 비주얼이 모양/구성에서 실제로 달라지게 함. 게시 후 선택한 포맷을 기록. 상태 스토어 초기화 실패 시 히스토리 없이 degrade(크래시 없음).
+- **포맷 변주 (`visual_formats.json`, `RollingLog`, `visual_format_window` 기본 6):** 최근 비주얼의 orientation+format을 추적하고, 가장 오래 안 쓴(least-recently-used) orientation을 에디터 프롬프트(`format_guidance`)와 생성 instruction에 주입해 연속된 비주얼이 모양/구성에서 실제로 달라지게 함. LRU는 orientation별 **마지막 사용 인덱스**로 계산(윈도의 첫 항목을 그대로 집으면 나중에 다시 쓴 orientation—즉 가장 최근 것—을 고르게 됨). 게시 후 선택한 포맷을 `date`로 dedup해 기록(같은 날 재실행은 교체, 변주 윈도 잠식 방지). 상태 스토어 초기화 실패 시 히스토리 없이 degrade(크래시 없음).
 - **맥락 보강:** 에디터가 고른 리서치 스텝(papers/community/news)을 실행해 맥락 수집.
 - **생성:** `VisualGenerator`(시놉시스 → gpt-image)로 1컷 밈/패러디/일러스트 또는 N컷 카툰 생성 → Slack 게시(+`enable_threads_post` 시 Threads에도 게시).
+- **플랜 파싱 실패:** 에디터 JSON을 못 읽으면 `{"skip": True}`로 취급해 그대로 건너뜀 — 재질의(추가 LLM 호출)도, 일반 폴백 instruction으로 gpt-image를 태우는 낭비 렌더도 하지 않음.
+- **성공 판정:** `run()`은 **활성화된 채널 중 하나라도 게시 성공**하면 True(Slack만 보던 시절엔 `enable_slack_post: false` 구성에서 Threads가 성공해도 'skipped'로 기록됐다).
 - **best-effort:** OpenAI 키 없음/부적합/오류 시 조용히 건너뛰며 파이프라인을 막지 않음.
 
 ### 5.2 AGI 카운트다운 인트로 (`shared/formatting.py` `agi_countdown_intro`)
@@ -338,6 +345,10 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 **알림 (`_maybe_alert`, 다이제스트 Lambda):** 소스가 FAILED일 때만, 그리고 빈 항목 조기 반환 이전에
 `ALERT_SNS_TOPIC_ARN`으로 게시(아무것도 수집 못 해도 장애는 알림되도록).
 
+**핸들러 예외 전파.** 다이제스트·비주얼·Threads 갱신 핸들러는 실패를 로깅(correlation id 포함)한 뒤
+**다시 raise**한다. 500 body를 반환하면 Lambda 입장에선 정상 종료라 Errors 알람도, 비동기 DLQ도 절대
+울리지 않았다. 세 함수 모두 `retry_attempts=0`이라 재시도로 인한 이중 게시 위험은 없다.
+
 ## 9. 딥 리서치 에이전트(AgentCore Runtime 위의 Strands)
 
 Slack 멘션으로 트리거되는 **자율 딥 리서치** 에이전트. 자유형 토픽을 받아 열린 웹·학술 문헌·커뮤니티를 독립적으로
@@ -409,11 +420,13 @@ ingress 흐름:
 
 **생성 흐름 (`VisualGenerator.generate(instruction, source, context)`):**
 - **브리프:** `VisualSynopsisPrompt`로 Claude(Bedrock)가 단일 이미지 브리프 생성(JSON: title·caption·prompt).
-- **파싱:** `_parse_brief`(`extract_json_from_llm_output` + `VisualBrief.model_validate`).
+- **파싱:** Bedrock 구조화 출력(`with_structured_output(VisualBrief)`)으로 검증된 객체를 받음 — 손으로 JSON을 파싱하지 않는다(브리프의 `prompt`가 최대 4000자 자유 문구라 escape 안 된 인용부호/개행에 파서가 깨졌음).
 - **이미지:** 브리프의 `prompt`로 OpenAI `gpt-image` 호출(`b64_json`) → PNG 바이트. 블로킹 호출(30-120초)이라 `asyncio.to_thread`로 이벤트 루프에서 분리(동시 Slack/Threads I/O가 렌더 동안 멈추지 않게). orientation(square/landscape/portrait)은 브리프가 시각에 맞게 고르고, `image_sizes` 딕셔너리로 gpt-image size에 매핑. 모더레이션 차단(intermittent) 시 완화된 브리프로 1회 재생성.
 - **게시:** `DailyVisualMaker`가 `output.slack_handler.send_image_to_slack`(`files_upload_v2`)로 Slack에 업로드(+`enable_threads_post` 시 Threads에도).
 
 **기타.**
+- **기본값 중복 없음:** 열 개 넘는 비주얼 놉을 모두 **필수 키워드 인자**로 받는다. 예전엔 같은 기본값을 여기와 `PipelineConfig`에 두 벌 뒀다가 드리프트했고(`style_aesthetic`이 "clean modern style"로 썩음), 일부 인자만 넘기는 호출자가 그 낡은 사본을 조용히 받았다. 이제 `PipelineConfig`가 단일 원천이다.
+- **호출 상한:** OpenAI 클라이언트를 `visual_image_timeout_sec`/`visual_image_max_retries`로 생성(SDK 기본 600s×2회는 15분 Lambda를 넘길 수 있음).
 - OpenAI 키(`resolve_secret`로 env→SSM 해석)가 없으면 우아하게 비활성화.
 - 새 출력 형식은 코드 변경 없이 instruction 문구만 바꾸면 됨.
 
@@ -439,9 +452,15 @@ ingress 흐름:
   EventBridge 일일 다이제스트 크론(설정 기반 시/분) + EventBridge Threads 토큰 갱신 스케줄(`threads_token_refresh_days`,
   기본 ~50일 주기 — 60일 만료 안쪽에서 토큰을 갱신해 SSM에 재기록), AgentCore Runtime(설정 가능한
   `agentcore_image_ref`로 이미지 바인딩), 시크릿용 SSM 파라미터, SNS로 향하는 CloudWatch 알람(§12 참조).
-- **재시도/DLQ:** 다이제스트·비주얼 Lambda는 `retry_attempts=0` + SQS DLQ(`foundation.async_dlq`로 `on_failure`)로
-  구성. 파이프라인이 멱등이 아니고 **Threads는 idempotency key가 없어 재시도가 이중 게시**를 일으키므로,
-  자동 재시도 대신 실패 건을 DLQ에 남겨 점검/수동 리플레이. 모든 Lambda는 `log_retention=ONE_MONTH`.
+- **재시도/DLQ:** 다이제스트·비주얼·Slack 이벤트 Lambda는 `retry_attempts=0` + SQS DLQ(`foundation.async_dlq`로
+  `on_failure`)로, Threads 갱신 Lambda도 `retry_attempts=0`(명시값이 없으면 비동기 재시도 2회가 기본이라 갱신
+  엔드포인트를 재호출)으로 구성. 파이프라인이 멱등이 아니고 **Threads는 idempotency key가 없어 재시도가 이중
+  게시**를 일으키므로, 자동 재시도 대신 실패 건을 DLQ에 남겨 점검/수동 리플레이(핸들러는 §8처럼 raise해
+  Errors 알람이 뜨게 한다). 모든 Lambda는 `log_retention=ONE_MONTH`.
+- **RSSHub 보안그룹 ingress:** 다이제스트 Lambda SG → RSSHub Fargate 서비스 SG(`RSSHUB_PORT`) 인그레스를
+  **이 스택에서** `CfnSecurityGroupIngress`로 추가. 규칙이 없어 AWS에서 X 피드 fetch가 전부 타임아웃했다(실제
+  X 항목은 S3 park 파일이 공급). `connections.allow_from()`은 규칙을 foundation 쪽에 붙여 `fnd → app` 순환
+  참조가 되므로 명시적 인그레스 리소스를 쓴다. Lambda SG는 기본 전체 egress라 ingress만 빠진 반쪽이었다.
 - **시크릿 처리:** 평문 `String` SSM 파라미터(CloudFormation은 SecureString 생성 불가). 보완 통제는 스코프된
   IAM 읽기 정책이며, 더 민감한 자격증명은 Secrets Manager로 승격 권장. Threads 갱신 Lambda는 새 토큰을
   `SecureString`으로 SSM에 직접 기록.
@@ -457,13 +476,13 @@ ingress 흐름:
 - **Lambda별 Errors ×4 + Timeout ×4** — digest / slack-events / visual / threads-refresh 각각에 대해 예외(Errors)와
   타임아웃 임박(max Duration ≥ 설정 타임아웃의 90%; 타임아웃은 Errors로 집계되지 않으므로 별도) 알람.
 - **API 5xx** — API Gateway server-error.
-- **EmptyDigestAlarm** — EMF `OmniSummary/DigestItemsPublished`(실행당 1회) 25h 윈도, 0건 게시 또는 그날 미실행을 모두 포착(missing-data=BREACHING).
+- **EmptyDigestAlarm** — EMF `OmniSummary/DigestItemsPublished`(실행당 1회) **24h 윈도**(CloudWatch가 `evaluation_periods × period ≤ 86400s`로 제한하므로 그 이상은 배포 시 거부), 0건 게시 또는 그날 미실행을 모두 포착(missing-data=BREACHING).
 - **AsyncDLQAlarm** — async DLQ에 메시지가 쌓이면(실패한 digest/visual 실행 대기) 알림.
 - **AgentErrorsAlarm** — EMF `OmniSummary/AgentErrors`(AgentCore 런타임이 자체 예외를 잡아 에러 메시지로 응답하므로, 체계적 장애가 EMF 메트릭으로만 보임).
 
 ## 13. 테스트 & CI/CD
 
-**테스트 (`tests/`, pytest, `asyncio_mode=auto`).** 580+ 테스트, 커버리지 게이트 55%. 커버 영역:
+**테스트 (`tests/`, pytest, `asyncio_mode=auto`).** 620+ 테스트, 커버리지 게이트 80%(측정 ~86%). `tests/conftest.py`의 autouse 픽스처가 앰비언트 시크릿/인프라 env를 monkeypatch로 비우고 SSM 클라이언트를 막아 **hermetic**하게 만든다(개발자 `.env`/AWS 프로파일에 결과가 좌우되지 않고, 실 SSM 왕복으로 낭비하던 수십 초도 사라짐). 커버 영역:
 - 수집기(모킹한 HTTP/feedparser).
 - Slack 이벤트 핸들러(서명 검증/중복 제거 + **형제 패키지 import 금지 가드** `test_handler_has_no_sibling_package_imports`).
 - 집계기, 랭커 파싱 + 슬롯/origin-cap 로직.
@@ -476,9 +495,10 @@ ingress 흐름:
 - CDK assertion(`aws-cdk.assertions`로 두 스택 검증).
 
 **CI (`.github/workflows/ci.yml`).**
-- lint(ruff), 포맷 체크(black `--check`), mypy 타입 체크.
-- 테스트 + 커버리지 게이트.
-- **레포 고정 CDK CLI로** 오프라인 `cdk synth`(Node 22 + `npm ci`로 `package.json`에 핀된 `aws-cdk` 설치 → `npx cdk synth -a "uv run python scripts/ci_synth.py"`). 인프로세스 `app.synth()`가 아닌 실제 CLI를 태워 **CLI↔`aws-cdk-lib` cloud-assembly 스키마 핸드셰이크**를 검증(글로벌 CLI가 라이브러리보다 뒤처져 배포가 스키마 미스매치로 깨지던 클래스를 PR에서 잡음). `ci_synth`는 `vpc_id`를 비우고 env-agnostic 계정을 써 자격증명 없이 완전 오프라인.
+- **락파일 고정:** `uv lock --check` + 모든 잡의 `uv sync --frozen`으로, 리뷰/테스트된 것과 다른 버전이 조용히 해석되지 않게 함.
+- lint(ruff), 포맷 체크(black `--check`), **`mypy .`**(경로 열거 대신 레포 전체 — 제외는 `[tool.mypy] exclude`. 예전 열거식은 새 최상위 모듈·`scripts/`를 조용히 게이트 밖에 뒀음).
+- 테스트 + 커버리지 게이트: 범위와 `fail_under`가 `pyproject.toml`(`[tool.coverage.*]`)에 있어 커맨드라인 수정으로 좁혀지지 않음.
+- **레포 고정 CDK CLI로** 오프라인 `cdk synth`(Node 22 + `npm ci`로 `package.json`에 핀된 `aws-cdk` 설치 — 예전 `npm ci || npm install` 폴백은 lock 부재/불일치를 삼키고 다른 CLI를 깔아 이 잡의 의미를 없앴음 → `npx cdk synth -a "uv run python scripts/ci_synth.py"`). 인프로세스 `app.synth()`가 아닌 실제 CLI를 태워 **CLI↔`aws-cdk-lib` cloud-assembly 스키마 핸드셰이크**를 검증(글로벌 CLI가 라이브러리보다 뒤처져 배포가 스키마 미스매치로 깨지던 클래스를 PR에서 잡음). `ci_synth`는 `vpc_id`를 비우고 env-agnostic 계정을 써 자격증명 없이 완전 오프라인.
 - Docker 빌드(digest amd64 + agentcore arm64, `--provenance=false`).
 
 ## 14. 주요 명령어
@@ -488,7 +508,7 @@ uv run python main.py --dry-run --sources rss reddit   # 부분 dry run
 uv run python main.py                                   # 전체 파이프라인 + 전달(현재 설정: Threads)
 uv run python -m pytest tests/ -v                       # 테스트
 uv run black --check . && uv run ruff check .           # lint/format
-uv run mypy shared/ collectors/ pipeline/ agent/ agent_runtime/ output/ lambda_handlers/ infrastructure/ main.py __main__.py research_cli.py
+uv run mypy .                                           # 레포 전체 타입 체크
 uv run python scripts/ci_synth.py                       # 오프라인 CDK synth(인프로세스)
 # 배포: 두 이미지(digest amd64 + agentcore arm64)를 먼저 빌드/푸시하고, 푸시된 sha256 digest를
 # DIGEST_IMAGE_REF로 넘겨 배포(태그 문자열이 안 바뀌면 CFN이 Lambda를 재배포 안 함). CDK CLI는

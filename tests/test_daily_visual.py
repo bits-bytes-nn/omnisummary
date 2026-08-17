@@ -364,6 +364,50 @@ class TestDailyVisualMaker:
         assert maker.threads_ledger.already_posted(date(2026, 6, 10))  # marked as posted
 
     @pytest.mark.asyncio
+    async def test_threads_only_success_is_reported_as_posted(self):
+        # With Slack delivery off (the shipped config) the run returned False even though Threads
+        # published, so the Lambda logged "skipped" for every successful day.
+        from datetime import date
+
+        from shared.models import DigestContent, DigestItem
+
+        maker = _maker()
+        maker.config.pipeline.enable_slack_post = False
+        maker.config.pipeline.enable_threads_post = True
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "x"}
+        content = DigestContent(
+            lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
+        )
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = AsyncMock(
+                    return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw"))
+                )
+                with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=True)):
+                    result = await maker.run(_items(), content, today=date(2026, 6, 10))
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_format_log_deduped_per_day(self):
+        # A same-day re-run must REPLACE its format entry, not push a duplicate that crowds the
+        # variation window (same convention as the recent-leads log).
+        from datetime import date
+
+        maker = _maker()
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "x", "format": "poster"}
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = AsyncMock(
+                    return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw"))
+                )
+                with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
+                    await maker.run(_items(), today=date(2026, 6, 10))
+                    await maker.run(_items(), today=date(2026, 6, 10))
+        entries = maker.format_log.entries()
+        assert len(entries) == 1
+        assert entries[0]["date"] == "2026-06-10"
+
+    @pytest.mark.asyncio
     async def test_gather_context_dispatches_by_source(self):
         # The editor agentically picks a source per research step; _gather_context routes
         # each to the matching backend (papers -> Semantic Scholar, community/news -> Tavily).
@@ -433,13 +477,27 @@ class TestDailyVisualMaker:
         assert plan == {"skip": False, "item_number": 1}
 
     @pytest.mark.asyncio
-    async def test_pick_story_malformed_returns_empty(self):
+    async def test_pick_story_malformed_plan_becomes_skip(self):
+        # An unparseable plan must read as a SKIP: returning {} let run() fall through to a
+        # generic instruction and pay for a full gpt-image render off a plan nobody could read.
         from langchain_core.messages import AIMessage
         from langchain_core.runnables import RunnableLambda
 
         maker = _maker()
         maker.llm = RunnableLambda(lambda _: AIMessage(content="no json here at all"))
-        assert await maker._pick_story(_items()) == {}
+        assert await maker._pick_story(_items()) == {"skip": True}
+
+    @pytest.mark.asyncio
+    async def test_unparseable_plan_renders_nothing(self):
+        from langchain_core.messages import AIMessage
+        from langchain_core.runnables import RunnableLambda
+
+        maker = _maker()
+        maker.llm = RunnableLambda(lambda _: AIMessage(content="not json"))
+        maker.generator.generate = AsyncMock()
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            assert await maker.run(_items()) is False
+        maker.generator.generate.assert_not_awaited()  # no wasted render, and no retry LLM call
 
 
 class TestFormatRotation:
@@ -454,6 +512,19 @@ class TestFormatRotation:
         # All three used; entries are oldest-first, so the first (portrait) is least-recent.
         recent = [{"orientation": "portrait"}, {"orientation": "square"}, {"orientation": "landscape"}]
         assert maker._least_recent_orientation(recent) == "portrait"
+
+    def test_least_recent_orientation_uses_last_use_not_first_appearance(self):
+        # Regression: scanning the window and returning its FIRST entry picked the orientation
+        # that appeared earliest — which is the MOST recently used one when it recurs later
+        # (square here was yesterday's shape). LRU must compare each orientation's LAST use.
+        maker = _maker()
+        recent = [
+            {"orientation": "square"},
+            {"orientation": "landscape"},
+            {"orientation": "portrait"},
+            {"orientation": "square"},
+        ]
+        assert maker._least_recent_orientation(recent) == "landscape"
 
     def test_least_recent_orientation_empty_history(self):
         maker = _maker()

@@ -1,5 +1,6 @@
 from shared import format_collected_item
 from shared.constants import SourceType
+from shared.formatting import resolve_origin_key
 from shared.models import CollectedItem
 
 
@@ -45,3 +46,40 @@ class TestFormatCollectedItem:
         out = format_collected_item(_item("word " * 500), index=1, max_tokens=10, fields=[], truncate=_truncate)
         body = out.split("Text:\n", 1)[1]
         assert len(body.split()) <= 10
+
+
+def _sourced(source: SourceType, *, url: str = "http://example.com/a", **fields) -> CollectedItem:
+    return CollectedItem(
+        item_id="id",
+        source_type=source,
+        title="t",
+        url=url,
+        author=fields.pop("author", None),
+        metadata=fields,
+    )
+
+
+class TestResolveOriginKey:
+    def test_web_origin_is_the_host(self):
+        # Web items carry no channel/feed metadata; without a host key they slipped past the
+        # per-origin diversity cap entirely.
+        assert resolve_origin_key(_sourced(SourceType.WEB, url="https://techcrunch.com/a/b")) == "techcrunch.com"
+
+    def test_web_origin_drops_www_prefix(self):
+        # Same normalization the RSS feed-name helper uses, so www/non-www are ONE origin.
+        assert resolve_origin_key(_sourced(SourceType.WEB, url="https://www.wired.com/x")) == "wired.com"
+
+    def test_web_subdomains_stay_distinct(self):
+        # Deliberately NOT a registrable-domain (public-suffix) heuristic.
+        assert resolve_origin_key(_sourced(SourceType.WEB, url="https://ai.googleblog.com/p")) == "ai.googleblog.com"
+        assert resolve_origin_key(_sourced(SourceType.WEB, url="https://blog.google/p")) == "blog.google"
+
+    def test_web_origin_none_without_host(self):
+        assert resolve_origin_key(_sourced(SourceType.WEB, url="notaurl")) is None
+
+    def test_other_sources_unchanged(self):
+        assert resolve_origin_key(_sourced(SourceType.YOUTUBE, channel_url="c")) == "c"
+        assert resolve_origin_key(_sourced(SourceType.REDDIT, subreddit="LocalLLaMA")) == "LocalLLaMA"
+        assert resolve_origin_key(_sourced(SourceType.RSS, feed_url="f")) == "f"
+        assert resolve_origin_key(_sourced(SourceType.X, author="karpathy")) == "karpathy"
+        assert resolve_origin_key(_sourced(SourceType.RSS)) is None  # no feed metadata -> no origin

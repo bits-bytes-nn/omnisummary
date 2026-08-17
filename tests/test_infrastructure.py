@@ -5,6 +5,7 @@ from aws_cdk.assertions import Match, Template
 from infrastructure.application_stack import OmniSummaryApplicationStack
 from infrastructure.foundation_stack import OmniSummaryFoundationStack
 from shared import Config
+from shared.constants import RSSHUB_PORT
 
 
 @pytest.fixture(scope="module")
@@ -151,6 +152,29 @@ class TestApplicationStack:
             "ALERT_SNS_TOPIC_ARN" in v["Properties"].get("Environment", {}).get("Variables", {}) for v in funcs.values()
         )
         assert has_env
+
+    def test_rsshub_ingress_from_digest_lambda(self, templates):
+        # Without an ingress rule on the RSSHub service SG the digest Lambda cannot reach the
+        # Fargate RSSHub service at all (every X feed fetch times out).
+        _, app = templates
+        app.has_resource_properties(
+            "AWS::EC2::SecurityGroupIngress",
+            {
+                "IpProtocol": "tcp",
+                "FromPort": RSSHUB_PORT,
+                "ToPort": RSSHUB_PORT,
+                "GroupId": Match.any_value(),
+                "SourceSecurityGroupId": Match.any_value(),
+            },
+        )
+
+    def test_every_lambda_disables_async_retries(self, templates):
+        # The handlers re-raise so Errors alarms / the DLQ fire; retries must stay off on ALL of
+        # them (a retried digest re-posts, a retried refresh re-calls the Threads endpoint).
+        _, app = templates
+        configs = app.find_resources("AWS::Lambda::EventInvokeConfig")
+        assert len(configs) == 4  # digest, visual, slack-events, threads-refresh
+        assert all(v["Properties"]["MaximumRetryAttempts"] == 0 for v in configs.values())
 
     def test_api_gateway_throttling(self, templates):
         _, app = templates

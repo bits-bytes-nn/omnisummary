@@ -33,6 +33,16 @@ def _feed(entries, *, bozo=False, status=200, title="Example"):
     )
 
 
+def _parse_by_url(mapping):
+    """feedparser stand-in keyed by URL — the feeds are parsed in worker threads, so a plain
+    side_effect LIST would be consumed in nondeterministic order."""
+
+    def _parse(url):
+        return mapping[url]
+
+    return _parse
+
+
 def _entry():
     return _Feed(
         title="Post",
@@ -55,22 +65,67 @@ class TestRSSCollect:
         assert items[0].metadata["feed_url"] == "https://example.com/feed"
 
     @pytest.mark.asyncio
-    async def test_http_error_returns_empty_and_logs(self):
-        c = RSSCollector(_config())
-        with patch("collectors.rss.feedparser.parse", return_value=_feed([], status=404)):
-            with patch("collectors.rss.logger") as log:
+    async def test_dead_feed_among_healthy_ones_is_skipped_and_logged(self):
+        # Partial tolerance: one dead feed loses only its own items, and is logged (not silent).
+        c = RSSCollector(_config(feeds=["https://dead.example/feed", "https://ok.example/feed"]))
+        parse = _parse_by_url(
+            {
+                "https://dead.example/feed": _feed([], status=404),
+                "https://ok.example/feed": _feed([_entry()]),
+            }
+        )
+        with patch("collectors.rss.feedparser.parse", side_effect=parse):
+            with patch("collectors.base.logger") as log:
                 items = await c.collect()
-        assert items == []
+        assert len(items) == 1
         assert log.warning.called  # dead feed must be logged, not silently swallowed
 
     @pytest.mark.asyncio
-    async def test_bozo_without_entries_returns_empty_and_logs(self):
-        c = RSSCollector(_config())
+    async def test_all_feeds_http_error_raises(self):
+        # Total outage (every feed 4xx/5xx) must be FAILED, not a silently empty digest.
+        c = RSSCollector(_config(feeds=["https://a.example/feed", "https://b.example/feed"]))
+        with patch("collectors.rss.feedparser.parse", return_value=_feed([], status=503)):
+            with pytest.raises(RuntimeError, match="Failed RSS feed"):
+                await c.collect()
+
+    @pytest.mark.asyncio
+    async def test_all_feeds_unparseable_raises(self):
+        c = RSSCollector(_config(feeds=["https://a.example/feed", "https://b.example/feed"]))
         with patch("collectors.rss.feedparser.parse", return_value=_feed([], bozo=True, status=200)):
-            with patch("collectors.rss.logger") as log:
+            with pytest.raises(RuntimeError, match="Failed RSS feed"):
+                await c.collect()
+
+    @pytest.mark.asyncio
+    async def test_all_feeds_timing_out_raises(self):
+        # A hung feed counts as a failure, so an all-hung run reports FAILED too.
+        c = RSSCollector(_config(feeds=["https://a.example/feed", "https://b.example/feed"]))
+
+        async def _timeout(awaitable, timeout):
+            awaitable.close()  # avoid an un-awaited to_thread coroutine warning
+            raise TimeoutError
+
+        with patch("collectors.rss.asyncio.wait_for", side_effect=_timeout):
+            with pytest.raises(RuntimeError, match="timed out"):
+                await c.collect()
+
+    @pytest.mark.asyncio
+    async def test_one_hung_feed_among_many_is_skipped(self):
+        c = RSSCollector(_config(feeds=["https://hang.example/feed", "https://ok.example/feed"]))
+        calls: list[str] = []
+
+        async def _timeout_first(awaitable, timeout):
+            # wait_for is called once per feed, in feed order.
+            if len(calls) == 0:
+                calls.append("hang")
+                awaitable.close()
+                raise TimeoutError
+            calls.append("ok")
+            return await awaitable
+
+        with patch("collectors.rss.feedparser.parse", return_value=_feed([_entry()])):
+            with patch("collectors.rss.asyncio.wait_for", side_effect=_timeout_first):
                 items = await c.collect()
-        assert items == []
-        assert log.warning.called
+        assert len(items) == 1  # the healthy feed still delivered
 
     @pytest.mark.asyncio
     async def test_bozo_with_entries_still_parses(self):

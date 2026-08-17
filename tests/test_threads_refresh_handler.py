@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from lambda_handlers import threads_refresh_handler as h
 
 
@@ -29,8 +31,23 @@ class TestThreadsRefreshHandler:
         assert put["Value"] == "NEW_TOKEN"
         assert put["Type"] == "SecureString" and put["Overwrite"] is True
 
-    def test_refresh_http_failure_returns_500(self):
+    def test_refresh_http_failure_reraises(self):
+        # A silent 500 body left the token un-refreshed with no alarm until Threads delivery
+        # broke 60 days later; the failure must reach Lambda's Errors metric.
         with patch.object(h, "resolve_secret", return_value="OLD"):
             with patch.object(h.httpx, "get", side_effect=RuntimeError("network")):
-                result = h.handler({}, None)
-        assert result["statusCode"] == 500 and result["body"] == "refresh failed"
+                with patch.object(h, "logger") as log:
+                    with pytest.raises(RuntimeError, match="network"):
+                        h.handler({}, None)
+        assert log.error.called
+
+    def test_ssm_write_failure_reraises(self):
+        resp = MagicMock()
+        resp.json.return_value = {"access_token": "NEW"}
+        ssm = MagicMock()
+        ssm.put_parameter.side_effect = RuntimeError("denied")
+        with patch.object(h, "resolve_secret", return_value="OLD"):
+            with patch.object(h.httpx, "get", return_value=resp):
+                with patch.object(h.boto3, "client", return_value=ssm):
+                    with pytest.raises(RuntimeError, match="denied"):
+                        h.handler({}, None)

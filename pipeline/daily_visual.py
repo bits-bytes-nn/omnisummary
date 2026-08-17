@@ -61,6 +61,8 @@ class DailyVisualMaker:
             style_guidance=config.pipeline.visual_synopsis_style_guidance,
             humor_guidance=config.pipeline.visual_synopsis_humor_guidance,
             style_aesthetic=config.pipeline.visual_synopsis_style_aesthetic,
+            image_timeout_sec=config.pipeline.visual_image_timeout_sec,
+            image_max_retries=config.pipeline.visual_image_max_retries,
         )
 
     async def run(
@@ -129,23 +131,32 @@ class DailyVisualMaker:
             # posts the lead + per-story replies (text-only). Slack image upload is skipped below.
             logger.warning("Daily visual generation failed; posting Threads text-only", exc_info=True)
 
+        post_date = today or datetime.now(ZoneInfo(self.config.aws.timezone)).date()
         slack_ok = await self._post(image_bytes, brief)
-        await self._post_threads(image_bytes, brief, content, today=today, force_republish=force_republish)
+        threads_ok = await self._post_threads(
+            image_bytes, brief, content, today=post_date, force_republish=force_republish
+        )
         # Record the chosen format so tomorrow can deliberately differ. Best-effort. Only when a
-        # brief was actually rendered — a text-only fallback has no format to record.
+        # brief was actually rendered — a text-only fallback has no format to record. Deduped by
+        # date so a same-day re-run replaces its entry instead of pushing a duplicate that crowds
+        # the variation window (same convention as the recent-leads log).
         if brief and self.format_log:
             try:
                 self.format_log.append(
                     {
+                        "date": post_date.isoformat(),
                         "orientation": brief.orientation,
                         "format": plan.get("format", ""),
                         "multi_panel": bool(plan.get("multi_panel", False)),
                         "use_character": use_character,
-                    }
+                    },
+                    dedup_key="date",
                 )
             except Exception:
                 logger.warning("Failed to record visual format history (non-fatal)", exc_info=True)
-        return slack_ok
+        # Success = at least one enabled channel published. Returning only slack_ok reported
+        # "skipped" for every Threads-only run (the current config), hiding real outcomes.
+        return slack_ok or threads_ok
 
     def _least_recent_orientation(self, recent_formats: list[dict]) -> str:
         """Return an orientation not used in the recent window (least-recently-used), so the
@@ -157,11 +168,12 @@ class DailyVisualMaker:
         unused = [o for o in all_orientations if o not in used]
         if unused:
             return unused[0]
-        # All used recently → pick the one used longest ago (earliest in the window).
-        for entry in used:
-            if entry in all_orientations:
-                return entry
-        return all_orientations[0]
+        # All used recently → pick the one whose LAST use is oldest. Scanning the window in order
+        # and returning its first entry picked the orientation that appeared earliest, which is the
+        # MOST recently used one whenever it recurs later in the window (e.g. square, landscape,
+        # portrait, square → it answered 'square', yesterday's shape).
+        last_use = {o: i for i, o in enumerate(used) if o in all_orientations}
+        return min(last_use, key=lambda o: last_use[o]) if last_use else all_orientations[0]
 
     @staticmethod
     def _recent_orientations(recent_formats: list[dict]) -> str:
@@ -278,8 +290,11 @@ class DailyVisualMaker:
         try:
             return parse_json_from_llm_output(raw)
         except json.JSONDecodeError:
-            logger.warning("Daily visual editor returned unparseable JSON", exc_info=True)
-            return {}
+            # Treat an unparseable plan as a skip. Returning {} let run() fall through with a
+            # generic fallback instruction and pay for a full gpt-image render off a plan nobody
+            # could read; skipping costs nothing extra (no second LLM call either).
+            logger.warning("Daily visual editor returned unparseable JSON; skipping", exc_info=True)
+            return {"skip": True}
 
     async def _gather_context(self, research: list[dict]) -> str:
         """Run the editor's chosen research steps and concatenate the findings. Each step

@@ -124,15 +124,17 @@ class YouTubeCollector(BaseCollector):
                 retry_on=(httpx.HTTPError,),
                 description=f"YouTube playlistItems for '{channel_url}'",
             )
+            # Raise (not return []) on an API rejection or a malformed body: these are FAILURES,
+            # and gather_collector_results only escalates when EVERY channel failed — so a quota
+            # exhaustion / revoked key across all channels reports FAILED instead of a silent EMPTY,
+            # while one bad channel among many is still tolerated.
             if response.status_code != 200:
-                logger.warning("YouTube API error for '%s': %d", channel_url, response.status_code)
-                return []
+                raise RuntimeError(f"YouTube playlistItems for '{channel_url}' returned {response.status_code}")
 
             try:
                 data = response.json()
-            except ValueError:
-                logger.warning("YouTube playlistItems for '%s' returned malformed JSON", channel_url, exc_info=True)
-                return []
+            except ValueError as e:
+                raise RuntimeError(f"YouTube playlistItems for '{channel_url}' returned malformed JSON") from e
             video_ids = []
             for item in data.get("items", []):
                 snippet = item.get("snippet", {})
@@ -158,14 +160,12 @@ class YouTubeCollector(BaseCollector):
                 description=f"YouTube videos details for '{channel_url}'",
             )
             if details_resp.status_code != 200:
-                logger.warning("YouTube API error for '%s': %d", channel_url, details_resp.status_code)
-                return []
+                raise RuntimeError(f"YouTube videos details for '{channel_url}' returned {details_resp.status_code}")
 
             try:
                 details_data = details_resp.json()
-            except ValueError:
-                logger.warning("YouTube videos details for '%s' returned malformed JSON", channel_url, exc_info=True)
-                return []
+            except ValueError as e:
+                raise RuntimeError(f"YouTube videos details for '{channel_url}' returned malformed JSON") from e
 
             # Build window-filtered records WITHOUT transcripts first; the playlist isn't reliably
             # newest-first, so collect every in-window video, then keep the latest N and fetch
@@ -217,8 +217,9 @@ class YouTubeCollector(BaseCollector):
     async def _collect_via_rss(self, channel_url: str) -> list[CollectedItem]:
         channel_id = await self._resolve_channel_id_async(channel_url)
         if not channel_id:
-            logger.warning("Could not resolve channel ID for '%s'", channel_url)
-            return []
+            # Same reasoning as the API path: an unresolvable channel is a failure, so an
+            # all-channels-unresolvable run (the RSS-fallback outage) reports FAILED.
+            raise RuntimeError(f"Could not resolve channel ID for '{channel_url}'")
 
         rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
         feed = await asyncio.to_thread(feedparser.parse, get_proxied_url(rss_url))

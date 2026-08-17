@@ -139,6 +139,25 @@ class TestRankEndToEnd:
         assert "y_weak" not in ids  # source already covered by the pin → no grace filler
 
     @pytest.mark.asyncio
+    async def test_pinned_web_item_still_fills_to_top_n_via_relaxed_pass(self):
+        # Counting the pin's origin must not starve the digest: when every remaining candidate
+        # shares the pin's host, the relaxed final pass (per-origin cap off, source cap kept)
+        # still fills to top_n.
+        items = _items([("p", SourceType.WEB), ("w1", SourceType.WEB), ("w2", SourceType.WEB)])
+        items[0].metadata = {"pinned": True}
+        ranker = _ranker(
+            _rankings({"p": 0.9, "w1": 0.85, "w2": 0.8}),
+            top_n=3,
+            min_score=0.6,
+            source_slots={"web": 1},
+            source_cap_multiplier=5,
+            max_per_origin=1,
+        )
+        result = await ranker.rank(items)
+        assert len(result) == 3
+        assert result[0].item.item_id == "p"  # pinned still leads
+
+    @pytest.mark.asyncio
     async def test_results_sorted_by_score_desc(self):
         items = _items([("a", SourceType.RSS), ("b", SourceType.REDDIT), ("c", SourceType.WEB)])
         ranker = _ranker(_rankings({"a": 0.7, "b": 0.95, "c": 0.8}), top_n=5, min_score=0.6)

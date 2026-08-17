@@ -55,7 +55,9 @@ class YouTubeCollectorConfig(BaseCollectorConfig):
 
 
 class RedditCollectorConfig(BaseCollectorConfig):
-    subreddits: list[str] = Field(default_factory=lambda: ["MachineLearning", "artificial", "LocalLLaMA"])
+    # Empty like every other source list: a live source list must come from config.yaml, never
+    # from a code default that would silently collect from subreddits nobody configured.
+    subreddits: list[str] = Field(default_factory=list)
     sort: Literal["hot", "top", "new"] = "hot"
     limit: int = Field(default=20, ge=1)
 
@@ -90,6 +92,11 @@ class RSSHubCollectorConfig(BaseCollectorConfig):
     accounts: list[RSSHubAccount] = Field(default_factory=list)
     lookback_hours: int = 72
     error_rate_threshold: float = Field(default=50.0, ge=0.0, le=100.0)
+    # How many account feeds may be fetched at once. Each fetch parks a worker thread, so this
+    # stays at/below the default asyncio executor width (min(32, cpu+4) — 6 on a 2-vCPU Lambda);
+    # oversubscribing it made a feed's timeout expire while its parse was still queued. Worst-case
+    # wall time is ceil(accounts / max_concurrency) * request_timeout, well inside the 15-min Lambda.
+    max_concurrency: int = Field(default=5, ge=1)
 
 
 class CollectorsConfig(_StrictModel):
@@ -263,6 +270,11 @@ class PipelineConfig(_StrictModel):
             "portrait": "1024x1536",
         }
     )
+    # Bounds on the gpt-image HTTP call. The OpenAI SDK defaults (600s timeout x 2 retries) can
+    # exceed the visual Lambda's 15-min budget; one 300s attempt leaves room for the single
+    # moderation-softened re-render and still finishes inside the Lambda.
+    visual_image_timeout_sec: int = Field(default=300, ge=10)
+    visual_image_max_retries: int = Field(default=0, ge=0)
     visual_synopsis_source_max_tokens: int = Field(default=2000, ge=1)
     visual_synopsis_context_max_tokens: int = Field(default=1500, ge=1)
     # Emoji prefixed to the Slack caption of a generated visual, for scannability.

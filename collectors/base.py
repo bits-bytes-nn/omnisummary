@@ -48,7 +48,13 @@ def load_items_from_s3(filename: str) -> list[CollectedItem] | None:
 
     Accepts both the newer envelope ({"generated_at", "items"}) and the legacy bare list; when a
     stamp is present and older than S3_ITEMS_MAX_AGE_HOURS, the items are still returned but a
-    warning is logged so a stalled sync doesn't masquerade as a fresh run."""
+    warning is logged so a stalled sync doesn't masquerade as a fresh run.
+
+    A zero-item file is treated as ABSENT (return None -> live collection) only when it is ALSO
+    older than S3_ITEMS_MAX_AGE_HOURS: that combination means the local sync stopped producing,
+    and falling through to live collection lets a real outage report FAILED instead of a silent
+    EMPTY. A FRESH zero-item envelope is a legitimately quiet sync day and is returned as-is, so
+    it can't trigger a false alert."""
     bucket = os.environ.get("STATE_BUCKET", "")
     if not bucket:
         return None
@@ -62,6 +68,17 @@ def load_items_from_s3(filename: str) -> list[CollectedItem] | None:
         data = json.loads(resp["Body"].read().decode("utf-8"))
         raw_items, generated_at = _unwrap_items_envelope(data)
         items = [CollectedItem.model_validate(item) for item in raw_items]
+        age_hours = _age_hours(generated_at)
+        if not items and age_hours is not None and age_hours > S3_ITEMS_MAX_AGE_HOURS:
+            logger.warning(
+                "S3 items at 's3://%s/%s' are EMPTY and %.1fh old (>%dh) — treating as absent "
+                "and falling back to live collection",
+                bucket,
+                s3_key,
+                age_hours,
+                S3_ITEMS_MAX_AGE_HOURS,
+            )
+            return None
         _warn_if_stale(s3_key, generated_at)
         logger.info("Loaded %d items from 's3://%s/%s'", len(items), bucket, s3_key)
         return items
@@ -88,13 +105,18 @@ def _unwrap_items_envelope(data: object) -> tuple[list, datetime | None]:
     return data if isinstance(data, list) else [], None
 
 
-def _warn_if_stale(s3_key: str, generated_at: datetime | None) -> None:
+def _age_hours(generated_at: datetime | None) -> float | None:
+    """Age of a sync envelope in hours; None when it carries no (parsable) `generated_at`."""
     if generated_at is None:
-        return
+        return None
     if generated_at.tzinfo is None:
         generated_at = generated_at.replace(tzinfo=UTC)
-    age_hours = (datetime.now(UTC) - generated_at).total_seconds() / 3600
-    if age_hours > S3_ITEMS_MAX_AGE_HOURS:
+    return (datetime.now(UTC) - generated_at).total_seconds() / 3600
+
+
+def _warn_if_stale(s3_key: str, generated_at: datetime | None) -> None:
+    age_hours = _age_hours(generated_at)
+    if age_hours is not None and age_hours > S3_ITEMS_MAX_AGE_HOURS:
         logger.warning(
             "S3 items at '%s' are %.1fh old (>%dh) — the local sync may have stalled; using stale data",
             s3_key,

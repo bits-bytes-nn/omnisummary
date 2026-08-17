@@ -124,7 +124,10 @@ class TestApiPath:
         assert items[0].item_id == "fresh000001"  # the fresh one, not the stale top-of-playlist row
 
     @pytest.mark.asyncio
-    async def test_non_200_returns_empty(self, monkeypatch):
+    async def test_non_200_raises_for_health(self, monkeypatch):
+        # An API rejection (quota exhausted / revoked key) is a FAILURE, not an empty channel:
+        # with a single configured channel the all-failed check propagates it so the source is
+        # reported FAILED instead of looking like a day with no uploads.
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
         collector = YouTubeCollector(_config())
 
@@ -136,12 +139,11 @@ class TestApiPath:
 
         with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
             with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
-                items = await collector.collect()
-
-        assert items == []
+                with pytest.raises(RuntimeError, match="returned 403"):
+                    await collector.collect()
 
     @pytest.mark.asyncio
-    async def test_malformed_playlist_json_returns_empty(self, monkeypatch):
+    async def test_malformed_playlist_json_raises_for_health(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
         collector = YouTubeCollector(_config())
 
@@ -155,11 +157,11 @@ class TestApiPath:
 
         with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
             with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
-                items = await collector.collect()
-        assert items == []
+                with pytest.raises(RuntimeError, match="malformed JSON"):
+                    await collector.collect()
 
     @pytest.mark.asyncio
-    async def test_malformed_videos_json_returns_empty(self, monkeypatch):
+    async def test_malformed_videos_json_raises_for_health(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
         collector = YouTubeCollector(_config())
 
@@ -176,11 +178,11 @@ class TestApiPath:
 
         with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
             with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
-                items = await collector.collect()
-        assert items == []
+                with pytest.raises(RuntimeError, match="malformed JSON"):
+                    await collector.collect()
 
     @pytest.mark.asyncio
-    async def test_videos_non_200_returns_empty(self, monkeypatch):
+    async def test_videos_non_200_raises_for_health(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
         collector = YouTubeCollector(_config())
 
@@ -195,8 +197,8 @@ class TestApiPath:
 
         with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
             with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
-                items = await collector.collect()
-        assert items == []
+                with pytest.raises(RuntimeError, match="returned 500"):
+                    await collector.collect()
 
     @pytest.mark.asyncio
     async def test_unresolvable_channel_raises_for_health(self, monkeypatch):
@@ -209,6 +211,22 @@ class TestApiPath:
             with patch.object(collector, "_resolve_channel_id", return_value=""):
                 with pytest.raises(RuntimeError, match="resolve canonical channel ID"):
                     await collector.collect()
+
+    @pytest.mark.asyncio
+    async def test_one_failing_channel_among_many_is_tolerated(self, monkeypatch):
+        # Partial tolerance: only an ALL-channels failure escalates to FAILED.
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config(channels=["https://www.youtube.com/@a", "https://www.youtube.com/@b"]))
+
+        async def _collect(channel_url):
+            if channel_url.endswith("@a"):
+                raise RuntimeError("quota exceeded")
+            return [CollectedItem(item_id="ok", source_type=SourceType.YOUTUBE, title="t", url="https://y/ok")]
+
+        with patch("collectors.youtube.load_items_from_s3", return_value=None):
+            with patch.object(collector, "_collect_channel", side_effect=_collect):
+                items = await collector.collect()
+        assert [i.item_id for i in items] == ["ok"]
 
 
 class TestS3Preload:

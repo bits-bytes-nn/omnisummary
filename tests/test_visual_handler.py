@@ -1,5 +1,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from lambda_handlers import visual_handler
 
 
@@ -10,11 +12,13 @@ class TestVisualHandler:
         run.assert_called_once()
         assert result["statusCode"] == 200
 
-    def test_handler_returns_500_on_exception(self):
+    def test_handler_reraises_on_exception_so_alarms_and_dlq_fire(self):
+        # Returning a 500 body made Lambda record a success — no Errors alarm, no DLQ message.
         with patch("lambda_handlers.visual_handler.asyncio.run", side_effect=RuntimeError("boom")):
-            result = visual_handler.handler({}, None)
-        assert result["statusCode"] == 500
-        assert "boom" in result["body"]
+            with patch("lambda_handlers.visual_handler.logger") as log:
+                with pytest.raises(RuntimeError, match="boom"):
+                    visual_handler.handler({}, None)
+        assert log.error.called
 
 
 class TestVisualRun:

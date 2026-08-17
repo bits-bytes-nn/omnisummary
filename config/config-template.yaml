@@ -4,20 +4,22 @@
 collectors:
   youtube:
     enabled: true
-    channels:
+    # Lists must stay valid YAML lists — a key with only a commented-out entry under it parses as
+    # null and fails config validation, so keep the `[]` and add entries inside it.
+    channels: []
       # - "https://www.youtube.com/@channel_name"
     max_videos_per_channel: 3
     lookback_hours: 24
   reddit:
     enabled: true
-    subreddits:
+    subreddits: []
       # - "subreddit_name"
     sort: hot
     limit: 20
     lookback_hours: 24
   rss:
     enabled: true
-    feeds:
+    feeds: []
       # - "https://example.substack.com/feed"
     lookback_hours: 24
   web_search:
@@ -51,10 +53,11 @@ collectors:
   rsshub:
     enabled: false
     base_url: "http://localhost:1200"
-    accounts:
+    accounts: []
       # - username: "karpathy"
       #   platform: x
     lookback_hours: 72
+    max_concurrency: 5
 
 pipeline:
   top_n: 5
@@ -80,7 +83,6 @@ pipeline:
 
 agent:
   model_id: "anthropic.claude-sonnet-5"
-  enable_interactive: true
 
 slack:
   bot_token: ""    # Or set SLACK_BOT_TOKEN env var

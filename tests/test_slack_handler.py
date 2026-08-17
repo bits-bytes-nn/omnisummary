@@ -102,11 +102,13 @@ class TestSendDigestToSlack:
 
     @pytest.mark.asyncio
     async def test_returns_false_when_no_token(self):
+        # No token in config and none in the environment (cleared by the hermetic_env fixture),
+        # so resolve_secret finds nothing — and its SSM fallback is stubbed out, which is what
+        # used to make this test spend ~2s on a real AWS round trip.
         digest = _make_digest()
         config = _make_config(bot_token="", channel_id="C123")
 
-        with patch.dict("os.environ", {}, clear=True):
-            result = await send_digest_to_slack(digest, config)
+        result = await send_digest_to_slack(digest, config)
 
         assert result is False
 
@@ -115,8 +117,7 @@ class TestSendDigestToSlack:
         digest = _make_digest()
         config = _make_config(bot_token="xoxb-test", channel_id="")
 
-        with patch.dict("os.environ", {}, clear=True):
-            result = await send_digest_to_slack(digest, config)
+        result = await send_digest_to_slack(digest, config)
 
         assert result is False
 
@@ -147,16 +148,14 @@ class TestSendDigestToSlack:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_env_vars(self):
+    async def test_falls_back_to_env_vars(self, monkeypatch):
         digest = _make_digest("Content")
         config = _make_config(bot_token="", channel_id="")
         mock_client = AsyncMock()
 
-        env = {"SLACK_BOT_TOKEN": "xoxb-env", "SLACK_CHANNEL_ID": "C_ENV"}
-        with (
-            patch.dict("os.environ", env, clear=False),
-            patch("output.slack_handler.AsyncWebClient", return_value=mock_client),
-        ):
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-env")
+        monkeypatch.setenv("SLACK_CHANNEL_ID", "C_ENV")
+        with patch("output.slack_handler.AsyncWebClient", return_value=mock_client):
             result = await send_digest_to_slack(digest, config)
 
         assert result is True

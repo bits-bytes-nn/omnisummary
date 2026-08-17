@@ -1,8 +1,12 @@
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
-from shared.config import Config, PipelineConfig, YouTubeCollectorConfig
+from shared.config import Config, PipelineConfig, RedditCollectorConfig, YouTubeCollectorConfig
 from shared.utils import _LANGUAGE_MODEL_INFO
+
+CONFIG_TEMPLATE = Path(__file__).resolve().parent.parent / "config" / "config-template.yaml"
 
 
 class TestStrictConfig:
@@ -18,6 +22,28 @@ class TestStrictConfig:
         # The shipped config.yaml must contain only known keys (guards against a strict-mode
         # regression where a real key isn't modeled).
         assert Config.load().pipeline.top_n >= 1
+
+    def test_config_template_loads_under_strict_validation(self):
+        # The template is what a new deployment copies to config.yaml, so it must itself validate.
+        # Loaded via from_yaml on the template PATH — Config.load() reads the shipped config.yaml
+        # and would pass no matter how broken the template is (the old vacuous assertion).
+        cfg = Config.from_yaml(str(CONFIG_TEMPLATE))
+        assert cfg.pipeline.top_n >= 1
+        assert cfg.aws.project_name
+
+    def test_config_template_ships_no_live_sources(self):
+        # Placeholder-only lists: a template must not silently start collecting from somewhere,
+        # and the code defaults must not fill them in either.
+        cfg = Config.from_yaml(str(CONFIG_TEMPLATE))
+        assert cfg.collectors.rss.feeds == []
+        assert cfg.collectors.reddit.subreddits == []
+        assert cfg.collectors.youtube.channels == []
+        assert cfg.collectors.rsshub.accounts == []
+
+    def test_reddit_subreddits_default_is_empty(self):
+        # A live source list must come from config.yaml, never from a code default (which would
+        # keep collecting if the config key were ever dropped or typo'd out).
+        assert RedditCollectorConfig().subreddits == []
 
     def test_top_n_lower_bound(self):
         with pytest.raises(ValidationError):

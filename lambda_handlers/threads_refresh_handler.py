@@ -14,7 +14,12 @@ THREADS_REFRESH_URL = "https://graph.threads.net/refresh_access_token"
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Refresh the long-lived Threads access token before its 60-day expiry and write
     the renewed value back to SSM. Scheduled well inside the window (e.g. every 50 days)
-    so the token is effectively permanent. Best-effort: a failure is logged, not raised."""
+    so the token is effectively permanent.
+
+    A failure is logged and RE-RAISED: a silent 500 body left the token quietly un-refreshed
+    until Threads delivery broke 60 days later, because Lambda counts a returned error as a
+    success (no Errors alarm, no DLQ message). The function runs with retry_attempts=0, so
+    re-raising cannot loop."""
     set_correlation_id(getattr(context, "aws_request_id", "") or None)
     token = resolve_secret("THREADS_ACCESS_TOKEN", "threads-access-token")
     if not token:
@@ -31,7 +36,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         new_token = resp.json()["access_token"]
     except Exception as e:
         logger.error("Failed to refresh Threads token: %s", e)
-        return {"statusCode": 500, "body": "refresh failed"}
+        raise
 
     project = os.environ.get("PROJECT_NAME", "omnisummary")
     stage = os.environ.get("STAGE", "dev")
@@ -46,4 +51,4 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         return {"statusCode": 200, "body": "refreshed"}
     except Exception as e:
         logger.error("Failed to write refreshed Threads token to SSM: %s", e)
-        return {"statusCode": 500, "body": "ssm write failed"}
+        raise

@@ -10,7 +10,6 @@ os.environ.setdefault("MEMORY_ID", "omnisummary_dev_digest_state-9GEp6f8MtL")
 import boto3
 
 from agent.tool_state import DigestStateManager
-from agent.visuals import VisualGenerator
 from pipeline.daily_visual import DailyVisualMaker
 from shared import BedrockLanguageModelFactory, Config, create_memory_store, logger
 
@@ -42,13 +41,9 @@ async def main() -> None:
     # Let the editor's own format/instruction drive it; just nudge toward a 4-panel comic.
     instruction = "A 4-panel comic. " + plan.get("instruction", "")
 
-    generator = VisualGenerator(
-        factory,
-        config.pipeline.digest_model,
-        image_model=config.pipeline.image_model,
-        image_sizes=config.pipeline.image_sizes,
-    )
-    image_bytes, brief = await generator.generate(instruction, source, context)
+    # Reuse the maker's generator so this one-off renders with the exact production config
+    # (VisualGenerator carries no defaults of its own).
+    image_bytes, brief = await maker.generator.generate(instruction, source, context)
     logger.info("Brief title: %s", brief.title)
     logger.info("Image prompt: %s", brief.prompt[:600])
 

@@ -109,6 +109,32 @@ class TestLoadItemsFromS3:
         assert [i.item_id for i in items] == ["v1"]  # stale beats empty
         assert any("stalled" in str(c.args) for c in warn.call_args_list)
 
+    def test_stale_empty_envelope_is_treated_as_absent(self, monkeypatch):
+        # A park file that is BOTH empty and stale means the local sync stopped producing; falling
+        # through to live collection lets a real outage report FAILED instead of silent EMPTY.
+        monkeypatch.setenv("STATE_BUCKET", "b")
+        monkeypatch.setenv("S3_PREFIX", "omnisummary/digest_state")
+        old = (datetime.now(UTC) - timedelta(hours=72)).isoformat()
+        body = json.dumps({"generated_at": old, "items": []}).encode("utf-8")
+        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(body)):
+            assert load_items_from_s3("rsshub_items.json") is None
+
+    def test_fresh_empty_envelope_is_returned_not_absent(self, monkeypatch):
+        # A legitimately quiet sync day must NOT fall through to live collection (which would
+        # raise a false FAILED from a Lambda IP that the source blocks).
+        monkeypatch.setenv("STATE_BUCKET", "b")
+        monkeypatch.setenv("S3_PREFIX", "omnisummary/digest_state")
+        body = json.dumps({"generated_at": datetime.now(UTC).isoformat(), "items": []}).encode("utf-8")
+        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(body)):
+            assert load_items_from_s3("rsshub_items.json") == []
+
+    def test_unstamped_empty_list_is_returned_not_absent(self, monkeypatch):
+        # Legacy bare list carries no age, so it can't be proven stale → keep prior behavior.
+        monkeypatch.setenv("STATE_BUCKET", "b")
+        monkeypatch.setenv("S3_PREFIX", "omnisummary/digest_state")
+        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(b"[]")):
+            assert load_items_from_s3("rsshub_items.json") == []
+
     def test_malformed_json_returns_none(self, monkeypatch):
         monkeypatch.setenv("STATE_BUCKET", "b")
         monkeypatch.setenv("S3_PREFIX", "omnisummary/digest_state")

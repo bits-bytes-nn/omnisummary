@@ -109,7 +109,7 @@ class ContentRanker:
         # Reserve slots for the pinned items so the source-slotting fills only the remainder,
         # then prepend the pinned items so they always lead and never get crowded out.
         remaining = max(0, limit - len(pinned))
-        filled = self._apply_source_slots(above_threshold, remaining, grace_ids)
+        filled = self._apply_source_slots(above_threshold, remaining, grace_ids, pinned)
         selected = pinned + filled
 
         if pinned:
@@ -224,7 +224,11 @@ class ContentRanker:
         return extra
 
     def _apply_source_slots(
-        self, above_threshold: list[RankedItem], limit: int, grace_ids: set[str] | None = None
+        self,
+        above_threshold: list[RankedItem],
+        limit: int,
+        grace_ids: set[str] | None = None,
+        pinned: list[RankedItem] | None = None,
     ) -> list[RankedItem]:
         grace_ids = grace_ids or set()
         source_slots = self.config.source_slots
@@ -236,6 +240,17 @@ class ContentRanker:
         source_counts: dict[str, int] = defaultdict(int)
         origin_counts: dict[str, int] = defaultdict(int)
         max_per_origin = self.config.max_per_origin
+
+        # Pinned items are prepended to the result by rank() and never enter this fill, so their
+        # source/origin used to go uncounted — a pin plus a slotted item from the SAME origin both
+        # landed, breaking max_per_origin exactly where the user forced an item in. Seed the
+        # counters with them (without selecting them); the relaxed final pass still fills to the
+        # limit when the caps would otherwise leave the digest short.
+        for item in pinned or []:
+            source_counts[item.item.source_type.value] += 1
+            pinned_origin = resolve_origin_key(item.item)
+            if pinned_origin:
+                origin_counts[pinned_origin] += 1
 
         def origin_at_cap(item: RankedItem) -> bool:
             origin_key = resolve_origin_key(item.item)
