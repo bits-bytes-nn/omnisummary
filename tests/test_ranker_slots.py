@@ -144,6 +144,59 @@ class TestOriginCap:
         assert ids == {"w1", "w3", "r1"}
 
 
+class TestSlotOrder:
+    def test_short_limit_gives_slots_to_the_strongest_sources(self):
+        # limit(2) < sum(source_slots)(3): the guaranteed pass used to walk the config key order, so
+        # the LAST-listed source lost its slot no matter how strong its candidate was.
+        ranker = _ranker(
+            top_n=2,
+            min_score=0.5,
+            source_slots={"reddit": 1, "rss": 1, "youtube": 1},
+            source_cap_multiplier=1,
+            max_per_origin=1,
+        )
+        items = [
+            _ranked(0.95, SourceType.YOUTUBE, item_id="y1", channel="chanA"),
+            _ranked(0.90, SourceType.RSS, item_id="r1", feed="https://f.example/feed"),
+            _ranked(0.60, SourceType.REDDIT, item_id="d1", sub="ml"),
+        ]
+        selected = ranker._apply_source_slots(items, ranker.config.top_n)
+        assert {r.item.item_id for r in selected} == {"y1", "r1"}
+
+    def test_full_limit_selection_is_order_independent(self):
+        # With limit >= sum(source_slots) (the live config) every source fills its own slot, so the
+        # strength ordering must not change the outcome — whatever order the YAML lists.
+        slots = {"reddit": 1, "rss": 1, "youtube": 1}
+        items = [
+            _ranked(0.95, SourceType.YOUTUBE, item_id="y1", channel="chanA"),
+            _ranked(0.90, SourceType.RSS, item_id="r1", feed="https://f.example/feed"),
+            _ranked(0.60, SourceType.REDDIT, item_id="d1", sub="ml"),
+        ]
+        selected_ids = set()
+        for keys in (("reddit", "rss", "youtube"), ("youtube", "rss", "reddit")):
+            ranker = _ranker(
+                top_n=3,
+                min_score=0.5,
+                source_slots={k: slots[k] for k in keys},
+                source_cap_multiplier=1,
+                max_per_origin=1,
+            )
+            selected_ids.add(frozenset(r.item.item_id for r in ranker._apply_source_slots(items, 3)))
+        assert selected_ids == {frozenset({"y1", "r1", "d1"})}
+
+    def test_ties_break_on_source_key_for_determinism(self):
+        ranker = _ranker(source_slots={"rss": 1, "reddit": 1, "youtube": 1})
+        items = [
+            _ranked(0.8, SourceType.RSS, item_id="r1"),
+            _ranked(0.8, SourceType.REDDIT, item_id="d1"),
+        ]
+        assert [src for src, _ in ranker._slot_order(items, ranker.config.source_slots)] == [
+            "reddit",
+            "rss",
+            "youtube",
+        ]
+
+
 class TestPinnedCaps:
     def test_pinned_item_counts_toward_origin_and_source_caps(self):
         # Pinned items are prepended by rank() and never entered this fill, so their origin went

@@ -8,6 +8,7 @@ from shared.config import Config, PipelineConfig, RedditCollectorConfig, YouTube
 from shared.utils import _LANGUAGE_MODEL_INFO
 
 CONFIG_TEMPLATE = Path(__file__).resolve().parent.parent / "config" / "config-template.yaml"
+LOCAL_CONFIG = Path(__file__).resolve().parent.parent / "config" / "config.yaml"
 
 
 class TestStrictConfig:
@@ -20,9 +21,16 @@ class TestStrictConfig:
             Config(pipeline={"min_scor": 0.5})  # typo of min_score
 
     def test_real_config_yaml_still_loads(self):
-        # The shipped config.yaml must contain only known keys (guards against a strict-mode
-        # regression where a real key isn't modeled).
-        assert Config.load().pipeline.top_n >= 1
+        # The LOCAL config.yaml must contain only known keys (guards against a strict-mode
+        # regression where a real key isn't modeled). config.yaml is gitignored, so Config.load()
+        # silently fell back to bare code defaults when absent and asserted nothing about it — read
+        # the file directly and skip LOUDLY instead of passing vacuously. The tracked template is
+        # covered separately by test_config_template_loads_under_strict_validation.
+        if not LOCAL_CONFIG.exists():
+            pytest.skip(f"no local config at {LOCAL_CONFIG} (gitignored); template is checked separately")
+        cfg = Config.from_yaml(str(LOCAL_CONFIG))
+        assert cfg.pipeline.top_n >= 1
+        assert cfg.aws.project_name
 
     def test_config_template_loads_under_strict_validation(self):
         # The template is what a new deployment copies to config.yaml, so it must itself validate.
@@ -79,11 +87,29 @@ class TestGetConfigCache:
 
 
 class TestConfiguredModelsAreRegistered:
+    def test_template_models_have_registry_info(self):
+        # The tracked template is what a new deployment ships with, so its models must be
+        # registered too — and unlike config.yaml it always exists (nothing to skip).
+        cfg = Config.from_yaml(str(CONFIG_TEMPLATE))
+        configured = {
+            cfg.pipeline.ranking_model,
+            cfg.pipeline.digest_model,
+            cfg.pipeline.trend_model,
+            cfg.collectors.web_search.refine_model,
+            cfg.agent.model_id,
+        }
+        missing = [m.value for m in configured if m not in _LANGUAGE_MODEL_INFO]
+        assert not missing, f"template models missing from _LANGUAGE_MODEL_INFO: {missing}"
+
     def test_every_configured_model_has_registry_info(self):
         # A model set in config that lacks a _LANGUAGE_MODEL_INFO entry passes Pydantic load
         # (valid enum) but hits the runtime max_tokens/gating fallback with only a warning.
-        # This locks the two in sync so a Sonnet-5-style bump can't half-land.
-        cfg = Config.load()
+        # This locks the two in sync so a Sonnet-5-style bump can't half-land. Read the LOCAL
+        # config.yaml directly: Config.load() falls back to code defaults when it's absent, which
+        # made this assert the defaults rather than the models anyone actually deploys.
+        if not LOCAL_CONFIG.exists():
+            pytest.skip(f"no local config at {LOCAL_CONFIG} (gitignored); the template is checked above")
+        cfg = Config.from_yaml(str(LOCAL_CONFIG))
         configured = {
             cfg.pipeline.ranking_model,
             cfg.pipeline.digest_model,

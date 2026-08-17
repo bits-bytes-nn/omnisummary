@@ -57,6 +57,19 @@ class YouTubeCollectorConfig(BaseCollectorConfig):
     resolve_timeout: int = Field(default=15, ge=1)
     transcript_timeout: int = Field(default=15, ge=1)
     transcript_language: str = Field(default="en")
+    # How many channels may be collected at once. Each one parks worker threads (page scrape,
+    # transcript fetches), so this stays at/below the default asyncio executor width, same bound as
+    # rss.max_concurrency / rsshub.max_concurrency.
+    max_concurrency: int = Field(default=5, ge=1)
+
+    @property
+    def channel_budget_sec(self) -> int:
+        """Wall-clock budget for ONE channel's collection: id resolution + the two Data API calls
+        (each retried, with backoff) + one transcript fetch per kept video. Derived from the
+        existing per-step knobs so there is no second number that can silently drift out of sync
+        and start failing healthy channels."""
+        api = (self.request_timeout + self.retry_backoff_sec) * self.max_retries * 2
+        return self.resolve_timeout + api + self.transcript_timeout * self.max_videos_per_channel
 
 
 class RedditCollectorConfig(BaseCollectorConfig):
@@ -91,6 +104,10 @@ class WebSearchCollectorConfig(BaseCollectorConfig):
     refine_model: LanguageModelId = LanguageModelId.CLAUDE_V5_SONNET
     max_refine_queries: int = Field(default=3, ge=1)
     min_search_score: float = Field(default=0.3, ge=0.0, le=1.0)
+    # How many search queries may be in flight against Tavily at once. Unbounded fan-out threw every
+    # configured query at the API simultaneously, so a large trend list self-throttled and lost whole
+    # queries. Same bound as rss.max_concurrency / rsshub.max_concurrency.
+    max_concurrency: int = Field(default=5, ge=1)
 
 
 class RSSHubAccount(_StrictModel):
@@ -226,6 +243,11 @@ class PipelineConfig(_StrictModel):
     # delete ~40 candidates from the day's pool with only a warning.
     ranking_max_retries: int = Field(default=3, ge=1)
     ranking_retry_backoff_sec: float = Field(default=5.0, ge=0)
+    # Minimum share of a batch's items the ranker must actually score. A model that quietly omits
+    # ids returns a valid response, so those candidates never reach the digest; below this ratio the
+    # omitted items get ONE extra re-ask (the shortfall is logged either way). A full-coverage
+    # batch — the normal case — makes no extra Bedrock call. 1.0 re-asks on any omission, 0 never.
+    ranking_min_coverage_ratio: float = Field(default=0.9, ge=0.0, le=1.0)
     source_slots: dict[str, int] = Field(
         default_factory=lambda: {
             "web": 2,
@@ -294,6 +316,9 @@ class PipelineConfig(_StrictModel):
     # moderation-softened re-render and still finishes inside the Lambda.
     visual_image_timeout_sec: int = Field(default=300, ge=10)
     visual_image_max_retries: int = Field(default=0, ge=0)
+    # Cap on the research steps the visual editor may request (each is a live search call). Matches
+    # the "1-3 steps" the editor prompt asks for, so a chatty plan can't fan out into ten searches.
+    visual_research_max_steps: int = Field(default=3, ge=1)
     visual_synopsis_source_max_tokens: int = Field(default=2000, ge=1)
     visual_synopsis_context_max_tokens: int = Field(default=1500, ge=1)
     # Emoji prefixed to the Slack caption of a generated visual, for scannability.

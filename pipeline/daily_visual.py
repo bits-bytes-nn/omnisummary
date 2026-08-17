@@ -160,9 +160,12 @@ class DailyVisualMaker:
 
     def _least_recent_orientation(self, recent_formats: list[dict]) -> str:
         """Return an orientation not used in the recent window (least-recently-used), so the
-        next visual differs in shape. Empty when no orientations are configured."""
+        next visual differs in shape. Empty when no orientations are configured, or when there is
+        NO history at all: with nothing to vary FROM, nudging toward whichever orientation happens
+        to be listed first is an arbitrary lock (and contradicts the 'pick whatever fits this
+        story' guidance the format block emits on a first run)."""
         all_orientations = list(self.config.pipeline.image_sizes)
-        if not all_orientations:
+        if not all_orientations or not recent_formats:
             return ""
         used = [f.get("orientation", "") for f in recent_formats]
         unused = [o for o in all_orientations if o not in used]
@@ -304,6 +307,12 @@ class DailyVisualMaker:
         steps = [s for s in (research or []) if isinstance(s, dict) and s.get("query")]
         if not steps:
             return ""
+        # The prompt asks for 1-3 steps, but nothing stopped a chatty editor from returning ten —
+        # each one is a live Tavily/Semantic Scholar call. Clamp to the configured budget.
+        max_steps = self.config.pipeline.visual_research_max_steps
+        if len(steps) > max_steps:
+            logger.info("Visual editor returned %d research steps; clamping to %d", len(steps), max_steps)
+            steps = steps[:max_steps]
         results = await asyncio.gather(*(self._run_research_step(s) for s in steps), return_exceptions=True)
         blocks = [r for r in results if isinstance(r, str) and r]
         return "\n\n".join(blocks)

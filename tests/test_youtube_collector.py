@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -188,23 +189,24 @@ class TestApiPath:
                     await collector.collect()
 
     @pytest.mark.asyncio
-    async def test_videos_non_200_raises_for_health(self, monkeypatch):
+    async def test_videos_persistent_5xx_raises_for_health(self, monkeypatch):
+        # A 5xx is retriable, but an exhausted retry chain is still a channel FAILURE.
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = YouTubeCollector(_config(max_retries=2, retry_backoff_sec=0))
 
         client = AsyncMock()
-        client.get.side_effect = [
-            _resp(200, _playlist_payload("vid00000001")),
-            _resp(500, {}),
-        ]
+        client.get.side_effect = lambda *a, **k: (
+            _resp(200, _playlist_payload("vid00000001")) if client.get.await_count == 1 else _resp(503, {})
+        )
         ctx = MagicMock()
         ctx.__aenter__ = AsyncMock(return_value=client)
         ctx.__aexit__ = AsyncMock(return_value=False)
 
         with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
             with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
-                with pytest.raises(RuntimeError, match="returned 500"):
+                with pytest.raises(RuntimeError, match="returned 503"):
                     await collector.collect()
+        assert client.get.await_count == 3  # playlist + 2 attempts at the details call
 
     @pytest.mark.asyncio
     async def test_unresolvable_channel_raises_for_health(self, monkeypatch):
@@ -233,6 +235,146 @@ class TestApiPath:
             with patch.object(collector, "_collect_channel", side_effect=_collect):
                 items = await collector.collect()
         assert [i.item_id for i in items] == ["ok"]
+
+
+class TestRetriableStatuses:
+    @pytest.mark.asyncio
+    async def test_transient_5xx_is_retried_then_succeeds(self, monkeypatch):
+        # A 503 on the playlist call used to fail the channel outright; it must be retried.
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config(retry_backoff_sec=0))
+
+        client = AsyncMock()
+        client.get.side_effect = [
+            _resp(503, {}),
+            _resp(200, _playlist_payload("vid00000001")),
+            _resp(200, _videos_payload("vid00000001")),
+        ]
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=client)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
+            with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
+                with patch.object(collector, "_get_transcript", return_value=""):
+                    items = await collector.collect()
+        assert [i.item_id for i in items] == ["vid00000001"]
+
+    @pytest.mark.asyncio
+    async def test_permanent_403_is_not_retried(self, monkeypatch):
+        # 403 (quota exhausted / revoked key) is a verdict, not a hiccup: fail on the first response
+        # instead of burning the channel's whole time budget on retries.
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config(max_retries=3, retry_backoff_sec=0))
+
+        client = AsyncMock()
+        client.get.return_value = _resp(403, {})
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=client)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
+            with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
+                with pytest.raises(RuntimeError, match="returned 403"):
+                    await collector.collect()
+        assert client.get.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_after_is_honoured_and_capped(self, monkeypatch):
+        # A 429's Retry-After is respected, but clamped to the per-request timeout so an absurd
+        # value can't outlive the channel's budget.
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config(request_timeout=7, retry_backoff_sec=0))
+
+        throttled = _resp(429, {})
+        throttled.headers = {"Retry-After": "3600"}
+        ok = _resp(200, _playlist_payload("vid00000001"))
+        ok.headers = {}
+        details = _resp(200, _videos_payload("vid00000001"))
+        details.headers = {}
+
+        client = AsyncMock()
+        client.get.side_effect = [throttled, ok, details]
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=client)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+
+        slept: list[float] = []
+
+        async def _sleep(delay):
+            slept.append(delay)
+
+        with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
+            with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
+                with patch("collectors.youtube.asyncio.sleep", new=_sleep):
+                    with patch.object(collector, "_get_transcript", return_value=""):
+                        items = await collector.collect()
+        assert [i.item_id for i in items] == ["vid00000001"]
+        # 3600s clamped to request_timeout (the retry backoff's own 0s sleep may follow).
+        assert slept[0] == 7.0 and all(s <= 7.0 for s in slept)
+
+    def test_retry_after_parsing(self):
+        from collectors.youtube import _retry_after_delay
+
+        resp = MagicMock()
+        resp.headers = {}
+        assert _retry_after_delay(resp, 10) == 0.0
+        resp.headers = {"Retry-After": "4"}
+        assert _retry_after_delay(resp, 10) == 4.0
+        resp.headers = {"Retry-After": "not-a-date"}
+        assert _retry_after_delay(resp, 10) == 0.0
+        resp.headers = {"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}  # in the past → no wait
+        assert _retry_after_delay(resp, 10) == 0.0
+
+
+class TestChannelFanOut:
+    @pytest.mark.asyncio
+    async def test_fan_out_is_bounded_by_config(self, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(
+            _config(channels=[f"https://www.youtube.com/@c{n}" for n in range(6)], max_concurrency=2)
+        )
+        state = {"active": 0, "peak": 0}
+
+        async def _collect(channel_url):
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+            await asyncio.sleep(0.01)
+            state["active"] -= 1
+            return []
+
+        with patch("collectors.youtube.load_items_from_s3", return_value=_absent_park()):
+            with patch.object(collector, "_collect_channel", side_effect=_collect):
+                await collector.collect()
+        assert state["peak"] <= 2, f"fan-out exceeded max_concurrency: peak={state['peak']}"
+
+    @pytest.mark.asyncio
+    async def test_hung_channel_times_out_as_a_failure(self, monkeypatch):
+        # A wedged channel must fail its task (so an all-channels hang reports FAILED) rather than
+        # holding the digest until the Lambda itself times out.
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config())
+
+        async def _hang(channel_url):
+            await asyncio.sleep(10)
+            return []
+
+        with patch("collectors.youtube.load_items_from_s3", return_value=_absent_park()):
+            with patch.object(collector, "_collect_channel", side_effect=_hang):
+                with patch.object(type(collector.config), "channel_budget_sec", property(lambda self: 0)):
+                    with pytest.raises(RuntimeError, match="timed out"):
+                        await collector.collect()
+
+    def test_channel_budget_derives_from_the_step_timeouts(self):
+        cfg = _config(
+            resolve_timeout=15,
+            request_timeout=30,
+            retry_backoff_sec=5,
+            max_retries=3,
+            transcript_timeout=15,
+            max_videos_per_channel=3,
+        )
+        assert cfg.channel_budget_sec == 15 + (30 + 5) * 3 * 2 + 15 * 3
 
 
 class TestS3Preload:

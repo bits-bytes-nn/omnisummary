@@ -359,3 +359,76 @@ class TestGraceIntegration:
         # Each appears exactly once via its own slot; no duplication / fallback padding.
         ids = sorted(r.item.item_id for r in result)
         assert ids == ["r1", "x1", "y1"]
+
+
+def _ranker_with_outputs(outputs: list[str], **overrides) -> tuple[ContentRanker, list[str]]:
+    """A ranker whose stand-in LLM returns `outputs` one call at a time (the last one repeats),
+    plus the list of prompts it saw — so the coverage re-ask can be counted."""
+    config = PipelineConfig(**overrides)
+    factory = _mock_factory()
+    seen: list[str] = []
+
+    def _respond(prompt_value):
+        seen.append(str(prompt_value))
+        return AIMessage(content=outputs[min(len(seen) - 1, len(outputs) - 1)])
+
+    factory.get_model.return_value = RunnableLambda(_respond)
+    return ContentRanker(config, factory), seen
+
+
+class TestRankingCoverage:
+    @pytest.mark.asyncio
+    async def test_full_coverage_makes_no_extra_call(self):
+        items = _items([("a", SourceType.RSS), ("b", SourceType.RSS)])
+        ranker, seen = _ranker_with_outputs([_rankings({"a": 0.9, "b": 0.8})], top_n=5, min_score=0.6, source_slots={})
+        result = await ranker.rank(items)
+        assert {r.item.item_id for r in result} == {"a", "b"}
+        assert len(seen) == 1  # a full-coverage day costs zero extra Bedrock calls
+
+    @pytest.mark.asyncio
+    async def test_omitted_items_recovered_by_one_reask(self):
+        # The model silently dropped b and c; the re-ask scores b, and that is the ONLY retry —
+        # c staying unscored must not trigger a second one.
+        items = _items([("a", SourceType.RSS), ("b", SourceType.RSS), ("c", SourceType.RSS)])
+        ranker, seen = _ranker_with_outputs(
+            [_rankings({"a": 0.9}), _rankings({"b": 0.8})],
+            top_n=5,
+            min_score=0.6,
+            source_slots={},
+            ranking_retry_backoff_sec=0,
+        )
+        result = await ranker.rank(items)
+        assert {r.item.item_id for r in result} == {"a", "b"}
+        assert len(seen) == 2  # one score pass + exactly one re-ask
+
+    @pytest.mark.asyncio
+    async def test_failed_reask_keeps_the_partially_scored_batch(self):
+        items = _items([("a", SourceType.RSS), ("b", SourceType.RSS)])
+        config = PipelineConfig(top_n=5, min_score=0.6, source_slots={}, ranking_retry_backoff_sec=0)
+        factory = _mock_factory()
+        calls: list[int] = []
+
+        def _respond(prompt_value):
+            calls.append(1)
+            if len(calls) == 1:
+                return AIMessage(content=_rankings({"a": 0.9}))
+            raise RuntimeError("ThrottlingException")
+
+        factory.get_model.return_value = RunnableLambda(_respond)
+        result = await ContentRanker(config, factory).rank(items)
+        # No raise, no lost items: the first pass's outcome survives untouched.
+        assert {r.item.item_id for r in result} == {"a"}
+
+    @pytest.mark.asyncio
+    async def test_shortfall_above_ratio_is_logged_but_not_reasked(self):
+        items = _items([(f"i{n}", SourceType.RSS) for n in range(4)])
+        ranker, seen = _ranker_with_outputs(
+            [_rankings({"i0": 0.9, "i1": 0.85, "i2": 0.8})],
+            top_n=5,
+            min_score=0.6,
+            source_slots={},
+            ranking_min_coverage_ratio=0.5,  # 3/4 coverage clears the bar
+        )
+        result = await ranker.rank(items)
+        assert {r.item.item_id for r in result} == {"i0", "i1", "i2"}
+        assert len(seen) == 1

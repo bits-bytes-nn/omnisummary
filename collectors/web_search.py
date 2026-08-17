@@ -56,11 +56,20 @@ class WebSearchCollector(BaseCollector):
             logger.warning("TAVILY_API_KEY not set, skipping web search collector")
             return []
 
+        # Bound the fan-out. Every configured query used to hit Tavily at once, so a large trend
+        # list self-throttled (429) and lost whole queries. The semaphore is created HERE (on the
+        # running loop, never at import/__init__) and acquired BEFORE the per-query timeout, so the
+        # timeout measures the search rather than the queue wait. Mirrors rss.max_concurrency.
+        semaphore = asyncio.Semaphore(self.config.max_concurrency)
         tasks: list[asyncio.Task] = []
 
         for trend in self.config.trend_searches:
             for query in trend.queries:
-                tasks.append(asyncio.ensure_future(self._search_trend(query, trend.domains, trend.name, trend.topic)))
+                tasks.append(
+                    asyncio.ensure_future(
+                        self._search_trend(query, trend.domains, trend.name, trend.topic, semaphore=semaphore)
+                    )
+                )
 
         if not tasks:
             logger.info("No web search queries or accounts configured, skipping")
@@ -69,13 +78,15 @@ class WebSearchCollector(BaseCollector):
         broad_items = self._deduplicate(await gather_collector_results(tasks, raise_if_all_failed=True))
         logger.info("Web search collector gathered %d items (broad phase)", len(broad_items))
 
-        refined_items = await self._refine_search(broad_items)
+        refined_items = await self._refine_search(broad_items, semaphore)
         all_items = self._deduplicate(broad_items + refined_items)
         logger.info("Web search collector gathered %d items total (after refinement)", len(all_items))
 
         return all_items
 
-    async def _refine_search(self, broad_items: list[CollectedItem]) -> list[CollectedItem]:
+    async def _refine_search(
+        self, broad_items: list[CollectedItem], semaphore: asyncio.Semaphore | None = None
+    ) -> list[CollectedItem]:
         if not self._llm:
             logger.info("Skipping web search refinement: refine LLM not configured (feature disabled)")
             return []
@@ -88,7 +99,9 @@ class WebSearchCollector(BaseCollector):
             return []
 
         logger.info("LLM-generated refined queries: %s", queries)
-        tasks = [asyncio.ensure_future(self._search_trend(query, [], "refined")) for query in queries]
+        tasks = [
+            asyncio.ensure_future(self._search_trend(query, [], "refined", semaphore=semaphore)) for query in queries
+        ]
         # Refinement is intentionally non-fatal (broad results are the floor), but a total
         # failure should be visible to ops so degraded refinement isn't silent.
         refined_items = await gather_collector_results(tasks)
@@ -118,7 +131,13 @@ class WebSearchCollector(BaseCollector):
         return []
 
     async def _search_trend(
-        self, query: str, domains: list[str], trend_name: str, topic: Literal["news", "general"] = "news"
+        self,
+        query: str,
+        domains: list[str],
+        trend_name: str,
+        topic: Literal["news", "general"] = "news",
+        *,
+        semaphore: asyncio.Semaphore | None = None,
     ) -> list[CollectedItem]:
         logger.info("Searching trend '%s' with query: '%s' (topic='%s')", trend_name, query, topic)
         days = max(1, self.config.lookback_hours // 24)
@@ -135,13 +154,20 @@ class WebSearchCollector(BaseCollector):
                 timeout=self.config.request_timeout,
             )
 
-        response = await retry_async(
-            _search,
-            max_retries=self.config.max_retries,
-            backoff_sec=self.config.retry_backoff_sec,
-            retry_on=(Exception,),
-            description=f"Tavily search for trend '{trend_name}' query '{query}'",
-        )
+        async def _search_with_retries() -> dict:
+            return await retry_async(
+                _search,
+                max_retries=self.config.max_retries,
+                backoff_sec=self.config.retry_backoff_sec,
+                retry_on=(Exception,),
+                description=f"Tavily search for trend '{trend_name}' query '{query}'",
+            )
+
+        if semaphore is None:
+            response = await _search_with_retries()
+        else:
+            async with semaphore:
+                response = await _search_with_retries()
         return self._parse_results(response, trend_name=trend_name)
 
     def _parse_results(

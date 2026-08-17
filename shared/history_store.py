@@ -163,4 +163,6 @@ class RollingLog:
         if dedup_key is not None and dedup_key in record:
             log = [e for e in log if e.get(dedup_key) != record[dedup_key]]
         log.append(record)
-        self.store.write_json(self.key, log[-self.max_entries :])
+        # max_entries == 0 disables the window; log[-0:] is the WHOLE list, so the cap silently
+        # became "keep everything" — the one setting meant to keep nothing grew without bound.
+        self.store.write_json(self.key, log[-self.max_entries :] if self.max_entries > 0 else [])

@@ -42,12 +42,15 @@ def _handle_slack_event(event: dict[str, Any], context: Any) -> dict[str, Any]:
     except (json.JSONDecodeError, TypeError):
         return {"statusCode": 400, "body": "Bad Request"}
 
-    if data.get("type") == "url_verification":
-        return {"statusCode": 200, "body": data.get("challenge", "")}
-
+    # Verify BEFORE any branch acts on the body. url_verification used to answer first, so anyone
+    # who could reach the endpoint got an unauthenticated echo of attacker-chosen bytes (and a free
+    # signal that the endpoint is live). Slack signs the handshake like every other event.
     if not _verify_slack_signature(headers, body):
         logger.warning("Slack signature verification failed")
         return {"statusCode": 401, "body": "Unauthorized"}
+
+    if data.get("type") == "url_verification":
+        return {"statusCode": 200, "body": data.get("challenge", "")}
 
     if data.get("type") == "event_callback":
         evt = data.get("event", {})

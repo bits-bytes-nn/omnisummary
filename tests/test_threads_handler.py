@@ -332,3 +332,101 @@ class TestPostToThreads:
         assert threads_handler._is_transient_reply_error(err(503))
         assert not threads_handler._is_transient_reply_error(err(401))  # auth: don't retry
         assert not threads_handler._is_transient_reply_error(err(403))
+
+
+class TestPublishPost:
+    @pytest.mark.asyncio
+    async def test_text_post_sends_text_media_type_and_no_wait(self):
+        client = MagicMock()
+        with patch.object(threads_handler, "_create_container", new=AsyncMock(return_value="c1")) as create:
+            with patch.object(threads_handler, "_publish_container", new=AsyncMock(return_value="p1")) as publish:
+                with patch.object(threads_handler.asyncio, "sleep", new=AsyncMock()) as sleep:
+                    post_id = await threads_handler._publish_post(client, "u", "tok", text="hello")
+        assert post_id == "p1"
+        assert create.await_args.kwargs["media_type"] == "TEXT"
+        assert create.await_args.kwargs["text"] == "hello"
+        assert "image_url" not in create.await_args.kwargs
+        publish.assert_awaited_once()
+        sleep.assert_not_awaited()  # only an image container needs the processing wait
+
+    @pytest.mark.asyncio
+    async def test_image_post_waits_for_media_processing(self):
+        client = MagicMock()
+        with patch.object(threads_handler, "_create_container", new=AsyncMock(return_value="c1")):
+            with patch.object(threads_handler, "_publish_container", new=AsyncMock(return_value="p1")):
+                with patch.object(threads_handler.asyncio, "sleep", new=AsyncMock()) as sleep:
+                    await threads_handler._publish_post(client, "u", "tok", text="t", image_url="https://s3/i.png")
+        sleep.assert_awaited_once_with(threads_handler.THREADS_MEDIA_PROCESS_WAIT_SEC)
+
+    @pytest.mark.asyncio
+    async def test_text_is_hard_capped_at_the_api_limit(self):
+        client = MagicMock()
+        with patch.object(threads_handler, "_create_container", new=AsyncMock(return_value="c1")) as create:
+            with patch.object(threads_handler, "_publish_container", new=AsyncMock(return_value="p1")):
+                await threads_handler._publish_post(client, "u", "tok", text="x" * 900, reply_to_id="rid")
+        assert len(create.await_args.kwargs["text"]) == threads_handler.THREADS_MAX_TEXT_LENGTH
+        assert create.await_args.kwargs["reply_to_id"] == "rid"
+
+    @pytest.mark.asyncio
+    async def test_create_container_posts_token_and_returns_id(self):
+        req = httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads")
+        client = MagicMock()
+        client.post = AsyncMock(return_value=httpx.Response(200, request=req, json={"id": "c9"}))
+        assert await threads_handler._create_container(client, "u", "tok", media_type="TEXT") == "c9"
+        assert client.post.await_args.kwargs["data"]["access_token"] == "tok"
+
+
+class TestImageHosting:
+    def test_uploads_with_content_type_and_presigns(self):
+        s3 = MagicMock()
+        s3.generate_presigned_url.return_value = "https://s3/presigned"
+        with patch.object(threads_handler.boto3, "client", return_value=s3):
+            url = threads_handler._upload_image_for_hosting(b"PNG", "bucket", "k/p.jpg", content_type="image/jpeg")
+        assert url == "https://s3/presigned"
+        assert s3.put_object.call_args.kwargs["ContentType"] == "image/jpeg"
+        assert s3.put_object.call_args.kwargs["Key"] == "k/p.jpg"
+        assert s3.generate_presigned_url.call_args.kwargs["ExpiresIn"] == threads_handler.THREADS_IMAGE_URL_TTL_SEC
+
+    @pytest.mark.asyncio
+    async def test_hosting_failure_falls_back_to_text_only(self):
+        # A dead S3 upload must not sink the digest: the root still posts, just without the image.
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_upload_image_for_hosting", side_effect=RuntimeError("denied")):
+                with patch.object(threads_handler, "_publish_post", new=AsyncMock(return_value="rid")) as pub:
+                    ok = await post_to_threads(
+                        root_text="R", replies=[], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
+                    )
+        assert ok is True
+        assert pub.await_args_list[0].kwargs["image_url"] == ""
+
+    @pytest.mark.asyncio
+    async def test_no_bucket_configured_posts_text_only(self):
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_upload_image_for_hosting") as up:
+                with patch.object(threads_handler, "_publish_post", new=AsyncMock(return_value="rid")) as pub:
+                    ok = await post_to_threads(root_text="R", image_bytes=b"PNG", image_bucket="", image_key="")
+        assert ok is True
+        up.assert_not_called()
+        assert pub.await_args_list[0].kwargs["image_url"] == ""
+
+
+class TestAddressability:
+    @pytest.mark.asyncio
+    async def test_addressable_on_200_and_not_on_400(self):
+        req = httpx.Request("GET", "https://graph.threads.net/v1.0/rid")
+        client = MagicMock()
+        client.get = AsyncMock(return_value=httpx.Response(200, request=req, json={"id": "rid"}))
+        assert await threads_handler._is_addressable(client, "rid", "tok") is True
+        client.get = AsyncMock(return_value=httpx.Response(400, request=req, text="media not found"))
+        assert await threads_handler._is_addressable(client, "rid", "tok") is False
+
+    @pytest.mark.asyncio
+    async def test_transport_error_is_not_addressable(self):
+        client = MagicMock()
+        client.get = AsyncMock(side_effect=httpx.ConnectError("no route"))
+        assert await threads_handler._is_addressable(client, "rid", "tok") is False
+
+    def test_error_detail_survives_an_unreadable_body(self):
+        exc = MagicMock()
+        type(exc).response = property(lambda self: (_ for _ in ()).throw(RuntimeError("gone")))
+        assert threads_handler._error_detail(exc) == "<no response body>"

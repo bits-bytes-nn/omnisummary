@@ -164,3 +164,156 @@ class TestFanOutBound:
                     items = await c.collect()
         assert len(items) == 6  # every account still collected
         assert state["peak"] <= 2
+
+
+class _Feed(dict):
+    """feedparser-style dict with attribute access (mirrors tests/test_rss_collector.py)."""
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as e:
+            raise AttributeError(name) from e
+
+
+def _entry(**kwargs) -> _Feed:
+    base = {
+        "title": "a post",
+        "link": "https://x.com/karpathy/status/1",
+        "id": "tweet-1",
+        "published": "Tue, 02 Jun 2026 12:00:00 GMT",
+        "summary": "post body",
+    }
+    base.update(kwargs)
+    return _Feed(base)
+
+
+def _feed(entries, *, bozo=False) -> _Feed:
+    return _Feed(entries=entries, bozo=bozo, bozo_exception=Exception("x") if bozo else None)
+
+
+class TestFeedParsing:
+    def test_parses_entry_into_x_item(self):
+        c = RSSHubCollector(_config())
+        with patch("collectors.rsshub.feedparser.parse", return_value=_feed([_entry()])):
+            items = c._parse_feed("http://localhost:1200/twitter/user/karpathy", "karpathy", "x")
+        assert len(items) == 1
+        item = items[0]
+        assert item.source_type == SourceType.X
+        assert item.item_id == "tweet-1"
+        assert item.author == "karpathy"
+        assert item.text == "post body"
+        assert item.metadata == {
+            "rsshub_feed": "http://localhost:1200/twitter/user/karpathy",
+            "platform": "x",
+        }
+
+    def test_prefers_content_over_summary(self):
+        c = RSSHubCollector(_config())
+        entry = _entry(content=[{"value": "rich body"}])
+        with patch("collectors.rsshub.feedparser.parse", return_value=_feed([entry])):
+            items = c._parse_feed("u", "karpathy", "x")
+        assert items[0].text == "rich body"
+
+    def test_entry_outside_the_window_is_dropped(self):
+        c = RSSHubCollector(_config())
+        old = _entry(published="Mon, 01 Jun 2026 00:00:00 GMT")  # reference 2026-06-03, lookback 24h
+        with patch("collectors.rsshub.feedparser.parse", return_value=_feed([old])):
+            assert c._parse_feed("u", "karpathy", "x") == []
+
+    def test_entry_without_id_falls_back_to_a_url_hash(self):
+        c = RSSHubCollector(_config())
+        entry = _entry(id="")
+        with patch("collectors.rsshub.feedparser.parse", return_value=_feed([entry])):
+            items = c._parse_feed("u", "karpathy", "x")
+        assert items[0].item_id  # generated from the link, never empty
+
+    def test_unparseable_feed_raises_for_health(self):
+        c = RSSHubCollector(_config())
+        with patch("collectors.rsshub.feedparser.parse", return_value=_feed([], bozo=True)):
+            with pytest.raises(RuntimeError, match="Failed to parse RSSHub feed"):
+                c._parse_feed("u", "karpathy", "x")
+
+    def test_bozo_with_entries_is_still_parsed(self):
+        # feedparser sets bozo on minor XML issues but still returns entries.
+        c = RSSHubCollector(_config())
+        with patch("collectors.rsshub.feedparser.parse", return_value=_feed([_entry()], bozo=True)):
+            assert len(c._parse_feed("u", "karpathy", "x")) == 1
+
+    def test_malformed_entry_is_skipped_not_fatal(self):
+        # A structurally broken entry (content that isn't feedparser's list-of-dicts) is skipped;
+        # the healthy sibling in the same feed still lands.
+        c = RSSHubCollector(_config())
+        broken = _entry(id="broken", content="not-a-list")
+        with patch("collectors.rsshub.feedparser.parse", return_value=_feed([broken, _entry()])):
+            items = c._parse_feed("u", "karpathy", "x")
+        assert [i.item_id for i in items] == ["tweet-1"]
+
+    def test_field_less_entry_still_yields_an_item(self):
+        # Pins current behavior: a title/link-less entry is NOT dropped here — the aggregator's
+        # "missing a url or title" guard is what removes it before ranking.
+        c = RSSHubCollector(_config())
+        with patch("collectors.rsshub.feedparser.parse", return_value=_feed([_Feed()])):
+            items = c._parse_feed("u", "karpathy", "x")
+        assert len(items) == 1 and items[0].url == "" and items[0].title == ""
+
+
+class TestFeedRouting:
+    def test_twitter_platforms_map_to_the_twitter_route(self):
+        assert RSSHubCollector._build_feed_path("karpathy", "x") == "twitter/user/karpathy"
+        assert RSSHubCollector._build_feed_path("karpathy", "Twitter") == "twitter/user/karpathy"
+
+    def test_other_platform_keeps_its_own_route(self):
+        assert RSSHubCollector._build_feed_path("someone", "Mastodon") == "mastodon/user/someone"
+
+    def test_source_type_is_x_only_for_twitter_platforms(self):
+        assert RSSHubCollector._detect_source_type("x") == SourceType.X
+        assert RSSHubCollector._detect_source_type("mastodon") == SourceType.WEB
+
+
+class TestParkedItems:
+    @pytest.mark.asyncio
+    async def test_park_file_short_circuits_live_collection(self):
+        # The AWS path: X is collected locally and parked in S3, so the Lambda must not fetch live
+        # (a datacenter IP gets blocked) and must not even probe RSSHub for reachability.
+        c = RSSHubCollector(_config())
+        parked = ParkedItems(outcome=ParkOutcome.FRESH, items=[_item("parked")])
+        with patch("collectors.rsshub.load_items_from_s3", return_value=parked):
+            with patch.object(c, "_check_reachable") as reach:
+                items = await c.collect()
+        assert [i.item_id for i in items] == ["parked"]
+        reach.assert_not_called()
+        assert c.park_status is not None and c.park_status.degraded is False
+
+    @pytest.mark.asyncio
+    async def test_stale_park_items_are_used_and_flagged(self):
+        c = RSSHubCollector(_config())
+        stale = ParkedItems(outcome=ParkOutcome.STALE, items=[_item("old")], age_hours=72.0, detail="72h")
+        with patch("collectors.rsshub.load_items_from_s3", return_value=stale):
+            items = await c.collect()
+        assert [i.item_id for i in items] == ["old"]
+        assert c.park_status is not None and c.park_status.degraded is True
+
+    @pytest.mark.asyncio
+    async def test_park_age_budget_comes_from_config(self):
+        c = RSSHubCollector(_config(park_max_age_hours=72))
+        with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()) as load:
+            with patch.object(c, "_check_reachable"):
+                with patch.object(c, "_parse_feed", return_value=[]):
+                    await c.collect()
+        assert load.call_args.kwargs["max_age_hours"] == 72
+
+    @pytest.mark.asyncio
+    async def test_disabled_collector_short_circuits(self):
+        c = RSSHubCollector(_config(enabled=False))
+        with patch("collectors.rsshub.load_items_from_s3") as load:
+            assert await c.collect() == []
+        load.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_accounts_configured_returns_empty(self):
+        c = RSSHubCollector(_config(accounts=[]))
+        with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
+            with patch.object(c, "_check_reachable") as reach:
+                assert await c.collect() == []
+        reach.assert_not_called()

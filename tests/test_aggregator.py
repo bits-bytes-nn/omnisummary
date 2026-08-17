@@ -133,6 +133,17 @@ class TestContentAggregator:
         result = ContentAggregator().aggregate(items)
         assert len(result) == 1
 
+    def test_titles_normalizing_to_empty_do_not_dedup_against_each_other(self):
+        # Emoji/punctuation-only titles (common on X) all normalize to "" — they used to collapse
+        # into one bucket, so unrelated posts silently swallowed each other.
+        items = [
+            _item(url="http://a.com", title="🔥🔥🔥"),
+            _item(url="http://b.com", title="!!!"),
+            _item(url="http://c.com", title="..."),
+        ]
+        result = ContentAggregator().aggregate(items)
+        assert {it.url for it in result} == {"http://a.com", "http://b.com", "http://c.com"}
+
     def test_pinned_item_bypasses_title_dedup(self):
         # A pinned item sharing a normalized title with an earlier story must NOT be dropped by
         # title dedup — otherwise the --pin-url guarantee dies before the ranker's pin-recovery

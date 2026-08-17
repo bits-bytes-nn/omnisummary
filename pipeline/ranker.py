@@ -144,6 +144,48 @@ class ContentRanker:
         return selected
 
     async def _rank_batch(self, items: list[CollectedItem], semaphore: asyncio.Semaphore) -> list[RankedItem]:
+        """Score one batch and reconcile its COVERAGE: an LLM that quietly omits item ids returns a
+        perfectly valid response, so those candidates used to vanish from the day's pool without a
+        trace. The shortfall is always logged, and when coverage falls below
+        ranking_min_coverage_ratio the omitted items get ONE extra re-ask (never more). A failed or
+        still-short re-ask leaves the original outcome untouched — it can never fail the batch."""
+        ranked = await self._score_batch(items, semaphore)
+        scored_ids = {r.item.item_id for r in ranked}
+        missing = [it for it in items if it.item_id not in scored_ids]
+        if not missing:
+            return ranked
+
+        logger.warning(
+            "Ranking batch scored %d/%d items; %d omitted by the model: %s",
+            len(ranked),
+            len(items),
+            len(missing),
+            [it.item_id for it in missing],
+        )
+        coverage = len(ranked) / len(items)
+        if coverage >= self.config.ranking_min_coverage_ratio:
+            return ranked
+
+        logger.info(
+            "Re-asking the ranker once for %d omitted item(s) (coverage %.2f < %.2f)",
+            len(missing),
+            coverage,
+            self.config.ranking_min_coverage_ratio,
+        )
+        try:
+            recovered = await self._score_batch(missing, semaphore)
+        except Exception:
+            # The re-ask is a best-effort top-up: its failure must not turn a partially-scored
+            # batch into a failed one (rank() would then count it toward the all-batches-failed
+            # outage check), so keep exactly what the first pass produced.
+            logger.warning("Ranking coverage re-ask failed; keeping the partially scored batch", exc_info=True)
+            return ranked
+
+        extra = [r for r in recovered if r.item.item_id not in scored_ids]
+        logger.info("Coverage re-ask recovered %d of %d omitted item(s)", len(extra), len(missing))
+        return ranked + extra
+
+    async def _score_batch(self, items: list[CollectedItem], semaphore: asyncio.Semaphore) -> list[RankedItem]:
         """Score one batch, retrying the Converse call before giving up. The failure used to be
         swallowed into [] — a single throttle or transient 5xx silently deleted a whole batch of
         candidates from the day's pool. Now it retries, and a permanent failure PROPAGATES so
@@ -289,7 +331,7 @@ class ContentRanker:
             if origin_key:
                 origin_counts[origin_key] += 1
 
-        for source_key, slot_count in source_slots.items():
+        for source_key, slot_count in self._slot_order(above_threshold, source_slots):
             taken = 0
             for item in above_threshold:
                 if taken >= slot_count or len(selected) >= limit:
@@ -331,6 +373,23 @@ class ContentRanker:
 
         selected.sort(key=lambda r: (-r.score, r.item.item_id))
         return selected[:limit]
+
+    @staticmethod
+    def _slot_order(above_threshold: list[RankedItem], source_slots: dict[str, int]) -> list[tuple[str, int]]:
+        """Order the guaranteed-slot pass by each source's BEST candidate score (descending), with
+        the source key as a deterministic tie-break — not by config key order, which is arbitrary.
+
+        It only changes anything when the limit cannot cover every slot (a short digest via
+        --select-count, or slots reserved by pinned items): the last-listed sources then went home
+        empty regardless of how strong their candidates were, purely because of where they sat in
+        the YAML. With limit >= sum(source_slots) — the live config — every source still fills its
+        own slots and the selection is identical."""
+        best: dict[str, float] = {}
+        for r in above_threshold:
+            src = r.item.source_type.value
+            if src in source_slots:
+                best[src] = max(best.get(src, 0.0), r.score)
+        return sorted(source_slots.items(), key=lambda kv: (-best.get(kv[0], 0.0), kv[0]))
 
     def _make_batches(self, ordered: list[CollectedItem]) -> list[list[CollectedItem]]:
         """Split ranking input into batches capped by BOTH item count (ranking_batch_size) and a

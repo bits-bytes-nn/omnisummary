@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
-from shared import DigestResult, logger, resolve_secret
+from shared import DigestResult, get_config, logger, resolve_secret
 from shared.config import SlackConfig
 
 SLACK_MAX_TEXT_LENGTH = 3900
@@ -82,7 +83,7 @@ async def send_image_to_slack(
         return False
 
 
-async def send_digest_to_slack(digest: DigestResult, config: SlackConfig) -> bool:
+async def send_digest_to_slack(digest: DigestResult, config: SlackConfig, digest_date: date | None = None) -> bool:
     bot_token = config.bot_token or resolve_secret("SLACK_BOT_TOKEN", "slack-bot-token")
     channel_id = config.channel_id or resolve_secret("SLACK_CHANNEL_ID", "slack-channel-id")
 
@@ -90,7 +91,10 @@ async def send_digest_to_slack(digest: DigestResult, config: SlackConfig) -> boo
         logger.warning("Slack bot_token or channel_id not configured. Skipping Slack delivery.")
         return False
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    # Stamp the header with the RUN's digest date, which the pipeline already computed in the
+    # configured timezone. datetime.now() read the Lambda's UTC clock, so the 19:00 KST digest was
+    # published under the PREVIOUS day's date; fall back to the configured timezone, never UTC.
+    today = (digest_date or datetime.now(ZoneInfo(get_config().aws.timezone)).date()).isoformat()
     # Count the stories actually shown (the LLM may merge ranked items into fewer), not the
     # raw ranked count — otherwise the header overstates how many stories are in the digest.
     n_stories = len(digest.content.items) if digest.content and digest.content.items else len(digest.ranked_items)

@@ -75,8 +75,17 @@ class ContentAggregator:
         seen_titles: dict[str, CollectedItem] = {}
         deduplicated: list[CollectedItem] = []
         title_dupes = 0
+        empty_norm = 0
         for item in url_deduped:
             norm = normalize_title(item.title)
+            # A title made only of punctuation/emoji (common for X posts) normalizes to "", and
+            # every such item lands in the SAME bucket — so without this they'd dedup against each
+            # other and silently swallow unrelated siblings. Same trap as the empty-url guard
+            # above; these items have distinct URLs, so pass them through untouched.
+            if not norm:
+                empty_norm += 1
+                deduplicated.append(item)
+                continue
             # Pinned items (user-specified via --pin-url) bypass title dedup too — mirroring the
             # URL-dedup bypass above. Otherwise a pin sharing a normalized title with an
             # earlier-inserted story is dropped here, before the ranker's pin-recovery can see it,
@@ -98,6 +107,9 @@ class ContentAggregator:
             else:
                 seen_titles[norm] = item
                 deduplicated.append(item)
+
+        if empty_norm:
+            logger.info("Kept %d item(s) whose title normalizes to empty out of title dedup", empty_norm)
 
         for item in deduplicated:
             item.metadata = self._normalize_metadata(item.metadata)

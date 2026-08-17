@@ -77,13 +77,31 @@ def dump_items_envelope(items: list[CollectedItem], generated_at: datetime | Non
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+def park_file_key(filename: str, root_prefix: str) -> str:
+    """S3 key of a collector's park file under `root_prefix` (the bucket ROOT prefix, i.e. the
+    config's aws.s3_prefix). Single source of truth for the layout: the sync scripts write with it
+    and load_items_from_s3 reads with it, so the writer and reader can't drift — they used to
+    disagree whenever s3_prefix was empty (writer '<file>' vs reader 'digest_state/<file>')."""
+    root = root_prefix.strip("/")
+    return f"{root}/{filename}" if root else filename
+
+
+def park_root_prefix(state_prefix: str) -> str:
+    """Bucket ROOT prefix derived from the digest-state prefix (S3_PREFIX, set by the CDK Lambda
+    env as '<root>/digest_state'). Parked items live one level up from the digest state, so the
+    root is the state prefix's parent — and '' when there is no parent (bare 'digest_state')."""
+    prefix = state_prefix.strip("/")
+    return prefix.rsplit("/", 1)[0] if "/" in prefix else ""
+
+
 def load_items_from_s3(filename: str, max_age_hours: int = S3_ITEMS_MAX_AGE_HOURS) -> ParkedItems:
     """Load a collector's pre-fetched items from S3 (uploaded by a local sync script).
 
     Sources that YouTube/X block from datacenter (Lambda) IPs are collected locally on a
     residential IP and parked in S3; in AWS the collector reads that file instead of fetching
     live. The S3 key mirrors trends.json: the prefix's parent + filename (S3_PREFIX is
-    '<root>/digest_state', the items live one level up at '<root>/').
+    '<root>/digest_state', the items live one level up at '<root>/'), computed by the same
+    park_file_key() the sync scripts write with.
 
     Returns a ParkedItems describing the outcome — `usable` says whether the items came from the
     park file, `degraded` says whether the health report must read STALE. ABSENT (no STATE_BUCKET,
@@ -102,9 +120,7 @@ def load_items_from_s3(filename: str, max_age_hours: int = S3_ITEMS_MAX_AGE_HOUR
     if not bucket:
         return ParkedItems(outcome=ParkOutcome.ABSENT)
 
-    prefix = os.environ.get("S3_PREFIX", "").rstrip("/")
-    base_prefix = prefix.rsplit("/", 1)[0] if "/" in prefix else prefix
-    s3_key = f"{base_prefix}/{filename}" if base_prefix else filename
+    s3_key = park_file_key(filename, park_root_prefix(os.environ.get("S3_PREFIX", "")))
 
     try:
         resp = boto3.client("s3").get_object(Bucket=bucket, Key=s3_key)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 
 import feedparser
 import httpx
@@ -27,6 +28,31 @@ _HANDLE_PATTERN = re.compile(r"/@([A-Za-z0-9_.-]+)")
 # rows would drop a fresh video that ranks below a stale one — which is why low-cadence channels
 # like Dwarkesh kept getting missed. Over-fetch + sort-by-date fixes that.
 _CHANNEL_FETCH_DEPTH = 15
+# Statuses worth another attempt: rate limiting and server-side faults. Everything else — notably
+# 403 (quota exhausted / revoked key) and 404 (unknown channel or playlist) — is permanent and
+# still fails the channel on the first response instead of burning its time budget on retries.
+_RETRIABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
+
+class TransientStatusError(RuntimeError):
+    """A YouTube Data API response that should be retried (429 / 5xx). A RuntimeError like the
+    permanent rejections, so an exhausted retry chain still reads as a channel FAILURE upstream."""
+
+
+def _retry_after_delay(response: httpx.Response, cap_sec: float) -> float:
+    """Server-requested backoff from a Retry-After header (delta-seconds or HTTP-date), clamped to
+    cap_sec so an absurd value can't outlive the channel's timeout budget. 0 when absent/unusable."""
+    raw = response.headers.get("Retry-After", "").strip()
+    if not raw:
+        return 0.0
+    try:
+        delay = float(raw)
+    except ValueError:
+        try:
+            delay = (parsedate_to_datetime(raw) - datetime.now(UTC)).total_seconds()
+        except (TypeError, ValueError):
+            return 0.0
+    return max(0.0, min(delay, cap_sec))
 
 
 def _latest_within_window(items: list[CollectedItem], limit: int) -> list[CollectedItem]:
@@ -87,10 +113,31 @@ class YouTubeCollector(BaseCollector):
 
         # One resolution for the whole run, before the fan-out, so no channel task blocks the loop.
         await self._resolve_api_key()
-        tasks = [self._collect_channel(ch) for ch in self.config.channels]
+        # Bound the fan-out. Each channel occupies worker threads (page scrape, transcript fetches)
+        # and burns Data API quota, and with dozens of channels the default executor is
+        # oversubscribed — a channel's timeout could expire while its work had not even started.
+        # The semaphore is created HERE (on the running loop, never at import/__init__) and is
+        # acquired BEFORE the per-channel timeout, so the timeout measures the fetch, not the queue
+        # wait. Mirrors rss.max_concurrency / rsshub.max_concurrency.
+        semaphore = asyncio.Semaphore(self.config.max_concurrency)
+        tasks = [self._collect_channel_bounded(ch, semaphore) for ch in self.config.channels]
         items = await gather_collector_results(tasks, labels=self.config.channels, raise_if_all_failed=True)
         logger.info("YouTube collector gathered %d items total", len(items))
         return items
+
+    async def _collect_channel_bounded(self, channel_url: str, semaphore: asyncio.Semaphore) -> list[CollectedItem]:
+        """Run one channel inside the fan-out bound and a real wall-clock budget. The per-step
+        timeouts (resolve, transcript) left the API calls themselves unbounded, so a wedged channel
+        could hold the digest until the Lambda itself timed out."""
+        async with semaphore:
+            budget = self.config.channel_budget_sec
+            try:
+                return await asyncio.wait_for(self._collect_channel(channel_url), timeout=budget)
+            except TimeoutError as e:
+                # Raise (not return []) so gather_collector_results counts this as a task FAILURE:
+                # an all-channels-hung run then reports FAILED instead of a silent empty result.
+                logger.warning("YouTube channel '%s' timed out after %ds, skipping", channel_url, budget)
+                raise RuntimeError(f"YouTube channel '{channel_url}' timed out after {budget}s") from e
 
     async def _collect_channel(self, channel_url: str) -> list[CollectedItem]:
         logger.info("Collecting videos from channel '%s'", channel_url)
@@ -115,19 +162,15 @@ class YouTubeCollector(BaseCollector):
                 raise RuntimeError(f"Could not resolve canonical channel ID for '{channel_url}'")
 
             uploads_playlist = f"UU{channel_id[2:]}"
-            response = await retry_async(
-                lambda: client.get(
-                    f"{YOUTUBE_API_BASE}/playlistItems",
-                    params={
-                        "part": "snippet",
-                        "playlistId": uploads_playlist,
-                        "maxResults": _CHANNEL_FETCH_DEPTH,
-                        "key": self.api_key,
-                    },
-                ),
-                max_retries=self.config.max_retries,
-                backoff_sec=self.config.retry_backoff_sec,
-                retry_on=(httpx.HTTPError,),
+            response = await self._get_api(
+                client,
+                "playlistItems",
+                {
+                    "part": "snippet",
+                    "playlistId": uploads_playlist,
+                    "maxResults": _CHANNEL_FETCH_DEPTH,
+                    "key": self.api_key,
+                },
                 description=f"YouTube playlistItems for '{channel_url}'",
             )
             # Raise (not return []) on an API rejection or a malformed body: these are FAILURES,
@@ -151,18 +194,14 @@ class YouTubeCollector(BaseCollector):
             if not video_ids:
                 return []
 
-            details_resp = await retry_async(
-                lambda: client.get(
-                    f"{YOUTUBE_API_BASE}/videos",
-                    params={
-                        "part": "snippet,statistics,contentDetails",
-                        "id": ",".join(video_ids),
-                        "key": self.api_key,
-                    },
-                ),
-                max_retries=self.config.max_retries,
-                backoff_sec=self.config.retry_backoff_sec,
-                retry_on=(httpx.HTTPError,),
+            details_resp = await self._get_api(
+                client,
+                "videos",
+                {
+                    "part": "snippet,statistics,contentDetails",
+                    "id": ",".join(video_ids),
+                    "key": self.api_key,
+                },
                 description=f"YouTube videos details for '{channel_url}'",
             )
             if details_resp.status_code != 200:
@@ -286,14 +325,10 @@ class YouTubeCollector(BaseCollector):
             return ""
         handle = match.group(1)
         try:
-            resp = await retry_async(
-                lambda: client.get(
-                    f"{YOUTUBE_API_BASE}/channels",
-                    params={"part": "id", "forHandle": handle, "key": self.api_key},
-                ),
-                max_retries=self.config.max_retries,
-                backoff_sec=self.config.retry_backoff_sec,
-                retry_on=(httpx.HTTPError,),
+            resp = await self._get_api(
+                client,
+                "channels",
+                {"part": "id", "forHandle": handle, "key": self.api_key},
                 description=f"YouTube channels forHandle '{handle}'",
             )
             if resp.status_code != 200:
@@ -303,9 +338,37 @@ class YouTubeCollector(BaseCollector):
             if items:
                 return items[0].get("id", "")
             logger.warning("YouTube channels.forHandle '%s' found no channel", handle)
-        except (httpx.HTTPError, ValueError, KeyError) as e:
+        except (httpx.HTTPError, TransientStatusError, ValueError, KeyError) as e:
+            # A handle lookup that can't be completed (incl. an exhausted 429/5xx retry chain) is
+            # not fatal here — the caller falls back to the page scrape.
             logger.warning("YouTube channels.forHandle '%s' failed: %s", handle, e)
         return ""
+
+    async def _get_api(self, client: httpx.AsyncClient, path: str, params: dict, *, description: str) -> httpx.Response:
+        """GET a YouTube Data API endpoint, retrying transport errors AND transient statuses
+        (429 / 5xx, honouring a Retry-After capped inside the channel's budget). Permanent
+        rejections (403 quota/key, 404 unknown resource) are returned as-is on the first response
+        so the caller fails the channel immediately instead of retrying a verdict."""
+
+        async def _call() -> httpx.Response:
+            resp = await client.get(f"{YOUTUBE_API_BASE}/{path}", params=params)
+            if resp.status_code in _RETRIABLE_STATUS_CODES:
+                delay = _retry_after_delay(resp, self.config.request_timeout)
+                if delay:
+                    logger.warning(
+                        "%s returned %d; honouring Retry-After of %.0fs", description, resp.status_code, delay
+                    )
+                    await asyncio.sleep(delay)
+                raise TransientStatusError(f"{description} returned {resp.status_code}")
+            return resp
+
+        return await retry_async(
+            _call,
+            max_retries=self.config.max_retries,
+            backoff_sec=self.config.retry_backoff_sec,
+            retry_on=(httpx.HTTPError, TransientStatusError),
+            description=description,
+        )
 
     async def _resolve_channel_id_async(self, channel_url: str) -> str:
         try:

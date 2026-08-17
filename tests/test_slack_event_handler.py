@@ -47,11 +47,29 @@ def _signed_headers(body: str, secret: str = SIGNING_SECRET, ts: str | None = No
 
 
 class TestUrlVerification:
-    def test_challenge_echoed_without_signature(self):
+    def test_challenge_echoed_for_a_signed_request(self):
         body = json.dumps({"type": "url_verification", "challenge": "abc123"})
-        resp = h.handler({"body": body, "headers": {}}, None)
+        with patch.object(h.boto3, "client") as mock_client:
+            mock_client.return_value.get_parameter.return_value = {"Parameter": {"Value": SIGNING_SECRET}}
+            resp = h.handler({"body": body, "headers": _signed_headers(body)}, None)
         assert resp["statusCode"] == 200
         assert resp["body"] == "abc123"
+
+    def test_unsigned_challenge_is_rejected(self):
+        # The handshake used to be answered BEFORE verification, so anyone who could reach the
+        # endpoint got an unauthenticated echo of attacker-chosen bytes.
+        body = json.dumps({"type": "url_verification", "challenge": "abc123"})
+        resp = h.handler({"body": body, "headers": {}}, None)
+        assert resp["statusCode"] == 401
+        assert resp["body"] == "Unauthorized"
+
+    def test_badly_signed_challenge_is_rejected(self):
+        body = json.dumps({"type": "url_verification", "challenge": "abc123"})
+        headers = {"X-Slack-Request-Timestamp": str(int(time.time())), "X-Slack-Signature": "v0=deadbeef"}
+        with patch.object(h.boto3, "client") as mock_client:
+            mock_client.return_value.get_parameter.return_value = {"Parameter": {"Value": SIGNING_SECRET}}
+            resp = h.handler({"body": body, "headers": headers}, None)
+        assert resp["statusCode"] == 401
 
 
 class TestSignatureVerification:

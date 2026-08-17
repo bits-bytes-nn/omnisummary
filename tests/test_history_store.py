@@ -164,6 +164,15 @@ class TestRollingLog:
         leads = [e["lead"] for e in log.entries()]
         assert leads == ["L2", "L3", "L4"]
 
+    def test_zero_window_keeps_nothing(self):
+        # log[-0:] is the WHOLE list, so a disabled window (max_entries=0) used to keep every
+        # record forever — the one setting meant to keep nothing grew without bound.
+        store = _MemStore()
+        log = RollingLog(store, "leads.json", max_entries=0)
+        for i in range(3):
+            log.append({"lead": f"L{i}"})
+        assert log.entries() == []
+
     def test_entries_empty_when_unset(self):
         assert RollingLog(_MemStore(), "k.json", max_entries=3).entries() == []
 

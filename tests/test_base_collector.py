@@ -5,7 +5,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
-from collectors.base import ParkOutcome, dump_items_envelope, gather_collector_results, load_items_from_s3
+from collectors.base import (
+    ParkOutcome,
+    dump_items_envelope,
+    gather_collector_results,
+    load_items_from_s3,
+    park_file_key,
+    park_root_prefix,
+)
 from shared.constants import SourceType
 from shared.models import CollectedItem
 
@@ -74,6 +81,28 @@ class TestLoadItemsFromS3:
         assert parked.outcome == ParkOutcome.FRESH
         assert [i.item_id for i in parked.items] == ["v1"]
         assert client.get_object.call_args.kwargs["Key"] == "omnisummary/youtube_items.json"
+
+    def test_reads_root_level_key_when_prefix_is_bare(self, monkeypatch):
+        # With no configured root prefix the CDK sets S3_PREFIX='digest_state', and the sync
+        # scripts write the park file at the bucket root ('<file>'). The reader used to look under
+        # 'digest_state/<file>' and never found it, silently falling back to live collection.
+        monkeypatch.setenv("STATE_BUCKET", "b")
+        monkeypatch.setenv("S3_PREFIX", "digest_state")
+        client = _s3_client_returning(b"[]")
+        with patch("collectors.base.boto3.client", return_value=client):
+            load_items_from_s3("youtube_items.json")
+        assert client.get_object.call_args.kwargs["Key"] == "youtube_items.json"
+
+    def test_park_key_matches_between_writer_and_reader(self):
+        # The sync scripts key off the config's aws.s3_prefix (bucket ROOT); the Lambda reader
+        # derives that root from S3_PREFIX ('<root>/digest_state'). Both must land on one key.
+        for root in ("omnisummary", ""):
+            state_prefix = f"{root}/digest_state" if root else "digest_state"
+            assert park_file_key("rsshub_items.json", root) == park_file_key(
+                "rsshub_items.json", park_root_prefix(state_prefix)
+            )
+        assert park_file_key("rsshub_items.json", "omnisummary") == "omnisummary/rsshub_items.json"
+        assert park_file_key("rsshub_items.json", "") == "rsshub_items.json"
 
     def test_missing_object_is_absent(self, monkeypatch):
         monkeypatch.setenv("STATE_BUCKET", "b")

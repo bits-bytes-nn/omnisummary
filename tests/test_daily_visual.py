@@ -433,6 +433,15 @@ class TestDailyVisualMaker:
         assert await _maker()._gather_context([]) == ""
 
     @pytest.mark.asyncio
+    async def test_gather_context_clamps_research_steps(self):
+        # The prompt asks for 1-3 steps; a chatty plan must not fan out into ten live searches.
+        maker = _maker()
+        research = [{"source": "news", "query": f"q{i}"} for i in range(10)]
+        with patch("shared.research._tavily_search", new=AsyncMock(return_value="NEWS")) as tav:
+            await maker._gather_context(research)
+        assert tav.await_count == maker.config.pipeline.visual_research_max_steps
+
+    @pytest.mark.asyncio
     async def test_gather_context_skips_failed_step(self):
         # A backend that raises must be skipped, not abort the whole gather.
         maker = _maker()
@@ -526,9 +535,16 @@ class TestFormatRotation:
         ]
         assert maker._least_recent_orientation(recent) == "landscape"
 
-    def test_least_recent_orientation_empty_history(self):
+    def test_least_recent_orientation_empty_history_nudges_nothing(self):
+        # With no history there is nothing to vary FROM, so returning the first configured
+        # orientation ('square') was an arbitrary lock on a first run.
         maker = _maker()
-        assert maker._least_recent_orientation([]) in ("square", "landscape", "portrait")
+        assert maker._least_recent_orientation([]) == ""
+
+    def test_least_recent_orientation_no_orientations_configured(self):
+        maker = _maker()
+        maker.config.pipeline.image_sizes = {}
+        assert maker._least_recent_orientation([{"orientation": "square"}]) == ""
 
     def test_format_guidance_empty_history(self):
         maker = _maker()

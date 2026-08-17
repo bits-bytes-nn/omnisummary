@@ -72,6 +72,13 @@ class TestParseRankings:
         result = self._parse(raw)
         assert len(result) == 1
 
+    def test_omitted_item_ids_are_silently_absent(self):
+        # The root cause _rank_batch's coverage reconciliation exists for: a response that simply
+        # omits ids parses cleanly, so those candidates vanish unless the caller reconciles.
+        raw = json.dumps({"rankings": [{"item_id": "item_1", "score": 0.9}]})
+        result = self._parse(raw, _items(3))
+        assert [r.item.item_id for r in result] == ["item_1"]
+
     def test_invalid_json_returns_empty(self):
         result = self._parse("not valid json at all")
         assert result == []

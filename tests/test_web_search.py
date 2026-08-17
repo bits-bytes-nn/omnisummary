@@ -140,6 +140,29 @@ class TestCollect:
         assert last["days"] == 1  # lookback_hours 24 -> 1 day
 
     @pytest.mark.asyncio
+    async def test_search_fan_out_is_bounded_by_config(self, monkeypatch):
+        # Unbounded fan-out threw every configured query at Tavily at once and self-throttled.
+        import asyncio
+
+        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        c = _search_collector(min_search_score=0.3, max_concurrency=1)
+        state = {"active": 0, "peak": 0}
+
+        async def _search(**kwargs):
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+            await asyncio.sleep(0.01)
+            state["active"] -= 1
+            return {"results": []}
+
+        client = MagicMock()
+        client.search = AsyncMock(side_effect=_search)
+        c._client_instance = client
+        await c.collect()
+        assert client.search.await_count == 3
+        assert state["peak"] == 1, f"fan-out exceeded max_concurrency: peak={state['peak']}"
+
+    @pytest.mark.asyncio
     async def test_all_queries_failing_raises(self, monkeypatch):
         # A total Tavily outage must surface as FAILED, not a silently empty web source.
         monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")

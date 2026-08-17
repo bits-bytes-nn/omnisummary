@@ -206,7 +206,7 @@ async def run_pipeline(
         logger.warning("Failed to update published-URL / leads history (non-fatal)", exc_info=True)
 
     if config.pipeline.enable_slack_post:
-        success = await send_digest_to_slack(digest, config.slack)
+        success = await send_digest_to_slack(digest, config.slack, digest_date)
         if success:
             logger.info("Digest sent to Slack successfully")
         else:

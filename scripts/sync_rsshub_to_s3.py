@@ -23,7 +23,7 @@ os.environ.pop("STATE_BUCKET", None)
 os.environ.pop("CLOUDFLARE_PROXY_URL", None)
 os.environ.pop("CLOUDFLARE_PROXY_TOKEN", None)
 
-from collectors.base import dump_items_envelope
+from collectors.base import dump_items_envelope, park_file_key
 from collectors.rsshub import RSSHubCollector
 from shared import Config, logger
 
@@ -60,7 +60,7 @@ async def main() -> None:
         logger.info("Saved %d items to '%s'", len(items), out)
         return
 
-    s3_key = f"{prefix}/rsshub_items.json" if prefix else "rsshub_items.json"
+    s3_key = park_file_key("rsshub_items.json", prefix)
     s3_access_key = os.getenv("S3_SYNC_ACCESS_KEY_ID", "")
     s3_secret_key = os.getenv("S3_SYNC_SECRET_ACCESS_KEY", "")
 
