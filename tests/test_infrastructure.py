@@ -347,3 +347,24 @@ class TestLeastPrivilegeGrants:
         funcs = app.find_resources("AWS::Lambda::Function")
         visual = next(v for v in funcs.values() if v["Properties"].get("FunctionName") == "omnisummary-dev-visual")
         assert "ALERT_SNS_TOPIC_ARN" in visual["Properties"]["Environment"]["Variables"]
+
+
+class TestBedrockCostAttributionPermissions:
+    """The model resolver prefers this project's APPLICATION inference profile so on-demand token
+    spend carries the Project cost-allocation tag (there is no taggable resource behind InvokeModel
+    otherwise). That ARN is a DIFFERENT resource type from the system-defined inference profiles, so
+    omitting it makes every Bedrock call AccessDenied the moment a profile exists — the whole digest."""
+
+    def test_invoke_covers_application_inference_profiles(self, templates):
+        foundation, _ = templates
+        for policy in foundation.find_resources("AWS::IAM::Policy").values():
+            for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
+                actions = statement.get("Action", [])
+                actions = [actions] if isinstance(actions, str) else actions
+                if "bedrock:InvokeModel" not in actions:
+                    continue
+                rendered = json.dumps(statement.get("Resource", []))
+                assert "application-inference-profile/*" in rendered
+                assert "inference-profile/*" in rendered  # system-defined ones still work
+                return
+        raise AssertionError("no statement granting bedrock:InvokeModel was found")

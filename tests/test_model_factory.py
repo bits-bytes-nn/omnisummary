@@ -218,3 +218,74 @@ class TestTokenUsageAttribution:
         handler = _TokenUsageLogger("digest", "global.anthropic.claude-sonnet-5")
         handler.on_llm_end(MagicMock(generations=[], llm_output=None))  # must not raise
         handler.on_llm_end(object())  # not even the expected shape
+
+
+class TestApplicationProfileResolution:
+    """On-demand Bedrock has no taggable resource, so token spend is unattributable in a shared
+    account. The resolver prefers this project's tagged APPLICATION inference profile — and because
+    resolution happens in one place, both the LangChain factory and the Strands research agent get
+    it. It must degrade silently: cost reporting may never stop a generation."""
+
+    def test_profile_name_is_deterministic_and_slugged(self, monkeypatch):
+        from shared.utils import BedrockCrossRegionModelHelper as H
+
+        monkeypatch.setenv("PROJECT_NAME", "omnisummary")
+        monkeypatch.setenv("STAGE", "dev")
+        assert (
+            H.application_profile_name(LanguageModelId.CLAUDE_V4_8_OPUS) == "omnisummary-dev-anthropic-claude-opus-4-8"
+        )
+        # dots and colons in a model id are not valid in a profile name
+        name = H.application_profile_name(LanguageModelId.CLAUDE_V3_HAIKU)
+        assert "." not in name and ":" not in name
+
+    def test_matching_profile_is_preferred(self, monkeypatch):
+        from shared.utils import BedrockCrossRegionModelHelper as H
+
+        monkeypatch.setenv("PROJECT_NAME", "omnisummary")
+        monkeypatch.setenv("STAGE", "dev")
+        arn = "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc"
+        client = MagicMock()
+        client.get_paginator.return_value.paginate.return_value = [
+            {
+                "inferenceProfileSummaries": [
+                    {"inferenceProfileName": "someone-elses", "inferenceProfileArn": "arn:other"},
+                    {"inferenceProfileName": "omnisummary-dev-anthropic-claude-opus-4-8", "inferenceProfileArn": arn},
+                ]
+            }
+        ]
+        session = MagicMock()
+        session.client.return_value = client
+        got = H._application_profile_arn(session, LanguageModelId.CLAUDE_V4_8_OPUS, "us-west-2", "fallback-id")
+        assert got == arn
+
+    def test_absent_profile_keeps_the_system_defined_id(self, monkeypatch):
+        from shared.utils import BedrockCrossRegionModelHelper as H
+
+        monkeypatch.setenv("PROJECT_NAME", "omnisummary")
+        client = MagicMock()
+        client.get_paginator.return_value.paginate.return_value = [{"inferenceProfileSummaries": []}]
+        session = MagicMock()
+        session.client.return_value = client
+        assert (
+            H._application_profile_arn(session, LanguageModelId.CLAUDE_V5_SONNET, "us-west-2", "global.anthropic.x")
+            == "global.anthropic.x"
+        )
+
+    def test_a_denied_lookup_keeps_the_system_defined_id(self):
+        from shared.utils import BedrockCrossRegionModelHelper as H
+
+        session = MagicMock()
+        session.client.side_effect = RuntimeError("AccessDenied")
+        assert (
+            H._application_profile_arn(session, LanguageModelId.CLAUDE_V5_SONNET, "us-west-2", "global.anthropic.x")
+            == "global.anthropic.x"
+        )
+
+    def test_an_arn_model_id_names_its_provider(self):
+        # ChatBedrockConverse refuses an ARN without a provider ("Model provider should be supplied
+        # when passing a model ARN as model_id"), which is exactly what a profile ARN is.
+        f = _factory()
+        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
+        cfg = f._build_model_config(info, "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc", True)
+        assert cfg["provider"] == "anthropic"
+        assert "provider" not in f._build_model_config(info, "global.anthropic.claude-sonnet-5", True)

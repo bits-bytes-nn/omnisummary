@@ -114,6 +114,12 @@ class OmniSummaryFoundationStack(Stack):
             resources=[
                 "arn:aws:bedrock:*::foundation-model/*",
                 f"arn:aws:bedrock:*:{self.account}:inference-profile/*",
+                # This project's APPLICATION inference profiles (scripts/put_inference_profiles.py)
+                # are a DIFFERENT ARN resource type from the system-defined ones above. The model
+                # resolver prefers them so on-demand token spend carries the Project cost-allocation
+                # tag — omitting this makes every Bedrock call AccessDenied the moment a profile
+                # exists, which is the whole digest.
+                f"arn:aws:bedrock:*:{self.account}:application-inference-profile/*",
             ],
         )
         # The cross-region helper resolves a model ID to its inference-profile ARN

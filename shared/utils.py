@@ -267,8 +267,53 @@ class BedrockCrossRegionModelHelper:
         if cached is not None:
             return cached
         resolved = BedrockCrossRegionModelHelper._resolve(boto_session, model_id, region_name)
+        # Prefer this project's APPLICATION inference profile when one exists: it is the only way
+        # on-demand Bedrock token spend gets attributed to a cost-allocation tag (there is no
+        # taggable resource behind InvokeModel otherwise), and this account bills several workloads
+        # against the same models. Resolution goes through here, so BOTH the LangChain factory and
+        # the Strands research agent pick it up. Absent → today's system-defined id, unchanged.
+        resolved = BedrockCrossRegionModelHelper._application_profile_arn(boto_session, model_id, region_name, resolved)
         BedrockCrossRegionModelHelper._resolution_cache[cache_key] = resolved
         return resolved
+
+    @staticmethod
+    def application_profile_name(model_id: LanguageModelId) -> str:
+        """Deterministic name for this project/stage's application inference profile for a model.
+        Shared by the resolver and scripts/put_inference_profiles.py so neither can drift."""
+        import os
+
+        project = os.getenv("PROJECT_NAME", "omnisummary")
+        stage = os.getenv("STAGE", "dev")
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", model_id.value).strip("-")
+        return f"{project}-{stage}-{slug}"
+
+    @staticmethod
+    def _application_profile_arn(
+        boto_session: boto3.Session,
+        model_id: LanguageModelId,
+        region_name: str,
+        fallback: str,
+    ) -> str:
+        """The ARN of this project's application inference profile for the model, or `fallback`.
+
+        Best-effort by design: cost attribution must never be able to stop a generation, so a
+        missing profile, a denied ListInferenceProfiles or any unexpected error keeps the
+        system-defined id the caller would have used anyway."""
+        wanted = BedrockCrossRegionModelHelper.application_profile_name(model_id)
+        try:
+            client = boto_session.client("bedrock", region_name=region_name)
+            paginator = client.get_paginator("list_inference_profiles")
+            for page in paginator.paginate(typeEquals="APPLICATION"):
+                for summary in page.get("inferenceProfileSummaries", []):
+                    if summary.get("inferenceProfileName") == wanted:
+                        arn = summary["inferenceProfileArn"]
+                        logger.debug("Using application inference profile '%s' (%s)", wanted, arn)
+                        return arn
+        except Exception as e:
+            logger.debug("Could not look up application inference profile '%s': %s", wanted, e)
+            return fallback
+        logger.debug("No application inference profile named '%s'; using '%s'", wanted, fallback)
+        return fallback
 
     @staticmethod
     def _resolve(
@@ -466,12 +511,18 @@ class BedrockLanguageModelFactory(
     def _build_base_config(
         self, resolved_model_id: str, use_converse: bool, model_info: LanguageModelInfo, **kwargs: Any
     ) -> dict[str, Any]:
-        config = {
+        config: dict[str, Any] = {
             "model_id": resolved_model_id,
             "region_name": self.region_name,
             "client": self._client,
             "callbacks": kwargs.get("callbacks"),
         }
+        # An application-inference-profile ARN carries no model family in its id, so
+        # ChatBedrockConverse refuses it ("Model provider should be supplied when passing a model ARN
+        # as model_id"). Every model in this registry is Anthropic, and the ARN path only appears
+        # when the cost-attribution profile resolved, so name the provider explicitly.
+        if resolved_model_id.startswith("arn:"):
+            config["provider"] = "anthropic"
         if self.boto_session.profile_name and self.boto_session.profile_name != "default":
             config["credentials_profile_name"] = self.boto_session.profile_name
         common_params = {
