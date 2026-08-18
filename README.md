@@ -465,10 +465,17 @@ each image is loaded and run with `--network none` and no credentials to import 
 modules, so a missing `COPY` or an import-time AWS/HTTP call fails in CI instead of at cold start.
 Every job carries a `timeout-minutes`; uv/npm caches are keyed on the lockfiles.
 
-A `security` job audits the **locked** dependency set with `pip-audit --strict` (exported the
-same way the images install it, so it audits versions that actually ship rather than re-resolved
-ranges) and runs `gitleaks` over **full history** — a shallow clone only ever sees the tip, so a
-key committed earlier and removed later would never be found. `.pre-commit-config.yaml` runs the
+A `security` job audits the **locked** dependency set with `pip-audit --strict` and runs
+`gitleaks` over **full history** — a shallow clone only ever sees the tip, so a key committed
+earlier and removed later would never be found. The audit runs against the **installed** tree
+(`uv sync --frozen --no-dev --no-install-project`, then `pip-audit --path .venv/...`), not an
+exported requirements file: that is the set the images install, already narrowed to the platform
+that ships, and pip-audit reads its `dist-info` without building anything. Two invocation details
+are load-bearing, because each one made this job fail *before it audited anything*: `uvx` needs
+`--from pip-audit==<version>` (the bare `pkg==version` form is invalid in the pinned uv), and
+pip-audit's `-r` mode builds its own venv via `ensurepip`, which uv-managed standalone Pythons do
+not ship. `--no-install-project` matters too — pip-audit reports an editable distribution as
+unauditable, and `--strict` turns that into a failure. `.pre-commit-config.yaml` runs the
 same gates before the push (`uv run pre-commit install`); mypy is deliberately not a hook, since
 it needs the full resolved dependency set and is slow enough that people start using
 `--no-verify`.

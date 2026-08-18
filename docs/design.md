@@ -335,8 +335,17 @@ X 세션 쿠키는 Fargate 태스크 정의의 `secrets`(ARN만 템플릿에 들
 
 ## 6. LLM 팩토리 (`shared/utils.py`)
 
+**의존성 경계.** 이 프로젝트는 `langchain-core`(프롬프트·출력 파서·러너블·콜백)와 `langchain-aws`(모델 클래스)만
+쓴다. **최상위 `langchain` umbrella 패키지는 의존성이 아니며, 다시 추가하지 말 것** — 한 번도 import되지 않으면서
+`langchain-text-splitters`·`sqlalchemy`를 끌고 왔고, 그 둘이 이 코드가 도달하지 않는 경로(`prompts.loading`,
+`HTMLHeaderTextSplitter.split_text_from_url`)의 권고를 실어 와 `security` 잡을 빨갛게 만들었다.
+
 **모델 팩토리.** `BedrockLanguageModelFactory.get_model(model_id, **kwargs)`
 - **반환:** 모델 역량(`_LANGUAGE_MODEL_INFO`)에 맞게 구성된 `ChatBedrock`/`ChatBedrockConverse`.
+- **생성자 표면은 테스트로 고정한다.** 두 클래스 모두 pydantic `extra="forbid"`이므로 프레임워크 메이저
+  업그레이드가 kwarg를 하나 renaming 하면 즉시 깨진다 — 그런데 나머지 테스트는 전부 config **딕셔너리**만
+  검증하므로 그 딕셔너리를 실제 클래스에 넣어보지 않으면 **그린으로 배포된다**. `tests/test_model_factory.py`의
+  `TestModelClassConstructorSurface`가 모든 조합(+배포 환경에서만 도는 profile ARN 경로)으로 실제 생성한다.
 - **구성 역량:** thinking, 1M 컨텍스트, 성능 레이턴시, 프롬프트 캐싱.
 - **리전:** `BedrockCrossRegionModelHelper`가 가능 시 `global.`/`apac.` inference-profile ID를 해석.
 - **모델 ID:** `shared/constants.py`(`LanguageModelId`)에 열거; 최신은 **Opus 5 / Sonnet 5**(Opus 4.8도 유지).
@@ -700,11 +709,25 @@ ingress 흐름:
 - **레포 고정 CDK CLI로** 오프라인 `cdk synth`(Node 22 + `npm ci`로 `package.json`에 핀된 `aws-cdk` 설치 — 예전 `npm ci || npm install` 폴백은 lock 부재/불일치를 삼키고 다른 CLI를 깔아 이 잡의 의미를 없앴음 → `npx cdk synth -a "uv run python scripts/ci_synth.py"`). 인프로세스 `app.synth()`가 아닌 실제 CLI를 태워 **CLI↔`aws-cdk-lib` cloud-assembly 스키마 핸드셰이크**를 검증(글로벌 CLI가 라이브러리보다 뒤처져 배포가 스키마 미스매치로 깨지던 클래스를 PR에서 잡음). `ci_synth`는 `vpc_id`를 비우고 env-agnostic 계정을 써 자격증명 없이 완전 오프라인.
 - Docker 빌드 + **이미지 import 체크**: 두 이미지를 단일 플랫폼 `load: true`(네이티브 amd64)로 빌드해 로컬 데몬에 올린 뒤 `docker run --rm --network none --entrypoint python`으로 실제 엔트리 모듈을 import한다(digest: `lambda_handlers.*` + `main`, agentcore: `agent_runtime.app`). 빌드만으로는 import가 한 번도 실행되지 않아 COPY 누락이나 개발자 머신에서만 해석되는 모듈이 그대로 통과했다. 자격증명 없이 `--network none`이므로 **import 시점 AWS 호출/HTTP fetch가 콜드스타트가 아니라 CI에서** 깨진다. import 체크는 빌드가 얼마나 캐시됐든 로드된 이미지에 대해 항상 실행되므로 레이어 캐시가 실패를 건너뛸 수 없다. 캐시는 `type=gha`(이미지별 scope).
   - agentcore는 배포는 arm64지만 CI는 amd64로 빌드한다(베이스·의존성 모두 멀티아치이고, QEMU 에뮬레이션 없이 import를 실행하려면 네이티브여야 한다 — QEMU 하 `pip install`은 잡 예산을 넘긴다). 이 잡이 잡는 것(COPY 누락·미해결 의존성)은 아키텍처 무관.
-- **의존성·시크릿 스캔 (`security` 잡):** `uv export --frozen`으로 **`uv.lock`이 핀한 정확한 집합**(= 이미지가
-  설치하는 그 버전들)을 뽑아 `pip-audit --strict`로 감사한다 — pyproject 범위를 재해석해 감사하면 배포되지 않는
-  버전을 검사하게 된다. 그리고 `gitleaks`를 **전체 히스토리**에 돌린다(shallow clone은 tip만 보므로 과거에
-  커밋되고 나중에 지워진 키를 절대 못 찾는다). CFN 템플릿이 오늘까지 실제로 평문 토큰을 담고 있었고,
-  `config/config.yaml`은 gitignore인데 실제 값을 갖고 있으므로 잘못 add된 파일 하나가 곧 유출이다.
+- **의존성·시크릿 스캔 (`security` 잡):** **`uv.lock`이 핀한 정확한 집합**(= 이미지가 설치하는 그 버전들)을
+  `pip-audit --strict`로 감사한다 — pyproject 범위를 재해석해 감사하면 배포되지 않는 버전을 검사하게 된다.
+  감사 대상은 requirements 파일이 아니라 **설치된 트리**다: `uv sync --frozen --no-dev --no-install-project`로
+  잠긴 집합을 디스크에 올린 뒤 `pip-audit --path .venv/lib/python3.12/site-packages`로 `dist-info`만 읽는다
+  (아무것도 빌드하지 않고, 실제 배포되는 플랫폼으로 이미 좁혀진 집합이다).
+  - **호출 형식 두 가지가 load-bearing이다.** 각각이 이 잡을 *감사를 한 번도 수행하지 못한 채* 실패시켰다:
+    (1) `uvx pip-audit==2.9.0`은 핀된 uv 0.5.11에서 유효한 spec이 아니다(`--from` 필요), (2) 그걸 고치면
+    `pip-audit -r` 모드가 `ensurepip`로 자체 venv를 만드는데 uv 관리 standalone 파이썬엔 ensurepip가 없다
+    (exit 127). 두 실패 모두 잡 이름만 보면 "취약점 발견"처럼 읽히므로, 게이트가 죽어 있는지 살아 있는지를
+    **양방향으로** 확인해야 한다(현재 lock에서 clean, 직전 lock에서 19개 패키지로 exit 1 — 실패할 수 없는
+    게이트는 게이트가 아니다). `--no-install-project`도 필수: editable 배포는 감사 불가로 보고되고
+    `--strict`가 이를 실패로 바꾼다.
+  - 그리고 `gitleaks`를 **전체 히스토리**에 돌린다(shallow clone은 tip만 보므로 과거에 커밋되고 나중에 지워진
+    키를 절대 못 찾는다). CFN 템플릿이 실제로 평문 토큰을 담고 있었고, `config/config.yaml`은 gitignore인데
+    실제 값을 갖고 있으므로 잘못 add된 파일 하나가 곧 유출이다.
+  - **주의:** `pip-audit --strict`는 "잠긴 집합에 알려진 권고 0건"을 요구하므로, 전이 의존성에 새 권고가
+    공개되면 **무관한 다음 푸시가 빨개진다**. 스케줄 실행이 없어 통보 시점이 곧 푸시 시점이다. 해소 순서는
+    `uv lock --upgrade` → 미사용 의존성 제거 → 상한 완화이며, `--ignore-vuln`은 도달 불가를 코드로 확인한
+    뒤의 마지막 수단이다(2026-08-19에는 세 단계로 19건을 0건까지 내려 억제가 필요 없었다).
 - **이미지 하드닝:** 두 Dockerfile 모두 `uv.lock`이 핀한 집합을 설치한다(`uv export` → `uv pip install --system`,
   프로젝트 자신은 `--no-deps`). 예전 `pip install .`은 빌드 시점에 pyproject 범위를 다시 해석했으므로 **CI가
   테스트한 적 없는 의존성 집합이 Lambda에서 돌 수 있었다**. 의존성 레이어를 소스 COPY보다 먼저 두어 코드 변경이
