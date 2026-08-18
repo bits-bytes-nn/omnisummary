@@ -38,14 +38,10 @@ def main():
         f"{config.aws.project_name}-{config.aws.stage}-application",
         config=config,
         foundation=foundation,
-        slack_signing_secret=os.getenv("SLACK_SIGNING_SECRET", ""),
-        slack_bot_token=os.getenv("SLACK_BOT_TOKEN", ""),
-        slack_channel_id=os.getenv("SLACK_CHANNEL_ID", ""),
-        tavily_api_key=os.getenv("TAVILY_API_KEY", ""),
-        openai_api_key=os.getenv("OPENAI_API_KEY", ""),
-        youtube_api_key=os.getenv("YOUTUBE_API_KEY", ""),
-        threads_access_token=os.getenv("THREADS_ACCESS_TOKEN", ""),
-        threads_user_id=os.getenv("THREADS_USER_ID", ""),
+        # No secrets are passed in: a CloudFormation template cannot hold a SecureString, so the
+        # values would land in plaintext in cdk.out, the CDK staging bucket and GetTemplate. The
+        # stack creates the parameters holding a placeholder; run scripts/put_secrets.py after the
+        # deploy to write the real values as SecureStrings.
         agentcore_image_ref=os.getenv("AGENTCORE_IMAGE_REF", ""),
         digest_image_ref=os.getenv("DIGEST_IMAGE_REF", ""),
         env=env,

@@ -19,7 +19,7 @@ from aws_cdk.aws_bedrockagentcore import CfnRuntime
 from constructs import Construct
 
 from shared import Config
-from shared.constants import RSSHUB_PORT
+from shared.constants import RSSHUB_PORT, SSM_PLACEHOLDER, SSM_SECRET_ENV_VARS
 
 from .foundation_stack import OmniSummaryFoundationStack
 
@@ -37,14 +37,6 @@ class OmniSummaryApplicationStack(Stack):
         *,
         config: Config,
         foundation: OmniSummaryFoundationStack,
-        slack_signing_secret: str = "",
-        slack_bot_token: str = "",
-        slack_channel_id: str = "",
-        tavily_api_key: str = "",
-        openai_api_key: str = "",
-        youtube_api_key: str = "",
-        threads_access_token: str = "",
-        threads_user_id: str = "",
         agentcore_image_ref: str = "",
         digest_image_ref: str = "",
         **kwargs,
@@ -61,28 +53,24 @@ class OmniSummaryApplicationStack(Stack):
 
         project_root = Path(__file__).parent.parent
 
-        ssm_params = {
-            "slack-signing-secret": slack_signing_secret,
-            "slack-bot-token": slack_bot_token,
-            "slack-channel-id": slack_channel_id,
-            "tavily-api-key": tavily_api_key,
-            "openai-api-key": openai_api_key,
-            "youtube-api-key": youtube_api_key,
-            "threads-access-token": threads_access_token,
-            "threads-user-id": threads_user_id,
-        }
-        # CloudFormation cannot create SecureString SSM parameters (AWS::SSM::Parameter
-        # supports only String/StringList). These hold low-sensitivity API tokens; access
-        # is restricted by the scoped ssm:GetParameter* IAM policy on /{project}/{stage}/*.
-        # Promote to Secrets Manager if higher-sensitivity credentials are added.
-        for name, value in ssm_params.items():
-            if value:
-                ssm.StringParameter(
-                    self,
-                    f"Ssm-{name}",
-                    parameter_name=f"/{project_name}/{stage}/{name}",
-                    string_value=value,
-                )
+        # The parameter PATHS are stack-managed (so the scoped ssm:GetParameter* policy and the
+        # names stay in one place) but the VALUES never are. CloudFormation cannot create
+        # SecureString parameters, so this stack used to pass the real tokens in as `string_value`
+        # — which wrote the live Slack bot token, Tavily/OpenAI/YouTube keys and the Threads access
+        # token in PLAINTEXT into the template, and therefore into cdk.out/*.template.json, the CDK
+        # staging bucket and every cloudformation:GetTemplate response.
+        #
+        # Each parameter is created holding SSM_PLACEHOLDER instead, and `scripts/put_secrets.py`
+        # overwrites it with the real value as a SecureString after the deploy. Re-deploys do NOT
+        # clobber it: CloudFormation only updates a resource whose template properties changed, and
+        # the placeholder never changes — so the SecureString value and type survive.
+        for name in SSM_SECRET_ENV_VARS:
+            ssm.StringParameter(
+                self,
+                f"Ssm-{name}",
+                parameter_name=f"/{project_name}/{stage}/{name}",
+                string_value=SSM_PLACEHOLDER,
+            )
 
         image_ref = (agentcore_image_ref or "arm64").lstrip("@")
         if image_ref.startswith("sha256:"):
@@ -223,7 +211,7 @@ class OmniSummaryApplicationStack(Stack):
             code=lambda_.Code.from_asset(str(project_root / "lambda_handlers")),
             timeout=Duration.seconds(60),
             memory_size=128,
-            role=foundation.lambda_role,
+            role=foundation.slack_role,
             log_retention=logs.RetentionDays.ONE_MONTH,
             # The handler fires the (minutes-long) AgentCore runtime without awaiting its result,
             # so a self-invoke that errored should NOT auto-retry — a retry re-runs the whole deep

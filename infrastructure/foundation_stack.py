@@ -14,11 +14,12 @@ from aws_cdk import aws_servicediscovery as sd
 from aws_cdk import aws_sns as sns
 from aws_cdk import aws_sns_subscriptions as subs
 from aws_cdk import aws_sqs as sqs
+from aws_cdk import aws_ssm as ssm
 from aws_cdk.aws_bedrockagentcore import CfnMemory
 from constructs import Construct
 
 from shared import Config
-from shared.constants import RSSHUB_PORT
+from shared.constants import RSSHUB_PORT, SSM_PLACEHOLDER, SSM_RSSHUB_SECRET_ENV_VARS
 
 
 class OmniSummaryFoundationStack(Stack):
@@ -180,6 +181,34 @@ class OmniSummaryFoundationStack(Stack):
             )
         )
 
+        # The Slack-events Lambda sits behind a public API Gateway — the only internet-reachable
+        # entry point in the system — so it gets its own least-privilege role instead of sharing the
+        # pipeline's. It needs exactly four things: read its Slack tokens from SSM, dedupe events in
+        # DynamoDB, self-invoke asynchronously (it answers Slack inside 3s and continues in a second
+        # invocation), and start the AgentCore runtime. It deliberately does NOT get the state
+        # bucket, bedrock:InvokeModel (the runtime holds that under agentcore_role), SNS publish,
+        # ssm:PutParameter, or InvokeFunction on every other function in the project.
+        self.slack_role = iam.Role(
+            self,
+            "SlackEventRole",
+            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+        )
+        self.slack_role.add_to_policy(ssm_read_statement)
+        self.slack_role.add_to_policy(logs_statement)
+        self.dedup_table.grant_read_write_data(self.slack_role)
+        self.slack_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["lambda:InvokeFunction"],
+                resources=[f"arn:aws:lambda:{self.region}:{self.account}:function:{project_name}-{stage}-slack-events"],
+            )
+        )
+        self.slack_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["bedrock-agentcore:InvokeAgentRuntime"],
+                resources=[f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:runtime/*"],
+            )
+        )
+
         self.alerts_topic = sns.Topic(self, "AlertsTopic", topic_name=f"{project_name}-{stage}-alerts")
         if alert_email:
             self.alerts_topic.add_subscription(subs.EmailSubscription(alert_email))
@@ -237,6 +266,18 @@ class OmniSummaryFoundationStack(Stack):
             vpc=self.vpc,
         )
 
+        # Created here, holding a placeholder, so they exist before the RSSHub service that consumes
+        # them starts. scripts/put_secrets.py writes the real values as SecureStrings.
+        rsshub_secret_params = {
+            env_key: ssm.StringParameter(
+                self,
+                f"Ssm-{name}",
+                parameter_name=f"/{project_name}/{stage}/{name}",
+                string_value=SSM_PLACEHOLDER,
+            )
+            for name, env_key in SSM_RSSHUB_SECRET_ENV_VARS.items()
+        }
+
         rsshub_task = ecs.FargateTaskDefinition(self, "RSSHubTask", memory_limit_mib=2048, cpu=1024)
         rsshub_task.add_container(
             "RSSHubContainer",
@@ -246,11 +287,15 @@ class OmniSummaryFoundationStack(Stack):
             environment={
                 "NODE_ENV": "production",
                 "CACHE_TYPE": "memory",
-                "TWITTER_AUTH_TOKEN": os.environ.get("TWITTER_AUTH_TOKEN", ""),
-                "TWITTER_CT0": os.environ.get("TWITTER_CT0", ""),
                 "PROXY_URI": os.environ.get("RSSHUB_PROXY_URI", ""),
                 "PROXY_STRATEGY": "all",
             },
+            # The X session cookies authenticate as the account, so they are NOT template material:
+            # passed through `environment` they were written in plaintext into the task definition
+            # and therefore into the CloudFormation template. `secrets` puts only the parameter ARN
+            # there and the ECS agent fetches (and decrypts) the value at task start.
+            # scripts/put_secrets.py writes these parameters as SecureStrings.
+            secrets={env_key: ecs.Secret.from_ssm_parameter(param) for env_key, param in rsshub_secret_params.items()},
         )
 
         self.rsshub_service = ecs.FargateService(

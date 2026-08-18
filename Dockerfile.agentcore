@@ -6,7 +6,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml ./
+# Install the EXACT dependency set uv.lock pins — the same one CI resolves and the test suite
+# exercises, rather than re-resolving pyproject's ranges at build time. Dependencies go in before
+# the source so a code-only change reuses this layer.
+COPY pyproject.toml uv.lock ./
+RUN pip install --no-cache-dir --upgrade pip uv==0.6.14 && \
+    uv export --frozen --no-dev --no-emit-project -o /tmp/requirements.txt && \
+    uv pip install --system --no-cache -r /tmp/requirements.txt && \
+    rm /tmp/requirements.txt
+
 COPY agent/ ./agent/
 COPY agent_runtime/ ./agent_runtime/
 COPY shared/ ./shared/
@@ -15,9 +23,11 @@ COPY collectors/ ./collectors/
 COPY output/ ./output/
 COPY config/ ./config/
 
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir . && \
-    pip install --no-cache-dir bedrock-agentcore
+# --no-deps: the pinned set above is authoritative. bedrock-agentcore is the runtime host for this
+# image, not an application dependency.
+RUN uv pip install --system --no-cache --no-deps . && \
+    pip install --no-cache-dir bedrock-agentcore==1.21.0 && \
+    rm -rf build omnisummary.egg-info
 
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8080

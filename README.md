@@ -256,7 +256,32 @@ Deploy through the repo-pinned CDK CLI (`npm install` once, then `npx cdk`) — 
 npm install                                       # once — installs the pinned CDK CLI locally
 export DIGEST_IMAGE_REF=sha256:<pushed-digest>    # AGENTCORE_IMAGE_REF defaults to :arm64
 AWS_PROFILE=<profile> npx cdk deploy --all -a "uv run python scripts/deploy.py"
+AWS_PROFILE=<profile> uv run python scripts/put_secrets.py   # then write the secrets
 ```
+
+### Secrets
+
+No secret is passed through the CDK stack. A CloudFormation template cannot hold a SecureString,
+so handing the tokens to the stack wrote the live Slack bot token, the Tavily/OpenAI/YouTube keys,
+the Threads access token and the X session cookies in **plaintext** into `cdk.out/*.template.json`,
+the CDK staging bucket and every `cloudformation:GetTemplate` response.
+
+Instead the stack creates each SSM parameter holding a placeholder, and `scripts/put_secrets.py`
+writes the real values as SecureStrings from your `.env` (run it after every first-time deploy;
+`--dry-run` previews). Re-deploys do not clobber them — CloudFormation only updates a resource
+whose template properties changed, and the placeholder never changes.
+
+Two behaviours worth knowing:
+- Parameters that are **already SecureStrings are skipped**. The Threads access token is rotated in
+  place by the refresh Lambda, so writing the local `.env` copy back would restore an expired
+  token. Use `--force` only when you really mean to overwrite the live value.
+- A missing/empty environment variable is skipped, never blanked, so a partial `.env` cannot wipe a
+  working parameter. `resolve_secret()` treats a parameter still holding the placeholder as unset,
+  so a skipped `put_secrets.py` degrades to the normal missing-credential path instead of sending
+  the placeholder to an API as a token.
+
+The X/Twitter session cookies reach the RSSHub Fargate container through the task definition's
+`secrets` block (parameter ARN in the template, value fetched by the ECS agent at task start).
 
 Resources created:
 - **Lambda** (Docker): Digest pipeline, 15min timeout

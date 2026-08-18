@@ -14,7 +14,7 @@ from botocore.config import Config as BotoConfig
 from langchain_aws import ChatBedrock, ChatBedrockConverse
 from pydantic import BaseModel
 
-from .constants import LanguageModelId
+from .constants import SSM_PLACEHOLDER, LanguageModelId
 from .logger import logger
 
 # Model used for the Bedrock CountTokens API. Only some base models expose CountTokens
@@ -496,10 +496,18 @@ def resolve_secret(env_var: str, ssm_suffix: str) -> str:
     region = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2"))
     try:
         ssm = boto3.client("ssm", region_name=region)
-        return ssm.get_parameter(Name=f"/{project}/{stage}/{ssm_suffix}", WithDecryption=True)["Parameter"]["Value"]
+        resolved = ssm.get_parameter(Name=f"/{project}/{stage}/{ssm_suffix}", WithDecryption=True)["Parameter"]["Value"]
     except Exception as e:
         logger.warning("Secret '%s' unavailable (env + SSM '%s'): %s", env_var, ssm_suffix, e)
         return ""
+    # The CDK stack creates each parameter holding a placeholder (never a real secret in the
+    # CloudFormation template); scripts/put_secrets.py writes the value. If that step was skipped,
+    # treat it as unset so the caller takes its normal missing-credential path instead of sending
+    # the placeholder to an API as a token.
+    if resolved == SSM_PLACEHOLDER:
+        logger.warning("Secret '%s' is still the SSM placeholder — run scripts/put_secrets.py", ssm_suffix)
+        return ""
+    return resolved
 
 
 def generate_item_id(url: str) -> str:

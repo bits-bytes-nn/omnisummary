@@ -73,6 +73,40 @@ RSSHUB_PORT: int = 1200
 # lives in the core rather than in either consuming workload.
 TRENDS_KEY: str = "trends.json"
 
+# SSM parameter name (under /{PROJECT_NAME}/{STAGE}/) -> the environment variable holding its
+# value locally. The CDK stack creates each parameter holding SSM_PLACEHOLDER so no secret ever
+# enters a CloudFormation template; scripts/put_secrets.py writes the real values as SecureStrings.
+# One mapping, used by both, so a renamed parameter can't drift between them.
+SSM_SECRET_ENV_VARS: dict[str, str] = {
+    "slack-signing-secret": "SLACK_SIGNING_SECRET",
+    "slack-bot-token": "SLACK_BOT_TOKEN",
+    "slack-channel-id": "SLACK_CHANNEL_ID",
+    "tavily-api-key": "TAVILY_API_KEY",
+    "openai-api-key": "OPENAI_API_KEY",
+    "youtube-api-key": "YOUTUBE_API_KEY",
+    "threads-access-token": "THREADS_ACCESS_TOKEN",
+    "threads-user-id": "THREADS_USER_ID",
+}
+
+# X/Twitter session cookies for the RSSHub container. They authenticate as the account, so they are
+# strictly more sensitive than an API key — and they used to sit in plaintext in the Fargate task
+# definition's `environment` block, i.e. in the CloudFormation template. The task now reads them
+# through ECS `secrets`, which puts only the parameter ARN there. Owned by the FOUNDATION stack
+# (which defines the task) rather than the application stack, so the parameters exist before the
+# service that consumes them starts; hence a separate mapping.
+SSM_RSSHUB_SECRET_ENV_VARS: dict[str, str] = {
+    "twitter-auth-token": "TWITTER_AUTH_TOKEN",
+    "twitter-ct0": "TWITTER_CT0",
+}
+
+# Every parameter scripts/put_secrets.py is responsible for.
+ALL_SSM_SECRET_ENV_VARS: dict[str, str] = {**SSM_SECRET_ENV_VARS, **SSM_RSSHUB_SECRET_ENV_VARS}
+
+# Value the stack writes instead of a real secret. resolve_secret() treats it as "unset" so a
+# deploy whose put_secrets step was skipped degrades to the normal missing-credential path
+# (logged, feature skipped) rather than sending the literal placeholder to an API as a token.
+SSM_PLACEHOLDER: str = "PLACEHOLDER-run-scripts/put_secrets.py"
+
 # Character limits applied to titles/queries when written to log lines. Centralized so
 # log verbosity can be tuned in one place instead of scattered slice literals.
 LOGGING_TRUNCATION_CHARS: dict[str, int] = {

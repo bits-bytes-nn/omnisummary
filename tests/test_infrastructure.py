@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -7,7 +8,7 @@ from aws_cdk.assertions import Match, Template
 from infrastructure.application_stack import OmniSummaryApplicationStack
 from infrastructure.foundation_stack import OmniSummaryFoundationStack
 from shared import Config
-from shared.constants import RSSHUB_PORT
+from shared.constants import ALL_SSM_SECRET_ENV_VARS, RSSHUB_PORT, SSM_PLACEHOLDER
 
 # The TRACKED config, matching what scripts/ci_synth.py synths: config/config.yaml is gitignored,
 # so asserting against Config.load() checked a different stack locally than in CI (where it fell
@@ -27,11 +28,78 @@ def templates():
         "app",
         config=config,
         foundation=foundation,
-        openai_api_key="oai",
-        tavily_api_key="tav",
         env=env,
     )
     return Template.from_stack(foundation), Template.from_stack(application)
+
+
+class TestNoSecretsInTheTemplate:
+    """A CloudFormation template is not a secret store: it is written to cdk.out, uploaded to the
+    CDK staging bucket, and returned verbatim by cloudformation:GetTemplate. The stack used to pass
+    the real Slack bot token, Tavily/OpenAI/YouTube keys, the Threads access token and the X session
+    cookies straight into it. Only placeholders and ARNs may appear."""
+
+    def test_every_ssm_parameter_holds_only_the_placeholder(self, templates):
+        foundation, application = templates
+        for template in (foundation, application):
+            params = template.find_resources("AWS::SSM::Parameter")
+            for logical_id, resource in params.items():
+                assert resource["Properties"]["Value"] == SSM_PLACEHOLDER, logical_id
+
+    def test_all_expected_secret_parameters_exist(self, templates):
+        foundation, application = templates
+        names = set()
+        for template in (foundation, application):
+            for resource in template.find_resources("AWS::SSM::Parameter").values():
+                names.add(resource["Properties"]["Name"].rsplit("/", 1)[-1])
+        assert set(ALL_SSM_SECRET_ENV_VARS) <= names
+
+    def test_rsshub_reads_x_cookies_as_secrets_not_plain_environment(self, templates):
+        foundation, _ = templates
+        task_defs = foundation.find_resources("AWS::ECS::TaskDefinition")
+        container = next(iter(task_defs.values()))["Properties"]["ContainerDefinitions"][0]
+        env_names = {e["Name"] for e in container.get("Environment", [])}
+        assert not {"TWITTER_AUTH_TOKEN", "TWITTER_CT0"} & env_names
+        assert {s["Name"] for s in container["Secrets"]} == {"TWITTER_AUTH_TOKEN", "TWITTER_CT0"}
+
+
+class TestSlackLambdaLeastPrivilege:
+    """The Slack-events Lambda is the only internet-reachable entry point, and it used to run with
+    the pipeline's role — Bedrock model invocation, the state bucket, SNS publish, ssm:PutParameter
+    on the Threads token, and InvokeFunction on every function in the project."""
+
+    def test_slack_lambda_does_not_share_the_pipeline_role(self, templates):
+        _, application = templates
+        fns = application.find_resources("AWS::Lambda::Function")
+        roles = {
+            props["Properties"].get("FunctionName", ""): json.dumps(props["Properties"]["Role"])
+            for props in fns.values()
+            if props["Properties"].get("FunctionName")
+        }
+        slack = next(v for k, v in roles.items() if k.endswith("slack-events"))
+        pipeline = next(v for k, v in roles.items() if k.endswith("-digest"))
+        assert "SlackEventRole" in slack
+        assert slack != pipeline
+
+    def test_slack_role_has_no_bedrock_model_or_bucket_access(self, templates):
+        foundation, _ = templates
+        policies = foundation.find_resources("AWS::IAM::Policy")
+        actions: list[str] = []
+        for props in policies.values():
+            if "SlackEventRole" not in json.dumps(props["Properties"].get("Roles", "")):
+                continue
+            for statement in props["Properties"]["PolicyDocument"]["Statement"]:
+                action = statement.get("Action")
+                actions.extend([action] if isinstance(action, str) else action)
+        assert actions, "expected an inline policy attached to SlackEventRole"
+        assert not [a for a in actions if a.startswith("bedrock:")]
+        assert not [a for a in actions if a.startswith("s3:")]
+        assert not [a for a in actions if a.startswith("sns:")]
+        assert "ssm:PutParameter" not in actions
+        # It still needs its own four capabilities.
+        assert "bedrock-agentcore:InvokeAgentRuntime" in actions
+        assert "lambda:InvokeFunction" in actions
+        assert "ssm:GetParameter" in actions
 
 
 class TestFoundationStack:

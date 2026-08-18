@@ -1,0 +1,39 @@
+# The build context is sent to the Docker daemon in full, so without this file `.env` (real API
+# keys), the local virtualenv, months of logs and cdk.out all travel with every build. The
+# Dockerfiles COPY specific source directories, so nothing here is needed to build the image.
+.git
+.gitignore
+.github
+
+# Secrets and local state
+.env
+.env.*
+*.pem
+digest_state/
+logs/
+
+# Local tooling / build output
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+cdk.out
+node_modules
+*.egg-info
+dist
+build
+
+# Not part of the runtime image
+tests/
+docs/
+references/
+scripts/
+infrastructure/
+cloudflare-proxy/
+.claude/
+*.md
