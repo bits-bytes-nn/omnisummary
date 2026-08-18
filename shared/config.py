@@ -165,6 +165,11 @@ class PipelineConfig(_StrictModel):
     visual_multi_panel_target_ratio: float = Field(default=0.34, ge=0.0, le=1.0)
     ranking_model: LanguageModelId = LanguageModelId.CLAUDE_V5_SONNET
     digest_model: LanguageModelId = LanguageModelId.CLAUDE_V5_SONNET
+    # A digest whose JSON the editor emits malformed (a stray bracket after the lead string cost
+    # the 2026-08-13 and 2026-08-17 digests every story) is RE-ASKED before it is given up on.
+    # Regeneration is one Bedrock call; the alternative is a day with no stories at all.
+    digest_max_retries: int = Field(default=3, ge=1)
+    digest_retry_backoff_sec: float = Field(default=5.0, ge=0)
     # Post-generation faithfulness pass: verify the digest's specific claims against the
     # source items and surgically revise unsupported ones (prompt rules alone couldn't
     # move the faithfulness score). Best-effort; disable to skip the extra LLM call.

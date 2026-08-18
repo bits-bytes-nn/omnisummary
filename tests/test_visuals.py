@@ -22,6 +22,24 @@ class TestVisualBriefValidation:
         with pytest.raises(ValidationError):
             VisualBrief(title="t", caption="c", prompt="x" * 5000)
 
+    def test_strips_leaked_markup_from_human_facing_fields(self):
+        # Regression (2026-08-17): the structured-output slip trailed the model's own scaffolding
+        # into the caption, and `</caption>\n<parameter name="orientation">landscape` was published
+        # verbatim on Threads. Tag-like markup must never survive into title/caption.
+        brief = VisualBrief(
+            title="제목<br>",
+            caption='본문 끝.</caption>\n<parameter name="orientation">landscape',
+            prompt="draw",
+        )
+        assert brief.title == "제목"
+        assert brief.caption == "본문 끝.\nlandscape"
+
+    def test_keeps_prose_that_merely_contains_an_angle_bracket(self):
+        # The strip must not eat comparisons/inequalities in ordinary prose.
+        brief = VisualBrief(title="지연 <2ms", caption="a < b 인 경우", prompt="draw")
+        assert brief.title == "지연 <2ms"
+        assert brief.caption == "a < b 인 경우"
+
 
 def _visual_kwargs(**overrides) -> dict:
     """VisualGenerator takes all ten visual knobs explicitly (it keeps NO defaults of its own —

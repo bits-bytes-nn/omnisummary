@@ -133,9 +133,7 @@ class DailyVisualMaker:
 
         post_date = today or datetime.now(ZoneInfo(self.config.aws.timezone)).date()
         slack_ok = await self._post(image_bytes, brief)
-        threads_ok = await self._post_threads(
-            image_bytes, brief, content, today=post_date, force_republish=force_republish
-        )
+        threads_ok = await self._post_threads(image_bytes, content, today=post_date, force_republish=force_republish)
         # Record the chosen format so tomorrow can deliberately differ. Best-effort. Only when a
         # brief was actually rendered — a text-only fallback has no format to record. Deduped by
         # date so a same-day re-run replaces its entry instead of pushing a duplicate that crowds
@@ -351,7 +349,6 @@ class DailyVisualMaker:
     async def _post_threads(
         self,
         image_bytes: bytes | None,
-        brief: VisualBrief | None,
         content: DigestContent | None,
         *,
         today: date | None = None,
@@ -371,16 +368,17 @@ class DailyVisualMaker:
             return False
 
         # Root = visual image + the digest lead (which already carries the AGI-countdown intro,
-        # prepended at digest generation); replies = one per story. When no structured content is
-        # available, fall back to the visual's own title/caption as the root.
-        if content and content.items:
-            root_text, replies = render_threads_posts(content)
-        elif brief:
-            root_text, replies = f"{brief.title}\n\n{brief.caption}", []
-        else:
-            # No structured digest AND no visual brief (image generation failed) → nothing to post.
-            logger.info("No digest content or visual brief for Threads; skipping")
+        # prepended at digest generation); replies = one per story.
+        #
+        # A digest with no stories is NOT posted. There used to be a fallback that published the
+        # visual's own title/caption as a lone root with no replies: on 2026-08-13 and 2026-08-17 a
+        # digest whose content failed to parse took that branch and published a story-less post
+        # (one of them carrying leaked `</caption>` markup), consuming the day's ledger slot and
+        # logging success. Skipping instead keeps the day retryable and never ships a broken digest.
+        if not (content and content.items):
+            logger.warning("No digest stories to post to Threads for %s; skipping (day stays retryable)", post_date)
             return False
+        root_text, replies = render_threads_posts(content)
 
         bucket = self.config.aws.state_bucket_name or os.environ.get("STATE_BUCKET", "")
         prefix = self.config.aws.s3_prefix.rstrip("/") + "/" if self.config.aws.s3_prefix else ""

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import UTC, date, datetime
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .constants import SourceType
+
+# An XML/HTML-style tag: needs a letter after '<' and a closing '>', so prose like "<2%" survives.
+_MARKUP_TAG_RE = re.compile(r"</?[A-Za-z][\w:-]*(?:\s[^<>]*?)?/?>")
 
 
 class CollectedItem(BaseModel):
@@ -79,9 +83,20 @@ class VisualBrief(BaseModel):
     title: str = Field(min_length=1, max_length=100)
     caption: str = Field(min_length=1, max_length=600)
     prompt: str = Field(min_length=1, max_length=4000)
+
     # The synopsis chooses the aspect ratio that fits the visual (a wide 4-panel strip,
     # a square meme, a tall infographic); the generator maps it to a supported size.
     orientation: Literal["square", "landscape", "portrait"] = "portrait"
+
+    @field_validator("title", "caption", mode="after")
+    @classmethod
+    def _drop_markup(cls, value: str) -> str:
+        """Strip tag-like markup from the human-facing fields. These are plain prose bound for a
+        post caption, but a structured-output slip can trail the model's own scaffolding into the
+        string: the 2026-08-17 caption ended with `</caption>\\n<parameter name="orientation">`
+        and that markup was published verbatim. The pattern requires a letter after `<` and a
+        closing `>`, so ordinary prose like "<2%" or "a < b" is left alone."""
+        return _MARKUP_TAG_RE.sub("", value).strip()
 
 
 class ImageAsset(BaseModel):

@@ -1,11 +1,11 @@
 import json
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
-from pipeline.digest_generator import DigestGenerator
+from pipeline.digest_generator import DigestContentError, DigestGenerator
 from shared.config import PipelineConfig
 from shared.constants import SourceType
 from shared.models import CollectedItem, DigestContent, DigestItem, RankedItem
@@ -132,10 +132,25 @@ class TestParseContent:
         assert content.items[0].implication == "시사점\t들여쓰기."
         assert content.headline_index == 1
 
-    def test_malformed_json_falls_back_to_minimal(self):
-        content = _generator("")._parse_content("totally not json")
-        assert content.items == []
-        assert content.lead == "totally not json"
+    def test_malformed_json_raises_instead_of_shipping_an_empty_digest(self):
+        # Regression (2026-08-13, 2026-08-17): the editor emitted a stray `]` after the lead
+        # string, the old fallback returned lead=raw/items=[], and the day shipped a story-less
+        # post whose "lead" was the raw fenced JSON. A parse failure must raise so the caller
+        # re-asks — a digest with no stories is never a valid result.
+        with pytest.raises(DigestContentError):
+            _generator("")._parse_content("totally not json")
+
+    def test_stray_bracket_after_lead_raises(self):
+        # The exact production emission: a valid lead string closed with an extra `]`.
+        raw = '{"lead": "오늘의 리드."], "headline_index": 1, "items": [{"title": "T", "url": "u", "body": "b"}]}'
+        with pytest.raises(DigestContentError):
+            _generator("")._parse_content(raw)
+
+    def test_valid_json_with_zero_items_raises(self):
+        # Well-formed JSON is not enough: an empty items array is the same broken outcome.
+        raw = json.dumps({"lead": "리드 문장.", "headline_index": 1, "items": []})
+        with pytest.raises(DigestContentError):
+            _generator("")._parse_content(raw)
 
     def test_one_malformed_item_does_not_collapse_whole_digest(self):
         # Valid JSON, valid lead, but the 2nd item is missing its required `url`. Item-level
@@ -156,10 +171,10 @@ class TestParseContent:
         assert [it.url for it in content.items] == ["u0", "u2", "u3"]
         assert content.lead == "리드 문장."
 
-    def test_malformed_headline_item_falls_back_to_minimal(self):
+    def test_malformed_headline_item_raises(self):
         # If items[0] (the headline the lead + visual are about) fails validation, keeping the
-        # rest would leave the lead/visual describing a dropped story. Fall back instead of
-        # shipping a headline/lead/visual mismatch.
+        # rest would leave the lead/visual describing a dropped story. Raise and re-ask instead
+        # of shipping a headline/lead/visual mismatch.
         raw = json.dumps(
             {
                 "lead": "The headline is about the GPT-6 launch.",
@@ -169,14 +184,79 @@ class TestParseContent:
                 ],
             }
         )
-        content = _generator("")._parse_content(raw)
-        assert content.items == []  # minimal fallback — no lead/headline desync
+        with pytest.raises(DigestContentError):
+            _generator("")._parse_content(raw)
 
-    def test_missing_lead_falls_back_to_minimal(self):
-        # Valid JSON with items but no usable lead → deterministic minimal fallback, not a crash.
+    def test_missing_lead_raises(self):
+        # Valid JSON with items but no usable lead → re-askable failure, not a lead-less digest.
         raw = json.dumps({"items": [{"title": "T0", "url": "u0", "body": "b0"}]})
-        content = _generator("")._parse_content(raw)
-        assert content.items == []
+        with pytest.raises(DigestContentError):
+            _generator("")._parse_content(raw)
+
+
+class TestReAskOnUnparseableEmission:
+    """Regression (2026-08-13, 2026-08-17): the editor emitted malformed JSON once, the digest
+    silently became lead=raw/items=[], and both days published a story-less post. generate() must
+    re-ask, and must fail the run outright rather than return a digest with no stories."""
+
+    @staticmethod
+    def _emitted(n: int = 2) -> str:
+        return json.dumps(
+            {
+                "lead": "리드.",
+                "headline_index": 1,
+                "items": [
+                    {"title": f"T{i}", "url": f"u{i}", "body": "본문.", "implication": "시사점."} for i in range(n)
+                ],
+            }
+        )
+
+    @staticmethod
+    def _ranked(n: int = 2):
+        return [
+            RankedItem(
+                item=CollectedItem(item_id=f"i{i}", source_type=SourceType.RSS, title=f"T{i}", url=f"u{i}"), score=0.8
+            )
+            for i in range(n)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_stray_bracket_emission_is_re_asked_and_recovers(self, monkeypatch):
+        from datetime import date
+
+        monkeypatch.setattr("shared.utils.asyncio.sleep", AsyncMock())
+        # First emission carries the production defect (a stray `]` closing the lead); the re-ask
+        # returns valid JSON. The digest must come back whole, not empty.
+        outputs = ['{"lead": "리드."], "items": []}', self._emitted()]
+        calls = {"n": 0}
+
+        def _reply(_):
+            calls["n"] += 1
+            return AIMessage(content=outputs[min(calls["n"] - 1, len(outputs) - 1)])
+
+        factory = MagicMock()
+        factory.get_model.return_value = RunnableLambda(_reply)
+        gen = DigestGenerator(PipelineConfig(enable_grounding_check=False), factory)
+        ranked = self._ranked()
+
+        result = await gen.generate(ranked, [r.item for r in ranked], today=date(2030, 1, 1))
+        assert calls["n"] == 2  # asked again instead of degrading
+        assert len(result.content.items) == 2
+
+    @pytest.mark.asyncio
+    async def test_persistently_unparseable_emission_raises(self, monkeypatch):
+        from datetime import date
+
+        monkeypatch.setattr("shared.utils.asyncio.sleep", AsyncMock())
+        factory = MagicMock()
+        factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content="```json\n{oops"))
+        gen = DigestGenerator(PipelineConfig(enable_grounding_check=False, digest_max_retries=2), factory)
+        ranked = self._ranked()
+
+        # A failed run is the correct outcome: the Lambda reports the error (alarm fires) and no
+        # broken digest reaches AgentCore Memory or Threads.
+        with pytest.raises(DigestContentError):
+            await gen.generate(ranked, [r.item for r in ranked], today=date(2030, 1, 1))
 
 
 class TestTargetCountTrim:

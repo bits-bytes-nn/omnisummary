@@ -139,6 +139,31 @@ class TestDailyVisualMaker:
         assert th.await_args.kwargs["image_bytes"] == b"PNG"
 
     @pytest.mark.asyncio
+    async def test_story_less_content_posts_nothing_and_stays_retryable(self):
+        # Regression (2026-08-13, 2026-08-17): when the digest carried no stories the visual
+        # published its own title+caption as a lone root with zero replies — a story-less "digest"
+        # that also burned the day's ledger slot. Nothing must be posted, and the ledger must stay
+        # unmarked so the day can still be retried.
+        from datetime import date
+
+        from shared.models import DigestContent
+
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = True
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "x"}
+        empty = DigestContent(lead="리드만 남았다.", headline_index=1, items=[])
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = AsyncMock(
+                    return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw"))
+                )
+                with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
+                    with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=True)) as th:
+                        await maker.run(_items(), empty, today=date(2026, 6, 10))
+        th.assert_not_awaited()
+        assert maker.threads_ledger.already_posted(date(2026, 6, 10)) is False
+
+    @pytest.mark.asyncio
     async def test_threads_skipped_when_already_posted_today(self):
         # A same-day re-run (or async Lambda retry) must not re-post the root+replies set.
         from datetime import date

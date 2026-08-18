@@ -247,7 +247,14 @@ async def post_to_threads(
         if posts and posted == 0:
             logger.warning("Threads root posted but all %d reply posts failed — reporting failure", len(posts))
             return False
-        logger.info("Successfully posted digest to Threads (%d/%d reply posts)", posted, len(posts))
+        # Say what actually happened. "Successfully posted digest ... (0/0 reply posts)" was logged
+        # on the two days the digest shipped with no stories at all, so the logs read green while
+        # the post was broken. A reply-less root is legitimate for a single research report, but it
+        # is never a digest, so don't call it one.
+        if posts:
+            logger.info("Posted Threads root '%s' with %d/%d replies", root_id, posted, len(posts))
+        else:
+            logger.info("Posted Threads root '%s' with no replies", root_id)
         return True
     except httpx.HTTPStatusError as e:
         logger.warning("Threads API error: %s — %s", e.response.status_code, e.response.text[:300])

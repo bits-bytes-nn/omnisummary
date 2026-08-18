@@ -21,8 +21,14 @@ from shared import (
     format_collected_item,
     logger,
     parse_json_from_llm_output,
+    retry_async,
 )
 from shared.config import PipelineConfig
+
+
+class DigestContentError(ValueError):
+    """The editor's output could not be turned into a digest carrying at least one story.
+    Retryable: a re-ask usually succeeds, since the cause is a one-off malformed emission."""
 
 
 class DigestGenerator:
@@ -74,18 +80,27 @@ class DigestGenerator:
 
         items_text = self._format_ranked_items(ranked_items)
         chain = DigestPrompt.get_prompt() | self.llm | StrOutputParser()
-        raw = await chain.ainvoke(
-            {
-                "items_text": items_text,
-                "trends_context": trends_context or "(No trend data available yet.)",
-                "language_rules": self.config.digest_language_rules,
-                "audience": self.config.digest_audience_description,
-                "voice_guidance": self.config.digest_voice_guidance,
-                "target_count": target_count,
-                "recent_leads": _format_recent_leads(recent_leads),
-            }
+        prompt_vars = {
+            "items_text": items_text,
+            "trends_context": trends_context or "(No trend data available yet.)",
+            "language_rules": self.config.digest_language_rules,
+            "audience": self.config.digest_audience_description,
+            "voice_guidance": self.config.digest_voice_guidance,
+            "target_count": target_count,
+            "recent_leads": _format_recent_leads(recent_leads),
+        }
+
+        async def _ask_editor() -> DigestContent:
+            return self._parse_content(await chain.ainvoke(prompt_vars))
+
+        # Re-ask on a malformed emission (or a transient Bedrock error) instead of degrading.
+        # Exhausting the attempts raises, so a story-less digest is never persisted or posted.
+        content: DigestContent = await retry_async(
+            _ask_editor,
+            max_retries=self.config.digest_max_retries,
+            backoff_sec=self.config.digest_retry_backoff_sec,
+            description="Digest content generation",
         )
-        content = self._parse_content(raw)
         # Hard upper-bound: the prompt asks for EXACTLY target_count, but a model can over-emit.
         # Trim deterministically so the digest never exceeds the target (fewer is allowed when the
         # editor genuinely found fewer distinct stories). headline_index is pinned to 1, so the
@@ -124,6 +139,15 @@ class DigestGenerator:
         )
 
     def _parse_content(self, raw: str) -> DigestContent:
+        """Turn the editor's raw output into a DigestContent, or raise DigestContentError.
+
+        It NEVER degrades to a story-less digest. The old fallback returned
+        `DigestContent(lead=raw[:1000], items=[])` on any parse error, which shipped the raw
+        fenced JSON as the lead and zero stories — the 2026-08-13 and 2026-08-17 digests each lost
+        all five stories that way (the editor emitted a stray `]` after the lead string; downstream
+        the visual Lambda then posted a caption-only root and logged success). Raising lets the
+        caller re-ask, and a persistent failure surfaces as a failed run instead of a broken post.
+        """
         try:
             data = parse_json_from_llm_output(raw)
             if not isinstance(data, dict):
@@ -150,10 +174,15 @@ class DigestGenerator:
                 raise ValueError("Digest content is missing a usable 'lead'")
             # The prompt makes items[0] the headline (lead + image are about it); pin the index
             # to 1 so a stray LLM value can't point the lead and the visual at different stories.
-            return DigestContent(lead=lead, headline_index=1, items=items)
-        except Exception:
-            logger.warning("Failed to parse digest content JSON; returning minimal content", exc_info=True)
-            return DigestContent(lead=raw.strip()[:1000], headline_index=1, items=[])
+            content = DigestContent(lead=lead, headline_index=1, items=items)
+        except Exception as e:
+            # Log the offending output: without it the 08-17 root cause was only recoverable by
+            # dumping the stored memory snapshot days later.
+            logger.warning("Unparseable digest content (%s); raw output: %r", e, raw.strip()[:600])
+            raise DigestContentError(f"Could not parse digest content: {e}") from e
+        if not content.items:
+            raise DigestContentError("Digest content parsed but carries no stories")
+        return content
 
     @staticmethod
     def _trim_keeping_pinned(items: list, target_count: int, ranked_items: list[RankedItem]) -> list:
