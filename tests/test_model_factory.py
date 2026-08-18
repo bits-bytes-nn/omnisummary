@@ -179,6 +179,49 @@ class TestOpus5Registry:
             assert opus5.uses_adaptive_thinking == other.uses_adaptive_thinking
 
 
+class TestModelClassConstructorSurface:
+    """Every other test here asserts on the config DICT, so a langchain-aws upgrade that renamed or
+    dropped a kwarg still passed the whole suite — nothing ever fed the dict to the real class. Both
+    ChatBedrockConverse and ChatBedrock set pydantic extra="forbid", so actually constructing them
+    is what turns a silent framework break into a red build. No network: the boto client is a mock."""
+
+    CASES = [
+        (LanguageModelId.CLAUDE_V4_8_OPUS, {}),
+        (LanguageModelId.CLAUDE_V5_SONNET, {}),
+        (LanguageModelId.CLAUDE_V5_OPUS, {}),
+        (LanguageModelId.CLAUDE_V5_SONNET, {"enable_thinking": True}),
+        (LanguageModelId.CLAUDE_V4_6_SONNET, {"enable_thinking": True}),  # legacy budget_tokens form
+        (LanguageModelId.CLAUDE_V5_SONNET, {"supports_1m_context_window": True}),
+        (LanguageModelId.CLAUDE_V5_SONNET, {"enable_performance_optimization": True}),
+    ]
+
+    def test_every_built_config_constructs_both_model_classes(self):
+        from langchain_aws import ChatBedrock, ChatBedrockConverse
+
+        f = _factory()
+        # conftest's hermetic_env blocks boto3.client outright; these classes build one in a
+        # validator, so opt in with a mock. Still no network — nothing is invoked.
+        with patch("boto3.client", return_value=MagicMock()):
+            for model, kwargs in self.CASES:
+                info = _LANGUAGE_MODEL_INFO[model]
+                for use_converse, cls in ((True, ChatBedrockConverse), (False, ChatBedrock)):
+                    cfg = f._build_model_config(info, model.value, use_converse, stage="ranking", **kwargs)
+                    cls(**cfg)  # raises on an unknown/renamed kwarg
+
+    def test_the_application_profile_arn_config_constructs(self):
+        # The ARN path adds `provider`, which only exists on the converse class — and it is the path
+        # that only runs in a deployed account, so a break here would surface in production first.
+        from langchain_aws import ChatBedrockConverse
+
+        f = _factory()
+        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
+        cfg = f._build_model_config(
+            info, "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc", True, stage="digest"
+        )
+        with patch("boto3.client", return_value=MagicMock()):
+            ChatBedrockConverse(**cfg)
+
+
 class TestTokenUsageAttribution:
     """Cost Explorer bills per MODEL, and several pipeline stages share one model — so a token total
     could not be traced to the stage that spent it. Every model carries a usage logger tagged with

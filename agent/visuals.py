@@ -132,11 +132,15 @@ class VisualGenerator:
         # The response carries the token counts the image is billed on, and they were being
         # discarded — leaving spend as an estimate from published per-image prices multiplied by a
         # log count. Logged so the real per-render usage is in CloudWatch.
+        # Log the quality the response reports, not just the one we asked for: when nothing is
+        # configured we send no `quality` at all and OpenAI resolves "auto" to a tier whose
+        # per-image price differs ~4x, so the requested value alone cannot say what was billed.
         logger.info(
-            "Rendered visual image (%s, %s, quality=%s, tokens=%s)",
+            "Rendered visual image (%s, %s, quality=%s->%s, tokens=%s)",
             brief.orientation,
             size,
             self.image_quality or "auto",
+            getattr(response, "quality", None) or "unreported",
             _usage_summary(getattr(response, "usage", None)),
         )
         return base64.b64decode(b64)

@@ -171,6 +171,7 @@ class TestVisualGenerator:
         resp = MagicMock()
         resp.data = [MagicMock(b64_json=base64.b64encode(b"P").decode())]
         resp.usage = MagicMock(input_tokens=11, output_tokens=2222, total_tokens=2233)
+        resp.quality = "high"
         client = MagicMock()
         client.images.generate.return_value = resp
 
@@ -180,7 +181,26 @@ class TestVisualGenerator:
         rendered = [c.args[0] % c.args[1:] for c in log.info.call_args_list if "Rendered" in str(c.args[0])]
         assert rendered, "no render log line"
         assert "output=2222" in rendered[0]
-        assert "quality=auto" in rendered[0]
+        # Requested -> resolved. With nothing configured we send no `quality` and OpenAI picks a
+        # tier itself, so only the RESPONSE says which of the ~4x-apart prices was billed.
+        assert "quality=auto->high" in rendered[0]
+
+    def test_render_logs_unreported_when_the_response_omits_quality(self, monkeypatch):
+        # Older/other SDK builds return no `quality`; the render must still succeed and the log must
+        # say so plainly rather than printing a mock repr as if it were a tier.
+        monkeypatch.setenv("OPENAI_API_KEY", "key")
+        brief = VisualBrief(title="T", caption="C", prompt="draw", orientation="landscape")
+        resp = MagicMock(spec=["data", "usage"])
+        resp.data = [MagicMock(b64_json=base64.b64encode(b"P").decode())]
+        resp.usage = MagicMock(input_tokens=1, output_tokens=2, total_tokens=3)
+        client = MagicMock()
+        client.images.generate.return_value = resp
+
+        with patch("agent.visuals.logger") as log:
+            with patch("openai.OpenAI", return_value=client):
+                assert _generator().render(brief) == b"P"
+        rendered = [c.args[0] % c.args[1:] for c in log.info.call_args_list if "Rendered" in str(c.args[0])]
+        assert "quality=auto->unreported" in rendered[0]
 
     def test_usage_summary_tolerates_a_missing_or_reshaped_usage(self):
         from agent.visuals import _usage_summary

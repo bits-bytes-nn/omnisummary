@@ -1,5 +1,5 @@
 from abc import ABC
-from dataclasses import dataclass
+from typing import ClassVar
 
 from langchain_core.prompts import (
     ChatPromptTemplate,
@@ -8,39 +8,36 @@ from langchain_core.prompts import (
 )
 
 
-@dataclass(frozen=True)
 class BasePrompt(ABC):
-    system_prompt_template: str
-    human_prompt_template: str
-    input_variables: list[str]
+    """A prompt definition. Subclasses supply the two templates plus the variables they interpolate,
+    and are never instantiated — hence ClassVar, and hence validation on the class rather than in a
+    dataclass __post_init__ reached by constructing a throwaway instance."""
 
-    def __post_init__(self) -> None:
-        self._validate_prompt_variables()
-
-    def _validate_prompt_variables(self) -> None:
-        for var in self.input_variables:
-            if not isinstance(var, str) or not var:
-                raise ValueError(f"Invalid input variable: {var}")
-            if f"{{{var}}}" not in self.human_prompt_template and f"{{{var}}}" not in self.system_prompt_template:
-                raise ValueError(f"Input variable '{var}' not found in any prompt template.")
+    system_prompt_template: ClassVar[str]
+    human_prompt_template: ClassVar[str]
+    input_variables: ClassVar[list[str]]
 
     @classmethod
     def get_prompt(cls) -> ChatPromptTemplate:
-        instance = cls(
-            input_variables=cls.input_variables,
-            system_prompt_template=cls.system_prompt_template,
-            human_prompt_template=cls.human_prompt_template,
-        )
+        cls._validate_prompt_variables()
         return ChatPromptTemplate.from_messages(
             [
-                SystemMessagePromptTemplate.from_template(instance.system_prompt_template),
-                HumanMessagePromptTemplate.from_template(instance.human_prompt_template),
+                SystemMessagePromptTemplate.from_template(cls.system_prompt_template),
+                HumanMessagePromptTemplate.from_template(cls.human_prompt_template),
             ]
         )
 
+    @classmethod
+    def _validate_prompt_variables(cls) -> None:
+        for var in cls.input_variables:
+            if not isinstance(var, str) or not var:
+                raise ValueError(f"Invalid input variable: {var}")
+            if f"{{{var}}}" not in cls.human_prompt_template and f"{{{var}}}" not in cls.system_prompt_template:
+                raise ValueError(f"Input variable '{var}' not found in any prompt template.")
+
 
 class RankingPrompt(BasePrompt):
-    input_variables: list[str] = [
+    input_variables = [
         "items_text",
         "engagement_guidance",
         "ranking_categories",
@@ -49,7 +46,7 @@ class RankingPrompt(BasePrompt):
         "audience",
     ]
 
-    system_prompt_template: str = """\
+    system_prompt_template = """\
 You are a content curator. Evaluate each item for {audience}.
 
 *Evaluation Criteria*
@@ -105,11 +102,11 @@ Return JSON with ALL items.
 ```
 Categories: {ranking_categories}"""
 
-    human_prompt_template: str = "Here are the content items to evaluate:\n\n{items_text}"
+    human_prompt_template = "Here are the content items to evaluate:\n\n{items_text}"
 
 
 class DigestPrompt(BasePrompt):
-    input_variables: list[str] = [
+    input_variables = [
         "items_text",
         "trends_context",
         "language_rules",
@@ -122,7 +119,7 @@ class DigestPrompt(BasePrompt):
         "lead_budget",
     ]
 
-    system_prompt_template: str = """\
+    system_prompt_template = """\
 You are a daily digest editor for {audience}. You return STRUCTURED CONTENT as JSON — never \
 Slack markup, headings, or formatting characters. Downstream code renders it per channel, so \
 write clean prose only; do not add *bold*, _italic_, backticks, bullets, or links yourself.
@@ -192,7 +189,7 @@ or simultaneity/causation claims that are not present verbatim in the provided i
 data. If a figure or title is implied but not present, omit it or attribute it ("보도에 따르면", \
 "~로 알려졌다"). General framing and opinion are fine; invented specifics are not."""
 
-    human_prompt_template: str = (
+    human_prompt_template = (
         "Here are today's top ranked items:\n\n{items_text}\n\n" "Ongoing trends from recent days:\n\n{trends_context}"
     )
 
@@ -202,9 +199,9 @@ class TrendClassifyPrompt(BasePrompt):
     existing trend an observation extends (or that it is new) and writes a one-sentence
     English summary of the evidence. Code owns all dates, status, momentum, archival."""
 
-    input_variables: list[str] = ["existing_trends", "todays_digest"]
+    input_variables = ["existing_trends", "todays_digest"]
 
-    system_prompt_template: str = """\
+    system_prompt_template = """\
 You track recurring AI/ML trends across daily digests. Read today's digest and the list of \
 existing trends, then report which trends today's digest provides evidence for.
 
@@ -228,13 +225,13 @@ create a new trend when no existing one fits.
 - summary is ONE English sentence of evidence — do NOT include dates, status, momentum, or counts.
 - Output ONLY the JSON object."""
 
-    human_prompt_template: str = "Existing trends:\n{existing_trends}\n\nToday's digest:\n{todays_digest}"
+    human_prompt_template = "Existing trends:\n{existing_trends}\n\nToday's digest:\n{todays_digest}"
 
 
 class RefineQueryPrompt(BasePrompt):
-    input_variables: list[str] = ["titles", "max_queries"]
+    input_variables = ["titles", "max_queries"]
 
-    system_prompt_template: str = """\
+    system_prompt_template = """\
 Generate {max_queries} focused search queries to complement articles already found.
 
 Rules:
@@ -244,7 +241,7 @@ Rules:
 - No generic terms ("AI news", "machine learning update")
 - Output ONLY a JSON array of strings"""
 
-    human_prompt_template: str = "Article titles already found:\n{titles}"
+    human_prompt_template = "Article titles already found:\n{titles}"
 
 
 class VisualEditorPrompt(BasePrompt):
@@ -252,9 +249,9 @@ class VisualEditorPrompt(BasePrompt):
     (the digest's lead is about it), so the editor doesn't pick the story — it decides how to
     illustrate it: research + format + image instruction. So image, lead, and headline stay in sync."""
 
-    input_variables: list[str] = ["items_text", "audience", "on_image_language", "format_guidance"]
+    input_variables = ["items_text", "audience", "on_image_language", "format_guidance"]
 
-    system_prompt_template: str = """\
+    system_prompt_template = """\
 You are the visual editor for {audience}. Illustrate today's HEADLINE story (marked below). The \
 headline is also what the digest's lead is about, so the image and the lead stay about the same \
 story. Aim for a striking, on-point, shareable image with genuine wit.
@@ -297,7 +294,7 @@ Rules:
   on-image text; any meme reference belongs in the spoken caption.
 - Output ONLY the JSON object."""
 
-    human_prompt_template: str = "Today's digest stories:\n\n{items_text}"
+    human_prompt_template = "Today's digest stories:\n\n{items_text}"
 
 
 class VisualSynopsisPrompt(BasePrompt):
@@ -306,7 +303,7 @@ class VisualSynopsisPrompt(BasePrompt):
     infographic ...); this turns it + the source material into a single image-generation
     brief. No fixed modes or panel counts."""
 
-    input_variables: list[str] = [
+    input_variables = [
         "instruction",
         "source",
         "context",
@@ -318,7 +315,7 @@ class VisualSynopsisPrompt(BasePrompt):
         "style_aesthetic",
     ]
 
-    system_prompt_template: str = """\
+    system_prompt_template = """\
 You are an art director. Turn the requested visualization into a single, concrete brief that an \
 image model can render in one image. Honor the user's instruction about format (e.g. a one-page \
 presentation slide, an N-panel comic, a concept diagram, an infographic, a poster).
@@ -371,7 +368,7 @@ Rules:
 - {style_guidance}
 - {humor_guidance}"""
 
-    human_prompt_template: str = (
+    human_prompt_template = (
         "Visualization request:\n{instruction}\n\nSource material:\n{source}\n\n"
         "Additional research/context (may be empty):\n{context}"
     )
@@ -383,9 +380,9 @@ class GroundingCheckPrompt(BasePrompt):
     or soften them), leaving everything else byte-for-byte. Prompt rules alone could not move
     the faithfulness score, so this is a code-invoked verification step over the real sources."""
 
-    input_variables: list[str] = ["digest_text", "sources"]
+    input_variables = ["digest_text", "sources"]
 
-    system_prompt_template: str = """\
+    system_prompt_template = """\
 You are a fact-checker for an AI/ML digest. You receive a drafted digest as labelled lines \
 (LEAD:, ITEM N BODY:, ITEM N IMPLICATION:) and the SOURCE items it was written from. Find \
 specific claims that are NOT supported by the sources and fix ONLY those — keep everything else \
@@ -412,4 +409,4 @@ Return ONLY this JSON:
 ```
 If there are no violations, return an empty violations list and the digest unchanged."""
 
-    human_prompt_template: str = "DRAFT DIGEST:\n{digest_text}\n\nSOURCE ITEMS:\n{sources}"
+    human_prompt_template = "DRAFT DIGEST:\n{digest_text}\n\nSOURCE ITEMS:\n{sources}"
