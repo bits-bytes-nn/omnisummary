@@ -2,7 +2,16 @@ from unittest.mock import MagicMock, patch
 
 
 class TestAgentPromptCaching:
-    def test_bedrock_model_built_with_auto_cache(self):
+    """Strands resolves strategy="auto" by substring-matching the model id for "claude"/"anthropic".
+    In production the id is an application inference profile ARN whose trailing segment is opaque, so
+    "auto" concluded the model could not cache and dropped every cache point — a research turn
+    re-sends the system prompt plus all accumulated tool results, so this is silently expensive.
+    The previous version of this test mocked the resolver to return "global.anthropic.claude-sonnet-5",
+    which contains "anthropic", and therefore could never have caught it."""
+
+    PROFILE_ARN = "arn:aws:bedrock:us-west-2:998601677581:application-inference-profile/pgqjcyolwk7q"
+
+    def _build_with(self, resolved_model_id):
         captured = {}
 
         def fake_bedrock_model(**kwargs):
@@ -15,16 +24,33 @@ class TestAgentPromptCaching:
             patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
             patch(
                 "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
-                return_value="global.anthropic.claude-sonnet-5",
+                return_value=resolved_model_id,
             ),
         ):
             from agent.research_agent import create_research_agent
 
             create_research_agent()
+        return captured
 
-        cache_config = captured.get("cache_config")
+    def test_cache_strategy_is_stated_not_sniffed(self):
+        cache_config = self._build_with(self.PROFILE_ARN).get("cache_config")
         assert cache_config is not None
-        assert cache_config.strategy == "auto"
+        # Must NOT be "auto": that is the value whose model-id sniff fails on an ARN.
+        assert cache_config.strategy == "anthropic"
+
+    def test_caching_survives_an_opaque_model_id(self):
+        # The point of stating the strategy is that it cannot depend on the id's spelling, so the
+        # same strategy must come out for a profile ARN and for a plain model id.
+        for model_id in (self.PROFILE_ARN, "global.anthropic.claude-sonnet-5"):
+            assert self._build_with(model_id)["cache_config"].strategy == "anthropic"
+
+    def test_strands_would_disable_caching_for_the_deployed_model_id_under_auto(self):
+        # Pins the upstream behaviour this works around: if Strands ever taught "auto" to recognise
+        # a profile ARN, this test fails and the explicit strategy can be revisited.
+        from strands.models.bedrock import BedrockModel
+
+        sniffed = BedrockModel._cache_strategy.fget(MagicMock(config={"model_id": self.PROFILE_ARN}))
+        assert sniffed is None
 
 
 class TestAgentToolInjection:

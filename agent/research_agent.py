@@ -305,7 +305,15 @@ def create_research_agent(tools: list[Any] | None = None) -> Agent:
         "model_id": resolved_model_id,
         "max_tokens": model_info.max_output_tokens if model_info else _DEFAULT_MAX_OUTPUT_TOKENS,
         "streaming": True,
-        "cache_config": CacheConfig(strategy="auto"),
+        # "anthropic", not "auto": Strands decides "auto" by substring-matching the model id for
+        # "claude"/"anthropic", and an application inference profile ARN
+        # (arn:...:application-inference-profile/<opaque-id>) contains neither — so it silently
+        # concluded the model could not cache and dropped every cache point, on the exact path the
+        # cost-attribution profiles introduced. A research turn re-sends the system prompt plus all
+        # accumulated tool results, so that is the most expensive thing to lose quietly. Every model
+        # in this registry is Anthropic (the Bedrock factory asserts the same by setting
+        # provider="anthropic" for ARN ids), so state it rather than letting a string sniff guess.
+        "cache_config": CacheConfig(strategy="anthropic"),
     }
     # Sonnet 5 / Opus 4.7/4.8 reject a non-default temperature with a 400. Send it only for
     # models that accept sampling params (same gate the Bedrock factory uses).
