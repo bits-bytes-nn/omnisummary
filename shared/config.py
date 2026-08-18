@@ -366,15 +366,17 @@ class PipelineConfig(_StrictModel):
     # ("who is holding the risk won't be clear until the next downturn") into a triumphal
     # rocket-and-money poster — the opposite register. Not-contradicting is far weaker than the
     # "the image must argue the lead's thesis" rule that was rejected as over-constraining.
-    # (2) The same run drew near-photoreal likenesses of two identifiable living executives in a
-    # fabricated scene. Empty disables either clause.
+    # (2) A 2026-08-15 visual cast the model race as four athletes whose ethnicity stood in for
+    # their lab's country. Depicting real, identifiable people IS allowed and wanted — recognising
+    # the figures is normal editorial-cartoon practice — but a company or a country is not a race.
+    # Empty disables either clause.
     visual_guardrails: str = (
         "Do NOT contradict the editorial angle you were given: if the angle is skeptical or "
         "cautionary, the image must not read as celebratory (and vice versa). You need not argue "
         "the angle — just don't invert it. "
-        "Do NOT render recognisable likenesses of real, identifiable living people, and do not "
-        "personify a company or country as an ethnically-coded human; use stylised or invented "
-        "figures, objects, mascots or logos-free stand-ins instead."
+        "Recognisable depictions of real people are fine. Do NOT, however, personify a company or "
+        "a country as an ethnically-coded human; use the real people involved, or stylised "
+        "figures, objects and mascots instead."
     )
     # Appended to the instruction when the image model's moderation blocks the first render,
     # to soften tone before a single retry. Configurable so ops can retune the safe-for-work

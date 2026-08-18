@@ -100,14 +100,16 @@ class TestEditorialTakeReachesTheArtDirector:
     @pytest.mark.asyncio
     async def test_guardrails_are_appended_and_are_config_driven(self):
         # Handing the angle over as pure context is not always enough: a 2026-08-18 run turned a
-        # lead about circular vendor financing into a triumphal rocket-and-money poster (the
-        # opposite register) and drew near-photoreal likenesses of two identifiable executives.
-        # The guardrails say what the image must not DO — far weaker than the rejected "the image
-        # must argue the lead's thesis" rule.
+        # lead about circular vendor financing into a triumphal rocket-and-money poster — the
+        # opposite register. The guardrails say what the image must not DO — far weaker than the
+        # rejected "the image must argue the lead's thesis" rule. Depicting real people is
+        # explicitly ALLOWED (normal editorial-cartoon practice); what is barred is standing a
+        # company or country up as an ethnically-coded human, as a 2026-08-15 visual did.
         instruction = await self._instruction_for(None)
         assert "GUARDRAILS:" in instruction
         assert "must not read as celebratory" in instruction
-        assert "real, identifiable living people" in instruction
+        assert "Recognisable depictions of real people are fine" in instruction
+        assert "ethnically-coded human" in instruction
 
     @pytest.mark.asyncio
     async def test_empty_guardrails_config_appends_nothing(self):
