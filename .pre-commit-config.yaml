@@ -1,0 +1,45 @@
+# Runs the same gates CI runs, before the push instead of after it. Install once:
+#   uv run pre-commit install
+# CI stays the source of truth — this only moves the feedback earlier. mypy is deliberately NOT a
+# hook: it needs the full dependency set resolved and takes long enough that people start passing
+# --no-verify, which costs more than it saves.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+        # black owns formatting in this repo (line-length 120 in pyproject); ruff-format would
+        # fight it, so only the linter runs here.
+        stages: [manual]
+
+  - repo: https://github.com/psf/black
+    rev: 25.9.0
+    hooks:
+      - id: black
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-yaml
+        # config-template.yaml and the CI workflow are both YAML that must stay parseable.
+        exclude: ^cdk\.out/
+      - id: check-json
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=2048]  # the diagram PNGs are legitimately large
+      - id: detect-private-key
+
+  - repo: local
+    hooks:
+      # The image installs from uv.lock; a pyproject edit that isn't relocked ships a dependency
+      # set nobody tested. CI checks this too — this just fails it before the push.
+      - id: uv-lock-current
+        name: uv.lock is current with pyproject.toml
+        entry: uv lock --check
+        language: system
+        files: ^(pyproject\.toml|uv\.lock)$
+        pass_filenames: false

@@ -95,3 +95,41 @@ class TestConfigureLogger:
         captured = capsys.readouterr()
         assert "plain message" in captured.err
         assert "[hcid]" in captured.err
+
+
+class TestFileHandlerNeverBreaksImport:
+    """`logger = get_default_logger()` runs at module scope, so anything _add_file_handler touches
+    happens before any application code. It used to mkdir the logs directory unguarded, which raised
+    PermissionError on import — found by giving the container image a non-root user, but a read-only
+    checkout or any sandbox hits the same wall. The file is a local convenience; the console handler
+    already carries every record, and AWS skips the file path entirely."""
+
+    def test_unwritable_logs_dir_degrades_to_console_only(self, capsys, monkeypatch):
+        from pathlib import Path
+
+        from shared.logger import _add_file_handler, _build_formatter
+
+        def deny(*_a, **_kw):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(Path, "mkdir", deny)
+        cfg = LoggerConfig(name="test-unwritable", level=logging.INFO, file_logging_enabled=True, json_logging=False)
+        log = configure_logger(cfg)
+        _add_file_handler(log, _build_formatter(cfg))  # must not raise
+        assert not [h for h in log.handlers if isinstance(h, logging.FileHandler)]
+        log.info("still logs to the console")
+        assert "still logs to the console" in capsys.readouterr().err
+
+    def test_unopenable_log_file_degrades_to_console_only(self, tmp_path, monkeypatch):
+        from shared.logger import _add_file_handler, _build_formatter
+
+        def deny(*_a, **_kw):
+            raise OSError(30, "Read-only file system")
+
+        # Patch the CONSTRUCTOR, not the name: _add_file_handler isinstance-checks FileHandler, and
+        # replacing the class with a function would make that check raise instead of the open.
+        monkeypatch.setattr(logging.FileHandler, "__init__", deny)
+        cfg = LoggerConfig(name="test-unopenable", level=logging.INFO, file_logging_enabled=True, json_logging=False)
+        log = configure_logger(cfg)
+        _add_file_handler(log, _build_formatter(cfg))  # must not raise
+        assert not [h for h in log.handlers if isinstance(h, logging.FileHandler)]

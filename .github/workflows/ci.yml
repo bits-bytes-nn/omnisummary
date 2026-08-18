@@ -163,3 +163,34 @@ jobs:
         run: >
           docker run --rm --network none --entrypoint python omnisummary-agentcore:ci -c
           "import agent_runtime.app; print('agentcore image imports OK')"
+
+  security:
+    name: Dependency & secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Full history: gitleaks scans commits, and a shallow clone would only ever look at the tip,
+      # so a key committed earlier and removed later would never be found.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Set up Python
+        run: uv python install 3.12
+      # Audit the EXACT set uv.lock pins — the same set the Docker images install — rather than
+      # re-resolving pyproject's ranges, which would audit versions that never ship.
+      - name: Export the locked dependency set
+        run: uv export --frozen --no-dev --no-emit-project --no-hashes -o requirements-audit.txt
+      - name: Audit locked dependencies for known vulnerabilities
+        run: uvx pip-audit==2.9.0 -r requirements-audit.txt --strict
+      # Secrets: the CloudFormation template used to carry live API tokens in plaintext, and
+      # config/config.yaml (gitignored) holds real values — a mis-added file is a live leak.
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"

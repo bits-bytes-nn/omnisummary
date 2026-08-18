@@ -32,6 +32,12 @@ RUN uv pip install --system --no-cache --no-deps . && \
     pip install --no-cache-dir awslambdaric==4.0.2 && \
     rm -rf build omnisummary.egg-info
 
+# Run as a non-root user. Lambda honours USER, and nothing here writes inside the image at runtime
+# (state goes to S3, scratch to /tmp, which is world-writable in the Lambda sandbox). Added last so
+# the pip installs above still run as root.
+RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app
+USER 10001
+
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
 

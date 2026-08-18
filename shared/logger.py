@@ -82,8 +82,18 @@ def _add_console_handler(logger_obj: logging.Logger, formatter: logging.Formatte
 
 
 def _add_file_handler(logger_obj: logging.Logger, formatter: logging.Formatter) -> None:
+    """Attach a local log file, or leave the console handler as the only sink.
+
+    The file is a local-development convenience — the console handler already carries every record,
+    and in AWS this is skipped entirely (json to stdout → CloudWatch). It must therefore never be
+    able to break an IMPORT: this runs at module scope via get_default_logger(), so an unwritable
+    directory used to raise PermissionError before any application code ran. Found by giving the
+    container a non-root user, but the same applies to a read-only checkout or any sandbox."""
     logs_dir = Path(__file__).resolve().parent.parent / LocalPaths.LOGS_DIR.value
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        logs_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
     base_filename = LocalPaths.LOGS_FILE.value
     name, ext = base_filename.rsplit(".", 1)
     timestamp = datetime.now().strftime("%Y-%m-%d")
@@ -91,7 +101,10 @@ def _add_file_handler(logger_obj: logging.Logger, formatter: logging.Formatter) 
     log_file_path = logs_dir / log_filename
     if any(isinstance(h, logging.FileHandler) and h.baseFilename == str(log_file_path) for h in logger_obj.handlers):
         return
-    file_handler = logging.FileHandler(log_file_path, encoding="utf-8")
+    try:
+        file_handler = logging.FileHandler(log_file_path, encoding="utf-8")
+    except OSError:
+        return
     file_handler.setFormatter(formatter)
     logger_obj.addHandler(file_handler)
 
