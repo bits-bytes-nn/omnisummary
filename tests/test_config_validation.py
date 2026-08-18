@@ -147,9 +147,10 @@ class TestCodeDefaultsMatchTheDeployedConfig:
     without a config.yaml (and every PipelineConfig() in a test) silently gets."""
 
     def test_countdown_position_default_matches_the_local_config(self):
-        # config.yaml has said "suffix" since the setting was added — the code default still said
-        # "prefix", i.e. the exact behaviour the setting exists to avoid (40 identical first lines).
-        assert PipelineConfig().agi_countdown_position == "suffix"
+        # The INVARIANT is what matters — a code default that disagrees with the deployed config is
+        # what a config-less deployment (and every PipelineConfig() in a test) silently gets. The
+        # VALUE is the owner's editorial call: the countdown is the account's signature, so it opens
+        # the lead today, but pinning the literal here would break this test on every such decision.
         if not LOCAL_CONFIG.exists():
             pytest.skip(f"no local config at {LOCAL_CONFIG} (gitignored)")
         cfg = Config.from_yaml(str(LOCAL_CONFIG))

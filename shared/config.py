@@ -265,14 +265,14 @@ class PipelineConfig(_StrictModel):
     # blew past — a self-aware joke). Empty agi_countdown_date disables the intro entirely.
     agi_countdown_template: str = "AGI 등장 {days}일 전이다. "
     agi_countdown_after: str = "AGI 등장 예정일 D+{days}일째, 아직이다. "
-    # Where the gag sits in the lead. As a "prefix" it spends the ROOT'S FIRST LINE — the one line
-    # most feed readers ever see — on the same fixed sentence every day (40 consecutive posts opened
-    # with it). "suffix" keeps the gag verbatim but moves it to a closing sign-off line, so the first
-    # line is the day's actual angle. Position only: no cadence/skip knobs, which would just be
-    # magic numbers. The DEFAULT is "suffix" to match config.yaml, which has said suffix since the
-    # setting was introduced — the code default was simply never corrected, so a deployment without
-    # a config.yaml (or a test using PipelineConfig()) silently got the behaviour we moved away from.
-    agi_countdown_position: Literal["prefix", "suffix"] = "suffix"
+    # Where the gag sits in the lead. "prefix" opens with it — which does spend the ROOT'S FIRST
+    # LINE, the one line most feed readers ever see, on the same fixed sentence every day (40
+    # consecutive posts opened with it). That is deliberate: the countdown is the account's
+    # SIGNATURE, and the owner ranked recognisable branding above the first-line reach argument.
+    # "suffix" keeps the gag verbatim but moves it to a closing sign-off, for a deployment that
+    # would rather open on the day's angle. Position only: no cadence/skip knobs, which would just
+    # be magic numbers.
+    agi_countdown_position: Literal["prefix", "suffix"] = "prefix"
     item_text_max_tokens: int = Field(default=8000, ge=1)
     ranking_batch_size: int = Field(default=40, ge=1)
     # How many ranking batches may be in flight against Bedrock at once. Unbounded fan-out threw
