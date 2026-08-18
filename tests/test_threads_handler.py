@@ -1,4 +1,5 @@
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -374,6 +375,99 @@ class TestPublishPost:
         client.post = AsyncMock(return_value=httpx.Response(200, request=req, json={"id": "c9"}))
         assert await threads_handler._create_container(client, "u", "tok", media_type="TEXT") == "c9"
         assert client.post.await_args.kwargs["data"]["access_token"] == "tok"
+
+
+class TestWireProtocol:
+    """Every other test in this file patches `_publish_post` or `_create_container`, so nothing ever
+    checked what actually goes ON THE WIRE — and that is the layer both 2026-08 incidents lived in.
+    These drive the real request-building code through an httpx MockTransport: no new dependency,
+    nothing patched but the transport and the credentials."""
+
+    @staticmethod
+    def _client_factory(recorded: list[httpx.Request]):
+        def handle(request: httpx.Request) -> httpx.Response:
+            recorded.append(request)
+            if request.method == "GET":  # readiness probe
+                return httpx.Response(200, json={"id": "root"})
+            if request.url.path.endswith("/threads_publish"):
+                return httpx.Response(200, json={"id": f"published-{len(recorded)}"})
+            return httpx.Response(200, json={"id": f"container-{len(recorded)}"})
+
+        transport = httpx.MockTransport(handle)
+        # Bind the REAL class now: threads_handler.httpx is the global module, so patching
+        # httpx.AsyncClient would make this factory call itself and recurse forever.
+        real_client = httpx.AsyncClient
+        return lambda *a, **kw: real_client(transport=transport)
+
+    @staticmethod
+    def _form(request: httpx.Request) -> dict[str, str]:
+        return {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+
+    @pytest.mark.asyncio
+    async def test_image_root_then_reply_hit_the_documented_two_step_endpoints(self):
+        recorded: list[httpx.Request] = []
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_upload_image_for_hosting", return_value="https://s3/i.png"):
+                with patch.object(threads_handler.asyncio, "sleep", new=AsyncMock()):
+                    with patch.object(threads_handler.httpx, "AsyncClient", new=self._client_factory(recorded)):
+                        ok = await post_to_threads(
+                            root_text="LEAD",
+                            replies=["STORY"],
+                            image_bytes=b"PNG",
+                            image_bucket="b",
+                            image_key="k.png",
+                        )
+        assert ok is True
+        posts = [r for r in recorded if r.method == "POST"]
+        assert [r.url.path for r in posts] == [
+            "/v1.0/user1/threads",  # create the image container
+            "/v1.0/user1/threads_publish",  # publish it
+            "/v1.0/user1/threads",  # create the reply container
+            "/v1.0/user1/threads_publish",  # publish the reply
+        ]
+        # every call is authenticated
+        assert all(self._form(r)["access_token"] == "tok" for r in posts)
+
+        root_create, root_publish, reply_create, _ = (self._form(r) for r in posts)
+        assert root_create["media_type"] == "IMAGE"
+        assert root_create["image_url"] == "https://s3/i.png"
+        assert root_create["text"] == "LEAD"
+        # the publish step must carry the id the CREATE step returned, not a re-derived one
+        assert root_publish["creation_id"] == "container-1"
+        # the reply is a TEXT post pointing at the PUBLISHED root id
+        assert reply_create["media_type"] == "TEXT"
+        assert reply_create["reply_to_id"] == "published-2"
+        assert "image_url" not in reply_create
+
+    @pytest.mark.asyncio
+    async def test_overlong_reply_is_capped_before_it_reaches_the_api(self):
+        # Threads rejects >500 chars outright; the cap has to be applied on the request, not just in
+        # the renderer, or one long story 400s the whole reply.
+        recorded: list[httpx.Request] = []
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler.asyncio, "sleep", new=AsyncMock()):
+                with patch.object(threads_handler.httpx, "AsyncClient", new=self._client_factory(recorded)):
+                    ok = await post_to_threads(root_text="R", replies=["가" * 900])
+        assert ok is True
+        creates = [self._form(r) for r in recorded if r.url.path.endswith("/threads")]
+        assert all(len(c["text"]) <= threads_handler.THREADS_MAX_TEXT_LENGTH for c in creates)
+
+    @pytest.mark.asyncio
+    async def test_api_rejection_on_the_publish_step_is_reported_not_swallowed(self):
+        # A 400 on threads_publish (as opposed to the create step) must surface as failure.
+        def handle(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/threads_publish"):
+                return httpx.Response(400, json={"error": {"code": 100, "message": "nope"}})
+            return httpx.Response(200, json={"id": "c1"})
+
+        transport = httpx.MockTransport(handle)
+        real_client = httpx.AsyncClient
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler.asyncio, "sleep", new=AsyncMock()):
+                with patch.object(
+                    threads_handler.httpx, "AsyncClient", new=lambda *a, **kw: real_client(transport=transport)
+                ):
+                    assert await post_to_threads(root_text="R", replies=["one"]) is False
 
 
 class TestImageHosting:

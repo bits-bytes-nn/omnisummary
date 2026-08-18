@@ -204,23 +204,40 @@ uv run python scripts/sync_rsshub_to_s3.py
 배포하세요. 이미지 *태그* 문자열이 그대로면 CloudFormation이 Lambda를 재배포하지 않으므로,
 푸시된 `sha256` digest를 `DIGEST_IMAGE_REF`로 넘깁니다:
 
+CDK CLI는 저장소에 핀된 것(`npm install` 후 `npx cdk`)을 쓰세요. 전역 `cdk`는 `aws-cdk-lib`보다
+뒤처져 cloud-assembly 스키마 불일치로 실패할 수 있습니다.
+
 ```bash
+npm install                                      # 한 번만 — 핀된 CDK CLI 설치
 export DIGEST_IMAGE_REF=sha256:<pushed-digest>   # AGENTCORE_IMAGE_REF은 기본 :arm64
-AWS_PROFILE=<profile> uv run cdk deploy --all -a "uv run python scripts/deploy.py"
+AWS_PROFILE=<profile> npx cdk deploy --all -a "uv run python scripts/deploy.py"
+AWS_PROFILE=<profile> uv run python scripts/put_secrets.py   # 이어서 시크릿 기록
 ```
+
+시크릿은 CloudFormation 템플릿에 들어가지 않습니다. 템플릿은 SecureString을 담을 수 없어서,
+스택에 값을 넘기면 `cdk.out`·CDK 스테이징 버킷·`cloudformation:GetTemplate` 응답에 **평문**으로
+남습니다. 스택은 파라미터 경로만 플레이스홀더로 만들고, 실제 값은 `scripts/put_secrets.py`가
+SecureString으로 기록합니다. 이미 SecureString인 파라미터는 건너뜁니다 — Threads 토큰은 갱신
+Lambda가 제자리에서 회전시키므로 로컬 `.env` 사본을 다시 쓰면 만료된 토큰으로 되돌아갑니다.
 
 생성되는 리소스:
 - **Lambda** (Docker): 다이제스트 파이프라인, 15분 타임아웃
-- **Lambda**: Slack 이벤트 핸들러, 60초 타임아웃
+- **Lambda** (Docker): 데일리 비주얼, 15분 타임아웃 (비동기, 다이제스트 크리티컬 패스 밖. **Threads 게시를 담당하는 컴포넌트**)
+- **Lambda**: Slack 이벤트 핸들러, 60초 타임아웃 (유일한 인터넷 노출 경로이므로 전용 최소권한 역할)
+- **Lambda** (Docker): Threads 토큰 갱신 (~50일 EventBridge 스케줄, 갱신된 60일 토큰을 SSM에 다시 기록)
 - **API Gateway** + **AWS WAFv2**: 레이트 리밋 + 매니지드 룰 + 스로틀링이 적용된 `POST /slack/events`
-- **EventBridge**: 일간 cron (설정 기반 시/분)
-- **Bedrock AgentCore**: Runtime(딥 리서치 에이전트, arm64) + **Memory**(다이제스트 스냅샷, `recall_trends`가 읽음)
-- **ECS Fargate**: RSSHub 컨테이너
-- **S3**: 트렌드 + RSSHub 동기화 데이터
+- **EventBridge**: 일간 다이제스트 cron (설정 기반 시/분) + Threads 토큰 갱신 스케줄
+- **Bedrock AgentCore**: Runtime(딥 리서치 에이전트, arm64) + **Memory**(다이제스트 스냅샷 — 데일리 비주얼 Lambda와 크로스데이 중복 제거가 읽음. `recall_trends`가 읽는 게 아니며, 그쪽은 S3의 `trends.json`을 읽습니다)
+- **ECS Fargate**: RSSHub 컨테이너 (X 세션 쿠키는 태스크 정의의 `secrets`로 SSM에서 주입, `environment`에 평문으로 두지 않음)
+- **SSM Parameter Store**: 모든 시크릿을 SecureString으로 보관 (`scripts/put_secrets.py`가 기록)
+- **S3**: 트렌드 + RSSHub 동기화 데이터 + Threads 이미지 호스팅
 - **DynamoDB**: Slack 이벤트 중복 제거
+- **SQS**: 비동기 DLQ — 모든 Lambda가 `retry_attempts=0` (재시도는 Threads 중복 게시를 유발)
 - **SNS**: 소스 헬스 알림 토픽(이메일)
-- **CloudWatch**: 구조화된 로그 + 에러/5xx 알람
+- **CloudWatch**: 구조화된 로그 + 알람 12개
 - **ECR**: Docker 이미지(Lambda용 amd64, AgentCore용 arm64)
+
+> 배포·아키텍처 세부는 [README.md](README.md)가 정본입니다. 이 문서와 어긋나면 README.md를 따르세요.
 
 ### Docker 이미지
 

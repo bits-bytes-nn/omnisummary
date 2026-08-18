@@ -290,8 +290,9 @@ Resources created:
 - **Lambda** (Docker): Threads token refresh (~50-day EventBridge schedule, writes the renewed 60-day token back to SSM)
 - **API Gateway** + **AWS WAFv2**: `POST /slack/events` with rate-limit + managed rules + throttling
 - **EventBridge**: Daily digest cron (config-driven hour/minute) + Threads token-refresh schedule
-- **Bedrock AgentCore**: Runtime (deep-research agent, arm64) + **Memory** (digest snapshot, read by `recall_trends`)
-- **ECS Fargate**: RSSHub container
+- **Bedrock AgentCore**: Runtime (deep-research agent, arm64) + **Memory** (digest snapshot — read by the daily-visual Lambda and by cross-day dedup; NOT by `recall_trends`, which reads `trends.json` from S3)
+- **ECS Fargate**: RSSHub container (X session cookies injected from SSM via the task definition's `secrets`, never its `environment`)
+- **SSM Parameter Store**: all secrets, as SecureStrings written by `scripts/put_secrets.py` — the stack only creates the parameter paths, holding a placeholder
 - **S3**: trends + RSSHub sync data + Threads image hosting
 - **DynamoDB**: Slack event deduplication
 - **SQS**: async DLQ — every Lambda runs `retry_attempts=0` (a retry would double-post to Threads, which has no idempotency key); the handlers re-raise on failure so the Errors alarm fires and digest/visual/slack failures land here for replay
