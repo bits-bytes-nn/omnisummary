@@ -129,6 +129,50 @@ class TestVoiceInjection:
         assert token in prompt
         assert str(cfg.agent.research_slack_target_words) in prompt
 
+    def test_tool_menu_is_derived_from_the_bound_tools(self):
+        # The prompt used to carry a hand-written numbered tool list beside the separately hardcoded
+        # list in create_research_agent, with nothing keeping them in agreement: a renamed, added or
+        # dropped tool left the model reading a menu it could no longer call. Every bound tool must
+        # appear, with its real arguments, and nothing else may.
+        from agent.research_agent import _render_tools_block
+        from agent.research_tools import (
+            attach_image,
+            community_search,
+            deliver_report,
+            read_url,
+            recall_digest,
+            recall_trends,
+            search_papers,
+            web_search,
+        )
+
+        tools = [
+            web_search,
+            community_search,
+            search_papers,
+            read_url,
+            recall_trends,
+            recall_digest,
+            attach_image,
+            deliver_report,
+        ]
+        block = _render_tools_block(tools)
+        for tool in tools:
+            assert f"{tool.tool_name}(" in block
+        # arguments come from the real signature, not prose
+        assert "web_search(query, recency)" in block
+        assert "deliver_report(report, channel)" in block
+        # one line per tool, numbered, and no stale name survives
+        assert len(block.splitlines()) == len(tools)
+        assert "make_visual" not in block and "get_detail" not in block
+
+    def test_a_renamed_tool_changes_the_menu(self):
+        # The point of deriving the block: dropping a tool must remove it, with no edit anywhere.
+        from agent.research_agent import _render_tools_block
+        from agent.research_tools import web_search
+
+        assert "deliver_report" not in _render_tools_block([web_search])
+
     def test_shares_korean_style_rules_with_digest(self):
         # The same KOREAN_STYLE_RULES block must back BOTH the research prompt and the digest
         # language rules, so the two features can't drift on register / colon-ban / translationese.

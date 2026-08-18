@@ -86,14 +86,7 @@ the <language> section below and apply to every word you write.)
 </voice>
 
 <tools>
-1. web_search(query, recency) — open web search; recency="news" for recent industry/company/policy news
-2. community_search(query) — Reddit / X / Hacker News / Substack reactions and sentiment
-3. search_papers(query) — academic papers (Semantic Scholar) for research/technical claims
-4. read_url(url) — fetch the full text of a specific page (a primary source you found via search)
-5. recall_trends(query) — how this topic evolved across earlier daily digests (the "이전 동향" angle)
-6. recall_digest(digest_date) — what one specific day's digest carried (YYYY-MM-DD), for "what did we cover on X" questions
-7. attach_image(source_url) — download a source's representative image (og:image) to attach to the report
-8. deliver_report(report, channel) — post the finished report (channel: "slack" default, or "threads")
+{tools_block}
 </tools>
 
 <flow>
@@ -255,6 +248,24 @@ say so explicitly and fall back to your background knowledge, clearly labeled as
 """
 
 
+def _render_tools_block(tools: list[Any]) -> str:
+    """Describe the tools that are ACTUALLY bound, from their own specs.
+
+    The prompt used to carry a hand-written numbered list beside a separately hardcoded tool list in
+    create_research_agent, with nothing keeping the two in agreement — so a renamed, added or dropped
+    tool left the model reading a menu that no longer matched what it could call. Name, arguments and
+    one-line summary all come from the Strands tool spec, i.e. from each tool's own signature and
+    docstring, which is the only place they are written down once."""
+    lines = []
+    for i, tool in enumerate(tools, start=1):
+        spec = getattr(tool, "tool_spec", None) or {}
+        name = getattr(tool, "tool_name", None) or spec.get("name", "")
+        args = ", ".join((spec.get("inputSchema", {}).get("json", {}) or {}).get("properties", {}))
+        summary = " ".join(str(spec.get("description", "")).split())
+        lines.append(f"{i}. {name}({args}) — {summary}" if summary else f"{i}. {name}({args})")
+    return "\n".join(lines)
+
+
 def create_research_agent(tools: list[Any] | None = None) -> Agent:
     config = Config.load()
 
@@ -324,6 +335,7 @@ def create_research_agent(tools: list[Any] | None = None) -> Agent:
             research_slack_target_words=config.agent.research_slack_target_words,
             research_max_threads_posts=config.agent.research_max_threads_posts,
             korean_style_rules=KOREAN_STYLE_RULES,
+            tools_block=_render_tools_block(tools),
         ),
     )
 
