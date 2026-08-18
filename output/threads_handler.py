@@ -53,6 +53,11 @@ class ThreadsDelivery(NamedTuple):
 
     posted: int
     expected: int
+    # Whether the root that went up actually carried the day's image. Defaults to False so every
+    # existing construction (a failure verdict, a research report) is unchanged; the visual Lambda
+    # emits it as a metric, because "posted 6/6" says nothing about a text-only fallback that
+    # silently dropped the visual.
+    with_image: bool = False
 
     @property
     def published(self) -> bool:
@@ -301,7 +306,7 @@ async def post_to_threads(
                     )
                 except Exception as e:
                     logger.warning("Threads reply %d/%d failed, continuing: %s", i, len(posts), e)
-        outcome = ThreadsDelivery(1 + posted, expected)
+        outcome = ThreadsDelivery(1 + posted, expected, with_image=bool(image_url))
         # Say what actually happened. "Successfully posted digest ... (0/0 reply posts)" was logged
         # on the two days the digest shipped with no stories at all, so the logs read green while
         # the post was broken. A reply-less root is legitimate for a single research report, but it

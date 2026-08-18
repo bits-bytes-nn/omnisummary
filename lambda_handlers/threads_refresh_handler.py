@@ -44,18 +44,36 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     project = os.environ.get("PROJECT_NAME", "omnisummary")
     stage = os.environ.get("STAGE", "dev")
+    name = f"/{project}/{stage}/threads-access-token"
+    ssm = boto3.client("ssm")
     try:
-        # No Type: the parameter is CREATED by CloudFormation, and AWS::SSM::Parameter cannot
-        # create a SecureString — so it exists as a String. Passing Type=SecureString on an
-        # overwrite is a type CHANGE, which SSM rejects with ValidationException, leaving the
-        # token un-refreshed. Omitting Type keeps the existing type and only updates the value.
-        boto3.client("ssm").put_parameter(
-            Name=f"/{project}/{stage}/threads-access-token",
-            Value=new_token,
-            Overwrite=True,
-        )
+        # No Type: passing Type=SecureString on an overwrite is a type CHANGE, which SSM rejects
+        # with ValidationException — and a rejected write leaves the token un-refreshed until it
+        # expires. Omitting Type keeps whatever type the parameter has (SecureString once
+        # scripts/put_secrets.py has migrated it) and only updates the value.
+        ssm.put_parameter(Name=name, Value=new_token, Overwrite=True)
         logger.info("Refreshed Threads access token and updated SSM")
-        return {"statusCode": 200, "body": "refreshed"}
     except Exception as e:
         logger.error("Failed to write refreshed Threads token to SSM: %s", e)
         raise
+    _warn_if_unencrypted(ssm, name)
+    return {"statusCode": 200, "body": "refreshed"}
+
+
+def _warn_if_unencrypted(ssm: Any, name: str) -> None:
+    """Say so when the refreshed token is sitting in a plain String parameter. The write above
+    deliberately omits Type, so it silently PRESERVES an unencrypted parameter — which is exactly
+    the state scripts/put_secrets.py exists to remove. Best-effort: a failed check must never turn a
+    successful refresh into an error."""
+    try:
+        param_type = ssm.get_parameter(Name=name)["Parameter"]["Type"]
+    except Exception as e:
+        logger.warning("Could not verify the type of '%s': %s", name, e)
+        return
+    if param_type != "SecureString":
+        logger.error(
+            "Threads access token is stored as a plain %s (unencrypted at rest) in '%s' — "
+            "run scripts/put_secrets.py to migrate it to a SecureString",
+            param_type,
+            name,
+        )

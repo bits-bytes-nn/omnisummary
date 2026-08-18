@@ -49,6 +49,11 @@ class BaseCollectorConfig(_StrictModel):
     # items are still used — stale beats empty — but the source is reported STALE so a stopped
     # local cron is visible instead of looking like a healthy run.
     park_max_age_hours: int = Field(default=36, ge=1)
+    # Share of a source's inputs (feeds / accounts / channels / queries) that may fail before the
+    # source is reported DEGRADED. Reporting only: every collected item still reaches the
+    # aggregator. One number for every collector — a source that answers from 2 of 40 inputs looks
+    # exactly like a healthy one in the item count alone.
+    error_rate_threshold: float = Field(default=50.0, ge=0.0, le=100.0)
 
 
 class YouTubeCollectorConfig(BaseCollectorConfig):
@@ -119,7 +124,6 @@ class RSSHubCollectorConfig(BaseCollectorConfig):
     base_url: str = f"http://localhost:{RSSHUB_PORT}"
     accounts: list[RSSHubAccount] = Field(default_factory=list)
     lookback_hours: int = 72
-    error_rate_threshold: float = Field(default=50.0, ge=0.0, le=100.0)
     # How many account feeds may be fetched at once. Each fetch parks a worker thread, so this
     # stays at/below the default asyncio executor width (min(32, cpu+4) — 6 on a 2-vCPU Lambda);
     # oversubscribing it made a feed's timeout expire while its parse was still queued. Worst-case
@@ -133,6 +137,12 @@ class CollectorsConfig(_StrictModel):
     rss: RSSCollectorConfig = Field(default_factory=RSSCollectorConfig)
     web_search: WebSearchCollectorConfig = Field(default_factory=WebSearchCollectorConfig)
     rsshub: RSSHubCollectorConfig = Field(default_factory=RSSHubCollectorConfig)
+    # Sources whose EMPTY result is an INCIDENT worth an alert, by collector name (e.g.
+    # ["rss", "web_search"]). A dark source produces no items, no exception and no stale park file,
+    # so nothing else notices it; but reddit/x are legitimately quiet on many days, which is why
+    # this is an explicit opt-in list rather than "alert whenever any source is empty" — that would
+    # page daily and be muted within a week. Empty (the default) never alerts on EMPTY.
+    alert_on_empty: list[str] = Field(default_factory=list)
 
     def set_reference_time(self, reference_time: datetime) -> None:
         for cfg in (self.youtube, self.reddit, self.rss, self.web_search, self.rsshub):
@@ -150,6 +160,9 @@ class PipelineConfig(_StrictModel):
     # Extra ranked candidates handed to the digest generator beyond top_n, so that when the
     # editor MERGES same-event items (e.g. two takes on one launch) it can still backfill to
     # exactly top_n distinct stories instead of emitting fewer. 0 disables the buffer.
+    # The source_slots guarantees are enforced on the top_n CORE, not on top_n + this buffer: the
+    # buffer items are handed over flagged as backfill, so a source's guaranteed slot can no longer
+    # be "satisfied" by a candidate the editor never publishes.
     digest_candidate_buffer: int = Field(default=3, ge=0)
     # Days a published URL stays in the cross-day dedup ledger; an article seen within this
     # window is skipped so the digest doesn't re-summarize the same story days apart.
@@ -272,6 +285,8 @@ class PipelineConfig(_StrictModel):
     # omitted items get ONE extra re-ask (the shortfall is logged either way). A full-coverage
     # batch — the normal case — makes no extra Bedrock call. 1.0 re-asks on any omission, 0 never.
     ranking_min_coverage_ratio: float = Field(default=0.9, ge=0.0, le=1.0)
+    # Per-source guaranteed slots, applied to the top_n stories the READER gets (never to the padded
+    # top_n + digest_candidate_buffer candidate list).
     source_slots: dict[str, int] = Field(
         default_factory=lambda: {
             "web": 2,

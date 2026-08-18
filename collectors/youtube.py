@@ -109,6 +109,9 @@ class YouTubeCollector(BaseCollector):
         parked = load_items_from_s3("youtube_items.json", max_age_hours=self.config.park_max_age_hours)
         self.park_status = parked
         if parked.usable:
+            # A FRESH park file says nothing about a sync that collected from 2 of 12 channels;
+            # the meta block the sync writes does. Reporting only — every item is still returned.
+            self.flag_degraded_park(parked, threshold=self.config.error_rate_threshold, what="channels")
             return parked.items
 
         # One resolution for the whole run, before the fan-out, so no channel task blocks the loop.
@@ -121,9 +124,25 @@ class YouTubeCollector(BaseCollector):
         # wait. Mirrors rss.max_concurrency / rsshub.max_concurrency.
         semaphore = asyncio.Semaphore(self.config.max_concurrency)
         tasks = [self._collect_channel_bounded(ch, semaphore) for ch in self.config.channels]
-        items = await gather_collector_results(tasks, labels=self.config.channels, raise_if_all_failed=True)
-        logger.info("YouTube collector gathered %d items total", len(items))
-        return items
+        result = await gather_collector_results(tasks, labels=self.config.channels, raise_if_all_failed=True)
+        logger.info(
+            "YouTube collector gathered %d items total from %d/%d channels (%d failed, %d empty)",
+            len(result.items),
+            result.total - result.failed - result.empty,
+            result.total,
+            result.failed,
+            result.empty,
+        )
+        # Records run_meta for the local sync script to park alongside the items (so the Lambda-side
+        # reader can see a half-dead sync) and reports the source DEGRADED past the failure rate.
+        self.record_run_health(
+            total=result.total,
+            failed=result.failed,
+            empty=result.empty,
+            threshold=self.config.error_rate_threshold,
+            what="channels",
+        )
+        return result.items
 
     async def _collect_channel_bounded(self, channel_url: str, semaphore: asyncio.Semaphore) -> list[CollectedItem]:
         """Run one channel inside the fan-out bound and a real wall-clock budget. The per-step

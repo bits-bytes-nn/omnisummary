@@ -70,6 +70,12 @@ collectors:
       #   platform: x
     lookback_hours: 72
     max_concurrency: 5
+  # Sources whose EMPTY result is an incident worth an SNS alert. A dark source raises no exception
+  # and leaves no stale park file, so nothing else notices it — but reddit/x are legitimately quiet
+  # on many days, so this is an explicit opt-in list rather than "alert on any empty source".
+  alert_on_empty: []
+    # - "rss"
+    # - "web_search"
 
 pipeline:
   top_n: 5

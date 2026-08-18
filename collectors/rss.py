@@ -32,9 +32,25 @@ class RSSCollector(BaseCollector):
         # wait. Mirrors rsshub.max_concurrency.
         semaphore = asyncio.Semaphore(self.config.max_concurrency)
         tasks = [self._collect_feed(feed_url, semaphore) for feed_url in self.config.feeds]
-        items = await gather_collector_results(tasks, labels=self.config.feeds, raise_if_all_failed=True)
-        logger.info("RSS collector gathered %d items total", len(items))
-        return items
+        result = await gather_collector_results(tasks, labels=self.config.feeds, raise_if_all_failed=True)
+        logger.info(
+            "RSS collector gathered %d items total from %d/%d feeds (%d failed, %d empty)",
+            len(result.items),
+            result.total - result.failed - result.empty,
+            result.total,
+            result.failed,
+            result.empty,
+        )
+        # A partial outage that still returns items is neither OK nor FAILED: without this, RSS
+        # could shrink from 22 feeds to 2 and the health report would call it healthy.
+        self.record_run_health(
+            total=result.total,
+            failed=result.failed,
+            empty=result.empty,
+            threshold=self.config.error_rate_threshold,
+            what="feeds",
+        )
+        return result.items
 
     async def _collect_feed(self, feed_url: str, semaphore: asyncio.Semaphore) -> list[CollectedItem]:
         async with semaphore:

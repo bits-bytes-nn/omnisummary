@@ -87,6 +87,14 @@ class TrendTracker:
         return TrendMemory(trends=recovered)
 
     def get_trends_context(self, today: date | None = None) -> str:
+        """The DIGEST-facing trend ammunition: the highest-momentum visible trends, with the
+        recurrence facts the lead reasons from.
+
+        Capped at trend_max_active_trends (the same knob that bounds how many trends stay active —
+        no second number): `visible` also holds cooling ones, so the block could hand the editor
+        20+ lines, most of them stale threads it will never use. The CLASSIFIER's view
+        (_render_existing) is deliberately NOT capped — hiding a cooling trend there would orphan it
+        and make the model coin a duplicate id for the same thread."""
         memory = self._load_memory()
         visible = [t for t in memory.trends if t.status != TrendStatus.ARCHIVED]
         if not visible:
@@ -96,7 +104,14 @@ class TrendTracker:
         # 19:00-KST run boundary.
         today = today or date.today()
         visible.sort(key=lambda t: t.momentum(today, self.config.trend_momentum_half_life_days), reverse=True)
-        return self._render_ammunition(visible, today)
+        capped = visible[: self.config.trend_max_active_trends]
+        if len(capped) < len(visible):
+            logger.info(
+                "Trend context capped to the %d highest-momentum of %d visible trends",
+                len(capped),
+                len(visible),
+            )
+        return self._render_ammunition(capped, today)
 
     @staticmethod
     def _render_ammunition(trends: list[Trend], today: date) -> str:

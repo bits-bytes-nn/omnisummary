@@ -61,9 +61,17 @@ class OmniSummaryApplicationStack(Stack):
         # staging bucket and every cloudformation:GetTemplate response.
         #
         # Each parameter is created holding SSM_PLACEHOLDER instead, and `scripts/put_secrets.py`
-        # overwrites it with the real value as a SecureString after the deploy. Re-deploys do NOT
-        # clobber it: CloudFormation only updates a resource whose template properties changed, and
-        # the placeholder never changes — so the SecureString value and type survive.
+        # replaces it with the real value as a SecureString after the deploy (it DELETES the
+        # placeholder String and re-creates it encrypted, because SSM rejects a type change on an
+        # overwrite). Re-deploys do NOT clobber it: CloudFormation only updates a resource whose
+        # template properties changed, and the placeholder never changes — so the SecureString value
+        # and type survive.
+        #
+        # Therefore: NEVER add, rename or re-value a property of these resources (not even a
+        # Description). Any property change makes CloudFormation PutParameter this resource again,
+        # writing the placeholder over the live secret — every affected feature then reads its
+        # secret as unset until put_secrets.py is re-run. tests/test_infrastructure.py pins the
+        # rendered property set for exactly this reason.
         for name in SSM_SECRET_ENV_VARS:
             ssm.StringParameter(
                 self,

@@ -326,3 +326,44 @@ class TestGetTrendsContext:
         tracker = TrendTracker(PipelineConfig(), MagicMock(), store)
         ctx = tracker.get_trends_context(today=date(2026, 6, 10))
         assert "10일째 추적 중" in ctx  # (2026-06-10 - 2026-06-01).days + 1 = 10, from the supplied date
+
+
+class TestDigestFacingTrendCap:
+    """`visible` also holds COOLING trends, so the digest-facing block could hand the editor 20+
+    lines of mostly stale threads. Capped with the SAME knob that bounds active trends — and only
+    here: capping the classifier's view would orphan a cooling trend and spawn a duplicate id."""
+
+    @staticmethod
+    def _memory(n: int) -> TrendMemory:
+        today = date(2026, 6, 10)
+        return TrendMemory(
+            trends=[
+                Trend(
+                    id=f"t{i}",
+                    title=f"Trend {i}",
+                    status=TrendStatus.COOLING if i % 2 else TrendStatus.ACTIVE,
+                    first_seen="2026-06-01",
+                    last_seen=today.isoformat(),
+                    # More evidence → more momentum, so the cap keeps the strongest threads.
+                    evidence=[TrendEvidence(date=today.isoformat(), summary=f"s{i}") for _ in range(n - i)],
+                )
+                for i in range(n)
+            ]
+        )
+
+    def test_context_is_capped_to_the_highest_momentum_trends(self):
+        config = PipelineConfig(trend_max_active_trends=3)
+        store = _FakeStore({TRENDS_KEY: self._memory(8).model_dump_json()})
+        tracker = TrendTracker(config, MagicMock(), store)
+        ctx = tracker.get_trends_context(today=date(2026, 6, 10))
+        lines = [ln for ln in ctx.splitlines() if ln.startswith("- ")]
+        assert len(lines) == 3
+        assert "Trend 0" in ctx and "Trend 7" not in ctx
+
+    def test_the_classifier_view_is_not_capped(self):
+        config = PipelineConfig(trend_max_active_trends=3)
+        memory = self._memory(8)
+        store = _FakeStore({TRENDS_KEY: memory.model_dump_json()})
+        tracker = TrendTracker(config, MagicMock(), store)
+        existing = tracker._render_existing(memory)
+        assert len([ln for ln in existing.splitlines() if ln.startswith("- ")]) == 8

@@ -48,7 +48,7 @@ class TestRun:
                         with patch("lambda_handlers.digest_handler._maybe_alert") as alert:
                             with patch("lambda_handlers.digest_handler.run_pipeline", new=AsyncMock()) as pipeline:
                                 await digest_handler._run()
-        alert.assert_called_once_with(health)
+        alert.assert_called_once_with(health, config.collectors.alert_on_empty)
         pipeline.assert_not_called()
 
     async def test_full_flow_persists_the_stories_and_triggers_the_visual_for_that_date(self):

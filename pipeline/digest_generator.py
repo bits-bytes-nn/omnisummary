@@ -5,7 +5,7 @@ from urllib.parse import urlparse, urlsplit
 
 from langchain_core.output_parsers import StrOutputParser
 
-from output.renderers import THREADS_MAX_POST_CHARS, threads_item_overhead_chars
+from output.renderers import THREADS_MAX_POST_CHARS, _sentences, threads_item_overhead_chars
 from pipeline.aggregator import normalize_url
 from shared import (
     COUNTDOWN_SUFFIX_SEPARATOR,
@@ -52,6 +52,7 @@ class DigestGenerator:
         trends_context: str = "",
         today: date | None = None,
         recent_leads: list[str] | None = None,
+        recent_titles: list[str] | None = None,
     ) -> DigestResult:
         if not ranked_items:
             logger.warning("No ranked items to generate digest from")
@@ -101,6 +102,7 @@ class DigestGenerator:
             "voice_guidance": self.config.digest_voice_guidance,
             "target_count": target_count,
             "recent_leads": _format_recent_leads(recent_leads),
+            "recent_titles": _format_recent_titles(recent_titles),
             "prose_budget_rule": _prose_budget_rule(self._item_prose_budget(ranked_items)),
             "lead_budget": self._lead_budget(intro),
         }
@@ -217,6 +219,16 @@ class DigestGenerator:
                     # minimal content rather than ship a headline/lead/visual mismatch.
                     if i == 0:
                         raise ValueError("Headline item (items[0]) failed validation") from None
+            if len(items) < len(raw_items):
+                # ERROR, not just the per-item warning above: the digest that follows looks entirely
+                # normal, so a dropped story is otherwise invisible — the reader simply gets fewer
+                # stories than the editor wrote. A shortfall from MERGING is legitimate and stays a
+                # warning in the caller; losing an emitted item to validation is not.
+                logger.error(
+                    "Digest lost %d of %d emitted stories to validation; the digest ships short",
+                    len(raw_items) - len(items),
+                    len(raw_items),
+                )
             lead = data.get("lead")
             if not isinstance(lead, str) or not lead.strip():
                 raise ValueError("Digest content is missing a usable 'lead'")
@@ -333,6 +345,12 @@ class DigestGenerator:
                 fields.insert(
                     0, ("MUST INCLUDE", "user-pinned — keep this item in the digest, do not drop or merge it away")
                 )
+            # The ranker enforces the source-mix guarantees on the first top_n candidates; these
+            # extras exist so a merge of two same-event items can still be topped up to top_n. Say
+            # so per item (a code-owned field, like MUST INCLUDE) instead of asking the prompt to
+            # infer which candidates are spare from their position in the list.
+            elif ranked.backfill:
+                fields.insert(0, ("BACKFILL", "spare candidate — use it to replace a merged item, not in addition"))
             parts.append(
                 format_collected_item(
                     item,
@@ -385,23 +403,41 @@ def _prose_budget_rule(max_chars: int) -> str:
     )
 
 
-# How much of each recent lead the anti-repetition block shows. What must differ is the OPENING
-# ANGLE, and the openings sit at the front; carrying five leads in full crowded the prompt with
-# prose the editor is not being asked to compare against.
+# Backstop cap for one recent-lead opening (an unterminated lead has no sentence boundary to cut at).
 RECENT_LEAD_PREVIEW_CHARS = 200
 
 
 def _format_recent_leads(recent_leads: list[str] | None) -> str:
     """Render the last few days' leads as a bulleted block for the anti-repetition prompt
     input. Generic — names no phrase to ban, just 'here are recent openings, differ from them'.
-    Each entry is truncated in CODE (not by a prompt instruction) to its opening stretch."""
+
+    Only each lead's FIRST SENTENCE is shown. What must differ is the opening ANGLE, and that is the
+    opening sentence; the 200-character previews carried a paragraph of prose the editor was never
+    asked to compare against. Derived HERE, at format time, so leads already stored as full prose
+    keep working — no history migration."""
     leads = [ln.strip() for ln in (recent_leads or []) if ln and ln.strip()]
     if not leads:
         return "(No recent digests — no prior angles to avoid.)"
-    previews = [
-        ln if len(ln) <= RECENT_LEAD_PREVIEW_CHARS else ln[:RECENT_LEAD_PREVIEW_CHARS].rstrip() + "…" for ln in leads
-    ]
-    return "\n".join(f"- {ln}" for ln in previews)
+    return "\n".join(f"- {_first_sentence(ln)}" for ln in leads)
+
+
+def _first_sentence(text: str) -> str:
+    """The text's first sentence, hard-capped as a backstop for prose with no sentence boundary."""
+    sentences = _sentences(text)
+    first = (sentences[0] if sentences else text).strip()
+    if len(first) <= RECENT_LEAD_PREVIEW_CHARS:
+        return first
+    return first[:RECENT_LEAD_PREVIEW_CHARS].rstrip() + "…"
+
+
+def _format_recent_titles(recent_titles: list[str] | None) -> str:
+    """The story titles the LAST published digest carried. The editor needs to know what yesterday
+    already ran so today isn't a re-run of it; the URL ledger stays the mechanism that actually
+    suppresses a repeat, so this is information, not a filter."""
+    titles = [t.strip() for t in (recent_titles or []) if t and t.strip()]
+    if not titles:
+        return "(No recent digest on record.)"
+    return "\n".join(f"- {t}" for t in titles)
 
 
 def render_digest_text(content: DigestContent) -> str:

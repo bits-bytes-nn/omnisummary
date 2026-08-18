@@ -61,7 +61,7 @@ class _Pipeline:
         ranked = self.ranked
         digest = self.digest
 
-        async def rank(items, select_count=None):
+        async def rank(items, select_count=None, core_count=None):
             self.ranked_input = items
             return ranked if ranked is not None else _ranked(items)
 
@@ -176,6 +176,8 @@ class TestRunPipelineHappyPath:
             with _Pipeline(tmpdir) as p:
                 await _run(p, config, [_item("https://a.example/1")])
         assert p.ranker.rank.await_args.kwargs["select_count"] == 8
+        # ...while the source-slot guarantees are enforced on the top_n the reader actually gets.
+        assert p.ranker.rank.await_args.kwargs["core_count"] == 5
 
 
 class TestRunPipelineDedup:
@@ -296,3 +298,18 @@ class TestRunPipelineDelivery:
                 with patch.object(p.store, "write_json", side_effect=RuntimeError("disk full")):
                     collected, ranked, digest = await _run(p, _config(), items)
         assert collected and ranked and digest
+
+
+class TestRecentStoryTitles:
+    """The editor is told what the LAST digest ran, read off the snapshots the cross-day dedup seed
+    already fetched — no extra call, and no change to the URL ledger."""
+
+    def test_titles_come_from_the_newest_snapshot(self):
+        newest = {"digest_result": {"content": {"items": [{"title": "어제 1"}, {"title": "어제 2"}]}}}
+        older = {"digest_result": {"content": {"items": [{"title": "그제 1"}]}}}
+        assert main._recent_story_titles([newest, older]) == ["어제 1", "어제 2"]
+
+    def test_a_story_less_or_missing_snapshot_degrades_to_nothing(self):
+        assert main._recent_story_titles([]) == []
+        assert main._recent_story_titles([{"digest_result": None}]) == []
+        assert main._recent_story_titles([{"digest_result": {"content": {"items": []}}}]) == []

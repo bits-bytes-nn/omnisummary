@@ -9,19 +9,30 @@ from shared import CollectedItem, SourceType, generate_item_id, logger, parse_fe
 from shared.config import RSSHubCollectorConfig
 from shared.constants import TWITTER_PLATFORMS
 
-from .base import BaseCollector, ParkedItems, cutoff_datetime, load_items_from_s3
+from .base import (
+    PARK_META_ACCOUNTS_EMPTY,
+    PARK_META_ACCOUNTS_FAILED,
+    PARK_META_ACCOUNTS_TOTAL,
+    BaseCollector,
+    cutoff_datetime,
+    load_items_from_s3,
+)
 
-# Keys of the park-file `meta` block this collector writes (via the sync script) and reads back.
-# Named here so the writer and the reader cannot drift, the same way park_file_key pins the layout.
-PARK_META_ACCOUNTS_TOTAL = "accounts_total"
-PARK_META_ACCOUNTS_FAILED = "accounts_failed"
-PARK_META_ACCOUNTS_EMPTY = "accounts_empty"
+__all__ = [
+    "PARK_META_ACCOUNTS_EMPTY",
+    "PARK_META_ACCOUNTS_FAILED",
+    "PARK_META_ACCOUNTS_TOTAL",
+    "RSSHubCollector",
+]
+
+# What the source's inputs are called in the degraded/park reports, and why they usually fail.
+_INPUT_LABEL = "account feeds"
+_FAILURE_HINT = "Twitter cookies may have expired"
 
 
 class RSSHubCollector(BaseCollector):
     def __init__(self, config: RSSHubCollectorConfig):
         self.config = config
-        # How the LIVE collection went, for the sync script to park alongside the items.
         self.run_meta: dict[str, int] = {}
 
     async def collect(self) -> list[CollectedItem]:
@@ -32,7 +43,9 @@ class RSSHubCollector(BaseCollector):
         parked = load_items_from_s3("rsshub_items.json", max_age_hours=self.config.park_max_age_hours)
         self.park_status = parked
         if parked.usable:
-            self._flag_degraded_park(parked)
+            self.flag_degraded_park(
+                parked, threshold=self.config.error_rate_threshold, what=_INPUT_LABEL, hint=_FAILURE_HINT
+            )
             return parked.items
 
         if not self.config.accounts:
@@ -69,11 +82,16 @@ class RSSHubCollector(BaseCollector):
 
         total = len(self.config.accounts)
         active = total - len(failed_accounts) - len(empty_accounts)
-        self.run_meta = {
-            PARK_META_ACCOUNTS_TOTAL: total,
-            PARK_META_ACCOUNTS_FAILED: len(failed_accounts),
-            PARK_META_ACCOUNTS_EMPTY: len(empty_accounts),
-        }
+        # Records run_meta (for the sync script to park) AND flags the source DEGRADED past the
+        # configured failure rate — the same helper every other collector uses.
+        self.record_run_health(
+            total=total,
+            failed=len(failed_accounts),
+            empty=len(empty_accounts),
+            threshold=self.config.error_rate_threshold,
+            what=_INPUT_LABEL,
+            hint=_FAILURE_HINT,
+        )
         logger.info(
             "RSSHub collector gathered %d items from %d/%d accounts (%d failed, %d empty)",
             len(items),
@@ -97,12 +115,6 @@ class RSSHubCollector(BaseCollector):
                     "Update TWITTER_AUTH_TOKEN and TWITTER_CT0 in the RSSHub container.",
                     self.config.error_rate_threshold,
                 )
-                # Same threshold, now also reported: a run that still returned a few items looked
-                # OK in the health report while most of the account list had gone dark.
-                self.degraded_detail = (
-                    f"{len(failed_accounts)}/{total} account feeds failed "
-                    f"(>{self.config.error_rate_threshold:.0f}%); Twitter cookies may have expired"
-                )
         if empty_accounts:
             logger.debug(
                 "RSSHub empty feeds (no recent posts): %d/%d — '%s'",
@@ -116,24 +128,6 @@ class RSSHubCollector(BaseCollector):
         if len(failed_accounts) == total:
             raise RuntimeError(f"All {total} RSSHub feeds failed: {', '.join(failed_accounts[:10])}")
         return items
-
-    def _flag_degraded_park(self, parked: ParkedItems) -> None:
-        """Report a park file that a HALF-DEAD sync wrote as DEGRADED. The file itself is fresh and
-        carries items, so nothing else in the health check can tell that the local sync collected
-        from 3 of 40 accounts — the shape of X quietly vanishing from the digest. Judged with the
-        SAME error_rate_threshold the live path already uses; silent for legacy files that carry no
-        meta block. Reporting only: every item still reaches the aggregator."""
-        total = parked.meta.get(PARK_META_ACCOUNTS_TOTAL) or 0
-        failed = parked.meta.get(PARK_META_ACCOUNTS_FAILED) or 0
-        if not isinstance(total, int) or not isinstance(failed, int) or total <= 0:
-            return
-        fail_rate = failed / total * 100
-        if fail_rate > self.config.error_rate_threshold:
-            self.degraded_detail = (
-                f"parked sync collected from {total - failed}/{total} account feeds "
-                f"({fail_rate:.0f}% failed); Twitter cookies may have expired"
-            )
-            logger.warning("RSSHub park file is DEGRADED: %s", self.degraded_detail)
 
     def _check_reachable(self) -> None:
         """Raise if the RSSHub service is unreachable, so a total outage is reported

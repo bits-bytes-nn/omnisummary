@@ -52,7 +52,24 @@ class TestNoSecretsInTheTemplate:
         for template in (foundation, application):
             for resource in template.find_resources("AWS::SSM::Parameter").values():
                 names.add(resource["Properties"]["Name"].rsplit("/", 1)[-1])
-        assert set(ALL_SSM_SECRET_ENV_VARS) <= names
+        # Equality, not a subset: a stack-created secret parameter that scripts/put_secrets.py does
+        # not know about would stay a plaintext String placeholder forever, and nothing else would
+        # ever notice — the "these are SecureStrings" claim has to cover every one of them.
+        assert names == set(ALL_SSM_SECRET_ENV_VARS)
+
+    def test_secret_parameter_properties_are_pinned(self, templates):
+        # put_secrets.py owns these parameters' VALUES out-of-band (it deletes the placeholder String
+        # and re-creates it as a SecureString). CloudFormation only leaves that alone while the
+        # resource's template properties are unchanged — so ANY new/renamed property here would make
+        # the next deploy write the placeholder back over the live secret. Pin the property set so
+        # such an edit fails here instead of in production.
+        foundation, application = templates
+        for template in (foundation, application):
+            for logical_id, resource in template.find_resources("AWS::SSM::Parameter").items():
+                # Tags are stack-wide and already deployed; everything else is pinned.
+                assert set(resource["Properties"]) <= {"Name", "Type", "Value", "Tags"}, logical_id
+                assert {"Name", "Type", "Value"} <= set(resource["Properties"]), logical_id
+                assert resource["Properties"]["Type"] == "String", logical_id
 
     def test_rsshub_reads_x_cookies_as_secrets_not_plain_environment(self, templates):
         foundation, _ = templates

@@ -137,15 +137,21 @@ async def recall_digest(digest_date: str) -> str:
     max_chars = config.agent.search_content_preview_chars
 
     def _load() -> dict | None:
-        try:
-            return create_memory_store().get_digest(day.isoformat())
-        except Exception as e:
-            # Best-effort like every other tool: the agent gets a sentence it can reason about
-            # instead of an exception that ends the run.
-            logger.warning("Failed to recall the digest for '%s': %s", day, e)
-            return None
+        return create_memory_store().get_digest(day.isoformat())
 
-    data = await asyncio.to_thread(_load)
+    try:
+        data = await asyncio.to_thread(_load)
+    except Exception as e:
+        # Best-effort like every other tool (an exception must not end the run), but the sentence
+        # must NOT read as "that day carried nothing": a throttled/denied/misconfigured store looked
+        # identical to an uncovered day, so the report asserted the digest never covered a topic it
+        # did. Say the store could not be read and let the agent reason about that instead.
+        logger.warning("Failed to recall the digest for '%s': %s", day, e)
+        return (
+            f"The digest store could not be READ for {day.isoformat()} ({e}). This does NOT mean the "
+            "day had no digest — do not claim anything about what that day covered."
+        )
+
     if not data:
         # NEVER fall back to another date: a report citing the wrong day's stories as that day's
         # coverage is worse than no recall at all.

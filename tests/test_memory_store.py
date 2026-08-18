@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -266,3 +267,64 @@ class TestAgentCoreGetDigestByDate:
         store, client = self._store()
         client.list_events.return_value = {"events": []}
         assert store.get_digest("2026-08-17") is None
+
+
+class TestNewestEventWithinASession:
+    """A session normally holds one event, but a same-day re-run appends another — and list_events
+    promises no ordering, so reading one event could serve the day's FIRST (superseded) attempt."""
+
+    def _store(self):
+        with patch("shared.memory.boto3.client") as mock_client:
+            client = MagicMock()
+            mock_client.return_value = client
+            store = AgentCoreMemoryStore("mem-1", region_name="us-west-2")
+        return store, client
+
+    @staticmethod
+    def _event(text: str, stamp=None):
+        event = {"payload": [{"conversational": {"content": {"text": text}}}]}
+        if stamp is not None:
+            event["eventTimestamp"] = stamp
+        return event
+
+    def test_picks_the_newest_event_regardless_of_listing_order(self):
+        store, client = self._store()
+        old = datetime(2026, 8, 17, 10, 0, tzinfo=UTC)
+        new = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
+        client.list_events.return_value = {
+            "events": [self._event('{"attempt": 1}', old), self._event('{"attempt": 2}', new)]
+        }
+        assert store.get_digest("2026-08-17") == {"attempt": 2}
+        # More than one event per session is read, but only a few — get_recent_digests pays this
+        # per session, so the page size must not grow with history.
+        assert client.list_events.call_args.kwargs["maxResults"] == AgentCoreMemoryStore.EVENTS_PER_SESSION
+        assert AgentCoreMemoryStore.EVENTS_PER_SESSION <= 10
+
+    def test_payload_generated_at_breaks_a_timestamp_tie_and_is_optional(self):
+        store, client = self._store()
+        same = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
+        first = self._event(json.dumps({"digest_result": {"generated_at": "2026-08-17T03:00:00+00:00"}}), same)
+        second = self._event(json.dumps({"digest_result": {"generated_at": "2026-08-17T05:00:00+00:00"}}), same)
+        client.list_events.return_value = {"events": [second, first]}
+        picked = store.get_digest("2026-08-17")
+        assert picked["digest_result"]["generated_at"] == "2026-08-17T05:00:00+00:00"
+
+        # A snapshot stored WITHOUT that field must still load — the stamp only breaks ties.
+        client.list_events.return_value = {"events": [self._event('{"ranked_items": []}')]}
+        assert store.get_digest("2026-08-17") == {"ranked_items": []}
+
+    def test_one_unparseable_event_does_not_hide_a_good_one(self):
+        store, client = self._store()
+        client.list_events.return_value = {
+            "events": [
+                self._event("{not json", datetime(2026, 8, 17, 12, 0, tzinfo=UTC)),
+                self._event('{"ok": 1}', datetime(2026, 8, 17, 11, 0, tzinfo=UTC)),
+            ]
+        }
+        assert store.get_digest("2026-08-17") == {"ok": 1}
+
+    def test_only_unparseable_events_raise_rather_than_read_as_an_empty_day(self):
+        store, client = self._store()
+        client.list_events.return_value = {"events": [self._event("{not json")]}
+        with pytest.raises(MemoryReadError, match="digest-2026-08-17"):
+            store.get_digest("2026-08-17")

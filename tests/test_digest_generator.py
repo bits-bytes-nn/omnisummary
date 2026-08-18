@@ -1,5 +1,5 @@
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -521,6 +521,16 @@ class TestFormatRecentLeads:
         assert "No recent digests" in _format_recent_leads([])
         assert "No recent digests" in _format_recent_leads(["", "  "])
 
+    def test_only_the_first_sentence_of_each_lead_is_shown(self):
+        # The opening ANGLE is the opening sentence; the rest of the lead is prose the editor is not
+        # being asked to compare against, and five 200-char previews spent ~1000 prompt characters
+        # on it. Derived at format time — a lead stored as full prose still works.
+        from pipeline.digest_generator import _format_recent_leads
+
+        stored = "오픈AI가 또 모델을 냈다. 두 번째 문장이다. 세 번째 문장이다."
+        out = _format_recent_leads([stored])
+        assert out == "- 오픈AI가 또 모델을 냈다."
+
     def test_long_leads_are_truncated_in_code_not_by_a_prompt_rule(self):
         # What must differ is the OPENING angle, and it sits at the front; five full leads crowded
         # the prompt with prose the editor is not being asked to compare against.
@@ -530,6 +540,22 @@ class TestFormatRecentLeads:
         assert out.startswith("- " + "가" * RECENT_LEAD_PREVIEW_CHARS)
         assert out.endswith("…")
         assert len(out) < RECENT_LEAD_PREVIEW_CHARS + 50
+
+
+class TestFormatRecentTitles:
+    """The editor is shown what the LAST digest ran, so today isn't a re-run of it. Information
+    only — the URL ledger stays the mechanism that suppresses a repeat."""
+
+    def test_bullets_the_titles(self):
+        from pipeline.digest_generator import _format_recent_titles
+
+        assert _format_recent_titles(["첫 스토리", "둘째 스토리"]) == "- 첫 스토리\n- 둘째 스토리"
+
+    def test_states_when_there_is_no_recent_digest(self):
+        from pipeline.digest_generator import _format_recent_titles
+
+        assert "No recent digest" in _format_recent_titles([])
+        assert "No recent digest" in _format_recent_titles(None)
 
 
 def _source_detail(item) -> str:
@@ -690,3 +716,65 @@ class TestSourceMatchingByNormalizedUrl:
         content = DigestContent(lead="l", headline_index=1, items=[DigestItem(title="T", url="", body="b")])
         gen._fill_source_metadata(content, ranked)
         assert content.items[0].source_tag == ""
+
+
+class TestBackfillMarking:
+    """The ranker guarantees the source mix on the core top_n and hands the rest over as backfill.
+    The editor is told WHICH candidates those are with a code-owned per-item field (like MUST
+    INCLUDE) rather than having to infer it from list position."""
+
+    @staticmethod
+    def _pair():
+        core = RankedItem(
+            item=CollectedItem(item_id="a", source_type=SourceType.RSS, title="Core", url="u1", text="b"), score=0.9
+        )
+        extra = RankedItem(
+            item=CollectedItem(item_id="b", source_type=SourceType.WEB, title="Spare", url="u2", text="b"),
+            score=0.7,
+            backfill=True,
+        )
+        return [core, extra]
+
+    def test_only_backfill_candidates_carry_the_marker(self):
+        text = _generator("")._format_ranked_items(self._pair())
+        blocks = text.split("=== Item ")
+        core_block = next(b for b in blocks if "Title: Core" in b)
+        extra_block = next(b for b in blocks if "Title: Spare" in b)
+        assert "BACKFILL" not in core_block
+        assert "BACKFILL" in extra_block
+        assert text.count("BACKFILL") == 1
+
+    def test_a_pinned_backfill_item_is_still_marked_must_include(self):
+        items = self._pair()
+        items[1].item.metadata["pinned"] = True
+        text = _generator("")._format_ranked_items(items)
+        assert "MUST INCLUDE" in text
+        assert "BACKFILL" not in text  # a pin is never "spare"
+
+
+class TestDroppedStoryIsAnError:
+    """A digest that lost a story to item-level validation still looks completely normal
+    downstream, so the log line is the only trace. Dropping an emitted item is an ERROR; ending up
+    with fewer stories because the editor MERGED same-event items is not (that stays a warning in
+    the caller, which knows the target)."""
+
+    def test_dropped_item_logs_an_error(self):
+        raw = json.dumps(
+            {
+                "lead": "리드 문장.",
+                "items": [
+                    {"title": "T0", "url": "u0", "body": "b0"},
+                    {"title": "T1", "body": "b1"},  # missing url → dropped
+                ],
+            }
+        )
+        with patch("pipeline.digest_generator.logger.error") as err:
+            content = _generator("")._parse_content(raw)
+        assert len(content.items) == 1
+        assert err.called
+
+    def test_a_complete_emission_logs_no_error(self):
+        raw = json.dumps({"lead": "리드 문장.", "items": [{"title": "T0", "url": "u0", "body": "b0"}]})
+        with patch("pipeline.digest_generator.logger.error") as err:
+            _generator("")._parse_content(raw)
+        assert not err.called

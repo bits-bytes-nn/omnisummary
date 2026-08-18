@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 import time
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -17,21 +17,34 @@ from shared import BedrockLanguageModelFactory, Config, create_memory_store, for
 
 METRIC_NAMESPACE = "OmniSummary"
 THREADS_POSTS_METRIC = "ThreadsPostsPublished"
+THREADS_IMAGE_METRIC = "ThreadsImagePublished"
 
 
-def _emit_threads_posts_metric(posted: int) -> None:
-    """Emit how many Threads posts (root + replies) actually landed, as a CloudWatch EMF metric on
-    stdout. This Lambda is the ONLY delivery path, and its verdict was previously visible solely in
-    an SNS alert that no-ops without ALERT_SNS_TOPIC_ARN — so a day that published nothing left no
-    numeric trace at all. Stdout only: no alarm or CDK change rides on this yet."""
+def _emit_threads_metrics(outcome: ThreadsDelivery | None) -> None:
+    """Emit what the day's Threads delivery actually produced, as ONE CloudWatch EMF record on
+    stdout: how many posts (root + replies) landed, and whether the root carried the visual.
+
+    Emitted UNCONDITIONALLY — including for a run with no outcome at all (0 posts). This Lambda is
+    the only delivery path, and skipping the datapoint when nothing was delivered is exactly the
+    case worth measuring: a missing datapoint reads as "no data", not as a zero.
+
+    The timestamp is UTC. datetime.now() is the Lambda's naive LOCAL clock; EMF reads Timestamp as
+    epoch-UTC ms, so a non-UTC runtime would file every datapoint at the wrong time."""
+    posted = outcome.posted if outcome else 0
+    with_image = 1 if (outcome and outcome.with_image) else 0
     emf = {
         "_aws": {
-            "Timestamp": int(datetime.now().timestamp() * 1000),
+            "Timestamp": int(datetime.now(UTC).timestamp() * 1000),
             "CloudWatchMetrics": [
-                {"Namespace": METRIC_NAMESPACE, "Dimensions": [[]], "Metrics": [{"Name": THREADS_POSTS_METRIC}]}
+                {
+                    "Namespace": METRIC_NAMESPACE,
+                    "Dimensions": [[]],
+                    "Metrics": [{"Name": THREADS_POSTS_METRIC}, {"Name": THREADS_IMAGE_METRIC}],
+                }
             ],
         },
         THREADS_POSTS_METRIC: posted,
+        THREADS_IMAGE_METRIC: with_image,
     }
     print(json.dumps(emf))
 
@@ -153,6 +166,5 @@ async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = 
     posted = await maker.run(ranked_items, content, today=digest_date, deadline=deadline)
     logger.info("Daily visual %s for %s", "posted" if posted else "skipped", digest_date)
     outcome = maker.threads_outcome
-    if outcome is not None:
-        _emit_threads_posts_metric(outcome.posted)
+    _emit_threads_metrics(outcome)
     _maybe_alert_threads_outcome(outcome, digest_date)

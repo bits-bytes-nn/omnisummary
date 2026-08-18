@@ -18,6 +18,7 @@ from shared import (
     DigestItem,
     RankedItem,
     RollingLog,
+    SecretUnavailableError,
     VisualBrief,
     VisualEditorPrompt,
     agi_countdown_intro,
@@ -109,6 +110,22 @@ class DailyVisualMaker:
                 post_date,
             )
             return False
+        if self._render_would_be_wasted(content):
+            # A story-less digest is deliberately NOT posted to Threads (that shape published the
+            # broken 2026-08-13/08-17 roots), so with Slack off there is no destination left for an
+            # image — and an LLM editor pass plus a gpt-image render would be paid for and thrown
+            # away. Record the same verdict _post_threads would have, HERE rather than inside the
+            # predicate, so the caller's delivery alert still fires for the unpublished day.
+            logger.error(
+                "Digest for %s carries no stories and Slack is disabled; skipping the visual render "
+                "(the day stays retryable)",
+                post_date,
+            )
+            if self.config.pipeline.enable_threads_post:
+                from output.threads_handler import ThreadsDelivery
+
+                self.threads_outcome = ThreadsDelivery(0, 1)
+            return False
 
         image_bytes, brief = await self._make_visual(ranked_items, content, post_date, deadline=deadline)
 
@@ -133,6 +150,14 @@ class DailyVisualMaker:
             return False
         return bool(self.threads_ledger and self.threads_ledger.already_posted(post_date))
 
+    def _render_would_be_wasted(self, content: DigestContent | None) -> bool:
+        """True when the render has no possible destination: the digest carries no stories (Threads
+        refuses that shape) AND Slack — the other real destination for the image — is off. A pure
+        predicate: run() owns the logging and the delivery verdict."""
+        if self.config.pipeline.enable_slack_post:
+            return False
+        return not (content and content.items)
+
     async def _make_visual(
         self,
         ranked_items: list[RankedItem],
@@ -145,7 +170,16 @@ class DailyVisualMaker:
         OpenAI key, an unusable editor plan, a render error — because the image is an ATTACHMENT to
         the digest, and this is the only Threads publish path. run() used to return early on all
         three, so a visual-only failure silently cost the whole day's digest."""
-        if not resolve_secret("OPENAI_API_KEY", "openai-api-key"):
+        # strict=True so an SSM read FAILURE (throttled, denied, wrong region) is distinguishable
+        # from "no key configured": the lenient read returned "" for both, so a broken parameter
+        # store silently produced text-only digests that looked like a deliberate config. The
+        # exception is caught right here — a strict read must never cost the text digest.
+        try:
+            api_key = resolve_secret("OPENAI_API_KEY", "openai-api-key", strict=True)
+        except SecretUnavailableError as e:
+            logger.error("Could not read OPENAI_API_KEY (%s) — publishing the digest text-only", e)
+            return None, None
+        if not api_key:
             logger.info("OPENAI_API_KEY not set — publishing the digest text-only, without a visual")
             return None, None
 
@@ -173,6 +207,56 @@ class DailyVisualMaker:
             # Extra context is a nice-to-have; a research backend outage must not reach the digest.
             logger.warning("Daily visual context gathering failed; continuing without it", exc_info=True)
             context = ""
+        instruction, use_character = self._build_instruction(
+            plan, content, post_date, headline_title, recent_formats, preferred_orientation
+        )
+
+        image_bytes: bytes | None = None
+        brief: VisualBrief | None = None
+        try:
+            image_bytes, brief = await self.generator.generate(instruction, source, context, deadline=deadline)
+        except Exception:
+            # The image is an optional attachment; its failure must NOT sink the Threads text
+            # digest, which stands on its own. Fall through with no image so _post_threads still
+            # posts the lead + per-story replies (text-only). Slack image upload is skipped below.
+            logger.warning("Daily visual generation failed; posting Threads text-only", exc_info=True)
+
+        # Record the chosen format so tomorrow can deliberately differ. Best-effort. Only when a
+        # brief was actually rendered — a text-only fallback has no format to record. Deduped by
+        # date so a same-day re-run replaces its entry instead of pushing a duplicate that crowds
+        # the variation window (same convention as the recent-leads log).
+        if brief and self.format_log:
+            try:
+                self.format_log.append(
+                    {
+                        "date": post_date.isoformat(),
+                        "orientation": brief.orientation,
+                        "format": plan.get("format", ""),
+                        "multi_panel": bool(plan.get("multi_panel", False)),
+                        "use_character": use_character,
+                    },
+                    dedup_key="date",
+                )
+            except Exception:
+                logger.warning("Failed to record visual format history (non-fatal)", exc_info=True)
+        return image_bytes, brief
+
+    def _build_instruction(
+        self,
+        plan: dict,
+        content: DigestContent | None,
+        post_date: date,
+        headline_title: str,
+        recent_formats: list[dict],
+        preferred_orientation: str,
+    ) -> tuple[str, bool]:
+        """The art-director instruction production actually sends, plus whether the recurring
+        character was requested.
+
+        A PURE extraction from _make_visual — no I/O, no state — so scripts/sample_visual_brief.py
+        can grade the very string production sends. The sampler used to brief the bare
+        `plan["instruction"]`, i.e. without the editorial angle, the guardrails, the format nudge or
+        the character sheet: it was scoring a prompt that never ships."""
         instruction = plan.get("instruction", "") or f"A fun visual about: {headline_title}"
 
         # The art director only ever saw the raw article, so it illustrates surface facts: the
@@ -206,36 +290,7 @@ class DailyVisualMaker:
                 "\n\nFEATURE THE RECURRING CHARACTER as a witness reacting inside this scene "
                 f"(do not just draw him in a void): {self.config.pipeline.visual_character_sheet}"
             )
-
-        image_bytes: bytes | None = None
-        brief: VisualBrief | None = None
-        try:
-            image_bytes, brief = await self.generator.generate(instruction, source, context, deadline=deadline)
-        except Exception:
-            # The image is an optional attachment; its failure must NOT sink the Threads text
-            # digest, which stands on its own. Fall through with no image so _post_threads still
-            # posts the lead + per-story replies (text-only). Slack image upload is skipped below.
-            logger.warning("Daily visual generation failed; posting Threads text-only", exc_info=True)
-
-        # Record the chosen format so tomorrow can deliberately differ. Best-effort. Only when a
-        # brief was actually rendered — a text-only fallback has no format to record. Deduped by
-        # date so a same-day re-run replaces its entry instead of pushing a duplicate that crowds
-        # the variation window (same convention as the recent-leads log).
-        if brief and self.format_log:
-            try:
-                self.format_log.append(
-                    {
-                        "date": post_date.isoformat(),
-                        "orientation": brief.orientation,
-                        "format": plan.get("format", ""),
-                        "multi_panel": bool(plan.get("multi_panel", False)),
-                        "use_character": use_character,
-                    },
-                    dedup_key="date",
-                )
-            except Exception:
-                logger.warning("Failed to record visual format history (non-fatal)", exc_info=True)
-        return image_bytes, brief
+        return instruction, use_character
 
     @staticmethod
     def _curated_headline(content: DigestContent | None) -> DigestItem | None:
@@ -265,6 +320,16 @@ class DailyVisualMaker:
         item = ranked_items[0].item
         return 1, item.title, f"{item.title}\n\n{item.text}"
 
+    def _countdown_intro(self, post_date: date) -> str:
+        """The AGI-countdown gag for this date, exactly as the digest generator computed it — the one
+        part of the lead CODE owns, so the renderer can identify (and drop) it if the lead overflows."""
+        return agi_countdown_intro(
+            self.config.pipeline.agi_countdown_date,
+            self.config.pipeline.agi_countdown_template,
+            post_date,
+            self.config.pipeline.agi_countdown_after,
+        )
+
     def _editorial_take(self, content: DigestContent | None, post_date: date) -> str:
         """The digest's angle on the headline story: its lead plus the headline item's closing
         implication. The AGI-countdown prefix is dropped — it's the same fixed template every day
@@ -272,12 +337,7 @@ class DailyVisualMaker:
         (a visual can still be made; it just won't know the take)."""
         if not content or not content.items:
             return ""
-        intro = agi_countdown_intro(
-            self.config.pipeline.agi_countdown_date,
-            self.config.pipeline.agi_countdown_template,
-            post_date,
-            self.config.pipeline.agi_countdown_after,
-        )
+        intro = self._countdown_intro(post_date)
         idx = content.headline_index if 1 <= content.headline_index <= len(content.items) else 1
         headline = content.items[idx - 1]
         parts = [editorial_lead(content.lead, intro).strip(), headline.implication.strip()]
@@ -517,7 +577,9 @@ class DailyVisualMaker:
             # posted >= expected false, so the "nothing to report" early-return can't swallow it.
             self.threads_outcome = Delivery(0, 1)
             return False
-        root_text, replies = render_threads_posts(content)
+        # Hand the countdown gag over so an over-long lead drops the fixed daily template rather
+        # than the sentence carrying the day's argument.
+        root_text, replies = render_threads_posts(content, self._countdown_intro(post_date))
 
         bucket = self.config.aws.state_bucket_name or os.environ.get("STATE_BUCKET", "")
         prefix = self.config.aws.s3_prefix.rstrip("/") + "/" if self.config.aws.s3_prefix else ""

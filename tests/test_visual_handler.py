@@ -222,3 +222,41 @@ class TestThreadsOutcomeAlert:
         with patch("lambda_handlers.visual_handler.boto3.client") as client:
             visual_handler._maybe_alert_threads_outcome(None, date(2026, 8, 18))
         client.assert_not_called()
+
+
+class TestThreadsMetrics:
+    """The only delivery path must leave a numeric trace of what it produced. A missing datapoint
+    reads as "no data" in CloudWatch, not as a zero — so the record is emitted unconditionally."""
+
+    @staticmethod
+    def _records(capsys) -> list[dict]:
+        return [
+            json.loads(line)
+            for line in capsys.readouterr().out.splitlines()
+            if line.startswith("{") and visual_handler.THREADS_POSTS_METRIC in line
+        ]
+
+    def test_both_metrics_ride_one_record_with_a_utc_timestamp(self, capsys):
+        from datetime import UTC, datetime
+
+        visual_handler._emit_threads_metrics(ThreadsDelivery(6, 6, with_image=True))
+        record = self._records(capsys)[-1]
+        assert record[visual_handler.THREADS_POSTS_METRIC] == 6
+        assert record[visual_handler.THREADS_IMAGE_METRIC] == 1
+        names = {m["Name"] for m in record["_aws"]["CloudWatchMetrics"][0]["Metrics"]}
+        assert names == {visual_handler.THREADS_POSTS_METRIC, visual_handler.THREADS_IMAGE_METRIC}
+        # UTC epoch ms, never the naive local clock (which files every datapoint at the wrong time).
+        drift = abs(record["_aws"]["Timestamp"] / 1000 - datetime.now(UTC).timestamp())
+        assert drift < 60
+
+    def test_a_text_only_post_reports_no_image(self, capsys):
+        visual_handler._emit_threads_metrics(ThreadsDelivery(6, 6))
+        record = self._records(capsys)[-1]
+        assert record[visual_handler.THREADS_POSTS_METRIC] == 6
+        assert record[visual_handler.THREADS_IMAGE_METRIC] == 0
+
+    def test_a_run_with_no_outcome_still_emits_zeroes(self, capsys):
+        visual_handler._emit_threads_metrics(None)
+        record = self._records(capsys)[-1]
+        assert record[visual_handler.THREADS_POSTS_METRIC] == 0
+        assert record[visual_handler.THREADS_IMAGE_METRIC] == 0

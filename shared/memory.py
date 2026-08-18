@@ -138,6 +138,10 @@ class AgentCoreMemoryStore(MemoryStore):
     # Safety cap on list_sessions pagination (100 sessions/page) so a runaway token loop can't
     # spin forever; 20 pages = 2000 sessions ≈ 5+ years of daily digests.
     MAX_SESSION_PAGES = 20
+    # Events read per digest session. Small on purpose: get_recent_digests loads one page PER
+    # session, so this is a constant factor on its cost that must not grow with history. A session
+    # only ever holds more than one event when the same date's pipeline was re-run.
+    EVENTS_PER_SESSION = 5
     # When even the ranked set overflows, cap each item's stored body. The digest snapshot
     # only needs enough text for cross-day dedup/recall, so a per-item cap loses nothing used.
     RANKED_TEXT_CAP = 12_000
@@ -232,18 +236,65 @@ class AgentCoreMemoryStore(MemoryStore):
         return sorted(ids, reverse=True)
 
     def _load_session(self, session_id: str) -> dict[str, Any] | None:
+        """The NEWEST snapshot stored in a session, or None when it holds none.
+
+        A session normally carries exactly one event, but a same-day re-run appends another and
+        list_events does not promise an order — reading maxResults=1 could therefore serve the FIRST
+        (stale) attempt of a day that was re-run. Read a small page and keep the newest instead. An
+        event whose payload is unparseable is skipped; if that leaves nothing usable the error
+        propagates, so get_digest reports an unreadable store rather than an empty day."""
         events = self._client.list_events(
             memoryId=self.memory_id,
             actorId=self.actor_id,
             sessionId=session_id,
-            maxResults=1,
+            maxResults=self.EVENTS_PER_SESSION,
             includePayloads=True,
         )
-        records = events.get("events", [])
-        if not records:
-            return None
-        text = self._extract_text(records[0])
-        return json.loads(text) if text else None
+        best_key: tuple[float, str] | None = None
+        best: dict[str, Any] | None = None
+        error: Exception | None = None
+        for record in events.get("events", []):
+            text = self._extract_text(record)
+            if not text:
+                continue
+            try:
+                data = json.loads(text)
+            except ValueError as e:
+                logger.warning("Skipping an unparseable event in session '%s': %s", session_id, e)
+                error = e
+                continue
+            key = (self._event_epoch(record), self._payload_stamp(data))
+            if best_key is None or key > best_key:
+                best_key, best = key, data
+        if best is None and error is not None:
+            raise error
+        return best
+
+    @staticmethod
+    def _event_epoch(event: dict[str, Any]) -> float:
+        """The event's own timestamp as an epoch float; 0.0 when absent or unparsable, so an
+        undated event never outranks a dated one."""
+        stamp = event.get("eventTimestamp")
+        if isinstance(stamp, datetime):
+            return stamp.timestamp()
+        if isinstance(stamp, int | float):
+            return float(stamp)
+        if isinstance(stamp, str):
+            try:
+                return datetime.fromisoformat(stamp).timestamp()
+            except ValueError:
+                return 0.0
+        return 0.0
+
+    @staticmethod
+    def _payload_stamp(data: object) -> str:
+        """OPTIONAL tiebreaker for two events with the same timestamp: the digest's own
+        generated_at. "" when the snapshot doesn't carry one, so snapshots stored before this was
+        read still load — it only ever breaks a tie, never decides on its own."""
+        if not isinstance(data, dict):
+            return ""
+        stamp = (data.get("digest_result") or {}).get("generated_at")
+        return stamp if isinstance(stamp, str) else ""
 
     def get_latest_digest(self) -> dict[str, Any] | None:
         sessions = self._digest_session_ids()

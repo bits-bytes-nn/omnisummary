@@ -535,6 +535,27 @@ class TestImageHosting:
         assert pub.await_args_list[0].kwargs["image_url"] == ""
 
     @pytest.mark.asyncio
+    async def test_the_outcome_records_whether_the_root_carried_the_image(self):
+        # "6/6 posts" says nothing about a text-only fallback that silently dropped the visual, so
+        # the verdict carries the image flag the visual Lambda emits as a metric.
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_upload_image_for_hosting", return_value="https://s3/x"):
+                with patch.object(threads_handler, "_publish_post", new=AsyncMock(return_value="rid")):
+                    with patch.object(threads_handler, "_wait_until_addressable", new=AsyncMock(return_value=True)):
+                        with_image = await post_to_threads(
+                            root_text="R", replies=["a"], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
+                        )
+        assert with_image.published is True and with_image.with_image is True
+
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_upload_image_for_hosting", side_effect=RuntimeError("denied")):
+                with patch.object(threads_handler, "_publish_post", new=AsyncMock(return_value="rid")):
+                    text_only = await post_to_threads(
+                        root_text="R", replies=["a"], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
+                    )
+        assert text_only.published is True and text_only.with_image is False
+
+    @pytest.mark.asyncio
     async def test_no_bucket_configured_posts_text_only(self):
         with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
             with patch.object(threads_handler, "_upload_image_for_hosting") as up:

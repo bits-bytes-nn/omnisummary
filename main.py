@@ -134,7 +134,14 @@ async def run_collectors_with_health(
             continue
         status = SourceStatus.OK if result else SourceStatus.EMPTY
         health.append(SourceHealth(name=label, item_count=len(result), status=status))
-    return items, HealthReport(sources=health)
+    report = HealthReport(sources=health)
+    # A source that ran clean and returned nothing is DARK: no exception, no stale park file, no
+    # failure ratio. The config names which sources that is an incident for (the digest Lambda
+    # alerts on the same list); log it loudly here so a local run sees it too.
+    dark = [name for name in report.empty_sources if name in set(config.collectors.alert_on_empty)]
+    if dark:
+        logger.error("Source(s) returned NO items and are configured as must-not-be-empty: %s", ", ".join(dark))
+    return items, report
 
 
 async def run_pipeline(
@@ -154,6 +161,7 @@ async def run_pipeline(
     # suppressing dupes for runs after the ledger is first populated. URLs are normalized to the
     # ledger's canonical form so http/https + trailing-slash variants of a past story still match.
     exclude_urls = ledger.recent_urls(digest_date)
+    snapshots: list[dict] = []
     try:
         # Seed the same TTL window the ledger uses: skip today's own snapshot (exclude_date) so a
         # same-day re-run keeps its stories, and floor at digest_date - ttl (after_date) so a story
@@ -177,10 +185,11 @@ async def run_pipeline(
         return None, None, None
 
     # Over-select (top_n + buffer) so the digest editor can backfill after merging same-event
-    # items and still land on exactly top_n distinct stories.
+    # items and still land on exactly top_n distinct stories. The source-slot guarantees are
+    # enforced on the top_n CORE (what the reader gets), not on the padded candidate list.
     select_count = config.pipeline.top_n + config.pipeline.digest_candidate_buffer
     ranker = ContentRanker(config.pipeline, llm_factory)
-    ranked_items = await ranker.rank(items, select_count=select_count)
+    ranked_items = await ranker.rank(items, select_count=select_count, core_count=config.pipeline.top_n)
     logger.info("Ranked %d items (from %d)", len(ranked_items), len(items))
 
     if not ranked_items:
@@ -193,9 +202,29 @@ async def run_pipeline(
     recent_leads = [e.get("lead", "") for e in leads_log.entries()]
     generator = DigestGenerator(config.pipeline, llm_factory)
     digest = await generator.generate(
-        ranked_items, items, trends_context=trends_context, today=digest_date, recent_leads=recent_leads
+        ranked_items,
+        items,
+        trends_context=trends_context,
+        today=digest_date,
+        recent_leads=recent_leads,
+        recent_titles=_recent_story_titles(snapshots),
     )
     logger.info("Generated digest with %d ranked items", len(digest.ranked_items))
+    # Carry the ranking verdict on the result so the delivery/alerting layer can say the digest was
+    # built on an incomplete candidate pool — the digest itself looks normal either way.
+    digest.ranking_health = ranker.health
+    stories = len(digest.content.items) if digest.content else 0
+    if stories < config.pipeline.top_n:
+        # WARNING, not ERROR: merging same-event items legitimately shortens the digest, and the
+        # generator is explicitly allowed to emit fewer than the target. It still must not pass
+        # unremarked — a day that quietly halves is the same shape as a broken one.
+        logger.warning(
+            "Digest carries %d stories, fewer than the target %d (a same-event merge can do this)",
+            stories,
+            config.pipeline.top_n,
+        )
+    if ranker.health.degraded:
+        logger.error("Digest was built on an incomplete candidate pool: %s", ranker.health.summary())
 
     if dry_run:
         logger.info("DRY RUN - Digest output:\n%s", digest.digest_text)
@@ -243,6 +272,19 @@ async def run_pipeline(
     if not is_running_in_aws():
         persist_digest(items, ranked_items, digest, digest_date, base_dir=Path(LocalPaths.DIGEST_STATE_DIR.value))
     return items, ranked_items, digest
+
+
+def _recent_story_titles(snapshots: list[dict]) -> list[str]:
+    """Story titles from the most recent stored digest, so the editor can see what the LAST digest
+    already ran. Read off the snapshots the cross-day dedup seed already fetched (no extra call), and
+    purely informational — the URL ledger remains the thing that actually suppresses a repeat."""
+    for snap in snapshots or []:
+        content = ((snap or {}).get("digest_result") or {}).get("content") or {}
+        titles = [it.get("title", "") for it in (content.get("items") or []) if isinstance(it, dict)]
+        titles = [t for t in titles if t]
+        if titles:
+            return titles
+    return []
 
 
 def _editorial_lead(config: Config, digest: DigestResult, digest_date: date) -> str:

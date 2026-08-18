@@ -45,6 +45,12 @@ class RankedItem(BaseModel):
     score: float = Field(ge=0.0, le=1.0)
     reasoning: str = ""
     categories: list[str] = Field(default_factory=list)
+    # True for a candidate handed over ONLY as merge backfill: the source-slot guarantees are
+    # enforced on the first top_n items (the ones the reader actually gets), and these extras exist
+    # so the editor can still reach top_n distinct stories after merging same-event items. Fully
+    # usable — just not part of the diversified core. Defaults to False, so a snapshot stored before
+    # this field existed still loads.
+    backfill: bool = False
 
 
 class DigestItem(BaseModel):
@@ -69,6 +75,34 @@ class DigestContent(BaseModel):
     items: list[DigestItem] = Field(default_factory=list)
 
 
+class RankingHealth(BaseModel):
+    """How complete the ranking pass was: how many batches failed every retry, and how many of the
+    day's candidates ended up scored.
+
+    A partly-ranked pool is not a failed run — the digest still publishes off what did rank — but it
+    must not read as a clean success either: a throttled batch silently deletes ~40 candidates from
+    the day, which is invisible in the digest itself."""
+
+    batches_total: int = 0
+    batches_failed: int = 0
+    items_total: int = 0
+    items_scored: int = 0
+    items_lost: int = 0
+
+    @property
+    def degraded(self) -> bool:
+        """True when candidates were LOST — a batch that failed every retry. Model omissions alone
+        (items_scored < items_total) are handled by the coverage re-ask and stay log-only."""
+        return self.batches_failed > 0
+
+    def summary(self) -> str:
+        return (
+            f"{self.batches_failed}/{self.batches_total} ranking batches failed permanently; "
+            f"{self.items_lost} of {self.items_total} candidates never reached the digest "
+            f"({self.items_scored} scored)"
+        )
+
+
 class DigestResult(BaseModel):
     digest_text: str
     # Defaults to [] so the memory snapshot can persist the digest result WITHOUT re-embedding
@@ -78,6 +112,9 @@ class DigestResult(BaseModel):
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     total_collected: int = 0
     total_ranked: int = 0
+    # Set by the pipeline after ranking, so the delivery/alerting layer can report a digest built on
+    # an incomplete candidate pool. None means "not recorded" (older snapshots, direct construction).
+    ranking_health: RankingHealth | None = None
 
 
 class VisualBrief(BaseModel):
@@ -234,6 +271,13 @@ class HealthReport(BaseModel):
     @property
     def degraded_sources(self) -> list[str]:
         return [s.name for s in self.sources if s.status == SourceStatus.DEGRADED]
+
+    @property
+    def empty_sources(self) -> list[str]:
+        """Sources that ran cleanly and returned NOTHING. Not a failure on its own (reddit/x are
+        legitimately quiet some days), so callers decide which of these matter — see
+        CollectorsConfig.alert_on_empty."""
+        return [s.name for s in self.sources if s.status == SourceStatus.EMPTY]
 
     def summary(self) -> str:
         return "\n".join(

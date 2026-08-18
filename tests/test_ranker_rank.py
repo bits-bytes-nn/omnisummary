@@ -1,6 +1,6 @@
 import asyncio
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -447,3 +447,72 @@ class TestRankingPromptOrigin:
         ranker = _ranker("", source_slots={})
         item = CollectedItem(item_id="w", source_type=SourceType.WEB, title="t", url="notaurl")
         assert "Origin:" not in ranker._format_items([item])
+
+
+class TestCoreVsBackfill:
+    """The source-slot guarantees must hold for the top_n the READER gets. Applied to the padded
+    candidate list (top_n + buffer) instead, a source's guaranteed slot could be satisfied by an
+    item the editor never used, so the published digest carried no such guarantee."""
+
+    @pytest.mark.asyncio
+    async def test_slots_are_enforced_on_the_core_not_the_padded_list(self):
+        # 4 strong web items and one weaker youtube item, core of 3: youtube's guaranteed slot must
+        # come out of the CORE, so the reader's three stories are not all web.
+        items = _items(
+            [("w1", SourceType.WEB), ("w2", SourceType.WEB), ("w3", SourceType.WEB), ("y1", SourceType.YOUTUBE)]
+        )
+        ranker = _ranker(
+            _rankings({"w1": 0.95, "w2": 0.93, "w3": 0.91, "y1": 0.7}),
+            min_score=0.6,
+            source_slots={"web": 2, "youtube": 1},
+            max_per_origin=3,
+        )
+        selected = await ranker.rank(items, select_count=4, core_count=3)
+        core = [r for r in selected if not r.backfill]
+        extras = [r for r in selected if r.backfill]
+        assert len(core) == 3
+        assert "y1" in {r.item.item_id for r in core}
+        # The buffer is still handed over in full — it is backfill, not a discard.
+        assert [r.item.item_id for r in extras] == ["w3"]
+
+    @pytest.mark.asyncio
+    async def test_without_a_core_count_every_selected_item_is_core(self):
+        items = _items([("w1", SourceType.WEB), ("w2", SourceType.WEB)])
+        ranker = _ranker(_rankings({"w1": 0.9, "w2": 0.8}), min_score=0.6, source_slots={"web": 2})
+        selected = await ranker.rank(items, select_count=2)
+        assert selected and not any(r.backfill for r in selected)
+
+
+class TestRankingHealthVerdict:
+    """A batch that fails every retry silently deletes ~40 candidates from the day, and the digest
+    that follows looks entirely normal — so the verdict has to travel out of rank()."""
+
+    @pytest.mark.asyncio
+    async def test_a_permanently_failed_batch_is_recorded_and_logged_as_an_error(self):
+        items = _items([("a", SourceType.WEB), ("b", SourceType.WEB), ("c", SourceType.WEB)])
+        ranker = _ranker(_rankings({"a": 0.9}), min_score=0.6, ranking_batch_size=1, ranking_max_retries=1)
+        calls = {"n": 0}
+
+        original = ranker._score_batch
+
+        async def flaky(batch, semaphore):
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise RuntimeError("throttled")
+            return await original(batch, semaphore)
+
+        with patch.object(ranker, "_score_batch", side_effect=flaky):
+            with patch("pipeline.ranker.logger.error") as err:
+                await ranker.rank(items)
+        assert ranker.health.degraded is True
+        assert ranker.health.batches_failed == 2 and ranker.health.batches_total == 3
+        assert ranker.health.items_lost == 2
+        assert err.called
+
+    @pytest.mark.asyncio
+    async def test_a_clean_run_is_not_degraded(self):
+        items = _items([("a", SourceType.WEB)])
+        ranker = _ranker(_rankings({"a": 0.9}), min_score=0.6)
+        await ranker.rank(items)
+        assert ranker.health.degraded is False
+        assert ranker.health.items_lost == 0

@@ -169,7 +169,9 @@ class TestThreadsPosts:
             items=[DigestItem(title="스토리", url="http://e.com/x", body="본문이다.", implication="시사점이다.")],
         )
         _, replies = render_threads_posts(content)
-        assert replies[0].split("\n\n") == ["스토리", "본문이다. 시사점이다.", "http://e.com/x"]
+        # The implication is its OWN block: run into the body as one paragraph it read as more body,
+        # so the closing beat each item lands on was invisible in the post.
+        assert replies[0].split("\n\n") == ["스토리", "본문이다.", "시사점이다.", "http://e.com/x"]
 
     def test_all_posts_within_cap(self):
         root, replies = render_threads_posts(_content(3, lead="나" * 700))
@@ -193,6 +195,55 @@ class TestThreadsPosts:
         assert len(post) <= THREADS_MAX_POST_CHARS
         assert "이것이 핵심 시사점이다." in post  # implication kept even as body is trimmed away
 
+    def test_only_the_implication_survives_when_no_body_sentence_fits(self):
+        # Every body sentence is over-long on its own, so the loop empties: the implication block
+        # alone is kept alongside the fixed parts (this branch had no coverage).
+        body = "이것은 아주 긴 한 문장이다 " * 40 + "끝난다."
+        content = DigestContent(
+            lead="리드.",
+            headline_index=1,
+            items=[DigestItem(title="스토리", url="http://e.com/x", body=body, implication="시사점이다.")],
+        )
+        _, replies = render_threads_posts(content)
+        post = replies[0]
+        assert len(post) <= THREADS_MAX_POST_CHARS
+        assert post.split("\n\n") == ["스토리", "시사점이다.", "http://e.com/x"]
+
+    def test_body_is_word_trimmed_and_the_implication_dropped_when_neither_fits(self):
+        # The implication itself overflows, so it goes and the body is word-trimmed into the room
+        # that is left — never down to a bare title + URL.
+        content = DigestContent(
+            lead="리드.",
+            headline_index=1,
+            items=[
+                DigestItem(
+                    title="스토리",
+                    url="http://e.com/x",
+                    body="가나다 " * 300,
+                    implication="시사점 " * 200,
+                )
+            ],
+        )
+        _, replies = render_threads_posts(content)
+        post = replies[0]
+        assert len(post) <= THREADS_MAX_POST_CHARS
+        assert "시사점" not in post
+        assert "가나다" in post and "http://e.com/x" in post
+
+    def test_an_over_long_title_is_trimmed_as_the_last_resort(self):
+        # Title + URL alone overflow: the title is word-trimmed and the URL kept intact, so the
+        # reader can still reach the story.
+        content = DigestContent(
+            lead="리드.",
+            headline_index=1,
+            items=[DigestItem(title="아주 긴 제목 " * 80, url="http://e.com/x", body="", implication="")],
+        )
+        _, replies = render_threads_posts(content)
+        post = replies[0]
+        assert len(post) <= THREADS_MAX_POST_CHARS
+        assert post.endswith("http://e.com/x")
+        assert not post.split("\n\n")[0].endswith("아주 긴 제")  # word boundary, never mid-word
+
     def test_unterminated_body_word_trimmed_not_dropped(self):
         # A long body with NO sentence boundary must be word-trimmed into the post (keeping
         # title + URL), not dropped entirely down to title+URL.
@@ -215,14 +266,24 @@ class TestThreadsPosts:
         assert len(root) <= THREADS_MAX_POST_CHARS
         assert not root.endswith("가나")  # cut on a space, never mid-word
 
-    def test_lead_trim_keeps_the_final_line(self):
-        # With the AGI countdown configured as a SUFFIX it rides the lead's last line, and trimming
-        # drops sentences from the end — so the trim must never be what eats it.
-        lead = "첫 문장이다. " + "가나다라마바사 이것은 문장이다. " * 40 + "\n\nAGI 등장 870일 전이다."
-        root, _ = render_threads_posts(_content(1, lead=lead))
+    def test_lead_trim_drops_the_countdown_gag_before_the_editors_prose(self):
+        # The countdown suffix is the same fixed template every day; the sentence it crowds out is
+        # the day's actual argument. When the caller identifies the gag, IT goes first.
+        gag = "AGI 등장 870일 전이다."
+        lead = "첫 문장이다. " + "가나다라마바사 이것은 문장이다. " * 40 + f"\n\n{gag}"
+        root, _ = render_threads_posts(_content(1, lead=lead), gag)
         assert len(root) <= THREADS_MAX_POST_CHARS
-        assert root.endswith("AGI 등장 870일 전이다.")
+        assert gag not in root
         assert root.startswith("첫 문장이다.")
+
+    def test_lead_trim_never_blind_drops_a_last_line_it_cannot_identify(self):
+        # With the gag in PREFIX position (or disabled), the last line is real prose — dropping it
+        # blind would delete the editor's closing sentence and keep the boilerplate.
+        gag = "AGI 등장 870일 전이다."
+        lead = f"{gag} 첫 문장이다. " + "가나다라마바사 이것은 문장이다. " * 40 + "\n\n마지막 논평이다."
+        root, _ = render_threads_posts(_content(1, lead=lead), gag)
+        assert len(root) <= THREADS_MAX_POST_CHARS
+        assert root.startswith(gag)  # a prefix gag is inside the kept leading sentences
 
     def test_lead_trim_warns(self):
         # A trimmed lead means the editor overran its prose budget: visible, not silent.
@@ -481,18 +542,18 @@ class TestThreadsItemOverhead:
     match what the assembled post really spends on the parts code owns."""
 
     def test_counts_source_line_url_and_separators(self):
-        # title \n\n meta \n\n prose \n\n url  → 3 separators (6 chars) + meta + url
-        assert threads_item_overhead_chars("src · 👍 +10", "http://e.com/1") == len("src · 👍 +10") + 14 + 6
+        # title \n\n meta \n\n body \n\n implication \n\n url → 4 separators (8 chars) + meta + url
+        assert threads_item_overhead_chars("src · 👍 +10", "http://e.com/1") == len("src · 👍 +10") + 14 + 8
 
     def test_no_source_line_means_one_separator_less(self):
-        assert threads_item_overhead_chars("", "http://e.com/1") == 14 + 4
+        assert threads_item_overhead_chars("", "http://e.com/1") == 14 + 6
 
     def test_matches_the_real_assembly(self):
         # An item whose title+body+implication exactly fill the derived budget must not be trimmed.
         meta, url = "src1 · 👍 +10", "http://e.com/1"
         budget = THREADS_MAX_POST_CHARS - threads_item_overhead_chars(meta, url)
         title, implication = "제목", "시사점이다."
-        body = "가" * (budget - len(title) - len(implication) - 1)  # -1 for the space before impl
+        body = "가" * (budget - len(title) - len(implication))
         content = DigestContent(
             lead="리드.",
             headline_index=1,

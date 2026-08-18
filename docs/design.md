@@ -84,12 +84,16 @@ AWS 아키텍처(두 경로 — 스케줄 다이제스트 / Slack 트리거 딥 
 
 | 그룹 | 필드 | 설명 |
 |------|------|------|
-| 공통(상속) | `enabled`, `lookback_hours`, `reference_time`, `request_timeout`, `max_retries`, `retry_backoff_sec`, `park_max_age_hours`(기본 36) | 활성화/조회 윈도/타임아웃/재시도/S3 park 파일 나이 예산(초과 시 항목은 쓰되 헬스 STALE) |
+| 공통(상속) | `enabled`, `lookback_hours`, `reference_time`, `request_timeout`, `max_retries`, `retry_backoff_sec`, `park_max_age_hours`(기본 36), `error_rate_threshold`(기본 50.0) | 활성화/조회 윈도/타임아웃/재시도/S3 park 파일 나이 예산(초과 시 항목은 쓰되 헬스 STALE)/입력(피드·계정·채널·쿼리) 실패율 임계 — 넘으면 소스를 DEGRADED로 **보고만** 함(항목은 그대로 전달) |
 | `rss` | `feeds`, `max_concurrency`(기본 5) | RSS 피드 URL 목록·동시 fetch 상한 |
 | `reddit` | `subreddits`, `sort`, `limit` | 서브레딧·정렬·개수 |
 | `youtube` | `channels`, `max_videos_per_channel`, `resolve_timeout`, `transcript_timeout`, `transcript_language` | 채널·영상 수·자막 |
 | `web_search` | `trend_searches`, `max_results_per_query`, `max_refine_queries`, `min_search_score`, `refine_model` | Tavily 검색·관련도 필터 |
-| `rsshub` | `base_url`, `accounts`, `error_rate_threshold`, `max_concurrency` | X 계정(로컬 컨테이너/S3)·동시 fetch 상한 |
+| `rsshub` | `base_url`, `accounts`, `max_concurrency` | X 계정(로컬 컨테이너/S3)·동시 fetch 상한 |
+
+`error_rate_threshold`는 RSSHub 전용이 아니라 **`BaseCollectorConfig` 공통 노브**입니다(두 번째 숫자를 만들지 않음). RSS·YouTube·web_search도 같은 임계로 DEGRADED를 보고합니다.
+
+`collectors.alert_on_empty`(기본 `[]`)는 **EMPTY가 사건인 소스 이름 목록**입니다(예: `["rss", "web_search"]`). 어두워진 소스는 예외도, stale park 파일도, 실패율도 남기지 않아 다른 어떤 신호에도 걸리지 않습니다 — 반면 reddit·x는 조용한 날이 정상이므로 "빈 소스면 무조건 알림"은 매일 페이징하다 곧 무시됩니다. 그래서 명시적 opt-in 목록이고, 비면 EMPTY로는 절대 알리지 않습니다.
 
 ### 3.2 `pipeline`
 
@@ -98,7 +102,7 @@ AWS 아키텍처(두 경로 — 스케줄 다이제스트 / Slack 트리거 딥 
 | 모델 | `ranking_model`(실효 Opus 4.8), `digest_model`(Sonnet 5), `trend_model` | 단계별 모델 |
 | 랭킹 | `ranking_batch_size`, `ranking_max_concurrency`(기본 4), `ranking_max_retries`(기본 3), `ranking_retry_backoff_sec`(기본 5), `engagement_tiers`, `ranking_categories`, `ranking_duplicate_score_penalty`, `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치·Bedrock fan-out 상한·배치 재시도·참여도 보정·카테고리·점수 루브릭 |
 | 선정/다양성 | `top_n`, `min_score`, `source_slot_score_grace`(기본 0.1), `source_slots`, `source_cap_multiplier`, `max_per_origin`, `origin_weights`, `origin_weight_default`, `origin_weight_nudge` | 상위 N·소스 슬롯·grace 밴드(슬롯 보유 소스가 min_score 위 항목이 전무하면 grace 밴드 내 최선 1건 구제)·origin 상한·가산 보정 |
-| 다이제스트 버퍼/중복 | `digest_candidate_buffer`(기본 3), `published_url_ttl_days`(기본 6), `recent_leads_window`(기본 5) | 랭커 오버선정 버퍼(에디터가 동일 사건 병합 후 backfill)·cross-day dedup 원장 TTL·반복 방지용 최근 lead 윈도 |
+| 다이제스트 버퍼/중복 | `digest_candidate_buffer`(기본 3), `published_url_ttl_days`(기본 6), `recent_leads_window`(기본 5) | 랭커 오버선정 버퍼(소스 슬롯은 **top_n 코어**에만 적용하고, 버퍼분은 `backfill` 플래그로 넘겨 병합 보충용임을 항목별로 알림)·cross-day dedup 원장 TTL·반복 방지용 최근 lead 윈도 |
 | 트렌드 | `trend_retention_days`, `trend_cooling_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존/냉각/증거·active 캡·momentum 반감기 |
 | 전달 | `enable_slack_post`, `enable_threads_post` | 채널별 전달 on/off(각각 독립 토글; 코드 기본값은 Slack on / Threads off, 실제 상태는 배포 환경 설정에 따름). Slack은 다이제스트 Lambda가, **Threads는 데일리 비주얼 Lambda가** 게시 |
 | AGI 카운트다운 | `agi_countdown_date`(기본 `2029-01-01`), `agi_countdown_template`, `agi_countdown_after`, `agi_countdown_position`(`prefix`\|`suffix`, 기본·배포 설정 모두 `suffix`) | 다이제스트 lead에 코드가 붙이는 "AGI N일 전" 인트로(D-day 전엔 카운트다운) + lead의 어느 쪽 끝에 붙일지(§5.2 참조) |
@@ -210,7 +214,8 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 - **날짜 파싱:** `_parse_date`는 Tavily의 date-only(`2026-07-10`)·tz 없는 ISO 문자열을 UTC로 정규화 — naive datetime을 tz-aware cutoff와 비교하다 TypeError로 결과가 조용히 드롭되지 않게 함.
 
 **동시 실행 & 헬스.**
-- `gather_collector_results(tasks, labels, raise_if_all_failed=False)` — 작업을 동시 실행하고 작업별 예외를 로깅 후 건너뜀(평탄한 리스트 반환). `raise_if_all_failed=True`(RSS·YouTube·Reddit 수집기가 사용)면 **모든 작업이 실패했을 때만** RuntimeError를 올려 소스가 EMPTY가 아니라 FAILED로 분류되게 함 — 부분 실패 허용은 그대로.
+- `gather_collector_results(tasks, labels, raise_if_all_failed=False)` — 작업을 동시 실행하고 작업별 예외를 로깅 후 건너뜀. 반환은 평탄한 리스트가 아니라 `CollectorRunResult(items, total, failed, empty)`로, **몇 개의 입력이 응답했는지**가 항목과 함께 흐른다(항목 수만으로는 40개 피드 중 2개만 답한 실행이 건강한 실행과 구분되지 않았다). `raise_if_all_failed=True`(RSS·YouTube·Reddit 수집기가 사용)면 **모든 작업이 실패했을 때만** RuntimeError를 올려 소스가 EMPTY가 아니라 FAILED로 분류되게 함 — 부분 실패 허용은 그대로.
+- `BaseCollector.record_run_health(total, failed, empty, threshold, what, hint)` / `flag_degraded_park(parked, ...)` — 실패율이 `error_rate_threshold`를 넘으면 `degraded_detail`을 세우고, 같은 카운트를 `run_meta`(park-meta 키)에 남겨 sync 스크립트가 항목과 함께 park한다. RSSHub 전용 코드였던 것을 **모든 수집기가 쓰는 한 구현**으로 올렸다 — 한 소스만 반쪽 상태를 보고하고 나머지는 침묵하는 상태를 없애기 위함. **보고 전용**: 어떤 항목도 필터링하지 않는다.
 - `main.run_collectors_with_health()` — 헬스 리포팅용으로 동일 작업을 실행하되 `HealthReport`(§8 참조)를 반환.
   `gather_collector_results`는 다른 호출자들을 위해 그대로 유지.
 
@@ -226,8 +231,8 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 - **입력:** 항목 포맷팅(engagement + origin 포함). `Origin` 줄은 `format_origin_label`이 만들고 **web-search 항목도 포함**한다(URL 호스트, `resolve_origin_key`와 동일하게 `netloc`에서 `www.`만 제거 — 도메인/권위 표도 PSL 로직도 없다). 프롬프트가 "Source Authority"를 채점하는데 web 항목만 매체명이 빠져 있어서 콘텐츠 팜과 통신사 기사가 구별되지 않았다. Tavily의 relevance score는 **의도적으로 넣지 않는다**(검색 적합도는 소스 권위가 아니고, 검증되지 않은 신호를 랭킹 입력에 더하게 된다).
 - **점수 산출:** Claude Opus 4.8로 `RankingPrompt` 병렬 배치 호출 → JSON 점수 파싱.
 - **배치 재시도 & fan-out 상한:** 각 배치의 Converse 호출은 `retry_async`로 재시도합니다(`ranking_max_retries` 기본 3, `ranking_retry_backoff_sec` 기본 5초 선형 백오프). 예전엔 한 번의 스로틀/일시적 5xx가 `[]`로 삼켜져 경고 한 줄만 남기고 **후보 40건이 그날 풀에서 조용히 사라졌습니다**. 동시에 in-flight 배치 수를 `ranking_max_concurrency`(기본 4)로 묶어 큰 날에 스스로 ThrottlingException을 유발하지 않게 합니다(세마포어는 `rank()` 안, 실행 중인 루프에서 생성).
-- **전면 실패만 승격:** 재시도까지 실패한 배치가 있으면 경고하되 나머지 배치 결과로 계속 진행하고, **모든 배치가 실패**했을 때만 RuntimeError로 올려 실행이 FAILED로 잡히게 합니다(`gather_collector_results(raise_if_all_failed=True)`와 같은 규칙). 파싱 실패(모델이 JSON이 아닌 문자열 반환)는 예전처럼 빈 결과로 degrade — 핀 복구 경로가 그 배치의 핀을 min_score로 되살립니다.
-- **오버선정:** `rank(items, select_count)`은 `top_n + digest_candidate_buffer`(기본 3)만큼 선정해, 다이제스트 에디터가 동일 사건 항목을 병합한 뒤 backfill할 여유 후보를 남김.
+- **전면 실패만 승격:** 재시도까지 실패한 배치가 있으면 **ERROR로 남기고**(사라진 후보 수까지 로그) 나머지 배치 결과로 계속 진행하고, **모든 배치가 실패**했을 때만 RuntimeError로 올려 실행이 FAILED로 잡히게 합니다(`gather_collector_results(raise_if_all_failed=True)`와 같은 규칙). 같은 판정을 `ContentRanker.health`(`RankingHealth`)에 남겨 `run_pipeline`이 `DigestResult.ranking_health`로 실어 보내고, 다이제스트 Lambda가 **파이프라인 이후 별도 SNS 알림**으로 게시합니다 — 배치 하나가 사라진 다이제스트도 겉보기엔 완전히 정상이기 때문입니다. 파싱 실패(모델이 JSON이 아닌 문자열 반환)는 예전처럼 빈 결과로 degrade — 핀 복구 경로가 그 배치의 핀을 min_score로 되살립니다.
+- **오버선정 + 코어/백필 구분:** `rank(items, select_count, core_count)`은 `top_n + digest_candidate_buffer`(기본 3)만큼 넘기되, **소스 슬롯 보장은 `core_count`(=top_n) 코어에만** 적용한다. 슬롯을 `top_n + buffer` 전체에 적용하면 어떤 소스의 보장 슬롯이 에디터가 끝내 쓰지 않는 후보로 충족될 수 있어, 독자가 받는 다이제스트에는 그 보장이 존재하지 않았다. 버퍼분은 그대로 전부 넘기고 `RankedItem.backfill=True`로 표시하며, 프롬프트에는 문장을 추가하지 않고 `_format_ranked_items`가 항목별 `BACKFILL:` 필드로 알린다(`MUST INCLUDE`와 같은 방식). 백필 후보도 완전히 사용 가능하므로 "병합 후 보충" 동작은 그대로다.
 - **origin 가산 보정:** `origin_weights`를 가산 보정으로 적용 — `score + (weight-1.0)*origin_weight_nudge`를
   [0,1]로 클램프(곱셈 배수가 아님). 미등록 origin엔 `origin_weight_default`.
 - **필터:** `min_score` 필터 적용.
@@ -264,7 +269,7 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
   소비되었고, 표본 95건 중 5건이 마지막 문장을 잃었다). `digest_item_prose_max_chars`(기본 380)는 상한
   ceiling일 뿐이고 0이면 채널 캡 없음. lead도 예산을 받는다(`_lead_budget` → 500 − 코드가 붙이는 카운트다운
   개그와 그 앞 빈 줄).
-- **target_count + recent_leads:** `generate(..., recent_leads=...)`. 프롬프트에 `target_count`와 `recent_leads`(최근 며칠 lead — "이 오프닝 각은 피하라", 특정 문구를 금지하지 않고 일반화. 각 lead는 **코드**가 앞부분만 남기고 자름(`RECENT_LEAD_PREVIEW_CHARS`) — 비교 대상은 오프닝 각이고, 프롬프트 지시가 아니라 입력 가공으로 처리)를 함께 넣음. `target_count`는 기본 `min(top_n, 후보수)`이되, 사용자가 top_n보다 많은 URL을 핀하면 **헤드라인 1 + 전체 핀**을 담도록 상향(핀도 헤드라인도 트림에 안 밀리게). 에디터는 오버선정 후보를 병합해 정확히 target_count개의 distinct 스토리를 내되, **모델이 초과 emit하면 코드가 트림**(`_trim_keeping_pinned`: 결정론적 상한; items[0] 헤드라인 우선 보존 후 나머지 슬롯에 핀 보존).
+- **target_count + recent_leads + recent_titles:** `generate(..., recent_leads=..., recent_titles=...)`. 프롬프트에 `target_count`와 `recent_leads`(최근 며칠 lead — "이 오프닝 각은 피하라", 특정 문구를 금지하지 않고 일반화. **각 lead의 첫 문장만** 보여준다: 달라야 하는 건 오프닝 각이고 그것이 첫 문장이다. 잘라내기는 저장 포맷이 아니라 **포맷 시점**(`_format_recent_leads`)에 일어나므로 전문(全文)으로 저장된 기존 이력도 그대로 동작하고, 마이그레이션이 없다. `RECENT_LEAD_PREVIEW_CHARS`는 문장 경계가 없는 산문용 백스톱), `recent_titles`(직전 다이제스트가 실은 **스토리 제목 목록** — 오늘이 그것의 재방송이 되지 않게. 프레이밍은 한 줄이고 임계·유사도 휴리스틱은 없다. 실제로 재발행을 막는 건 여전히 URL 원장이며 여기선 정보로만 준다. `main.run_pipeline`이 cross-day dedup이 이미 가져온 스냅샷에서 뽑으므로 추가 호출도 없다)를 함께 넣음. `target_count`는 기본 `min(top_n, 후보수)`이되, 사용자가 top_n보다 많은 URL을 핀하면 **헤드라인 1 + 전체 핀**을 담도록 상향(핀도 헤드라인도 트림에 안 밀리게). 에디터는 오버선정 후보를 병합해 정확히 target_count개의 distinct 스토리를 내되, **모델이 초과 emit하면 코드가 트림**(`_trim_keeping_pinned`: 결정론적 상한; items[0] 헤드라인 우선 보존 후 나머지 슬롯에 핀 보존).
 - **Slack 마크업 없음:** 다이제스트 경로는 `sanitize_slack_mrkdwn`을 호출하지 **않음**(그 정규화는 이제 딥 리서치 경로 전용 — `output/delivery.py`의 `_deliver_slack`이 모델이 흘린 마크업을 1차로 보정하고, `agent_runtime/app.py` 폴백이 동일 정규화를 적용). 채널별 마크업은 각 렌더러가 붙임.
 - **시스템 오브 레코드:** `render_digest_text`가 구조화 콘텐츠를 평문 산문으로 렌더해 `digest_text`를 만들고, 이는 트렌드 분류기·AgentCore 스냅샷이 사용.
 - **그라운딩(옵션, `enable_grounding_check`):** 산문 필드의 구체적 주장을 소스 항목(+코드 산출 트렌드 사실)에 대조해 근거 없는 부분만 외과적으로 수정.
@@ -272,7 +277,7 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 ### 5. 채널별 렌더링 (`output/renderers.py`)
 구조화 `DigestContent`를 채널 포맷으로 변환(다이제스트 경로는 채널마다 다른 렌더러를 통과):
 - **`render_slack_blocks`:** Slack Block Kit — header / lead section / (이미지) / 항목별 divider·title 링크·source·metrics context·body는 `rich_text_quote`·implication. 메시지당 블록 상한으로 청크 분할. `output/slack_handler.send_digest_to_slack`가 사용.
-- **`render_threads_posts`:** Threads용 — root는 lead, 항목마다 평탄한 reply 하나(≤500자, 문장 경계로 트림, title·소스 줄·URL 유지, Slack 마크업 없음). 산문이 캡에 걸려 잘린 항목이 있으면 **개수만** WARNING으로 남긴다(본문 텍스트는 로깅하지 않음) — 에디터가 산문 예산을 넘겼다는 신호.
+- **`render_threads_posts`:** Threads용 — root는 lead, 항목마다 평탄한 reply 하나(≤500자, 문장 경계로 트림, title·소스 줄·URL 유지, Slack 마크업 없음). **implication은 body와 한 단락으로 이어 붙이지 않고 자기 블록**(빈 줄로 분리)으로 나간다 — 이어 붙이면 목소리 줄이 그냥 본문의 마지막 문장처럼 읽혀 항목이 착지하는 지점이 사라졌다. 이 추가 구분자는 `threads_item_overhead_chars`(에디터에게 알려주는 파생 예산)와 `_item_post_overflows`(트림 카운트)에도 **똑같이** 반영돼 예산이 정확히 유지된다. 산문이 캡에 걸려 잘린 항목이 있으면 **개수만** WARNING으로 남긴다(본문 텍스트는 로깅하지 않음) — 에디터가 산문 예산을 넘겼다는 신호.
 - **`render_research_blocks`:** 딥 리서치 리포트(Slack mrkdwn)를 다이제스트와 같은 룩의 Block Kit로 렌더 — header 블록(`:satellite: OmniSummary Deep Research`) 뒤로, 번호 매긴 섹션 제목(`*N. ...*`)마다 그 앞에 divider를 넣어 한 덩어리 텍스트가 아니라 깔끔히 구획된 형태로 보이게 함(header 바로 아래 divider는 빈 띠로 보이므로 억제). 산문은 `SLACK_MAX_SECTION_CHARS`(2900) 단위로 단락 패킹하고 메시지당 블록 캡으로 청크 분할. 리서치 Slack 경로(`output/delivery.py` `_deliver_slack`)의 기본 렌더러.
 - **`render_threads_research`:** 딥 리서치 리포트를 Threads용 root + 평탄한 reply chain(각 ≤500자)으로 렌더. 에이전트가 `---`만 있는 줄로 자기 게시물 경계를 표시하므로(번호+제목+본문이 한 게시물에 묶임), 렌더러는 그 경계를 존중하고 500자 초과 게시물만 문장 경계로 재분할(인용 URL 보존). 구분자가 없는 구버전 출력은 문장 패킹으로 폴백. `max_posts`(>0)로 총 게시물 수를 **하드 캡**해 초과분을 드롭. Slack 마크업은 `_strip_slack_mrkdwn`으로 제거(`<url|label>`→`label (url)`, `*bold*`/`_italic_`/`` `code` `` 마커 제거, 단 URL은 보호).
 - **`render_agent_blocks`:** 구조 없는 자유형 에이전트 텍스트를 Block Kit section으로 단순 단락 패킹/래핑하는 **폴백 전용** 래퍼 — 이제 `agent_runtime/app.py`의 Slack 폴백(`_send_slack_message`, 에이전트가 `deliver_report`를 끝내 호출하지 않았거나 Slack 전달이 실패한 경우)에서만 쓰임. 정상 리서치 Slack 경로는 `render_research_blocks`를 사용.
@@ -287,8 +292,10 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 - **맥락 보강:** 에디터가 고른 리서치 스텝(papers/community/news)을 실행해 맥락 수집.
 - **생성:** `VisualGenerator`(시놉시스 → gpt-image)로 1컷 밈/패러디/일러스트 또는 N컷 카툰 생성 → Slack 게시(+`enable_threads_post` 시 Threads에도 게시).
 - **플랜 파싱 실패:** 에디터 JSON을 못 읽으면 `{"skip": True}`로 취급해 그대로 건너뜀 — 재질의(추가 LLM 호출)도, 일반 폴백 instruction으로 gpt-image를 태우는 낭비 렌더도 하지 않음.
-- **비주얼 실패가 다이제스트를 삼키지 않음:** 이미지는 **첨부물**이고 이 함수가 Threads의 유일한 게시 경로다. OpenAI 키 없음·에디터 호출 실패·에디터 skip·렌더 실패는 모두 `_make_visual` 안에서 흡수되어 `(None, None)`으로 떨어지고, `run()`은 그대로 **텍스트 전용**으로 Threads(lead + 스토리별 reply)를 게시한다. 예전엔 이 세 경우가 게시 이전에 `return False`였기 때문에 비주얼만의 문제로 그날 다이제스트가 조용히 사라졌다.
+- **비주얼 실패가 다이제스트를 삼키지 않음:** 이미지는 **첨부물**이고 이 함수가 Threads의 유일한 게시 경로다. OpenAI 키 없음·에디터 호출 실패·에디터 skip·렌더 실패는 모두 `_make_visual` 안에서 흡수되어 `(None, None)`으로 떨어지고, `run()`은 그대로 **텍스트 전용**으로 Threads(lead + 스토리별 reply)를 게시한다. 예전엔 이 세 경우가 게시 이전에 `return False`였기 때문에 비주얼만의 문제로 그날 다이제스트가 조용히 사라졌다. OpenAI 키는 `strict=True`로 읽어 **"미설정"과 "SSM을 읽지 못함"을 구분**하되(느슨한 읽기는 둘 다 `""`여서 파라미터 스토어 장애가 의도된 설정처럼 보였다), `SecretUnavailableError`는 **`_make_visual` 안에서 잡는다** — 엄격한 시크릿 읽기가 텍스트 다이제스트를 비용으로 삼는 일은 없어야 한다.
+- **instruction 빌더가 하나(`_build_instruction`):** 편집 관점·guardrails·포맷 유도·캐릭터 시트를 붙여 최종 아트 디렉터 instruction을 만드는 부분은 I/O 없는 **순수 함수**로 분리돼 있다. `scripts/sample_visual_brief.py`가 **프로덕션이 실제로 보내는 문자열**을 채점할 수 있어야 하기 때문이다 — 예전 샘플러는 맨 `plan["instruction"]`만 브리핑해서, 편집 관점도 guardrails도 포맷 유도도 캐릭터도 없는(=배포되지 않는) 프롬프트를 평가했다. 샘플러는 다이제스트를 먼저 생성해 **실제 `DigestContent`**를 넘기고(없는 편집 관점을 지어내지 않음), 테스트가 두 경로의 출력이 바이트 단위로 같음을 고정한다.
 - **이미 게시된 날 조기 종료:** `run()` 맨 앞에서 "게시할 것이 남아 있지 않다"(Threads 원장에 오늘이 있고 `enable_slack_post`가 꺼져 있으며 force가 아님)를 확인하면 에디터 호출·gpt-image 렌더 비용을 아예 쓰지 않는다. 게이트는 의도적으로 좁다 — Slack 전달이 켜져 있으면 이미지에는 Threads 마커와 무관한 별도 목적지가 있으므로 그대로 진행한다.
+- **스토리 없는 날은 렌더를 사지 않는다:** `_render_would_be_wasted(content)` — 스토리가 0건이면 Threads는 (의도적으로) 게시하지 않고, `enable_slack_post`가 꺼져 있으면 이미지에 남은 목적지가 없다. 두 조건이 **동시에** 참일 때만 렌더 이전에 종료한다(Slack이 켜져 있으면 업로드가 실제 목적지이므로 그대로 진행). 판정은 순수 predicate로 두고, 로깅과 `threads_outcome = ThreadsDelivery(0, 1)` 기록은 **`run()`이** 한다 — predicate 안에서 상태를 바꾸지 않으며, 이 기록 덕분에 그날의 전달 알림이 no-op이 되지 않는다.
 - **헤드라인 매핑:** `content.headline_index`(큐레이션 items 기준)를 `normalize_url`로 랭킹 항목에 되매핑한다. 끝내 매칭되지 않으면 예전의 `or 1`(= 랭킹 1위, lead와 **다른** 스토리)이 아니라 **큐레이션 헤드라인 자신의 title/body/implication**을 소스로 브리핑해 이미지와 텍스트의 동기화를 지킨다(에디터에게 넘기는 헤드라인 마커는 0 = 없음).
 - **성공 판정:** `run()`은 **활성화된 채널 중 하나라도 게시 성공**하면 True(Slack만 보던 시절엔 `enable_slack_post: false` 구성에서 Threads가 성공해도 'skipped'로 기록됐다). 게시 결과(`ThreadsDelivery`)는 `maker.threads_outcome`으로 노출되어 비주얼 Lambda가 부분 전달을 알림으로 올린다.
 - **best-effort:** 파이프라인을 막지 않으며, 실패는 항상 로깅된다.
@@ -298,7 +305,7 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 - **적용 시점:** 다이제스트 **생성 시점**에 `content.lead`에 붙임(`digest_generator.generate` → `place_countdown_intro`), 그 날 실행의 KST `digest_date`로 계산. 인트로가 저장 콘텐츠의 일부가 되어 **모든 채널**(Slack Block Kit · Threads root)에 함께 나가며, 트렌드 재등장 수치와 같은 시계(날짜)를 씀.
 - **위치 노브(`agi_countdown_position`, 기본 `suffix`, 배포 설정도 `suffix`):** 접두로 두면 Threads root의 **첫 줄**—피드 독자가 유일하게 보는 줄—을 매일 같은 고정 문장이 차지한다(연속 40개 게시물이 동일 문장으로 시작). `suffix`는 개그를 **문구 그대로** 두고 lead의 마지막 줄(맺음말)로 옮겨 첫 줄이 그날의 각이 되게 한다. 위치만 노브로 두고 cadence·N일마다 생략·랜덤은 두지 않는다(매직 넘버).
 - **양 끝 제거(`editorial_lead`):** 최근 lead 신선도 비교와 비주얼의 편집 관점 전달은 개그를 뺀 각만 봐야 하므로, 접두/접미 **어느 쪽에 붙어 있어도** 제거한다(저장된 lead가 설정 변경 이전 것일 수 있음).
-- **렌더러가 개그를 먹지 않음:** Threads root가 500자를 넘으면 `_fit_lead`가 **마지막 줄을 보존**하고 그 위 산문에서 문장을 뒤에서 덜어낸다. 트림이 발생하면 WARNING으로 남긴다(에디터가 산문 예산을 넘겼다는 신호).
+- **넘치면 개그가 먼저 나간다:** Threads root가 500자를 넘으면 `_fit_lead`가 **코드가 소유한 카운트다운 줄을 먼저 버리고** 에디터의 산문(그날의 논지)을 지킨다. 개그를 버리는 조건은 **마지막 줄이 그 개그임을 식별할 수 있을 때뿐**이다 — 호출자(`daily_visual`)가 계산한 인트로 문자열을 `render_threads_posts(content, countdown)`로 넘겨 비교한다. 마지막 줄을 무조건 버리는 방식은 `prefix` 위치(또는 개그 비활성)에서 **진짜 산문**을 삭제하므로 쓰지 않는다. 식별되지 않으면 앞에서부터 온전한 문장만 남기므로 접두 개그는 살아남는다. 트림이 발생하면 WARNING으로 남긴다(에디터가 산문 예산을 넘겼다는 신호).
 
 ### 5.3 Threads 전달 (`output/threads_handler.py`, `enable_threads_post`)
 - **호출자:** 다이제스트 Lambda가 아니라 **데일리 비주얼 Lambda**(`DailyVisualMaker.run`)가 게시한다 — Threads 게시물은 이미지 root + reply chain이 한 세트라 이미지를 만든 쪽이 함께 보내야 한다. 따라서 Threads 전달에는 `enable_threads_post`와 `enable_daily_visual`이 **둘 다** 필요하다.
@@ -361,13 +368,14 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
   - 동일 날짜 재실행은 멱등(그날 증거 교체).
 - **로드 견고성:** 전체 `TrendMemory.model_validate_json` 실패 시(스키마 드리프트·제거된 enum 값 등) 모든 history를 버리지 않고 **트렌드별로 관대하게 복구**(`_recover_trends`: 개별 검증해 살아남는 것만 유지) — 레코드 하나가 나빠도 누적 history가 통째로 날아가지 않음.
 - **진실의 원천:** `trends.json`(`TrendMemory`)이 원천이고 렌더된 텍스트는 뷰.
-- **주입(recurrence "ammunition"):** 다이제스트 생성 시 active/cooling 트렌드를 momentum 순으로 렌더해 `DigestPrompt`에 주입하되, 각 트렌드에 **코드가 증거에서 산출한 재등장 사실**(추적 N일째 / 서로 다른 N일 재등장 / 이번 달 N회)을 붙임(`_render_ammunition`). 이 수치는 lead의 날카로운 근거로 쓰이며 LLM이 지어내지 않음.
+- **주입(recurrence "ammunition"):** 다이제스트 생성 시 active/cooling 트렌드를 momentum 순으로 렌더해 `DigestPrompt`에 주입하되, 각 트렌드에 **코드가 증거에서 산출한 재등장 사실**(추적 N일째 / 서로 다른 N일 재등장 / 이번 달 N회)을 붙임(`_render_ammunition`). 이 수치는 lead의 날카로운 근거로 쓰이며 LLM이 지어내지 않음. **다이제스트용 블록만 `trend_max_active_trends`로 캡**한다(새 노브를 만들지 않고 기존 active 캡을 재사용): `visible`에는 cooling도 들어가서 20줄 넘게 넘어갈 수 있고 대부분은 에디터가 쓰지 않는 식은 실이다. **분류기용 `_render_existing`은 캡하지 않는다** — 거기서 cooling 트렌드를 숨기면 그 실이 고아가 되고 모델이 같은 주제에 중복 id를 새로 만든다.
 
 **(b) 다이제스트 스냅샷 — AgentCore Memory (`shared/memory.py`)**
 - **`AgentCoreMemoryStore`:**
   - **기록:** 오늘의 ranked 아이템 스냅샷을 단기 세션 이벤트로 기록(`create_event`, 세션 `digest-<date>`,
     `_fit_to_limit`로 100k 한도 보장).
   - **읽기:** `get_digest(date)`가 **그 날짜의 세션**(`digest-YYYY-MM-DD`)을 직접 읽는다 — 비주얼 Lambda는 자기가 트리거된 날짜의 콘텐츠를 게시해야 하므로 '최신을 읽고 날짜를 비교'는 쓸 수 없다(`digest_result.generated_at`은 UTC라서 09:00 KST 이전 실행에서는 KST 다이제스트 날짜와 항상 어긋난다). 없으면 `None`이며 **최신으로 폴백하지 않는다**(어제 스토리를 오늘 게시하는 것을 막음). 읽기 자체가 실패하면(스로틀·거부) `None`이 아니라 **`MemoryReadError`를 raise**한다 — 예전엔 '그 날 다이제스트가 없음'과 구분되지 않아 비주얼 Lambda가 게시를 건너뛰고 200을 반환했다. 게시 경로는 그대로 터뜨리고(Errors 알람 + DLQ, `retry_attempts=0`), 보강용 읽기(`main.py`의 cross-day dedup 시드)만 catch해 degrade한다. `get_latest_digest()`도 남아 있고, `_digest_session_ids`는 `list_sessions`를 **NextToken으로 페이지네이션**(세션은 삭제되지 않아 100개/페이지를 넘기면 단일 페이지가 최신 세션을 놓칠 수 있음; `MAX_SESSION_PAGES` 안전 캡).
+  - **세션 안에서도 최신 이벤트를 고른다:** 한 세션은 보통 이벤트 1건이지만 같은 날 재실행이 두 번째를 append하고, `list_events`는 순서를 보장하지 않는다 — `maxResults=1`은 그날의 **첫(폐기된) 시도**를 서빙할 수 있었다. 이제 작은 페이지(`EVENTS_PER_SESSION`)를 읽고 `eventTimestamp`로 최신을 고르며, 동률일 때만 페이로드의 `digest_result.generated_at`으로 **선택적** tie-break한다(그 필드 없이 저장된 기존 스냅샷도 그대로 로드된다). 페이지 크기를 작게 두는 이유는 `get_recent_digests`가 **세션마다** 이 페이지를 읽기 때문 — 이력이 늘어도 세션당 비용이 커지지 않아야 한다. 파싱 불가 이벤트는 건너뛰되, 그래서 아무것도 남지 않으면 예외를 올려 '읽기 실패'가 '빈 날'로 읽히지 않게 한다.
   - **목적:** 데일리 비주얼 Lambda가 cross-Lambda로 이 스냅샷을 읽어 맥락을 공유하는 수단. (트렌드 회상은 별개 — 딥 리서치 에이전트의 `recall_trends`는 이 스냅샷이 아니라 `shared/constants.py`의 `TRENDS_KEY`(`trends.json`)를 직접 쿼리.)
   - **제거됨:** 시맨틱 recall/장기 전략 제거(관리형 추출이 트렌드 흐름이 아닌 안정적 사용자-사실만 뽑아 부적합).
 - **`LocalMemoryStore`:** 오프라인 폴백(`digest_*.json`만).
@@ -390,7 +398,8 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 **모델 (`shared/models.py`):**
 - `SourceStatus` — `ok`/`empty`/`failed`/`stale`/`degraded`.
 - `SourceHealth(name, item_count, status, detail)`.
-- `HealthReport(sources)` — `has_failures`, `stale_sources`, `degraded_sources`, `summary()` 보유.
+- `HealthReport(sources)` — `has_failures`, `stale_sources`, `degraded_sources`, `empty_sources`, `summary()` 보유.
+- `RankingHealth(batches_total, batches_failed, items_total, items_scored, items_lost)` — `degraded`(후보가 실제로 사라졌는지)와 `summary()`. `DigestResult.ranking_health`로 실려 나간다.
   **STALE·DEGRADED는 실패가 아니므로** `has_failures`를 켜지 않습니다(FAILED 승격 경로와 분리).
 
 **소스 분류 (`run_collectors_with_health`):**
@@ -402,13 +411,18 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
   **입력 중 일부만** 응답한 경우(예: RSSHub 계정 피드 대부분 실패)로, 40개 계정이 3개로 줄어도 OK로 보였던
   구멍을 메웁니다. STALE 판정이 더 조치 가능하므로 park가 degraded면 STALE이 우선합니다. **보고/알림만
   바꾸며 집계기에 도달하는 항목은 그대로입니다.**
-- 0 항목 → EMPTY(조용한 날엔 정상).
+- 0 항목 → EMPTY(조용한 날엔 정상). 단 `collectors.alert_on_empty`가 이름을 지목한 소스는 어두워진 것이 **사건**이므로 로컬 실행에서도 ERROR 한 줄을 남기고 Lambda는 알림을 올린다.
 - 그 외 → OK.
 
 **알림 (`_maybe_alert`, 다이제스트 Lambda):** 소스가 FAILED **또는 STALE 또는 DEGRADED**일 때, 그리고 빈 항목 조기 반환
 이전에 `ALERT_SNS_TOPIC_ARN`으로 게시(아무것도 수집 못 해도 장애는 알림되도록). 메시지는 실패/stale 소스
-목록(실패/stale/degraded)을 각각 분리해 담습니다 — `has_failures`만 보던 게이트에서는 죽은 로컬 cron이
-며칠간 무음이었습니다.
+목록(실패/stale/degraded/empty)을 각각 분리해 담습니다 — `has_failures`만 보던 게이트에서는 죽은 로컬 cron이
+며칠간 무음이었습니다. **EMPTY는 `collectors.alert_on_empty`가 지목한 소스만** 포함합니다(reddit·x 조용한 날이
+매일 페이징하지 않도록 config 게이트).
+
+**랭킹 헬스 알림 (`_maybe_alert_ranking`, 파이프라인 이후):** 위 수집기 알림은 **파이프라인 이전** 호출을 그대로
+두고, 랭킹 판정은 **별도 게시**로 올립니다 — 파이프라인 예외가 수집기 알림을 삼킬 수 없게 하기 위함입니다.
+재시도까지 실패한 배치가 있으면(≈후보 40건 소실) 겉보기 정상인 다이제스트에도 알림이 갑니다.
 
 **핸들러 예외 전파.** 다이제스트·비주얼·Threads 갱신 핸들러는 실패를 로깅(correlation id 포함)한 뒤
 **다시 raise**한다. 500 body를 반환하면 Lambda 입장에선 정상 종료라 Errors 알람도, 비동기 DLQ도 절대
@@ -417,7 +431,10 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 **게시량 메트릭 & 날짜 전달 (다이제스트 → 비주얼 Lambda).**
 - `DigestItemsPublished`(EMF)는 **큐레이션된 스토리 수**(`digest.content.items`)를 센다. 랭커 후보 수를
   세던 탓에 2026-08-13·08-17에 스토리 0건으로 게시된 날에도 만점처럼 보고되어 `EmptyDigestAlarm`이 울리지
-  않았다.
+  않았다. 타임스탬프는 UTC(위 참조).
+- **짧은 다이제스트는 성공으로 로깅되지 않는다:** `_parse_content`에서 emit된 항목이 **드롭**되면 ERROR
+  (그 뒤 다이제스트는 겉보기 정상이라 이 줄이 유일한 흔적이다). 반면 동일 사건 **병합**으로 target보다 적어진
+  것은 정당하므로 `run_pipeline`이 WARNING으로만 남긴다(코드가 명시적으로 허용하는 경우).
 - `_trigger_visual(digest_date)`는 날짜를 **명시적으로** 페이로드에 담아 비동기 invoke한다. 비주얼 Lambda는
   `_requested_date`로 그 값과 **"날짜가 명시됐는지" 플래그**를 읽고(DLQ 재생 시에는 봉투의 `requestPayload`
   아래 값도 인정), 해당 날짜의 스냅샷만 로드한다. 스냅샷이 없을 때 **날짜가 명시된 invoke면 raise**한다
@@ -431,7 +448,11 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
   '어제 콘텐츠 게시' 대신 '완전 무출력인데 아무 신호 없음'이 된다.
 - **Threads 부분 전달 알림 + 게시 결과 메트릭:** 비주얼 Lambda는 `ThreadsDelivery`(posted/expected)를 보고
   누락이 있으면 `ALERT_SNS_TOPIC_ARN`으로 SNS 알림을 올리고(env가 없으면 no-op이라 로컬 실행은 조용함),
-  결과가 있을 때 `ThreadsPostsPublished`(EMF, stdout 전용 — 아직 알람/CDK 연결 없음)를 남긴다. `_post_threads`는
+  `ThreadsPostsPublished`와 `ThreadsImagePublished`(root가 그날 이미지를 실었는지 0/1)를 **하나의 EMF 레코드**로,
+  결과가 없는 실행(=0건)에도 **무조건** 남긴다(EMF stdout 전용 — 아직 알람/CDK 연결 없음). 데이터포인트를 아예
+  안 찍으면 CloudWatch에서는 0이 아니라 "데이터 없음"으로 읽히는데, 그 경우가 바로 측정 가치가 가장 큰 날이다.
+  타임스탬프는 `datetime.now(UTC)` — naive 로컬 시계로 찍으면 UTC epoch ms로 해석돼 엉뚱한 시각에 기록된다
+  (`digest_handler._emit_digest_items_metric`도 같은 버그였고 같은 방식으로 고쳤다). `_post_threads`는
   **콘텐츠가 있었는데 아무것도 게시되지 않은 경로**(스토리 0건, 게시 예외)에서도 `threads_outcome`을 남기므로
   (`expected>=1`) 알림/메트릭이 조용히 넘어가지 않는다. 반면 **이미 게시된 날의 스킵과 채널 비활성 스킵은
   실패가 아니므로 outcome을 남기지 않는다**(무음).
@@ -467,7 +488,7 @@ Slack 멘션으로 트리거되는 **자율 딥 리서치** 에이전트. 자유
 - `search_papers(query)` — Semantic Scholar(`_search_papers`, 429 시 retry/backoff).
 - `read_url(url)` — 특정 페이지 전문 fetch(`extract_url` → Tavily extract, `research_content_cap_chars`로 캡).
 - `recall_trends(query)` — `shared/constants.py`의 `TRENDS_KEY`(`trends.json`)를 직접 쿼리(키워드 매칭 + momentum 정렬, active/cooling 트렌드, 상위 `recall_memory_top_k`). 시맨틱 recall이나 AgentCore 장기 메모리가 아님 — cross-day 트렌드 메모리의 "이전 동향" 각을 위함.
-- `recall_digest(digest_date)` — **그 날짜의** 다이제스트 스냅샷(AgentCore Memory)에서 lead와 스토리 제목을 되읽음("X일에 뭘 다뤘나"). 단일 목적 도구이고 모드/파라미터가 없다. 출력은 bounded(`top_n`개 스토리, 줄당 `search_content_preview_chars`), 없는 날은 **다른 날짜로 폴백하지 않고** `No digest stored for <date>.` 문자열을 돌려준다(엉뚱한 날을 그날의 커버리지로 인용하는 것보다 recall 실패가 낫다). 잘못된 날짜 형식·읽기 실패도 평문 한 줄로 degrade.
+- `recall_digest(digest_date)` — **그 날짜의** 다이제스트 스냅샷(AgentCore Memory)에서 lead와 스토리 제목을 되읽음("X일에 뭘 다뤘나"). 단일 목적 도구이고 모드/파라미터가 없다. 출력은 bounded(`top_n`개 스토리, 줄당 `search_content_preview_chars`), 없는 날은 **다른 날짜로 폴백하지 않고** `No digest stored for <date>.` 문자열을 돌려준다(엉뚱한 날을 그날의 커버리지로 인용하는 것보다 recall 실패가 낫다). **읽기 실패는 '없는 날'과 다른 문장**으로 degrade한다 — 스로틀·거부·설정 오류를 "그날은 아무것도 안 다뤘다"로 보고하면 리포트가 실제로 다룬 주제를 안 다뤘다고 주장하게 된다. 잘못된 날짜 형식도 평문 한 줄로 degrade.
 - `attach_image(source_url)` — 소스 페이지의 대표 이미지(og:image)를 받아 전달 컨텍스트에 stage(`fetch_og_image`). `research_max_staged_images` 캡 도달 시 거부.
 - `deliver_report(report, channel)` — 완성 리포트를 채널("slack" 기본/"threads")에 게시. `output.delivery.deliver_research_report` 위임. 알 수 없는 채널이면 에이전트가 스스로 고치도록 오류 문자열 반환(조용한 강등 없음). 반환 문자열은 **실제 전달량**(`DeliveryStats`: rendered/delivered/dropped/trimmed)을 담는다 — 캡을 넘겨 드롭된 게시물, 500자 컷으로 잘린 게시물, 안 붙은 reply가 모두 "Delivered the report"로 보고돼 에이전트가 최종 답변에서 완전한 전달을 단정했다. 불완전하면 그렇게 말하고, **재전송은 하지 않는다**(`delivered_channels` 가드로 두 번째 호출은 no-op이므로 재전송 경로 자체를 만들지 않음).
 
@@ -570,14 +591,23 @@ ingress 흐름:
   생성 불가 → 값을 스택에 넘기면 템플릿·CDK staging 버킷·`GetTemplate` 응답에 평문으로 박힌다). 실제 값은
   배포 후 `scripts/put_secrets.py`가 **SecureString**으로 out-of-band 기록한다(`--dry-run` 미리보기,
   `--verify` 읽기 전용 점검, `--force`로만 기존 SecureString 덮어씀). 재배포는 값을 건드리지 않는다(placeholder가
-  안 바뀌므로 CloudFormation이 리소스를 업데이트하지 않음). `String` → `SecureString` 타입 변경을 SSM이
-  `ValidationException`으로 거절하면 스크립트는 `Type` 없이 값만 재기록하고(값은 반영, 암호화는 아님) 남은
-  시크릿을 계속 처리한 뒤 `FAILED` 목록과 non-zero 종료로 보고한다 — 예전엔 첫 거절에서 루프가 죽어 그 뒤
-  시크릿이 전부 placeholder(=런타임에선 미설정)로 남았다. 보완 통제는 스코프된 IAM 읽기 정책.
-  Threads 갱신 Lambda는 갱신된 토큰을
-  `put_parameter(Overwrite=True)`로 **`Type`을 지정하지 않고** 덮어쓴다 — 파라미터는 CFN이 만든 `String`이고
-  `Type=SecureString`을 얹는 것은 타입 변경이어서 SSM이 `ValidationException`으로 거절한다(그러면 토큰이 갱신되지
-  않은 채 60일 뒤 Threads 전달이 끊긴다). `Type`을 생략하면 기존 타입을 유지하고 값만 갱신한다.
+  안 바뀌므로 CloudFormation이 리소스를 업데이트하지 않음) — 그래서 **이 리소스의 템플릿 속성은 무엇도 추가·변경하면
+  안 된다**(Description 하나만 붙여도 CloudFormation이 PutParameter를 다시 실행해 살아 있는 시크릿 위에 placeholder를
+  쓴다). `tests/test_infrastructure.py`가 렌더된 속성 집합을 고정해 그 편집을 배포 전에 잡는다.
+  `String` → `SecureString` 타입 변경은 SSM이 `ValidationException`으로 거절하므로, 스크립트는 **CloudFormation이
+  남긴 정확한 상태**(`Type == String` **그리고** `Value == SSM_PLACEHOLDER`)일 때만 파라미터를 **삭제하고 SecureString으로
+  재생성**한다 — 이것이 "시크릿은 SecureString"이라는 주장을 실제로 참으로 만든다. 그 밖의 `String`은 **실제 값을 담고
+  있으므로 절대 삭제하지 않고**(살아 있는 자격증명을 잃는 건 암호화되지 않은 것보다 나쁘다) 값만 제자리에 쓰고 시끄럽게
+  알린다. 삭제는 됐는데 재기록이 실패한 경우는 **가장 나쁜 상태**(파라미터 자체가 없음)이므로 `FAILED` 목록 + non-zero
+  종료 + **복구 명령 전문**(`aws ssm put-parameter --name … --type SecureString …`)을 출력한다. 한 파라미터의 실패로
+  루프가 죽지 않는다 — 예전엔 첫 거절에서 루프가 죽어 그 뒤 시크릿이 전부 placeholder(=런타임에선 미설정)로 남았다.
+  `--verify`는 이제 값이 있어도 `String`이면 **PLAINTEXT**로 따로 보고하고 non-zero로 끝낸다(설정됨 ≠ 암호화됨).
+  보완 통제는 스코프된 IAM 읽기 정책. Threads 갱신 Lambda는 갱신된 토큰을
+  `put_parameter(Overwrite=True)`로 **`Type`을 지정하지 않고** 덮어쓴다 — `Type=SecureString`을 얹는 것은 타입 변경이라
+  파라미터가 아직 `String`이면 SSM이 `ValidationException`으로 거절하고, 그러면 토큰이 갱신되지 않은 채 60일 뒤 Threads
+  전달이 끊긴다. `Type`을 생략하면 기존 타입(마이그레이션 후에는 SecureString)을 유지하고 값만 갱신한다. 다만 그 생략은
+  암호화되지 않은 파라미터도 **조용히 보존**하므로, 기록 후 타입을 확인해 `SecureString`이 아니면 ERROR로 남긴다
+  (best-effort — 확인 실패가 성공한 갱신을 에러로 바꾸지는 않는다).
 
 ## 12. 관측성(Observability)
 

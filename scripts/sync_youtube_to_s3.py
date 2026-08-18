@@ -53,7 +53,10 @@ async def main() -> None:
 
     with_transcript = sum(1 for it in items if it.text and it.text.strip())
     logger.info("Collected %d YouTube items (%d with transcript/body text)", len(items), with_transcript)
-    payload = dump_items_envelope(items)
+    # Park HOW the sync went alongside the items (same meta contract as sync_rsshub_to_s3.py): a
+    # fresh, on-time park file otherwise reads as perfectly healthy even when this run collected
+    # from 2 of 12 channels.
+    payload = dump_items_envelope(items, meta=collector.run_meta)
 
     bucket = config.aws.state_bucket_name
     prefix = config.aws.s3_prefix

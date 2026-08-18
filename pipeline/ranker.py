@@ -11,6 +11,7 @@ from shared import (
     BedrockLanguageModelFactory,
     CollectedItem,
     RankedItem,
+    RankingHealth,
     RankingPrompt,
     SourceType,
     format_collected_item,
@@ -32,15 +33,29 @@ class ContentRanker:
         self.config = config
         self.llm_factory = llm_factory
         self.llm = llm_factory.get_model(config.ranking_model)
+        # How complete the last rank() was, for the caller to report/alert on. A digest built from a
+        # pool that lost a whole batch of candidates must not read as a clean success.
+        self.health = RankingHealth()
 
     def _truncate(self, text: str, max_tokens: int) -> str:
         return self.llm_factory.truncate_to_tokens(text, max_tokens)
 
-    async def rank(self, items: list[CollectedItem], select_count: int | None = None) -> list[RankedItem]:
+    async def rank(
+        self, items: list[CollectedItem], select_count: int | None = None, core_count: int | None = None
+    ) -> list[RankedItem]:
+        """Select the day's candidates.
+
+        `select_count` is how many candidates the digest editor is handed (top_n + buffer);
+        `core_count` is how many stories the READER gets (top_n). The source-slot guarantees are
+        enforced on the CORE, not on the whole candidate list — with slots applied to top_n+buffer,
+        every source's guaranteed slot could be satisfied by an item the editor then never used, so
+        the digest itself carried no such guarantee. The buffer is still handed over in full (marked
+        `backfill`) so merging same-event items can still be topped up to top_n."""
         if not items:
             logger.warning("No items to rank")
             return []
         limit = select_count or self.config.top_n
+        core_limit = min(core_count or limit, limit)
 
         logger.info("Ranking %d items with model '%s'", len(items), self.config.ranking_model.value)
 
@@ -64,12 +79,29 @@ class ContentRanker:
         # rank — raise so the run reports FAILED instead of silently publishing an empty digest.
         # Mirrors gather_collector_results(raise_if_all_failed=True).
         failures = [r for r in results if isinstance(r, BaseException)]
+        lost = sum(len(b) for b, r in zip(batches, results, strict=True) if isinstance(r, BaseException))
         if failures:
-            logger.warning("%d of %d ranking batches failed permanently", len(failures), len(batches))
+            # ERROR, not warning: those candidates are GONE from the day's pool, and the digest that
+            # follows looks perfectly normal — so this line is the only trace that the pool was
+            # short. self.health carries the same verdict to the caller for alerting.
+            logger.error(
+                "%d of %d ranking batches failed permanently; %d candidate(s) never reached the digest: %s",
+                len(failures),
+                len(batches),
+                lost,
+                failures[0],
+            )
         if failures and len(failures) == len(results):
             raise RuntimeError(f"All {len(failures)} ranking batches failed: {failures[0]}")
 
         ranked_items: list[RankedItem] = [r for batch in results if not isinstance(batch, BaseException) for r in batch]
+        self.health = RankingHealth(
+            batches_total=len(batches),
+            batches_failed=len(failures),
+            items_total=len(items),
+            items_scored=len(ranked_items),
+            items_lost=lost,
+        )
         self._apply_origin_weights(ranked_items)
 
         # Pinned items (user-specified via --pin-url) are guaranteed a slot regardless of score
@@ -121,27 +153,53 @@ class ContentRanker:
 
         # Reserve slots for the pinned items so the source-slotting fills only the remainder,
         # then prepend the pinned items so they always lead and never get crowded out.
-        remaining = max(0, limit - len(pinned))
+        remaining = max(0, core_limit - len(pinned))
         filled = self._apply_source_slots(above_threshold, remaining, grace_ids, pinned)
-        selected = pinned + filled
+        core = pinned + filled
+        extras = self._backfill_candidates(above_threshold, core, grace_ids, limit - len(core))
+        selected = core + extras
 
         if pinned:
             logger.info("Force-included %d pinned item(s): %s", len(pinned), [r.item.url for r in pinned])
         logger.info(
-            "Ranked %d items → %d above min_score %.2f → %d selected (with source slots)",
+            "Ranked %d items → %d above min_score %.2f → %d core (with source slots) + %d backfill",
             len(items),
             len(above_threshold),
             self.config.min_score,
-            len(selected),
+            len(core),
+            len(extras),
         )
         for r in selected:
             logger.info(
-                "  Selected: [%s] %.2f - '%s'",
+                "  Selected%s: [%s] %.2f - '%s'",
+                " (backfill)" if r.backfill else "",
                 r.item.source_type.value,
                 r.score,
                 r.item.title[: LOGGING_TRUNCATION_CHARS["title"]],
             )
         return selected
+
+    @staticmethod
+    def _backfill_candidates(
+        above_threshold: list[RankedItem], core: list[RankedItem], grace_ids: set[str], room: int
+    ) -> list[RankedItem]:
+        """The extra candidates handed to the editor beyond the core, in score order, flagged as
+        backfill. They exist so a merge of two same-event items can still be topped up to top_n
+        distinct stories; the diversity guarantees belong to the core, so these deliberately ignore
+        the slot/origin caps. Grace items (below min_score) are never backfill — they may only earn
+        their own source's guaranteed slot."""
+        if room <= 0:
+            return []
+        chosen_ids = {r.item.item_id for r in core}
+        extras: list[RankedItem] = []
+        for item in above_threshold:
+            if len(extras) >= room:
+                break
+            if item.item.item_id in chosen_ids or item.item.item_id in grace_ids:
+                continue
+            item.backfill = True
+            extras.append(item)
+        return extras
 
     async def _rank_batch(self, items: list[CollectedItem], semaphore: asyncio.Semaphore) -> list[RankedItem]:
         """Score one batch and reconcile its COVERAGE: an LLM that quietly omits item ids returns a

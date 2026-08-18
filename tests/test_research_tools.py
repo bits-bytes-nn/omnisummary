@@ -117,12 +117,16 @@ class TestRecallDigest:
         store.get_latest_digest.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_read_failure_degrades_to_a_sentence(self):
+    async def test_an_unreadable_store_is_never_reported_as_an_uncovered_day(self):
+        # A throttled/denied read used to return the same sentence as "that day has no digest", so a
+        # report could assert the digest never covered a topic it in fact covered.
         store = MagicMock()
         store.get_digest.side_effect = RuntimeError("throttled")
         with patch("shared.create_memory_store", return_value=store):
             result = await rt.recall_digest._tool_func("2026-08-17")
-        assert "No digest stored for 2026-08-17." == result
+        assert "could not be READ" in result
+        assert "throttled" in result
+        assert "No digest stored" not in result
 
     @pytest.mark.asyncio
     async def test_malformed_date_is_rejected(self):

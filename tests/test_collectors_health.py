@@ -3,6 +3,7 @@ from unittest.mock import patch
 import pytest
 
 from collectors.base import ParkedItems, ParkOutcome
+from shared import Config
 from shared.constants import SourceType
 from shared.models import CollectedItem, SourceStatus
 
@@ -37,7 +38,7 @@ async def test_health_report_classifies_sources():
     labels = ["rss", "reddit", "youtube"]
     collectors = [_Collector(), _Collector(), _Collector()]
     with patch.object(main, "_build_collector_tasks", return_value=(tasks, labels, collectors)):
-        items, report = await main.run_collectors_with_health(config=None, llm_factory=None)
+        items, report = await main.run_collectors_with_health(config=Config(), llm_factory=None)
 
     assert len(items) == 2
     by_name = {s.name: s for s in report.sources}
@@ -54,7 +55,7 @@ async def test_no_active_collectors_returns_empty_report():
     import main
 
     with patch.object(main, "_build_collector_tasks", return_value=([], [], [])):
-        items, report = await main.run_collectors_with_health(config=None, llm_factory=None)
+        items, report = await main.run_collectors_with_health(config=Config(), llm_factory=None)
 
     assert items == []
     assert report.sources == []
@@ -72,7 +73,7 @@ async def test_stale_park_file_reports_stale_not_ok():
 
     park = ParkedItems(outcome=ParkOutcome.STALE, age_hours=72.0, detail="park file is 72.0h old (>36h)")
     with patch.object(main, "_build_collector_tasks", return_value=([parked_items()], ["youtube"], [_Collector(park)])):
-        items, report = await main.run_collectors_with_health(config=None, llm_factory=None)
+        items, report = await main.run_collectors_with_health(config=Config(), llm_factory=None)
 
     assert len(items) == 1
     source = report.sources[0]
@@ -94,7 +95,7 @@ async def test_unreadable_park_file_reports_stale_after_live_fallback():
 
     park = ParkedItems(outcome=ParkOutcome.ERROR, detail="could not read park file: AccessDenied")
     with patch.object(main, "_build_collector_tasks", return_value=([live_items()], ["rsshub"], [_Collector(park)])):
-        items, report = await main.run_collectors_with_health(config=None, llm_factory=None)
+        items, report = await main.run_collectors_with_health(config=Config(), llm_factory=None)
 
     assert len(items) == 1
     assert report.sources[0].status == SourceStatus.STALE
@@ -110,7 +111,7 @@ async def test_fresh_park_file_is_ok():
 
     park = ParkedItems(outcome=ParkOutcome.FRESH, age_hours=1.0)
     with patch.object(main, "_build_collector_tasks", return_value=([parked_items()], ["youtube"], [_Collector(park)])):
-        _items, report = await main.run_collectors_with_health(config=None, llm_factory=None)
+        _items, report = await main.run_collectors_with_health(config=Config(), llm_factory=None)
 
     assert report.sources[0].status == SourceStatus.OK
     assert report.stale_sources == []
@@ -127,7 +128,7 @@ async def test_partially_collected_source_reports_degraded_not_ok():
 
     collector = _Collector(degraded_detail="30/40 account feeds failed (>50%)")
     with patch.object(main, "_build_collector_tasks", return_value=([some_items()], ["rsshub"], [collector])):
-        items, report = await main.run_collectors_with_health(config=None, llm_factory=None)
+        items, report = await main.run_collectors_with_health(config=Config(), llm_factory=None)
 
     # Reporting only — the items still reach the aggregator untouched.
     assert len(items) == 1
@@ -152,6 +153,6 @@ async def test_stale_wins_over_degraded():
     park = ParkedItems(outcome=ParkOutcome.STALE, age_hours=72.0, detail="park file is 72.0h old (>36h)")
     collector = _Collector(park, degraded_detail="30/40 account feeds failed")
     with patch.object(main, "_build_collector_tasks", return_value=([parked_items()], ["rsshub"], [collector])):
-        _items, report = await main.run_collectors_with_health(config=None, llm_factory=None)
+        _items, report = await main.run_collectors_with_health(config=Config(), llm_factory=None)
 
     assert report.sources[0].status == SourceStatus.STALE

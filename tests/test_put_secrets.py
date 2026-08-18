@@ -41,7 +41,7 @@ class TestMidWayAbort:
     CloudFormation placeholder — which reads as "unset" at runtime, so the affected feature silently
     stopped working with nothing in the output to say so."""
 
-    def test_type_change_rejection_falls_back_to_a_value_only_write(self, put_secrets, monkeypatch, capsys):
+    def test_type_change_rejection_recreates_the_placeholder_as_a_secure_string(self, put_secrets, monkeypatch, capsys):
         names = list(ALL_SSM_SECRET_ENV_VARS)
         for env_var in ALL_SSM_SECRET_ENV_VARS.values():
             monkeypatch.setenv(env_var, "real-value")
@@ -56,13 +56,55 @@ class TestMidWayAbort:
                     rc = put_secrets.main()
         out = capsys.readouterr().out
         assert rc == 0  # every parameter landed, so this is not a failure
-        # The retry drops Type (the same thing the refresh Lambda does), so the VALUE lands...
-        retried = [c for c in client.put_parameter.call_args_list if "Type" not in c.kwargs]
-        assert retried, "expected a value-only retry after the type-change rejection"
-        # ...and the operator is told loudly how to make it a SecureString.
-        assert "delete-parameter" in out
+        # The placeholder parameter is DELETED and re-created ENCRYPTED — never left as plaintext.
+        client.delete_parameter.assert_called_once_with(Name=f"/omnisummary/dev/{names[0]}")
+        assert all(c.kwargs.get("Type") == "SecureString" for c in client.put_parameter.call_args_list)
+        assert "value only" not in out
         # Every parameter was attempted: one rejection must not end the run.
         assert len({c.kwargs["Name"] for c in client.put_parameter.call_args_list}) == len(names)
+
+    def test_a_string_holding_a_real_value_is_never_deleted(self, put_secrets, monkeypatch, capsys):
+        # The Threads token is rotated in place by the refresh Lambda, which cannot change the
+        # parameter's type — so a String can hold a LIVE credential. Deleting it to encrypt it would
+        # destroy the value; write it in place and say so instead.
+        names = list(ALL_SSM_SECRET_ENV_VARS)
+        for env_var in ALL_SSM_SECRET_ENV_VARS.values():
+            monkeypatch.setenv(env_var, "real-value")
+        client = _ssm(put_side_effect=[_validation_error()] + [None] * (2 * len(names)))
+        client.get_parameter.return_value = {"Parameter": {"Type": "String", "Value": "a-live-token"}}
+        config = MagicMock()
+        config.aws.project_name, config.aws.stage, config.aws.region = "omnisummary", "dev", "ap-northeast-2"
+        with patch.object(put_secrets, "Config") as cfg:
+            cfg.load.return_value = config
+            with patch.object(put_secrets.boto3, "client", return_value=client):
+                with patch.object(sys, "argv", ["put_secrets.py"]):
+                    rc = put_secrets.main()
+        out = capsys.readouterr().out
+        assert rc == 0
+        client.delete_parameter.assert_not_called()
+        assert [c for c in client.put_parameter.call_args_list if "Type" not in c.kwargs]
+        assert "delete-parameter" in out  # the operator is told how to encrypt it deliberately
+
+    def test_a_deleted_parameter_that_cannot_be_rewritten_is_reported_as_failed(self, put_secrets, monkeypatch, capsys):
+        # The one state worse than a plaintext secret: the placeholder is gone and nothing replaced
+        # it. It must exit non-zero and print the exact command that restores the parameter.
+        names = list(ALL_SSM_SECRET_ENV_VARS)
+        for env_var in ALL_SSM_SECRET_ENV_VARS.values():
+            monkeypatch.setenv(env_var, "real-value")
+        denied = ClientError({"Error": {"Code": "AccessDeniedException"}}, "PutParameter")
+        client = _ssm(put_side_effect=[_validation_error(), denied] + [None] * (2 * len(names)))
+        client.get_parameter.return_value = {"Parameter": {"Type": "String", "Value": SSM_PLACEHOLDER}}
+        config = MagicMock()
+        config.aws.project_name, config.aws.stage, config.aws.region = "omnisummary", "dev", "ap-northeast-2"
+        with patch.object(put_secrets, "Config") as cfg:
+            cfg.load.return_value = config
+            with patch.object(put_secrets.boto3, "client", return_value=client):
+                with patch.object(sys, "argv", ["put_secrets.py"]):
+                    rc = put_secrets.main()
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "DELETED but not re-created" in out
+        assert f"aws ssm put-parameter --name /omnisummary/dev/{names[0]} --type SecureString" in out
 
     def test_a_hard_put_failure_is_reported_and_the_loop_continues(self, put_secrets, monkeypatch, capsys):
         names = list(ALL_SSM_SECRET_ENV_VARS)
@@ -100,3 +142,14 @@ class TestVerify:
         rc = put_secrets._verify(client, "omnisummary", "dev")
         assert rc == 0
         assert "PLACEHOLDER" not in capsys.readouterr().out
+
+    def test_verify_flags_a_set_but_unencrypted_parameter(self, put_secrets, capsys):
+        # "Set" is not the same as "SecureString": a real value in a plain String parameter is the
+        # state this script exists to remove, so it must be visible and exit non-zero.
+        client = _ssm()
+        client.get_parameter.return_value = {"Parameter": {"Type": "String", "Value": "a-live-token"}}
+        rc = put_secrets._verify(client, "omnisummary", "dev")
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "PLAINTEXT" in out
+        client.put_parameter.assert_not_called()

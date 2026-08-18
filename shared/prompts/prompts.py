@@ -117,6 +117,7 @@ class DigestPrompt(BasePrompt):
         "voice_guidance",
         "target_count",
         "recent_leads",
+        "recent_titles",
         "prose_budget_rule",
         "lead_budget",
     ]
@@ -181,6 +182,9 @@ varies day to day — some days it's admiration for a real advance, a sharp tech
 irony, a contrarian-but-positive read, or a quiet "this is bigger than it looks"; reach for \
 skepticism only when today's facts actually earn it. Do not default to the same beat as below:
 {recent_leads}
+
+*Already in the last digest* — a real development ON one of these is welcome; the same story told again is not:
+{recent_titles}
 
 *Faithfulness*
 Do NOT name external systems, products, mechanisms, benchmarks, paper titles, dates, statistics, \

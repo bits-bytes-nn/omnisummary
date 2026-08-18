@@ -29,6 +29,7 @@ _INPUTS = {
         "voice_guidance": "v",
         "target_count": 5,
         "recent_leads": "r",
+        "recent_titles": "t",
         "prose_budget_rule": " title, body and implication together must stay under 380 characters.",
         "lead_budget": 470,
     },

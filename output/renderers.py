@@ -268,69 +268,83 @@ def _fit_one_post(
     tail = [url.strip()] if url.strip() else []
     impl = implication.strip()
 
-    def assemble(prose: str) -> str:
-        return THREADS_POST_SEPARATOR.join(fixed + ([prose] if prose else []) + tail)
+    def assemble(prose: str, *, keep_impl: bool = True) -> str:
+        # The implication is its OWN block, not the body's last sentence: it is the voice line the
+        # item closes on, and run into the body as one paragraph it read as more body — the beat
+        # that makes each item land was invisible in the post.
+        blocks = list(fixed)
+        if prose:
+            blocks.append(prose)
+        if keep_impl and impl:
+            blocks.append(impl)
+        return THREADS_POST_SEPARATOR.join(blocks + tail)
 
     body_sents = _sentences(body)
-    # Drop body sentences from the end while keeping the implication appended.
+    # Drop body sentences from the end while keeping the implication block.
     while body_sents:
-        prose = " ".join(body_sents + ([impl] if impl else []))
-        if len(assemble(prose)) <= max_len:
-            return assemble(prose)
+        candidate = assemble(" ".join(body_sents))
+        if len(candidate) <= max_len:
+            return candidate
         body_sents.pop()
     # No body sentence fits alongside the implication. Keep the implication alone if it fits.
-    if impl and len(assemble(impl)) <= max_len:
-        return assemble(impl)
+    if impl and len(assemble("")) <= max_len:
+        return assemble("")
 
     # Even the implication won't fit. Word-trim the body into the remaining room (never drop
     # it to bare title+URL), or word-trim the title if title+URL alone overflow.
-    room = max_len - len(assemble("")) - 2
+    bare = assemble("", keep_impl=False)
+    room = max_len - len(bare) - len(THREADS_POST_SEPARATOR)
     if room > 0 and body.strip():
-        return assemble(_truncate_at_word(body, room))
-    if len(assemble("")) <= max_len:
-        return assemble("")
-    room = max_len - (len(url.strip()) + 2 if url.strip() else 0)
-    return "\n\n".join([p for p in (_truncate_at_word(title, max(0, room)), url.strip()) if p])
+        return assemble(_truncate_at_word(body, room), keep_impl=False)
+    if len(bare) <= max_len:
+        return bare
+    room = max_len - (len(url.strip()) + len(THREADS_POST_SEPARATOR) if url.strip() else 0)
+    return THREADS_POST_SEPARATOR.join([p for p in (_truncate_at_word(title, max(0, room)), url.strip()) if p])
 
 
 def threads_item_overhead_chars(meta: str, url: str) -> int:
     """Characters ONE item's Threads post spends on the parts CODE owns: the source line, the URL,
-    and the blank-line separators between title / source / prose / URL. Everything left over is what
-    the editor may write (title + body + implication), so the prose budget it is told about is
-    derived from this — not from a hand-estimated "~120 chars in practice"."""
+    and the blank-line separators between title / source / body / implication / URL. Everything left
+    over is what the editor may write (title + body + implication), so the prose budget it is told
+    about is derived from this — not from a hand-estimated "~120 chars in practice".
+
+    The implication is its own block, hence one separator MORE than there are code-owned parts
+    (title | body | implication is 2 separators even with no meta and no URL). An item with no
+    implication is charged that separator anyway — a slightly smaller budget, never a too-large one."""
     parts = [p for p in (meta.strip(), url.strip()) if p]
-    return sum(len(p) for p in parts) + len(THREADS_POST_SEPARATOR) * (len(parts) + 1)
+    return sum(len(p) for p in parts) + len(THREADS_POST_SEPARATOR) * (len(parts) + 2)
 
 
 def _item_post_overflows(title: str, meta: str, body: str, implication: str, url: str) -> bool:
     """True when the item's FULL prose cannot fit one post — i.e. _fit_one_post had to drop
-    something. Mirrors its assembly with nothing trimmed; used for counts-only trim reporting."""
-    parts = [p for p in (title.strip(), meta.strip()) if p]
-    prose = " ".join(p for p in (body.strip(), implication.strip()) if p)
+    something. Mirrors its assembly with nothing trimmed (implication as its own block, so the
+    separator count matches); used for counts-only trim reporting."""
+    blocks = [p for p in (title.strip(), meta.strip(), body.strip(), implication.strip()) if p]
     tail = [url.strip()] if url.strip() else []
-    assembled = THREADS_POST_SEPARATOR.join(parts + ([prose] if prose else []) + tail)
+    assembled = THREADS_POST_SEPARATOR.join(blocks + tail)
     return len(assembled) > THREADS_MAX_POST_CHARS
 
 
-def _fit_lead(lead: str) -> str:
+def _fit_lead(lead: str, countdown: str = "") -> str:
     """Fit the root text (the digest lead) into one Threads post.
 
-    Trimming drops whole sentences from the end, so it PRESERVES the lead's final line: when the
-    AGI-countdown gag is configured as a suffix it lives there, and an over-long lead would
-    otherwise silently eat the one line the trim is not allowed to lose. Logged at WARNING because
-    a trimmed lead means the editor's prose budget was overrun — that should be visible, not silent."""
+    An over-long lead loses the CODE-OWNED countdown gag first, and only then the editor's prose:
+    the gag is the same fixed template every day, while the sentence it was crowding out is the day's
+    actual argument. It is dropped only when the lead's final line can be IDENTIFIED as that gag by
+    comparing it to the countdown string the caller passes in — a blind "drop the last line" would
+    delete real prose whenever the gag sits at the front (agi_countdown_position="prefix") or is
+    disabled. Otherwise whole sentences are kept from the front, so a prefix gag survives.
+
+    Logged at WARNING because a trimmed lead means the editor's prose budget was overrun."""
     if len(lead) <= THREADS_MAX_POST_CHARS:
         return lead
     logger.warning("Threads lead is %d chars (cap %d); trimming prose", len(lead), THREADS_MAX_POST_CHARS)
     head, sep, last_line = lead.rpartition("\n")
-    if not sep or not last_line.strip():
-        return _pack_sentences(lead, THREADS_MAX_POST_CHARS)
-    tail = last_line.strip()
-    room = THREADS_MAX_POST_CHARS - len(tail) - 2  # reserve "\n\n" + the final line
-    if room <= 0:
-        # The final line alone fills the post — keep it and drop the prose above it.
-        return _pack_sentences(tail, THREADS_MAX_POST_CHARS)
-    return f"{_pack_sentences(head.strip(), room)}\n\n{tail}"
+    gag = countdown.strip()
+    if sep and gag and last_line.strip() == gag:
+        logger.warning("Dropping the countdown line from the Threads lead to keep the editor's prose")
+        return _pack_sentences(head.strip(), THREADS_MAX_POST_CHARS)
+    return _pack_sentences(lead, THREADS_MAX_POST_CHARS)
 
 
 def _pack_sentences(text: str, max_len: int) -> str:
@@ -341,12 +355,15 @@ def _pack_sentences(text: str, max_len: int) -> str:
     return " ".join(kept) if kept else _truncate_at_word(text, max_len)
 
 
-def render_threads_posts(content: DigestContent) -> tuple[str, list[str]]:
+def render_threads_posts(content: DigestContent, countdown: str = "") -> tuple[str, list[str]]:
     """Render DigestContent for Threads: a root text (the lead) and a reply chain with EXACTLY ONE
     reply per item (title + source line + body + implication + URL). Each reply is trimmed to fit
     Threads' 500-char cap at a clean sentence boundary — never mid-word — keeping the title, the
-    source line and the URL. No Slack markup (Threads renders none)."""
-    lead = _fit_lead(content.lead.strip())
+    source line and the URL. No Slack markup (Threads renders none).
+
+    `countdown` is the code-owned AGI-countdown gag as the pipeline computed it, so an over-long
+    lead can drop THAT rather than the day's argument. Empty (the default) simply trims prose."""
+    lead = _fit_lead(content.lead.strip(), countdown)
     replies: list[str] = []
     trimmed = 0
     for item in content.items:

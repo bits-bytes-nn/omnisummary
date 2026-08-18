@@ -6,6 +6,8 @@ import pytest
 from botocore.exceptions import ClientError
 
 from collectors.base import (
+    BaseCollector,
+    ParkedItems,
     ParkOutcome,
     dump_items_envelope,
     gather_collector_results,
@@ -37,11 +39,15 @@ async def _fail() -> list[CollectedItem]:
     raise RuntimeError("boom")
 
 
+async def _empty() -> list[CollectedItem]:
+    return []
+
+
 class TestGatherCollectorResults:
     @pytest.mark.asyncio
     async def test_partial_failure_passes_through(self):
-        items = await gather_collector_results([_ok("a"), _fail()], raise_if_all_failed=True)
-        assert {i.item_id for i in items} == {"a"}
+        result = await gather_collector_results([_ok("a"), _fail()], raise_if_all_failed=True)
+        assert {i.item_id for i in result.items} == {"a"}
 
     @pytest.mark.asyncio
     async def test_all_failed_raises_when_flagged(self):
@@ -50,13 +56,59 @@ class TestGatherCollectorResults:
 
     @pytest.mark.asyncio
     async def test_all_failed_silent_when_not_flagged(self):
-        items = await gather_collector_results([_fail(), _fail()])
-        assert items == []
+        result = await gather_collector_results([_fail(), _fail()])
+        assert result.items == []
 
     @pytest.mark.asyncio
     async def test_no_tasks_does_not_raise(self):
-        items = await gather_collector_results([], raise_if_all_failed=True)
-        assert items == []
+        result = await gather_collector_results([], raise_if_all_failed=True)
+        assert result.items == [] and result.total == 0
+
+    @pytest.mark.asyncio
+    async def test_counts_are_returned_so_a_partial_outage_is_visible(self):
+        # A source that answered from 1 of 4 inputs is indistinguishable from a healthy one by item
+        # count alone — the counts are what let the caller report it DEGRADED.
+        result = await gather_collector_results([_ok("a"), _fail(), _fail(), _empty()])
+        assert (result.total, result.failed, result.empty) == (4, 2, 1)
+        assert [i.item_id for i in result.items] == ["a"]
+
+
+class _Collector(BaseCollector):
+    async def collect(self):
+        return []
+
+
+class TestDegradationReporting:
+    """degraded_detail/run_meta are shared by every collector so one source can't stay silent while
+    another reports. Reporting only — nothing here filters items."""
+
+    def test_run_health_records_meta_and_flags_a_majority_failure(self):
+        c = _Collector()
+        c.record_run_health(total=40, failed=30, empty=2, threshold=50.0, what="feeds", hint="cookies expired")
+        assert c.run_meta == {"accounts_total": 40, "accounts_failed": 30, "accounts_empty": 2}
+        assert "30/40 feeds failed" in c.degraded_detail
+        assert "cookies expired" in c.degraded_detail
+
+    def test_run_health_stays_quiet_below_the_threshold(self):
+        c = _Collector()
+        c.record_run_health(total=40, failed=5, empty=0, threshold=50.0, what="feeds")
+        assert c.degraded_detail == ""
+        assert c.run_meta["accounts_failed"] == 5  # still parked, so the sync's state is recorded
+
+    def test_park_meta_written_by_a_half_dead_sync_reports_degraded(self):
+        c = _Collector()
+        parked = ParkedItems(
+            outcome=ParkOutcome.FRESH,
+            items=[_item("v1")],
+            meta={"accounts_total": 12, "accounts_failed": 10},
+        )
+        c.flag_degraded_park(parked, threshold=50.0, what="channels")
+        assert "2/12 channels" in c.degraded_detail
+
+    def test_park_without_meta_is_never_reported_degraded(self):
+        c = _Collector()
+        c.flag_degraded_park(ParkedItems(outcome=ParkOutcome.FRESH, items=[_item("v1")]), threshold=50.0, what="x")
+        assert c.degraded_detail == ""
 
 
 class TestLoadItemsFromS3:

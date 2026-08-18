@@ -56,22 +56,17 @@ class TestEditorialTakeReachesTheArtDirector:
     context, NOT as a constraint the image has to argue."""
 
     @staticmethod
-    async def _instruction_for(content) -> str:
-        from datetime import date
-
+    def _instruction_for(content, **pipeline_overrides) -> str:
+        # Built through the same pure builder production sends (TestBuildInstructionIsWhatShips
+        # pins that equivalence end-to-end).
         maker = _maker()
-        maker.config.pipeline.enable_threads_post = False
-        maker.config.pipeline.enable_slack_post = False
+        for key, value in pipeline_overrides.items():
+            setattr(maker.config.pipeline, key, value)
         plan = {"skip": False, "item_number": 1, "research": [], "instruction": "Draw the story."}
-        gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw")))
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = gen
-                await maker.run(_items(), content, today=date(2026, 8, 15))
-        return str(gen.await_args.args[0])
+        instruction, _ = maker._build_instruction(plan, content, date(2026, 8, 15), "GLM-5.3", [], "")
+        return instruction
 
-    @pytest.mark.asyncio
-    async def test_lead_and_implication_are_handed_over_without_the_countdown(self):
+    def test_lead_and_implication_are_handed_over_without_the_countdown(self):
         from shared.models import DigestContent, DigestItem
 
         content = DigestContent(
@@ -86,7 +81,7 @@ class TestEditorialTakeReachesTheArtDirector:
                 )
             ],
         )
-        instruction = await self._instruction_for(content)
+        instruction = self._instruction_for(content)
         assert "격차의 원인은 모델 품질이 아니라 출시 주기다." in instruction
         assert "신중함에 값을 매기는 쪽이 시장에서 손해를 본다." in instruction
         # The fixed daily countdown template carries no information about the story.
@@ -94,40 +89,25 @@ class TestEditorialTakeReachesTheArtDirector:
         # Handed over as context the art director may ignore — not a matching requirement.
         assert "does NOT have to" in instruction
 
-    @pytest.mark.asyncio
-    async def test_no_take_when_there_is_no_structured_content(self):
-        instruction = await self._instruction_for(None)
+    def test_no_take_when_there_is_no_structured_content(self):
+        instruction = self._instruction_for(None)
         assert "THE DIGEST'S OWN ANGLE" not in instruction
 
-    @pytest.mark.asyncio
-    async def test_guardrails_are_appended_and_are_config_driven(self):
+    def test_guardrails_are_appended_and_are_config_driven(self):
         # Handing the angle over as pure context is not always enough: a 2026-08-18 run turned a
         # lead about circular vendor financing into a triumphal rocket-and-money poster — the
         # opposite register. The guardrails say what the image must not DO — far weaker than the
         # rejected "the image must argue the lead's thesis" rule. Depicting real people is
         # explicitly ALLOWED (normal editorial-cartoon practice); what is barred is standing a
         # company or country up as an ethnically-coded human, as a 2026-08-15 visual did.
-        instruction = await self._instruction_for(None)
+        instruction = self._instruction_for(None)
         assert "GUARDRAILS:" in instruction
         assert "must not read as celebratory" in instruction
         assert "Recognisable depictions of real people are fine" in instruction
         assert "ethnically-coded human" in instruction
 
-    @pytest.mark.asyncio
-    async def test_empty_guardrails_config_appends_nothing(self):
-        from datetime import date
-
-        maker = _maker()
-        maker.config.pipeline.enable_threads_post = False
-        maker.config.pipeline.enable_slack_post = False
-        maker.config.pipeline.visual_guardrails = ""
-        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "Draw the story."}
-        gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw")))
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = gen
-                await maker.run(_items(), None, today=date(2026, 8, 18))
-        assert "GUARDRAILS:" not in str(gen.await_args.args[0])
+    def test_empty_guardrails_config_appends_nothing(self):
+        assert "GUARDRAILS:" not in self._instruction_for(None, visual_guardrails="")
 
 
 class TestVisualFailureNeverCostsTheDigest:
@@ -164,6 +144,30 @@ class TestVisualFailureNeverCostsTheDigest:
         th.assert_awaited_once()
         assert th.await_args.kwargs["root_text"] == "오늘의 리드."
         assert th.await_args.kwargs["image_bytes"] is None
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_openai_secret_still_publishes_the_text_digest(self):
+        # The key is read STRICTLY so a broken parameter store is distinguishable from "no key
+        # configured" — but the exception must never escape _make_visual: the image is an
+        # attachment, and this is the only Threads publish path.
+        from shared import SecretUnavailableError
+
+        maker = self._threads_maker()
+        with patch("pipeline.daily_visual.resolve_secret", side_effect=SecretUnavailableError("AccessDenied")):
+            with patch(
+                "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
+            ) as th:
+                result = await maker.run(_items(), self._content(), today=date(2026, 6, 10))
+        assert result is True
+        assert th.await_args.kwargs["image_bytes"] is None
+
+    @pytest.mark.asyncio
+    async def test_the_openai_key_is_read_strictly(self):
+        maker = self._threads_maker()
+        with patch("pipeline.daily_visual.resolve_secret", return_value="") as secret:
+            with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))):
+                await maker.run(_items(), self._content(), today=date(2026, 6, 10))
+        assert secret.call_args.kwargs.get("strict") is True
 
     @pytest.mark.asyncio
     async def test_editor_failure_still_publishes_the_text_digest(self):
@@ -977,3 +981,99 @@ class TestCharacterInjection:
                     await maker.run(_items())
         instruction = maker.generator.generate.call_args[0][0]
         assert "RECURRING CHARACTER" not in instruction
+
+
+class TestBuildInstructionIsWhatShips:
+    """scripts/sample_visual_brief.py grades the art-director instruction, so it must be able to
+    build the EXACT string production sends. _build_instruction is that one builder."""
+
+    @pytest.mark.asyncio
+    async def test_output_is_byte_identical_to_what_make_visual_sends(self):
+        from shared.models import DigestContent, DigestItem
+
+        content = DigestContent(
+            lead="AGI 등장 870일 전이다. 출시 주기가 격차를 만든다.",
+            headline_index=1,
+            items=[
+                DigestItem(title="GLM-5.3", url="http://e.com/1", body="본문.", implication="신중함이 손해를 본다.")
+            ],
+        )
+        plan = {
+            "skip": False,
+            "item_number": 1,
+            "research": [],
+            "instruction": "Draw the story.",
+            "use_character": True,
+        }
+        post_date = date(2026, 8, 15)
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = False
+        maker.config.pipeline.enable_slack_post = False
+        gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw")))
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = gen
+                await maker.run(_items(), content, today=post_date)
+        sent = str(gen.await_args.args[0])
+
+        ranked = _items()
+        headline_index = maker._headline_ranked_index(content, ranked)
+        _marker, headline_title, _source = maker._headline_brief(content, ranked, headline_index)
+        rebuilt, use_character = maker._build_instruction(
+            plan, content, post_date, headline_title, maker.format_log.entries() if maker.format_log else [], ""
+        )
+        assert rebuilt == sent
+        assert use_character is True
+
+
+class TestStoryLessDayDoesNotPayForARender:
+    """Threads deliberately refuses a story-less digest, so with Slack off there is no destination
+    left for the image — an LLM editor pass plus a gpt-image render would be bought and thrown away."""
+
+    @pytest.mark.asyncio
+    async def test_no_render_when_there_are_no_stories_and_slack_is_off(self):
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = True
+        maker.config.pipeline.enable_slack_post = False
+        gen = AsyncMock()
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock()) as pick:
+                maker.generator.generate = gen
+                result = await maker.run(_items(), None, today=date(2026, 8, 18))
+        assert result is False
+        pick.assert_not_awaited()
+        gen.assert_not_awaited()
+        # The verdict is still recorded so the caller's delivery alert is not a no-op.
+        assert maker.threads_outcome == ThreadsDelivery(0, 1)
+
+    @pytest.mark.asyncio
+    async def test_the_render_still_happens_when_slack_can_take_the_image(self):
+        # The Slack upload is a real destination the Threads story-count says nothing about.
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = False
+        maker.config.pipeline.enable_slack_post = True
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "Draw."}
+        gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw")))
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
+                    maker.generator.generate = gen
+                    result = await maker.run(_items(), None, today=date(2026, 8, 18))
+        assert result is True
+        gen.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_digest_with_stories_is_unaffected(self):
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = True
+        maker.config.pipeline.enable_slack_post = False
+        content = TestVisualFailureNeverCostsTheDigest._content()
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "Draw."}
+        gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw")))
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))):
+                    maker.generator.generate = gen
+                    result = await maker.run(_items(), content, today=date(2026, 8, 18))
+        assert result is True
+        gen.assert_awaited_once()

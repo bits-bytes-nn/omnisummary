@@ -81,8 +81,24 @@ class WebSearchCollector(BaseCollector):
             logger.info("No web search queries or accounts configured, skipping")
             return []
 
-        broad_items = self._deduplicate(await gather_collector_results(tasks, raise_if_all_failed=True))
-        logger.info("Web search collector gathered %d items (broad phase)", len(broad_items))
+        broad = await gather_collector_results(tasks, raise_if_all_failed=True)
+        broad_items = self._deduplicate(broad.items)
+        logger.info(
+            "Web search collector gathered %d items (broad phase) from %d/%d queries (%d failed)",
+            len(broad_items),
+            broad.total - broad.failed,
+            broad.total,
+            broad.failed,
+        )
+        # Items arrived, but from only a fraction of the configured queries (Tavily throttling, a
+        # revoked key on some calls): reported, never filtered.
+        self.record_run_health(
+            total=broad.total,
+            failed=broad.failed,
+            empty=broad.empty,
+            threshold=self.config.error_rate_threshold,
+            what="search queries",
+        )
 
         refined_items = await self._refine_search(broad_items, semaphore)
         all_items = self._deduplicate(broad_items + refined_items)
@@ -110,7 +126,7 @@ class WebSearchCollector(BaseCollector):
         ]
         # Refinement is intentionally non-fatal (broad results are the floor), but a total
         # failure should be visible to ops so degraded refinement isn't silent.
-        refined_items = await gather_collector_results(tasks)
+        refined_items = (await gather_collector_results(tasks)).items
         if tasks and not refined_items:
             logger.warning("All %d refined web-search queries returned no items; using broad results only", len(tasks))
         return refined_items

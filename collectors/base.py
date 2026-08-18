@@ -19,6 +19,14 @@ from shared import CollectedItem, logger
 # local dev, a source that isn't synced) that must stay a quiet fall-through to live collection.
 _ABSENT_ERROR_CODES = frozenset({"NoSuchKey", "NoSuchBucket", "404"})
 
+# Keys of the park-file `meta` block a sync script writes and the collector reads back. Named here
+# (the way park_file_key pins the layout) so writer and reader cannot drift. The names are historic
+# — RSSHub accounts were the first inputs counted this way — but they mean "the source's INPUTS":
+# RSSHub account feeds, YouTube channels, RSS feeds, search queries.
+PARK_META_ACCOUNTS_TOTAL = "accounts_total"
+PARK_META_ACCOUNTS_FAILED = "accounts_failed"
+PARK_META_ACCOUNTS_EMPTY = "accounts_empty"
+
 
 class ParkOutcome(str, Enum):
     ABSENT = "absent"  # no bucket configured, or no object -> collect live
@@ -64,9 +72,61 @@ class BaseCollector(ABC):
     # change which items reach the aggregator; without it a source could shrink from 40 feeds to 2
     # and still be logged as OK.
     degraded_detail: str = ""
+    # How the LIVE fan-out went (park-meta keys), for a sync script to park alongside the items so
+    # the Lambda-side reader can see that a fresh park file came from a half-dead sync. Always
+    # REPLACED wholesale (record_run_health), never mutated in place — the class-level default is a
+    # shared empty dict, exactly like park_status/degraded_detail above.
+    run_meta: dict[str, int] = {}
 
     @abstractmethod
     async def collect(self) -> list[CollectedItem]: ...
+
+    def record_run_health(
+        self,
+        *,
+        total: int,
+        failed: int,
+        empty: int = 0,
+        threshold: float,
+        what: str,
+        hint: str = "",
+    ) -> None:
+        """Record how many of the source's inputs answered, and report the source DEGRADED when
+        more than `threshold` percent of them failed.
+
+        One implementation for every collector: a fresh, on-time result says nothing about a run
+        that collected from 3 of 40 inputs, which is the shape of a source quietly vanishing from
+        the digest. Reporting only — the items themselves are never filtered."""
+        self.run_meta = {
+            PARK_META_ACCOUNTS_TOTAL: total,
+            PARK_META_ACCOUNTS_FAILED: failed,
+            PARK_META_ACCOUNTS_EMPTY: empty,
+        }
+        if total <= 0 or failed <= 0:
+            return
+        fail_rate = failed / total * 100
+        if fail_rate <= threshold:
+            return
+        self.degraded_detail = f"{failed}/{total} {what} failed (>{threshold:.0f}%)" + (f"; {hint}" if hint else "")
+        logger.warning("Collector is DEGRADED: %s", self.degraded_detail)
+
+    def flag_degraded_park(self, parked: ParkedItems, *, threshold: float, what: str, hint: str = "") -> None:
+        """Report a park file that a HALF-DEAD sync wrote as DEGRADED. The file itself is fresh and
+        carries items, so nothing else in the health check can tell that the local sync collected
+        from 3 of 40 inputs. Judged with the SAME threshold the live path uses; silent for legacy
+        files that carry no meta block. Reporting only: every item still reaches the aggregator."""
+        total = parked.meta.get(PARK_META_ACCOUNTS_TOTAL) or 0
+        failed = parked.meta.get(PARK_META_ACCOUNTS_FAILED) or 0
+        if not isinstance(total, int) or not isinstance(failed, int) or total <= 0 or failed <= 0:
+            return
+        fail_rate = failed / total * 100
+        if fail_rate <= threshold:
+            return
+        self.degraded_detail = (
+            f"parked sync collected from {total - failed}/{total} {what} ({fail_rate:.0f}% failed)"
+            + (f"; {hint}" if hint else "")
+        )
+        logger.warning("Park file is DEGRADED: %s", self.degraded_detail)
 
 
 def cutoff_datetime(lookback_hours: int, reference_time: datetime | None = None) -> datetime:
@@ -207,25 +267,40 @@ def _age_hours(generated_at: datetime | None) -> float | None:
     return (datetime.now(UTC) - generated_at).total_seconds() / 3600
 
 
+class CollectorRunResult(BaseModel):
+    """A fan-out's items PLUS how many of its inputs answered.
+
+    Returned instead of a bare list so the caller can report a source that produced items from only
+    a fraction of its inputs: 2 of 40 feeds answering used to look exactly like a healthy run."""
+
+    items: list[CollectedItem] = Field(default_factory=list)
+    total: int = 0
+    failed: int = 0
+    empty: int = 0
+
+
 async def gather_collector_results(
     tasks: Sequence[Awaitable[list[CollectedItem]]],
     labels: list[str] | None = None,
     raise_if_all_failed: bool = False,
-) -> list[CollectedItem]:
+) -> CollectorRunResult:
     results = await asyncio.gather(*tasks, return_exceptions=True)
     items: list[CollectedItem] = []
     failures: list[BaseException] = []
+    empty = 0
     for i, result in enumerate(results):
         if isinstance(result, BaseException):
             label = labels[i] if labels else f"task-{i}"
             logger.warning("Collector task '%s' failed: %s", label, result)
             failures.append(result)
-        else:
+        elif result:
             items.extend(result)
+        else:
+            empty += 1
 
     # When every task errored (and produced nothing), surface it so the health check
     # marks the source FAILED instead of reporting a silent empty result on an outage.
     if raise_if_all_failed and results and len(failures) == len(results):
         raise RuntimeError(f"All {len(failures)} collector tasks failed: {failures[0]}")
 
-    return items
+    return CollectorRunResult(items=items, total=len(results), failed=len(failures), empty=empty)
