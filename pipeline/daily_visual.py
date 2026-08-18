@@ -5,14 +5,17 @@ import hashlib
 import json
 import os
 from datetime import date, datetime
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from langchain_core.output_parsers import StrOutputParser
 
 from agent.visuals import VisualGenerator
+from pipeline.aggregator import normalize_url
 from shared import (
     BedrockLanguageModelFactory,
     DigestContent,
+    DigestItem,
     RankedItem,
     RollingLog,
     VisualBrief,
@@ -28,15 +31,23 @@ from shared import (
 from shared.config import Config
 from shared.history_store import VISUAL_FORMATS_KEY, ThreadsPostLedger
 
+if TYPE_CHECKING:
+    from output.threads_handler import ThreadsDelivery
+
 
 class DailyVisualMaker:
     """Picks one digest story and renders a fun daily visual (meme / parody /
-    illustration / N-panel cartoon), then posts it to Slack. Best-effort: any failure
-    (no OpenAI key, no fit, search/render error) is logged and skipped — it must never
-    break the digest pipeline."""
+    illustration / N-panel cartoon), then posts the digest (image + text) to Slack/Threads.
+
+    Best-effort in BOTH directions: a visual failure (no OpenAI key, no fit, search/render error)
+    is logged and the digest still publishes TEXT-ONLY, and a delivery failure never escapes into
+    the pipeline. This function is the only Threads publish path, so an early return here means
+    the day's digest is never delivered at all."""
 
     def __init__(self, config: Config, llm_factory: BedrockLanguageModelFactory) -> None:
         self.config = config
+        # Last Threads publish outcome (posted/expected posts), for the caller's metrics/alerts.
+        self.threads_outcome: ThreadsDelivery | None = None
         self.llm = llm_factory.get_model(config.pipeline.digest_model)
         # Format-variation history is best-effort: if the state store can't be created
         # (misconfigured bucket/profile), degrade to no history rather than crash the visual.
@@ -77,34 +88,73 @@ class DailyVisualMaker:
     ) -> bool:
         if not ranked_items:
             return False
-        if not resolve_secret("OPENAI_API_KEY", "openai-api-key"):
-            logger.info("OPENAI_API_KEY not set, skipping daily visual")
-            return False
 
         post_date = today or datetime.now(ZoneInfo(self.config.aws.timezone)).date()
+        if self._nothing_left_to_publish(post_date, force_republish):
+            logger.info(
+                "Threads digest for %s already posted and no other channel is enabled, skipping "
+                "(use force to re-publish)",
+                post_date,
+            )
+            return False
+
+        image_bytes, brief = await self._make_visual(ranked_items, content, post_date)
+
+        slack_ok = await self._post(image_bytes, brief)
+        threads_ok = await self._post_threads(image_bytes, content, today=post_date, force_republish=force_republish)
+        # Success = at least one enabled channel published. Returning only slack_ok reported
+        # "skipped" for every Threads-only run (the current config), hiding real outcomes.
+        return slack_ok or threads_ok
+
+    def _nothing_left_to_publish(self, post_date: date, force_republish: bool) -> bool:
+        """True when the day is provably done: Threads already carries this date's digest AND no
+        other channel could take the visual. Checked at the TOP of run() so an already-posted day
+        doesn't pay for an LLM editor pass + a gpt-image render it can never publish.
+
+        Deliberately narrow — with enable_slack_post on, the Slack image upload is a separate
+        delivery the Threads marker says nothing about, so the run must proceed."""
+        if force_republish or self.config.pipeline.enable_slack_post:
+            return False
+        if not self.config.pipeline.enable_threads_post:
+            return False
+        return bool(self.threads_ledger and self.threads_ledger.already_posted(post_date))
+
+    async def _make_visual(
+        self, ranked_items: list[RankedItem], content: DigestContent | None, post_date: date
+    ) -> tuple[bytes | None, VisualBrief | None]:
+        """Render the day's image, or (None, None). EVERY failure is contained here — a missing
+        OpenAI key, an unusable editor plan, a render error — because the image is an ATTACHMENT to
+        the digest, and this is the only Threads publish path. run() used to return early on all
+        three, so a visual-only failure silently cost the whole day's digest."""
+        if not resolve_secret("OPENAI_API_KEY", "openai-api-key"):
+            logger.info("OPENAI_API_KEY not set — publishing the digest text-only, without a visual")
+            return None, None
+
         # The visual MUST depict the digest's headline so the image and the lead stay in sync.
         # content.headline_index is into the curated content.items (may be merged/reordered), so
-        # map it back to a ranked_items position by URL; fall back to the top-ranked item.
-        headline_index = self._headline_ranked_index(content, ranked_items) or 1
+        # map it back to a ranked_items position by normalized URL.
+        headline_index = self._headline_ranked_index(content, ranked_items)
+        marker_index, headline_title, source = self._headline_brief(content, ranked_items, headline_index)
         recent_formats = self.format_log.entries() if self.format_log else []
         preferred_orientation = self._least_recent_orientation(recent_formats)
         try:
-            plan = await self._pick_story(ranked_items, headline_index, recent_formats, preferred_orientation)
+            plan = await self._pick_story(ranked_items, marker_index, recent_formats, preferred_orientation)
         except Exception:
             # Best-effort: a visual failure must never block the digest, so catch broadly here.
-            logger.warning("Daily visual editor failed", exc_info=True)
-            return False
+            logger.warning("Daily visual editor failed; publishing the digest text-only", exc_info=True)
+            return None, None
 
         if plan.get("skip"):
-            logger.info("Daily visual: editor could not illustrate the headline, skipping")
-            return False
+            logger.info("Daily visual: editor could not illustrate the headline; publishing the digest text-only")
+            return None, None
 
-        # The headline is authoritative; the editor only briefs HOW to draw it. Ignore any
-        # off-headline item_number the editor might return.
-        ranked = ranked_items[headline_index - 1]
-        source = f"{ranked.item.title}\n\n{ranked.item.text}"
-        context = await self._gather_context(plan.get("research", []))
-        instruction = plan.get("instruction", "") or f"A fun visual about: {ranked.item.title}"
+        try:
+            context = await self._gather_context(plan.get("research", []))
+        except Exception:
+            # Extra context is a nice-to-have; a research backend outage must not reach the digest.
+            logger.warning("Daily visual context gathering failed; continuing without it", exc_info=True)
+            context = ""
+        instruction = plan.get("instruction", "") or f"A fun visual about: {headline_title}"
 
         # The art director only ever saw the raw article, so it illustrates surface facts: the
         # 2026-08-15 visual drew a four-way photo finish ("they all tied") for a story whose point
@@ -148,8 +198,6 @@ class DailyVisualMaker:
             # posts the lead + per-story replies (text-only). Slack image upload is skipped below.
             logger.warning("Daily visual generation failed; posting Threads text-only", exc_info=True)
 
-        slack_ok = await self._post(image_bytes, brief)
-        threads_ok = await self._post_threads(image_bytes, content, today=post_date, force_republish=force_republish)
         # Record the chosen format so tomorrow can deliberately differ. Best-effort. Only when a
         # brief was actually rendered — a text-only fallback has no format to record. Deduped by
         # date so a same-day re-run replaces its entry instead of pushing a duplicate that crowds
@@ -168,9 +216,35 @@ class DailyVisualMaker:
                 )
             except Exception:
                 logger.warning("Failed to record visual format history (non-fatal)", exc_info=True)
-        # Success = at least one enabled channel published. Returning only slack_ok reported
-        # "skipped" for every Threads-only run (the current config), hiding real outcomes.
-        return slack_ok or threads_ok
+        return image_bytes, brief
+
+    @staticmethod
+    def _curated_headline(content: DigestContent | None) -> DigestItem | None:
+        """The curated story the lead is about (content.items[headline_index]), or None."""
+        if not content or not content.items:
+            return None
+        idx = content.headline_index if 1 <= content.headline_index <= len(content.items) else 1
+        return content.items[idx - 1]
+
+    def _headline_brief(
+        self, content: DigestContent | None, ranked_items: list[RankedItem], headline_index: int
+    ) -> tuple[int, str, str]:
+        """(marker_index, title, source_text) for the story the visual must depict.
+
+        marker_index is the ranked position to flag as TODAY'S HEADLINE for the editor (0 = none).
+        When the curated headline has no matching ranked source, the CURATED story's own prose is
+        the source: the old `or 1` fallback briefed ranked #1 instead, i.e. a different story than
+        the lead — exactly the image/text desync this whole path exists to prevent."""
+        if headline_index:
+            item = ranked_items[headline_index - 1].item
+            return headline_index, item.title, f"{item.title}\n\n{item.text}"
+        curated = self._curated_headline(content)
+        if curated is not None:
+            body = "\n\n".join(p for p in (curated.body.strip(), curated.implication.strip()) if p)
+            return 0, curated.title, f"{curated.title}\n\n{body}"
+        # No structured content at all (visual-only run): the top-ranked story is the headline.
+        item = ranked_items[0].item
+        return 1, item.title, f"{item.title}\n\n{item.text}"
 
     def _editorial_take(self, content: DigestContent | None, post_date: date) -> str:
         """The digest's angle on the headline story: its lead plus the headline item's closing
@@ -279,14 +353,19 @@ class DailyVisualMaker:
 
     @staticmethod
     def _headline_ranked_index(content: DigestContent | None, ranked_items: list[RankedItem]) -> int:
+        """Ranked position (1-based) of the curated headline, or 0 when it matches none.
+
+        Matched on the aggregator's normalize_url, not an exact string: the editor echoes the URL
+        back and a trailing slash / http→https / utm-param difference is enough to miss a match
+        that is obviously the same article. Already-identical URLs are unaffected."""
         if not content or not content.items:
             return 0
         idx = content.headline_index
         if not (1 <= idx <= len(content.items)):
             return 0
-        url = content.items[idx - 1].url
+        url = normalize_url(content.items[idx - 1].url)
         for i, r in enumerate(ranked_items, start=1):
-            if r.item.url == url:
+            if normalize_url(r.item.url) == url:
                 return i
         return 0
 
@@ -434,7 +513,7 @@ class DailyVisualMaker:
                 logger.warning("Failed to record Threads post marker (non-fatal)", exc_info=True)
 
         try:
-            posted = await post_to_threads(
+            outcome = await post_to_threads(
                 root_text=root_text,
                 replies=replies,
                 image_bytes=image_bytes,
@@ -448,9 +527,13 @@ class DailyVisualMaker:
             if not was_marked:
                 self._release_threads_marker(post_date, run_id)
             return False
-        if not posted and not was_marked:
+        # Expose the (posted, expected) counts so the caller can report/alert on a partial chain.
+        # Branch on .published explicitly — the outcome tuple itself is ALWAYS truthy, so `if
+        # outcome:` would treat a 0-of-6 post as a success and skip the ledger rollback.
+        self.threads_outcome = outcome
+        if not outcome.published and not was_marked:
             self._release_threads_marker(post_date, run_id)
-        return posted
+        return outcome.published
 
     def _release_threads_marker(self, post_date: date, run_id: str = "") -> None:
         if not self.threads_ledger:

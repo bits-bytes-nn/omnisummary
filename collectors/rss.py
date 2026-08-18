@@ -4,10 +4,15 @@ import asyncio
 
 import feedparser
 
-from shared import CollectedItem, SourceType, generate_item_id, logger, parse_feed_published_date
+from shared import CollectedItem, SourceType, generate_item_id, logger, parse_feed_published_date, retry_async
 from shared.config import RSSCollectorConfig
 
 from .base import BaseCollector, cutoff_datetime, gather_collector_results
+
+# Reuse the YouTube collector's transient-status classification verbatim rather than growing a
+# second list that could drift: 429 / 5xx are worth another attempt, and everything else (403, 404,
+# a malformed body) is a verdict that retrying cannot change.
+from .youtube import _RETRIABLE_STATUS_CODES, TransientStatusError
 
 
 class RSSCollector(BaseCollector):
@@ -34,21 +39,51 @@ class RSSCollector(BaseCollector):
     async def _collect_feed(self, feed_url: str, semaphore: asyncio.Semaphore) -> list[CollectedItem]:
         async with semaphore:
             logger.info("Collecting posts from feed '%s'", feed_url)
-            try:
+
+            # The retry wraps the TIMEOUT, not the other way round, so every attempt gets its own
+            # full request_timeout instead of sharing one budget with its predecessors.
+            #
+            # Worst case per feed = max_retries * request_timeout + linear backoff
+            #                     = 3 * 30s + (5s + 10s) = 105s (defaults),
+            # and feeds run max_concurrency at a time, so the collector's worst case is
+            # ceil(feeds / max_concurrency) * 105s — with the shipped 22 feeds / 5 concurrent that
+            # is ~8.8 min, still inside the digest Lambda's 15-min timeout alongside the others
+            # (all collectors run concurrently, so this is the bound for the whole collect step).
+            async def _attempt() -> list[CollectedItem]:
                 return await asyncio.wait_for(
                     asyncio.to_thread(self._parse_feed, feed_url),
                     timeout=self.config.request_timeout,
+                )
+
+            try:
+                return await retry_async(
+                    _attempt,
+                    max_retries=self.config.max_retries,
+                    backoff_sec=self.config.retry_backoff_sec,
+                    # A hung fetch and a 429/5xx are transient: a single blip used to drop the whole
+                    # feed's items for the day. A dead feed (403/404, unparseable body) raises a
+                    # plain RuntimeError and is NOT retried — the verdict won't change.
+                    retry_on=(TimeoutError, TransientStatusError),
+                    description=f"RSS feed '{feed_url}'",
                 )
             except TimeoutError as e:
                 # Raise (not return []) so gather_collector_results counts this as a task FAILURE:
                 # a total outage (every feed hung) then surfaces as FAILED instead of a silent empty
                 # result. One hung feed among many is still just logged there and skipped.
-                logger.warning("RSS feed '%s' timed out after %ds, skipping", feed_url, self.config.request_timeout)
+                logger.warning(
+                    "RSS feed '%s' timed out after %d attempts of %ds, skipping",
+                    feed_url,
+                    self.config.max_retries,
+                    self.config.request_timeout,
+                )
                 raise RuntimeError(f"RSS feed '{feed_url}' timed out after {self.config.request_timeout}s") from e
 
     def _parse_feed(self, feed_url: str) -> list[CollectedItem]:
         feed = feedparser.parse(feed_url)
         status = feed.get("status")
+        if status in _RETRIABLE_STATUS_CODES:
+            # Rate limiting / a server-side fault, not a dead feed: the caller retries.
+            raise TransientStatusError(f"RSS feed '{feed_url}' returned {status}")
         if (status is not None and status >= 400) or (feed.bozo and not feed.entries):
             reason = f"HTTP {status}" if status and status >= 400 else feed.get("bozo_exception")
             # A dead feed is a FAILURE, not an empty one: raising lets the all-failed check mark

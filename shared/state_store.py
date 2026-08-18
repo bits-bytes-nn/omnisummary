@@ -14,6 +14,19 @@ if TYPE_CHECKING:
     from .config import Config
 
 
+class StateReadError(RuntimeError):
+    """The state blob could NOT be read — distinct from "there is no history yet".
+
+    Both used to come back as None, so a throttled/denied S3 GET read as an empty ledger and the
+    next read-modify-write persisted that emptiness: the published-URL ledger, the recent-leads log,
+    the visual-format window and the Threads idempotency marker were all blanked by one failed read.
+
+    Every consumer handles this the same way: log at ERROR, treat the history as UNKNOWN, and SKIP
+    the write. It must never reach a publish path — a lost digest is strictly worse than a run
+    without history.
+    """
+
+
 class StateStore(ABC):
     """Blob store for the structured trends memory (read-modify-write each run).
 
@@ -36,7 +49,10 @@ class StateStore(ABC):
     def exists(self, key: str) -> bool: ...
 
     def read_json(self, key: str, default: Any = None) -> Any:
-        """Read and parse a JSON blob; return default on missing/corrupt content."""
+        """Read and parse a JSON blob; return default on missing/corrupt content.
+
+        Raises StateReadError when the blob could not be READ at all — corrupt content is a
+        recoverable "start fresh", an unreadable store is not."""
         raw = self.read(key)
         if not raw:
             return default
@@ -59,7 +75,10 @@ class LocalStateStore(StateStore):
         path = self.base_dir / key
         if not path.exists():
             return None
-        content = path.read_text(encoding="utf-8")
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as e:
+            raise StateReadError(f"Failed to read state '{path}': {e}") from e
         logger.debug("Read state from '%s' (%d chars)", path, len(content))
         return content
 
@@ -71,6 +90,11 @@ class LocalStateStore(StateStore):
 
     def exists(self, key: str) -> bool:
         return (self.base_dir / key).exists()
+
+
+# S3 answers "no such object" as NoSuchKey on GET but as a bare 404 on HEAD (head_object has no
+# response body to carry the code), so both spellings mean the same thing: genuinely absent.
+_MISSING_KEY_CODES = frozenset({"NoSuchKey", "404", "NotFound"})
 
 
 class S3StateStore(StateStore):
@@ -90,10 +114,13 @@ class S3StateStore(StateStore):
             logger.debug("Read state from 's3://%s/%s' (%d chars)", self.bucket, s3_key, len(content))
             return content
         except ClientError as e:
-            if e.response["Error"]["Code"] == "NoSuchKey":
+            code = e.response["Error"].get("Code", "")
+            if code in _MISSING_KEY_CODES:
                 return None
-            logger.warning("Failed to read 's3://%s/%s': %s", self.bucket, s3_key, e)
-            return None
+            # NOT None: "the object isn't there" and "S3 wouldn't tell me" are different answers,
+            # and returning None for the second one let the next write persist an empty ledger.
+            logger.error("Failed to read 's3://%s/%s': %s", self.bucket, s3_key, e)
+            raise StateReadError(f"Failed to read 's3://{self.bucket}/{s3_key}': {e}") from e
 
     def write(self, key: str, content: str) -> None:
         s3_key = self._key(key)
@@ -105,8 +132,11 @@ class S3StateStore(StateStore):
         try:
             self.s3.head_object(Bucket=self.bucket, Key=s3_key)
             return True
-        except ClientError:
-            return False
+        except ClientError as e:
+            if e.response["Error"].get("Code", "") in _MISSING_KEY_CODES:
+                return False
+            logger.error("Failed to stat 's3://%s/%s': %s", self.bucket, s3_key, e)
+            raise StateReadError(f"Failed to stat 's3://{self.bucket}/{s3_key}': {e}") from e
 
 
 def _boto_session(config: Config | None):

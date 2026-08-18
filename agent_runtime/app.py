@@ -98,7 +98,11 @@ def invoke(payload: dict[str, Any]) -> str:
             try:
                 _send_slack_message(channel_id, sanitize_slack_mrkdwn(fallback_text), thread_ts)
             except Exception as e:
+                # Nothing reached the user on ANY channel: the report is lost. Emit the error metric
+                # so the alarm fires — the entrypoint still returns text, so a failure here is
+                # otherwise invisible.
                 logger.error("Fallback Slack post failed: %s", e, exc_info=True)
+                _emit_agent_error_metric()
 
     return response
 

@@ -1,7 +1,7 @@
 import hashlib
 import json
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -37,6 +37,25 @@ class TestResolveSecret:
         monkeypatch.delenv("MY_SECRET", raising=False)
         with patch("shared.utils.boto3.client", side_effect=Exception("no ssm")):
             assert resolve_secret("MY_SECRET", "my-secret") == ""
+
+    def test_strict_distinguishes_an_ssm_outage_from_an_unset_secret(self, monkeypatch):
+        # Default behaviour (every existing caller) is unchanged: "" degrades gracefully. The
+        # opt-in strict mode raises, so a caller whose whole job IS the secret cannot report
+        # "nothing to do" while SSM is simply unreachable.
+        from botocore.exceptions import ClientError
+
+        from shared.utils import SecretUnavailableError
+
+        monkeypatch.delenv("MY_SECRET", raising=False)
+        with patch("shared.utils.boto3.client", side_effect=Exception("no ssm")):
+            with pytest.raises(SecretUnavailableError):
+                resolve_secret("MY_SECRET", "my-secret", strict=True)
+
+        # A parameter that genuinely does not exist is still just "unset", even in strict mode.
+        client = MagicMock()
+        client.get_parameter.side_effect = ClientError({"Error": {"Code": "ParameterNotFound"}}, "GetParameter")
+        with patch("shared.utils.boto3.client", return_value=client):
+            assert resolve_secret("MY_SECRET", "my-secret", strict=True) == ""
 
 
 class TestGenerateItemId:

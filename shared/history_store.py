@@ -4,7 +4,7 @@ from datetime import date
 from typing import Any
 
 from .logger import logger
-from .state_store import StateStore
+from .state_store import StateReadError, StateStore
 
 
 def published_urls_from_snapshots(snapshots: list[dict[str, Any]]) -> set[str]:
@@ -48,9 +48,15 @@ class ThreadsPostLedger:
     def __init__(self, store: StateStore) -> None:
         self.store = store
 
-    def _marks(self) -> dict[str, str]:
-        """Return {iso_date: owner_run_id}, tolerating the legacy list-of-dates format."""
-        data = self.store.read_json(THREADS_POSTED_KEY, default={})
+    def _marks(self) -> dict[str, str] | None:
+        """Return {iso_date: owner_run_id}, tolerating the legacy list-of-dates format.
+        None when the store could not be READ — the caller must then treat the ledger as unknown
+        and write nothing (a blind write would erase every recorded date)."""
+        try:
+            data = self.store.read_json(THREADS_POSTED_KEY, default={})
+        except StateReadError as e:
+            logger.error("Threads post ledger unreadable (%s); treating post history as unknown", e)
+            return None
         if isinstance(data, dict):
             return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
         if isinstance(data, list):  # legacy: bare ISO dates, no owner
@@ -63,10 +69,17 @@ class ThreadsPostLedger:
         self.store.write_json(THREADS_POSTED_KEY, trimmed)
 
     def already_posted(self, today: date) -> bool:
-        return today.isoformat() in self._marks()
+        """False when the ledger can't be read: an unknown history must not block the publish
+        (that would turn a state-store blip into a lost digest). A duplicate post is recoverable;
+        a missing one is not."""
+        marks = self._marks()
+        return marks is not None and today.isoformat() in marks
 
     def mark(self, today: date, run_id: str = "") -> None:
         marks = self._marks()
+        if marks is None:
+            logger.error("Not marking %s as posted: the Threads ledger could not be read", today)
+            return
         iso = today.isoformat()
         if iso in marks:
             return
@@ -79,6 +92,9 @@ class ThreadsPostLedger:
         concurrent run wrote for a post that may have succeeded. No-op if absent or not owned."""
         iso = today.isoformat()
         marks = self._marks()
+        if marks is None:
+            logger.error("Not releasing the Threads marker for %s: the ledger could not be read", iso)
+            return
         owner = marks.get(iso)
         if owner is None:
             return
@@ -100,13 +116,24 @@ class PublishedUrlLedger:
         self.store = store
         self.ttl_days = ttl_days
 
+    def _ledger(self) -> dict | None:
+        """The stored {url: iso_date} map, or None when the store could not be read (unknown
+        history — the caller must not write, or the whole ledger is replaced by today's URLs)."""
+        try:
+            ledger = self.store.read_json(PUBLISHED_URLS_KEY, default={}) or {}
+        except StateReadError as e:
+            logger.error("Published-URL ledger unreadable (%s); treating publish history as unknown", e)
+            return None
+        return ledger if isinstance(ledger, dict) else {}
+
     def recent_urls(self, today: date) -> set[str]:
         """URLs published on a STRICTLY EARLIER day within the window. Same-day (age 0) is
         excluded from the set so a same-day re-run reproduces today's digest rather than
         suppressing its own just-recorded stories; within-run duplicates are handled by the
-        aggregator's own dedup, not here."""
-        ledger = self.store.read_json(PUBLISHED_URLS_KEY, default={}) or {}
-        if not isinstance(ledger, dict):
+        aggregator's own dedup, not here. An unreadable ledger yields no exclusions (a repeat
+        story is a far smaller cost than an aborted run)."""
+        ledger = self._ledger()
+        if ledger is None:
             return set()
         keep: set[str] = set()
         for url, iso in ledger.items():
@@ -123,9 +150,12 @@ class PublishedUrlLedger:
         older than the TTL window."""
         if not urls:
             return
-        ledger = self.store.read_json(PUBLISHED_URLS_KEY, default={}) or {}
-        if not isinstance(ledger, dict):
-            ledger = {}
+        ledger = self._ledger()
+        if ledger is None:
+            # Skip the write: a read-modify-write on an unknown ledger would replace weeks of
+            # publish history with just today's URLs, re-opening every story for re-publication.
+            logger.error("Not recording %d published URL(s): the ledger could not be read", len(urls))
+            return
         today_iso = today.isoformat()
         for url in urls:
             if url:
@@ -150,16 +180,32 @@ class RollingLog:
         self.key = key
         self.max_entries = max_entries
 
-    def entries(self) -> list[dict]:
-        data = self.store.read_json(self.key, default=[]) or []
+    def _log(self) -> list[dict] | None:
+        """The stored records, or None when the store could not be read (unknown history)."""
+        try:
+            data = self.store.read_json(self.key, default=[]) or []
+        except StateReadError as e:
+            logger.error("Rolling log '%s' unreadable (%s); treating history as unknown", self.key, e)
+            return None
         return data if isinstance(data, list) else []
+
+    def entries(self) -> list[dict]:
+        """The stored records; [] when unreadable. Called from the publish path (the visual reads
+        its format window before posting), so it must never raise."""
+        return self._log() or []
 
     def append(self, record: dict, dedup_key: str | None = None) -> None:
         """Append a record, capped FIFO. When dedup_key is given, first drop any existing entry
         whose value at that key equals this record's — so a same-day re-run (e.g.
         --force-republish) replaces its prior entry instead of pushing a duplicate that would
-        crowd out the window (the ledger and trends paths dedup by date the same way)."""
-        log = self.entries()
+        crowd out the window (the ledger and trends paths dedup by date the same way).
+
+        Skipped entirely when the log could not be read: writing [record] would discard the whole
+        window and reset the variation/novelty signals it exists to provide."""
+        log = self._log()
+        if log is None:
+            logger.error("Not appending to rolling log '%s': it could not be read", self.key)
+            return
         if dedup_key is not None and dedup_key in record:
             log = [e for e in log if e.get(dedup_key) != record[dedup_key]]
         log.append(record)

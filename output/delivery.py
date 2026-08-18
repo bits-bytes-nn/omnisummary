@@ -19,6 +19,32 @@ _SLACK_RESEARCH_HEADER = ":satellite: OmniSummary Deep Research"
 
 
 @dataclass
+class DeliveryStats:
+    """What the last delivery actually put in front of the reader. `rendered` is the number of posts
+    or messages the report became, `delivered` how many landed, and dropped/trimmed how much content
+    the renderer had to discard to fit the channel's limits. Carried back to the agent so its tool
+    result states the truth: a report whose second half was dropped is not "delivered"."""
+
+    channel: str = ""
+    rendered: int = 0
+    delivered: int = 0
+    dropped: int = 0
+    trimmed: int = 0
+
+    @property
+    def complete(self) -> bool:
+        return self.delivered >= self.rendered and not self.dropped and not self.trimmed
+
+    def summary(self) -> str:
+        parts = [f"{self.delivered}/{self.rendered} posts delivered"]
+        if self.dropped:
+            parts.append(f"{self.dropped} post(s) DROPPED (report too long for the channel)")
+        if self.trimmed:
+            parts.append(f"{self.trimmed} post(s) trimmed to fit the 500-char cap")
+        return "; ".join(parts)
+
+
+@dataclass
 class DeliveryContext:
     """Per-invocation delivery target + staging for the deep-research agent. `staged_images`
     holds OG images the agent attached via attach_image; `delivered_channels` records which
@@ -37,6 +63,8 @@ class DeliveryContext:
     # The last report text handed to deliver_report — so the runtime fallback can re-post the
     # actual report to Slack, not the agent's terminal one-line confirmation.
     last_report: str = ""
+    # Outcome of the last delivery attempt, for honest reporting back to the agent/user.
+    last_stats: DeliveryStats = field(default_factory=DeliveryStats)
 
     @property
     def delivered(self) -> bool:
@@ -95,12 +123,15 @@ async def _deliver_slack(report: str, delivery: DeliveryContext, *, bot_token: s
     notify = _strip_slack_mrkdwn(report)[:200]
 
     client = AsyncWebClient(token=token)
+    chunks = render_research_blocks(report, header=_SLACK_RESEARCH_HEADER)
+    delivery.last_stats = DeliveryStats(channel="slack", rendered=len(chunks))
     try:
-        for blocks in render_research_blocks(report, header=_SLACK_RESEARCH_HEADER):
+        for blocks in chunks:
             kwargs: dict = {"channel": channel_id, "blocks": blocks, "text": notify}
             if delivery.thread_ts:
                 kwargs["thread_ts"] = delivery.thread_ts
             await client.chat_postMessage(**kwargs)
+            delivery.last_stats.delivered += 1
         logger.info("Delivered research report to Slack channel '%s'", channel_id)
         return True
     except Exception as e:
@@ -114,7 +145,8 @@ async def _deliver_threads(report: str, delivery: DeliveryContext) -> bool:
     from output.threads_handler import post_to_threads
 
     max_posts = get_config().agent.research_max_threads_posts
-    root_text, replies = render_threads_research(report, max_posts=max_posts)
+    root_text, replies, dropped, trimmed = render_threads_research(report, max_posts=max_posts)
+    delivery.last_stats = DeliveryStats(channel="threads", dropped=dropped, trimmed=trimmed)
     if not root_text.strip():
         # Empty report → nothing to post. An empty root would 400 the Threads API; skip cleanly.
         logger.warning("Research report rendered to empty Threads root; skipping Threads delivery.")
@@ -140,7 +172,7 @@ async def _deliver_threads(report: str, delivery: DeliveryContext) -> bool:
             ext = extension_for(image_content_type)
             image_key = f"{prefix}threads/research_{hashlib.sha256(image_bytes).hexdigest()[:16]}.{ext}"
 
-    return await post_to_threads(
+    outcome = await post_to_threads(
         root_text=root_text,
         replies=replies,
         image_bytes=image_bytes,
@@ -148,6 +180,11 @@ async def _deliver_threads(report: str, delivery: DeliveryContext) -> bool:
         image_key=image_key,
         image_content_type=image_content_type,
     )
+    # Explicitly read the counts: the outcome is a NamedTuple and therefore always truthy, so
+    # `return outcome` would report a 0-of-8 post as a success.
+    delivery.last_stats.rendered = outcome.expected
+    delivery.last_stats.delivered = outcome.posted
+    return outcome.published
 
 
 def _dry_run_print(report: str, channel: str, delivery: DeliveryContext) -> bool:
@@ -161,13 +198,19 @@ def _dry_run_print(report: str, channel: str, delivery: DeliveryContext) -> bool
             print(f"  - {img.image_url} (from {img.source_url}, {len(img.data)} bytes) {tag}")
     if channel == "threads":
         max_posts = get_config().agent.research_max_threads_posts
-        root, replies = render_threads_research(report, max_posts=max_posts)
+        root, replies, dropped, trimmed = render_threads_research(report, max_posts=max_posts)
         print(f"\n[ROOT]\n{root}\n")
         for i, r in enumerate(replies, 1):
             print(f"[REPLY {i}]\n{r}\n")
+        if dropped or trimmed:
+            print(f"[RENDER] {dropped} post(s) dropped over the cap, {trimmed} trimmed to fit 500 chars")
+        delivery.last_stats = DeliveryStats(
+            channel="threads", rendered=1 + len(replies), delivered=1 + len(replies), dropped=dropped, trimmed=trimmed
+        )
     else:
         # Show what _deliver_slack actually posts: sanitized, header + sectioned blocks.
         chunks = render_research_blocks(sanitize_slack_mrkdwn(report), header=_SLACK_RESEARCH_HEADER)
+        delivery.last_stats = DeliveryStats(channel="slack", rendered=len(chunks), delivered=len(chunks))
         for mi, blocks in enumerate(chunks, 1):
             print(f"\n[SLACK MESSAGE {mi} — {len(blocks)} block(s)]")
             for b in blocks:
@@ -184,9 +227,14 @@ def _dry_run_print(report: str, channel: str, delivery: DeliveryContext) -> bool
 
 async def deliver_research_report(report: str, *, channel: str, delivery: DeliveryContext) -> bool:
     """Render and post a finished research report to the chosen channel, attaching any staged
-    OG images. Records the channel in delivery.delivered_channels on success so a partial
-    multi-channel failure (e.g. Threads ok but Slack failed) still triggers the runtime's
-    per-channel fallback. In dry-run mode the rendered output is printed instead of posted."""
+    OG images. Records the channel in delivery.delivered_channels on success, which BOTH makes a
+    repeat deliver_report call a no-op and tells the runtime whether its last-resort Slack fallback
+    is still needed (it fires only when no channel was delivered at all). In dry-run mode the
+    rendered output is printed instead of posted.
+
+    The per-attempt outcome lands in delivery.last_stats so the caller can report a partial
+    delivery honestly; a partially-delivered report is NOT re-sent (the recorded channel makes a
+    second attempt a no-op), the requester is told instead."""
     delivery.last_report = report
     if channel in delivery.delivered_channels:
         # Idempotency: a retried/duplicated tool call must not double-post the report.
@@ -200,4 +248,27 @@ async def deliver_research_report(report: str, *, channel: str, delivery: Delive
         ok = await _deliver_slack(report, delivery)
     if ok:
         delivery.delivered_channels.add(channel)
+        if not delivery.last_stats.complete:
+            await _notify_incomplete_delivery(delivery)
     return ok
+
+
+async def _notify_incomplete_delivery(delivery: DeliveryContext) -> None:
+    """Tell the requester, in their own Slack thread, that the report went out incomplete — posts
+    dropped over the channel cap, trimmed to 500 chars, or replies that never landed. Best-effort
+    and one line: without it a truncated report is indistinguishable from a complete one."""
+    stats = delivery.last_stats
+    logger.warning("Research report delivered INCOMPLETE to %s: %s", stats.channel or "?", stats.summary())
+    if delivery.dry_run or not delivery.channel_id:
+        return
+    token = resolve_secret("SLACK_BOT_TOKEN", "slack-bot-token")
+    if not token:
+        return
+    text = f":warning: 리포트가 {stats.channel}에 완전하게 전달되지 않았다 — {stats.summary()}"
+    try:
+        kwargs: dict = {"channel": delivery.channel_id, "text": text}
+        if delivery.thread_ts:
+            kwargs["thread_ts"] = delivery.thread_ts
+        await AsyncWebClient(token=token).chat_postMessage(**kwargs)
+    except Exception as e:
+        logger.warning("Failed to post the partial-delivery notice: %s", e)

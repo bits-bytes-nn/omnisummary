@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 from langchain_core.output_parsers import StrOutputParser
 
+from pipeline.aggregator import normalize_url
 from shared import (
     YOUTUBE_VIEWS_EMOJI,
     BedrockLanguageModelFactory,
@@ -21,6 +22,7 @@ from shared import (
     format_collected_item,
     logger,
     parse_json_from_llm_output,
+    place_countdown_intro,
     retry_async,
 )
 from shared.config import PipelineConfig
@@ -115,17 +117,17 @@ class DigestGenerator:
         if self.config.enable_grounding_check:
             content = await self._verify_grounding(content, ranked_items, trends_context)
 
-        # Prepend the AGI countdown to the lead at generation time, using the digest's own date
+        # Attach the AGI countdown to the lead at generation time, using the digest's own date
         # (the single KST clock for the run) so the day count is consistent with trend stamps and
-        # lands on every channel via the stored content — not just one renderer.
+        # lands on every channel via the stored content — not just one renderer. Its end of the lead
+        # is config-driven (agi_countdown_position).
         intro = agi_countdown_intro(
             self.config.agi_countdown_date,
             self.config.agi_countdown_template,
             today or datetime.now(UTC).date(),
             self.config.agi_countdown_after,
         )
-        if intro and content.lead and not content.lead.startswith(intro):
-            content.lead = intro + content.lead
+        content.lead = place_countdown_intro(content.lead, intro, self.config.agi_countdown_position)
 
         digest_text = render_digest_text(content)
         logger.info("Digest generated successfully (%d items, %d characters)", len(content.items), len(digest_text))
@@ -213,12 +215,23 @@ class DigestGenerator:
         return kept
 
     def _fill_source_metadata(self, content: DigestContent, ranked_items: list[RankedItem]) -> None:
-        """Code owns the source tag/metrics (not the LLM): match each item to its ranked
-        source by URL and stamp the backtick tag + emoji metrics the renderers display."""
-        by_url = {r.item.url: r.item for r in ranked_items}
+        """Code owns the source tag/metrics (not the LLM): match each item to its ranked source and
+        stamp the backtick tag + emoji metrics the renderers display.
+
+        Matched on the aggregator's normalize_url, not an exact string: the editor echoes the URL
+        back, and one trailing slash / http→https / dropped utm param was enough to lose the match —
+        the story then shipped with no source line at all, on Slack and on Threads. Identical URLs
+        take the same path they always did."""
+        by_url = {normalize_url(r.item.url): r.item for r in ranked_items}
         for item in content.items:
-            src = by_url.get(item.url)
+            src = by_url.get(normalize_url(item.url))
             if src is None:
+                # Last resort so the reader still sees a provenance line: the URL's own host. No
+                # per-domain table — that would be a second, drifting source of source names.
+                host = urlsplit(item.url).netloc.removeprefix("www.")
+                if host:
+                    item.source_tag, item.metrics = f"`{host}`", ""
+                    logger.warning("Digest item '%s' matched no ranked source; tagged by host", item.url)
                 continue
             item.source_tag, item.metrics = self._source_tag_and_metrics(src)
 

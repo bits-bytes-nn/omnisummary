@@ -86,7 +86,7 @@ class TestRSSCollect:
     async def test_all_feeds_http_error_raises(self):
         # Total outage (every feed 4xx/5xx) must be FAILED, not a silently empty digest.
         c = RSSCollector(_config(feeds=["https://a.example/feed", "https://b.example/feed"]))
-        with patch("collectors.rss.feedparser.parse", return_value=_feed([], status=503)):
+        with patch("collectors.rss.feedparser.parse", return_value=_feed([], status=404)):
             with pytest.raises(RuntimeError, match="Failed RSS feed"):
                 await c.collect()
 
@@ -100,7 +100,9 @@ class TestRSSCollect:
     @pytest.mark.asyncio
     async def test_all_feeds_timing_out_raises(self):
         # A hung feed counts as a failure, so an all-hung run reports FAILED too.
-        c = RSSCollector(_config(feeds=["https://a.example/feed", "https://b.example/feed"]))
+        c = RSSCollector(
+            _config(feeds=["https://a.example/feed", "https://b.example/feed"], max_retries=2, retry_backoff_sec=0)
+        )
 
         async def _timeout(awaitable, timeout):
             awaitable.close()  # avoid an un-awaited to_thread coroutine warning
@@ -112,22 +114,81 @@ class TestRSSCollect:
 
     @pytest.mark.asyncio
     async def test_one_hung_feed_among_many_is_skipped(self):
-        c = RSSCollector(_config(feeds=["https://hang.example/feed", "https://ok.example/feed"]))
-        calls: list[str] = []
+        # One feed that never answers (every attempt times out) loses only its own items.
+        c = RSSCollector(
+            _config(
+                feeds=["https://hang.example/feed", "https://ok.example/feed"],
+                request_timeout=1,
+                max_retries=1,
+                retry_backoff_sec=0,
+            )
+        )
 
-        async def _timeout_first(awaitable, timeout):
-            # wait_for is called once per feed, in feed order.
-            if len(calls) == 0:
-                calls.append("hang")
+        def _parse(url):
+            if "hang" in url:
+                time.sleep(3)
+            return _feed([_entry()])
+
+        with patch("collectors.rss.feedparser.parse", side_effect=_parse):
+            items = await c.collect()
+        assert len(items) == 1  # the healthy feed still delivered
+
+    @pytest.mark.asyncio
+    async def test_transient_status_is_retried_then_succeeds(self):
+        # A single 503 used to lose that feed's whole day of items. It is retried instead;
+        # the retry list is the YouTube collector's, so 429/5xx retry and 403/404 do not.
+        c = RSSCollector(_config(max_retries=3, retry_backoff_sec=0))
+        responses = [_feed([], status=503), _feed([_entry()])]
+
+        def _parse(_url):
+            return responses.pop(0)
+
+        with patch("collectors.rss.feedparser.parse", side_effect=_parse):
+            items = await c.collect()
+        assert len(items) == 1
+        assert responses == []  # both the failed attempt and the retry ran
+
+    @pytest.mark.asyncio
+    async def test_transient_status_exhausted_still_fails_the_source(self):
+        # Retries must not paper over a real outage: an exhausted chain still raises, so an
+        # all-feeds-down run reports FAILED rather than a silent empty digest.
+        c = RSSCollector(
+            _config(feeds=["https://a.example/feed", "https://b.example/feed"], max_retries=2, retry_backoff_sec=0)
+        )
+        with patch("collectors.rss.feedparser.parse", return_value=_feed([], status=503)) as parse:
+            with pytest.raises(RuntimeError, match="returned 503"):
+                await c.collect()
+        assert parse.call_count == 4  # 2 feeds x 2 attempts
+
+    @pytest.mark.asyncio
+    async def test_permanent_status_is_not_retried(self):
+        c = RSSCollector(_config(max_retries=3, retry_backoff_sec=0))
+        with patch("collectors.rss.feedparser.parse", return_value=_feed([], status=403)) as parse:
+            with pytest.raises(RuntimeError, match="Failed RSS feed"):
+                await c.collect()
+        assert parse.call_count == 1  # a verdict, not a blip
+
+    @pytest.mark.asyncio
+    async def test_hung_feed_is_retried_with_a_full_timeout_each_attempt(self):
+        # The retry wraps the timeout, so every attempt gets its own request_timeout instead of
+        # sharing one budget; a feed that answers on the second try still delivers.
+        c = RSSCollector(_config(max_retries=3, retry_backoff_sec=0))
+        timeouts: list[int] = []
+        attempts = {"n": 0}
+
+        async def _timeout_then_pass(awaitable, timeout):
+            timeouts.append(timeout)
+            attempts["n"] += 1
+            if attempts["n"] == 1:
                 awaitable.close()
                 raise TimeoutError
-            calls.append("ok")
             return await awaitable
 
         with patch("collectors.rss.feedparser.parse", return_value=_feed([_entry()])):
-            with patch("collectors.rss.asyncio.wait_for", side_effect=_timeout_first):
+            with patch("collectors.rss.asyncio.wait_for", side_effect=_timeout_then_pass):
                 items = await c.collect()
-        assert len(items) == 1  # the healthy feed still delivered
+        assert len(items) == 1
+        assert timeouts == [c.config.request_timeout, c.config.request_timeout]
 
     @pytest.mark.asyncio
     async def test_bozo_with_entries_still_parses(self):

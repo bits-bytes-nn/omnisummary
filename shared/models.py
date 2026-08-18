@@ -4,11 +4,12 @@ import hashlib
 import re
 from datetime import UTC, date, datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .constants import SourceType
+from .logger import logger
 
 # An XML/HTML-style tag: needs a letter after '<' and a closing '>', so prose like "<2%" survives.
 _MARKUP_TAG_RE = re.compile(r"</?[A-Za-z][\w:-]*(?:\s[^<>]*?)?/?>")
@@ -106,13 +107,19 @@ class VisualBrief(BaseModel):
         form of a recurring structured-output slip: the model runs the next field into the previous
         string. A 2026-08-18 local run produced the TAG-LESS form — a caption ending in a bare
         `\\nportrait` — which the markup strip above cannot see. The rule is derived, not a word
-        list: a prose field must not END with the literal value of another field, and only a
-        standalone final line counts, so prose that merely contains the word survives."""
+        list: a prose field must not END with a standalone line that is one of the orientation
+        field's ALLOWED values, so prose that merely contains the word survives.
+
+        Compared against every value of the Literal, not just the parsed `orientation`: on 08-17 the
+        bled word was 'landscape' while orientation had fallen back to the default 'portrait', so a
+        self-comparison did not match and the leak was published."""
+        candidates = {v.casefold() for v in get_args(type(self).model_fields["orientation"].annotation)}
         for name in ("title", "caption"):
             value = getattr(self, name)
             head, sep, last = value.rpartition("\n")
-            if sep and last.strip().casefold() == self.orientation.casefold():
+            if sep and last.strip().casefold() in candidates:
                 setattr(self, name, head.strip())
+                logger.warning("Dropped a bled '%s' value from VisualBrief.%s", last.strip(), name)
         return self
 
 

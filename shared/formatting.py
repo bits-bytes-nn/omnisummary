@@ -82,11 +82,41 @@ def agi_countdown_intro(date_str: str, template: str, today: date, after_templat
     return ""
 
 
+COUNTDOWN_SUFFIX_SEPARATOR = "\n\n"
+
+
+def place_countdown_intro(lead: str, intro: str, position: str = "prefix") -> str:
+    """Attach the countdown gag to the lead at the configured end, verbatim and idempotently.
+
+    "suffix" puts it on its own closing line so the lead's FIRST line is the day's actual angle
+    (40 consecutive Threads roots opened with the identical countdown sentence). Returns the lead
+    unchanged when there is no intro, or when it is already attached at that end."""
+    if not intro or not lead:
+        return lead
+    if position == "suffix":
+        tail = intro.strip()
+        body = lead.rstrip()
+        if not tail or body.endswith(tail):
+            return lead
+        return f"{body}{COUNTDOWN_SUFFIX_SEPARATOR}{tail}"
+    return lead if lead.startswith(intro) else intro + lead
+
+
 def editorial_lead(lead: str, intro: str) -> str:
-    """The lead with the AGI-countdown prefix removed, leaving only the editorial angle. Callers
-    that reason about the ANGLE (recent-leads novelty, the visual's take) want this rather than
-    the raw lead, whose first clause is the same fixed daily template every single day."""
-    return lead[len(intro) :].lstrip() if intro and lead.startswith(intro) else lead
+    """The lead with the AGI-countdown gag removed from EITHER end, leaving only the editorial
+    angle. Callers that reason about the ANGLE (recent-leads novelty, the visual's take) want this
+    rather than the raw lead, one end of which is the same fixed daily template every single day.
+    Both ends are handled because the gag's position is configurable, and a stored lead can predate
+    a change to that setting."""
+    if not intro:
+        return lead
+    if lead.startswith(intro):
+        return lead[len(intro) :].lstrip()
+    tail = intro.strip()
+    body = lead.rstrip()
+    if tail and body.endswith(tail):
+        return body[: -len(tail)].rstrip()
+    return lead
 
 
 def normalize_title(title: str) -> str:

@@ -42,6 +42,15 @@ class TestLocalMemoryStore:
         store = LocalMemoryStore(tmp_path)
         assert store.get_latest_digest() is None
 
+    def test_get_digest_by_date(self, tmp_path):
+        # The visual Lambda must publish the date it was fired for, not whatever is newest:
+        # 'load latest' published yesterday's stories when today's snapshot was missing.
+        store = LocalMemoryStore(tmp_path)
+        store.put_digest("2026-06-01", {"a": 1})
+        store.put_digest("2026-06-02", {"a": 2})
+        assert store.get_digest("2026-06-01") == {"a": 1}
+        assert store.get_digest("2026-06-03") is None
+
     def test_get_recent_digests_newest_first_and_capped(self, tmp_path):
         store = LocalMemoryStore(tmp_path)
         for d in ("2026-06-05", "2026-06-06", "2026-06-07"):
@@ -194,3 +203,33 @@ class TestAgentCoreMemoryStore:
         }
         recent = store.get_recent_digests(10, exclude_date="2026-06-09", after_date="2026-06-05")
         assert [r["sid"] for r in recent] == ["digest-2026-06-08", "digest-2026-06-07"]
+
+
+class TestAgentCoreGetDigestByDate:
+    def _store(self):
+        with patch("shared.memory.boto3.client") as mock_client:
+            client = MagicMock()
+            mock_client.return_value = client
+            store = AgentCoreMemoryStore("mem-1", region_name="us-west-2")
+        return store, client
+
+    def test_reads_the_session_for_that_date(self):
+        store, client = self._store()
+        client.list_events.return_value = {
+            "events": [{"payload": [{"conversational": {"content": {"text": '{"a": 1}'}}}]}]
+        }
+        assert store.get_digest("2026-08-17") == {"a": 1}
+        # Addressed directly by session id — never a list-then-compare-generated_at (that field is
+        # UTC and disagrees with the KST digest date on every pre-09:00 KST run).
+        assert client.list_events.call_args.kwargs["sessionId"] == "digest-2026-08-17"
+        client.list_sessions.assert_not_called()
+
+    def test_missing_session_is_none_not_a_stale_fallback(self):
+        store, client = self._store()
+        client.list_events.return_value = {"events": []}
+        assert store.get_digest("2026-08-17") is None
+
+    def test_api_failure_is_none(self):
+        store, client = self._store()
+        client.list_events.side_effect = RuntimeError("throttled")
+        assert store.get_digest("2026-08-17") is None

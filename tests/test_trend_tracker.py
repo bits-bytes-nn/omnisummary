@@ -7,6 +7,7 @@ import pytest
 from pipeline.trend_tracker import TRENDS_KEY, TrendTracker
 from shared.config import PipelineConfig
 from shared.models import Trend, TrendEvidence, TrendMemory, TrendStatus
+from shared.state_store import StateReadError
 
 
 class _FakeStore:
@@ -240,6 +241,37 @@ class TestLoadRecovery:
         memory = tracker._load_memory()
         ids = {t.id for t in memory.trends}
         assert "good" in ids
+
+
+class TestUnreadableTrendStateIsNotEmptyState:
+    """A throttled/denied read used to look exactly like "no trends yet", and update_trends then
+    OVERWROTE trends.json with just today's observations — losing every accumulated thread."""
+
+    class _UnreadableStore:
+        def __init__(self) -> None:
+            self.writes: dict[str, str] = {}
+
+        def read(self, key: str) -> str | None:
+            raise StateReadError(f"cannot read {key}")
+
+        def write(self, key: str, content: str) -> None:
+            self.writes[key] = content
+
+        def exists(self, key: str) -> bool:
+            raise StateReadError(f"cannot stat {key}")
+
+    def test_load_degrades_without_raising(self):
+        tracker = TrendTracker(PipelineConfig(), MagicMock(), self._UnreadableStore())
+        assert tracker._load_memory().trends == []
+        assert tracker.get_trends_context(today=date(2026, 6, 10)) == ""
+
+    @pytest.mark.asyncio
+    async def test_update_does_not_persist_a_blank_memory(self, monkeypatch):
+        store = self._UnreadableStore()
+        obs = [{"trend_id": "", "new_title": "Open Weight Models", "summary": "Meta released a model."}]
+        tracker = _patched_tracker(store, obs, monkeypatch)
+        await tracker.update_trends("digest", "2026-06-10")
+        assert store.writes == {}
 
 
 class TestGetTrendsContext:

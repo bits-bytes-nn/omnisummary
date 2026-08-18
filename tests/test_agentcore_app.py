@@ -169,6 +169,17 @@ class TestInvoke:
                 app_module.invoke({"prompt": "p", "channel_id": "C"})
         send.assert_called_once()
 
+    def test_failed_fallback_post_emits_the_error_metric(self):
+        # This is the last-resort path: if it raises, NOTHING reached the user on any channel. The
+        # entrypoint still returns text, so without the metric the lost report is invisible.
+        agent = self._agent("report text")
+        with patch.object(app_module, "create_research_agent", return_value=agent):
+            with patch.object(app_module, "_send_slack_message", side_effect=RuntimeError("rate limited")):
+                with patch.object(app_module, "_emit_agent_error_metric") as emit:
+                    result = app_module.invoke({"prompt": "p", "channel_id": "C"})
+        assert result == "report text"  # still answered, never raised
+        emit.assert_called_once()
+
 
 @pytest.fixture(autouse=True)
 def _reset_request_context():

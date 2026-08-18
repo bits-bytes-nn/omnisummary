@@ -19,9 +19,13 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     A failure is logged and RE-RAISED: a silent 500 body left the token quietly un-refreshed
     until Threads delivery broke 60 days later, because Lambda counts a returned error as a
     success (no Errors alarm, no DLQ message). The function runs with retry_attempts=0, so
-    re-raising cannot loop."""
+    re-raising cannot loop.
+
+    The token is resolved strictly: an SSM read failure raises instead of returning "", which this
+    handler would otherwise report as "no token configured, nothing to refresh" — a 200 that leaves
+    the real token to expire."""
     set_correlation_id(getattr(context, "aws_request_id", "") or None)
-    token = resolve_secret("THREADS_ACCESS_TOKEN", "threads-access-token")
+    token = resolve_secret("THREADS_ACCESS_TOKEN", "threads-access-token", strict=True)
     if not token:
         logger.info("No Threads access token configured, nothing to refresh")
         return {"statusCode": 200, "body": "no token"}

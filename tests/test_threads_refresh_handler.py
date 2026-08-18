@@ -12,6 +12,16 @@ class TestThreadsRefreshHandler:
         assert result["statusCode"] == 200
         assert result["body"] == "no token"
 
+    def test_resolves_the_token_strictly(self):
+        # An SSM outage used to come back as "" and be reported as "no token configured, nothing to
+        # refresh" — a 200 that quietly let the live token expire. strict=True makes it raise.
+        with patch.object(h, "resolve_secret", return_value="OLD") as rs:
+            with patch.object(h.httpx, "get") as get:
+                get.return_value.json.return_value = {"access_token": "NEW"}
+                with patch.object(h.boto3, "client"):
+                    h.handler({}, None)
+        assert rs.call_args.kwargs == {"strict": True}
+
     def test_refreshes_and_writes_back_to_ssm(self, monkeypatch):
         monkeypatch.setenv("PROJECT_NAME", "omnisummary")
         monkeypatch.setenv("STAGE", "dev")

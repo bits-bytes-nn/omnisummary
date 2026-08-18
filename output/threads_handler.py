@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 import boto3
 import httpx
@@ -33,6 +33,33 @@ THREADS_REPLY_RETRY_BACKOFF_SEC = 10
 # How long the hosted-image presigned URL stays valid — must outlast the
 # create-container + media-processing window with margin.
 THREADS_IMAGE_URL_TTL_SEC = 900
+
+
+class ThreadsDelivery(NamedTuple):
+    """How much of the intended post set actually landed. `posted`/`expected` count the ROOT plus
+    one per reply, so a 5-story digest is 6 expected posts.
+
+    Deliberately NOT a bool: "the root went up" and "the digest went up" are different outcomes,
+    and a partial reply chain (4 of 6 posts on 2026-07-17) used to be reported as plain success.
+    CALLERS: a NamedTuple is ALWAYS truthy, so never branch on the value itself — use `published`.
+    """
+
+    posted: int
+    expected: int
+
+    @property
+    def published(self) -> bool:
+        """True when what landed is usable: the root, plus at least one reply when replies were
+        intended. An all-replies-failed root is a lone image with no stories, never a digest."""
+        return self.posted > 1 if self.expected > 1 else self.posted > 0
+
+    @property
+    def partial(self) -> bool:
+        """Published, but some intended posts are missing — the reader sees a truncated chain."""
+        return self.published and self.posted < self.expected
+
+    def summary(self) -> str:
+        return f"{self.posted}/{self.expected} posts"
 
 
 def _upload_image_for_hosting(image_bytes: bytes, bucket: str, key: str, content_type: str = "image/png") -> str:
@@ -184,16 +211,22 @@ async def post_to_threads(
     image_key: str = "",
     image_content_type: str = "image/png",
     request_timeout: int = 60,
-) -> bool:
+) -> ThreadsDelivery:
     """Post a digest to Threads as a root post (image + lead) followed by a reply chain — one
     pre-rendered reply per story. Each reply is re-split here as a safety net so nothing exceeds
     the 500-char cap. Best-effort: missing credentials or any API failure is logged and skipped,
-    never raising to the caller."""
+    never raising to the caller.
+
+    Returns a ThreadsDelivery (posted, expected) count — NOT a bool, so a partial reply chain is
+    distinguishable from a complete post. Branch on `.published`, never on the value itself."""
+    expected = 1 + len([r for r in (replies or []) if r.strip()])
     token = resolve_secret("THREADS_ACCESS_TOKEN", "threads-access-token")
     user_id = resolve_secret("THREADS_USER_ID", "threads-user-id")
     if not token or not user_id:
-        logger.info("Threads access token / user id not configured. Skipping Threads delivery.")
-        return False
+        # ERROR, not INFO: with enable_threads_post on, empty credentials mean the day's digest is
+        # NOT delivered anywhere. That read as a routine "skipping" line in the logs.
+        logger.error("Threads access token / user id not configured — digest NOT delivered to Threads")
+        return ThreadsDelivery(0, expected)
 
     image_url = ""
     if image_bytes and image_bucket and image_key:
@@ -241,24 +274,25 @@ async def post_to_threads(
                     )
                 except Exception as e:
                     logger.warning("Threads reply %d/%d failed, continuing: %s", i, len(posts), e)
-        # If there were stories to post but NONE landed (e.g. the image root never indexed within
-        # the budget), the digest is a lone image with no stories. Report failure so the caller's
-        # ledger rollback keeps the day retryable instead of marking a broken digest "posted".
-        if posts and posted == 0:
-            logger.warning("Threads root posted but all %d reply posts failed — reporting failure", len(posts))
-            return False
+        outcome = ThreadsDelivery(1 + posted, expected)
         # Say what actually happened. "Successfully posted digest ... (0/0 reply posts)" was logged
         # on the two days the digest shipped with no stories at all, so the logs read green while
         # the post was broken. A reply-less root is legitimate for a single research report, but it
         # is never a digest, so don't call it one.
-        if posts:
-            logger.info("Posted Threads root '%s' with %d/%d replies", root_id, posted, len(posts))
-        else:
+        if not posts:
             logger.info("Posted Threads root '%s' with no replies", root_id)
-        return True
+        elif not outcome.published:
+            # Every reply failed (e.g. the image root never indexed within the budget): a lone
+            # image with no stories. The caller's ledger rollback keeps the day retryable.
+            logger.error("Threads root '%s' posted but ALL %d reply posts failed", root_id, len(posts))
+        elif outcome.partial:
+            logger.error("Threads digest posted PARTIALLY: %s (reply chain is incomplete)", outcome.summary())
+        else:
+            logger.info("Posted Threads root '%s' with %d/%d replies", root_id, posted, len(posts))
+        return outcome
     except httpx.HTTPStatusError as e:
         logger.warning("Threads API error: %s — %s", e.response.status_code, e.response.text[:300])
-        return False
+        return ThreadsDelivery(0, expected)
     except Exception as e:
         logger.warning("Unexpected error posting to Threads: %s", e)
-        return False
+        return ThreadsDelivery(0, expected)

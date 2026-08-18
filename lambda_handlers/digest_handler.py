@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -25,9 +25,10 @@ DIGEST_ITEMS_METRIC = "DigestItemsPublished"
 
 
 def _emit_digest_items_metric(count: int) -> None:
-    """Emit the published-item count as a CloudWatch EMF metric on stdout. A CDK alarm fires
-    when this is 0 or missing — catching the 'ran clean but produced an empty digest' (or didn't
-    run at all) failure that no error/timeout alarm would surface."""
+    """Emit the number of STORIES the digest carries as a CloudWatch EMF metric on stdout. A CDK
+    alarm fires when this is 0 or missing — catching the 'ran clean but produced an empty digest'
+    (or didn't run at all) failure that no error/timeout alarm would surface. It must count the
+    curated digest items, never the ranker's candidate list, or an empty digest reads as full."""
     emf = {
         "_aws": {
             "Timestamp": int(datetime.now().timestamp() * 1000),
@@ -110,32 +111,41 @@ async def _run() -> None:
 
     result = await run_pipeline(config, llm_factory, collected_items, digest_date=digest_date)
 
-    published = len(result[1]) if result and result[1] else 0
-    _emit_digest_items_metric(published)
+    items, ranked_items, digest = result
+    # Count the STORIES the digest actually carries (the curated content items), not the ranker's
+    # candidate list: on 2026-08-13/08-17 the editor's output failed to parse and the digest shipped
+    # zero stories, yet this metric reported the full candidate count and the alarm stayed green.
+    content_items = digest.content.items if digest and digest.content else []
+    _emit_digest_items_metric(len(content_items))
 
-    if result:
-        items, ranked_items, digest = result
-        if items and ranked_items and digest:
-            # Persist for the follow-up agent. A persistence failure must NOT abort the
-            # run or block the daily visual — the Slack digest is already sent by now.
-            try:
-                # base_dir=None → AgentCore-backed memory store in AWS.
-                persist_digest(items, ranked_items, digest, digest_date, base_dir=None)
-            except Exception:
-                logger.error("Failed to persist digest state (non-fatal)", exc_info=True)
-            _trigger_visual()
+    if items and ranked_items and digest:
+        try:
+            # base_dir=None → AgentCore-backed memory store in AWS.
+            persist_digest(items, ranked_items, digest, digest_date, base_dir=None)
+        except Exception as e:
+            # The visual Lambda publishes off this snapshot and is the only Threads delivery path,
+            # so a failed persist means the day produces NOTHING. Don't trigger the visual (it
+            # would load an older date and re-publish stale content) and fail LOUD: re-raising is
+            # what fires the Errors alarm and lands the invoke in the DLQ for replay.
+            # retry_attempts=0, so this cannot re-run the pipeline.
+            logger.error("Failed to persist digest state; visual/Threads delivery skipped", exc_info=True)
+            raise RuntimeError(f"Digest snapshot persist failed for {digest_date}: {e}") from e
+        _trigger_visual(digest_date)
 
     logger.info("Digest pipeline completed for %s", digest_date)
 
 
-def _trigger_visual() -> None:
-    """Fire the daily-visual Lambda asynchronously so its ~1-2 min of work doesn't
-    count against the digest Lambda's 15-min timeout. Best-effort."""
+def _trigger_visual(digest_date: date) -> None:
+    """Fire the daily-visual Lambda asynchronously so its ~1-2 min of work doesn't count against
+    the digest Lambda's 15-min timeout. The digest date is passed EXPLICITLY so the visual publishes
+    the snapshot this run produced, instead of re-deriving a clock that may have rolled over (or
+    reading whatever snapshot happens to be newest). Best-effort."""
     fn = os.environ.get("VISUAL_FUNCTION_NAME", "")
     if not fn:
         return
+    payload = json.dumps({"digest_date": digest_date.isoformat()}).encode()
     try:
-        boto3.client("lambda").invoke(FunctionName=fn, InvocationType="Event", Payload=b"{}")
-        logger.info("Triggered visual Lambda '%s'", fn)
+        boto3.client("lambda").invoke(FunctionName=fn, InvocationType="Event", Payload=payload)
+        logger.info("Triggered visual Lambda '%s' for %s", fn, digest_date)
     except Exception as e:
         logger.warning("Failed to trigger visual Lambda: %s", e)

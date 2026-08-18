@@ -1,10 +1,11 @@
 import tempfile
 from unittest.mock import MagicMock, patch
 
+import pytest
 from botocore.exceptions import ClientError
 
 from shared.config import Config
-from shared.state_store import LocalStateStore, S3StateStore, create_state_store
+from shared.state_store import LocalStateStore, S3StateStore, StateReadError, create_state_store
 
 
 def _s3_session(client: MagicMock) -> MagicMock:
@@ -37,6 +38,14 @@ class TestLocalStateStore:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = LocalStateStore(tmpdir)
             assert store.read("nonexistent.txt") is None
+
+    def test_unreadable_file_raises_instead_of_reading_as_empty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LocalStateStore(tmpdir)
+            store.write("k.json", "[]")
+            with patch("pathlib.Path.read_text", side_effect=OSError("EIO")):
+                with pytest.raises(StateReadError):
+                    store.read("k.json")
 
     def test_nested_key(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -93,15 +102,19 @@ class TestS3StateStore:
         store = S3StateStore(_s3_session(client), "bkt")
         assert store.read("trends.json") is None
 
-    def test_other_client_error_reads_none_and_warns(self):
-        # A denied/throttled read must degrade to "no state" (the caller starts a fresh trend
-        # memory) rather than crashing the digest — but it must be logged, not silent.
+    def test_other_client_error_is_distinguishable_from_no_history(self):
+        # Regression: a denied/throttled GET returned None, exactly like "the key isn't there".
+        # Every consumer then treated the history as empty and its next read-modify-write PERSISTED
+        # that emptiness. An unreadable store must be its own, typed answer.
         client = MagicMock()
         client.get_object.side_effect = ClientError({"Error": {"Code": "AccessDenied"}}, "GetObject")
         store = S3StateStore(_s3_session(client), "bkt")
-        with patch("shared.state_store.logger.warning") as warn:
-            assert store.read("trends.json") is None
-        assert warn.called
+        with patch("shared.state_store.logger.error") as err:
+            with pytest.raises(StateReadError):
+                store.read("trends.json")
+        assert err.called
+        with pytest.raises(StateReadError):
+            store.read_json("trends.json", default={})
 
     def test_exists_true_and_false(self):
         client = MagicMock()
@@ -109,6 +122,15 @@ class TestS3StateStore:
         assert store.exists("trends.json") is True
         client.head_object.side_effect = ClientError({"Error": {"Code": "404"}}, "HeadObject")
         assert store.exists("trends.json") is False
+
+    def test_exists_raises_on_a_real_failure(self):
+        # A denied HEAD used to read as "no such key", so the caller started a fresh trend memory
+        # and then overwrote the real one.
+        client = MagicMock()
+        client.head_object.side_effect = ClientError({"Error": {"Code": "AccessDenied"}}, "HeadObject")
+        store = S3StateStore(_s3_session(client), "bkt")
+        with pytest.raises(StateReadError):
+            store.exists("trends.json")
 
     def test_read_json_parses_stored_json(self):
         client = MagicMock()

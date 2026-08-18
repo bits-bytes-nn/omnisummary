@@ -270,3 +270,63 @@ class TestApplicationStack:
             "AWS::ApiGateway::Stage",
             {"MethodSettings": Match.array_with([Match.object_like({"ThrottlingRateLimit": Match.any_value()})])},
         )
+
+
+class TestLeastPrivilegeGrants:
+    """The pipeline role held s3:* on the WHOLE bucket (which can be a pre-existing shared one) and
+    lambda:InvokeFunction on every {project}-{stage}-* function, including the internet-facing Slack
+    handler. Both are scoped down."""
+
+    @pytest.fixture(scope="class")
+    def prefixed_foundation(self):
+        config = Config.from_yaml(str(CONFIG_TEMPLATE))
+        config.aws.state_bucket_name = ""
+        config.aws.s3_prefix = "omnisummary"
+        app = App()
+        stack = OmniSummaryFoundationStack(
+            app,
+            "fnd-prefixed",
+            config=config,
+            env=Environment(account="123456789012", region=config.aws.region),
+        )
+        return Template.from_stack(stack)
+
+    @staticmethod
+    def _statements(template):
+        for policy in template.find_resources("AWS::IAM::Policy").values():
+            yield from policy["Properties"]["PolicyDocument"]["Statement"]
+
+    def test_object_access_is_scoped_to_the_project_prefix(self, prefixed_foundation):
+        object_arns = [
+            json.dumps(r)
+            for stmt in self._statements(prefixed_foundation)
+            for a in (stmt["Action"] if isinstance(stmt["Action"], list) else [stmt["Action"]])
+            if a.startswith("s3:GetObject") or a.startswith("s3:PutObject")
+            for r in (stmt["Resource"] if isinstance(stmt["Resource"], list) else [stmt["Resource"]])
+        ]
+        keyspaces = [arn for arn in object_arns if "/*" in arn]
+        assert keyspaces, "expected S3 object grants"
+        # Every object key space must carry the project prefix — state_store's digest_state, the
+        # collectors' park files and the daily visual's Threads images all live under it. A bare
+        # "<bucket>/*" would be the whole (possibly shared, pre-existing) bucket. The bucket-level
+        # ARN itself stays for List, which CDK adds and which is deliberately left alone.
+        assert all('"/omnisummary/*"' in arn for arn in keyspaces), keyspaces
+
+    def test_invoke_function_is_scoped_to_the_visual_function(self, templates):
+        foundation, _ = templates
+        invoke_resources = [
+            stmt["Resource"]
+            for stmt in self._statements(foundation)
+            if "lambda:InvokeFunction" in (stmt["Action"] if isinstance(stmt["Action"], list) else [stmt["Action"]])
+        ]
+        rendered = json.dumps(invoke_resources)
+        assert "function:omnisummary-dev-visual" in rendered
+        assert "function:omnisummary-dev-*" not in rendered
+
+    def test_visual_lambda_can_publish_the_delivery_alert(self, templates):
+        # The visual Lambda is the Threads publish path, so it is what notices a partial reply
+        # chain; without the topic ARN in its env the notice is a silent no-op.
+        _, app = templates
+        funcs = app.find_resources("AWS::Lambda::Function")
+        visual = next(v for v in funcs.values() if v["Properties"].get("FunctionName") == "omnisummary-dev-visual")
+        assert "ALERT_SNS_TOPIC_ARN" in visual["Properties"]["Environment"]["Variables"]

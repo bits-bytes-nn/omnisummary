@@ -74,6 +74,10 @@ collectors:
 pipeline:
   top_n: 5
   min_score: 0.6
+  # Where the AGI-countdown gag sits in the lead: "prefix" spends the Threads root's FIRST line —
+  # the only line most feed readers see — on the same fixed sentence every day. "suffix" keeps the
+  # gag verbatim but moves it to a closing line, so the first line is the day's actual angle.
+  agi_countdown_position: "suffix"
   ranking_model: "anthropic.claude-opus-4-8"
   digest_model: "anthropic.claude-sonnet-5"
   item_text_max_tokens: 10000

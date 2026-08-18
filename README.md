@@ -107,7 +107,13 @@ S3_SYNC_ACCESS_KEY_ID=...          # optional — dedicated creds for the local�
 S3_SYNC_SECRET_ACCESS_KEY=...
 ```
 
-> Secrets are **never baked into images**. For AWS, `scripts/deploy.py` reads these from `.env` and CDK writes them to SSM Parameter Store (`/{project}/{stage}/<name>`); the Lambdas/agent resolve them at runtime via `resolve_secret()` (env → SSM). Update a secret by re-deploying, or edit the SSM parameter directly.
+> Secrets are **never baked into images and never pass through the CDK stack** (a CloudFormation
+> template cannot hold a SecureString, so the stack would publish them in plaintext). The stack only
+> creates the parameter paths `/{project}/{stage}/<name>` holding a placeholder;
+> `scripts/put_secrets.py` writes the real values from `.env` as SecureStrings **after** the deploy,
+> and the Lambdas/agent resolve them at runtime via `resolve_secret()` (env → SSM). Update a secret by
+> editing `.env` and re-running `put_secrets.py` (or by editing the SSM parameter directly) — a
+> re-deploy does **not** write secrets. See [Secrets](#secrets).
 
 ### Setup Checklist
 
@@ -256,7 +262,8 @@ Deploy through the repo-pinned CDK CLI (`npm install` once, then `npx cdk`) — 
 npm install                                       # once — installs the pinned CDK CLI locally
 export DIGEST_IMAGE_REF=sha256:<pushed-digest>    # AGENTCORE_IMAGE_REF defaults to :arm64
 AWS_PROFILE=<profile> npx cdk deploy --all -a "uv run python scripts/deploy.py"
-AWS_PROFILE=<profile> uv run python scripts/put_secrets.py   # then write the secrets
+AWS_PROFILE=<profile> uv run python scripts/put_secrets.py            # then write the secrets
+AWS_PROFILE=<profile> uv run python scripts/put_secrets.py --verify   # read-only: any left unset?
 ```
 
 ### Secrets
@@ -271,7 +278,7 @@ writes the real values as SecureStrings from your `.env` (run it after every fir
 `--dry-run` previews). Re-deploys do not clobber them — CloudFormation only updates a resource
 whose template properties changed, and the placeholder never changes.
 
-Two behaviours worth knowing:
+Behaviours worth knowing:
 - Parameters that are **already SecureStrings are skipped**. The Threads access token is rotated in
   place by the refresh Lambda, so writing the local `.env` copy back would restore an expired
   token. Use `--force` only when you really mean to overwrite the live value.
@@ -279,6 +286,15 @@ Two behaviours worth knowing:
   working parameter. `resolve_secret()` treats a parameter still holding the placeholder as unset,
   so a skipped `put_secrets.py` degrades to the normal missing-credential path instead of sending
   the placeholder to an API as a token.
+- **One parameter SSM refuses no longer aborts the run.** SSM rejects a `String` → `SecureString`
+  type change with `ValidationException`; the script then re-puts the value **without `Type`** (so the
+  value lands on the existing String parameter, exactly what the refresh Lambda does), prints the
+  `aws ssm delete-parameter` line that lets you make it a SecureString, and continues with the
+  remaining secrets. Any parameter that could not be written at all is listed under `FAILED` and the
+  script exits non-zero. Previously the first rejection ended the loop and every later secret was
+  silently left on its placeholder — which reads as "unset" at runtime.
+- `--verify` is a read-only report of which parameters are set, which still hold the placeholder and
+  which are missing (exit code 1 if any). Safe to run against prod at any time.
 
 The X/Twitter session cookies reach the RSSHub Fargate container through the task definition's
 `secrets` block (parameter ARN in the template, value fetched by the ECS agent at task start).

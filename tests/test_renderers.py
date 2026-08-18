@@ -191,6 +191,31 @@ class TestThreadsPosts:
         assert len(root) <= THREADS_MAX_POST_CHARS
         assert not root.endswith("가나")  # cut on a space, never mid-word
 
+    def test_lead_trim_keeps_the_final_line(self):
+        # With the AGI countdown configured as a SUFFIX it rides the lead's last line, and trimming
+        # drops sentences from the end — so the trim must never be what eats it.
+        lead = "첫 문장이다. " + "가나다라마바사 이것은 문장이다. " * 40 + "\n\nAGI 등장 870일 전이다."
+        root, _ = render_threads_posts(_content(1, lead=lead))
+        assert len(root) <= THREADS_MAX_POST_CHARS
+        assert root.endswith("AGI 등장 870일 전이다.")
+        assert root.startswith("첫 문장이다.")
+
+    def test_lead_trim_warns(self):
+        # A trimmed lead means the editor overran its prose budget: visible, not silent.
+        from unittest.mock import patch
+
+        with patch("output.renderers.logger") as log:
+            render_threads_posts(_content(1, lead="긴 문장이다. " * 100))
+        assert log.warning.called
+
+    def test_short_lead_is_untouched(self):
+        from unittest.mock import patch
+
+        with patch("output.renderers.logger") as log:
+            root, _ = render_threads_posts(_content(1, lead="짧은 리드다.\n\nAGI 등장 870일 전이다."))
+        assert root == "짧은 리드다.\n\nAGI 등장 870일 전이다."
+        log.warning.assert_not_called()
+
 
 class TestAgentBlocks:
     def test_wraps_text_in_section(self):
@@ -280,39 +305,58 @@ class TestStripSlackMrkdwn:
 class TestThreadsResearch:
     def test_root_and_replies_under_cap(self):
         report = "\n\n".join(["문장 하나다. " * 20 for _ in range(4)])
-        root, replies = render_threads_research(report)
+        root, replies, *_ = render_threads_research(report)
         assert len(root) <= THREADS_MAX_POST_CHARS
         assert all(len(r) <= THREADS_MAX_POST_CHARS for r in replies)
         assert len(replies) >= 1
 
     def test_strips_markdown_for_threads(self):
-        root, replies = render_threads_research("리드 *굵게* 본문이다. <https://x.com|링크> 참고하라.")
+        root, replies, *_ = render_threads_research("리드 *굵게* 본문이다. <https://x.com|링크> 참고하라.")
         joined = root + " " + " ".join(replies)
         assert "*" not in joined
         assert "<https" not in joined
         assert "링크 (https://x.com)" in joined
 
+    def test_reports_dropped_and_trimmed_counts(self):
+        # The renderer used to drop/trim silently, so the agent reported a truncated report as
+        # "Delivered the report". The counts now ride back with the render.
+        report = "\n---\n".join(f"{i}/30 소제목\n\n섹션 {i} 문장이다." for i in range(30))
+        render = render_threads_research(report, max_posts=8)
+        assert render.rendered == 8
+        assert render.dropped == 22
+        assert render.trimmed == 0
+
+        oversize = "1/2 소제목\n\n" + "이것은 아주 긴 문장이다. " * 60 + "\n---\n2/2 짧다."
+        render = render_threads_research(oversize, max_posts=8)
+        assert render.trimmed == 1
+        assert render.dropped == 0
+
+    def test_complete_render_reports_nothing_lost(self):
+        render = render_threads_research("1/2 소제목\n\n본문이다.\n---\n2/2 마무리다.", max_posts=8)
+        assert (render.dropped, render.trimmed) == (0, 0)
+        assert render.rendered == 2
+
     def test_max_posts_caps_total_count(self):
         # A long report must not fan out past the cap (root + replies <= max_posts).
         report = "\n\n".join(f"섹션 {i} 문장이다. " * 8 for i in range(30))
-        root, replies = render_threads_research(report, max_posts=8)
+        root, replies, *_ = render_threads_research(report, max_posts=8)
         assert 1 + len(replies) <= 8
         # no Slack pointer — the Threads post stands on its own
         assert "Slack" not in (root + " ".join(replies))
 
     def test_no_cap_when_max_posts_zero(self):
         report = "\n\n".join(f"섹션 {i} 문장이다. " * 8 for i in range(30))
-        _, replies = render_threads_research(report, max_posts=0)
+        _, replies, *_ = render_threads_research(report, max_posts=0)
         assert 1 + len(replies) > 8  # uncapped
 
     def test_oversize_sentence_word_trimmed(self):
         report = "단어 " * 400  # one giant "sentence" with no terminator, >500 chars
-        root, replies = render_threads_research(report)
+        root, replies, *_ = render_threads_research(report)
         assert len(root) <= THREADS_MAX_POST_CHARS
         assert all(len(r) <= THREADS_MAX_POST_CHARS for r in replies)
 
     def test_short_report_single_root_no_replies(self):
-        root, replies = render_threads_research("짧은 보고서다.")
+        root, replies, *_ = render_threads_research("짧은 보고서다.")
         assert root == "짧은 보고서다."
         assert replies == []
 
@@ -320,7 +364,7 @@ class TestThreadsResearch:
         # Two substantial sections (each above the root-merge threshold) stay as separate posts.
         a = "첫째 문단이다. " * 10
         b = "둘째 문단이다. " * 10
-        root, replies = render_threads_research(f"{a}\n\n{b}")
+        root, replies, *_ = render_threads_research(f"{a}\n\n{b}")
         assert root.startswith("첫째")
         assert any(r.startswith("둘째") for r in replies)
 
@@ -328,7 +372,7 @@ class TestThreadsResearch:
         # When the agent marks boundaries with '---', each block is ONE post — number + heading +
         # body stay together, not split on the internal blank line.
         report = "1/2 첫 포스트 본문이다.\n\n부연 설명이다.\n---\n2/2 둘째 포스트 본문이다."
-        root, replies = render_threads_research(report, max_posts=8)
+        root, replies, *_ = render_threads_research(report, max_posts=8)
         assert root.startswith("1/2")
         assert "부연 설명이다." in root  # stayed in the same post despite the blank line
         assert len(replies) == 1
@@ -339,7 +383,7 @@ class TestThreadsResearch:
         # out — so the 'N/M 소제목' line never orphans and the post count matches the agent's.
         heading = "3/4 마스터카드의 전략"
         big = heading + "\n\n" + "문장이다. " * 120  # >500 chars, multiple body sentences
-        root, replies = render_threads_research(f"{big}\n---\n4/4 끝이다.", max_posts=8)
+        root, replies, *_ = render_threads_research(f"{big}\n---\n4/4 끝이다.", max_posts=8)
         assert root.startswith(heading)  # heading stays attached to its body, not orphaned
         assert len(root) <= THREADS_MAX_POST_CHARS
         assert len(replies) == 1  # exactly the agent's 2 posts → 1 root + 1 reply, no fan-out
@@ -349,7 +393,7 @@ class TestThreadsResearch:
     def test_long_sentence_preserves_trailing_url(self):
         # Regression: an over-length sentence ending in a citation URL must keep the URL.
         long = "이것은 매우 긴 문장이다 " * 30 + "출처는 https://arxiv.org/abs/2401.00001 이다"
-        root, replies = render_threads_research(long)
+        root, replies, *_ = render_threads_research(long)
         joined = root + " " + " ".join(replies)
         assert "https://arxiv.org/abs/2401.00001" in joined
         assert len(root) <= THREADS_MAX_POST_CHARS
@@ -358,7 +402,7 @@ class TestThreadsResearch:
         # Regression: a delimited post whose HEADING line alone exceeds 500 chars must still be
         # trimmed to <=500 (the heading-only-overflow branch), never returned over-cap.
         huge_heading = "가" * 600
-        root, replies = render_threads_research(f"{huge_heading}\n\n짧은 본문이다.\n---\n2/2 다음이다.")
+        root, replies, *_ = render_threads_research(f"{huge_heading}\n\n짧은 본문이다.\n---\n2/2 다음이다.")
         assert len(root) <= THREADS_MAX_POST_CHARS
         assert all(len(r) <= THREADS_MAX_POST_CHARS for r in replies)
 
@@ -367,13 +411,13 @@ class TestThreadsResearch:
         # on the LAST body sentence even as earlier sentences are kept and the post is trimmed.
         url = "https://arxiv.org/abs/2406.12345"
         body = "이것은 본문 문장이다. " * 40 + f"핵심 출처는 {url} 이다."
-        root, replies = render_threads_research(f"1/2 긴 섹션\n\n{body}\n---\n2/2 짧은 마무리다.")
+        root, replies, *_ = render_threads_research(f"1/2 긴 섹션\n\n{body}\n---\n2/2 짧은 마무리다.")
         assert len(root) <= THREADS_MAX_POST_CHARS
         assert url in root  # citation on the trailing sentence survives the trim
 
     def test_leading_delimiter_does_not_contaminate_first_post(self):
         # A "---" as the report's very first line must be stripped, not baked into the root post.
-        root, replies = render_threads_research("---\n1/2 첫 포스트다.\n\n본문이다.\n---\n2/2 둘째다.")
+        root, replies, *_ = render_threads_research("---\n1/2 첫 포스트다.\n\n본문이다.\n---\n2/2 둘째다.")
         assert not root.startswith("---")
         assert root.startswith("1/2")
         assert len(replies) == 1
@@ -381,7 +425,7 @@ class TestThreadsResearch:
     def test_empty_report_returns_empty_root_no_replies(self):
         # An empty/whitespace report must yield ("", []) so the caller skips the Threads API
         # (an empty TEXT container 400s). Previously this returned a stray empty root.
-        root, replies = render_threads_research("   \n\n  ")
+        root, replies, *_ = render_threads_research("   \n\n  ")
         assert root == ""
         assert replies == []
 

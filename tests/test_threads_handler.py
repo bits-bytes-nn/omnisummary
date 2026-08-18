@@ -20,7 +20,7 @@ class TestPostToThreads:
     @pytest.mark.asyncio
     async def test_skips_without_credentials(self):
         with patch.object(threads_handler, "resolve_secret", return_value=""):
-            assert await post_to_threads(root_text="hi") is False
+            assert (await post_to_threads(root_text="hi")).published is False
 
     @pytest.mark.asyncio
     async def test_posts_flat_replies_under_root(self):
@@ -37,7 +37,7 @@ class TestPostToThreads:
             with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
                 ok = await post_to_threads(root_text="ROOT", replies=["reply one", "a" * 1100])
 
-        assert ok is True
+        assert ok.published is True
         assert len(published) == 3  # root + exactly 2 replies (one per input reply)
         assert published[0]["reply_to_id"] == "" and published[0]["text"] == "ROOT"
         # both replies point at the ROOT (id0), not at each other
@@ -53,7 +53,7 @@ class TestPostToThreads:
                     ok = await post_to_threads(
                         root_text="R", replies=[], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
                     )
-        assert ok is True
+        assert ok.published is True
         up.assert_called_once()
         # the root publish call received the hosted image url
         assert pub.await_args_list[0].kwargs["image_url"] == "https://s3/img.png"
@@ -68,7 +68,7 @@ class TestPostToThreads:
                 "_publish_post",
                 new=AsyncMock(side_effect=httpx.HTTPStatusError("err", request=req, response=resp)),
             ):
-                assert await post_to_threads(root_text="R") is False
+                assert (await post_to_threads(root_text="R")).published is False
 
     @pytest.mark.asyncio
     async def test_reply_retries_on_media_not_found(self, monkeypatch):
@@ -91,7 +91,7 @@ class TestPostToThreads:
         with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
             with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
                 ok = await post_to_threads(root_text="R", replies=["only reply"])
-        assert ok is True
+        assert ok.published is True
         assert calls["n"] == 2  # failed once, retried once
 
     @pytest.mark.asyncio
@@ -125,7 +125,7 @@ class TestPostToThreads:
             with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
                 with patch.object(threads_handler.asyncio, "sleep", side_effect=fake_sleep):
                     ok = await post_to_threads(root_text="R", replies=["first", "second", "third"])
-        assert ok is True
+        assert ok.published is True
         # first and third land; second is attempted (and retried to the budget) but never blocks the others
         assert "first" in seen and "third" in seen
 
@@ -157,7 +157,7 @@ class TestPostToThreads:
                         ok = await post_to_threads(
                             root_text="R", replies=["only"], image_bytes=b"P", image_bucket="b", image_key="k"
                         )
-        assert ok is True
+        assert ok.published is True
         assert get_calls["n"] >= 2  # polled until ready
         assert published == ["root", "rid"]  # reply posted after the root indexed
 
@@ -196,7 +196,7 @@ class TestPostToThreads:
                                 root_text="R", replies=["a"], image_bytes=b"P", image_bucket="b", image_key="k"
                             )
         # poll never succeeds and the reply can't land → overall failure (retryable)
-        assert ok is False
+        assert ok.published is False
 
     @pytest.mark.asyncio
     async def test_media_not_found_retries_past_fixed_cap_until_budget(self, monkeypatch):
@@ -230,7 +230,7 @@ class TestPostToThreads:
             with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
                 with patch.object(threads_handler.asyncio, "sleep", side_effect=fake_sleep):
                     ok = await post_to_threads(root_text="R", replies=["headline reply"])
-        assert ok is True
+        assert ok.published is True
         assert calls["n"] == 7  # retried 6 code-24 failures (past the 3-cap) then landed
 
     @pytest.mark.asyncio
@@ -262,7 +262,7 @@ class TestPostToThreads:
             with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
                 with patch.object(threads_handler.asyncio, "sleep", side_effect=fake_sleep):
                     ok = await post_to_threads(root_text="R", replies=["only reply"])
-        assert ok is False
+        assert ok.published is False
         assert calls["n"] == 3  # capped at the fixed attempt count, not the indexing budget
 
     @pytest.mark.asyncio
@@ -286,7 +286,7 @@ class TestPostToThreads:
         with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
             with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
                 ok = await post_to_threads(root_text="R", replies=["only reply"])
-        assert ok is True
+        assert ok.published is True
         assert calls["n"] == 2  # failed once, retried once, then succeeded
 
     @pytest.mark.asyncio
@@ -310,8 +310,48 @@ class TestPostToThreads:
             with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
                 ok = await post_to_threads(root_text="R", replies=["only reply"])
         # root posted, sole reply failed → all replies failed → overall failure (retryable)
-        assert ok is False
+        assert ok.published is False
         assert calls["n"] == 1  # raised on the first attempt, no retry
+
+    @pytest.mark.asyncio
+    async def test_counts_delivered_posts_and_flags_a_partial_chain(self, monkeypatch):
+        # Regression: a digest whose reply chain lost one story reported plain success, so nothing
+        # downstream could tell 4-of-6 from 6-of-6. The outcome now carries both counts.
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 0)
+        req = httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads")
+        resp = httpx.Response(401, request=req, json={"error": {"code": 190}})
+        auth_err = httpx.HTTPStatusError("unauthorized", request=req, response=resp)
+
+        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
+            if text == "second":
+                raise auth_err
+            return "id"
+
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
+                ok = await post_to_threads(root_text="R", replies=["first", "second", "third"])
+        assert (ok.posted, ok.expected) == (3, 4)  # root + 2 of 3 replies
+        assert ok.published is True
+        assert ok.partial is True
+        assert ok.summary() == "3/4 posts"
+
+    @pytest.mark.asyncio
+    async def test_missing_credentials_report_every_intended_post_as_undelivered(self):
+        # Empty credentials used to be an INFO "skipping" line: the day's only delivery path
+        # silently did nothing. The counts now say the whole digest was undelivered.
+        with patch.object(threads_handler, "resolve_secret", return_value=""):
+            ok = await post_to_threads(root_text="R", replies=["a", "b"])
+        assert (ok.posted, ok.expected) == (0, 3)
+        assert ok.published is False
+        assert ok.partial is False
+
+    @pytest.mark.asyncio
+    async def test_a_complete_post_is_not_partial(self):
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_publish_post", new=AsyncMock(return_value="id")):
+                ok = await post_to_threads(root_text="R", replies=["a", "b"])
+        assert (ok.posted, ok.expected) == (3, 3)
+        assert ok.partial is False
 
     def test_is_media_not_found_detects_code_24(self):
         req = httpx.Request("POST", "https://x")
@@ -417,7 +457,7 @@ class TestWireProtocol:
                             image_bucket="b",
                             image_key="k.png",
                         )
-        assert ok is True
+        assert ok.published is True
         posts = [r for r in recorded if r.method == "POST"]
         assert [r.url.path for r in posts] == [
             "/v1.0/user1/threads",  # create the image container
@@ -448,7 +488,7 @@ class TestWireProtocol:
             with patch.object(threads_handler.asyncio, "sleep", new=AsyncMock()):
                 with patch.object(threads_handler.httpx, "AsyncClient", new=self._client_factory(recorded)):
                     ok = await post_to_threads(root_text="R", replies=["가" * 900])
-        assert ok is True
+        assert ok.published is True
         creates = [self._form(r) for r in recorded if r.url.path.endswith("/threads")]
         assert all(len(c["text"]) <= threads_handler.THREADS_MAX_TEXT_LENGTH for c in creates)
 
@@ -467,7 +507,7 @@ class TestWireProtocol:
                 with patch.object(
                     threads_handler.httpx, "AsyncClient", new=lambda *a, **kw: real_client(transport=transport)
                 ):
-                    assert await post_to_threads(root_text="R", replies=["one"]) is False
+                    assert (await post_to_threads(root_text="R", replies=["one"])).published is False
 
 
 class TestImageHosting:
@@ -490,7 +530,7 @@ class TestImageHosting:
                     ok = await post_to_threads(
                         root_text="R", replies=[], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
                     )
-        assert ok is True
+        assert ok.published is True
         assert pub.await_args_list[0].kwargs["image_url"] == ""
 
     @pytest.mark.asyncio
@@ -499,7 +539,7 @@ class TestImageHosting:
             with patch.object(threads_handler, "_upload_image_for_hosting") as up:
                 with patch.object(threads_handler, "_publish_post", new=AsyncMock(return_value="rid")) as pub:
                     ok = await post_to_threads(root_text="R", image_bytes=b"PNG", image_bucket="", image_key="")
-        assert ok is True
+        assert ok.published is True
         up.assert_not_called()
         assert pub.await_args_list[0].kwargs["image_url"] == ""
 

@@ -146,6 +146,44 @@ class TestDeliverReport:
                 msg = await rt.deliver_report._tool_func("body", channel="slack")
         assert "Failed to deliver" in msg
 
+    @pytest.mark.asyncio
+    async def test_partial_delivery_is_not_reported_as_a_clean_delivery(self):
+        # Regression: posts dropped over the channel cap / trimmed mid-sentence, or replies that
+        # never landed, all came back as "Delivered the report to threads." The agent then asserted
+        # a complete delivery in its final answer.
+        from output.delivery import DeliveryStats
+
+        delivery = DeliveryContext(channel_id="C")
+
+        async def _deliver(report, *, channel, delivery):
+            delivery.last_stats = DeliveryStats(channel=channel, rendered=8, delivered=6, dropped=3, trimmed=1)
+            return True
+
+        with request_context(delivery):
+            with patch("output.delivery.deliver_research_report", new=_deliver):
+                msg = await rt.deliver_report._tool_func("body", channel="threads")
+        assert "INCOMPLETELY" in msg
+        assert "6/8 posts delivered" in msg
+        assert "3 post(s) DROPPED" in msg
+        assert "trimmed" in msg
+        assert "Do not re-send" in msg  # a second deliver_report is a no-op, so don't invite one
+
+    @pytest.mark.asyncio
+    async def test_complete_delivery_states_the_counts(self):
+        from output.delivery import DeliveryStats
+
+        delivery = DeliveryContext(channel_id="C")
+
+        async def _deliver(report, *, channel, delivery):
+            delivery.last_stats = DeliveryStats(channel=channel, rendered=6, delivered=6)
+            return True
+
+        with request_context(delivery):
+            with patch("output.delivery.deliver_research_report", new=_deliver):
+                msg = await rt.deliver_report._tool_func("body", channel="threads")
+        assert "INCOMPLETE" not in msg
+        assert "6/6 posts delivered" in msg
+
 
 class TestRequestContext:
     def test_binds_and_resets(self):

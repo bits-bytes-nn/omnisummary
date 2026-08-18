@@ -28,6 +28,16 @@ class MemoryStore(ABC):
     @abstractmethod
     def get_latest_digest(self) -> dict[str, Any] | None: ...
 
+    @abstractmethod
+    def get_digest(self, digest_date: str) -> dict[str, Any] | None:
+        """The snapshot stored FOR that ISO date, or None when the date has none.
+
+        Consumers that must act on a specific day (the visual Lambda publishes the digest for the
+        date the pipeline generated) use this instead of get_latest_digest: 'load latest, then
+        check its date' cannot work, because digest_result.generated_at is UTC and would
+        false-mismatch the KST digest date on every pre-09:00 KST run.
+        """
+
     def get_recent_digests(self, n: int, exclude_date: str = "", after_date: str = "") -> list[dict[str, Any]]:
         """Return up to the n most recent digest snapshots (newest first), skipping the one for
         exclude_date and any dated strictly before after_date (ISO). Used to seed cross-day dedup
@@ -58,6 +68,13 @@ class LocalMemoryStore(MemoryStore):
             return None
         logger.info("Loaded latest local digest state '%s'", files[0])
         return json.loads(files[0].read_text(encoding="utf-8"))
+
+    def get_digest(self, digest_date: str) -> dict[str, Any] | None:
+        path = self.base_dir / f"digest_{digest_date}.json"
+        if not path.exists():
+            logger.info("No local digest state for '%s' in '%s'", digest_date, self.base_dir)
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def get_recent_digests(self, n: int, exclude_date: str = "", after_date: str = "") -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -215,6 +232,19 @@ class AgentCoreMemoryStore(MemoryStore):
         data = self._load_session(sessions[0])
         if data is not None:
             logger.info("Loaded latest digest state from AgentCore Memory (session '%s')", sessions[0])
+        return data
+
+    def get_digest(self, digest_date: str) -> dict[str, Any] | None:
+        session_id = f"{self.DIGEST_SESSION_PREFIX}-{digest_date}"
+        try:
+            data = self._load_session(session_id)
+        except Exception as e:
+            logger.warning("Failed to load digest session '%s': %s", session_id, e)
+            return None
+        if data is None:
+            logger.warning("No digest state in AgentCore Memory for session '%s'", session_id)
+        else:
+            logger.info("Loaded digest state from AgentCore Memory (session '%s')", session_id)
         return data
 
     def get_recent_digests(self, n: int, exclude_date: str = "", after_date: str = "") -> list[dict[str, Any]]:

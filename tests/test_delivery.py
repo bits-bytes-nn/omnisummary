@@ -4,6 +4,7 @@ import pytest
 
 from agent.research_tools import DeliveryContext
 from output import delivery as dlv
+from output.threads_handler import ThreadsDelivery
 from shared import ImageAsset
 
 
@@ -138,7 +139,7 @@ class TestDeliverThreads:
     @pytest.mark.asyncio
     async def test_passes_first_image_with_content_type_and_key(self):
         d = DeliveryContext(channel_id="C", staged_images=[_img("image/webp"), _img("image/png")])
-        with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=True)) as pt:
+        with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(1, 1))) as pt:
             with patch.object(dlv, "get_config") as cfg:
                 cfg.return_value.aws.state_bucket_name = "bkt"
                 cfg.return_value.aws.s3_prefix = "omni"
@@ -166,7 +167,7 @@ class TestDeliverThreads:
     @pytest.mark.asyncio
     async def test_no_images_text_only(self):
         d = DeliveryContext(channel_id="C")
-        with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=True)) as pt:
+        with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(1, 1))) as pt:
             await dlv.deliver_research_report("리드.", channel="threads", delivery=d)
         assert pt.await_args.kwargs["image_bytes"] is None
 
@@ -178,7 +179,9 @@ class TestDeliverThreads:
         client.chat_postMessage = AsyncMock()
         with patch.object(dlv, "AsyncWebClient", return_value=client):
             with patch.object(dlv, "resolve_secret", return_value="xoxb"):
-                with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=True)) as pt:
+                with patch(
+                    "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(1, 1))
+                ) as pt:
                     await dlv.deliver_research_report("body", channel="slack", delivery=d)
                     await dlv.deliver_research_report("body", channel="threads", delivery=d)
                     # repeat slack call must not double-post
@@ -194,7 +197,7 @@ class TestDeliverThreads:
         # Staged image but no state bucket → text-only post, no image bytes passed.
         monkeypatch.delenv("STATE_BUCKET", raising=False)
         d = DeliveryContext(channel_id="C", staged_images=[_img()])
-        with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=True)) as pt:
+        with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(1, 1))) as pt:
             with patch.object(dlv, "get_config") as cfg:
                 cfg.return_value.aws.state_bucket_name = ""
                 cfg.return_value.aws.s3_prefix = ""
@@ -203,3 +206,62 @@ class TestDeliverThreads:
         assert ok is True
         assert pt.await_args.kwargs["image_bytes"] is None
         assert pt.await_args.kwargs["image_bucket"] == ""
+
+
+class TestPartialDeliveryNotice:
+    """A truncated report used to be indistinguishable from a complete one. There is deliberately NO
+    re-delivery path (the recorded channel makes a second deliver_report a no-op) — the requester is
+    told instead, in their own thread."""
+
+    @pytest.mark.asyncio
+    async def test_incomplete_threads_delivery_posts_a_one_line_notice(self):
+        d = DeliveryContext(channel_id="C7", thread_ts="ts-9")
+        client = MagicMock()
+        client.chat_postMessage = AsyncMock()
+        with patch.object(dlv, "AsyncWebClient", return_value=client):
+            with patch.object(dlv, "resolve_secret", return_value="xoxb"):
+                with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(4, 6))):
+                    with patch.object(dlv, "get_config") as cfg:
+                        cfg.return_value.aws.state_bucket_name = ""
+                        cfg.return_value.aws.s3_prefix = ""
+                        cfg.return_value.agent.research_max_threads_posts = 8
+                        ok = await dlv.deliver_research_report("리드다.", channel="threads", delivery=d)
+        assert ok is True  # what landed stays landed
+        assert d.last_stats.delivered == 4 and d.last_stats.rendered == 6
+        kwargs = client.chat_postMessage.await_args.kwargs
+        assert kwargs["thread_ts"] == "ts-9"  # posted into the requester's thread
+        assert "4/6" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_complete_delivery_posts_no_notice(self):
+        d = DeliveryContext(channel_id="C7", thread_ts="ts-9")
+        client = MagicMock()
+        client.chat_postMessage = AsyncMock()
+        with patch.object(dlv, "AsyncWebClient", return_value=client):
+            with patch.object(dlv, "resolve_secret", return_value="xoxb"):
+                with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))):
+                    with patch.object(dlv, "get_config") as cfg:
+                        cfg.return_value.aws.state_bucket_name = ""
+                        cfg.return_value.aws.s3_prefix = ""
+                        cfg.return_value.agent.research_max_threads_posts = 8
+                        await dlv.deliver_research_report("리드다.", channel="threads", delivery=d)
+        client.chat_postMessage.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_dropped_posts_count_as_incomplete_even_when_all_land(self):
+        # Everything that was RENDERED landed, but the renderer had to drop posts over the cap —
+        # the reader still has half a report, so the notice fires.
+        d = DeliveryContext(channel_id="C7")
+        client = MagicMock()
+        client.chat_postMessage = AsyncMock()
+        report = "\n---\n".join(f"{i}/20 소제목\n\n본문 {i}이다." for i in range(20))
+        with patch.object(dlv, "AsyncWebClient", return_value=client):
+            with patch.object(dlv, "resolve_secret", return_value="xoxb"):
+                with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(4, 4))):
+                    with patch.object(dlv, "get_config") as cfg:
+                        cfg.return_value.aws.state_bucket_name = ""
+                        cfg.return_value.aws.s3_prefix = ""
+                        cfg.return_value.agent.research_max_threads_posts = 4
+                        await dlv.deliver_research_report(report, channel="threads", delivery=d)
+        assert d.last_stats.dropped == 16
+        assert "DROPPED" in client.chat_postMessage.await_args.kwargs["text"]

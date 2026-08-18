@@ -32,7 +32,10 @@ class TestVisualBriefValidation:
             prompt="draw",
         )
         assert brief.title == "제목"
-        assert brief.caption == "본문 끝.\nlandscape"
+        # The bled value itself must go too. It used to survive because the bleed check compared
+        # against the PARSED orientation (defaulted to 'portrait' here) rather than the field's
+        # allowed values, so '본문 끝.\nlandscape' was published verbatim.
+        assert brief.caption == "본문 끝."
 
     def test_strips_a_trailing_bled_orientation_value(self):
         # Observed on a 2026-08-18 local end-to-end run: the caption ended with a bare "\nportrait",
@@ -40,6 +43,20 @@ class TestVisualBriefValidation:
         # `</caption><parameter name="orientation">landscape`. The markup strip cannot see it.
         brief = VisualBrief(title="제목", caption="본문 끝이다.\nportrait", prompt="draw", orientation="portrait")
         assert brief.caption == "본문 끝이다."
+
+    def test_drops_a_bled_value_that_is_not_the_chosen_orientation(self):
+        # The 08-17 shape: the bleed names a DIFFERENT orientation than the parsed field. Candidates
+        # come from the Literal itself (typing.get_args), so no hand-written word list can drift.
+        brief = VisualBrief(title="제목", caption="본문 끝이다.\nsquare", prompt="draw", orientation="portrait")
+        assert brief.caption == "본문 끝이다."
+
+    def test_warns_only_when_a_value_was_actually_dropped(self):
+        with patch("shared.models.logger") as log:
+            VisualBrief(title="제목", caption="본문 끝이다.", prompt="draw", orientation="portrait")
+        log.warning.assert_not_called()
+        with patch("shared.models.logger") as log:
+            VisualBrief(title="제목", caption="본문 끝이다.\nlandscape", prompt="draw", orientation="portrait")
+        assert log.warning.called
 
     def test_keeps_the_word_when_it_is_part_of_the_prose(self):
         # Only a standalone FINAL line counts — prose that merely contains the word is untouched.

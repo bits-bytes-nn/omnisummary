@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import NamedTuple
 
 from shared import DigestContent, logger
 
@@ -290,19 +291,41 @@ def _fit_one_post(
     return "\n\n".join([p for p in (_truncate_at_word(title, max(0, room)), url.strip()) if p])
 
 
+def _fit_lead(lead: str) -> str:
+    """Fit the root text (the digest lead) into one Threads post.
+
+    Trimming drops whole sentences from the end, so it PRESERVES the lead's final line: when the
+    AGI-countdown gag is configured as a suffix it lives there, and an over-long lead would
+    otherwise silently eat the one line the trim is not allowed to lose. Logged at WARNING because
+    a trimmed lead means the editor's prose budget was overrun — that should be visible, not silent."""
+    if len(lead) <= THREADS_MAX_POST_CHARS:
+        return lead
+    logger.warning("Threads lead is %d chars (cap %d); trimming prose", len(lead), THREADS_MAX_POST_CHARS)
+    head, sep, last_line = lead.rpartition("\n")
+    if not sep or not last_line.strip():
+        return _pack_sentences(lead, THREADS_MAX_POST_CHARS)
+    tail = last_line.strip()
+    room = THREADS_MAX_POST_CHARS - len(tail) - 2  # reserve "\n\n" + the final line
+    if room <= 0:
+        # The final line alone fills the post — keep it and drop the prose above it.
+        return _pack_sentences(tail, THREADS_MAX_POST_CHARS)
+    return f"{_pack_sentences(head.strip(), room)}\n\n{tail}"
+
+
+def _pack_sentences(text: str, max_len: int) -> str:
+    """Keep whole leading sentences up to max_len; word-trim when even the first one overflows."""
+    kept = _sentences(text)
+    while kept and len(" ".join(kept)) > max_len:
+        kept.pop()
+    return " ".join(kept) if kept else _truncate_at_word(text, max_len)
+
+
 def render_threads_posts(content: DigestContent) -> tuple[str, list[str]]:
     """Render DigestContent for Threads: a root text (the lead) and a reply chain with EXACTLY ONE
     reply per item (title + source line + body + implication + URL). Each reply is trimmed to fit
     Threads' 500-char cap at a clean sentence boundary — never mid-word — keeping the title, the
     source line and the URL. No Slack markup (Threads renders none)."""
-    lead = content.lead.strip()
-    if len(lead) > THREADS_MAX_POST_CHARS:
-        kept = _sentences(lead)
-        while kept and len(" ".join(kept)) > THREADS_MAX_POST_CHARS:
-            kept.pop()
-        # No sentence boundary in range → word-trim, never a mid-word slice.
-        lead = " ".join(kept) if kept else _truncate_at_word(lead, THREADS_MAX_POST_CHARS)
-
+    lead = _fit_lead(content.lead.strip())
     replies = [
         _fit_one_post(item.title, _item_meta(item), item.body, item.implication or "", item.url)
         for item in content.items
@@ -442,7 +465,23 @@ def _trim_oversize_post(post: str) -> str:
     return result if len(result) <= THREADS_MAX_POST_CHARS else _trim_long_sentence(post, THREADS_MAX_POST_CHARS)
 
 
-def render_threads_research(report: str, *, max_posts: int = 0) -> tuple[str, list[str]]:
+class ThreadsResearchRender(NamedTuple):
+    """The rendered report plus what the rendering COST: `dropped` posts that exceeded the cap and
+    were discarded, `trimmed` posts whose tail sentences were cut to fit 500 chars. Both used to be
+    log-only, so the agent reported "Delivered the report" for a report the reader never saw in
+    full. Unpacks as a 4-tuple, so every call site states which parts it wants."""
+
+    root: str
+    replies: list[str]
+    dropped: int = 0
+    trimmed: int = 0
+
+    @property
+    def rendered(self) -> int:
+        return (1 if self.root else 0) + len(self.replies)
+
+
+def render_threads_research(report: str, *, max_posts: int = 0) -> ThreadsResearchRender:
     """Render a Threads research report into a root post + flat reply chain, each <=500 chars.
     Slack mrkdwn is stripped (Threads renders none). The agent marks its own post boundaries with
     a line containing only '---', so a post's number + heading + body stay together; the renderer
@@ -450,25 +489,30 @@ def render_threads_research(report: str, *, max_posts: int = 0) -> tuple[str, li
     are present (older output), it falls back to sentence packing.
 
     `max_posts` (>0) hard-caps the total post count (root + replies) so a too-long report can't
-    fan out into dozens of public posts; excess posts are dropped. Returns (root_text, replies)."""
+    fan out into dozens of public posts; excess posts are dropped. Returns the render plus the
+    dropped/trimmed counts, so the caller can report an incomplete report as incomplete."""
     plain = _strip_slack_mrkdwn(report).strip()
     # A leading "---" (delimiter as the report's first line) isn't matched by the split regex,
     # which requires a preceding newline; drop it so it can't ride into the first post as text.
     plain = _THREADS_LEADING_DELIMITER.sub("", plain).strip()
 
+    trimmed = 0
     if _THREADS_POST_DELIMITER.search(plain):
         raw_posts = [p.strip() for p in _THREADS_POST_DELIMITER.split(plain) if p.strip()]
         # Each agent-delimited block is exactly ONE post: keep the heading + body together and only
         # trim (never fan out) when it overflows, so the 'N/M 소제목' line never orphans.
         posts = [_trim_oversize_post(p) for p in raw_posts]
+        trimmed = sum(1 for before, after in zip(raw_posts, posts, strict=True) if before != after)
     else:
         posts = _pack_by_sentence(plain)
 
     if not posts:
         # Empty/whitespace report → no post (caller skips delivery). Returning ("", []) here would
         # make post_to_threads create an empty TEXT container, which Meta's API rejects with a 400.
-        return "", []
+        return ThreadsResearchRender("", [])
+    dropped = 0
     if max_posts > 0 and len(posts) > max_posts:
-        logger.info("Threads research: %d posts exceed cap %d, truncating", len(posts), max_posts)
+        dropped = len(posts) - max_posts
+        logger.warning("Threads research: dropping %d post(s) over the cap of %d", dropped, max_posts)
         posts = posts[:max_posts]
-    return posts[0], posts[1:]
+    return ThreadsResearchRender(posts[0], posts[1:], dropped, trimmed)

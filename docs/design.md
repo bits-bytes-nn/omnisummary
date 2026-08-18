@@ -100,7 +100,7 @@ AWS 아키텍처(두 경로 — 스케줄 다이제스트 / Slack 트리거 딥 
 | 다이제스트 버퍼/중복 | `digest_candidate_buffer`(기본 3), `published_url_ttl_days`(기본 6), `recent_leads_window`(기본 5) | 랭커 오버선정 버퍼(에디터가 동일 사건 병합 후 backfill)·cross-day dedup 원장 TTL·반복 방지용 최근 lead 윈도 |
 | 트렌드 | `trend_retention_days`, `trend_cooling_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존/냉각/증거·active 캡·momentum 반감기 |
 | 전달 | `enable_slack_post`, `enable_threads_post` | 채널별 전달 on/off(각각 독립 토글; 코드 기본값은 Slack on / Threads off, 실제 상태는 배포 환경 설정에 따름). Slack은 다이제스트 Lambda가, **Threads는 데일리 비주얼 Lambda가** 게시 |
-| AGI 카운트다운 | `agi_countdown_date`(기본 `2029-01-01`), `agi_countdown_template` | 다이제스트 lead에 코드가 붙이는 "AGI N일 전" 인트로(D-day 전엔 카운트다운, §5.5 참조) |
+| AGI 카운트다운 | `agi_countdown_date`(기본 `2029-01-01`), `agi_countdown_template`, `agi_countdown_after`, `agi_countdown_position`(`prefix`\|`suffix`, 배포 설정 `suffix`) | 다이제스트 lead에 코드가 붙이는 "AGI N일 전" 인트로(D-day 전엔 카운트다운) + lead의 어느 쪽 끝에 붙일지(§5.2 참조) |
 | 시각화 | `enable_daily_visual`, `image_model`, `image_sizes`, `visual_format_window`(기본 6), `visual_synopsis_source_max_tokens`, `visual_synopsis_context_max_tokens`, `visual_caption_emoji`, `visual_image_timeout_sec`(기본 300)·`visual_image_max_retries`(기본 0), `visual_multi_panel_target_ratio`(기본 0.34), `visual_character_enabled`·`visual_character_sheet`·`visual_character_target_ratio` | 데일리 비주얼 on/off·gpt-image 모델·orientation→size 딕셔너리·포맷 변주 추적 윈도(orientation+style)·입력 상한·캡션 이모지·gpt-image HTTP 호출 상한(SDK 기본 600s×2회는 비주얼 Lambda 15분 예산을 넘길 수 있어 config로 고정) |
 | 프롬프트 주입(하드코딩 대신 템플릿 변수) | `digest_language_rules`, `digest_voice_guidance`(Gruber 톤; 단일 냉소 프레임으로 기본 고정하지 말고 그날 사실이 정당화할 때만 각을 선택), `ranking_audience_description`, `digest_audience_description`, `visual_audience_description`, `visual_caption_language`, `visual_on_image_language`, `visual_synopsis_style_guidance`, `visual_synopsis_humor_guidance`, `visual_synopsis_style_aesthetic`, `visual_moderation_softening_instruction` | 언어/대상독자/톤·유머/미감/모더레이션 완화 문구 |
 
@@ -177,8 +177,10 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 **RSS** (`rss.py`)
 - **소스:** `config.collectors.rss.feeds`에 대해 feedparser 사용.
 - **메타데이터:** `feed_url`, `feed_title`.
-- **fan-out 상한(`max_concurrency`, 기본 5):** 피드마다 `feedparser.parse`가 워커 스레드를 점유하므로, 수십 개 피드를 한꺼번에 던지면 기본 asyncio executor(2 vCPU Lambda에서 6)가 초과 구독되어 **파싱이 시작되기도 전에 per-feed 타임아웃이 만료**됩니다(멀쩡한 피드가 FAILED로 집계). 세마포어는 `collect()` 안(실행 중인 루프)에서 만들고 **per-feed 타임아웃보다 먼저 획득**해 타임아웃이 큐 대기가 아니라 fetch 자체를 재게 함 — RSSHub와 동일한 패턴. 최악 wall time은 `ceil(feeds / max_concurrency) * request_timeout`.
-- **실패 신호:** 죽은 피드(HTTP 4xx/5xx, entries 없는 bozo)와 타임아웃은 빈 결과가 아니라 **예외**로 올림. `gather_collector_results(raise_if_all_failed=True)`가 **전 피드 실패일 때만** 승격시키므로, 일부 피드 장애는 로깅 후 건너뛰고(부분 허용) 전면 장애는 FAILED로 알림.
+- **fan-out 상한(`max_concurrency`, 기본 5):** 피드마다 `feedparser.parse`가 워커 스레드를 점유하므로, 수십 개 피드를 한꺼번에 던지면 기본 asyncio executor(2 vCPU Lambda에서 6)가 초과 구독되어 **파싱이 시작되기도 전에 per-feed 타임아웃이 만료**됩니다(멀쩡한 피드가 FAILED로 집계). 세마포어는 `collect()` 안(실행 중인 루프)에서 만들고 **per-feed 타임아웃보다 먼저 획득**해 타임아웃이 큐 대기가 아니라 fetch 자체를 재게 함 — RSSHub와 동일한 패턴.
+- **일시적 실패 재시도:** 타임아웃과 **일시적 상태 코드**(429/5xx — YouTube 수집기의 `_RETRIABLE_STATUS_CODES`를 그대로 재사용)는 `retry_async`로 `max_retries`(기본 3)까지 재시도한다. 재시도는 **타임아웃을 감싸므로** 매 시도가 자기 `request_timeout`을 온전히 갖는다(예전엔 한 번의 blip이 그 피드의 하루치 항목을 통째로 잃었다). 403/404·파싱 불가 본문은 재시도해도 결론이 안 바뀌므로 첫 응답에서 즉시 실패.
+- **최악 wall time:** 피드당 `max_retries * request_timeout + 선형 backoff` = 기본값에서 `3*30s + (5s+10s)` = 105초, 피드는 `max_concurrency`개씩 도므로 수집기 전체는 `ceil(feeds / max_concurrency) * 105s`(운영 설정 22 피드/5 동시 ≈ 8.8분) — 다른 수집기와 병렬로 도는 수집 단계 전체가 다이제스트 Lambda의 15분 예산 안.
+- **실패 신호:** 죽은 피드(HTTP 4xx/5xx, entries 없는 bozo)와 재시도를 소진한 타임아웃은 빈 결과가 아니라 **예외**로 올림. `gather_collector_results(raise_if_all_failed=True)`가 **전 피드 실패일 때만** 승격시키므로, 일부 피드 장애는 로깅 후 건너뛰고(부분 허용) 전면 장애는 FAILED로 알림.
 
 **Reddit** (`reddit.py`)
 - **방식:** 공개 `.rss` 피드 사용 — `https://www.reddit.com/r/{sub}/{sort}/.rss`.
@@ -243,8 +245,8 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 - **생명주기:** 날짜 기반 상태(active/cooling/archived), momentum 감쇠 랭킹, active 캡 아카이브 (§7 참조).
 
 ### 4. 다이제스트 생성기 (`digest_generator.py`)
-- **처리:** Claude Sonnet 5로 `DigestPrompt` → **구조화 `DigestContent`**(Pydantic: `lead`, 항상 1인 `headline_index`, `items[]` 각각 title/url/source_tag/metrics/body/implication). LLM은 산문(lead·body·implication)만 작성하고, source tag·metrics는 코드(`_fill_source_metadata`)가 URL로 매칭해 채움.
-- **파싱 견고성(`_parse_content`):** LLM JSON은 `parse_json_from_llm_output`(`strict=False` — 문자열 값 안의 raw 제어문자 허용)로 파싱하고, **items를 개별 검증**해 한 항목이 malformed여도(예: url/body 누락) 그 항목만 스킵하고 나머지는 유지(전체를 0-item으로 무너뜨리지 않음). 단 **items[0](헤드라인)이 검증 실패하면** lead·비주얼이 그 스토리를 가리키므로 minimal 폴백(헤드라인/lead/비주얼 불일치 방지). lead가 없거나 JSON이 통째로 깨지면 minimal 폴백.
+- **처리:** Claude Sonnet 5로 `DigestPrompt` → **구조화 `DigestContent`**(Pydantic: `lead`, 항상 1인 `headline_index`, `items[]` 각각 title/url/source_tag/metrics/body/implication). LLM은 산문(lead·body·implication)만 작성하고, source tag·metrics는 코드(`_fill_source_metadata`)가 URL로 매칭해 채움 — 매칭 키는 집계기의 `normalize_url`이라 에디터가 URL을 되쓸 때 생긴 trailing slash·http→https·utm 파라미터 차이로 소스 줄이 통째로 사라지지 않는다(URL이 이미 동일하면 동작 변화 없음). 랭킹 소스와 끝내 매칭되지 않는 항목은 최후 수단으로 `urlsplit(url).netloc`을 태그로 쓴다(도메인 매핑 표는 두지 않음).
+- **파싱 견고성(`_parse_content`):** LLM JSON은 `parse_json_from_llm_output`(`strict=False` — 문자열 값 안의 raw 제어문자 허용)로 파싱하고, **items를 개별 검증**해 한 항목이 malformed여도(예: url/body 누락) 그 항목만 스킵하고 나머지는 유지(전체를 0-item으로 무너뜨리지 않음). 단 **items[0](헤드라인)이 검증 실패하거나** lead가 없거나 JSON이 통째로 깨지면 `DigestContentError`를 **raise**한다 — 예전의 minimal 폴백(`lead=raw[:1000], items=[]`)이 2026-08-13·08-17에 다섯 스토리를 전부 잃은 채로 게시된 경로였다. 호출자는 `digest_max_retries`만큼 재질의하고, 계속 실패하면 실행 자체가 실패로 남아 깨진 게시물이 나가지 않는다.
 - **target_count + recent_leads:** `generate(..., recent_leads=...)`. 프롬프트에 `target_count`와 `recent_leads`(최근 며칠 lead — "이 오프닝 각은 피하라", 특정 문구를 금지하지 않고 일반화)를 함께 넣음. `target_count`는 기본 `min(top_n, 후보수)`이되, 사용자가 top_n보다 많은 URL을 핀하면 **헤드라인 1 + 전체 핀**을 담도록 상향(핀도 헤드라인도 트림에 안 밀리게). 에디터는 오버선정 후보를 병합해 정확히 target_count개의 distinct 스토리를 내되, **모델이 초과 emit하면 코드가 트림**(`_trim_keeping_pinned`: 결정론적 상한; items[0] 헤드라인 우선 보존 후 나머지 슬롯에 핀 보존).
 - **Slack 마크업 없음:** 다이제스트 경로는 `sanitize_slack_mrkdwn`을 호출하지 **않음**(그 정규화는 이제 딥 리서치 경로 전용 — `output/delivery.py`의 `_deliver_slack`이 모델이 흘린 마크업을 1차로 보정하고, `agent_runtime/app.py` 폴백이 동일 정규화를 적용). 채널별 마크업은 각 렌더러가 붙임.
 - **시스템 오브 레코드:** `render_digest_text`가 구조화 콘텐츠를 평문 산문으로 렌더해 `digest_text`를 만들고, 이는 트렌드 분류기·AgentCore 스냅샷이 사용.
@@ -268,20 +270,26 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 - **맥락 보강:** 에디터가 고른 리서치 스텝(papers/community/news)을 실행해 맥락 수집.
 - **생성:** `VisualGenerator`(시놉시스 → gpt-image)로 1컷 밈/패러디/일러스트 또는 N컷 카툰 생성 → Slack 게시(+`enable_threads_post` 시 Threads에도 게시).
 - **플랜 파싱 실패:** 에디터 JSON을 못 읽으면 `{"skip": True}`로 취급해 그대로 건너뜀 — 재질의(추가 LLM 호출)도, 일반 폴백 instruction으로 gpt-image를 태우는 낭비 렌더도 하지 않음.
-- **성공 판정:** `run()`은 **활성화된 채널 중 하나라도 게시 성공**하면 True(Slack만 보던 시절엔 `enable_slack_post: false` 구성에서 Threads가 성공해도 'skipped'로 기록됐다).
-- **best-effort:** OpenAI 키 없음/부적합/오류 시 조용히 건너뛰며 파이프라인을 막지 않음.
+- **비주얼 실패가 다이제스트를 삼키지 않음:** 이미지는 **첨부물**이고 이 함수가 Threads의 유일한 게시 경로다. OpenAI 키 없음·에디터 호출 실패·에디터 skip·렌더 실패는 모두 `_make_visual` 안에서 흡수되어 `(None, None)`으로 떨어지고, `run()`은 그대로 **텍스트 전용**으로 Threads(lead + 스토리별 reply)를 게시한다. 예전엔 이 세 경우가 게시 이전에 `return False`였기 때문에 비주얼만의 문제로 그날 다이제스트가 조용히 사라졌다.
+- **이미 게시된 날 조기 종료:** `run()` 맨 앞에서 "게시할 것이 남아 있지 않다"(Threads 원장에 오늘이 있고 `enable_slack_post`가 꺼져 있으며 force가 아님)를 확인하면 에디터 호출·gpt-image 렌더 비용을 아예 쓰지 않는다. 게이트는 의도적으로 좁다 — Slack 전달이 켜져 있으면 이미지에는 Threads 마커와 무관한 별도 목적지가 있으므로 그대로 진행한다.
+- **헤드라인 매핑:** `content.headline_index`(큐레이션 items 기준)를 `normalize_url`로 랭킹 항목에 되매핑한다. 끝내 매칭되지 않으면 예전의 `or 1`(= 랭킹 1위, lead와 **다른** 스토리)이 아니라 **큐레이션 헤드라인 자신의 title/body/implication**을 소스로 브리핑해 이미지와 텍스트의 동기화를 지킨다(에디터에게 넘기는 헤드라인 마커는 0 = 없음).
+- **성공 판정:** `run()`은 **활성화된 채널 중 하나라도 게시 성공**하면 True(Slack만 보던 시절엔 `enable_slack_post: false` 구성에서 Threads가 성공해도 'skipped'로 기록됐다). 게시 결과(`ThreadsDelivery`)는 `maker.threads_outcome`으로 노출되어 비주얼 Lambda가 부분 전달을 알림으로 올린다.
+- **best-effort:** 파이프라인을 막지 않으며, 실패는 항상 로깅된다.
 
 ### 5.2 AGI 카운트다운 인트로 (`shared/formatting.py` `agi_countdown_intro`)
 - **동작:** "AGI 등장 N일 전이다"식 인트로를 **LLM이 아니라 코드**가 계산(`agi_countdown_date` 기본 `2029-01-01`, `agi_countdown_template`). D-day **이전엔 카운트다운**, D-day 당일/이후엔 `agi_countdown_after`로 **카운트업**("AGI 등장 예정일 D+N일째, 아직이다"). 빈 `agi_countdown_date`면 비활성. 템플릿은 운영자 편집 config 문자열이므로 `.format()`을 try/except로 감싸 오타(잘못된 placeholder·괄호)면 인트로를 비워 **생성 도중 크래시하지 않음**(수집·랭킹·LLM 비용을 다 쓴 뒤 죽는 걸 방지).
-- **적용 시점:** 다이제스트 **생성 시점**에 `content.lead` 앞에 붙임(`digest_generator.generate`), 그 날 실행의 KST `digest_date`로 계산. 인트로가 저장 콘텐츠의 일부가 되어 **모든 채널**(Slack Block Kit · Threads root)에 함께 나가며, 트렌드 재등장 수치와 같은 시계(날짜)를 씀.
+- **적용 시점:** 다이제스트 **생성 시점**에 `content.lead`에 붙임(`digest_generator.generate` → `place_countdown_intro`), 그 날 실행의 KST `digest_date`로 계산. 인트로가 저장 콘텐츠의 일부가 되어 **모든 채널**(Slack Block Kit · Threads root)에 함께 나가며, 트렌드 재등장 수치와 같은 시계(날짜)를 씀.
+- **위치 노브(`agi_countdown_position`, 기본 `prefix`, 배포 설정은 `suffix`):** 접두로 두면 Threads root의 **첫 줄**—피드 독자가 유일하게 보는 줄—을 매일 같은 고정 문장이 차지한다(연속 40개 게시물이 동일 문장으로 시작). `suffix`는 개그를 **문구 그대로** 두고 lead의 마지막 줄(맺음말)로 옮겨 첫 줄이 그날의 각이 되게 한다. 위치만 노브로 두고 cadence·N일마다 생략·랜덤은 두지 않는다(매직 넘버).
+- **양 끝 제거(`editorial_lead`):** 최근 lead 신선도 비교와 비주얼의 편집 관점 전달은 개그를 뺀 각만 봐야 하므로, 접두/접미 **어느 쪽에 붙어 있어도** 제거한다(저장된 lead가 설정 변경 이전 것일 수 있음).
+- **렌더러가 개그를 먹지 않음:** Threads root가 500자를 넘으면 `_fit_lead`가 **마지막 줄을 보존**하고 그 위 산문에서 문장을 뒤에서 덜어낸다. 트림이 발생하면 WARNING으로 남긴다(에디터가 산문 예산을 넘겼다는 신호).
 
 ### 5.3 Threads 전달 (`output/threads_handler.py`, `enable_threads_post`)
 - **호출자:** 다이제스트 Lambda가 아니라 **데일리 비주얼 Lambda**(`DailyVisualMaker.run`)가 게시한다 — Threads 게시물은 이미지 root + reply chain이 한 세트라 이미지를 만든 쪽이 함께 보내야 한다. 따라서 Threads 전달에는 `enable_threads_post`와 `enable_daily_visual`이 **둘 다** 필요하다.
 - **흐름(`post_to_threads`):** 이미지 root 게시 → 스토리당 reply 하나의 평탄한 chain. reply는 서로가 아니라 **모두 root에 매닮**(reply-of-reply로 중첩되면 첫 개만 보임).
 - **이미지 호스팅:** Threads는 바이트 업로드가 불가하고 **공개 URL만** fetch하므로, PNG를 S3에 올리고 단기 presigned URL을 Meta에 한 번 넘김(`_upload_image_for_hosting`).
 - **인덱싱 지연 폴링:** 방금 게시된 이미지 root는 곧바로 reply 대상이 되지 못해 Meta가 "media not found"(code 24 / subcode 4279009)를 반환할 수 있음. reply의 create-container 쓰기를 blind하게 재시도하는 대신(각 시도가 낭비 쓰기 + sleep), **값싼 GET으로 root가 addressable해질 때까지 한 번 폴링**(`_wait_until_addressable`)한 뒤 reply chain을 시작. 준비 여부는 root의 속성이라 chain 전체가 하나의 예산(`THREADS_INDEXING_BUDGET_SEC`≈270초)을 공유하며, 비주얼 Lambda 타임아웃 15분이 총량을 bound. TEXT-only root(이미지 없음)는 거의 즉시 인덱싱되므로 폴링 생략. reply에는 GET이 200을 준 뒤에도 드물게 나는 eventual-consistency 경계용 **짧은 안전망 재시도**(`_publish_reply_with_retry`, 기본 3회)만 남김.
-- **per-reply best-effort + 0-reply 실패 신호:** reply 게시는 건별로 try/except — 한 reply가 실패해도 나머지를 포기하지 않아 댓글 chain이 중간에 끊기지 않음. 단, 스토리가 있는데 **한 건도 못 붙으면**(root는 게시됐으나 인덱싱이 예산 내 못 끝난 경우) `post_to_threads`가 `False`를 반환 → 호출자가 ledger 마커를 롤백해 그날을 재시도 가능하게 둠(이미지만 있고 스토리 없는 다이제스트를 "게시됨"으로 굳히지 않음). 게시 성공 수(`posted/total`)를 로깅.
-- **best-effort:** 자격증명(`THREADS_ACCESS_TOKEN`/`THREADS_USER_ID`) 없음·API 오류는 로깅 후 건너뜀(절대 raise 안 함).
+- **per-reply best-effort + 전달량 회계(`ThreadsDelivery`):** reply 게시는 건별로 try/except — 한 reply가 실패해도 나머지를 포기하지 않아 댓글 chain이 중간에 끊기지 않음. 반환값은 bool이 아니라 `(posted, expected)` NamedTuple(root 포함)로, `published`(root + reply chain이면 최소 1건)와 `partial`(게시됐지만 일부 누락)을 구분한다. 예전엔 5개 중 4개만 붙어도 그냥 성공이라 truncated chain을 아무도 알 수 없었다. **호출자는 값 자체의 truthiness로 분기하면 안 된다**(NamedTuple은 `(0, 5)`도 truthy) — `daily_visual`/`delivery` 모두 `.published`를 명시적으로 읽으며, `published`가 아니면 ledger 마커를 롤백해 그날을 재시도 가능하게 둔다(이미지만 있고 스토리 없는 다이제스트를 "게시됨"으로 굳히지 않음). 부분 전달·전면 실패는 ERROR로 로깅되고, 비주얼 Lambda가 `ALERT_SNS_TOPIC_ARN`이 있을 때 SNS 알림을 올린다(없으면 no-op).
+- **best-effort:** API 오류는 로깅 후 건너뜀(절대 raise 안 함 — `output/delivery.py`의 리서치 경로가 이 계약에 의존). 단 자격증명(`THREADS_ACCESS_TOKEN`/`THREADS_USER_ID`) 부재는 **ERROR**로 올린다: `enable_threads_post`가 켜진 구성에서 그날 다이제스트가 어디에도 전달되지 않는 상태인데 예전엔 평범한 INFO "skipping" 한 줄이었다.
 - **토큰 갱신:** `lambda_handlers/threads_refresh_handler.py` + ~50일 주기 EventBridge 스케줄이 60일 만료 장기 토큰을 갱신해 SSM에 재기록(§11 참조).
 
 ## 6. LLM 팩토리 (`shared/utils.py`)
@@ -323,6 +331,7 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
   `config.aws.profile`/`region`으로 만들어 `.env`에 `STATE_BUCKET`을 둔 개발자가 자격증명을 잃지 않게 하고,
   AWS 안에서는 실행 역할(기본 세션)을 씁니다. prefix 규약은 env 경로(`S3_PREFIX`가 곧 digest-state prefix)와
   config 경로(`s3_prefix` + `/digest_state`)가 서로 다르므로 그대로 유지합니다.
+- **읽기 실패 ≠ 히스토리 없음(`StateReadError`):** 예전엔 스로틀/거부된 S3 GET이 `None`을 반환해 "키가 없다"와 구분되지 않았고, 다음 read-modify-write가 그 공백을 **영구화**했다(발행 URL 원장·최근 lead·비주얼 포맷 윈도·Threads 멱등 마커가 한 번의 실패 읽기로 비워짐). 이제 `read`/`exists`는 `NoSuchKey`/404만 조용히 없음으로 처리하고 그 외 `ClientError`(및 로컬 `OSError`)는 `StateReadError`를 raise한다. 소비자는 **전부 동일하게** 처리한다: ERROR 로깅 → 히스토리는 '모름' → **쓰기 생략**. 게시 경로로는 절대 전파되지 않는다(`RollingLog.entries()`는 `[]`, `ThreadsPostLedger.already_posted()`는 `False`를 반환 — 중복 게시는 복구 가능하지만 미게시는 아니므로), 그리고 `TrendTracker`는 그 실행의 trends.json 쓰기를 건너뛴다.
 - **관리 주체:** `pipeline/trend_tracker.py`의 `TrendTracker`.
 - **LLM 역할:** `TrendClassifyPrompt`는 오늘 아이템이 기존 트렌드(id) 확장인지 신규인지 분류만 함. 부기는 전부 결정론적 Python.
 - **결정론적 부기:**
@@ -341,7 +350,7 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 - **`AgentCoreMemoryStore`:**
   - **기록:** 오늘의 ranked 아이템 스냅샷을 단기 세션 이벤트로 기록(`create_event`, 세션 `digest-<date>`,
     `_fit_to_limit`로 100k 한도 보장).
-  - **읽기:** `get_latest_digest()`가 최신 세션을 읽음. `_digest_session_ids`는 `list_sessions`를 **NextToken으로 페이지네이션**(세션은 삭제되지 않아 100개/페이지를 넘기면 단일 페이지가 최신 세션을 놓칠 수 있음; `MAX_SESSION_PAGES` 안전 캡).
+  - **읽기:** `get_digest(date)`가 **그 날짜의 세션**(`digest-YYYY-MM-DD`)을 직접 읽는다 — 비주얼 Lambda는 자기가 트리거된 날짜의 콘텐츠를 게시해야 하므로 '최신을 읽고 날짜를 비교'는 쓸 수 없다(`digest_result.generated_at`은 UTC라서 09:00 KST 이전 실행에서는 KST 다이제스트 날짜와 항상 어긋난다). 없으면 `None`이며 **최신으로 폴백하지 않는다**(어제 스토리를 오늘 게시하는 것을 막음). `get_latest_digest()`도 남아 있고, `_digest_session_ids`는 `list_sessions`를 **NextToken으로 페이지네이션**(세션은 삭제되지 않아 100개/페이지를 넘기면 단일 페이지가 최신 세션을 놓칠 수 있음; `MAX_SESSION_PAGES` 안전 캡).
   - **목적:** 데일리 비주얼 Lambda가 cross-Lambda로 이 스냅샷을 읽어 맥락을 공유하는 수단. (트렌드 회상은 별개 — 딥 리서치 에이전트의 `recall_trends`는 이 스냅샷이 아니라 `shared/constants.py`의 `TRENDS_KEY`(`trends.json`)를 직접 쿼리.)
   - **제거됨:** 시맨틱 recall/장기 전략 제거(관리형 추출이 트렌드 흐름이 아닌 안정적 사용자-사실만 뽑아 부적합).
 - **`LocalMemoryStore`:** 오프라인 폴백(`digest_*.json`만).
@@ -383,6 +392,20 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 **다시 raise**한다. 500 body를 반환하면 Lambda 입장에선 정상 종료라 Errors 알람도, 비동기 DLQ도 절대
 울리지 않았다. 세 함수 모두 `retry_attempts=0`이라 재시도로 인한 이중 게시 위험은 없다.
 
+**게시량 메트릭 & 날짜 전달 (다이제스트 → 비주얼 Lambda).**
+- `DigestItemsPublished`(EMF)는 **큐레이션된 스토리 수**(`digest.content.items`)를 센다. 랭커 후보 수를
+  세던 탓에 2026-08-13·08-17에 스토리 0건으로 게시된 날에도 만점처럼 보고되어 `EmptyDigestAlarm`이 울리지
+  않았다.
+- `_trigger_visual(digest_date)`는 날짜를 **명시적으로** 페이로드에 담아 비동기 invoke한다. 비주얼 Lambda는
+  `_requested_date`로 그 값을 읽고(DLQ 재생 시에는 봉투의 `requestPayload` 아래 값도 인정), 해당 날짜의
+  스냅샷만 로드한다.
+- **스냅샷 persist 실패 시 비주얼을 트리거하지 않고 시끄럽게 실패한다.** 비주얼 Lambda가 이 스냅샷으로
+  게시하는 유일한 Threads 경로이므로, persist가 실패한 날 트리거하면 **다른 날짜**의 스토리를 게시하게
+  된다. 트리거를 건너뛰고 예외를 다시 raise해 Errors 알람 + DLQ(재생 가능)로 남긴다 — 조용히 넘기면
+  '어제 콘텐츠 게시' 대신 '완전 무출력인데 아무 신호 없음'이 된다.
+- **Threads 부분 전달 알림:** 비주얼 Lambda는 `ThreadsDelivery`(posted/expected)를 보고 누락이 있으면
+  `ALERT_SNS_TOPIC_ARN`으로 SNS 알림을 올린다(env가 없으면 no-op이라 로컬 실행은 조용함).
+
 ## 9. 딥 리서치 에이전트(AgentCore Runtime 위의 Strands)
 
 Slack 멘션으로 트리거되는 **자율 딥 리서치** 에이전트. 자유형 토픽을 받아 열린 웹·학술 문헌·커뮤니티를 독립적으로
@@ -407,15 +430,16 @@ Slack 멘션으로 트리거되는 **자율 딥 리서치** 에이전트. 자유
 - `read_url(url)` — 특정 페이지 전문 fetch(`extract_url` → Tavily extract, `research_content_cap_chars`로 캡).
 - `recall_trends(query)` — `shared/constants.py`의 `TRENDS_KEY`(`trends.json`)를 직접 쿼리(키워드 매칭 + momentum 정렬, active/cooling 트렌드, 상위 `recall_memory_top_k`). 시맨틱 recall이나 AgentCore 장기 메모리가 아님 — cross-day 트렌드 메모리의 "이전 동향" 각을 위함.
 - `attach_image(source_url)` — 소스 페이지의 대표 이미지(og:image)를 받아 전달 컨텍스트에 stage(`fetch_og_image`). `research_max_staged_images` 캡 도달 시 거부.
-- `deliver_report(report, channel)` — 완성 리포트를 채널("slack" 기본/"threads")에 게시. `output.delivery.deliver_research_report` 위임. 알 수 없는 채널이면 에이전트가 스스로 고치도록 오류 문자열 반환(조용한 강등 없음).
+- `deliver_report(report, channel)` — 완성 리포트를 채널("slack" 기본/"threads")에 게시. `output.delivery.deliver_research_report` 위임. 알 수 없는 채널이면 에이전트가 스스로 고치도록 오류 문자열 반환(조용한 강등 없음). 반환 문자열은 **실제 전달량**(`DeliveryStats`: rendered/delivered/dropped/trimmed)을 담는다 — 캡을 넘겨 드롭된 게시물, 500자 컷으로 잘린 게시물, 안 붙은 reply가 모두 "Delivered the report"로 보고돼 에이전트가 최종 답변에서 완전한 전달을 단정했다. 불완전하면 그렇게 말하고, **재전송은 하지 않는다**(`delivered_channels` 가드로 두 번째 호출은 no-op이므로 재전송 경로 자체를 만들지 않음).
 
 `DeliveryContext`/`current_delivery_context`/`request_context`는 전달 계약을 소유한 `output/delivery.py`에 살고, 에이전트 엔트리포인트와 도구가 바인딩하도록 여기서 re-export된다.
 
 ### 9.1 채널 인지 전달 (`output/delivery.py`)
 - **`DeliveryContext`(dataclass):** invoke별 전달 타깃 + staging. `channel_id`/`thread_ts`, `staged_images`(attach_image가 쌓은 OG 이미지), `delivered_channels`(성공 게시된 채널 — 채널별 폴백 판단용), `last_report`(deliver_report에 넘긴 마지막 리포트 — 런타임 폴백이 한 줄 확인 메시지가 아니라 실제 리포트를 재게시하도록), `dry_run`(로컬 CLI에서 stdout으로 단락). `request_context`는 contextvar로 동시 invoke가 글로벌을 공유하지 않게 바인딩하고, `current_delivery_context`는 바인딩이 없으면 새 인스턴스를 반환(warm 컨테이너에서 모듈 싱글톤이 staged_images/채널을 누적하지 않게).
-- **`deliver_research_report`:** 채널별 디스패치. **채널별 멱등** — `channel in delivered_channels`면 재게시 스킵(재시도/중복 도구 호출이 이중 게시하지 않게). 성공 시 `delivered_channels`에 기록.
+- **`DeliveryStats`:** 마지막 전달 시도의 결과(`channel`, `rendered`, `delivered`, `dropped`, `trimmed`, `complete`). `DeliveryContext.last_stats`로 실려 `deliver_report`의 반환 문자열과 부분 전달 알림의 근거가 된다.
+- **`deliver_research_report`:** 채널별 디스패치. **채널별 멱등** — `channel in delivered_channels`면 재게시 스킵(재시도/중복 도구 호출이 이중 게시하지 않게). 성공 시 `delivered_channels`에 기록(런타임의 마지막 폴백이 필요한지 판단하는 신호도 이 집합이다). 성공했지만 `last_stats.complete`가 아니면 `_notify_incomplete_delivery`가 요청자의 **같은 스레드**(`thread_ts`)에 한 줄 안내를 남긴다.
 - **`_deliver_slack`:** staged OG 이미지를 먼저 각각 파일 업로드(소스 크레딧 캡션, `extension_for(content_type)`로 파일 확장자 결정) → 리포트에 `sanitize_slack_mrkdwn`을 적용해 모델이 흘린 마크업(## 헤딩/**bold**/`[text](url)`/이모지)을 코드로 보정(폴백 경로와 일치; `[text](url)`→`<url|text>` 변환은 **URL 내 균형 괄호를 보존**해 위키피디아/arXiv/DOI 인용이 첫 `)`에서 잘리지 않음) → `render_research_blocks(header=":satellite: OmniSummary Deep Research")`로 Block Kit 청크를 게시. 알림/프리뷰 텍스트는 `_strip_slack_mrkdwn`으로 평문화. best-effort(실패 시 False 반환).
-- **`_deliver_threads`:** `render_threads_research(report, max_posts=research_max_threads_posts)`로 root + 평탄한 reply chain(각 ≤500자). staged 이미지가 있으면 **첫 1장만** root에 태움(Threads 미디어 인덱싱이 느려 나머지는 Slack 전용) — PNG/원본 content_type 바이트를 S3 키(`{prefix}threads/research_<sha>.<ext>`)로 host하고 `post_to_threads`에 `image_content_type`을 함께 넘김. 상태 버킷이 없으면 텍스트 전용으로 게시.
+- **`_deliver_threads`:** `render_threads_research(report, max_posts=research_max_threads_posts)`로 root + 평탄한 reply chain(각 ≤500자) + **드롭/트림 수**(`ThreadsResearchRender`). staged 이미지가 있으면 **첫 1장만** root에 태움(Threads 미디어 인덱싱이 느려 나머지는 Slack 전용) — PNG/원본 content_type 바이트를 S3 키(`{prefix}threads/research_<sha>.<ext>`)로 host하고 `post_to_threads`에 `image_content_type`을 함께 넘김. 상태 버킷이 없으면 텍스트 전용으로 게시.
 - **`_dry_run_print`:** 실제 게시 대신 렌더 결과를 stdout으로(Threads는 root/reply, Slack은 sanitize 후 header+섹션 블록). Threads는 첫 이미지만 첨부됨을 명시.
 
 ### 9.2 진입 Lambda (`lambda_handlers/slack_event_handler.py`)
@@ -433,7 +457,7 @@ ingress 흐름:
 - payload의 `correlation_id`로 correlation id 시드.
 - `DeliveryContext(channel_id, thread_ts)`를 만들고 `create_research_agent()`로 에이전트 생성.
 - `request_context(delivery)`로 contextvar 스코프(동시 invoke가 한 요청의 채널을 다른 요청으로 누출하지 않게) 안에서 에이전트 실행. 응답은 `sanitize_slack_mrkdwn`. 예외 시 `_emit_agent_error_metric`(EMF `OmniSummary/AgentErrors`)을 찍고 **raw 예외 문자열이 아닌 일반 안내 메시지**로 응답(모델 ID·ARN·백엔드 오류 바디가 Slack에 새지 않게).
-- **Slack 폴백:** 에이전트가 **어떤 채널에도 전달하지 못했을 때만**(`channel_id and not delivery.delivered_channels` — `deliver_report`를 끝내 호출 안 했거나 모든 전달이 실패) `_send_slack_message`로 게시해 사용자가 최소한 무언가는 받게 한다. Slack이 타깃이 아니었다는 이유만으로는 폴백하지 않는다 — Threads 전용 요청이 Threads에 성공했으면 (Threads 포맷) 리포트를 Slack에 중복 투척하면 안 되기 때문. 이때 한 줄 확인 메시지가 아니라 `delivery.last_report`(실제 리포트)를 우선 사용하고, `sanitize_slack_mrkdwn`으로 게시(`_send_slack_message`가 `render_agent_blocks` 폴백 래퍼 사용). 이 마지막 폴백 게시도 try/except로 감싸 여기서의 raise가 invocation을 하드 에러로 만들지 않게 한다.
+- **Slack 폴백:** 에이전트가 **어떤 채널에도 전달하지 못했을 때만**(`channel_id and not delivery.delivered_channels` — `deliver_report`를 끝내 호출 안 했거나 모든 전달이 실패) `_send_slack_message`로 게시해 사용자가 최소한 무언가는 받게 한다. Slack이 타깃이 아니었다는 이유만으로는 폴백하지 않는다 — Threads 전용 요청이 Threads에 성공했으면 (Threads 포맷) 리포트를 Slack에 중복 투척하면 안 되기 때문. 이때 한 줄 확인 메시지가 아니라 `delivery.last_report`(실제 리포트)를 우선 사용하고, `sanitize_slack_mrkdwn`으로 게시(`_send_slack_message`가 `render_agent_blocks` 폴백 래퍼 사용). 이 마지막 폴백 게시도 try/except로 감싸 여기서의 raise가 invocation을 하드 에러로 만들지 않게 하되, 그 경우 어떤 채널에도 아무것도 도달하지 못했으므로 `_emit_agent_error_metric()`을 찍어 알람이 울게 한다(엔트리포인트는 여전히 텍스트를 반환하므로 그 외엔 무증상).
 
 ### 9.4 OG 이미지 첨부 (`shared/media/og_image.py`)
 - **`fetch_og_image(url)`:** 페이지를 브라우저 UA로 fetch해 og:image/twitter:image 메타(`og:image`→`og:image:url`→`twitter:image`→`twitter:image:src` 우선순위)를 파싱하고 상대 URL은 페이지 URL로 절대화. 이미지는 **스트리밍**으로 받아 oversize 바디를 다 버퍼링하지 않고 중간에 중단(Content-Length 선검사 + 스트림 누적 검사, `og_image_max_bytes`/`og_image_timeout_sec`). 렌더 가능한 래스터 타입(jpeg/png/webp/gif)만 통과 — SVG 등 벡터/이색 타입은 Slack 프리뷰/Threads fetcher가 못 다뤄 제외. 어떤 오류·미존재·비이미지·oversize도 `None` 반환(절대 raise 안 함). 반환 `ImageAsset(data, source_url, image_url, content_type, alt)`.
@@ -455,6 +479,7 @@ ingress 흐름:
 **생성 흐름 (`VisualGenerator.generate(instruction, source, context)`):**
 - **브리프:** `VisualSynopsisPrompt`로 Claude(Bedrock)가 단일 이미지 브리프 생성(JSON: title·caption·prompt).
 - **파싱:** Bedrock 구조화 출력(`with_structured_output(VisualBrief)`)으로 검증된 객체를 받음 — 손으로 JSON을 파싱하지 않는다(브리프의 `prompt`가 최대 4000자 자유 문구라 escape 안 된 인용부호/개행에 파서가 깨졌음).
+- **필드 유출 방어(`VisualBrief` 검증기):** 구조화 출력이 다음 필드 값을 앞 문자열에 흘리는 슬립이 반복됐다 — 2026-08-17엔 태그 형태(`</caption>\n<parameter name="orientation">landscape`)가 Threads에 그대로 게시되고, 08-18 로컬 실행에선 태그 없는 형태(캡션이 맨 끝에 `\nportrait`)가 나왔다. `title`/`caption`은 (1) 태그 유사 마크업을 제거하고(`<2%` 같은 산문은 보존), (2) **마지막 줄 전체**가 orientation 필드의 **허용값 중 하나**면 그 줄을 떨어뜨린다. 후보값은 하드코딩 단어 목록이 아니라 `typing.get_args`로 Literal에서 파생하며, 비교 대상을 파싱된 `orientation` 하나로 두면 08-17처럼 값이 어긋난 유출(캡션은 `landscape`, 필드는 기본값 `portrait`)을 놓친다. 산문 중간에 그 단어가 들어간 경우는 건드리지 않고, 실제로 값을 떨어뜨린 경우에만 WARNING을 남긴다.
 - **이미지:** 브리프의 `prompt`로 OpenAI `gpt-image` 호출(`b64_json`) → PNG 바이트. 블로킹 호출(30-120초)이라 `asyncio.to_thread`로 이벤트 루프에서 분리(동시 Slack/Threads I/O가 렌더 동안 멈추지 않게). orientation(square/landscape/portrait)은 브리프가 시각에 맞게 고르고, `image_sizes` 딕셔너리로 gpt-image size에 매핑. 모더레이션 차단(intermittent) 시 완화된 브리프로 1회 재생성.
 - **게시:** `DailyVisualMaker`가 `output.slack_handler.send_image_to_slack`(`files_upload_v2`)로 Slack에 업로드(+`enable_threads_post` 시 Threads에도).
 
@@ -474,7 +499,14 @@ ingress 흐름:
 - **IAM(최소 권한):**
   - `/{project}/{stage}/*`로 스코프된 `ssm:GetParameter*`.
   - foundation-model/inference-profile ARN으로 스코프된 `bedrock:InvokeModel*`.
-  - 스코프된 `lambda:InvokeFunction` 및 `bedrock-agentcore:InvokeAgentRuntime`/Memory 데이터플레인 액션.
+  - `lambda:InvokeFunction`은 **데일리 비주얼 함수 하나**(`{project}-{stage}-visual`)로 스코프 — 파이프라인
+    역할의 유일한 cross-function 호출이 그 비동기 fan-out이다. 예전의 `{project}-{stage}-*`는 공개
+    API Gateway 뒤의 Slack 핸들러와 토큰 갱신 Lambda까지 포함했다. ARN은 application_stack이 붙이는
+    **리터럴 이름**으로 만든다(함수 객체를 참조하면 `fnd → app` 순환 의존이 됨).
+  - S3 객체 접근은 프로젝트 **루트 prefix**(`config.aws.s3_prefix` + `/*`)로 스코프 — 상태 버킷은 기존 공유
+    버킷일 수 있고, 이 prefix가 프로젝트가 만지는 모든 키(state_store의 `digest_state`, 수집기 park 파일,
+    데일리 비주얼의 `threads/*.png`)를 덮는다. 버킷 레벨 List(CDK가 붙임)는 그대로 둔다.
+  - `bedrock-agentcore:InvokeAgentRuntime`/Memory 데이터플레인 액션.
   - 프로젝트 로그 그룹 ARN으로 스코프된 CloudWatch Logs.
   - 계정 전역 관리형 정책 없음.
 
@@ -495,8 +527,15 @@ ingress 흐름:
   **이 스택에서** `CfnSecurityGroupIngress`로 추가. 규칙이 없어 AWS에서 X 피드 fetch가 전부 타임아웃했다(실제
   X 항목은 S3 park 파일이 공급). `connections.allow_from()`은 규칙을 foundation 쪽에 붙여 `fnd → app` 순환
   참조가 되므로 명시적 인그레스 리소스를 쓴다. Lambda SG는 기본 전체 egress라 ingress만 빠진 반쪽이었다.
-- **시크릿 처리:** 평문 `String` SSM 파라미터(CloudFormation은 SecureString 생성 불가). 보완 통제는 스코프된
-  IAM 읽기 정책이며, 더 민감한 자격증명은 Secrets Manager로 승격 권장. Threads 갱신 Lambda는 갱신된 토큰을
+- **시크릿 처리:** 스택은 파라미터 **경로만** 만들고 값은 `SSM_PLACEHOLDER`로 둔다(CloudFormation은 SecureString
+  생성 불가 → 값을 스택에 넘기면 템플릿·CDK staging 버킷·`GetTemplate` 응답에 평문으로 박힌다). 실제 값은
+  배포 후 `scripts/put_secrets.py`가 **SecureString**으로 out-of-band 기록한다(`--dry-run` 미리보기,
+  `--verify` 읽기 전용 점검, `--force`로만 기존 SecureString 덮어씀). 재배포는 값을 건드리지 않는다(placeholder가
+  안 바뀌므로 CloudFormation이 리소스를 업데이트하지 않음). `String` → `SecureString` 타입 변경을 SSM이
+  `ValidationException`으로 거절하면 스크립트는 `Type` 없이 값만 재기록하고(값은 반영, 암호화는 아님) 남은
+  시크릿을 계속 처리한 뒤 `FAILED` 목록과 non-zero 종료로 보고한다 — 예전엔 첫 거절에서 루프가 죽어 그 뒤
+  시크릿이 전부 placeholder(=런타임에선 미설정)로 남았다. 보완 통제는 스코프된 IAM 읽기 정책.
+  Threads 갱신 Lambda는 갱신된 토큰을
   `put_parameter(Overwrite=True)`로 **`Type`을 지정하지 않고** 덮어쓴다 — 파라미터는 CFN이 만든 `String`이고
   `Type=SecureString`을 얹는 것은 타입 변경이어서 SSM이 `ValidationException`으로 거절한다(그러면 토큰이 갱신되지
   않은 채 60일 뒤 Threads 전달이 끊긴다). `Type`을 생략하면 기존 타입을 유지하고 값만 갱신한다.

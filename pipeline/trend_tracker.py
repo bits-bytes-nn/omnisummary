@@ -20,7 +20,7 @@ from shared import (
     parse_json_from_llm_output,
 )
 from shared.config import PipelineConfig
-from shared.state_store import StateStore
+from shared.state_store import StateReadError, StateStore
 
 __all__ = ["TRENDS_KEY", "TrendTracker"]
 
@@ -38,12 +38,21 @@ class TrendTracker:
         self.llm = llm_factory.get_model(config.trend_model)
         self.state_store = state_store
         self._memory: TrendMemory | None = None
+        # Set when trends.json could not be READ this run: history is unknown, so the merge must
+        # not be persisted (it would replace every accumulated thread with today's observations).
+        self._degraded = False
 
     def _load_memory(self) -> TrendMemory:
         if self._memory is not None:
             return self._memory
 
-        raw = self.state_store.read(TRENDS_KEY) if self.state_store.exists(TRENDS_KEY) else None
+        try:
+            raw = self.state_store.read(TRENDS_KEY) if self.state_store.exists(TRENDS_KEY) else None
+        except StateReadError as e:
+            logger.error("Trend memory unreadable (%s); running without trend history", e)
+            self._degraded = True
+            self._memory = TrendMemory()
+            return self._memory
         if raw:
             try:
                 self._memory = TrendMemory.model_validate_json(raw)
@@ -145,6 +154,11 @@ class TrendTracker:
         self._run_lifecycle(memory, today_date)
 
         self._memory = memory
+        if self._degraded:
+            # trends.json was unreadable at load, so `memory` holds only today's observations.
+            # Writing it would wipe every tracked thread; the next healthy run picks up again.
+            logger.error("Not persisting trends: the existing trend memory could not be read this run")
+            return
         await asyncio.to_thread(self.state_store.write, TRENDS_KEY, memory.model_dump_json())
         logger.info("Persisted %d trends to '%s'", len(memory.trends), TRENDS_KEY)
 

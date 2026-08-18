@@ -479,11 +479,30 @@ class BedrockLanguageModelFactory(
         return enable and model_info.supports_thinking
 
 
-def resolve_secret(env_var: str, ssm_suffix: str) -> str:
+def _is_parameter_not_found(exc: BaseException) -> bool:
+    """True when SSM answered that the parameter does not exist (as opposed to failing to answer)."""
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        return response.get("Error", {}).get("Code") == "ParameterNotFound"
+    return False
+
+
+class SecretUnavailableError(RuntimeError):
+    """SSM could not be read (outage, throttle, denied) — as opposed to the secret being unset.
+    Only raised for callers that opt into strict=True; every other caller keeps the ""-degrades
+    contract it was written against."""
+
+
+def resolve_secret(env_var: str, ssm_suffix: str, *, strict: bool = False) -> str:
     """Resolve a secret from env first, then SSM Parameter Store.
 
     SSM path is /{PROJECT_NAME}/{STAGE}/{ssm_suffix} (SecureString-decrypted).
     Returns "" if unavailable from either source (callers degrade gracefully).
+
+    strict=True instead RAISES SecretUnavailableError when SSM itself could not be read, so a
+    caller whose whole job is that secret (the Threads token refresh) fails loudly rather than
+    reporting "nothing to refresh" — which is indistinguishable from "no token configured" and
+    quietly let the token lapse. A parameter that is genuinely absent/placeholder still returns "".
     """
     import os
 
@@ -498,6 +517,8 @@ def resolve_secret(env_var: str, ssm_suffix: str) -> str:
         ssm = boto3.client("ssm", region_name=region)
         resolved = ssm.get_parameter(Name=f"/{project}/{stage}/{ssm_suffix}", WithDecryption=True)["Parameter"]["Value"]
     except Exception as e:
+        if strict and not _is_parameter_not_found(e):
+            raise SecretUnavailableError(f"Could not read secret '{ssm_suffix}' from SSM: {e}") from e
         logger.warning("Secret '%s' unavailable (env + SSM '%s'): %s", env_var, ssm_suffix, e)
         return ""
     # The CDK stack creates each parameter holding a placeholder (never a real secret in the

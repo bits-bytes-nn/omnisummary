@@ -154,6 +154,15 @@ async def deliver_report(report: str, channel: str = "slack") -> str:
 
     delivery = current_delivery_context()
     ok = await deliver_research_report(report, channel=target, delivery=delivery)
+    # Report what the reader actually got. "Delivered the report" was returned even when half the
+    # posts were dropped over the channel cap or trimmed mid-sentence, so the agent's final answer
+    # asserted a complete delivery that never happened.
+    stats = delivery.last_stats
     if not ok:
-        return f"Failed to deliver the report to {target}."
-    return f"Delivered the report to {target}."
+        return f"Failed to deliver the report to {target} ({stats.summary()})."
+    if not stats.complete:
+        return (
+            f"Delivered the report to {target} INCOMPLETELY: {stats.summary()}. "
+            "Do not re-send it (that would duplicate what did land); say so in your final answer."
+        )
+    return f"Delivered the report to {target} ({stats.summary()})."

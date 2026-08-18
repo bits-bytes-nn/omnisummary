@@ -8,7 +8,7 @@ from shared.history_store import (
     ThreadsPostLedger,
     published_urls_from_snapshots,
 )
-from shared.state_store import StateStore
+from shared.state_store import StateReadError, StateStore
 
 
 class _MemStore(StateStore):
@@ -186,3 +186,51 @@ class TestRollingLog:
         entries = log.entries()
         assert len(entries) == 1
         assert entries[0]["lead"] == "second"
+
+
+class _UnreadableStore(StateStore):
+    """A store whose reads FAIL (throttled/denied S3), as opposed to being empty."""
+
+    def __init__(self) -> None:
+        self.writes: dict[str, str] = {}
+
+    def read(self, key: str) -> str | None:
+        raise StateReadError(f"cannot read {key}")
+
+    def write(self, key: str, content: str) -> None:
+        self.writes[key] = content
+
+    def exists(self, key: str) -> bool:
+        raise StateReadError(f"cannot stat {key}")
+
+
+class TestUnreadableStateIsNotEmptyState:
+    """Regression: an unreadable state blob read exactly like "no history yet", so the next
+    read-modify-write persisted that emptiness — blanking the publish ledger, the recent-leads
+    window, the visual-format window and the Threads idempotency marker. Now: log, treat history as
+    unknown, and SKIP the write. Nothing may raise into a publish path."""
+
+    def test_threads_ledger_reads_as_unposted_and_writes_nothing(self):
+        store = _UnreadableStore()
+        ledger = ThreadsPostLedger(store)
+        today = date(2026, 6, 10)
+        # Unknown history must not block the publish: a duplicate post is recoverable, a lost
+        # digest is not.
+        assert ledger.already_posted(today) is False
+        ledger.mark(today, "run-1")
+        ledger.unmark(today, "run-1")
+        assert store.writes == {}
+
+    def test_published_url_ledger_excludes_nothing_and_writes_nothing(self):
+        store = _UnreadableStore()
+        ledger = PublishedUrlLedger(store, ttl_days=6)
+        assert ledger.recent_urls(date(2026, 6, 10)) == set()
+        ledger.record(["https://a.com/x"], date(2026, 6, 10))
+        assert store.writes == {}  # never replace weeks of history with today's single URL
+
+    def test_rolling_log_returns_empty_and_skips_the_append(self):
+        store = _UnreadableStore()
+        log = RollingLog(store, "visual_formats.json", max_entries=7)
+        assert log.entries() == []  # called from the publish path — must not raise
+        log.append({"date": "2026-06-10", "orientation": "square"}, dedup_key="date")
+        assert store.writes == {}

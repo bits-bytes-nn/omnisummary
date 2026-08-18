@@ -143,7 +143,14 @@ class OmniSummaryFoundationStack(Stack):
         self.agentcore_role.add_to_policy(bedrock_invoke_statement)
         self.agentcore_role.add_to_policy(bedrock_profile_statement)
         self.agentcore_role.add_to_policy(logs_statement)
-        self.state_bucket.grant_read_write(self.agentcore_role)
+        # Scope object access to the project's own prefix instead of the entire bucket. The bucket
+        # can be a pre-existing shared one (config.aws.state_bucket_name), so a bucket-wide
+        # grant hands every other tenant's objects to this role. The root prefix provably covers
+        # everything the project touches: {prefix}/digest_state/* (state_store), {prefix}/<file>
+        # park files (collectors.base.park_file_key) and {prefix}/threads/*.png (daily visual).
+        # An empty s3_prefix keeps the previous bucket-wide behaviour.
+        objects_prefix = f"{config.aws.s3_prefix.strip('/')}/*" if config.aws.s3_prefix.strip("/") else "*"
+        self.state_bucket.grant_read_write(self.agentcore_role, objects_prefix)
 
         self.lambda_role = iam.Role(
             self,
@@ -157,12 +164,17 @@ class OmniSummaryFoundationStack(Stack):
         self.lambda_role.add_to_policy(bedrock_invoke_statement)
         self.lambda_role.add_to_policy(bedrock_profile_statement)
         self.lambda_role.add_to_policy(logs_statement)
-        self.state_bucket.grant_read_write(self.lambda_role)
+        self.state_bucket.grant_read_write(self.lambda_role, objects_prefix)
         self.dedup_table.grant_read_write_data(self.lambda_role)
+        # The digest Lambda's only cross-function call is the async fan-out to the daily-visual
+        # Lambda, so grant exactly that one function instead of every {project}-{stage}-* function
+        # (which included the public-facing Slack handler and the token-refresh Lambda). Built from
+        # the literal name the application stack assigns, so foundation takes NO dependency on it —
+        # importing the function object here would create a foundation -> application cycle.
         self.lambda_role.add_to_policy(
             iam.PolicyStatement(
                 actions=["lambda:InvokeFunction"],
-                resources=[f"arn:aws:lambda:{self.region}:{self.account}:function:{project_name}-{stage}-*"],
+                resources=[f"arn:aws:lambda:{self.region}:{self.account}:function:{project_name}-{stage}-visual"],
             )
         )
         self.lambda_role.add_to_policy(

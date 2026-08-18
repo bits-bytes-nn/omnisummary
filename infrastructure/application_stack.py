@@ -142,6 +142,10 @@ class OmniSummaryApplicationStack(Stack):
                 "PROJECT_NAME": project_name,
                 "STAGE": stage,
                 "MEMORY_ID": foundation.memory_id,
+                # The visual Lambda is the Threads publish path, so it — not the digest Lambda —
+                # is what knows whether the post actually landed. It notifies on a partial reply
+                # chain / failed delivery; without this the notice is a silent no-op.
+                "ALERT_SNS_TOPIC_ARN": foundation.alerts_topic.topic_arn,
                 # The visual maker reads/writes visual_formats.json (format-variation history)
                 # via the StateStore; without these it falls through to the config-profile
                 # branch and crashes on the 'research' profile, which doesn't exist in Lambda.

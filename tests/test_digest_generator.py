@@ -500,3 +500,117 @@ class TestFormatSourceDetail:
         result = _source_detail(item)
         assert "`r/MachineLearning`" in result
         assert ":thumbsup:" not in result
+
+
+class TestCountdownPosition:
+    """The gag is kept verbatim, but as a PREFIX it spent the Threads root's first line — the one
+    line most feed readers see — on the same fixed sentence for 40 consecutive posts. Position is a
+    config knob; the strip helper must handle both ends in the same release, or recent-leads novelty
+    and the visual's editorial take start comparing boilerplate again."""
+
+    def test_prefix_places_the_intro_first(self):
+        from shared import place_countdown_intro
+
+        assert (
+            place_countdown_intro("오늘의 각도다.", "AGI 등장 870일 전이다. ")
+            == "AGI 등장 870일 전이다. 오늘의 각도다."
+        )
+
+    def test_suffix_places_the_intro_on_its_own_closing_line(self):
+        from shared import place_countdown_intro
+
+        out = place_countdown_intro("오늘의 각도다.", "AGI 등장 870일 전이다. ", "suffix")
+        assert out == "오늘의 각도다.\n\nAGI 등장 870일 전이다."
+        assert out.splitlines()[0] == "오늘의 각도다."  # the first line is the day's angle
+
+    def test_idempotent_at_either_end(self):
+        from shared import place_countdown_intro
+
+        intro = "AGI 등장 870일 전이다. "
+        prefixed = place_countdown_intro("각도다.", intro)
+        assert place_countdown_intro(prefixed, intro) == prefixed
+        suffixed = place_countdown_intro("각도다.", intro, "suffix")
+        assert place_countdown_intro(suffixed, intro, "suffix") == suffixed
+
+    def test_no_intro_or_no_lead_changes_nothing(self):
+        from shared import place_countdown_intro
+
+        assert place_countdown_intro("각도다.", "", "suffix") == "각도다."
+        assert place_countdown_intro("", "AGI 등장 870일 전이다. ", "suffix") == ""
+
+    def test_editorial_lead_strips_either_end(self):
+        from shared import editorial_lead
+
+        intro = "AGI 등장 870일 전이다. "
+        assert editorial_lead("AGI 등장 870일 전이다. 각도다.", intro) == "각도다."
+        assert editorial_lead("각도다.\n\nAGI 등장 870일 전이다.", intro) == "각도다."
+        assert editorial_lead("각도다.", intro) == "각도다."  # never attached
+
+    @pytest.mark.asyncio
+    async def test_generate_honours_the_configured_position(self):
+        from datetime import date
+
+        payload = json.dumps(
+            {"lead": "각도다.", "items": [{"title": "T", "url": "u", "body": "본문.", "implication": "시사점."}]}
+        )
+        gen = _generator(payload)
+        gen.config.enable_grounding_check = False
+        gen.config.agi_countdown_position = "suffix"
+        result = await gen.generate(_ranked(), [], today=date(2026, 8, 18))
+        assert result.content is not None
+        lead = result.content.lead
+        assert lead.splitlines()[0] == "각도다."  # the angle, not the countdown, opens the root
+        assert lead.splitlines()[-1].startswith("AGI 등장")
+        assert lead.rstrip().endswith("전이다.")  # the gag itself is unchanged
+
+
+class TestSourceMatchingByNormalizedUrl:
+    """The editor echoes each story's URL back, and the source tag was matched by EXACT string: one
+    trailing slash, an http→https flip or a dropped utm param and the story shipped with no
+    provenance line at all — on Slack and on Threads."""
+
+    def _generator_with(self, ranked_url: str):
+        gen = _generator("{}")
+        return gen, [
+            RankedItem(
+                item=CollectedItem(
+                    item_id="a",
+                    source_type=SourceType.RSS,
+                    title="T",
+                    url=ranked_url,
+                    metadata={"feed_title": "Interconnects"},
+                ),
+                score=0.9,
+            )
+        ]
+
+    def test_trailing_slash_and_scheme_variants_still_match(self):
+        gen, ranked = self._generator_with("http://www.interconnects.ai/p/x/")
+        content = DigestContent(
+            lead="l", headline_index=1, items=[DigestItem(title="T", url="https://interconnects.ai/p/x", body="b")]
+        )
+        gen._fill_source_metadata(content, ranked)
+        assert content.items[0].source_tag == "`Interconnects`"
+
+    def test_identical_urls_are_unaffected(self):
+        gen, ranked = self._generator_with("https://interconnects.ai/p/x")
+        content = DigestContent(
+            lead="l", headline_index=1, items=[DigestItem(title="T", url="https://interconnects.ai/p/x", body="b")]
+        )
+        gen._fill_source_metadata(content, ranked)
+        assert content.items[0].source_tag == "`Interconnects`"
+
+    def test_unmatched_item_falls_back_to_its_host(self):
+        # Last resort so the reader still sees provenance; derived from the URL, never a table.
+        gen, ranked = self._generator_with("https://interconnects.ai/p/x")
+        content = DigestContent(
+            lead="l", headline_index=1, items=[DigestItem(title="T", url="https://www.newsite.com/a/b", body="b")]
+        )
+        gen._fill_source_metadata(content, ranked)
+        assert content.items[0].source_tag == "`newsite.com`"
+
+    def test_unmatched_item_without_a_host_keeps_no_tag(self):
+        gen, ranked = self._generator_with("https://interconnects.ai/p/x")
+        content = DigestContent(lead="l", headline_index=1, items=[DigestItem(title="T", url="", body="b")])
+        gen._fill_source_metadata(content, ranked)
+        assert content.items[0].source_tag == ""
