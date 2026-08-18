@@ -107,6 +107,46 @@ class TestThreadsPosts:
         body_line = [ln for ln in post.split("\n\n") if "문장" in ln][0]
         assert body_line.rstrip().endswith("다.")
 
+    def test_reply_carries_the_source_line_without_slack_markup(self):
+        # The pipeline computes `source_tag`/`metrics` and Slack shows them, but the Threads reply
+        # used to discard both — a reader couldn't tell a Reddit thread from an arXiv paper without
+        # opening the link. The tag is stored backtick-wrapped for Slack mrkdwn, and Threads renders
+        # no markup, so the backticks must be stripped rather than published literally.
+        _, replies = render_threads_posts(_content(1))
+        post = replies[0]
+        assert "src1 · 👍 +10" in post
+        assert "`" not in post
+
+    def test_source_line_is_kept_even_when_the_body_must_be_trimmed(self):
+        # Provenance is fixed, like the title and the URL: knowing the source is worth more than
+        # one more clause of body.
+        content = DigestContent(
+            lead="리드.",
+            headline_index=1,
+            items=[
+                DigestItem(
+                    title="스토리",
+                    url="http://e.com/x",
+                    source_tag="`r/LocalLLaMA`",
+                    metrics="👍 +44",
+                    body="이것은 긴 본문 문장이다. " * 40,
+                    implication="핵심 시사점이다.",
+                )
+            ],
+        )
+        _, replies = render_threads_posts(content)
+        assert len(replies[0]) <= THREADS_MAX_POST_CHARS
+        assert "r/LocalLLaMA · 👍 +44" in replies[0]
+
+    def test_missing_source_metadata_adds_no_blank_line(self):
+        content = DigestContent(
+            lead="리드.",
+            headline_index=1,
+            items=[DigestItem(title="스토리", url="http://e.com/x", body="본문이다.", implication="시사점이다.")],
+        )
+        _, replies = render_threads_posts(content)
+        assert replies[0].split("\n\n") == ["스토리", "본문이다. 시사점이다.", "http://e.com/x"]
+
     def test_all_posts_within_cap(self):
         root, replies = render_threads_posts(_content(3, lead="나" * 700))
         assert len(root) <= THREADS_MAX_POST_CHARS

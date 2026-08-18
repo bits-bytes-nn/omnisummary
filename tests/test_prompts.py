@@ -29,6 +29,7 @@ _INPUTS = {
         "voice_guidance": "v",
         "target_count": 5,
         "recent_leads": "r",
+        "prose_budget_rule": " body and implication together must stay under 380 characters.",
     },
     TrendClassifyPrompt: {"existing_trends": "e", "todays_digest": "d"},
     GroundingCheckPrompt: {"digest_text": "d", "sources": "s"},

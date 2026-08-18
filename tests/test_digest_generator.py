@@ -207,6 +207,51 @@ class TestParseContent:
             _generator("")._parse_content(raw)
 
 
+class TestProseBudgetReachesTheEditor:
+    """The renderer enforces the 500-char Threads cap by dropping trailing body sentences, but the
+    editor was never told a budget: 5 of 95 sampled items lost their closing sentence (median 106
+    chars — usually the concrete figures), and adding the source line pushed that to 8 of 95."""
+
+    def test_budget_clause_states_the_configured_limit(self):
+        from pipeline.digest_generator import _prose_budget_rule
+
+        rule = _prose_budget_rule(380)
+        assert "380" in rule
+        assert "implication" in rule
+
+    def test_no_budget_configured_states_no_number(self):
+        # 0 disables the hint for a deployment whose channel has no post cap; the sentence must
+        # still read naturally rather than "under 0 characters".
+        from pipeline.digest_generator import _prose_budget_rule
+
+        assert _prose_budget_rule(0) == ""
+
+    @pytest.mark.asyncio
+    async def test_budget_is_passed_into_the_prompt(self):
+        from datetime import date
+
+        emitted = {
+            "items": [{"title": "T", "url": "u", "body": "본문.", "implication": "시사점."}],
+            "headline_index": 1,
+            "lead": "리드.",
+        }
+        seen: list[str] = []
+
+        def _reply(prompt_value):
+            seen.append(str(prompt_value))
+            return AIMessage(content=json.dumps(emitted))
+
+        factory = MagicMock()
+        factory.get_model.return_value = RunnableLambda(_reply)
+        config = PipelineConfig(enable_grounding_check=False, digest_item_prose_max_chars=333)
+        gen = DigestGenerator(config, factory)
+        ranked = [
+            RankedItem(item=CollectedItem(item_id="i", source_type=SourceType.RSS, title="T", url="u"), score=0.8)
+        ]
+        await gen.generate(ranked, [r.item for r in ranked], today=date(2030, 1, 1))
+        assert any("333" in s for s in seen)
+
+
 class TestReAskOnUnparseableEmission:
     """Regression (2026-08-13, 2026-08-17): the editor emitted malformed JSON once, the digest
     silently became lead=raw/items=[], and both days published a story-less post. generate() must

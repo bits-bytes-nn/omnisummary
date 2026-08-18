@@ -249,12 +249,19 @@ def _truncate_at_word(text: str, max_len: int) -> str:
     return (window[:cut] if cut > 0 else window).rstrip()
 
 
-def _fit_one_post(title: str, body: str, implication: str, url: str, max_len: int = THREADS_MAX_POST_CHARS) -> str:
-    """Build ONE Threads post for an item that fits within max_len. Title and URL are always
-    kept; the implication (the voice line) is preserved over body — body sentences are dropped
-    from the end first, and the implication only goes if title+implication+URL still overflow.
-    Nothing is cut mid-sentence and the link is never split. Each item maps to exactly one reply."""
-    fixed = [p for p in (title.strip(),) if p]
+def _fit_one_post(
+    title: str, meta: str, body: str, implication: str, url: str, max_len: int = THREADS_MAX_POST_CHARS
+) -> str:
+    """Build ONE Threads post for an item that fits within max_len. Title, the source line and the
+    URL are always kept; the implication (the voice line) is preserved over body — body sentences
+    are dropped from the end first, and the implication only goes if the fixed parts still overflow.
+    Nothing is cut mid-sentence and the link is never split. Each item maps to exactly one reply.
+
+    `meta` is the "r/LocalLLaMA · 👍 +44" provenance line the pipeline already computes and Slack
+    already shows. Threads used to discard it, so a reader could not tell a Reddit thread from an
+    arXiv paper without opening the link. It costs a median of 16 characters and is treated as
+    fixed: knowing the source is worth more than one more clause of body."""
+    fixed = [p for p in (title.strip(), meta.strip()) if p]
     tail = [url.strip()] if url.strip() else []
     impl = implication.strip()
 
@@ -284,10 +291,10 @@ def _fit_one_post(title: str, body: str, implication: str, url: str, max_len: in
 
 
 def render_threads_posts(content: DigestContent) -> tuple[str, list[str]]:
-    """Render DigestContent for Threads: a root text (the lead) and a reply chain with
-    EXACTLY ONE reply per item (title + body + implication + URL). Each reply is trimmed to
-    fit Threads' 500-char cap at a clean sentence boundary — never mid-word — keeping the
-    title and URL. No Slack markup (Threads renders none)."""
+    """Render DigestContent for Threads: a root text (the lead) and a reply chain with EXACTLY ONE
+    reply per item (title + source line + body + implication + URL). Each reply is trimmed to fit
+    Threads' 500-char cap at a clean sentence boundary — never mid-word — keeping the title, the
+    source line and the URL. No Slack markup (Threads renders none)."""
     lead = content.lead.strip()
     if len(lead) > THREADS_MAX_POST_CHARS:
         kept = _sentences(lead)
@@ -296,8 +303,18 @@ def render_threads_posts(content: DigestContent) -> tuple[str, list[str]]:
         # No sentence boundary in range → word-trim, never a mid-word slice.
         lead = " ".join(kept) if kept else _truncate_at_word(lead, THREADS_MAX_POST_CHARS)
 
-    replies = [_fit_one_post(item.title, item.body, item.implication or "", item.url) for item in content.items]
+    replies = [
+        _fit_one_post(item.title, _item_meta(item), item.body, item.implication or "", item.url)
+        for item in content.items
+    ]
     return lead, replies
+
+
+def _item_meta(item) -> str:
+    """The provenance line, same composition Slack's context block uses — but stripped of markup.
+    `source_tag` is stored backtick-wrapped for Slack mrkdwn (`` `r/LocalLLaMA` ``), and Threads
+    renders no markup, so the backticks would show up literally in the post."""
+    return _strip_slack_mrkdwn(" · ".join(p for p in (item.source_tag, item.metrics) if p)).strip()
 
 
 _URL_RE = re.compile(r"https?://\S+")

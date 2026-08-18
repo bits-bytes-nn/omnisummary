@@ -88,6 +88,7 @@ class DigestGenerator:
             "voice_guidance": self.config.digest_voice_guidance,
             "target_count": target_count,
             "recent_leads": _format_recent_leads(recent_leads),
+            "prose_budget_rule": _prose_budget_rule(self.config.digest_item_prose_max_chars),
         }
 
         async def _ask_editor() -> DigestContent:
@@ -312,6 +313,18 @@ class DigestGenerator:
             tag = f"`{domain}`" if domain else "`Web`"
 
         return tag, " · ".join(metrics)
+
+
+def _prose_budget_rule(max_chars: int) -> str:
+    """The clause telling the editor how much prose actually survives to the post. Empty when no
+    budget is configured, so the sentence reads naturally either way (rather than "under 0 chars")."""
+    if max_chars <= 0:
+        return ""
+    return (
+        f" `body` and `implication` TOGETHER must stay under {max_chars} characters — the renderer "
+        "drops trailing sentences that do not fit, so an over-long body loses exactly the closing "
+        "detail you wrote last."
+    )
 
 
 def _format_recent_leads(recent_leads: list[str] | None) -> str:

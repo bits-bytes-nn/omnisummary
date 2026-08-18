@@ -165,6 +165,14 @@ class PipelineConfig(_StrictModel):
     visual_multi_panel_target_ratio: float = Field(default=0.34, ge=0.0, le=1.0)
     ranking_model: LanguageModelId = LanguageModelId.CLAUDE_V5_SONNET
     digest_model: LanguageModelId = LanguageModelId.CLAUDE_V5_SONNET
+    # Character budget for one item's `body` + `implication` prose, stated to the editor. Derived,
+    # not arbitrary: a Threads post caps at 500 characters and the renderer spends the rest on the
+    # parts CODE owns — the display title, the "r/LocalLLaMA · 👍 +44" source line, the URL and the
+    # blank-line separators (~120 chars in practice). The renderer still enforces the real cap by
+    # dropping trailing sentences; 5 of 95 sampled items lost their closing sentence that way (a
+    # median of 106 characters, usually the concrete figures) purely because the editor was never
+    # told the budget. 0 states no budget, for a deployment whose channel has no post cap.
+    digest_item_prose_max_chars: int = Field(default=380, ge=0)
     # A digest whose JSON the editor emits malformed (a stray bracket after the lead string cost
     # the 2026-08-13 and 2026-08-17 digests every story) is RE-ASKED before it is given up on.
     # Regeneration is one Bedrock call; the alternative is a day with no stories at all.
