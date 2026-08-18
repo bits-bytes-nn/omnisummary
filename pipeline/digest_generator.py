@@ -40,7 +40,7 @@ class DigestGenerator:
     def __init__(self, config: PipelineConfig, llm_factory: BedrockLanguageModelFactory) -> None:
         self.config = config
         self.llm_factory = llm_factory
-        self.llm = llm_factory.get_model(config.digest_model)
+        self.llm = llm_factory.get_model(config.digest_model, stage="digest")
 
     def _truncate(self, text: str, max_tokens: int) -> str:
         return self.llm_factory.truncate_to_tokens(text, max_tokens)

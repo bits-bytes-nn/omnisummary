@@ -49,7 +49,7 @@ class DailyVisualMaker:
         self.config = config
         # Last Threads publish outcome (posted/expected posts), for the caller's metrics/alerts.
         self.threads_outcome: ThreadsDelivery | None = None
-        self.llm = llm_factory.get_model(config.pipeline.digest_model)
+        self.llm = llm_factory.get_model(config.pipeline.digest_model, stage="visual-editor")
         # Format-variation history is best-effort: if the state store can't be created
         # (misconfigured bucket/profile), degrade to no history rather than crash the visual.
         try:

@@ -12,6 +12,7 @@ from typing import Any, ClassVar, Generic, TypeVar
 import boto3
 from botocore.config import Config as BotoConfig
 from langchain_aws import ChatBedrock, ChatBedrockConverse
+from langchain_core.callbacks import BaseCallbackHandler
 from pydantic import BaseModel
 
 from .constants import SSM_PLACEHOLDER, LanguageModelId
@@ -144,6 +145,19 @@ _LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
         supports_temperature=False,
         uses_adaptive_thinking=True,
     ),
+    LanguageModelId.CLAUDE_V5_OPUS: LanguageModelInfo(
+        context_window_size=1000000,
+        max_output_tokens=64000,
+        supports_prompt_caching=True,
+        supports_thinking=True,
+        supports_1m_context_window=True,
+        # Verified against Converse on global.anthropic.claude-opus-5: a `temperature` param and the
+        # legacy thinking.type="enabled"/budget_tokens form BOTH return ValidationException, while
+        # thinking.type="adaptive" + output_config.effort succeeds — the same shape as Opus 4.7/4.8
+        # and Sonnet 5. Prompt caching is confirmed by cache-write line items in the account's bill.
+        supports_temperature=False,
+        uses_adaptive_thinking=True,
+    ),
     # NOTE: add new models here
 }
 
@@ -194,6 +208,46 @@ class BaseBedrockModelFactory(Generic[ModelIdT, ModelInfoT, WrapperT], ABC):
 
     def get_supported_models(self) -> list[ModelIdT]:
         return list(self._get_model_info_dict().keys())
+
+
+class _TokenUsageLogger(BaseCallbackHandler):
+    """Log the token usage of every LLM call, tagged with the pipeline stage that made it.
+
+    Cost Explorer bills per MODEL, not per stage, so a bill of "Sonnet 5: 4.7M input tokens / 30d"
+    could not be attributed: the digest, the grounding pass, trend classification, the visual editor,
+    the visual synopsis, query refinement and the ad-hoc research agent all share that one model. Any
+    optimisation without this is a guess. Best-effort by construction — a callback must never be able
+    to fail a generation, so every read is defensive."""
+
+    def __init__(self, stage: str, model_id: str) -> None:
+        self.stage = stage
+        self.model_id = model_id
+
+    def on_llm_end(self, response: Any, **kwargs: Any) -> None:
+        try:
+            usage: dict[str, Any] = {}
+            for generations in getattr(response, "generations", []) or []:
+                for generation in generations or []:
+                    message = getattr(generation, "message", None)
+                    meta = getattr(message, "usage_metadata", None)
+                    if meta:
+                        usage = dict(meta)
+            if not usage:
+                usage = (getattr(response, "llm_output", None) or {}).get("usage", {}) or {}
+            if not usage:
+                return
+            details = usage.get("input_token_details") or {}
+            logger.info(
+                "LLM usage stage=%s model=%s input=%s output=%s cache_read=%s cache_write=%s",
+                self.stage,
+                self.model_id,
+                usage.get("input_tokens"),
+                usage.get("output_tokens"),
+                details.get("cache_read"),
+                details.get("cache_creation"),
+            )
+        except Exception:  # pragma: no cover - telemetry must never break a generation
+            logger.debug("Could not read LLM usage metadata", exc_info=True)
 
 
 class BedrockCrossRegionModelHelper:
@@ -340,7 +394,12 @@ class BedrockLanguageModelFactory(
         logger.warning("Text truncated to <=%d tokens (%d chars)", max_tokens, len(truncated))
         return truncated
 
-    def get_model(self, model_id: LanguageModelId, **kwargs: Any) -> ChatBedrock | ChatBedrockConverse:
+    def get_model(
+        self, model_id: LanguageModelId, *, stage: str = "", **kwargs: Any
+    ) -> ChatBedrock | ChatBedrockConverse:
+        """Build a chat model. `stage` names the caller (ranking / digest / grounding / ...) purely so
+        token usage can be attributed in the logs — the bill is per MODEL, and several stages share
+        one model, so without it a token total cannot be traced to the call that spent it."""
         model_info = self.get_model_info(model_id)
         if not model_info:
             raise ValueError(f"Unsupported language model ID: '{model_id.value}'")
@@ -350,7 +409,7 @@ class BedrockLanguageModelFactory(
         is_cross_region = resolved_model_id != model_id.value
         enable_thinking = kwargs.get("enable_thinking", False)
         use_converse = is_cross_region or (enable_thinking and model_info.supports_thinking)
-        model_config = self._build_model_config(model_info, resolved_model_id, use_converse, **kwargs)
+        model_config = self._build_model_config(model_info, resolved_model_id, use_converse, stage=stage, **kwargs)
         model_class = ChatBedrockConverse if use_converse else ChatBedrock
         model = model_class(**model_config)
         logger.debug(
@@ -377,6 +436,12 @@ class BedrockLanguageModelFactory(
             logger.debug("Adjusting temperature to 1.0 for thinking mode")
         final_max_tokens = self._validate_max_tokens(kwargs.get("max_tokens"), model_info)
         config = self._build_base_config(resolved_model_id, use_converse, model_info, **kwargs)
+        # Telemetry sits with the rest of the config, not bolted on afterwards. The base config
+        # takes `callbacks` from kwargs, which is None when the caller passed none, so build the list.
+        config["callbacks"] = [
+            *(config.get("callbacks") or []),
+            _TokenUsageLogger(str(kwargs.get("stage") or "unattributed"), resolved_model_id),
+        ]
         # Newer models (e.g. Opus 4.7/4.8) reject the `temperature` param entirely.
         params: dict[str, Any] = {"max_tokens": final_max_tokens}
         if model_info.supports_temperature:

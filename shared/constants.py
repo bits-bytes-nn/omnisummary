@@ -28,6 +28,7 @@ class LanguageModelId(str, Enum):
     CLAUDE_V4_6_OPUS = "anthropic.claude-opus-4-6-v1"
     CLAUDE_V4_7_OPUS = "anthropic.claude-opus-4-7"
     CLAUDE_V4_8_OPUS = "anthropic.claude-opus-4-8"
+    CLAUDE_V5_OPUS = "anthropic.claude-opus-5"
     # NOTE: add new models here
 
 

@@ -151,3 +151,70 @@ class TestThinkingFormat:
         thinking = cfg["additional_model_request_fields"]["thinking"]
         assert thinking["type"] == "enabled"
         assert thinking["budget_tokens"] == f.DEFAULT_THINKING_BUDGET_TOKENS
+
+
+class TestOpus5Registry:
+    """Opus 5 is selectable from config. Its capability flags were VERIFIED against Converse on
+    global.anthropic.claude-opus-5, not inferred from the version number: a `temperature` param and
+    the legacy thinking.type="enabled"/budget_tokens form both return ValidationException, while
+    thinking.type="adaptive" + output_config.effort succeeds. Getting these wrong 400s every call."""
+
+    def test_opus_5_is_registered(self):
+        assert LanguageModelId.CLAUDE_V5_OPUS in _LANGUAGE_MODEL_INFO
+
+    def test_opus_5_rejects_sampling_params_and_uses_adaptive_thinking(self):
+        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_OPUS]
+        assert info.supports_temperature is False
+        assert info.uses_adaptive_thinking is True
+        assert info.supports_thinking is True
+        assert info.supports_prompt_caching is True
+
+    def test_opus_5_matches_the_other_claude_5_family_gates(self):
+        # Same shape as Sonnet 5 / Opus 4.8 — a new family member that silently differs on these two
+        # flags is the failure mode this pins.
+        opus5 = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_OPUS]
+        for sibling in (LanguageModelId.CLAUDE_V5_SONNET, LanguageModelId.CLAUDE_V4_8_OPUS):
+            other = _LANGUAGE_MODEL_INFO[sibling]
+            assert opus5.supports_temperature == other.supports_temperature
+            assert opus5.uses_adaptive_thinking == other.uses_adaptive_thinking
+
+
+class TestTokenUsageAttribution:
+    """Cost Explorer bills per MODEL, and several pipeline stages share one model — so a token total
+    could not be traced to the stage that spent it. Every model carries a usage logger tagged with
+    its stage; telemetry must never be able to fail a generation."""
+
+    def test_stage_tagged_usage_logger_is_attached(self):
+        from shared.utils import _TokenUsageLogger
+
+        f = _factory()
+        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
+        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", True, stage="ranking")
+        loggers = [c for c in cfg["callbacks"] if isinstance(c, _TokenUsageLogger)]
+        assert [h.stage for h in loggers] == ["ranking"]
+        assert loggers[0].model_id == "global.anthropic.claude-sonnet-5"
+
+    def test_untagged_call_is_labelled_rather_than_dropped(self):
+        from shared.utils import _TokenUsageLogger
+
+        f = _factory()
+        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
+        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", True)
+        assert [c.stage for c in cfg["callbacks"] if isinstance(c, _TokenUsageLogger)] == ["unattributed"]
+
+    def test_a_caller_supplied_callback_is_kept(self):
+        from shared.utils import _TokenUsageLogger
+
+        mine = MagicMock()
+        f = _factory()
+        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
+        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", True, callbacks=[mine], stage="digest")
+        assert mine in cfg["callbacks"]
+        assert any(isinstance(c, _TokenUsageLogger) for c in cfg["callbacks"])
+
+    def test_a_response_without_usage_metadata_is_survivable(self):
+        from shared.utils import _TokenUsageLogger
+
+        handler = _TokenUsageLogger("digest", "global.anthropic.claude-sonnet-5")
+        handler.on_llm_end(MagicMock(generations=[], llm_output=None))  # must not raise
+        handler.on_llm_end(object())  # not even the expected shape

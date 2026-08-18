@@ -97,7 +97,7 @@ Return JSON with ALL items.
     {{
       "item_id": "...",
       "score": 0.85,
-      "reasoning": "1-2 sentence justification",
+      "reasoning": "the ONE thing that decided this score, as a short phrase (not a sentence)",
       "categories": ["research"]
     }}
   ]

@@ -35,7 +35,7 @@ class TrendTracker:
         state_store: StateStore,
     ) -> None:
         self.config = config
-        self.llm = llm_factory.get_model(config.trend_model)
+        self.llm = llm_factory.get_model(config.trend_model, stage="trends")
         self.state_store = state_store
         self._memory: TrendMemory | None = None
         # Set when trends.json could not be READ this run: history is unknown, so the merge must

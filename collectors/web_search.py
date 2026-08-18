@@ -34,7 +34,7 @@ class WebSearchCollector(BaseCollector):
         self.config = config
         self._api_key = ""
         self._client_instance: AsyncTavilyClient | None = None
-        self._llm = llm_factory.get_model(config.refine_model) if llm_factory else None
+        self._llm = llm_factory.get_model(config.refine_model, stage="query-refine") if llm_factory else None
 
     @property
     def _client(self) -> AsyncTavilyClient:

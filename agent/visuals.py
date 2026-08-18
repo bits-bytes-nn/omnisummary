@@ -69,7 +69,7 @@ class VisualGenerator:
         # Bind the VisualBrief schema as a tool so Bedrock returns a validated object instead
         # of free text: the brief's `prompt` is up to 4000 chars of free-form copy that often
         # contains unescaped quotes/newlines, which broke hand-parsing the model's JSON.
-        self.llm = llm_factory.get_model(brief_model).with_structured_output(VisualBrief)
+        self.llm = llm_factory.get_model(brief_model, stage="visual-synopsis").with_structured_output(VisualBrief)
         self.image_model = image_model
         # orientation -> gpt-image size; the brief picks the orientation that fits the visual.
         self.image_sizes = image_sizes

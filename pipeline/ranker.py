@@ -32,7 +32,7 @@ class ContentRanker:
     def __init__(self, config: PipelineConfig, llm_factory: BedrockLanguageModelFactory) -> None:
         self.config = config
         self.llm_factory = llm_factory
-        self.llm = llm_factory.get_model(config.ranking_model)
+        self.llm = llm_factory.get_model(config.ranking_model, stage="ranking")
         # How complete the last rank() was, for the caller to report/alert on. A digest built from a
         # pool that lost a whole batch of candidates must not read as a clean success.
         self.health = RankingHealth()

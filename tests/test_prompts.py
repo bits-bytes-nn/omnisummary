@@ -115,3 +115,21 @@ class TestDeletedDuplicateRules:
         rendered = _render(DigestPrompt)
         assert "공개했다/밝혔다" not in rendered
         assert "보도에 따르면" in rendered
+
+
+class TestRankingCostShape:
+    """The ranker scores every collected item (~100/day) but only the ~8 that survive selection reach
+    the digest editor, so anything it emits per item is paid for ~12x over and mostly discarded — at
+    Opus output rates ($25/Mtok) that was the second-largest line in the Bedrock bill."""
+
+    def test_reasoning_is_a_phrase_not_sentences(self):
+        rendered = _render(RankingPrompt)
+        assert "short phrase" in rendered
+        assert "1-2 sentence justification" not in rendered
+
+    def test_score_is_requested_before_reasoning(self):
+        # Load-bearing for the change above: with `score` emitted FIRST, the justification is
+        # post-hoc and cannot act as chain-of-thought, so shortening it cannot move a score. If the
+        # keys are ever reordered so reasoning precedes score, shortening it becomes a quality risk.
+        rendered = _render(RankingPrompt)
+        assert rendered.index('"score"') < rendered.index('"reasoning"')
