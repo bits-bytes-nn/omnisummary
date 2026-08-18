@@ -118,6 +118,7 @@ class DigestPrompt(BasePrompt):
         "target_count",
         "recent_leads",
         "prose_budget_rule",
+        "lead_budget",
     ]
 
     system_prompt_template: str = """\
@@ -143,17 +144,16 @@ because the lead is a comment on stories you have already written:
       "implication": "ONE sharp, provocative closing line in Korean that takes a real stance — but VARY THE SHAPE across items so the digest never reads as the same beat repeated: a pointed assertion (no question mark), an open question to the reader, a falsifiable prediction, a single damning detail/number, an invitation to disagree, or a quiet line that just lets a heavy fact land. Do NOT end every item with a question, and do NOT reuse the same shape used by another item today. Provocation is in the angle, never in invented facts."
     }}
   ],
-  "headline_index": 1,
-  "lead": "3-5 sentence opening that works as a standalone post (it leads the digest AND is the caption under today's image). It is about the headline story you already wrote as items[0] — the one the image depicts. Open with ONE natural sentence that situates the reader in today's AI/ML landscape — a real observation, NOT a label like '오늘의 다이제스트' and NO emoji — then land ONE thesis on what that story MEANS, connecting it to its ongoing trend arc (use the trend ammunition below) in the voice above. The reader sees items[0] directly beneath this lead, so do NOT re-narrate it: no repeating its numbers, names, or its sequence of events. State what they add up to instead."
+  "lead": "3-5 sentence opening, under {lead_budget} characters, that works as a standalone post (it leads the digest AND is the caption under today's image). It is about the headline story you already wrote as items[0] — the one the image depicts. Open by NAMING that story in ONE assertive sentence a stranger could follow — the actual company / model / event, no label like '오늘의 다이제스트' and NO emoji — then land ONE thesis on what it MEANS, connecting it to its ongoing trend arc (use the trend ammunition below) in the voice above. The reader sees items[0] directly beneath this lead, so do NOT re-tell it: no replaying its sequence of events and no repeating its numbers. State what they add up to instead."
 }}
 ```
 
 Rules:
-- The FIRST item (`items[0]`) is today's HEADLINE: put it first, set `headline_index` to 1, and \
-write the `lead` as commentary ON it (not a second telling of it). The lead, the headline item, \
-and the image all concern this ONE story, so they stay in sync. Choose as the headline the story that is both important AND visually \
-expressible — favor a news / industry / release / drama story over a dry deep-technical or purely \
-academic one, which rarely makes a good image. Order the remaining items by importance after it.
+- The FIRST item (`items[0]`) is today's HEADLINE: put it first and write the `lead` as commentary \
+ON it (not a second telling of it). The lead, the headline item, and the image all concern this ONE \
+story, so they stay in sync. Choose the most important story as the headline; use visual \
+expressibility only to break a tie between equally important ones. Order the remaining items by \
+importance after it.
 - If two ranked items are the SAME underlying story (same companies/event), MERGE them into one \
 item (keep the most informative URL) rather than emitting near-duplicates. You are given MORE \
 candidates than needed for exactly this reason: after merging, fill the freed slot with the next \
@@ -186,9 +186,7 @@ skepticism only when today's facts actually earn it. Do not default to the same 
 Do NOT name external systems, products, mechanisms, benchmarks, paper titles, dates, statistics, \
 or simultaneity/causation claims that are not present verbatim in the provided item text or trend \
 data. If a figure or title is implied but not present, omit it or attribute it ("보도에 따르면", \
-"~로 알려졌다"). Never present an inferred number or proper-noun title with a definite verb \
-("공개했다/밝혔다") unless the value is in the source. General framing and opinion are fine; \
-invented specifics are not."""
+"~로 알려졌다"). General framing and opinion are fine; invented specifics are not."""
 
     human_prompt_template: str = (
         "Here are today's top ranked items:\n\n{items_text}\n\n" "Ongoing trends from recent days:\n\n{trends_context}"
@@ -253,15 +251,14 @@ class VisualEditorPrompt(BasePrompt):
     input_variables: list[str] = ["items_text", "audience", "on_image_language", "format_guidance"]
 
     system_prompt_template: str = """\
-You are the visual editor for {audience}. Illustrate today's HEADLINE story (marked below) — set \
-`item_number` to it. The headline is also what the digest's lead is about, so the image and the \
-lead stay about the same story. Aim for a striking, on-point, shareable image with genuine wit.
+You are the visual editor for {audience}. Illustrate today's HEADLINE story (marked below). The \
+headline is also what the digest's lead is about, so the image and the lead stay about the same \
+story. Aim for a striking, on-point, shareable image with genuine wit.
 
 Produce ONLY a JSON object:
 ```json
 {{
   "skip": false,
-  "item_number": 1,
   "research": [
     {{"source": "news|community|papers", "query": "a focused query"}}
   ],
@@ -273,8 +270,8 @@ Produce ONLY a JSON object:
 ```
 
 Rules:
-- `item_number`: the marked headline. Only return {{"skip": true}} if the headline genuinely
-  cannot be illustrated at all (very rare); otherwise always produce a brief for it.
+- Only return {{"skip": true}} if the headline genuinely cannot be illustrated at all (very rare);
+  otherwise always produce a brief for it.
 - `research`: choose 1-3 steps that best enrich the visual — pick the SOURCE per step by what the
   content needs: `papers` (Semantic Scholar) for a research/technical claim, `community` (Reddit/X/
   HN/Substack) for reactions/memes/sentiment, `news` for industry/company/policy framing. Mix freely;

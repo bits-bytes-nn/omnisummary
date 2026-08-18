@@ -18,6 +18,7 @@ __all__ = [
     "current_delivery_context",
     "deliver_report",
     "read_url",
+    "recall_digest",
     "recall_trends",
     "request_context",
     "search_papers",
@@ -111,6 +112,52 @@ async def recall_trends(query: str) -> str:
         for t in matched
     ]
     return "Earlier trends:\n\n" + "\n".join(lines)
+
+
+@tool
+async def recall_digest(digest_date: str) -> str:
+    """Read back what a specific day's daily digest actually carried (its lead and story titles),
+    for a question about what was covered on that date.
+
+    Args:
+        digest_date: The digest's date as YYYY-MM-DD.
+    """
+    from datetime import date as date_cls
+
+    from shared import create_memory_store
+
+    raw = digest_date.strip()
+    try:
+        day = date_cls.fromisoformat(raw)
+    except ValueError:
+        return f'"{digest_date}" is not a YYYY-MM-DD date.'
+
+    config = get_config()
+    max_stories = config.pipeline.top_n
+    max_chars = config.agent.search_content_preview_chars
+
+    def _load() -> dict | None:
+        try:
+            return create_memory_store().get_digest(day.isoformat())
+        except Exception as e:
+            # Best-effort like every other tool: the agent gets a sentence it can reason about
+            # instead of an exception that ends the run.
+            logger.warning("Failed to recall the digest for '%s': %s", day, e)
+            return None
+
+    data = await asyncio.to_thread(_load)
+    if not data:
+        # NEVER fall back to another date: a report citing the wrong day's stories as that day's
+        # coverage is worse than no recall at all.
+        return f"No digest stored for {day.isoformat()}."
+
+    from agent.tool_state import DigestStateManager
+
+    content = DigestStateManager.load_from_dict(data).get_content()
+    if content is None or not content.items:
+        return f"The digest for {day.isoformat()} carries no stories."
+    lines = [f"- {it.title[:max_chars]}" for it in content.items[:max_stories]]
+    return f"Digest for {day.isoformat()}:\n{content.lead[:max_chars]}\n\n" + "\n".join(lines)
 
 
 @tool

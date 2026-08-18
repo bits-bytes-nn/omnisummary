@@ -77,6 +77,7 @@ class TestAgentToolInjection:
             community_search,
             deliver_report,
             read_url,
+            recall_digest,
             recall_trends,
             search_papers,
             web_search,
@@ -88,6 +89,7 @@ class TestAgentToolInjection:
             search_papers,
             read_url,
             recall_trends,
+            recall_digest,
             attach_image,
             deliver_report,
         }

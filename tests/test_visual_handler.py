@@ -1,3 +1,5 @@
+import json
+import time
 from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -6,18 +8,30 @@ import pytest
 
 from lambda_handlers import visual_handler
 from output.threads_handler import ThreadsDelivery
+from shared.memory import MemoryReadError
 
 
 class TestVisualHandler:
-    def test_handler_returns_200_on_success(self):
-        with patch("lambda_handlers.visual_handler.asyncio.run") as run:
-            result = visual_handler.handler({}, None)
-        run.assert_called_once()
+    def test_handler_forwards_the_event_and_returns_200(self):
+        # Patch _run (not asyncio.run) so the EVENT the handler forwards is asserted: patching the
+        # runner made the test pass no matter what payload — or none — reached the pipeline.
+        event = {"digest_date": "2026-08-18"}
+        with patch("lambda_handlers.visual_handler._run", new=AsyncMock()) as run:
+            result = visual_handler.handler(event, None)
+        assert run.await_args.args[0] == event
+        assert run.await_args.kwargs["deadline"] is None  # no Lambda context in this test
         assert result["statusCode"] == 200
+
+    def test_handler_forwards_the_context_deadline(self):
+        context = MagicMock()
+        context.get_remaining_time_in_millis.return_value = 600_000
+        with patch("lambda_handlers.visual_handler._run", new=AsyncMock()) as run:
+            visual_handler.handler({}, context)
+        assert run.await_args.kwargs["deadline"] is not None
 
     def test_handler_reraises_on_exception_so_alarms_and_dlq_fire(self):
         # Returning a 500 body made Lambda record a success — no Errors alarm, no DLQ message.
-        with patch("lambda_handlers.visual_handler.asyncio.run", side_effect=RuntimeError("boom")):
+        with patch("lambda_handlers.visual_handler._run", new=AsyncMock(side_effect=RuntimeError("boom"))):
             with patch("lambda_handlers.visual_handler.logger") as log:
                 with pytest.raises(RuntimeError, match="boom"):
                     visual_handler.handler({}, None)
@@ -33,20 +47,21 @@ class TestRequestedDate:
     tz = ZoneInfo("Asia/Seoul")
 
     def test_explicit_date_from_the_payload(self):
-        assert visual_handler._requested_date({"digest_date": "2026-08-17"}, self.tz) == date(2026, 8, 17)
+        # The flag says the invoke NAMED its date, which is what makes a missing snapshot a failure.
+        assert visual_handler._requested_date({"digest_date": "2026-08-17"}, self.tz) == (date(2026, 8, 17), True)
 
     def test_dlq_replay_envelope_is_honoured(self):
         # A DLQ message wraps the original payload under requestPayload; a replay must publish the
         # date the FAILED run was for, not today's.
         event = {"version": "1.0", "requestPayload": {"digest_date": "2026-08-13"}}
-        assert visual_handler._requested_date(event, self.tz) == date(2026, 8, 13)
+        assert visual_handler._requested_date(event, self.tz) == (date(2026, 8, 13), True)
 
     def test_missing_and_malformed_fall_back_to_today(self):
         from datetime import datetime
 
         today = datetime.now(self.tz).date()
-        assert visual_handler._requested_date({}, self.tz) == today
-        assert visual_handler._requested_date({"digest_date": "not-a-date"}, self.tz) == today
+        assert visual_handler._requested_date({}, self.tz) == (today, False)
+        assert visual_handler._requested_date({"digest_date": "not-a-date"}, self.tz) == (today, False)
 
 
 class TestVisualRun:
@@ -58,7 +73,9 @@ class TestVisualRun:
                 await visual_handler._run()
         store.assert_not_called()
 
-    async def test_skips_when_no_digest_state_for_that_date(self):
+    async def test_missing_snapshot_for_a_named_date_raises(self):
+        # The digest Lambda names the date it just persisted, so a miss means this — the only
+        # Threads delivery path — published nothing. Returning 200 hid that on 2026-08-13/08-17.
         config = MagicMock()
         config.pipeline.enable_daily_visual = True
         config.aws.timezone = "Asia/Seoul"
@@ -67,11 +84,37 @@ class TestVisualRun:
         with patch("lambda_handlers.visual_handler.Config.load", return_value=config):
             with patch("lambda_handlers.visual_handler.create_memory_store", return_value=store):
                 with patch("lambda_handlers.visual_handler.DailyVisualMaker") as maker:
-                    await visual_handler._run({"digest_date": "2026-08-17"})
+                    with pytest.raises(RuntimeError, match="No digest state for 2026-08-17"):
+                        await visual_handler._run({"digest_date": "2026-08-17"})
         # Loaded BY date, and no stale fallback to whatever snapshot is newest.
         store.get_digest.assert_called_once_with("2026-08-17")
         store.get_latest_digest.assert_not_called()
         maker.assert_not_called()
+
+    async def test_missing_snapshot_without_a_named_date_stays_quiet(self):
+        # A today-fallback invoke (local/manual) may legitimately run before any digest exists;
+        # that must not raise, or every such run would fail loudly for nothing.
+        config = MagicMock()
+        config.pipeline.enable_daily_visual = True
+        config.aws.timezone = "Asia/Seoul"
+        store = MagicMock()
+        store.get_digest.return_value = None
+        with patch("lambda_handlers.visual_handler.Config.load", return_value=config):
+            with patch("lambda_handlers.visual_handler.create_memory_store", return_value=store):
+                with patch("lambda_handlers.visual_handler.DailyVisualMaker") as maker:
+                    await visual_handler._run({})
+        maker.assert_not_called()
+
+    async def test_read_failure_propagates_instead_of_reading_as_an_empty_day(self):
+        config = MagicMock()
+        config.pipeline.enable_daily_visual = True
+        config.aws.timezone = "Asia/Seoul"
+        store = MagicMock()
+        store.get_digest.side_effect = MemoryReadError("throttled")
+        with patch("lambda_handlers.visual_handler.Config.load", return_value=config):
+            with patch("lambda_handlers.visual_handler.create_memory_store", return_value=store):
+                with pytest.raises(MemoryReadError):
+                    await visual_handler._run({"digest_date": "2026-08-17"})
 
     async def test_runs_maker_for_the_requested_date(self):
         config = MagicMock()
@@ -98,6 +141,46 @@ class TestVisualRun:
         args, kwargs = maker_instance.run.call_args
         assert args == (ranked, content)
         assert kwargs["today"] == date(2026, 8, 18)
+        # No caller deadline → None, so the publish path behaves exactly as it did before.
+        assert kwargs["deadline"] is None
+
+    async def test_publish_outcome_is_emitted_as_a_metric(self, capsys):
+        config = MagicMock()
+        config.pipeline.enable_daily_visual = True
+        config.aws.timezone = "Asia/Seoul"
+        store = MagicMock()
+        store.get_digest.return_value = {"some": "state"}
+        maker_instance = MagicMock()
+        maker_instance.run = AsyncMock(return_value=False)
+        maker_instance.threads_outcome = ThreadsDelivery(0, 6)
+        with patch("lambda_handlers.visual_handler.Config.load", return_value=config):
+            with patch("lambda_handlers.visual_handler.create_memory_store", return_value=store):
+                with patch("lambda_handlers.visual_handler.DigestStateManager.load_from_dict"):
+                    with patch("lambda_handlers.visual_handler.boto3.Session"):
+                        with patch("lambda_handlers.visual_handler.BedrockLanguageModelFactory"):
+                            with patch("lambda_handlers.visual_handler.DailyVisualMaker", return_value=maker_instance):
+                                await visual_handler._run({"digest_date": "2026-08-18"})
+        emitted = [
+            json.loads(line)
+            for line in capsys.readouterr().out.splitlines()
+            if line.startswith("{") and visual_handler.THREADS_POSTS_METRIC in line
+        ]
+        assert emitted and emitted[-1][visual_handler.THREADS_POSTS_METRIC] == 0
+
+
+class TestRemainingDeadline:
+    """The Lambda's remaining time is converted to a plain monotonic float HERE; the context object
+    itself is never threaded into the pipeline."""
+
+    def test_none_without_a_context(self):
+        assert visual_handler._remaining_deadline(None) is None
+
+    def test_derived_from_the_remaining_millis(self):
+        context = MagicMock()
+        context.get_remaining_time_in_millis.return_value = 600_000
+        deadline = visual_handler._remaining_deadline(context)
+        assert deadline is not None
+        assert 500 < deadline - time.monotonic() <= 600
 
 
 class TestThreadsOutcomeAlert:

@@ -10,6 +10,7 @@ from output.renderers import (
     render_slack_blocks,
     render_threads_posts,
     render_threads_research,
+    threads_item_overhead_chars,
 )
 from shared.models import DigestContent, DigestItem
 
@@ -473,3 +474,59 @@ class TestHardSplitLinkSafe:
         pieces = _split_long_paragraph(big, SLACK_MAX_SECTION_CHARS)
         non_link = [p for p in pieces if "<http" not in p]
         assert all(len(p) <= SLACK_MAX_SECTION_CHARS for p in non_link)
+
+
+class TestThreadsItemOverhead:
+    """The per-item prose budget the editor is told about is derived from THIS number, so it has to
+    match what the assembled post really spends on the parts code owns."""
+
+    def test_counts_source_line_url_and_separators(self):
+        # title \n\n meta \n\n prose \n\n url  → 3 separators (6 chars) + meta + url
+        assert threads_item_overhead_chars("src · 👍 +10", "http://e.com/1") == len("src · 👍 +10") + 14 + 6
+
+    def test_no_source_line_means_one_separator_less(self):
+        assert threads_item_overhead_chars("", "http://e.com/1") == 14 + 4
+
+    def test_matches_the_real_assembly(self):
+        # An item whose title+body+implication exactly fill the derived budget must not be trimmed.
+        meta, url = "src1 · 👍 +10", "http://e.com/1"
+        budget = THREADS_MAX_POST_CHARS - threads_item_overhead_chars(meta, url)
+        title, implication = "제목", "시사점이다."
+        body = "가" * (budget - len(title) - len(implication) - 1)  # -1 for the space before impl
+        content = DigestContent(
+            lead="리드.",
+            headline_index=1,
+            items=[
+                DigestItem(
+                    title=title, url=url, source_tag="`src1`", metrics="👍 +10", body=body, implication=implication
+                )
+            ],
+        )
+        _, replies = render_threads_posts(content)
+        assert len(replies[0]) == THREADS_MAX_POST_CHARS
+        assert body in replies[0] and implication in replies[0]
+
+    def test_trimmed_items_are_reported_by_count(self):
+        from unittest.mock import patch
+
+        # Counts only, never the text: a trimmed item means the prose budget was overrun.
+        content = DigestContent(
+            lead="리드.",
+            headline_index=1,
+            items=[
+                DigestItem(title="스토리", url="http://e.com/x", body="긴 본문이다. " * 80, implication="시사점이다."),
+                DigestItem(title="짧은 스토리", url="http://e.com/y", body="짧다.", implication="끝."),
+            ],
+        )
+        with patch("output.renderers.logger") as log:
+            render_threads_posts(content)
+        args = log.warning.call_args.args
+        assert args[1] == 1 and args[2] == 2
+        assert not any("긴 본문이다" in str(a) for a in args)
+
+    def test_nothing_reported_when_everything_fits(self):
+        from unittest.mock import patch
+
+        with patch("output.renderers.logger") as log:
+            render_threads_posts(_content(3))
+        log.warning.assert_not_called()

@@ -46,7 +46,9 @@ async def main() -> None:
         # (good) park file untouched instead of overwriting it with nothing.
         logger.info("No RSSHub items collected; parking an empty envelope to stamp the sync time")
 
-    payload = dump_items_envelope(items)
+    # Park HOW the sync went next to the items: a fresh file full of items from 3 of 40 accounts is
+    # indistinguishable from a healthy one, so the digest reported X as OK while it had gone dark.
+    payload = dump_items_envelope(items, meta=collector.run_meta)
 
     bucket = config.aws.state_bucket_name
     prefix = config.aws.s3_prefix

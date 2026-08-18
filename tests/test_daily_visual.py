@@ -337,6 +337,77 @@ class TestDailyVisualMaker:
                         await maker.run(_items(), empty, today=date(2026, 6, 10))
         th.assert_not_awaited()
         assert maker.threads_ledger.already_posted(date(2026, 6, 10)) is False
+        # …and it leaves a VERDICT behind: content existed, the channel was on, nothing published.
+        # With threads_outcome left at None the caller's alert/metric was a silent no-op.
+        assert maker.threads_outcome == ThreadsDelivery(0, 1)
+        assert maker.threads_outcome.published is False
+
+    @pytest.mark.asyncio
+    async def test_a_channel_skip_leaves_no_verdict(self):
+        # The already-posted ledger skip and the channel-disabled skip are NOT failures; they must
+        # stay silent so the daily alert/metric only speaks when something actually went wrong.
+        from datetime import date
+
+        from shared.models import DigestContent, DigestItem
+
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = True
+        maker.threads_ledger.mark(date(2026, 6, 10))
+        content = DigestContent(
+            lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
+        )
+        posted = await maker.run(_items(), content, today=date(2026, 6, 10))
+        assert posted is False
+        assert maker.threads_outcome is None
+
+    @pytest.mark.asyncio
+    async def test_post_exception_still_leaves_a_verdict(self):
+        from datetime import date
+
+        from shared.models import DigestContent, DigestItem
+
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = True
+        plan = {"skip": False, "research": [], "instruction": "x"}
+        content = DigestContent(
+            lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
+        )
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = AsyncMock(
+                    return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw"))
+                )
+                with patch("output.threads_handler.post_to_threads", new=AsyncMock(side_effect=RuntimeError("boom"))):
+                    posted = await maker.run(_items(), content, today=date(2026, 6, 10))
+        assert posted is False
+        assert maker.threads_outcome == ThreadsDelivery(0, 2)
+
+    @pytest.mark.asyncio
+    async def test_caller_deadline_is_forwarded_to_the_publish_path(self):
+        # A plain monotonic float is threaded through — never the Lambda context object — and a
+        # None deadline (local runs) must reach the publisher unchanged.
+        import time
+        from datetime import date
+
+        from shared.models import DigestContent, DigestItem
+
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = True
+        plan = {"skip": False, "research": [], "instruction": "x"}
+        content = DigestContent(
+            lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
+        )
+        deadline = time.monotonic() + 300
+        gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw")))
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = gen
+                with patch(
+                    "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
+                ) as th:
+                    await maker.run(_items(), content, today=date(2026, 6, 10), deadline=deadline)
+        assert th.await_args.kwargs["deadline"] == deadline
+        assert gen.await_args.kwargs["deadline"] == deadline
 
     @pytest.mark.asyncio
     async def test_threads_skipped_when_already_posted_today(self):

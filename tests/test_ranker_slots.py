@@ -59,10 +59,12 @@ class TestOriginCap:
             _ranked(0.86, SourceType.YOUTUBE, item_id="v3", channel="chanA"),
         ]
         selected = ranker._apply_source_slots(items, ranker.config.top_n)
-        # No distinct origins to diversify into, so the fallback fills up to the SOURCE cap
-        # (1 slot x 2 multiplier = 2) — bounded monopoly, never all 3.
-        assert len(selected) == 2
-        assert {r.item.item_id for r in selected} == {"v1", "v2"}
+        # No distinct origins to diversify into and no other source with candidates, so after the
+        # origin cap and then the source cap are exhausted the LAST-RESORT pass fills the digest
+        # rather than shipping it short: with a collector outage the caps have nothing left to
+        # spend diversity on, and a reader loses a story for a diversity that cannot happen.
+        assert len(selected) == 3
+        assert {r.item.item_id for r in selected} == {"v1", "v2", "v3"}
 
     def test_distinct_channels_fill_slots(self):
         ranker = _ranker(
@@ -313,3 +315,58 @@ class TestOriginWeights:
         items = [_ranked(0.95, SourceType.YOUTUBE, item_id="v1", channel="chanA")]
         ranker._apply_origin_weights(items)
         assert items[0].score == 1.0  # 0.95 + 0.4 clamped to 1.0
+
+
+class TestLastResortSourceCapRelaxation:
+    """When a collector outage leaves every remaining candidate on one source, the source cap alone
+    would ship a short digest. The relaxation runs LAST, only while the digest is short, and prefers
+    candidates that still satisfy max_per_origin."""
+
+    def test_not_entered_when_the_caps_already_fill_the_limit(self):
+        ranker = _ranker(
+            top_n=2,
+            min_score=0.5,
+            source_slots={"rss": 1, "web": 1},
+            source_cap_multiplier=1,
+            max_per_origin=1,
+        )
+        items = [
+            _ranked(0.9, SourceType.RSS, item_id="r1", feed="f1"),
+            _ranked(0.8, SourceType.WEB, item_id="w1", url="http://a.com/1"),
+            _ranked(0.7, SourceType.RSS, item_id="r2", feed="f2"),
+        ]
+        selected = ranker._apply_source_slots(items, ranker.config.top_n)
+        assert {r.item.item_id for r in selected} == {"r1", "w1"}
+
+    def test_prefers_a_distinct_origin_over_a_repeat_one(self):
+        ranker = _ranker(
+            top_n=2,
+            min_score=0.5,
+            source_slots={"rss": 1},
+            source_cap_multiplier=1,
+            max_per_origin=1,
+        )
+        items = [
+            _ranked(0.9, SourceType.RSS, item_id="r1", feed="f1"),
+            _ranked(0.88, SourceType.RSS, item_id="same-origin", feed="f1"),
+            _ranked(0.86, SourceType.RSS, item_id="other-origin", feed="f2"),
+        ]
+        selected = ranker._apply_source_slots(items, ranker.config.top_n)
+        # r1 takes the guaranteed slot (cap 1x1 exhausted); the relaxed pass then prefers the item
+        # from a NEW feed over the higher-scoring one that repeats r1's origin.
+        assert {r.item.item_id for r in selected} == {"r1", "other-origin"}
+
+    def test_grace_items_are_never_used_as_filler(self):
+        ranker = _ranker(
+            top_n=3,
+            min_score=0.6,
+            source_slots={"rss": 1},
+            source_cap_multiplier=1,
+            max_per_origin=1,
+        )
+        items = [
+            _ranked(0.9, SourceType.RSS, item_id="r1", feed="f1"),
+            _ranked(0.55, SourceType.YOUTUBE, item_id="g1", channel="c1"),
+        ]
+        selected = ranker._apply_source_slots(items, ranker.config.top_n, grace_ids={"g1"})
+        assert {r.item.item_id for r in selected} == {"r1"}

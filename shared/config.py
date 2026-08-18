@@ -186,7 +186,10 @@ class PipelineConfig(_StrictModel):
     # Korean editorial rules + translation glossary; other deployments can override to
     # write the digest in another language without forking the prompt.
     digest_language_rules: str = (
-        "- Write in Korean (95%+). English ONLY for proper nouns and untranslatable technical terms.\n"
+        "- Write in Korean (95%+); English ONLY for proper nouns and untranslatable technical terms. "
+        "Use ONE form per proper noun across the whole digest, as the source writes it — never invent "
+        "a Korean transliteration for a term outside the glossary below — and make the particle after "
+        "it agree with that written form (OpenAI는, GPT-5가).\n"
         "- Translate terms that have established Korean equivalents: architecture → 아키텍처, "
         "benchmark → 벤치마크, inference → 추론, training → 학습, deployment → 배포, "
         "weight → 가중치, parameter → 파라미터, token → 토큰, open-source → 오픈소스, "
@@ -227,9 +230,9 @@ class PipelineConfig(_StrictModel):
         "forced): a one-line statement of the creed on a genuinely huge day; a wry scientific or "
         "sci-fi aside on an ordinary detail; a brief first-person flash of candor or conviction. "
         "These are rare spices, never the main course; most lines carry none.\n"
-        "CRAFT — Spice is in the FRAMING, never the facts: sharpen the angle and contrast, but never "
-        "state an inference as a reported fact; mark a sharp reading as judgment ('~로 읽힌다', "
-        "'보통 이런 구도는'). Critique ideas, decisions, incentives — never a person. Plain words over "
+        "CRAFT — Spice is in the FRAMING, never the facts: sharpen the angle and contrast, and mark "
+        "a sharp reading as judgment ('~로 읽힌다', '보통 이런 구도는'). Critique ideas, decisions, "
+        "incentives — never a person. Plain words over "
         "jargon and short sentences over dense ones, but never drop a rung of the argument to sound "
         "simple — 'easy' is the wording, not a missing step. On a pure-tech story keep the "
         "power/distribution lens light or absent. Concentrate the persona in the LEAD (the standalone "
@@ -250,8 +253,10 @@ class PipelineConfig(_StrictModel):
     # most feed readers ever see — on the same fixed sentence every day (40 consecutive posts opened
     # with it). "suffix" keeps the gag verbatim but moves it to a closing sign-off line, so the first
     # line is the day's actual angle. Position only: no cadence/skip knobs, which would just be
-    # magic numbers.
-    agi_countdown_position: Literal["prefix", "suffix"] = "prefix"
+    # magic numbers. The DEFAULT is "suffix" to match config.yaml, which has said suffix since the
+    # setting was introduced — the code default was simply never corrected, so a deployment without
+    # a config.yaml (or a test using PipelineConfig()) silently got the behaviour we moved away from.
+    agi_countdown_position: Literal["prefix", "suffix"] = "suffix"
     item_text_max_tokens: int = Field(default=8000, ge=1)
     ranking_batch_size: int = Field(default=40, ge=1)
     # How many ranking batches may be in flight against Bedrock at once. Unbounded fan-out threw

@@ -9,17 +9,18 @@ from shared.models import HealthReport, SourceHealth, SourceStatus
 
 
 class TestHandler:
-    def test_returns_200_on_success(self):
-        with patch("lambda_handlers.digest_handler.asyncio.run") as run:
+    def test_runs_the_pipeline_and_returns_200(self):
+        # Patch _run, not asyncio.run: patching the runner asserted only that SOMETHING was awaited.
+        with patch("lambda_handlers.digest_handler._run", new=AsyncMock()) as run:
             result = digest_handler.handler({}, None)
-        run.assert_called_once()
+        run.assert_awaited_once_with()
         assert result["statusCode"] == 200
 
     def test_reraises_on_exception_so_alarms_and_dlq_fire(self):
         # A returned 500 body counts as a SUCCESSFUL invocation to Lambda: neither the Errors
         # alarm nor the async DLQ would ever see a broken digest. The failure must propagate
         # (retry_attempts=0 means it can't re-post).
-        with patch("lambda_handlers.digest_handler.asyncio.run", side_effect=RuntimeError("boom")):
+        with patch("lambda_handlers.digest_handler._run", new=AsyncMock(side_effect=RuntimeError("boom"))):
             with patch("lambda_handlers.digest_handler.logger") as log:
                 with pytest.raises(RuntimeError, match="boom"):
                     digest_handler.handler({}, None)
@@ -49,6 +50,47 @@ class TestRun:
                                 await digest_handler._run()
         alert.assert_called_once_with(health)
         pipeline.assert_not_called()
+
+    async def test_full_flow_persists_the_stories_and_triggers_the_visual_for_that_date(self):
+        # Assert the SHAPE that is handed to the only delivery path — the snapshot's ranked count
+        # and non-empty digest content — and the date the visual is fired for. A story-less digest
+        # that still triggered the visual is exactly how 2026-08-13/08-17 published a broken post.
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from shared.models import DigestContent, DigestItem
+
+        config = _config()
+        items = [MagicMock()]
+        health = HealthReport(sources=[SourceHealth(name="rss", item_count=1, status=SourceStatus.OK)])
+        digest = MagicMock()
+        digest.content = DigestContent(
+            lead="리드.", headline_index=1, items=[DigestItem(title="t", url="http://e/1", body="b")]
+        )
+        ranked = [MagicMock(), MagicMock(), MagicMock()]
+        result = (items, ranked, digest)
+        with patch("lambda_handlers.digest_handler.Config.load", return_value=config):
+            with patch("lambda_handlers.digest_handler.boto3.Session"):
+                with patch("lambda_handlers.digest_handler.BedrockLanguageModelFactory"):
+                    with patch(
+                        "lambda_handlers.digest_handler.run_collectors_with_health",
+                        new=AsyncMock(return_value=(items, health)),
+                    ):
+                        with patch("lambda_handlers.digest_handler._maybe_alert"):
+                            with patch(
+                                "lambda_handlers.digest_handler.run_pipeline", new=AsyncMock(return_value=result)
+                            ):
+                                with patch("lambda_handlers.digest_handler.persist_digest") as persist:
+                                    with patch("lambda_handlers.digest_handler._trigger_visual") as trigger:
+                                        await digest_handler._run()
+        today = datetime.now(ZoneInfo("Asia/Seoul")).date()
+        persisted_items, persisted_ranked, persisted_digest, persisted_date = persist.call_args.args
+        assert persisted_items == items
+        assert len(persisted_ranked) == 3
+        assert persisted_digest.content.items  # the stories actually reach the snapshot
+        assert persisted_date == today
+        assert persist.call_args.kwargs["base_dir"] is None  # AgentCore-backed store in AWS
+        trigger.assert_called_once_with(today)
 
     async def test_full_flow_persists_and_triggers_visual(self):
         config = _config()
@@ -197,9 +239,21 @@ class TestTriggerVisual:
         # replay of the failed invoke carries the same date instead of being re-dated to today.
         assert json.loads(kwargs["Payload"]) == {"digest_date": "2026-08-18"}
 
-    def test_invoke_error_is_swallowed(self, monkeypatch):
+    def test_invoke_error_raises_so_the_undelivered_day_is_visible(self, monkeypatch):
+        # The visual Lambda is the ONLY Threads delivery path. A swallowed invoke error meant the
+        # digest run returned 200 while the day was never published, with no alarm and no DLQ entry.
+        # The snapshot is already persisted at this point, so raising loses nothing.
         monkeypatch.setenv("VISUAL_FUNCTION_NAME", "fn")
         lambda_client = MagicMock()
         lambda_client.invoke.side_effect = Exception("network down")
         with patch("lambda_handlers.digest_handler.boto3.client", return_value=lambda_client):
+            with pytest.raises(RuntimeError, match="Could not trigger visual delivery"):
+                digest_handler._trigger_visual(date(2026, 8, 18))
+
+    def test_missing_function_name_raises_in_aws(self, monkeypatch):
+        # Locally the visual runs inline from main.py, so an unset name is normal (test above). In
+        # AWS it is the only link to delivery, so it must fail the run rather than exit green.
+        monkeypatch.delenv("VISUAL_FUNCTION_NAME", raising=False)
+        monkeypatch.setattr("lambda_handlers.digest_handler.is_running_in_aws", lambda: True)
+        with pytest.raises(RuntimeError, match="VISUAL_FUNCTION_NAME"):
             digest_handler._trigger_visual(date(2026, 8, 18))

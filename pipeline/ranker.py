@@ -343,33 +343,52 @@ class ContentRanker:
                 record(item, source_key)
                 taken += 1
 
-        if len(selected) < limit:
+        def fill(*, respect_origin: bool, respect_source: bool) -> int:
+            """Walk the remaining candidates in score order and take what the given caps allow.
+            One loop for every fill pass — the three passes differ ONLY in which caps they honour.
+            Grace items (below min_score) are never filler: they may earn their own source's
+            guaranteed slot and nothing more. Returns how many items this pass added."""
+            added = 0
             for item in above_threshold:
+                if len(selected) >= limit:
+                    break
                 if item.item.item_id in selected_ids or item.item.item_id in grace_ids:
                     continue
                 src = item.item.source_type.value
                 cap = source_slots.get(src, DEFAULT_SOURCE_SLOT) * self.config.source_cap_multiplier
-                if source_counts[src] >= cap or origin_at_cap(item):
+                if respect_source and source_counts[src] >= cap:
+                    continue
+                if respect_origin and origin_at_cap(item):
                     continue
                 record(item, src)
-                if len(selected) >= limit:
-                    break
+                added += 1
+            return added
 
-        # Final fallback: if diversity caps left the digest below the limit while valid
-        # candidates remain, relax the per-origin cap (keep the source cap) so a quiet
-        # day with few distinct origins still fills the digest. Grace items (below min_score)
-        # are excluded here — they only earn their own source's guaranteed slot, not filler.
         if len(selected) < limit:
-            for item in above_threshold:
-                if item.item.item_id in selected_ids or item.item.item_id in grace_ids:
-                    continue
-                src = item.item.source_type.value
-                cap = source_slots.get(src, DEFAULT_SOURCE_SLOT) * self.config.source_cap_multiplier
-                if source_counts[src] >= cap:
-                    continue
-                record(item, src)
-                if len(selected) >= limit:
-                    break
+            fill(respect_origin=True, respect_source=True)
+
+        # If diversity caps left the digest below the limit while valid candidates remain, relax
+        # the per-origin cap (keep the source cap) so a quiet day with few distinct origins still
+        # fills the digest.
+        if len(selected) < limit:
+            fill(respect_origin=False, respect_source=True)
+
+        # Last resort: relax the SOURCE cap too. A collector outage (rsshub/reddit empty) leaves
+        # every remaining candidate on one source, so the source cap alone could hold the digest
+        # short — fewer stories to read, for a diversity that has no candidates to spend on.
+        # Ordered last and entered only while short, so it can never change a day that filled
+        # normally; candidates that still satisfy max_per_origin go first.
+        if len(selected) < limit:
+            relaxed = fill(respect_origin=True, respect_source=False)
+            relaxed += fill(respect_origin=False, respect_source=False)
+            if relaxed:
+                logger.info(
+                    "Source caps relaxed to fill the digest: %d extra item(s) taken (%d/%d selected) — "
+                    "likely a partial collector outage",
+                    relaxed,
+                    len(selected),
+                    limit,
+                )
 
         selected.sort(key=lambda r: (-r.score, r.item.item_id))
         return selected[:limit]

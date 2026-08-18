@@ -77,6 +77,79 @@ class TestRecallTrends:
         assert "No earlier trends recalled" in result
 
 
+class TestRecallDigest:
+    """One single-purpose tool: what did a SPECIFIC day's digest carry. It must never answer with a
+    different day's stories, or the report cites the wrong day as that day's coverage."""
+
+    @staticmethod
+    def _snapshot() -> dict:
+        return {
+            "collected_items": {},
+            "ranked_items": [],
+            "digest_result": {
+                "digest_text": "t",
+                "content": {
+                    "lead": "\uc624\ub298\uc758 \ub9ac\ub4dc.",
+                    "headline_index": 1,
+                    "items": [{"title": "\uc2a4\ud1a0\ub9ac 1", "url": "u1", "body": "b"}],
+                },
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_returns_the_lead_and_story_titles(self):
+        store = MagicMock()
+        store.get_digest.return_value = self._snapshot()
+        with patch("shared.create_memory_store", return_value=store):
+            result = await rt.recall_digest._tool_func("2026-08-17")
+        store.get_digest.assert_called_once_with("2026-08-17")
+        assert "2026-08-17" in result
+        assert "\uc624\ub298\uc758 \ub9ac\ub4dc." in result
+        assert "\uc2a4\ud1a0\ub9ac 1" in result
+
+    @pytest.mark.asyncio
+    async def test_missing_day_says_so_instead_of_serving_another_date(self):
+        store = MagicMock()
+        store.get_digest.return_value = None
+        with patch("shared.create_memory_store", return_value=store):
+            result = await rt.recall_digest._tool_func("2026-08-17")
+        assert result == "No digest stored for 2026-08-17."
+        store.get_latest_digest.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_read_failure_degrades_to_a_sentence(self):
+        store = MagicMock()
+        store.get_digest.side_effect = RuntimeError("throttled")
+        with patch("shared.create_memory_store", return_value=store):
+            result = await rt.recall_digest._tool_func("2026-08-17")
+        assert "No digest stored for 2026-08-17." == result
+
+    @pytest.mark.asyncio
+    async def test_malformed_date_is_rejected(self):
+        with patch("shared.create_memory_store") as store:
+            result = await rt.recall_digest._tool_func("yesterday")
+        store.assert_not_called()
+        assert "not a YYYY-MM-DD date" in result
+
+    @pytest.mark.asyncio
+    async def test_output_is_bounded(self):
+        from shared import get_config
+
+        snapshot = self._snapshot()
+        cap = get_config().pipeline.top_n
+        snapshot["digest_result"]["content"]["items"] = [
+            {"title": f"\uc2a4\ud1a0\ub9ac {i}" + "\uac00" * 500, "url": f"u{i}", "body": "b"} for i in range(cap + 5)
+        ]
+        store = MagicMock()
+        store.get_digest.return_value = snapshot
+        with patch("shared.create_memory_store", return_value=store):
+            result = await rt.recall_digest._tool_func("2026-08-17")
+        chars = get_config().agent.search_content_preview_chars
+        lines = [ln for ln in result.splitlines() if ln.startswith("- ")]
+        assert len(lines) == cap
+        assert all(len(ln) <= chars + 2 for ln in lines)
+
+
 class TestAttachImage:
     @pytest.mark.asyncio
     async def test_stages_image_on_context(self):

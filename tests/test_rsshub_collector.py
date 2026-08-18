@@ -317,3 +317,60 @@ class TestParkedItems:
             with patch.object(c, "_check_reachable") as reach:
                 assert await c.collect() == []
         reach.assert_not_called()
+
+
+class TestDegradedReporting:
+    """A source can shrink to a fraction of its feeds and still return items on time. Reported with
+    the SAME error_rate_threshold the live warning already uses — no second ratio knob."""
+
+    @pytest.mark.asyncio
+    async def test_park_meta_over_the_threshold_flags_degraded(self):
+        c = RSSHubCollector(_config(error_rate_threshold=50.0))
+        parked = ParkedItems(
+            outcome=ParkOutcome.FRESH,
+            items=[_item("parked")],
+            meta={"accounts_total": 40, "accounts_failed": 30},
+        )
+        with patch("collectors.rsshub.load_items_from_s3", return_value=parked):
+            items = await c.collect()
+        # The items are untouched — DEGRADED changes reporting only.
+        assert [i.item_id for i in items] == ["parked"]
+        assert "10/40" in c.degraded_detail
+
+    @pytest.mark.asyncio
+    async def test_park_meta_under_the_threshold_is_clean(self):
+        c = RSSHubCollector(_config(error_rate_threshold=50.0))
+        parked = ParkedItems(
+            outcome=ParkOutcome.FRESH,
+            items=[_item("parked")],
+            meta={"accounts_total": 40, "accounts_failed": 2},
+        )
+        with patch("collectors.rsshub.load_items_from_s3", return_value=parked):
+            await c.collect()
+        assert c.degraded_detail == ""
+
+    @pytest.mark.asyncio
+    async def test_legacy_park_file_without_meta_is_not_flagged(self):
+        c = RSSHubCollector(_config())
+        parked = ParkedItems(outcome=ParkOutcome.FRESH, items=[_item("parked")])
+        with patch("collectors.rsshub.load_items_from_s3", return_value=parked):
+            await c.collect()
+        assert c.degraded_detail == ""
+
+    @pytest.mark.asyncio
+    async def test_live_run_records_meta_and_flags_a_mostly_failed_fan_out(self):
+        accounts = [RSSHubAccount(username=f"u{i}", platform="x") for i in range(4)]
+        c = RSSHubCollector(_config(accounts=accounts, error_rate_threshold=50.0))
+
+        def _parse(feed_url: str, username: str, platform: str):
+            if username == "u0":
+                return [_item(username)]
+            raise RuntimeError("feed down")
+
+        with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
+            with patch.object(c, "_check_reachable"):
+                with patch.object(c, "_parse_feed", side_effect=_parse):
+                    items = await c.collect()
+        assert [i.item_id for i in items] == ["u0"]
+        assert c.run_meta == {"accounts_total": 4, "accounts_failed": 3, "accounts_empty": 0}
+        assert "3/4" in c.degraded_detail

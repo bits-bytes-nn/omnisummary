@@ -252,6 +252,69 @@ class TestProseBudgetReachesTheEditor:
         assert any("333" in s for s in seen)
 
 
+class TestDerivedBudgets:
+    """The per-item number is computed from the parts CODE owns (URL + source line + separators)
+    and now covers the TITLE too, because the editor authors it. digest_item_prose_max_chars is
+    only a ceiling."""
+
+    @staticmethod
+    def _gen(**overrides) -> DigestGenerator:
+        factory = MagicMock()
+        factory.get_model.return_value = MagicMock()
+        return DigestGenerator(PipelineConfig(**overrides), factory)
+
+    @staticmethod
+    def _web(url: str) -> RankedItem:
+        return RankedItem(item=CollectedItem(item_id=url, source_type=SourceType.WEB, title="T", url=url), score=0.8)
+
+    def test_budget_shrinks_with_the_real_fixed_parts(self):
+        from output.renderers import THREADS_MAX_POST_CHARS
+
+        gen = self._gen(digest_item_prose_max_chars=0)  # ceiling off: pure derivation
+        short_url, long_url = "https://e.com/a", "https://e.com/" + "p" * 120
+        short = gen._item_prose_budget([self._web(short_url)])
+        long_ = gen._item_prose_budget([self._web(long_url)])
+        assert short < THREADS_MAX_POST_CHARS
+        assert long_ == short - (len(long_url) - len(short_url))
+
+    def test_worst_case_candidate_sets_the_budget(self):
+        # A budget that only holds for the median item still trims the long-URL ones.
+        gen = self._gen(digest_item_prose_max_chars=0)
+        items = [self._web("https://e.com/a"), self._web("https://e.com/" + "p" * 120)]
+        assert gen._item_prose_budget(items) == gen._item_prose_budget(items[1:])
+
+    def test_configured_ceiling_still_applies(self):
+        gen = self._gen(digest_item_prose_max_chars=100)
+        assert gen._item_prose_budget([self._web("https://e.com/a")]) == 100
+
+    def test_lead_budget_reserves_the_code_owned_countdown(self):
+        from output.renderers import THREADS_MAX_POST_CHARS
+
+        gen = self._gen(agi_countdown_position="suffix")
+        intro = "AGI 등장 100일 전이다. "
+        # The gag plus the blank line before it are not the editor's to spend.
+        assert gen._lead_budget(intro) == THREADS_MAX_POST_CHARS - len(intro) - 2
+        assert gen._lead_budget("") == THREADS_MAX_POST_CHARS
+
+    def test_lead_budget_reaches_the_prompt(self):
+        import asyncio
+        from datetime import date
+
+        emitted = {"items": [{"title": "T", "url": "u", "body": "본문."}], "lead": "리드."}
+        seen: list[str] = []
+        factory = MagicMock()
+        factory.get_model.return_value = RunnableLambda(
+            lambda p: (seen.append(str(p)), AIMessage(content=json.dumps(emitted)))[1]
+        )
+        config = PipelineConfig(enable_grounding_check=False, agi_countdown_date="")
+        gen = DigestGenerator(config, factory)
+        ranked = [
+            RankedItem(item=CollectedItem(item_id="i", source_type=SourceType.RSS, title="T", url="u"), score=0.8)
+        ]
+        asyncio.run(gen.generate(ranked, [r.item for r in ranked], today=date(2030, 1, 1)))
+        assert any("under 500 characters" in s for s in seen)
+
+
 class TestReAskOnUnparseableEmission:
     """Regression (2026-08-13, 2026-08-17): the editor emitted malformed JSON once, the digest
     silently became lead=raw/items=[], and both days published a story-less post. generate() must
@@ -457,6 +520,16 @@ class TestFormatRecentLeads:
 
         assert "No recent digests" in _format_recent_leads([])
         assert "No recent digests" in _format_recent_leads(["", "  "])
+
+    def test_long_leads_are_truncated_in_code_not_by_a_prompt_rule(self):
+        # What must differ is the OPENING angle, and it sits at the front; five full leads crowded
+        # the prompt with prose the editor is not being asked to compare against.
+        from pipeline.digest_generator import RECENT_LEAD_PREVIEW_CHARS, _format_recent_leads
+
+        out = _format_recent_leads(["가" * (RECENT_LEAD_PREVIEW_CHARS + 50)])
+        assert out.startswith("- " + "가" * RECENT_LEAD_PREVIEW_CHARS)
+        assert out.endswith("…")
+        assert len(out) < RECENT_LEAD_PREVIEW_CHARS + 50
 
 
 def _source_detail(item) -> str:

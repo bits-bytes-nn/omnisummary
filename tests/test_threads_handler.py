@@ -1,3 +1,4 @@
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs
 
@@ -564,3 +565,23 @@ class TestAddressability:
         exc = MagicMock()
         type(exc).response = property(lambda self: (_ for _ in ()).throw(RuntimeError("gone")))
         assert threads_handler._error_detail(exc) == "<no response body>"
+
+
+class TestIndexingBudget:
+    """The indexing wait may be bounded by the CALLER's remaining time, but never shortened while
+    the full budget still fits — too little indexing patience is what dropped stories before."""
+
+    def test_no_deadline_keeps_the_full_budget(self):
+        assert threads_handler._indexing_budget_sec(None) == float(threads_handler.THREADS_INDEXING_BUDGET_SEC)
+
+    def test_generous_deadline_keeps_the_full_budget(self):
+        deadline = time.monotonic() + threads_handler.THREADS_INDEXING_BUDGET_SEC * 3
+        assert threads_handler._indexing_budget_sec(deadline) == float(threads_handler.THREADS_INDEXING_BUDGET_SEC)
+
+    def test_tight_deadline_reserves_room_for_the_reply_chain(self):
+        deadline = time.monotonic() + threads_handler.THREADS_PUBLISH_RESERVE_SEC + 40
+        budget = threads_handler._indexing_budget_sec(deadline)
+        assert 30 < budget <= 40
+
+    def test_expired_deadline_waits_not_at_all(self):
+        assert threads_handler._indexing_budget_sec(time.monotonic() - 5) == 0.0

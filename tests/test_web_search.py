@@ -105,6 +105,22 @@ class TestCollect:
         assert await c.collect() == []
 
     @pytest.mark.asyncio
+    async def test_unreadable_secret_store_fails_the_source_instead_of_emptying_it(self, monkeypatch):
+        # A denied/throttled SSM read used to return "" — the same answer as "no key configured" —
+        # so the digest silently lost its whole web-search source with one warning line. It must
+        # raise, which reports the collector FAILED and alerts.
+        from shared.utils import SecretUnavailableError
+
+        def _boom(*args, **kwargs):
+            assert kwargs.get("strict") is True
+            raise SecretUnavailableError("AccessDenied")
+
+        monkeypatch.setattr("collectors.web_search.resolve_secret", _boom)
+        c = _collector(min_search_score=0.3)
+        with pytest.raises(SecretUnavailableError):
+            await c.collect()
+
+    @pytest.mark.asyncio
     async def test_disabled_collector_short_circuits(self):
         c = _search_collector(enabled=False)
         with patch("collectors.web_search.resolve_secret") as resolve:

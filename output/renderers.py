@@ -11,6 +11,8 @@ SLACK_MAX_BLOCKS_PER_MESSAGE = 45
 SLACK_MAX_SECTION_CHARS = 2900
 # Threads caps each post at 500 characters.
 THREADS_MAX_POST_CHARS = 500
+# One item's post is assembled as title / source line / prose / URL joined by blank lines.
+THREADS_POST_SEPARATOR = "\n\n"
 
 
 def _split_long_paragraph(para: str, max_len: int) -> list[str]:
@@ -267,7 +269,7 @@ def _fit_one_post(
     impl = implication.strip()
 
     def assemble(prose: str) -> str:
-        return "\n\n".join(fixed + ([prose] if prose else []) + tail)
+        return THREADS_POST_SEPARATOR.join(fixed + ([prose] if prose else []) + tail)
 
     body_sents = _sentences(body)
     # Drop body sentences from the end while keeping the implication appended.
@@ -289,6 +291,25 @@ def _fit_one_post(
         return assemble("")
     room = max_len - (len(url.strip()) + 2 if url.strip() else 0)
     return "\n\n".join([p for p in (_truncate_at_word(title, max(0, room)), url.strip()) if p])
+
+
+def threads_item_overhead_chars(meta: str, url: str) -> int:
+    """Characters ONE item's Threads post spends on the parts CODE owns: the source line, the URL,
+    and the blank-line separators between title / source / prose / URL. Everything left over is what
+    the editor may write (title + body + implication), so the prose budget it is told about is
+    derived from this — not from a hand-estimated "~120 chars in practice"."""
+    parts = [p for p in (meta.strip(), url.strip()) if p]
+    return sum(len(p) for p in parts) + len(THREADS_POST_SEPARATOR) * (len(parts) + 1)
+
+
+def _item_post_overflows(title: str, meta: str, body: str, implication: str, url: str) -> bool:
+    """True when the item's FULL prose cannot fit one post — i.e. _fit_one_post had to drop
+    something. Mirrors its assembly with nothing trimmed; used for counts-only trim reporting."""
+    parts = [p for p in (title.strip(), meta.strip()) if p]
+    prose = " ".join(p for p in (body.strip(), implication.strip()) if p)
+    tail = [url.strip()] if url.strip() else []
+    assembled = THREADS_POST_SEPARATOR.join(parts + ([prose] if prose else []) + tail)
+    return len(assembled) > THREADS_MAX_POST_CHARS
 
 
 def _fit_lead(lead: str) -> str:
@@ -326,10 +347,20 @@ def render_threads_posts(content: DigestContent) -> tuple[str, list[str]]:
     Threads' 500-char cap at a clean sentence boundary — never mid-word — keeping the title, the
     source line and the URL. No Slack markup (Threads renders none)."""
     lead = _fit_lead(content.lead.strip())
-    replies = [
-        _fit_one_post(item.title, _item_meta(item), item.body, item.implication or "", item.url)
-        for item in content.items
-    ]
+    replies: list[str] = []
+    trimmed = 0
+    for item in content.items:
+        meta = _item_meta(item)
+        implication = item.implication or ""
+        replies.append(_fit_one_post(item.title, meta, item.body, implication, item.url))
+        if _item_post_overflows(item.title, meta, item.body, implication, item.url):
+            trimmed += 1
+    if trimmed:
+        # Counts only, never the text: a trimmed item means the editor's prose budget was overrun,
+        # and 5 of 95 sampled items silently lost their closing sentence (the concrete figures).
+        logger.warning(
+            "Threads: %d of %d item posts lost prose to the %d-char cap", trimmed, len(replies), THREADS_MAX_POST_CHARS
+        )
     return lead, replies
 
 

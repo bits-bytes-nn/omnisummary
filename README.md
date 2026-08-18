@@ -10,7 +10,7 @@ Proactive AI/ML daily digest system that collects content from multiple sources,
 - **Multi-channel delivery**: structured digest rendered per channel — Slack (Block Kit, sent by the digest Lambda) and Threads (image root + flat reply chain, sent by the daily-visual Lambda), each independently toggleable
 - **Deep-research agent**: autonomous Slack-triggered Strands agent — rewrites the query, researches across web/papers/community/blogs, writes a persona-voiced cited report (same narrator as the digest), and posts to Slack (default) or Threads (on explicit request), attaching the source article's OG image
 - **AgentCore-centric**: digest state persisted in Bedrock AgentCore Memory; agent runs on AgentCore Runtime
-- **Operational excellence**: per-source health checks → SNS email alerts (a total collector outage reports FAILED instead of an empty result; a source served from a too-old S3 park file reports STALE, so a stopped local sync can't look healthy; partial failures are tolerated), structured JSON logging with correlation IDs, CloudWatch alarms, AWS WAF on the API
+- **Operational excellence**: per-source health checks → SNS email alerts (a total collector outage reports FAILED instead of an empty result; a source served from a too-old S3 park file reports STALE, so a stopped local sync can't look healthy; a source that returned items from only a fraction of its feeds reports DEGRADED; partial failures are tolerated), structured JSON logging with correlation IDs, CloudWatch alarms, AWS WAF on the API
 - **AWS deployment**: Lambda + EventBridge cron + Bedrock AgentCore (Runtime + Memory) + ECS (RSSHub)
 
 ## Architecture
@@ -212,7 +212,8 @@ Each collector runs async in parallel. Lookback window is configurable per sourc
 - Hard filters: promotions, thin content, beginner questions → score ≤ 0.3
 - Content bonuses: interviews, paper summaries, major model releases
 - `origin_weights`: additive score nudge for known origins — `score + (weight-1.0) * origin_weight_nudge`, clamped to [0,1] (a tie-breaker, not a multiplier)
-- `source_slots`: guaranteed minimum per source type
+- `source_slots`: guaranteed minimum per source type, then one shared fill loop relaxes the caps in order — both caps → per-origin cap off → (last resort, only while the digest is short) source cap off too, preferring candidates that still satisfy `max_per_origin` and logging once at INFO
+- The prompt sees an `Origin` line for every item, web-search results included (the URL host, `netloc` minus `www.`), since "source authority" cannot be judged with the outlet withheld
 
 ### 4. Trend Tracking
 
@@ -222,17 +223,19 @@ Each collector runs async in parallel. Lookback window is configurable per sourc
 
 `DigestGenerator` uses Claude Sonnet to produce a Korean editorial digest as a structured `DigestContent` (Pydantic: `lead`, `headline_index`, `items[]` each with title/url/source_tag/metrics/body/implication):
 
-- Opening: one editorial angle, not a summary of all items; an "AGI countdown" intro line is prepended in code (not the LLM)
+- Opening: one editorial angle naming the day's headline story, not a summary of all items; an "AGI countdown" gag line is attached in code (not the LLM), at the end of the lead by default (`agi_countdown_position: suffix`) so the Threads root's first line is the day's actual angle
+- **The JSON key order is load-bearing**: the prompt asks for `items` FIRST and `lead` LAST, so the lead comments on stories already written (measured word overlap with the headline reply dropped from 0.21-0.41 to 0.03-0.21). `headline_index` is not requested at all — code pins it to 1. **Do not reorder the requested keys to match `DigestContent`'s field order**; that "tidy-up" is an overlap regression
+- Prose budgets are computed in code from the parts code owns (URL + source line + separators), title included, and stated to the editor — `digest_item_prose_max_chars` (380) is only a ceiling
 - Per item: source tag + engagement metrics, core content, technical detail, implications (italic)
 - The LLM writes only the prose; code stamps source tags/metrics. No Slack markup here — per-channel renderers (`output/renderers.py`) emit Slack **Block Kit** and **Threads** posts. `render_digest_text` produces the plain-prose system-of-record `digest_text` for trends/memory/agent. (`sanitize_slack_mrkdwn()` is used only on the free-form agent path.)
 
 ### 6. Daily Visual
 
-`DailyVisualMaker` (best-effort, async off the digest critical path) illustrates the **headline** (`items[0]`, the lead's story) so the image, lead, and text stay in sync. The editor briefs *how* to draw it, preferring light/news topics over deep-tech and choosing the orientation freely per image, then `VisualGenerator` renders it via OpenAI gpt-image-2 and posts to Slack (and, when `enable_threads_post` is on, ships the whole digest to Threads — image root + reply chain — since this Lambda owns the Threads post).
+`DailyVisualMaker` (best-effort, async off the digest critical path) illustrates the **headline** (`items[0]`, the lead's story) so the image, lead, and text stay in sync. The editor briefs *how* to draw it (the headline itself is picked upstream by importance, with visual expressibility only breaking a tie between equally important stories) and chooses the orientation freely per image, then `VisualGenerator` renders it via OpenAI gpt-image-2 and posts to Slack (and, when `enable_threads_post` is on, ships the whole digest to Threads — image root + reply chain — since this Lambda owns the Threads post).
 
 ### 7. Deep-Research Agent
 
-Autonomous Strands Agent (on Bedrock AgentCore Runtime), triggered by a Slack mention with an AI/ML topic. It rewrites the query, researches across sources, writes a cited Korean report in the digest's narrator voice, and delivers it to Slack (default) or Threads (on explicit request), attaching the best source's OG image. It freely composes these 7 single-purpose tools — e.g. "diffusion LLM 최신 동향" → `web_search`/`search_papers`/`community_search` → `read_url` → `attach_image` → `deliver_report`:
+Autonomous Strands Agent (on Bedrock AgentCore Runtime), triggered by a Slack mention with an AI/ML topic. It rewrites the query, researches across sources, writes a cited Korean report in the digest's narrator voice, and delivers it to Slack (default) or Threads (on explicit request), attaching the best source's OG image. It freely composes these 8 single-purpose tools — e.g. "diffusion LLM 최신 동향" → `web_search`/`search_papers`/`community_search` → `read_url` → `attach_image` → `deliver_report`:
 
 | Tool | Function |
 |------|----------|
@@ -241,6 +244,7 @@ Autonomous Strands Agent (on Bedrock AgentCore Runtime), triggered by a Slack me
 | `search_papers(query)` | Semantic Scholar API |
 | `read_url(url)` | Fetch + extract a primary source's full text (Tavily extract) |
 | `recall_trends(query)` | Keyword match over the structured `trends.json` (active/cooling), momentum-ranked |
+| `recall_digest(digest_date)` | What one specific day's digest carried (lead + story titles) — never falls back to another date |
 | `attach_image(source_url)` | Download a source's OG image and stage it for delivery |
 | `deliver_report(report, channel)` | Render + post the report — Slack (default) or Threads |
 

@@ -1,7 +1,9 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from shared.memory import AgentCoreMemoryStore, LocalMemoryStore, create_memory_store
+import pytest
+
+from shared.memory import AgentCoreMemoryStore, LocalMemoryStore, MemoryReadError, create_memory_store
 
 
 def _store() -> AgentCoreMemoryStore:
@@ -28,6 +30,29 @@ class TestFitToLimit:
         parsed = json.loads(out)  # must be valid JSON (never byte-sliced)
         assert len(out) <= store.MAX_EVENT_TEXT
         assert "ranked_items" in parsed  # still a well-formed snapshot dict
+
+    def test_shedding_keeps_every_story_and_the_digest_content(self):
+        # The visual Lambda publishes off THIS payload, so what survives the trim decides whether
+        # the day has a digest. Assert the surviving SHAPE by parsing it (story count, content items
+        # non-empty) — a substring check would pass on a snapshot that had shed all of them.
+        store = _store()
+        body = "x" * 30_000
+        state = {
+            "ranked_items": [{"item": {"item_id": f"i{n}", "text": body}, "score": 0.8} for n in range(4)],
+            "collected_items": {f"i{n}": {"text": body} for n in range(4)},
+            "digest_result": {
+                "digest_text": "d",
+                "content": {
+                    "lead": "리드.",
+                    "headline_index": 1,
+                    "items": [{"title": f"스토리 {n}", "url": f"u{n}", "body": "b"} for n in range(5)],
+                },
+            },
+        }
+        parsed = json.loads(store._fit_to_limit(state))
+        assert len(parsed["ranked_items"]) == 4
+        assert [r["item"]["item_id"] for r in parsed["ranked_items"]] == ["i0", "i1", "i2", "i3"]
+        assert len(parsed["digest_result"]["content"]["items"]) == 5
 
 
 class TestLocalMemoryStore:
@@ -229,7 +254,15 @@ class TestAgentCoreGetDigestByDate:
         client.list_events.return_value = {"events": []}
         assert store.get_digest("2026-08-17") is None
 
-    def test_api_failure_is_none(self):
+    def test_api_failure_raises_instead_of_reading_as_an_empty_day(self):
+        # A throttled/denied read used to come back as None — indistinguishable from "this day has
+        # no digest" — so the visual Lambda skipped the day's only delivery and returned 200.
         store, client = self._store()
         client.list_events.side_effect = RuntimeError("throttled")
+        with pytest.raises(MemoryReadError, match="digest-2026-08-17"):
+            store.get_digest("2026-08-17")
+
+    def test_a_genuinely_missing_snapshot_is_still_none(self):
+        store, client = self._store()
+        client.list_events.return_value = {"events": []}
         assert store.get_digest("2026-08-17") is None

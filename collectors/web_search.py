@@ -51,7 +51,13 @@ class WebSearchCollector(BaseCollector):
             logger.info("Web search collector is disabled, skipping")
             return []
 
-        self._api_key = await asyncio.to_thread(resolve_secret, "TAVILY_API_KEY", "tavily-api-key")
+        # strict=True: an SSM read that FAILS (denied, throttled, misconfigured) raises instead of
+        # returning "", so the collector reports FAILED and alerts. It used to return [] — the same
+        # answer as "no key configured" — and the digest simply lost its whole web-search source for
+        # the day with one warning line. A genuinely absent parameter still returns "" and takes the
+        # quiet skip below. Deliberately scoped to this collector: the research backends and the
+        # agent path keep the ""-degrades contract they were written against.
+        self._api_key = await asyncio.to_thread(resolve_secret, "TAVILY_API_KEY", "tavily-api-key", strict=True)
         if not self._api_key:
             logger.warning("TAVILY_API_KEY not set, skipping web search collector")
             return []

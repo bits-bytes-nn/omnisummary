@@ -207,6 +207,10 @@ class SourceStatus(str, Enum):
     # sync) or could not be read at all. The run still produced items, so it is not a FAILURE —
     # but it must not read as a healthy OK either, which is how a dead cron stayed invisible.
     STALE = "stale"
+    # The source produced items, on time, from only a FRACTION of its inputs (most of its feeds
+    # failed). Also not a failure and not OK: a source can shrink from 40 accounts to 3 and still
+    # look perfectly healthy, which is how X quietly stopped contributing.
+    DEGRADED = "degraded"
 
 
 class SourceHealth(BaseModel):
@@ -226,6 +230,10 @@ class HealthReport(BaseModel):
     @property
     def stale_sources(self) -> list[str]:
         return [s.name for s in self.sources if s.status == SourceStatus.STALE]
+
+    @property
+    def degraded_sources(self) -> list[str]:
+        return [s.name for s in self.sources if s.status == SourceStatus.DEGRADED]
 
     def summary(self) -> str:
         return "\n".join(

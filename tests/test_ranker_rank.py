@@ -432,3 +432,18 @@ class TestRankingCoverage:
         result = await ranker.rank(items)
         assert {r.item.item_id for r in result} == {"i0", "i1", "i2"}
         assert len(seen) == 1
+
+
+class TestRankingPromptOrigin:
+    """What the ranker actually SHOWS the model. The prompt scores "Source Authority", so a web
+    item's outlet has to appear — it used to be omitted entirely for web-search results."""
+
+    def test_web_items_carry_an_origin_line(self):
+        ranker = _ranker("", source_slots={})
+        item = CollectedItem(item_id="w", source_type=SourceType.WEB, title="t", url="https://www.wired.com/story/x")
+        assert "Origin: wired.com" in ranker._format_items([item])
+
+    def test_no_origin_line_when_the_url_has_no_host(self):
+        ranker = _ranker("", source_slots={})
+        item = CollectedItem(item_id="w", source_type=SourceType.WEB, title="t", url="notaurl")
+        assert "Origin:" not in ranker._format_items([item])

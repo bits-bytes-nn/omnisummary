@@ -5,8 +5,10 @@ from urllib.parse import urlparse, urlsplit
 
 from langchain_core.output_parsers import StrOutputParser
 
+from output.renderers import THREADS_MAX_POST_CHARS, threads_item_overhead_chars
 from pipeline.aggregator import normalize_url
 from shared import (
+    COUNTDOWN_SUFFIX_SEPARATOR,
     YOUTUBE_VIEWS_EMOJI,
     BedrockLanguageModelFactory,
     CollectedItem,
@@ -80,6 +82,15 @@ class DigestGenerator:
             self.config.digest_model.value,
         )
 
+        # The countdown gag is code-owned and lands on the lead after generation, so its length is
+        # spent before the editor writes a word — compute it here to bound the lead's own budget.
+        intro = agi_countdown_intro(
+            self.config.agi_countdown_date,
+            self.config.agi_countdown_template,
+            today or datetime.now(UTC).date(),
+            self.config.agi_countdown_after,
+        )
+
         items_text = self._format_ranked_items(ranked_items)
         chain = DigestPrompt.get_prompt() | self.llm | StrOutputParser()
         prompt_vars = {
@@ -90,7 +101,8 @@ class DigestGenerator:
             "voice_guidance": self.config.digest_voice_guidance,
             "target_count": target_count,
             "recent_leads": _format_recent_leads(recent_leads),
-            "prose_budget_rule": _prose_budget_rule(self.config.digest_item_prose_max_chars),
+            "prose_budget_rule": _prose_budget_rule(self._item_prose_budget(ranked_items)),
+            "lead_budget": self._lead_budget(intro),
         }
 
         async def _ask_editor() -> DigestContent:
@@ -121,12 +133,6 @@ class DigestGenerator:
         # (the single KST clock for the run) so the day count is consistent with trend stamps and
         # lands on every channel via the stored content — not just one renderer. Its end of the lead
         # is config-driven (agi_countdown_position).
-        intro = agi_countdown_intro(
-            self.config.agi_countdown_date,
-            self.config.agi_countdown_template,
-            today or datetime.now(UTC).date(),
-            self.config.agi_countdown_after,
-        )
         content.lead = place_countdown_intro(content.lead, intro, self.config.agi_countdown_position)
 
         digest_text = render_digest_text(content)
@@ -140,6 +146,45 @@ class DigestGenerator:
             total_collected=len(all_items),
             total_ranked=len(ranked_items),
         )
+
+    def _item_prose_budget(self, ranked_items: list[RankedItem]) -> int:
+        """Characters the editor may spend on ONE item's title + body + implication.
+
+        Derived from the real fixed parts of a Threads post rather than estimated: the URL and the
+        source line are code-owned and their lengths are already known from the candidates, so the
+        budget is 500 minus the WORST-CASE overhead among them (a budget that only holds for the
+        median item still trims the long-URL ones). The TITLE is inside the number because the
+        editor authors it — the old budget covered body + implication only, so every Korean title
+        was spent off-budget and 5 of 95 sampled items lost their closing sentence.
+        digest_item_prose_max_chars stays an optional CEILING: 0 means "no channel cap here"."""
+        overhead = max(
+            (threads_item_overhead_chars(self._threads_meta_line(r.item), r.item.url) for r in ranked_items),
+            default=0,
+        )
+        derived = max(0, THREADS_MAX_POST_CHARS - overhead)
+        ceiling = self.config.digest_item_prose_max_chars
+        budget = min(derived, ceiling) if ceiling > 0 else derived
+        logger.info("Item prose budget: %d chars (derived %d, worst-case fixed parts %d)", budget, derived, overhead)
+        return budget
+
+    def _lead_budget(self, intro: str) -> int:
+        """Characters the editor may spend on the lead. The lead IS the Threads root post, and the
+        code-owned countdown gag is appended to it afterwards, so the gag's own length (plus the
+        blank line before it in `suffix` position) is not the editor's to spend. An over-long lead
+        is trimmed by whole sentences at publish time — silently, until now."""
+        reserved = len(intro)
+        if intro and self.config.agi_countdown_position == "suffix":
+            reserved += len(COUNTDOWN_SUFFIX_SEPARATOR)
+        return max(0, THREADS_MAX_POST_CHARS - reserved)
+
+    @classmethod
+    def _threads_meta_line(cls, item: CollectedItem) -> str:
+        """The item's provenance line exactly as the Threads renderer shows it (Slack markup
+        stripped), so the budget is computed off the string that really occupies the post."""
+        from output.renderers import _strip_slack_mrkdwn
+
+        tag, metrics = cls._source_tag_and_metrics(item)
+        return _strip_slack_mrkdwn(" · ".join(p for p in (tag, metrics) if p)).strip()
 
     def _parse_content(self, raw: str) -> DigestContent:
         """Turn the editor's raw output into a DigestContent, or raise DigestContentError.
@@ -334,19 +379,29 @@ def _prose_budget_rule(max_chars: int) -> str:
     if max_chars <= 0:
         return ""
     return (
-        f" `body` and `implication` TOGETHER must stay under {max_chars} characters — the renderer "
-        "drops trailing sentences that do not fit, so an over-long body loses exactly the closing "
-        "detail you wrote last."
+        f" `title`, `body` and `implication` TOGETHER must stay under {max_chars} characters — the "
+        "renderer drops trailing sentences that do not fit, so an over-long body loses exactly the "
+        "closing detail you wrote last."
     )
+
+
+# How much of each recent lead the anti-repetition block shows. What must differ is the OPENING
+# ANGLE, and the openings sit at the front; carrying five leads in full crowded the prompt with
+# prose the editor is not being asked to compare against.
+RECENT_LEAD_PREVIEW_CHARS = 200
 
 
 def _format_recent_leads(recent_leads: list[str] | None) -> str:
     """Render the last few days' leads as a bulleted block for the anti-repetition prompt
-    input. Generic — names no phrase to ban, just 'here are recent openings, differ from them'."""
+    input. Generic — names no phrase to ban, just 'here are recent openings, differ from them'.
+    Each entry is truncated in CODE (not by a prompt instruction) to its opening stretch."""
     leads = [ln.strip() for ln in (recent_leads or []) if ln and ln.strip()]
     if not leads:
         return "(No recent digests — no prior angles to avoid.)"
-    return "\n".join(f"- {ln}" for ln in leads)
+    previews = [
+        ln if len(ln) <= RECENT_LEAD_PREVIEW_CHARS else ln[:RECENT_LEAD_PREVIEW_CHARS].rstrip() + "…" for ln in leads
+    ]
+    return "\n".join(f"- {ln}" for ln in previews)
 
 
 def render_digest_text(content: DigestContent) -> str:

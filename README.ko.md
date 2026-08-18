@@ -22,12 +22,12 @@ AWS 위 일간 파이프라인 · Bedrock AgentCore (Runtime + Memory) · Amazon
 ## 주요 기능
 
 - **멀티 소스 수집**: Reddit(프록시 경유 공개 .rss 피드), YouTube, X/Twitter(RSSHub 경유), RSS/Substack, 웹 검색(Tavily)
-- **LLM 기반 랭킹**: Claude Opus 4.8, 소스 슬롯 + 출처별 다양성 캡을 적용한 다축(multi-axis) 평가
+- **LLM 기반 랭킹**: Claude Opus 4.8, 소스 슬롯 + 출처별 다양성 캡을 적용한 다축(multi-axis) 평가(채널·서브레딧·피드·X 작성자·웹 호스트 단위, 핀 항목도 캡에 계수)
 - **에디토리얼 다이제스트**: Claude Sonnet 5 한국어 에디토리얼, 일자 간 트렌드 추적 포함
 - **멀티 채널 전달**: 구조화된 다이제스트를 채널별로 렌더링 — Slack(Block Kit)과 Threads(이미지 루트 + 평면 답글 체인), 각각 독립적으로 on/off
 - **딥 리서치 에이전트**: Slack 멘션으로 작동하는 자율 Strands 에이전트 — 쿼리를 재작성하고, 웹/논문/커뮤니티/블로그를 가로질러 조사한 뒤, 다이제스트와 동일한 내레이터 보이스로 인용 기반 한국어 리포트를 작성해 Slack(기본) 또는 Threads(명시적 요청 시)에 게시하고, 출처 기사의 OG 이미지를 첨부
 - **AgentCore 중심**: 다이제스트 상태를 Bedrock AgentCore Memory에 보존하고, 에이전트는 AgentCore Runtime에서 실행
-- **운영 우수성**: 소스별 헬스 체크 → SNS 이메일 알림, 상관 ID가 붙는 구조화된 JSON 로깅, CloudWatch 알람, API에 AWS WAF
+- **운영 우수성**: 소스별 헬스 체크 → SNS 이메일 알림(수집기 전면 장애는 빈 결과가 아니라 FAILED, 너무 오래된 S3 park 파일로 서비스된 소스는 STALE, 자기 피드 중 일부만 응답해 항목을 낸 소스는 DEGRADED — 부분 실패는 허용), 상관 ID가 붙는 구조화된 JSON 로깅, CloudWatch 알람, API에 AWS WAF
 - **AWS 배포**: Lambda + EventBridge cron + Bedrock AgentCore(Runtime + Memory) + ECS(RSSHub)
 
 ## 아키텍처
@@ -166,7 +166,8 @@ uv run python scripts/sync_rsshub_to_s3.py
 - 하드 필터: 홍보성, 빈약한 콘텐츠, 초보 질문 → 점수 ≤ 0.3
 - 콘텐츠 보너스: 인터뷰, 논문 요약, 주요 모델 출시
 - `origin_weights`: 알려진 출처에 대한 가산 점수 보정 — `score + (weight-1.0) * origin_weight_nudge`, [0,1]로 클램프 (배수가 아니라 동점 처리용)
-- `source_slots`: 소스 유형별 최소 보장 수
+- `source_slots`: 소스 유형별 최소 보장 수. 이후 하나의 공통 fill 루프가 캡을 순서대로 완화합니다 — 두 캡 모두 → per-origin 캡 해제 → (마지막 수단, 다이제스트가 미달일 때만) source 캡까지 해제(`max_per_origin`을 만족하는 후보 우선, 발동 시 INFO 1줄)
+- 프롬프트에는 web-search 항목까지 포함해 모든 항목의 `Origin` 줄이 들어갑니다(URL 호스트, `netloc`에서 `www.` 제거) — 매체명을 가린 채로 "소스 권위"를 채점할 수는 없기 때문
 
 ### 4. 트렌드 추적(Trend Tracking)
 
@@ -176,13 +177,21 @@ uv run python scripts/sync_rsshub_to_s3.py
 
 `DigestGenerator`가 Claude Sonnet으로 한국어 에디토리얼 다이제스트를 생성합니다:
 
-- 오프닝: 전체 항목 요약이 아니라 하나의 에디토리얼 앵글
+구조화된 `DigestContent`(Pydantic: `lead`, `headline_index`, `items[]` — 각 title/url/source_tag/metrics/body/implication)로 생성합니다:
+
+- 오프닝: 전체 항목 요약이 아니라, 그날 헤드라인 스토리를 이름으로 짚는 하나의 에디토리얼 앵글. "AGI 카운트다운" 개그 줄은 LLM이 아니라 **코드**가 붙이며, 기본값(`agi_countdown_position: suffix`)은 lead의 **마지막** 줄이라 Threads 루트의 첫 줄이 그날의 각이 됩니다
+- **JSON 키 순서가 동작에 영향을 줍니다**: 프롬프트는 `items`를 **먼저**, `lead`를 **마지막에** 요청합니다. 이미 쓴 스토리에 대한 논평으로 lead를 쓰게 만드는 장치이고(헤드라인 답글과의 단어 겹침 0.21–0.41 → 0.03–0.21로 측정됨), `headline_index`는 아예 요청하지 않고 코드가 1로 고정합니다. **`DigestContent`의 필드 순서에 맞춰 프롬프트 키 순서를 되돌리지 마세요** — 그 '정리'는 겹침 회귀입니다
 - 항목별: 소스 태그 + 인게이지먼트 지표, 핵심 내용, 기술적 세부, 함의(이탤릭)
-- `sanitize_slack_mrkdwn()` 후처리로 Slack mrkdwn 포매팅
+- 산문 예산은 코드가 소유한 고정 파트(URL + 소스 줄 + 구분자)에서 계산해 에디터에게 전달하며 title도 그 안에 포함됩니다(`digest_item_prose_max_chars` 380은 상한선일 뿐)
+- LLM은 산문만 쓰고, 소스 태그/지표는 코드가 채웁니다. 다이제스트 경로에는 Slack 마크업이 없고, 채널별 렌더러(`output/renderers.py`)가 Slack **Block Kit**과 **Threads** 게시물을 만듭니다(`sanitize_slack_mrkdwn()`은 자유형 에이전트 경로 전용)
 
-### 6. 딥 리서치 에이전트(Deep-Research Agent)
+### 6. 데일리 비주얼(Daily Visual)
 
-자율 Strands 에이전트(Bedrock AgentCore Runtime에서 실행)로, AI/ML 주제가 담긴 Slack 멘션으로 작동합니다. 쿼리를 재작성하고, 여러 소스를 가로질러 조사한 뒤, 다이제스트의 내레이터 보이스로 인용 기반 한국어 리포트를 작성해 Slack(기본) 또는 Threads(명시적 요청 시)에 전달하고, 가장 적합한 출처의 OG 이미지를 첨부합니다. 아래 7개의 단일 목적 도구를 자유롭게 조합합니다 — 예: "diffusion LLM 최신 동향" → `web_search`/`search_papers`/`community_search` → `read_url` → `attach_image` → `deliver_report`:
+`DailyVisualMaker`(다이제스트 크리티컬 패스 밖, 비동기)가 **헤드라인**(`items[0]`, lead의 스토리)을 그려 이미지·lead·텍스트가 한 스토리로 일치하게 합니다. 에디터는 *어떻게* 그릴지만 브리핑하고(헤드라인 자체는 상류에서 중요도로 뽑으며, 시각화 용이성은 동등하게 중요한 스토리 사이의 tie-break만 합니다), orientation은 이미지마다 자유롭게 고릅니다. 이후 `VisualGenerator`가 OpenAI gpt-image-2로 렌더해 Slack에 올리고, `enable_threads_post`가 켜져 있으면 **다이제스트 전체를 Threads에 게시**합니다(이미지 루트 + 답글 체인 — Threads 게시는 이 Lambda가 소유).
+
+### 7. 딥 리서치 에이전트(Deep-Research Agent)
+
+자율 Strands 에이전트(Bedrock AgentCore Runtime에서 실행)로, AI/ML 주제가 담긴 Slack 멘션으로 작동합니다. 쿼리를 재작성하고, 여러 소스를 가로질러 조사한 뒤, 다이제스트의 내레이터 보이스로 인용 기반 한국어 리포트를 작성해 Slack(기본) 또는 Threads(명시적 요청 시)에 전달하고, 가장 적합한 출처의 OG 이미지를 첨부합니다. 아래 8개의 단일 목적 도구를 자유롭게 조합합니다 — 예: "diffusion LLM 최신 동향" → `web_search`/`search_papers`/`community_search` → `read_url` → `attach_image` → `deliver_report`:
 
 | 도구 | 기능 |
 |------|----------|
@@ -191,10 +200,11 @@ uv run python scripts/sync_rsshub_to_s3.py
 | `search_papers(query)` | Semantic Scholar API |
 | `read_url(url)` | 1차 출처 전문 가져오기 + 추출 (Tavily extract) |
 | `recall_trends(query)` | 구조화된 `trends.json`(active/cooling)에 대한 키워드 매칭, 모멘텀 순위 |
+| `recall_digest(digest_date)` | 특정 날짜의 다이제스트가 담았던 내용(lead + 스토리 제목) — 다른 날짜로 폴백하지 않음 |
 | `attach_image(source_url)` | 출처의 OG 이미지를 내려받아 전달용으로 준비 |
 | `deliver_report(report, channel)` | 리포트 렌더링 + 게시 — Slack(기본) 또는 Threads |
 
-전달은 (프롬프트 규칙이 아니라) 코드에서 채널을 인식해 처리합니다: Slack은 Block Kit(`render_agent_blocks`, `:satellite: OmniSummary Deep Research` 헤더), Threads는 루트 + 평면 답글 체인으로 `'---'`로 구분된 ≤500자 게시물(`render_threads_research`). 에이전트가 전달 없이 종료하면 런타임이 리포트를 Slack에 폴백 게시합니다.
+전달은 (프롬프트 규칙이 아니라) 코드에서 채널을 인식해 처리합니다: Slack은 Block Kit(`render_research_blocks`, `:satellite: OmniSummary Deep Research` 헤더), Threads는 루트 + 평면 답글 체인으로 `'---'`로 구분된 ≤500자 게시물(`render_threads_research`). 에이전트가 전달 없이 종료하면 런타임이 `render_agent_blocks`로 리포트를 Slack에 폴백 게시합니다.
 
 ## AWS 배포
 

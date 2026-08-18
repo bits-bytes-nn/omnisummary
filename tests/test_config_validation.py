@@ -140,3 +140,38 @@ class TestTranscriptLanguage:
 
     def test_is_configurable(self):
         assert YouTubeCollectorConfig(transcript_language="ko").transcript_language == "ko"
+
+
+class TestCodeDefaultsMatchTheDeployedConfig:
+    """A code default that disagrees with config.yaml is a live trap: it is what a deployment
+    without a config.yaml (and every PipelineConfig() in a test) silently gets."""
+
+    def test_countdown_position_default_matches_the_local_config(self):
+        # config.yaml has said "suffix" since the setting was added — the code default still said
+        # "prefix", i.e. the exact behaviour the setting exists to avoid (40 identical first lines).
+        assert PipelineConfig().agi_countdown_position == "suffix"
+        if not LOCAL_CONFIG.exists():
+            pytest.skip(f"no local config at {LOCAL_CONFIG} (gitignored)")
+        cfg = Config.from_yaml(str(LOCAL_CONFIG))
+        assert cfg.pipeline.agi_countdown_position == PipelineConfig().agi_countdown_position
+
+    def test_delivery_toggles_are_explicit_in_the_local_config(self):
+        # Delivery routing must come from the file, never a code default: the visual Lambda is the
+        # only Threads publish path, and enable_threads_post defaults to False in code.
+        if not LOCAL_CONFIG.exists():
+            pytest.skip(f"no local config at {LOCAL_CONFIG} (gitignored)")
+        import yaml
+
+        raw = yaml.safe_load(LOCAL_CONFIG.read_text(encoding="utf-8"))["pipeline"]
+        assert "enable_threads_post" in raw
+        assert "enable_slack_post" in raw
+
+
+class TestLanguageRules:
+    def test_one_form_per_proper_noun_and_particle_agreement(self):
+        # Published Korean carried two spellings of the same company in one digest and particles
+        # that disagreed with the form as written. One consolidated rule, no per-company name table.
+        rules = PipelineConfig().digest_language_rules
+        assert "ONE form per proper noun" in rules
+        assert "particle" in rules
+        assert "transliteration" in rules

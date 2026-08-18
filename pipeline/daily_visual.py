@@ -58,7 +58,14 @@ class DailyVisualMaker:
             )
             self.threads_ledger: ThreadsPostLedger | None = ThreadsPostLedger(store)
         except Exception:
-            logger.warning("Visual format history unavailable (state store init failed)", exc_info=True)
+            # ERROR, not warning: without the store there is no Threads idempotency ledger either,
+            # so this run cannot tell an already-published day from a fresh one. Deliberately NOT
+            # raised — see StateReadError's contract: a lost digest is strictly worse than a run
+            # without history, and retry_attempts=0 means nothing would auto-retry the publish.
+            logger.error(
+                "Visual format history AND the Threads post ledger are unavailable (state store init failed)",
+                exc_info=True,
+            )
             self.format_log = None
             self.threads_ledger = None
         self.generator = VisualGenerator(
@@ -85,7 +92,12 @@ class DailyVisualMaker:
         *,
         today: date | None = None,
         force_republish: bool = False,
+        deadline: float | None = None,
     ) -> bool:
+        """Make the day's visual and publish the digest. `deadline` is an OPTIONAL monotonic
+        timestamp (time.monotonic() + seconds left) that bounds the render + publish path when the
+        caller runs under a hard timeout — the visual Lambda passes its remaining time. None (local
+        runs, main.py) means unbounded, exactly as before."""
         if not ranked_items:
             return False
 
@@ -98,10 +110,12 @@ class DailyVisualMaker:
             )
             return False
 
-        image_bytes, brief = await self._make_visual(ranked_items, content, post_date)
+        image_bytes, brief = await self._make_visual(ranked_items, content, post_date, deadline=deadline)
 
         slack_ok = await self._post(image_bytes, brief)
-        threads_ok = await self._post_threads(image_bytes, content, today=post_date, force_republish=force_republish)
+        threads_ok = await self._post_threads(
+            image_bytes, content, today=post_date, force_republish=force_republish, deadline=deadline
+        )
         # Success = at least one enabled channel published. Returning only slack_ok reported
         # "skipped" for every Threads-only run (the current config), hiding real outcomes.
         return slack_ok or threads_ok
@@ -120,7 +134,12 @@ class DailyVisualMaker:
         return bool(self.threads_ledger and self.threads_ledger.already_posted(post_date))
 
     async def _make_visual(
-        self, ranked_items: list[RankedItem], content: DigestContent | None, post_date: date
+        self,
+        ranked_items: list[RankedItem],
+        content: DigestContent | None,
+        post_date: date,
+        *,
+        deadline: float | None = None,
     ) -> tuple[bytes | None, VisualBrief | None]:
         """Render the day's image, or (None, None). EVERY failure is contained here — a missing
         OpenAI key, an unusable editor plan, a render error — because the image is an ATTACHMENT to
@@ -191,7 +210,7 @@ class DailyVisualMaker:
         image_bytes: bytes | None = None
         brief: VisualBrief | None = None
         try:
-            image_bytes, brief = await self.generator.generate(instruction, source, context)
+            image_bytes, brief = await self.generator.generate(instruction, source, context, deadline=deadline)
         except Exception:
             # The image is an optional attachment; its failure must NOT sink the Threads text
             # digest, which stands on its own. Fall through with no image so _post_threads still
@@ -466,10 +485,12 @@ class DailyVisualMaker:
         *,
         today: date | None = None,
         force_republish: bool = False,
+        deadline: float | None = None,
     ) -> bool:
         if not self.config.pipeline.enable_threads_post:
             return False
         from output.renderers import render_threads_posts
+        from output.threads_handler import ThreadsDelivery as Delivery
         from output.threads_handler import post_to_threads
 
         # Idempotency: a same-day re-run (manual `main.py`) or an automatic async retry of the
@@ -489,7 +510,12 @@ class DailyVisualMaker:
         # (one of them carrying leaked `</caption>` markup), consuming the day's ledger slot and
         # logging success. Skipping instead keeps the day retryable and never ships a broken digest.
         if not (content and content.items):
-            logger.warning("No digest stories to post to Threads for %s; skipping (day stays retryable)", post_date)
+            logger.error("No digest stories to post to Threads for %s; skipping (day stays retryable)", post_date)
+            # Leave a VERDICT behind, don't just return: this is the 2026-08-13/08-17 story-loss
+            # shape (the channel was enabled, the day was unpublished, and nothing went out), and
+            # with threads_outcome left at None the caller's alert was a no-op. expected=1 keeps
+            # posted >= expected false, so the "nothing to report" early-return can't swallow it.
+            self.threads_outcome = Delivery(0, 1)
             return False
         root_text, replies = render_threads_posts(content)
 
@@ -519,11 +545,14 @@ class DailyVisualMaker:
                 image_bytes=image_bytes,
                 image_bucket=bucket,
                 image_key=image_key,
+                deadline=deadline,
             )
         except Exception:
             # Best-effort like the rest of the visual path: roll the claim back so the post
-            # stays retryable, log, and don't let a Threads failure escape into run().
+            # stays retryable, log, and don't let a Threads failure escape into run(). The verdict
+            # is still recorded (nothing landed of the posts we intended) so the caller can alert.
             logger.warning("Threads post failed", exc_info=True)
+            self.threads_outcome = Delivery(0, 1 + len([r for r in replies if r.strip()]))
             if not was_marked:
                 self._release_threads_marker(post_date, run_id)
             return False

@@ -196,7 +196,14 @@ def resolve_origin_key(item: CollectedItem) -> str | None:
 
 
 def format_origin_label(item: CollectedItem) -> str:
-    """Plain-text origin label fed to the ranking prompt (no Slack markup)."""
+    """Plain-text origin label fed to the ranking prompt (no Slack markup).
+
+    Web-search items carried NO origin line, so the ranking prompt was asked to judge "Source
+    Authority" for them with the outlet withheld — a press release on a content farm and a report
+    from a wire service looked identical. Their host stands in as the origin, derived exactly the
+    way resolve_origin_key does it (`netloc` minus a `www.` prefix): no domain/authority table, no
+    public-suffix logic, no new dependency.
+    """
     meta = item.metadata
     if item.source_type == SourceType.REDDIT:
         return f"r/{meta.get('subreddit', '')}" if meta.get("subreddit") else ""
@@ -206,4 +213,6 @@ def format_origin_label(item: CollectedItem) -> str:
         return f"@{item.author}" if item.author else ""
     if item.source_type == SourceType.RSS:
         return meta.get("feed_title", "") or meta.get("feed_url", "")
+    if item.source_type == SourceType.WEB:
+        return urlparse(item.url).netloc.removeprefix("www.")
     return ""

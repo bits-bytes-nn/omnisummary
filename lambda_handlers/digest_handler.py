@@ -16,6 +16,7 @@ from shared import (
     HealthReport,
     SourceStatus,
     format_alarm,
+    is_running_in_aws,
     logger,
     set_correlation_id,
 )
@@ -45,9 +46,11 @@ def _maybe_alert(health: HealthReport) -> None:
     topic_arn = os.environ.get("ALERT_SNS_TOPIC_ARN", "")
     failed = [s.name for s in health.sources if s.status == SourceStatus.FAILED]
     # A STALE source also alerts: it produced items, but off an S3 park file whose local sync has
-    # stopped (or that couldn't be read), which otherwise stays invisible for days.
+    # stopped (or that couldn't be read), which otherwise stays invisible for days. So does a
+    # DEGRADED one: it produced items on time, but from only a fraction of its feeds.
     stale = health.stale_sources
-    if not topic_arn or not (failed or stale):
+    degraded = health.degraded_sources
+    if not topic_arn or not (failed or stale or degraded):
         return
     try:
         sns = boto3.client("sns")
@@ -56,10 +59,12 @@ def _maybe_alert(health: HealthReport) -> None:
             fields["Failed sources"] = ", ".join(failed)
         if stale:
             fields["Stale sources"] = ", ".join(stale)
+        if degraded:
+            fields["Degraded sources"] = ", ".join(degraded)
         fields["Report"] = health.summary()
         subject, message = format_alarm(event="Source Health", status="ALERT", fields=fields)
         sns.publish(TopicArn=topic_arn, Subject=subject, Message=message)
-        logger.warning("Published SNS alert (failed: %s, stale: %s)", failed, stale)
+        logger.warning("Published SNS alert (failed: %s, stale: %s, degraded: %s)", failed, stale, degraded)
     except Exception as e:
         logger.error("Failed to publish SNS alert: %s", e)
 
@@ -139,13 +144,24 @@ def _trigger_visual(digest_date: date) -> None:
     """Fire the daily-visual Lambda asynchronously so its ~1-2 min of work doesn't count against
     the digest Lambda's 15-min timeout. The digest date is passed EXPLICITLY so the visual publishes
     the snapshot this run produced, instead of re-deriving a clock that may have rolled over (or
-    reading whatever snapshot happens to be newest). Best-effort."""
+    reading whatever snapshot happens to be newest).
+
+    NOT best-effort in AWS: that Lambda is the only Threads delivery path, so a missing function
+    name or a failed invoke means the day is never published. Both raise — the snapshot is already
+    persisted at this point, so failing here loses nothing and is what fires the Errors alarm and
+    puts the invoke in the DLQ for replay. Locally the visual runs inline from main.py instead, so
+    an unset VISUAL_FUNCTION_NAME is the normal case and stays a quiet no-op."""
     fn = os.environ.get("VISUAL_FUNCTION_NAME", "")
     if not fn:
+        if is_running_in_aws():
+            raise RuntimeError(
+                f"VISUAL_FUNCTION_NAME is not set; the {digest_date} digest was persisted but never delivered"
+            )
         return
     payload = json.dumps({"digest_date": digest_date.isoformat()}).encode()
     try:
         boto3.client("lambda").invoke(FunctionName=fn, InvocationType="Event", Payload=payload)
         logger.info("Triggered visual Lambda '%s' for %s", fn, digest_date)
     except Exception as e:
-        logger.warning("Failed to trigger visual Lambda: %s", e)
+        logger.error("Failed to trigger visual Lambda '%s': %s", fn, e, exc_info=True)
+        raise RuntimeError(f"Could not trigger visual delivery for {digest_date}: {e}") from e

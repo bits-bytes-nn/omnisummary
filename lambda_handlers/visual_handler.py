@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import time
 from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -12,6 +14,40 @@ from agent.tool_state import DigestStateManager
 from output.threads_handler import ThreadsDelivery
 from pipeline.daily_visual import DailyVisualMaker
 from shared import BedrockLanguageModelFactory, Config, create_memory_store, format_alarm, logger, set_correlation_id
+
+METRIC_NAMESPACE = "OmniSummary"
+THREADS_POSTS_METRIC = "ThreadsPostsPublished"
+
+
+def _emit_threads_posts_metric(posted: int) -> None:
+    """Emit how many Threads posts (root + replies) actually landed, as a CloudWatch EMF metric on
+    stdout. This Lambda is the ONLY delivery path, and its verdict was previously visible solely in
+    an SNS alert that no-ops without ALERT_SNS_TOPIC_ARN — so a day that published nothing left no
+    numeric trace at all. Stdout only: no alarm or CDK change rides on this yet."""
+    emf = {
+        "_aws": {
+            "Timestamp": int(datetime.now().timestamp() * 1000),
+            "CloudWatchMetrics": [
+                {"Namespace": METRIC_NAMESPACE, "Dimensions": [[]], "Metrics": [{"Name": THREADS_POSTS_METRIC}]}
+            ],
+        },
+        THREADS_POSTS_METRIC: posted,
+    }
+    print(json.dumps(emf))
+
+
+def _remaining_deadline(context: Any) -> float | None:
+    """A plain monotonic deadline for the publish path, derived from the Lambda's own remaining
+    time. Returns None when there is no context (local runs, tests) — the deadline is optional
+    everywhere downstream, so None keeps behaviour byte-identical to having no bound at all.
+    The CONTEXT OBJECT never leaves this function; only a float is threaded through."""
+    remaining_ms = getattr(context, "get_remaining_time_in_millis", None)
+    if remaining_ms is None:
+        return None
+    try:
+        return time.monotonic() + float(remaining_ms()) / 1000.0
+    except Exception:
+        return None
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -27,28 +63,34 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     set_correlation_id(getattr(context, "aws_request_id", "") or None)
     logger.info("Visual Lambda invoked")
     try:
-        asyncio.run(_run(event or {}))
+        asyncio.run(_run(event or {}, deadline=_remaining_deadline(context)))
         return {"statusCode": 200, "body": "Visual completed"}
     except Exception as e:
         logger.error("Visual Lambda failed: %s", e, exc_info=True)
         raise
 
 
-def _requested_date(event: dict[str, Any], tz: ZoneInfo) -> date:
-    """The digest date this invocation must publish. The digest Lambda passes it explicitly so the
-    visual publishes the SAME day's content it was fired for, rather than re-deriving a clock that
-    can have rolled over. A DLQ replay hands back the failed invoke's envelope, whose original
-    payload sits under `requestPayload` — honour that too so a replay isn't silently re-dated."""
+def _requested_date(event: dict[str, Any], tz: ZoneInfo) -> tuple[date, bool]:
+    """(digest date this invocation must publish, whether the invoke NAMED that date).
+
+    The digest Lambda passes the date explicitly so the visual publishes the SAME day's content it
+    was fired for, rather than re-deriving a clock that can have rolled over. A DLQ replay hands
+    back the failed invoke's envelope, whose original payload sits under `requestPayload` — honour
+    that too so a replay isn't silently re-dated.
+
+    The flag matters because it says whether a MISSING snapshot is a real failure: an explicit date
+    comes from a run that just persisted one, while a today-fallback invoke (local/manual) may
+    legitimately find nothing yet."""
     payload = event
     if "digest_date" not in payload and isinstance(payload.get("requestPayload"), dict):
         payload = payload["requestPayload"]
     raw = str(payload.get("digest_date", "") or "")
     if raw:
         try:
-            return date.fromisoformat(raw)
+            return date.fromisoformat(raw), True
         except ValueError:
             logger.warning("Ignoring malformed digest_date '%s'; falling back to today", raw)
-    return datetime.now(tz).date()
+    return datetime.now(tz).date(), False
 
 
 def _maybe_alert_threads_outcome(outcome: ThreadsDelivery | None, digest_date: date) -> None:
@@ -79,19 +121,26 @@ def _maybe_alert_threads_outcome(outcome: ThreadsDelivery | None, digest_date: d
         logger.error("Failed to publish Threads delivery alert: %s", e)
 
 
-async def _run(event: dict[str, Any] | None = None) -> None:
+async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = None) -> None:
     config = Config.load()
     if not config.pipeline.enable_daily_visual:
         logger.info("Daily visual disabled, skipping")
         return
 
-    digest_date = _requested_date(event or {}, ZoneInfo(config.aws.timezone))
+    digest_date, dated_invoke = _requested_date(event or {}, ZoneInfo(config.aws.timezone))
     # Load the snapshot BY DATE. 'Load the latest' published yesterday's stories whenever today's
     # snapshot was missing, and comparing digest_result.generated_at instead is not an option: it
     # is a UTC timestamp, so it disagrees with the KST digest date on every pre-09:00 KST run.
+    # An unreadable store raises MemoryReadError from here — never mistaken for an empty day.
     data = create_memory_store().get_digest(digest_date.isoformat())
     if not data:
-        logger.error("No digest state for %s in AgentCore Memory; nothing to publish", digest_date)
+        # An invoke that NAMED its date was fired by a pipeline run that had just persisted the
+        # snapshot, so a miss means the day's only delivery path has nothing to publish: RAISE, so
+        # the Errors alarm fires and the invoke lands in the DLQ (retry_attempts=0, so re-raising
+        # can't duplicate a post). A today-fallback invoke stays quiet — nothing has run yet.
+        if dated_invoke:
+            raise RuntimeError(f"No digest state for {digest_date} in AgentCore Memory; nothing to publish")
+        logger.info("No digest state for %s yet; nothing to publish", digest_date)
         return
     state = DigestStateManager.load_from_dict(data)
     ranked_items = state.get_ranked_items()
@@ -101,6 +150,9 @@ async def _run(event: dict[str, Any] | None = None) -> None:
     factory = BedrockLanguageModelFactory(boto_session=session, region_name=config.aws.bedrock_region)
 
     maker = DailyVisualMaker(config, factory)
-    posted = await maker.run(ranked_items, content, today=digest_date)
+    posted = await maker.run(ranked_items, content, today=digest_date, deadline=deadline)
     logger.info("Daily visual %s for %s", "posted" if posted else "skipped", digest_date)
-    _maybe_alert_threads_outcome(maker.threads_outcome, digest_date)
+    outcome = maker.threads_outcome
+    if outcome is not None:
+        _emit_threads_posts_metric(outcome.posted)
+    _maybe_alert_threads_outcome(outcome, digest_date)

@@ -12,10 +12,12 @@ def _item(url: str) -> CollectedItem:
 
 
 class _Collector:
-    """Stand-in for a built collector: run_collectors_with_health only reads park_status off it."""
+    """Stand-in for a built collector: run_collectors_with_health only reads park_status and
+    degraded_detail off it."""
 
-    def __init__(self, park_status: ParkedItems | None = None) -> None:
+    def __init__(self, park_status: ParkedItems | None = None, degraded_detail: str = "") -> None:
         self.park_status = park_status
+        self.degraded_detail = degraded_detail
 
 
 @pytest.mark.asyncio
@@ -112,3 +114,44 @@ async def test_fresh_park_file_is_ok():
 
     assert report.sources[0].status == SourceStatus.OK
     assert report.stale_sources == []
+
+
+@pytest.mark.asyncio
+async def test_partially_collected_source_reports_degraded_not_ok():
+    # Items arrived, on time, but from a fraction of the source's feeds. That used to read as a
+    # healthy OK, which is how X could shrink from 40 accounts to 3 without anyone noticing.
+    import main
+
+    async def some_items():
+        return [_item("http://a.com")]
+
+    collector = _Collector(degraded_detail="30/40 account feeds failed (>50%)")
+    with patch.object(main, "_build_collector_tasks", return_value=([some_items()], ["rsshub"], [collector])):
+        items, report = await main.run_collectors_with_health(config=None, llm_factory=None)
+
+    # Reporting only — the items still reach the aggregator untouched.
+    assert len(items) == 1
+    source = report.sources[0]
+    assert source.status == SourceStatus.DEGRADED
+    assert source.item_count == 1
+    assert "30/40" in source.detail
+    assert report.has_failures is False
+    assert report.degraded_sources == ["rsshub"]
+    assert report.stale_sources == []
+
+
+@pytest.mark.asyncio
+async def test_stale_wins_over_degraded():
+    # A stale park file is the more actionable finding (the sync itself has stopped), so it keeps
+    # the report slot rather than being masked by the degradation flag.
+    import main
+
+    async def parked_items():
+        return [_item("http://a.com")]
+
+    park = ParkedItems(outcome=ParkOutcome.STALE, age_hours=72.0, detail="park file is 72.0h old (>36h)")
+    collector = _Collector(park, degraded_detail="30/40 account feeds failed")
+    with patch.object(main, "_build_collector_tasks", return_value=([parked_items()], ["rsshub"], [collector])):
+        _items, report = await main.run_collectors_with_health(config=None, llm_factory=None)
+
+    assert report.sources[0].status == SourceStatus.STALE

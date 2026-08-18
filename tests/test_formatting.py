@@ -1,6 +1,6 @@
 from shared import format_collected_item
 from shared.constants import SourceType
-from shared.formatting import resolve_origin_key
+from shared.formatting import format_origin_label, resolve_origin_key
 from shared.models import CollectedItem
 
 
@@ -83,3 +83,25 @@ class TestResolveOriginKey:
         assert resolve_origin_key(_sourced(SourceType.RSS, feed_url="f")) == "f"
         assert resolve_origin_key(_sourced(SourceType.X, author="karpathy")) == "karpathy"
         assert resolve_origin_key(_sourced(SourceType.RSS)) is None  # no feed metadata -> no origin
+
+
+class TestFormatOriginLabel:
+    """The ranking prompt judges "Source Authority" from this line. Web-search items had none, so
+    the outlet was withheld from the one criterion that needs it."""
+
+    def test_web_label_is_the_host(self):
+        assert format_origin_label(_sourced(SourceType.WEB, url="https://techcrunch.com/a/b")) == "techcrunch.com"
+
+    def test_web_label_drops_www_and_keeps_subdomains(self):
+        # Mirrors resolve_origin_key exactly: netloc minus 'www.', no public-suffix folding.
+        assert format_origin_label(_sourced(SourceType.WEB, url="https://www.wired.com/x")) == "wired.com"
+        assert format_origin_label(_sourced(SourceType.WEB, url="https://ai.googleblog.com/p")) == "ai.googleblog.com"
+
+    def test_web_label_empty_without_a_host(self):
+        assert format_origin_label(_sourced(SourceType.WEB, url="notaurl")) == ""
+
+    def test_other_sources_unchanged(self):
+        assert format_origin_label(_sourced(SourceType.REDDIT, subreddit="LocalLLaMA")) == "r/LocalLLaMA"
+        assert format_origin_label(_sourced(SourceType.YOUTUBE, channel_url="c")) == "c"
+        assert format_origin_label(_sourced(SourceType.X, author="karpathy")) == "@karpathy"
+        assert format_origin_label(_sourced(SourceType.RSS, feed_title="The Verge")) == "The Verge"

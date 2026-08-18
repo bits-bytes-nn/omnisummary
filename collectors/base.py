@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Sequence
 from datetime import UTC, datetime, timedelta
 from enum import Enum
+from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError
@@ -35,6 +36,11 @@ class ParkedItems(BaseModel):
     items: list[CollectedItem] = Field(default_factory=list)
     age_hours: float | None = None
     detail: str = ""
+    # Whatever the writing sync recorded about HOW the collection went (e.g. how many of its feeds
+    # failed). A fresh, on-time park file says nothing about a sync that collected from 2 of 40
+    # accounts, so without this a half-dead source reads as perfectly healthy. Always optional:
+    # legacy files (bare list, or an envelope with no `meta`) load as an empty dict.
+    meta: dict[str, Any] = Field(default_factory=dict)
 
     @property
     def usable(self) -> bool:
@@ -53,6 +59,11 @@ class BaseCollector(ABC):
     # Set by collectors that read an S3 park file (YouTube, RSSHub), so run_collectors_with_health
     # can classify a stalled/unreadable park as STALE instead of a healthy OK.
     park_status: ParkedItems | None = None
+    # Set by a collector that DID return items but collected them from only a fraction of its
+    # inputs (e.g. most RSSHub account feeds failed). Reporting/alerting only — it must never
+    # change which items reach the aggregator; without it a source could shrink from 40 feeds to 2
+    # and still be logged as OK.
+    degraded_detail: str = ""
 
     @abstractmethod
     async def collect(self) -> list[CollectedItem]: ...
@@ -69,11 +80,19 @@ def cutoff_datetime(lookback_hours: int, reference_time: datetime | None = None)
 S3_ITEMS_MAX_AGE_HOURS = 36
 
 
-def dump_items_envelope(items: list[CollectedItem], generated_at: datetime | None = None) -> str:
+def dump_items_envelope(
+    items: list[CollectedItem], generated_at: datetime | None = None, meta: dict[str, Any] | None = None
+) -> str:
     """Serialize sync-collected items with a `generated_at` stamp so the loader can detect a
-    stale (long-unrun) sync. Written by the local sync scripts; read by load_items_from_s3."""
+    stale (long-unrun) sync. Written by the local sync scripts; read by load_items_from_s3.
+
+    `meta` optionally records HOW the sync went (how many of its inputs answered), so the reader
+    can report a half-collected source as DEGRADED instead of trusting a fresh timestamp. Omitted
+    entirely when empty, keeping the file byte-compatible with readers that never look for it."""
     stamp = (generated_at or datetime.now(UTC)).isoformat()
-    payload = {"generated_at": stamp, "items": [item.model_dump(mode="json") for item in items]}
+    payload: dict[str, Any] = {"generated_at": stamp, "items": [item.model_dump(mode="json") for item in items]}
+    if meta:
+        payload["meta"] = meta
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
@@ -125,7 +144,7 @@ def load_items_from_s3(filename: str, max_age_hours: int = S3_ITEMS_MAX_AGE_HOUR
     try:
         resp = boto3.client("s3").get_object(Bucket=bucket, Key=s3_key)
         data = json.loads(resp["Body"].read().decode("utf-8"))
-        raw_items, generated_at = _unwrap_items_envelope(data)
+        raw_items, generated_at, meta = _unwrap_items_envelope(data)
         items = [CollectedItem.model_validate(item) for item in raw_items]
         age_hours = _age_hours(generated_at)
         stale = age_hours is not None and age_hours > max_age_hours
@@ -139,9 +158,9 @@ def load_items_from_s3(filename: str, max_age_hours: int = S3_ITEMS_MAX_AGE_HOUR
                 "the local sync may have stalled — using stale data"
             )
             logger.warning("%s", detail)
-            return ParkedItems(outcome=ParkOutcome.STALE, items=items, age_hours=age_hours, detail=detail)
+            return ParkedItems(outcome=ParkOutcome.STALE, items=items, age_hours=age_hours, detail=detail, meta=meta)
         logger.info("Loaded %d items from 's3://%s/%s'", len(items), bucket, s3_key)
-        return ParkedItems(outcome=ParkOutcome.FRESH, items=items, age_hours=age_hours)
+        return ParkedItems(outcome=ParkOutcome.FRESH, items=items, age_hours=age_hours, meta=meta)
     except ClientError as e:
         # Classification changes the log level and the reported status ONLY — every ClientError
         # still falls through to live collection, so an unrecognised S3 failure can never abort a
@@ -160,8 +179,11 @@ def load_items_from_s3(filename: str, max_age_hours: int = S3_ITEMS_MAX_AGE_HOUR
         return ParkedItems(outcome=ParkOutcome.ERROR, detail=detail)
 
 
-def _unwrap_items_envelope(data: object) -> tuple[list, datetime | None]:
-    """Return (items, generated_at) from either the envelope dict or a legacy bare list."""
+def _unwrap_items_envelope(data: object) -> tuple[list, datetime | None, dict[str, Any]]:
+    """Return (items, generated_at, meta) from either the envelope dict or a legacy bare list.
+
+    Every part after `items` is optional: a legacy bare list, an envelope without `generated_at`,
+    and an envelope without `meta` all load — only what is present is reported."""
     if isinstance(data, dict):
         items = data.get("items", [])
         stamp = data.get("generated_at")
@@ -171,8 +193,9 @@ def _unwrap_items_envelope(data: object) -> tuple[list, datetime | None]:
                 generated_at = datetime.fromisoformat(stamp)
             except ValueError:
                 generated_at = None
-        return items if isinstance(items, list) else [], generated_at
-    return data if isinstance(data, list) else [], None
+        meta = data.get("meta")
+        return items if isinstance(items, list) else [], generated_at, meta if isinstance(meta, dict) else {}
+    return data if isinstance(data, list) else [], None, {}
 
 
 def _age_hours(generated_at: datetime | None) -> float | None:

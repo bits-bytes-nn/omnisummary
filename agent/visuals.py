@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import time
 
 from shared import (
     LOGGING_TRUNCATION_CHARS,
@@ -126,7 +127,13 @@ class VisualGenerator:
         msg = str(exc).lower()
         return "moderation_blocked" in msg or "safety system" in msg
 
-    async def generate(self, instruction: str, source: str, context: str = "") -> tuple[bytes, VisualBrief]:
+    async def generate(
+        self, instruction: str, source: str, context: str = "", *, deadline: float | None = None
+    ) -> tuple[bytes, VisualBrief]:
+        """`deadline` is an optional monotonic timestamp bounding the caller (the visual Lambda's
+        remaining time). It only gates the SECOND, moderation-softened render — a whole extra
+        image_timeout_sec — so a retry can't push the run past its caller's timeout and lose the
+        text digest too. None (local runs, the research agent) behaves exactly as before."""
         brief = await self.brief(instruction, source, context)
         try:
             # render() makes a blocking 30-120s OpenAI HTTP call; run it off the event loop so
@@ -134,6 +141,9 @@ class VisualGenerator:
             return await asyncio.to_thread(self.render, brief), brief
         except Exception as e:
             if not self._is_moderation_error(e):
+                raise
+            if deadline is not None and deadline - time.monotonic() < self.image_timeout_sec:
+                logger.warning("Image moderation blocked the prompt, but there is no time left to re-render")
                 raise
             # gpt-image moderation is intermittent and sensitive to real-person likenesses /
             # edgy parody. Regenerate the brief once with a softened, safe-for-work instruction

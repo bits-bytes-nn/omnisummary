@@ -133,3 +133,7 @@ python_classes = "Test*"
 python_functions = "test_*"
 addopts = "-v"
 asyncio_mode = "auto"
+# A never-awaited coroutine is only a RuntimeWarning, so a test that patched an async call with a
+# plain MagicMock (or asserted on the wrong mock) passed while the code under test never ran.
+# Promote it to an error; the full suite is clean under this setting.
+filterwarnings = ["error::RuntimeWarning"]

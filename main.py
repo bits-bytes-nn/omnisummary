@@ -119,6 +119,19 @@ async def run_collectors_with_health(
             )
             logger.warning("Collector '%s' is STALE: %s", label, park.detail)
             continue
+        # Items arrived, on time, but from only a fraction of the source's inputs. Reported, never
+        # filtered: the items themselves are fine and all of them reach the aggregator.
+        if collector.degraded_detail:
+            health.append(
+                SourceHealth(
+                    name=label,
+                    item_count=len(result),
+                    status=SourceStatus.DEGRADED,
+                    detail=collector.degraded_detail[:200],
+                )
+            )
+            logger.warning("Collector '%s' is DEGRADED: %s", label, collector.degraded_detail)
+            continue
         status = SourceStatus.OK if result else SourceStatus.EMPTY
         health.append(SourceHealth(name=label, item_count=len(result), status=status))
     return items, HealthReport(sources=health)

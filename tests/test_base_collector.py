@@ -224,3 +224,40 @@ class TestDumpItemsEnvelope:
             loaded = load_items_from_s3("youtube_items.json")
         assert [i.item_id for i in loaded.items] == ["v1", "v2"]
         assert loaded.outcome == ParkOutcome.FRESH
+
+    def test_meta_block_roundtrips_and_is_optional(self, monkeypatch):
+        # The writer/reader contract for the OPTIONAL meta block: what a sync recorded about how it
+        # went must survive the round trip, and a payload without it must still load.
+        monkeypatch.setenv("STATE_BUCKET", "b")
+        monkeypatch.setenv("S3_PREFIX", "omnisummary/digest_state")
+        with_meta = dump_items_envelope([_item("v1")], meta={"accounts_total": 40, "accounts_failed": 30}).encode()
+        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(with_meta)):
+            loaded = load_items_from_s3("rsshub_items.json")
+        assert loaded.meta == {"accounts_total": 40, "accounts_failed": 30}
+
+        without_meta = dump_items_envelope([_item("v1")]).encode()
+        assert "meta" not in json.loads(without_meta)
+        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(without_meta)):
+            assert load_items_from_s3("rsshub_items.json").meta == {}
+
+    def test_legacy_shapes_still_load_with_an_empty_meta(self, monkeypatch):
+        monkeypatch.setenv("STATE_BUCKET", "b")
+        monkeypatch.setenv("S3_PREFIX", "omnisummary/digest_state")
+        legacy_list = json.dumps(
+            [{"item_id": "v1", "source_type": "youtube", "title": "T", "url": "https://y/v1"}]
+        ).encode()
+        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(legacy_list)):
+            parked = load_items_from_s3("youtube_items.json")
+        assert [i.item_id for i in parked.items] == ["v1"]
+        assert parked.meta == {}
+
+        stamped_no_meta = json.dumps(
+            {
+                "generated_at": datetime.now(UTC).isoformat(),
+                "items": [{"item_id": "v2", "source_type": "youtube", "title": "T", "url": "https://y/v2"}],
+            }
+        ).encode()
+        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(stamped_no_meta)):
+            parked = load_items_from_s3("youtube_items.json")
+        assert [i.item_id for i in parked.items] == ["v2"]
+        assert parked.meta == {}

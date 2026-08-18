@@ -30,6 +30,13 @@ THREADS_INDEXING_BUDGET_SEC = 270
 # real waiting; a genuine content rejection burns these attempts but is now logged with its body.
 THREADS_REPLY_RETRY_ATTEMPTS = 3
 THREADS_REPLY_RETRY_BACKOFF_SEC = 10
+# Seconds the publish path still needs AFTER the indexing wait: the media-processing sleep the root
+# already paid for plus one reply's full retry ladder. Derived from the constants above — never a
+# second hand-written number that could drift from them — and used only to shorten the indexing
+# budget when the caller supplied a deadline that cannot cover the full 270s.
+THREADS_PUBLISH_RESERVE_SEC = THREADS_MEDIA_PROCESS_WAIT_SEC + THREADS_REPLY_RETRY_ATTEMPTS * (
+    THREADS_REPLY_RETRY_BACKOFF_SEC
+)
 # How long the hosted-image presigned URL stays valid — must outlast the
 # create-container + media-processing window with margin.
 THREADS_IMAGE_URL_TTL_SEC = 900
@@ -154,6 +161,20 @@ async def _is_addressable(client: httpx.AsyncClient, post_id: str, token: str) -
         return False
 
 
+def _indexing_budget_sec(deadline: float | None) -> float:
+    """How long this run may wait for the image root to index.
+
+    THREADS_INDEXING_BUDGET_SEC unless the caller handed over a hard deadline that cannot cover it:
+    then wait for whatever is left minus the publish reserve, so a root that never indexes can't eat
+    the time the reply chain still needs. The budget is NEVER shortened while the remaining time
+    allows the full 270s — too little indexing patience is what dropped stories in the first place.
+    A None deadline (local runs, research reports) keeps the fixed budget, exactly as before."""
+    if deadline is None:
+        return float(THREADS_INDEXING_BUDGET_SEC)
+    left = deadline - time.monotonic() - THREADS_PUBLISH_RESERVE_SEC
+    return max(0.0, min(float(THREADS_INDEXING_BUDGET_SEC), left))
+
+
 async def _wait_until_addressable(client: httpx.AsyncClient, post_id: str, token: str, deadline: float) -> bool:
     """Poll the root with cheap GETs until it's addressable as a reply target or the shared
     deadline passes. Returns True once ready. Replaces blind create-container retries: a read poll
@@ -211,11 +232,15 @@ async def post_to_threads(
     image_key: str = "",
     image_content_type: str = "image/png",
     request_timeout: int = 60,
+    deadline: float | None = None,
 ) -> ThreadsDelivery:
     """Post a digest to Threads as a root post (image + lead) followed by a reply chain — one
     pre-rendered reply per story. Each reply is re-split here as a safety net so nothing exceeds
     the 500-char cap. Best-effort: missing credentials or any API failure is logged and skipped,
     never raising to the caller.
+
+    `deadline` is an optional monotonic timestamp bounding this call (the visual Lambda's remaining
+    time); it only ever SHORTENS the root-indexing wait, and None behaves exactly as before.
 
     Returns a ThreadsDelivery (posted, expected) count — NOT a bool, so a partial reply chain is
     distinguishable from a complete post. Branch on `.published`, never on the value itself."""
@@ -251,9 +276,9 @@ async def post_to_threads(
             # cheap GETs (shared across all replies — readiness is a root property) instead of
             # blind-retrying create-container writes per reply. A TEXT root (no image) indexes
             # ~immediately, so skip the poll there.
-            deadline = time.monotonic() + THREADS_INDEXING_BUDGET_SEC
+            indexing_deadline = time.monotonic() + _indexing_budget_sec(deadline)
             if image_url and posts:
-                await _wait_until_addressable(client, root_id, token, deadline)
+                await _wait_until_addressable(client, root_id, token, indexing_deadline)
             # All replies hang off the ROOT (a flat thread), not off each other — otherwise
             # they nest as reply-of-reply and only the first shows under the root. Each reply is
             # best-effort: a single failure must not abandon the rest, so the digest never posts a
@@ -261,7 +286,9 @@ async def post_to_threads(
             posted = 0
             for i, post in enumerate(posts, start=1):
                 try:
-                    await _publish_reply_with_retry(client, user_id, token, post, root_id, indexing_deadline=deadline)
+                    await _publish_reply_with_retry(
+                        client, user_id, token, post, root_id, indexing_deadline=indexing_deadline
+                    )
                     posted += 1
                     logger.debug("Posted Threads reply %d/%d", i, len(posts))
                 except httpx.HTTPStatusError as e:

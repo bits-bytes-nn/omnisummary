@@ -24,6 +24,7 @@ from .research_tools import (
     community_search,
     deliver_report,
     read_url,
+    recall_digest,
     recall_trends,
     search_papers,
     web_search,
@@ -90,8 +91,9 @@ the <language> section below and apply to every word you write.)
 3. search_papers(query) — academic papers (Semantic Scholar) for research/technical claims
 4. read_url(url) — fetch the full text of a specific page (a primary source you found via search)
 5. recall_trends(query) — how this topic evolved across earlier daily digests (the "이전 동향" angle)
-6. attach_image(source_url) — download a source's representative image (og:image) to attach to the report
-7. deliver_report(report, channel) — post the finished report (channel: "slack" default, or "threads")
+6. recall_digest(digest_date) — what one specific day's digest carried (YYYY-MM-DD), for "what did we cover on X" questions
+7. attach_image(source_url) — download a source's representative image (og:image) to attach to the report
+8. deliver_report(report, channel) — post the finished report (channel: "slack" default, or "threads")
 </tools>
 
 <flow>
@@ -307,6 +309,7 @@ def create_research_agent(tools: list[Any] | None = None) -> Agent:
             search_papers,
             read_url,
             recall_trends,
+            recall_digest,
             attach_image,
             deliver_report,
         ]

@@ -14,6 +14,21 @@ from .logger import logger
 DEFAULT_ACTOR_ID = "omnisummary"
 
 
+class MemoryReadError(RuntimeError):
+    """The digest snapshot could NOT be read — distinct from "there is no snapshot for that date".
+
+    Both used to come back as None, so a throttled/denied/misconfigured AgentCore read was
+    indistinguishable from a day that simply has no digest: the visual Lambda logged "nothing to
+    publish", returned 200, and the day's digest — whose only delivery path that Lambda is — was
+    never posted, with no alarm.
+
+    A consumer that PUBLISHES must let this escape (a failed invoke fires the Errors alarm and
+    lands in the DLQ; retry_attempts=0 means it cannot duplicate a post). A consumer that only
+    ENRICHES — the cross-day dedup seed in main.py — keeps catching it and degrades, because a
+    lost dedup hint is harmless while a lost digest is not.
+    """
+
+
 class MemoryStore(ABC):
     """Persistence boundary for the structured digest snapshot.
 
@@ -36,6 +51,9 @@ class MemoryStore(ABC):
         date the pipeline generated) use this instead of get_latest_digest: 'load latest, then
         check its date' cannot work, because digest_result.generated_at is UTC and would
         false-mismatch the KST digest date on every pre-09:00 KST run.
+
+        Raises MemoryReadError when the snapshot could not be READ (as opposed to not existing),
+        so a publish path never mistakes an unreadable store for an empty day.
         """
 
     def get_recent_digests(self, n: int, exclude_date: str = "", after_date: str = "") -> list[dict[str, Any]]:
@@ -74,7 +92,10 @@ class LocalMemoryStore(MemoryStore):
         if not path.exists():
             logger.info("No local digest state for '%s' in '%s'", digest_date, self.base_dir)
             return None
-        return json.loads(path.read_text(encoding="utf-8"))
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            raise MemoryReadError(f"Failed to read local digest state '{path}': {e}") from e
 
     def get_recent_digests(self, n: int, exclude_date: str = "", after_date: str = "") -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -239,8 +260,9 @@ class AgentCoreMemoryStore(MemoryStore):
         try:
             data = self._load_session(session_id)
         except Exception as e:
-            logger.warning("Failed to load digest session '%s': %s", session_id, e)
-            return None
+            # RAISE, don't return None: a throttled/denied read used to read as "this day has no
+            # digest", so the visual Lambda skipped delivery and reported success.
+            raise MemoryReadError(f"Failed to load digest session '{session_id}': {e}") from e
         if data is None:
             logger.warning("No digest state in AgentCore Memory for session '%s'", session_id)
         else:
