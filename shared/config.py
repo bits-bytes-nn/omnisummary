@@ -453,6 +453,13 @@ class AWSConfig(_StrictModel):
     digest_cron_minute: str = "0"
     # Threads long-lived tokens expire after 60 days; refresh comfortably inside that window.
     threads_token_refresh_days: int = Field(default=50, ge=1, le=59)
+    # Running tasks for the RSSHub Fargate service. 0 by default because the digest never reaches
+    # it: RSSHubCollector reads the S3 park file FIRST and returns early when it is usable, and the
+    # local sync cron refreshes that file before every run (verified in the digest logs — X items
+    # are served from rsshub_items.json, and the service was the account's only Fargate task at
+    # ~$40/30d). The task definition is still deployed, so raising this to 1 restores the in-AWS
+    # fallback for a day when the local sync has stopped (which now reports the source as STALE).
+    rsshub_desired_count: int = Field(default=0, ge=0)
     api_throttle_rate_limit: int = Field(default=20, ge=1)
     api_throttle_burst_limit: int = Field(default=10, ge=1)
     waf_rate_limit: int = Field(default=2000, ge=100)

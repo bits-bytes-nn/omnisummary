@@ -303,7 +303,7 @@ class OmniSummaryFoundationStack(Stack):
             "RSSHubService",
             cluster=self.ecs_cluster,
             task_definition=rsshub_task,
-            desired_count=1,
+            desired_count=config.aws.rsshub_desired_count,
             assign_public_ip=False,
             vpc_subnets=self.vpc_subnets,
             cloud_map_options=ecs.CloudMapOptions(

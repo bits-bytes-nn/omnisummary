@@ -146,3 +146,7 @@ aws:
   subnet_ids: []           # Leave empty to use default private subnets
   state_bucket_name: ""    # Leave empty to create new S3 bucket
   s3_prefix: ""            # S3 key prefix (e.g., "omnisummary")
+  # Running tasks for the RSSHub Fargate service. 0 because the digest reads X items from the
+  # S3 park file (refreshed by the local sync cron) and never reaches the service; raise to 1
+  # to restore the in-AWS fallback. The task definition is deployed either way.
+  rsshub_desired_count: 0

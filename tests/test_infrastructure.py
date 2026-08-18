@@ -63,6 +63,19 @@ class TestNoSecretsInTheTemplate:
         assert {s["Name"] for s in container["Secrets"]} == {"TWITTER_AUTH_TOKEN", "TWITTER_CT0"}
 
 
+class TestRSSHubServiceScale:
+    def test_desired_count_comes_from_config_and_defaults_to_zero(self, templates):
+        # The digest never reaches this service: RSSHubCollector returns the S3 park file before it
+        # would even probe RSSHub (see TestParkedItems), and the local sync cron refreshes that file
+        # before every run — so a running task is pure cost. The task DEFINITION stays deployed, so
+        # raising aws.rsshub_desired_count to 1 restores the in-AWS fallback.
+        foundation, _ = templates
+        services = foundation.find_resources("AWS::ECS::Service")
+        assert len(services) == 1
+        assert next(iter(services.values()))["Properties"]["DesiredCount"] == 0
+        foundation.resource_count_is("AWS::ECS::TaskDefinition", 1)
+
+
 class TestSlackLambdaLeastPrivilege:
     """The Slack-events Lambda is the only internet-reachable entry point, and it used to run with
     the pipeline's role — Bedrock model invocation, the state bucket, SNS publish, ssm:PutParameter
