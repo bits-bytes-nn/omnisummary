@@ -5,7 +5,7 @@ Proactive AI/ML daily digest system that collects content from multiple sources,
 ## Features
 
 - **Multi-source collection**: Reddit (public .rss feed via proxy), YouTube, X/Twitter (via RSSHub), RSS/Substack, Web Search (Tavily)
-- **LLM-powered ranking**: Claude Opus 4.8, multi-axis evaluation with source-slot + per-origin diversity caps (a channel, subreddit, feed, X author, or web host — pinned items count toward the caps too)
+- **LLM-powered ranking**: Claude Opus 4.8 (Opus 5 and Sonnet 5 are also selectable), multi-axis evaluation with source-slot + per-origin diversity caps (a channel, subreddit, feed, X author, or web host — pinned items count toward the caps too)
 - **Editorial digest**: Claude Sonnet 5 Korean editorial with cross-day trend tracking
 - **Multi-channel delivery**: structured digest rendered per channel — Slack (Block Kit, sent by the digest Lambda) and Threads (image root + flat reply chain, sent by the daily-visual Lambda), each independently toggleable
 - **Deep-research agent**: autonomous Slack-triggered Strands agent — rewrites the query, researches across web/papers/community/blogs, writes a persona-voiced cited report (same narrator as the digest), and posts to Slack (default) or Threads (on explicit request), attaching the source article's OG image
@@ -268,7 +268,35 @@ export DIGEST_IMAGE_REF=sha256:<pushed-digest>    # AGENTCORE_IMAGE_REF defaults
 AWS_PROFILE=<profile> npx cdk deploy --all -a "uv run python scripts/deploy.py"
 AWS_PROFILE=<profile> uv run python scripts/put_secrets.py            # then write the secrets
 AWS_PROFILE=<profile> uv run python scripts/put_secrets.py --verify   # read-only: any left unset?
+AWS_PROFILE=<profile> uv run python scripts/put_inference_profiles.py # once per account/stage
 ```
+
+### Bedrock cost attribution
+
+On-demand Bedrock bills against no taggable resource, so `InvokeModel` token spend cannot carry a
+cost-allocation tag — in a shared account (this one runs several workloads against the same Claude
+models) the Bedrock line is one unattributable total. An **application inference profile** IS
+taggable, and invoking through its ARN attributes the usage.
+
+`scripts/put_inference_profiles.py` creates one per configured model, named
+`{project}-{stage}-{model-slug}` and tagged `Project`/`Stage`, copied from the system-defined
+cross-region profile so the same global routing is inherited. `BedrockCrossRegionModelHelper` prefers
+them at resolution time — which is the one place both the LangChain factory and the Strands research
+agent already go through, so the agent's spend is captured too even though it bypasses `get_model`.
+A missing profile or a denied lookup silently keeps the system-defined id: cost reporting must never
+stop a generation.
+
+Two things to know:
+- `application-inference-profile` is a **different IAM resource type** from `inference-profile`. The
+  policy grants both; dropping the former makes every Bedrock call AccessDenied the moment a profile
+  exists.
+- Activate the `Project` cost allocation tag in Billing for this to reach Cost Explorer (up to 24h,
+  and not retroactive — there is a separate backfill request for past months).
+
+Complementing it, every `get_model()` takes `stage=` and logs
+`LLM usage stage=... model=... input=... output=... cache_read=... cache_write=...`, because the bill
+is per model while the digest, grounding pass, trend classifier, visual editor, visual synopsis,
+query refinement and research agent all share Sonnet 5.
 
 ### Secrets
 
@@ -321,6 +349,12 @@ Resources created:
 - **ECR**: Docker images (amd64 for Lambda, arm64 for AgentCore)
 
 ### Docker Images
+
+Both images install the **exact dependency set `uv.lock` pins** (`uv export` → `uv pip install
+--system`, project itself `--no-deps`), so the image can never run a set CI never tested — the old
+`pip install .` re-resolved pyproject's ranges at build time. Dependencies install before the source
+is copied, so a code-only change reuses that layer. Both run as **non-root** (uid 10001), and
+`.dockerignore` keeps `.env`, `.venv`, `logs/` and `cdk.out` out of the build context.
 
 Two Dockerfiles for different architectures:
 
@@ -430,6 +464,14 @@ offline CDK synth through the pinned CLI (`npm ci`) against the **tracked** `con
 each image is loaded and run with `--network none` and no credentials to import its real entry
 modules, so a missing `COPY` or an import-time AWS/HTTP call fails in CI instead of at cold start.
 Every job carries a `timeout-minutes`; uv/npm caches are keyed on the lockfiles.
+
+A `security` job audits the **locked** dependency set with `pip-audit --strict` (exported the
+same way the images install it, so it audits versions that actually ship rather than re-resolved
+ranges) and runs `gitleaks` over **full history** — a shallow clone only ever sees the tip, so a
+key committed earlier and removed later would never be found. `.pre-commit-config.yaml` runs the
+same gates before the push (`uv run pre-commit install`); mypy is deliberately not a hook, since
+it needs the full resolved dependency set and is slow enough that people start using
+`--no-verify`.
 
 ## License
 

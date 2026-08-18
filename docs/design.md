@@ -160,8 +160,16 @@ AWS 아키텍처(두 경로 — 스케줄 다이제스트 / Slack 트리거 딥 
 | `CLOUDFLARE_PROXY_URL`/`CLOUDFLARE_PROXY_TOKEN` | `.env` | Reddit/YouTube 프록시(데이터센터 IP 우회). 워커 쪽 값은 `wrangler secret put PROXY_TOKEN`으로 넣습니다 — `wrangler.toml`의 `[vars]`는 평문으로 버전 관리에 들어가므로 토큰을 두지 않습니다 |
 | `MEMORY_ID`, `STATE_BUCKET`, `S3_PREFIX`, `ALERT_SNS_TOPIC_ARN`, `RSSHUB_BASE_URL`, `PROJECT_NAME`, `STAGE` | CDK 주입(AWS) | 런타임 리소스 식별자 |
 
-`.env`의 시크릿은 `scripts/deploy.py`가 배포 시 SSM `/{project}/{stage}/{name}`에 적재하고, Lambda/AgentCore는
-env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `rsshub_base_url` CDK context로 재정의
+`.env`의 시크릿은 **CDK 스택을 통과하지 않습니다.** CloudFormation 템플릿은 SecureString을 담을 수 없어서, 값을
+스택에 넘기면 `cdk.out/*.template.json`·CDK 스테이징 버킷·`cloudformation:GetTemplate` 응답에 **평문**으로 남습니다
+(실제로 Slack 봇 토큰·Tavily/OpenAI/YouTube 키·Threads 토큰·X 세션 쿠키가 그렇게 있었습니다). 스택은 파라미터
+**경로만** `SSM_PLACEHOLDER`로 만들고, 실제 값은 `scripts/put_secrets.py`가 **SecureString**으로 기록합니다.
+재배포가 값을 되돌리지 않습니다 — CFN은 템플릿 속성이 바뀐 리소스만 갱신하고 플레이스홀더는 불변이기 때문입니다.
+스크립트는 **이미 SecureString인 파라미터를 건너뜁니다**(Threads 토큰은 갱신 Lambda가 제자리에서 회전시키므로
+로컬 `.env` 사본을 다시 쓰면 만료 토큰으로 되돌아갑니다 — `--force`로만 덮어씀), 비어 있는 env var도 지우지 않습니다.
+`resolve_secret`은 플레이스홀더를 **미설정으로 취급**해, put_secrets를 건너뛴 배포가 플레이스홀더를 API 토큰으로
+보내는 대신 정상적인 '자격증명 없음' 경로로 degrade합니다. Lambda/AgentCore는 env→SSM 순으로 해소합니다.
+X 세션 쿠키는 Fargate 태스크 정의의 `secrets`(ARN만 템플릿에 들어가고 값은 ECS 에이전트가 시작 시 가져옴)로 주입됩니다. `RSSHUB_BASE_URL`은 `rsshub_base_url` CDK context로 재정의
 가능하며, 로컬 개발에선 RSSHub Docker 컨테이너가 `localhost:RSSHUB_PORT`(기본 `1200`)에서 동작해야 X 수집이 됩니다.
 
 ## 4. 수집기(Collectors)
@@ -289,6 +297,15 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 - **멀티패널 비율 유도 (`visual_multi_panel_target_ratio` 기본 0.34):** 에디터는 방치하면 단컷 구성으로 기울기 때문에, 최근 윈도의 멀티패널 비중이 목표보다 낮으면 "시퀀스·반전·설정과 응수가 있으면 멀티패널 만화로" 쪽으로, 높으면 단컷 쪽으로 프롬프트를 **soft-steer**함. 쿼터가 아니라 유도이며 스토리가 최종 결정. 0이면 유도 없음(순수 에디터 판단), 히스토리에 해당 키를 기록한 항목이 없으면 근거가 없으니 유도를 건너뜀.
 - **재등장 캐릭터 (`visual_character_enabled`, `visual_character_sheet`, `visual_character_target_ratio`):** 에디터가 이 스토리에 맞다고 판단한 날(`use_character`)에만 등장하며, 캐릭터 시트를 instruction에 주입해 이미지 모델이 **같은 인물**을 그리게 함. 정체성은 시그니처 소품에 실려 매일 바뀌는 화풍을 견딤. 시트는 의도적으로 얇게 유지 — 참조 과적합과 해부 붕괴를 유발했기 때문(`0d79b33`). 등장 빈도도 최근 윈도 기준으로 목표 비율을 향해 soft-steer(0이면 유도 없음)하되, 스토리에 안 맞으면 에디터가 여전히 건너뜀.
 - **편집 관점 전달:** 다이제스트의 리드(카운트다운 접두 제거)와 헤드라인 항목의 `implication`을 instruction에 **정보로** 넘김. 아트 디렉터가 원본 기사만 보던 탓에 표면 사실만 그리는 문제(2026-08-15: 논지는 "출시 주기가 격차의 원인"인데 그림은 4자 동시 골인 = "다 비슷하다")를 막기 위한 것. 일치를 **강제하지 않음** — 이미지가 리드의 논지를 논증해야 한다는 제약은 과하다고 판단.
+- **가드레일 (`visual_guardrails`, 비우면 미적용):** 스타일도 논지 요구도 아니라 이미지가 **하지 말아야** 할 두
+  가지다. (1) 받은 편집 관점의 정서를 **뒤집지 말 것** — 2026-08-18 실행이 순환 벤더 파이낸싱("누가 위험을
+  지는지는 다음 다운턴에야 드러난다")에 대한 리드를 로켓과 지폐가 쏟아지는 승리 포스터로 그렸다. "논지를
+  논증하라"보다 훨씬 약한 요구이며, 그 강한 규칙은 과한 제약으로 기각됐다. (2) 기업·국가를 **인종으로 코딩된
+  인물로 의인화하지 말 것**(2026-08-15 비주얼이 모델 경쟁을 각 랩 국적의 육상 선수로 그렸다). **실존 인물을
+  알아보게 그리는 것은 허용·권장**된다 — 시사만평의 표준 관행이고 계정 주인의 편집 판단이다.
+  ⚠️ 이 문구의 **인과 효과는 미증명**이다. 문제가 났던 케이스로 A/B를 시도했지만 에디터가 합성 content가 아닌
+  `ranked_items` 헤드라인을 그려 실험이 무효였고, 이미지 생성이 확률적이라 팔당 1샘플로는 노이즈와 구분되지
+  않는다. 비용 0·config로 즉시 해제 가능·지시문 포함 여부는 테스트로 고정 — 효과는 주장하지 않는다.
 - **맥락 보강:** 에디터가 고른 리서치 스텝(papers/community/news)을 실행해 맥락 수집.
 - **생성:** `VisualGenerator`(시놉시스 → gpt-image)로 1컷 밈/패러디/일러스트 또는 N컷 카툰 생성 → Slack 게시(+`enable_threads_post` 시 Threads에도 게시).
 - **플랜 파싱 실패:** 에디터 JSON을 못 읽으면 `{"skip": True}`로 취급해 그대로 건너뜀 — 재질의(추가 LLM 호출)도, 일반 폴백 instruction으로 gpt-image를 태우는 낭비 렌더도 하지 않음.
@@ -322,8 +339,27 @@ env→SSM 순으로 `resolve_secret`이 해소합니다. `RSSHUB_BASE_URL`은 `r
 - **반환:** 모델 역량(`_LANGUAGE_MODEL_INFO`)에 맞게 구성된 `ChatBedrock`/`ChatBedrockConverse`.
 - **구성 역량:** thinking, 1M 컨텍스트, 성능 레이턴시, 프롬프트 캐싱.
 - **리전:** `BedrockCrossRegionModelHelper`가 가능 시 `global.`/`apac.` inference-profile ID를 해석.
-- **모델 ID:** `shared/constants.py`(`LanguageModelId`)에 열거; 최신은 Opus 4.8 / Sonnet 5.
+- **모델 ID:** `shared/constants.py`(`LanguageModelId`)에 열거; 최신은 **Opus 5 / Sonnet 5**(Opus 4.8도 유지).
+  Opus 5의 역량 플래그는 버전 번호로 추정하지 않고 Converse로 **직접 검증**했다 — `temperature`와 레거시
+  `thinking.type="enabled"`/`budget_tokens`는 둘 다 ValidationException이고, `adaptive` + `output_config.effort`만
+  통과한다(Opus 4.7/4.8·Sonnet 5와 동일). 단가도 Opus 4.8과 같으므로 **비용 옵션이 아니라 품질 옵션**이다.
 - **샘플링 파라미터 게이팅:** Sonnet 5·Opus 4.7/4.8은 비기본 `temperature`/`top_k`/`top_p`를 400으로 거부하므로, 해당 모델은 `LanguageModelInfo.supports_temperature=False`로 표시하고 팩토리가 `temperature`와 `top_k`를 함께 생략한다.
+
+- **단계 태깅 & 사용량 로깅:** `get_model(model_id, stage="ranking"|"digest"|"trends"|"visual-editor"|
+  "visual-synopsis"|"query-refine")`. 붙은 콜백이 호출마다
+  `LLM usage stage=... model=... input=... output=... cache_read=... cache_write=...`를 남긴다. 청구는 **모델**
+  단위인데 Sonnet 5 하나를 다이제스트·그라운딩·트렌드·비주얼·쿼리정제·리서치 에이전트가 공유하므로, 이 태그
+  없이는 토큰 총량을 쓴 주체로 되짚을 수 없다(실측: 실행당 Sonnet 입력 157k > 랭커 82k). 텔레메트리는 설계상
+  best-effort — 어떤 읽기 실패도 생성을 막지 못한다.
+- **비용 귀속(application inference profile):** 온디맨드 `InvokeModel`은 과금 대상 리소스가 없어 비용 할당
+  태그가 붙지 않는다. `BedrockCrossRegionModelHelper`가 시스템 프로필을 해석한 뒤 이 프로젝트의
+  **application inference profile**(`{project}-{stage}-{model-slug}`, `scripts/put_inference_profiles.py`가
+  `Project`/`Stage` 태그와 함께 생성)을 찾아 그 ARN을 반환한다. 해석이 이 한 곳이라 LangChain 팩토리와
+  **Strands 리서치 에이전트가 동시에** 커버된다(에이전트는 `get_model`을 우회하므로 단계 로깅으로는 안 잡힘).
+  프로필이 없거나 조회가 거부되면 시스템 프로필로 조용히 폴백한다 — 리포팅이 생성을 막아선 안 된다.
+  `ChatBedrockConverse`는 ARN에 `provider`를 요구하므로 config 빌더가 `provider="anthropic"`을 붙인다.
+  IAM 주의: `application-inference-profile`은 `inference-profile`과 **다른 ARN 리소스 타입**이라 정책에
+  따로 넣어야 한다(누락 시 프로필이 존재하는 순간 모든 Bedrock 호출이 AccessDenied).
 
 **토큰 카운트.** `count_tokens(text)` / `truncate_to_tokens(text, max_tokens)`
 - Bedrock CountTokens API로 권위 있는 카운트(로컬 휴리스틱 아님). 일부 베이스 모델만 CountTokens를 노출(Sonnet 4.6은 지원, Opus 4.8은 미지원 — AccessDenied/'doesn't support counting tokens')하므로, **호출자 모델과 무관하게 항상 `TOKEN_COUNT_MODEL`(Sonnet 4.6)로 카운트**. `model_id` 파라미터는 두 함수에서 제거됨.
@@ -546,6 +582,11 @@ ingress 흐름:
 **기타.**
 - **기본값 중복 없음:** 열 개 넘는 비주얼 놉을 모두 **필수 키워드 인자**로 받는다. 예전엔 같은 기본값을 여기와 `PipelineConfig`에 두 벌 뒀다가 드리프트했고(`style_aesthetic`이 "clean modern style"로 썩음), 일부 인자만 넘기는 호출자가 그 낡은 사본을 조용히 받았다. 이제 `PipelineConfig`가 단일 원천이다.
 - **호출 상한:** OpenAI 클라이언트를 `visual_image_timeout_sec`/`visual_image_max_retries`로 생성(SDK 기본 600s×2회는 15분 Lambda를 넘길 수 있음).
+- **비용 가시성 & 결정성:** `quality`는 `visual_image_quality`가 설정될 때만 보낸다. 비우면 OpenAI의 `auto`가
+  티어를 고르는데 **장당 단가가 약 4배 차이**(우리 사이즈 기준 medium $0.041–0.053 vs high $0.165–0.211)라
+  월 청구가 하루 1장에 ~$1.3~5.2 사이로 불확정이고 코드가 어느 티어를 산 건지 말할 수 없다. 값을 고정하면
+  결정적이 된다. 어느 쪽이든 렌더가 응답의 **실제 과금 토큰 수**를 로그에 남긴다(`_usage_summary`,
+  usage가 없거나 필드명이 바뀌면 `"unknown"`으로 degrade — SDK 변경이 그날 이미지를 날려선 안 된다).
 - OpenAI 키(`resolve_secret`로 env→SSM 해석)가 없으면 우아하게 비활성화.
 - 새 출력 형식은 코드 변경 없이 instruction 문구만 바꾸면 됨.
 
@@ -556,9 +597,18 @@ ingress 흐름:
 - **리소스:** VPC, ECR 리포, DynamoDB 중복 제거 테이블(SSE + prod에서 PITR), S3 상태 버킷(CDK 생성 시
   S3-managed 암호화, 버저닝, 퍼블릭 차단, SSL 강제), ECS Fargate RSSHub 서비스 + service-discovery,
   CodeBuild 이미지 빌드, SNS 알림 토픽(+ 선택적 이메일 구독), AgentCore Memory 리소스 + 실행 역할, IAM 역할들.
+- **RSSHub 서비스는 `aws.rsshub_desired_count`(기본 0)로 스케일된다.** 다이제스트는 이 서비스에 **도달하지**
+  않는다 — `RSSHubCollector`는 S3 park 파일을 **먼저** 읽고 쓸 수 있으면 도달성 확인조차 하기 전에 리턴하며,
+  로컬 sync cron이 매 실행 직전에 그 파일을 갱신한다(2026-08-17 파일은 19:00 실행을 위해 18:30에 올라왔고,
+  다이제스트 로그의 X 항목은 그 파일에서 나왔다). 계정의 유일한 상시 Fargate 태스크로 월 약 $40이었다.
+  **태스크 정의는 그대로 배포되므로** 1로 올리면 로컬 sync가 멈춘 날의 AWS 폴백이 복구된다(그 상태는 이미
+  헬스 STALE로 표면화된다).
 - **IAM(최소 권한):**
   - `/{project}/{stage}/*`로 스코프된 `ssm:GetParameter*`.
-  - foundation-model/inference-profile ARN으로 스코프된 `bedrock:InvokeModel*`.
+  - foundation-model / inference-profile / **application-inference-profile** ARN으로 스코프된
+    `bedrock:InvokeModel*`. 마지막 것은 별도 리소스 타입이며 **필수**다 — 모델 리졸버가 비용 귀속용
+    application inference profile을 선호하므로, 빠뜨리면 프로필이 존재하는 순간 모든 Bedrock 호출이
+    AccessDenied가 된다(= 그날 다이제스트 전체).
   - `lambda:InvokeFunction`은 **데일리 비주얼 함수 하나**(`{project}-{stage}-visual`)로 스코프 — 파이프라인
     역할의 유일한 cross-function 호출이 그 비동기 fan-out이다. 예전의 `{project}-{stage}-*`는 공개
     API Gateway 뒤의 Slack 핸들러와 토큰 갱신 Lambda까지 포함했다. ARN은 application_stack이 붙이는
@@ -626,7 +676,7 @@ ingress 흐름:
 
 ## 13. 테스트 & CI/CD
 
-**테스트 (`tests/`, pytest, `asyncio_mode=auto`).** 700+ 테스트, 커버리지 게이트 80%(측정 ~90%). `tests/conftest.py`의 autouse 픽스처가 앰비언트 시크릿/인프라 env를 monkeypatch로 비우고 SSM 클라이언트를 막아 **hermetic**하게 만든다(개발자 `.env`/AWS 프로파일에 결과가 좌우되지 않고, 실 SSM 왕복으로 낭비하던 수십 초도 사라짐). 커버 영역:
+**테스트 (`tests/`, pytest, `asyncio_mode=auto`).** 1000+ 테스트, 커버리지 게이트 80%(측정 ~90%). `tests/conftest.py`의 autouse 픽스처가 앰비언트 시크릿/인프라 env를 monkeypatch로 비우고 SSM 클라이언트를 막아 **hermetic**하게 만든다(개발자 `.env`/AWS 프로파일에 결과가 좌우되지 않고, 실 SSM 왕복으로 낭비하던 수십 초도 사라짐). 커버 영역:
 - 수집기(모킹한 HTTP/feedparser).
 - Slack 이벤트 핸들러(서명 검증/중복 제거 + **형제 패키지 import 금지 가드** `test_handler_has_no_sibling_package_imports`).
 - 집계기, 랭커 파싱 + 슬롯/origin-cap 로직 + **배치 재시도/전면 실패 승격/fan-out 상한**.
@@ -650,6 +700,22 @@ ingress 흐름:
 - **레포 고정 CDK CLI로** 오프라인 `cdk synth`(Node 22 + `npm ci`로 `package.json`에 핀된 `aws-cdk` 설치 — 예전 `npm ci || npm install` 폴백은 lock 부재/불일치를 삼키고 다른 CLI를 깔아 이 잡의 의미를 없앴음 → `npx cdk synth -a "uv run python scripts/ci_synth.py"`). 인프로세스 `app.synth()`가 아닌 실제 CLI를 태워 **CLI↔`aws-cdk-lib` cloud-assembly 스키마 핸드셰이크**를 검증(글로벌 CLI가 라이브러리보다 뒤처져 배포가 스키마 미스매치로 깨지던 클래스를 PR에서 잡음). `ci_synth`는 `vpc_id`를 비우고 env-agnostic 계정을 써 자격증명 없이 완전 오프라인.
 - Docker 빌드 + **이미지 import 체크**: 두 이미지를 단일 플랫폼 `load: true`(네이티브 amd64)로 빌드해 로컬 데몬에 올린 뒤 `docker run --rm --network none --entrypoint python`으로 실제 엔트리 모듈을 import한다(digest: `lambda_handlers.*` + `main`, agentcore: `agent_runtime.app`). 빌드만으로는 import가 한 번도 실행되지 않아 COPY 누락이나 개발자 머신에서만 해석되는 모듈이 그대로 통과했다. 자격증명 없이 `--network none`이므로 **import 시점 AWS 호출/HTTP fetch가 콜드스타트가 아니라 CI에서** 깨진다. import 체크는 빌드가 얼마나 캐시됐든 로드된 이미지에 대해 항상 실행되므로 레이어 캐시가 실패를 건너뛸 수 없다. 캐시는 `type=gha`(이미지별 scope).
   - agentcore는 배포는 arm64지만 CI는 amd64로 빌드한다(베이스·의존성 모두 멀티아치이고, QEMU 에뮬레이션 없이 import를 실행하려면 네이티브여야 한다 — QEMU 하 `pip install`은 잡 예산을 넘긴다). 이 잡이 잡는 것(COPY 누락·미해결 의존성)은 아키텍처 무관.
+- **의존성·시크릿 스캔 (`security` 잡):** `uv export --frozen`으로 **`uv.lock`이 핀한 정확한 집합**(= 이미지가
+  설치하는 그 버전들)을 뽑아 `pip-audit --strict`로 감사한다 — pyproject 범위를 재해석해 감사하면 배포되지 않는
+  버전을 검사하게 된다. 그리고 `gitleaks`를 **전체 히스토리**에 돌린다(shallow clone은 tip만 보므로 과거에
+  커밋되고 나중에 지워진 키를 절대 못 찾는다). CFN 템플릿이 오늘까지 실제로 평문 토큰을 담고 있었고,
+  `config/config.yaml`은 gitignore인데 실제 값을 갖고 있으므로 잘못 add된 파일 하나가 곧 유출이다.
+- **이미지 하드닝:** 두 Dockerfile 모두 `uv.lock`이 핀한 집합을 설치한다(`uv export` → `uv pip install --system`,
+  프로젝트 자신은 `--no-deps`). 예전 `pip install .`은 빌드 시점에 pyproject 범위를 다시 해석했으므로 **CI가
+  테스트한 적 없는 의존성 집합이 Lambda에서 돌 수 있었다**. 의존성 레이어를 소스 COPY보다 먼저 두어 코드 변경이
+  레이어를 재사용한다. 런타임은 **non-root**(uid 10001) — 이 전환이 실제 취약점을 하나 드러냈다: `shared/logger.py`가
+  모듈 스코프에서 로그 디렉터리를 무가드 `mkdir`해 쓰기 권한이 없으면 **import 자체가 PermissionError**로 죽었다
+  (프로덕션은 `is_running_in_aws()` 가드로 무사했지만 CI 임포트 검사·읽기 전용 체크아웃·샌드박스는 모두 해당).
+  이제 mkdir과 FileHandler 열기 모두 콘솔 전용으로 degrade한다. `.dockerignore`도 추가 — 빌드 컨텍스트가
+  `.env`·`.venv`·`logs/`·`cdk.out`을 데몬으로 보내고 있었다.
+- **pre-commit (`.pre-commit-config.yaml`, `uv run pre-commit install`):** CI와 같은 게이트(ruff, black, YAML/JSON,
+  private-key 탐지, `uv lock --check`)를 푸시 전에 돌린다. mypy는 의도적으로 훅에서 제외 — 전체 의존성 해석이
+  필요하고 느려서 사람들이 `--no-verify`를 쓰기 시작하면 얻는 것보다 잃는 게 크다.
 - **CI는 추적되는 config로 synth:** `config/config.yaml`이 gitignore이므로 `scripts/ci_synth.py`는 `config/config-template.yaml`을 로드한다(`Config.load()`는 CI에서 코드 기본값으로 조용히 떨어져 아무도 배포하지 않는 스택을 synth했다). 인프라 assertion 테스트도 같은 템플릿을 쓴다.
 
 ## 14. 주요 명령어
@@ -667,4 +733,9 @@ uv run python scripts/ci_synth.py                       # 오프라인 CDK synth
 npm install                                             # 1회 — 핀된 CDK CLI 설치
 export DIGEST_IMAGE_REF=sha256:<pushed>                 # AGENTCORE_IMAGE_REF 기본 :arm64
 AWS_PROFILE=${AWS_PROFILE:-research} npx cdk deploy --all -a "uv run python scripts/deploy.py"
+# 시크릿은 템플릿에 없다 — 배포 직후 실제 값을 SecureString으로 기록(§3.5).
+AWS_PROFILE=${AWS_PROFILE:-research} uv run python scripts/put_secrets.py            # --dry-run / --verify / --force
+# 온디맨드 Bedrock은 과금 대상 리소스가 없어 비용 할당 태그가 안 붙는다. 계정/스테이지당 1회:
+AWS_PROFILE=${AWS_PROFILE:-research} uv run python scripts/put_inference_profiles.py  # --dry-run / --delete
+uv run pre-commit install                               # 1회 — CI 게이트를 푸시 전에
 ```

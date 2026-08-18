@@ -222,6 +222,7 @@ npm install                                      # 한 번만 — 핀된 CDK CLI
 export DIGEST_IMAGE_REF=sha256:<pushed-digest>   # AGENTCORE_IMAGE_REF은 기본 :arm64
 AWS_PROFILE=<profile> npx cdk deploy --all -a "uv run python scripts/deploy.py"
 AWS_PROFILE=<profile> uv run python scripts/put_secrets.py   # 이어서 시크릿 기록
+AWS_PROFILE=<profile> uv run python scripts/put_inference_profiles.py  # 계정/스테이지당 1회
 ```
 
 시크릿은 CloudFormation 템플릿에 들어가지 않습니다. 템플릿은 SecureString을 담을 수 없어서,
@@ -229,6 +230,15 @@ AWS_PROFILE=<profile> uv run python scripts/put_secrets.py   # 이어서 시크�
 남습니다. 스택은 파라미터 경로만 플레이스홀더로 만들고, 실제 값은 `scripts/put_secrets.py`가
 SecureString으로 기록합니다. 이미 SecureString인 파라미터는 건너뜁니다 — Threads 토큰은 갱신
 Lambda가 제자리에서 회전시키므로 로컬 `.env` 사본을 다시 쓰면 만료된 토큰으로 되돌아갑니다.
+
+온디맨드 Bedrock은 과금 대상 리소스가 없어 비용 할당 태그가 붙지 않습니다 — 이 계정처럼 여러 워크로드가 같은
+Claude 모델을 쓰면 Bedrock 청구는 하나의 귀속 불가 총액입니다. **application inference profile**은 태그가 붙으므로,
+`scripts/put_inference_profiles.py`가 설정된 모델마다 `{project}-{stage}-{model-slug}` 이름으로(`Project`/`Stage` 태그,
+시스템 정의 크로스리전 프로필에서 copy) 만들고 모델 리졸버가 이를 우선합니다. 리졸버는 LangChain 팩토리와 Strands
+리서치 에이전트가 **둘 다 거치는 한 곳**이라 에이전트 사용량까지 잡힙니다. 프로필이 없으면 조용히 시스템 프로필로
+폴백합니다. ⚠️ `application-inference-profile`은 `inference-profile`과 **다른 IAM 리소스 타입**이며, 빠뜨리면 프로필이
+존재하는 순간 모든 Bedrock 호출이 AccessDenied가 됩니다. Cost Explorer에 보이려면 Billing에서 `Project` 태그를
+비용 할당 태그로 활성화해야 합니다(최대 24시간, 소급 안 됨).
 
 생성되는 리소스:
 - **Lambda** (Docker): 다이제스트 파이프라인, 15분 타임아웃
@@ -238,7 +248,9 @@ Lambda가 제자리에서 회전시키므로 로컬 `.env` 사본을 다시 쓰�
 - **API Gateway** + **AWS WAFv2**: 레이트 리밋 + 매니지드 룰 + 스로틀링이 적용된 `POST /slack/events`
 - **EventBridge**: 일간 다이제스트 cron (설정 기반 시/분) + Threads 토큰 갱신 스케줄
 - **Bedrock AgentCore**: Runtime(딥 리서치 에이전트, arm64) + **Memory**(다이제스트 스냅샷 — 데일리 비주얼 Lambda와 크로스데이 중복 제거가 읽음. `recall_trends`가 읽는 게 아니며, 그쪽은 S3의 `trends.json`을 읽습니다)
-- **ECS Fargate**: RSSHub 컨테이너 (X 세션 쿠키는 태스크 정의의 `secrets`로 SSM에서 주입, `environment`에 평문으로 두지 않음)
+- **ECS Fargate**: RSSHub 컨테이너 — X 세션 쿠키는 태스크 정의의 `secrets`로 SSM에서 주입(`environment`에 평문 없음).
+  `aws.rsshub_desired_count` **기본 0**: 다이제스트는 S3 park 파일을 먼저 읽고 이 서비스에 도달하지 않으므로 상시
+  실행은 순수 비용(월 약 $40)이었습니다. 태스크 정의는 남아 있어 1로 올리면 폴백이 복구됩니다
 - **SSM Parameter Store**: 모든 시크릿을 SecureString으로 보관 (`scripts/put_secrets.py`가 기록)
 - **S3**: 트렌드 + RSSHub 동기화 데이터 + Threads 이미지 호스팅
 - **DynamoDB**: Slack 이벤트 중복 제거
