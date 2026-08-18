@@ -84,6 +84,7 @@ class DailyVisualMaker:
             style_aesthetic=config.pipeline.visual_synopsis_style_aesthetic,
             image_timeout_sec=config.pipeline.visual_image_timeout_sec,
             image_max_retries=config.pipeline.visual_image_max_retries,
+            image_quality=config.pipeline.visual_image_quality,
         )
 
     async def run(

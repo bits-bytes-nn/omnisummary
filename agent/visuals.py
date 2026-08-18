@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import time
+from typing import Any
 
 from shared import (
     LOGGING_TRUNCATION_CHARS,
@@ -13,6 +14,22 @@ from shared import (
     resolve_secret,
 )
 from shared.config import LanguageModelId
+
+
+def _usage_summary(usage: Any) -> str:
+    """Compact token counts from an images.generate response, or "unknown".
+
+    The image is billed on output image tokens, so this is the only number that turns spend from an
+    estimate (published per-image price x a log count) into a measurement. Tolerant of the field
+    being absent or renamed: a usage-shape change in the SDK must never break a render."""
+    if usage is None:
+        return "unknown"
+    parts = []
+    for field in ("input_tokens", "output_tokens", "total_tokens"):
+        value = getattr(usage, field, None)
+        if value is not None:
+            parts.append(f"{field.split('_')[0]}={value}")
+    return " ".join(parts) or "unknown"
 
 
 class VisualGenerator:
@@ -45,6 +62,7 @@ class VisualGenerator:
         style_aesthetic: str,
         image_timeout_sec: int,
         image_max_retries: int,
+        image_quality: str = "",
     ) -> None:
         self.llm_factory = llm_factory
         self.brief_model = brief_model
@@ -56,6 +74,7 @@ class VisualGenerator:
         # orientation -> gpt-image size; the brief picks the orientation that fits the visual.
         self.image_sizes = image_sizes
         self.image_timeout_sec = image_timeout_sec
+        self.image_quality = image_quality
         self.image_max_retries = image_max_retries
         self.source_max_tokens = source_max_tokens
         self.context_max_tokens = context_max_tokens
@@ -100,11 +119,26 @@ class VisualGenerator:
         # Lambda's 15-min budget, which shows up as a timeout with no image instead of a clean
         # failure. Both bounds are config-driven (PipelineConfig.visual_image_*).
         client = OpenAI(api_key=api_key, timeout=self.image_timeout_sec, max_retries=self.image_max_retries)
-        response = client.images.generate(model=self.image_model, prompt=brief.prompt, size=size)
+        # `quality` is only sent when configured: omitting it leaves OpenAI's "auto", which picks
+        # between quality tiers whose per-image prices differ ~4x, so the bill is unpredictable and
+        # the code cannot say which tier it bought. Pin it to make cost deterministic.
+        params: dict[str, Any] = {"model": self.image_model, "prompt": brief.prompt, "size": size}
+        if self.image_quality:
+            params["quality"] = self.image_quality
+        response = client.images.generate(**params)
         b64 = response.data[0].b64_json if response.data else None
         if not b64:
             raise RuntimeError("gpt-image returned no image data")
-        logger.info("Rendered visual image (%s, %s)", brief.orientation, size)
+        # The response carries the token counts the image is billed on, and they were being
+        # discarded — leaving spend as an estimate from published per-image prices multiplied by a
+        # log count. Logged so the real per-render usage is in CloudWatch.
+        logger.info(
+            "Rendered visual image (%s, %s, quality=%s, tokens=%s)",
+            brief.orientation,
+            size,
+            self.image_quality or "auto",
+            _usage_summary(getattr(response, "usage", None)),
+        )
         return base64.b64decode(b64)
 
     @staticmethod

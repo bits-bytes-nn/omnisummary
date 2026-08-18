@@ -357,6 +357,12 @@ class PipelineConfig(_StrictModel):
     # exceed the visual Lambda's 15-min budget; one 300s attempt leaves room for the single
     # moderation-softened re-render and still finishes inside the Lambda.
     visual_image_timeout_sec: int = Field(default=300, ge=10)
+    # gpt-image quality tier. Empty sends nothing, leaving OpenAI's "auto" — which picks between
+    # tiers whose published per-image prices differ ~4x ($0.041-0.053 medium vs $0.165-0.211 high at
+    # our sizes), so the monthly bill for one image a day is anywhere from ~$1.3 to ~$5.2 and the
+    # code cannot say which. Set it to make the cost deterministic; the render also logs the
+    # response's token counts either way, so actual spend is measurable rather than estimated.
+    visual_image_quality: str = ""
     visual_image_max_retries: int = Field(default=0, ge=0)
     # Cap on the research steps the visual editor may request (each is a live search call). Matches
     # the "1-3 steps" the editor prompt asks for, so a chatty plan can't fan out into ten searches.

@@ -91,6 +91,7 @@ def _visual_kwargs(**overrides) -> dict:
         "style_aesthetic": cfg.visual_synopsis_style_aesthetic,
         "image_timeout_sec": cfg.visual_image_timeout_sec,
         "image_max_retries": cfg.visual_image_max_retries,
+        "image_quality": cfg.visual_image_quality,
     }
     kwargs.update(overrides)
     return kwargs
@@ -141,6 +142,63 @@ class TestVisualGenerator:
         assert fake_client.images.generate.called
         # the image prompt sent to OpenAI comes from brief.prompt
         assert fake_client.images.generate.call_args.kwargs["prompt"] == "a one-page slide explaining X"
+
+    def test_quality_is_omitted_unless_configured(self, monkeypatch):
+        # Sending nothing leaves OpenAI's "auto", which picks between tiers whose per-image prices
+        # differ ~4x. The default must stay omitted (no silent cost/quality change), and a configured
+        # value must actually reach the API so the bill becomes deterministic.
+        monkeypatch.setenv("OPENAI_API_KEY", "key")
+        brief = VisualBrief(title="T", caption="C", prompt="draw", orientation="landscape")
+        resp = MagicMock()
+        resp.data = [MagicMock(b64_json=base64.b64encode(b"P").decode())]
+        resp.usage = MagicMock(input_tokens=11, output_tokens=2222, total_tokens=2233)
+
+        for configured, expected in (("", None), ("medium", "medium")):
+            client = MagicMock()
+            client.images.generate.return_value = resp
+            gen = _generator(image_quality=configured)
+            with patch("openai.OpenAI", return_value=client):
+                gen.render(brief)
+            assert client.images.generate.call_args.kwargs.get("quality") == expected
+
+    def test_render_reports_the_billed_token_counts(self, monkeypatch):
+        # The response carries the tokens the image is billed on and they were discarded, leaving
+        # spend as an estimate (published per-image price x a log count). Asserted on the logger
+        # call rather than captured output: the project logger sets propagate=False and binds its
+        # StreamHandler to the real stderr at import, so neither caplog nor capsys/capfd see it.
+        monkeypatch.setenv("OPENAI_API_KEY", "key")
+        brief = VisualBrief(title="T", caption="C", prompt="draw", orientation="landscape")
+        resp = MagicMock()
+        resp.data = [MagicMock(b64_json=base64.b64encode(b"P").decode())]
+        resp.usage = MagicMock(input_tokens=11, output_tokens=2222, total_tokens=2233)
+        client = MagicMock()
+        client.images.generate.return_value = resp
+
+        with patch("agent.visuals.logger") as log:
+            with patch("openai.OpenAI", return_value=client):
+                _generator().render(brief)
+        rendered = [c.args[0] % c.args[1:] for c in log.info.call_args_list if "Rendered" in str(c.args[0])]
+        assert rendered, "no render log line"
+        assert "output=2222" in rendered[0]
+        assert "quality=auto" in rendered[0]
+
+    def test_usage_summary_tolerates_a_missing_or_reshaped_usage(self):
+        from agent.visuals import _usage_summary
+
+        assert _usage_summary(None) == "unknown"
+        assert _usage_summary(MagicMock(spec=[])) == "unknown"  # no token fields at all
+        assert _usage_summary(MagicMock(spec=["output_tokens"], output_tokens=7)) == "output=7"
+
+    def test_missing_usage_does_not_break_a_render(self, monkeypatch):
+        # A usage-shape change in the SDK must never cost the day's image.
+        monkeypatch.setenv("OPENAI_API_KEY", "key")
+        brief = VisualBrief(title="T", caption="C", prompt="draw")
+        resp = MagicMock(spec=["data"])
+        resp.data = [MagicMock(b64_json=base64.b64encode(b"P").decode())]
+        client = MagicMock()
+        client.images.generate.return_value = resp
+        with patch("openai.OpenAI", return_value=client):
+            assert _generator().render(brief) == b"P"
 
     @pytest.mark.asyncio
     async def test_generate_retries_softened_on_moderation_block(self, monkeypatch):
