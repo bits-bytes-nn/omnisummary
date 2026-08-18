@@ -117,6 +117,8 @@ class DailyVisualMaker:
                 "\n\nTHE DIGEST'S OWN ANGLE on this story (context you may use or ignore — "
                 f"the image does NOT have to argue this point):\n{take}"
             )
+        if self.config.pipeline.visual_guardrails:
+            instruction += f"\n\nGUARDRAILS: {self.config.pipeline.visual_guardrails}"
         # The art-director picks orientation, but it anchors to the same one for days. Steer it to
         # the least-recently-used aspect ratio so consecutive visuals actually vary in shape.
         if preferred_orientation:

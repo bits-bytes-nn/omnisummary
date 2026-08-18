@@ -98,6 +98,23 @@ class VisualBrief(BaseModel):
         closing `>`, so ordinary prose like "<2%" or "a < b" is left alone."""
         return _MARKUP_TAG_RE.sub("", value).strip()
 
+    @model_validator(mode="after")
+    def _drop_bled_field_value(self) -> VisualBrief:
+        """Drop a trailing line that is just ANOTHER field's value.
+
+        The 2026-08-17 leak (`</caption>\\n<parameter name="orientation">landscape`) was the tagged
+        form of a recurring structured-output slip: the model runs the next field into the previous
+        string. A 2026-08-18 local run produced the TAG-LESS form — a caption ending in a bare
+        `\\nportrait` — which the markup strip above cannot see. The rule is derived, not a word
+        list: a prose field must not END with the literal value of another field, and only a
+        standalone final line counts, so prose that merely contains the word survives."""
+        for name in ("title", "caption"):
+            value = getattr(self, name)
+            head, sep, last = value.rpartition("\n")
+            if sep and last.strip().casefold() == self.orientation.casefold():
+                setattr(self, name, head.strip())
+        return self
+
 
 class ImageAsset(BaseModel):
     """A representative image downloaded from a source page (its og:image / twitter:image),

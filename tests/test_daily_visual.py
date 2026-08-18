@@ -97,6 +97,34 @@ class TestEditorialTakeReachesTheArtDirector:
         instruction = await self._instruction_for(None)
         assert "THE DIGEST'S OWN ANGLE" not in instruction
 
+    @pytest.mark.asyncio
+    async def test_guardrails_are_appended_and_are_config_driven(self):
+        # Handing the angle over as pure context is not always enough: a 2026-08-18 run turned a
+        # lead about circular vendor financing into a triumphal rocket-and-money poster (the
+        # opposite register) and drew near-photoreal likenesses of two identifiable executives.
+        # The guardrails say what the image must not DO — far weaker than the rejected "the image
+        # must argue the lead's thesis" rule.
+        instruction = await self._instruction_for(None)
+        assert "GUARDRAILS:" in instruction
+        assert "must not read as celebratory" in instruction
+        assert "real, identifiable living people" in instruction
+
+    @pytest.mark.asyncio
+    async def test_empty_guardrails_config_appends_nothing(self):
+        from datetime import date
+
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = False
+        maker.config.pipeline.enable_slack_post = False
+        maker.config.pipeline.visual_guardrails = ""
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "Draw the story."}
+        gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw")))
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = gen
+                await maker.run(_items(), None, today=date(2026, 8, 18))
+        assert "GUARDRAILS:" not in str(gen.await_args.args[0])
+
 
 class TestDailyVisualMaker:
     @pytest.mark.asyncio

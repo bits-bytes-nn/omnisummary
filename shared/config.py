@@ -360,6 +360,22 @@ class PipelineConfig(_StrictModel):
         "perspective, coherent anatomy for any figures, balanced composition, and a deliberate, "
         "harmonious color palette; aim for a professionally art-directed look, never sloppy or distorted"
     )
+    # Guardrails appended to every visual instruction. Not style, not a thesis requirement: two
+    # things the image must not DO. (1) The digest's angle is handed over as context the art
+    # director may ignore, but a 2026-08-18 run turned a lead about circular vendor financing
+    # ("who is holding the risk won't be clear until the next downturn") into a triumphal
+    # rocket-and-money poster — the opposite register. Not-contradicting is far weaker than the
+    # "the image must argue the lead's thesis" rule that was rejected as over-constraining.
+    # (2) The same run drew near-photoreal likenesses of two identifiable living executives in a
+    # fabricated scene. Empty disables either clause.
+    visual_guardrails: str = (
+        "Do NOT contradict the editorial angle you were given: if the angle is skeptical or "
+        "cautionary, the image must not read as celebratory (and vice versa). You need not argue "
+        "the angle — just don't invert it. "
+        "Do NOT render recognisable likenesses of real, identifiable living people, and do not "
+        "personify a company or country as an ethnically-coded human; use stylised or invented "
+        "figures, objects, mascots or logos-free stand-ins instead."
+    )
     # Appended to the instruction when the image model's moderation blocks the first render,
     # to soften tone before a single retry. Configurable so ops can retune the safe-for-work
     # guidance without editing code.

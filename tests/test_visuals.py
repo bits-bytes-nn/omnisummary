@@ -34,6 +34,21 @@ class TestVisualBriefValidation:
         assert brief.title == "제목"
         assert brief.caption == "본문 끝.\nlandscape"
 
+    def test_strips_a_trailing_bled_orientation_value(self):
+        # Observed on a 2026-08-18 local end-to-end run: the caption ended with a bare "\nportrait",
+        # the tag-less form of the same structured-output slip that produced 08-17's
+        # `</caption><parameter name="orientation">landscape`. The markup strip cannot see it.
+        brief = VisualBrief(title="제목", caption="본문 끝이다.\nportrait", prompt="draw", orientation="portrait")
+        assert brief.caption == "본문 끝이다."
+
+    def test_keeps_the_word_when_it_is_part_of_the_prose(self):
+        # Only a standalone FINAL line counts — prose that merely contains the word is untouched.
+        brief = VisualBrief(
+            title="portrait 모드 비교", caption="세로형 portrait 구도가 더 낫다.", prompt="draw", orientation="portrait"
+        )
+        assert brief.title == "portrait 모드 비교"
+        assert brief.caption == "세로형 portrait 구도가 더 낫다."
+
     def test_keeps_prose_that_merely_contains_an_angle_bracket(self):
         # The strip must not eat comparisons/inequalities in ordinary prose.
         brief = VisualBrief(title="지연 <2ms", caption="a < b 인 경우", prompt="draw")
