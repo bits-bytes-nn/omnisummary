@@ -474,7 +474,10 @@ class TestFormatSourceDetail:
         item = _item(SourceType.YOUTUBE, metadata={"view_count": 12345})
         result = _source_detail(item)
         assert "`YouTube`" in result
-        assert ":arrow_forward: 12,345" in result
+        # A literal Unicode emoji, not a Slack `:shortcode:` — Threads renders no shortcodes, and
+        # its renderer strips Slack markup characters, which published a bare ":arrowforward:".
+        assert "▶️ 12,345" in result
+        assert ":" not in result.split("`YouTube`")[-1]
 
     def test_x_with_author(self):
         item = _item(SourceType.X, author="karpathy")

@@ -107,6 +107,29 @@ class TestThreadsPosts:
         body_line = [ln for ln in post.split("\n\n") if "문장" in ln][0]
         assert body_line.rstrip().endswith("다.")
 
+    def test_source_line_never_publishes_a_slack_emoji_shortcode(self):
+        # Regression (2026-08-18, live post): metrics carried the Slack shortcode
+        # `:arrow_forward:`, and _strip_slack_mrkdwn removes `_`, so Threads published a bare
+        # ":arrowforward:". Metric emoji must survive the strip intact — i.e. be real Unicode.
+        from shared.formatting import YOUTUBE_VIEWS_EMOJI
+
+        content = DigestContent(
+            lead="리드.",
+            headline_index=1,
+            items=[
+                DigestItem(
+                    title="스토리",
+                    url="http://e.com/x",
+                    source_tag="`YouTube`",
+                    metrics=f"{YOUTUBE_VIEWS_EMOJI} 14,235",
+                    body="본문이다.",
+                )
+            ],
+        )
+        _, replies = render_threads_posts(content)
+        assert f"YouTube · {YOUTUBE_VIEWS_EMOJI} 14,235" in replies[0]
+        assert ":" not in replies[0].split("\n\n")[1]
+
     def test_reply_carries_the_source_line_without_slack_markup(self):
         # The pipeline computes `source_tag`/`metrics` and Slack shows them, but the Threads reply
         # used to discard both — a reader couldn't tell a Reddit thread from an arXiv paper without

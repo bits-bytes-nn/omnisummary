@@ -10,7 +10,10 @@ from .constants import SourceType
 from .logger import logger
 from .models import CollectedItem
 
-YOUTUBE_VIEWS_EMOJI = ":arrow_forward:"
+# A literal Unicode emoji, NOT a Slack `:shortcode:`. Slack renders both, but Threads renders no
+# shortcodes — and the Threads renderer strips Slack markup characters, so `:arrow_forward:` lost
+# its underscore and published as a bare ":arrowforward:" on 2026-08-18.
+YOUTUBE_VIEWS_EMOJI = "▶️"
 RSS_NAME_DELIMITERS = (" - ", " — ")
 
 
