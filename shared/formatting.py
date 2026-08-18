@@ -82,6 +82,13 @@ def agi_countdown_intro(date_str: str, template: str, today: date, after_templat
     return ""
 
 
+def editorial_lead(lead: str, intro: str) -> str:
+    """The lead with the AGI-countdown prefix removed, leaving only the editorial angle. Callers
+    that reason about the ANGLE (recent-leads novelty, the visual's take) want this rather than
+    the raw lead, whose first clause is the same fixed daily template every single day."""
+    return lead[len(intro) :].lstrip() if intro and lead.startswith(intro) else lead
+
+
 def normalize_title(title: str) -> str:
     """Normalize a title for dedup/clustering: strip HTML, lowercase, drop punctuation,
     collapse whitespace. Shared by the aggregator (title dedup) and ranker (topic-coherent

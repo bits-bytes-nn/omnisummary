@@ -47,6 +47,57 @@ def _items(n: int = 3) -> list[RankedItem]:
     ]
 
 
+class TestEditorialTakeReachesTheArtDirector:
+    """The brief used to see only the raw article, so the image illustrated surface facts: the
+    2026-08-15 visual drew a four-way photo finish ("they all tied") for a story whose point was
+    that release cadence explained the gap. The digest's angle must reach the art director — as
+    context, NOT as a constraint the image has to argue."""
+
+    @staticmethod
+    async def _instruction_for(content) -> str:
+        from datetime import date
+
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = False
+        maker.config.pipeline.enable_slack_post = False
+        plan = {"skip": False, "item_number": 1, "research": [], "instruction": "Draw the story."}
+        gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw")))
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = gen
+                await maker.run(_items(), content, today=date(2026, 8, 15))
+        return str(gen.await_args.args[0])
+
+    @pytest.mark.asyncio
+    async def test_lead_and_implication_are_handed_over_without_the_countdown(self):
+        from shared.models import DigestContent, DigestItem
+
+        content = DigestContent(
+            lead="AGI 등장 870일 전이다. 격차의 원인은 모델 품질이 아니라 출시 주기다.",
+            headline_index=1,
+            items=[
+                DigestItem(
+                    title="GLM-5.3",
+                    url="http://e.com/1",
+                    body="본문.",
+                    implication="신중함에 값을 매기는 쪽이 시장에서 손해를 본다.",
+                )
+            ],
+        )
+        instruction = await self._instruction_for(content)
+        assert "격차의 원인은 모델 품질이 아니라 출시 주기다." in instruction
+        assert "신중함에 값을 매기는 쪽이 시장에서 손해를 본다." in instruction
+        # The fixed daily countdown template carries no information about the story.
+        assert "AGI 등장" not in instruction
+        # Handed over as context the art director may ignore — not a matching requirement.
+        assert "does NOT have to" in instruction
+
+    @pytest.mark.asyncio
+    async def test_no_take_when_there_is_no_structured_content(self):
+        instruction = await self._instruction_for(None)
+        assert "THE DIGEST'S OWN ANGLE" not in instruction
+
+
 class TestDailyVisualMaker:
     @pytest.mark.asyncio
     async def test_skips_without_openai_key(self):

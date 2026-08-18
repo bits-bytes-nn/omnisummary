@@ -130,11 +130,10 @@ write clean prose only; do not add *bold*, _italic_, backticks, bullets, or link
 *Language*
 {language_rules}
 
-Produce ONLY this JSON object:
+Produce ONLY this JSON object, writing the keys IN THIS ORDER — the stories first, the lead last, \
+because the lead is a comment on stories you have already written:
 ```json
 {{
-  "lead": "3-5 sentence opening that works as a standalone post (it leads the digest AND is the caption under today's image). Open with ONE natural sentence that situates the reader in today's AI/ML landscape — a real observation, NOT a label like '오늘의 다이제스트' and NO emoji — then go straight into the headline story (the one named by headline_index, which is also what the image depicts), connecting it to its ongoing trend arc (use the trend ammunition below) with a sharp, grounded take in the voice above. Pick ONE thesis.",
-  "headline_index": 1,
   "items": [
     {{
       "title": "the Korean display title for this story",
@@ -142,14 +141,16 @@ Produce ONLY this JSON object:
       "body": "2-3 tight Korean sentences: what this is, why it matters, the key detail. Keep it compact and self-contained so the whole item reads as ONE short social post; every sentence must end completely (no trailing fragments).",
       "implication": "ONE sharp, provocative closing line in Korean that takes a real stance — but VARY THE SHAPE across items so the digest never reads as the same beat repeated: a pointed assertion (no question mark), an open question to the reader, a falsifiable prediction, a single damning detail/number, an invitation to disagree, or a quiet line that just lets a heavy fact land. Do NOT end every item with a question, and do NOT reuse the same shape used by another item today. Provocation is in the angle, never in invented facts."
     }}
-  ]
+  ],
+  "headline_index": 1,
+  "lead": "3-5 sentence opening that works as a standalone post (it leads the digest AND is the caption under today's image). It is about the headline story you already wrote as items[0] — the one the image depicts. Open with ONE natural sentence that situates the reader in today's AI/ML landscape — a real observation, NOT a label like '오늘의 다이제스트' and NO emoji — then land ONE thesis on what that story MEANS, connecting it to its ongoing trend arc (use the trend ammunition below) in the voice above. The reader sees items[0] directly beneath this lead, so do NOT re-narrate it: no repeating its numbers, names, or its sequence of events. State what they add up to instead."
 }}
 ```
 
 Rules:
-- The FIRST item (`items[0]`) is today's HEADLINE: put it first, write the `lead` about it, and \
-set `headline_index` to 1. The lead, the headline item, and the image all depict this ONE story, \
-so they stay in sync. Choose as the headline the story that is both important AND visually \
+- The FIRST item (`items[0]`) is today's HEADLINE: put it first, set `headline_index` to 1, and \
+write the `lead` as commentary ON it (not a second telling of it). The lead, the headline item, \
+and the image all concern this ONE story, so they stay in sync. Choose as the headline the story that is both important AND visually \
 expressible — favor a news / industry / release / drama story over a dry deep-technical or purely \
 academic one, which rarely makes a good image. Order the remaining items by importance after it.
 - If two ranked items are the SAME underlying story (same companies/event), MERGE them into one \

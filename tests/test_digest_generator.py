@@ -132,6 +132,19 @@ class TestParseContent:
         assert content.items[0].implication == "시사점\t들여쓰기."
         assert content.headline_index == 1
 
+    def test_parses_items_first_lead_last_key_order(self):
+        # The prompt now asks for `items` BEFORE `lead`: the lead is written after the stories
+        # exist, so it comments on them instead of re-narrating the headline (measured: the
+        # lead/headline-reply word overlap fell from ~0.34 to ~0.11 across five sampled days).
+        # Parsing must not depend on key order.
+        raw = (
+            '{"items": [{"title": "T0", "url": "u0", "body": "b0", "implication": "i0"}], '
+            '"headline_index": 1, "lead": "오늘의 논평."}'
+        )
+        content = _generator("")._parse_content(raw)
+        assert content.lead == "오늘의 논평."
+        assert [it.url for it in content.items] == ["u0"]
+
     def test_malformed_json_raises_instead_of_shipping_an_empty_digest(self):
         # Regression (2026-08-13, 2026-08-17): the editor emitted a stray `]` after the lead
         # string, the old fallback returned lead=raw/items=[], and the day shipped a story-less

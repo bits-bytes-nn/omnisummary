@@ -33,6 +33,7 @@ from shared import (
     agi_countdown_intro,
     create_memory_store,
     create_state_store,
+    editorial_lead,
     is_running_in_aws,
     logger,
     published_urls_from_snapshots,
@@ -234,14 +235,13 @@ async def run_pipeline(
 def _editorial_lead(config: Config, digest: DigestResult, digest_date: date) -> str:
     """The digest lead with the AGI-countdown prefix removed, so recent-leads novelty compares
     the editorial angle (not the fixed daily countdown template every lead starts with)."""
-    lead = digest.content.lead if digest.content else ""
     intro = agi_countdown_intro(
         config.pipeline.agi_countdown_date,
         config.pipeline.agi_countdown_template,
         digest_date,
         config.pipeline.agi_countdown_after,
     )
-    return lead[len(intro) :] if intro and lead.startswith(intro) else lead
+    return editorial_lead(digest.content.lead if digest.content else "", intro)
 
 
 def persist_digest(

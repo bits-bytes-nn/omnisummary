@@ -17,7 +17,9 @@ from shared import (
     RollingLog,
     VisualBrief,
     VisualEditorPrompt,
+    agi_countdown_intro,
     create_state_store,
+    editorial_lead,
     get_correlation_id,
     logger,
     parse_json_from_llm_output,
@@ -79,6 +81,7 @@ class DailyVisualMaker:
             logger.info("OPENAI_API_KEY not set, skipping daily visual")
             return False
 
+        post_date = today or datetime.now(ZoneInfo(self.config.aws.timezone)).date()
         # The visual MUST depict the digest's headline so the image and the lead stay in sync.
         # content.headline_index is into the curated content.items (may be merged/reordered), so
         # map it back to a ranked_items position by URL; fall back to the top-ranked item.
@@ -102,6 +105,18 @@ class DailyVisualMaker:
         source = f"{ranked.item.title}\n\n{ranked.item.text}"
         context = await self._gather_context(plan.get("research", []))
         instruction = plan.get("instruction", "") or f"A fun visual about: {ranked.item.title}"
+
+        # The art director only ever saw the raw article, so it illustrates surface facts: the
+        # 2026-08-15 visual drew a four-way photo finish ("they all tied") for a story whose point
+        # was that RELEASE CADENCE, not model quality, explained the gap. Hand over the digest's own
+        # angle as INFORMATION, not a constraint — the image needn't match the lead's thesis, but it
+        # shouldn't be blind to it.
+        take = self._editorial_take(content, post_date)
+        if take:
+            instruction += (
+                "\n\nTHE DIGEST'S OWN ANGLE on this story (context you may use or ignore — "
+                f"the image does NOT have to argue this point):\n{take}"
+            )
         # The art-director picks orientation, but it anchors to the same one for days. Steer it to
         # the least-recently-used aspect ratio so consecutive visuals actually vary in shape.
         if preferred_orientation:
@@ -131,7 +146,6 @@ class DailyVisualMaker:
             # posts the lead + per-story replies (text-only). Slack image upload is skipped below.
             logger.warning("Daily visual generation failed; posting Threads text-only", exc_info=True)
 
-        post_date = today or datetime.now(ZoneInfo(self.config.aws.timezone)).date()
         slack_ok = await self._post(image_bytes, brief)
         threads_ok = await self._post_threads(image_bytes, content, today=post_date, force_republish=force_republish)
         # Record the chosen format so tomorrow can deliberately differ. Best-effort. Only when a
@@ -155,6 +169,24 @@ class DailyVisualMaker:
         # Success = at least one enabled channel published. Returning only slack_ok reported
         # "skipped" for every Threads-only run (the current config), hiding real outcomes.
         return slack_ok or threads_ok
+
+    def _editorial_take(self, content: DigestContent | None, post_date: date) -> str:
+        """The digest's angle on the headline story: its lead plus the headline item's closing
+        implication. The AGI-countdown prefix is dropped — it's the same fixed template every day
+        and carries no information about today's story. Empty when there is no structured content
+        (a visual can still be made; it just won't know the take)."""
+        if not content or not content.items:
+            return ""
+        intro = agi_countdown_intro(
+            self.config.pipeline.agi_countdown_date,
+            self.config.pipeline.agi_countdown_template,
+            post_date,
+            self.config.pipeline.agi_countdown_after,
+        )
+        idx = content.headline_index if 1 <= content.headline_index <= len(content.items) else 1
+        headline = content.items[idx - 1]
+        parts = [editorial_lead(content.lead, intro).strip(), headline.implication.strip()]
+        return "\n\n".join(p for p in parts if p)
 
     def _least_recent_orientation(self, recent_formats: list[dict]) -> str:
         """Return an orientation not used in the recent window (least-recently-used), so the
