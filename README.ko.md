@@ -278,7 +278,7 @@ uv run python scripts/put_inference_profiles.py  # 계정/스테이지당 1회
 | **API Gateway** + **WAFv2** | 레이트 리밋과 매니지드 룰셋, 스테이지 스로틀링이 적용된 `POST /slack/events` |
 | **EventBridge** | 일간 다이제스트 크론(설정 기반 시와 분, UTC)과 토큰 갱신 스케줄 |
 | **Bedrock AgentCore** | Runtime(에이전트, arm64)과 Memory(다이제스트 스냅샷) |
-| **ECS Fargate** | RSSHub 컨테이너. `aws.rsshub_desired_count`는 기본 0이다. 다이제스트가 S3 park 파일을 먼저 읽고 이 서비스에 도달하지 않으니 상시 실행은 월 약 $40의 순수 비용이었다. 태스크 정의는 그대로 배포되니 1로 올리면 AWS 폴백이 복구된다 |
+| **ECS Fargate** | RSSHub 컨테이너. `aws.rsshub_desired_count`는 기본 0이다. 다이제스트가 S3 park 파일을 먼저 읽고 이 서비스에 도달하지 않으니 상시 실행은 월 약 $40의 순수 비용이다. 태스크 정의는 그대로 배포되니 1로 올리면 AWS 폴백이 복구된다 |
 | **SSM Parameter Store** | 모든 시크릿. out-of-band로 기록한 SecureString이다 |
 | **S3** | 트렌드와 park 파일, Threads 이미지 호스팅 |
 | **DynamoDB** | Slack 이벤트 중복 제거 |
@@ -409,7 +409,7 @@ CI(`.github/workflows/ci.yml`)는 다섯 개 잡을 돈다. lint & type-check(`u
 
 이 중 둘은 설명이 필요하다.
 
-- **import 체크**는 빌드된 각 이미지를 올려 `--network none`과 자격증명 없이 실제 엔트리 모듈을 import한다. 빌드만으로는 import가 한 번도 실행되지 않으니, 예전에는 COPY 누락이나 import 시점의 AWS/HTTP 호출이 CI가 아니라 콜드 스타트에서 깨졌다.
+- **import 체크**는 빌드된 각 이미지를 올려 `--network none`과 자격증명 없이 실제 엔트리 모듈을 import한다. 빌드만으로는 import가 한 번도 실행되지 않으니, 이 체크가 없으면 COPY 누락이나 import 시점의 AWS/HTTP 호출이 CI가 아니라 콜드 스타트에서 드러난다.
 - **의존성 스캔**은 설치된 트리를 감사한다(`uv sync --frozen --no-dev --no-install-project` 후 `pip-audit --strict --path .venv/...`). 그것이 이미지가 설치하는 집합이고, 실제 배포되는 플랫폼으로 이미 좁혀진 집합이기 때문이다. `--no-install-project`가 중요하다. pip-audit은 editable 배포를 감사 불가로 보고하고 `--strict`가 그것을 실패로 바꾼다. `gitleaks`는 전체 히스토리에 돈다. shallow clone은 tip만 보니 과거에 커밋되고 나중에 지워진 키를 절대 찾지 못한다.
 
   운영자를 위한 주의사항이 있다. `pip-audit --strict`는 잠긴 집합에 알려진 권고가 0건이기를 요구하니, 전이 의존성에 새 권고가 공개되면 무관한 다음 푸시가 빨개진다. 해소 순서는 `uv lock --upgrade`, 미사용 의존성 제거, 상한 완화이며 `--ignore-vuln`은 코드 경로가 도달 불가임을 확인한 뒤의 마지막 수단이다.

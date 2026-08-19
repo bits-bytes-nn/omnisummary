@@ -279,7 +279,7 @@ On every later deploy only steps 3-4 apply: push the new images, then `deploy --
 | **API Gateway** + **WAFv2** | `POST /slack/events` with rate limiting, managed rule sets and stage throttling |
 | **EventBridge** | Daily digest cron (config-driven hour/minute, **UTC**) + the token-refresh schedule |
 | **Bedrock AgentCore** | Runtime (the agent, arm64) + Memory (digest snapshots) |
-| **ECS Fargate** | RSSHub container. `aws.rsshub_desired_count` **defaults to 0**: the digest reads the S3 park file first and never reaches this service, so running it around the clock was ~$40/month of pure cost. The task definition is still deployed, so set it to 1 to restore the AWS fallback |
+| **ECS Fargate** | RSSHub container. `aws.rsshub_desired_count` **defaults to 0**: the digest reads the S3 park file first and never reaches this service, so running it around the clock is ~$40/month of pure cost. The task definition is still deployed, so set it to 1 to restore the AWS fallback |
 | **SSM Parameter Store** | All secrets, as SecureStrings written out-of-band |
 | **S3** | Trends + park files + Threads image hosting |
 | **DynamoDB** | Slack event deduplication |
@@ -296,7 +296,7 @@ Four behaviours worth knowing:
 
 - **Parameters that are already SecureStrings are skipped.** The Threads token is rotated in place by the refresh Lambda, so re-asserting the local `.env` copy would restore an expired token. Use `--force` only when you mean to overwrite the live value.
 - **A missing or empty environment variable is skipped, never blanked**, so a partial `.env` can't wipe a working parameter. And `resolve_secret()` treats a parameter still holding the placeholder as unset, so forgetting to run `put_secrets.py` degrades to the normal missing-credential path instead of sending the placeholder to an API as a token.
-- **One parameter SSM refuses no longer aborts the run.** Failures are listed under `FAILED` and the script exits non-zero, but every other secret still gets written.
+- **One parameter SSM refuses does not abort the run.** Failures are listed under `FAILED` and the script exits non-zero, but every other secret still gets written.
 - **`--verify` is a read-only report** of which parameters are set, which still hold the placeholder, which are plaintext `String`, and which are missing. Safe to run against prod any time.
 
 The X session cookies reach the RSSHub Fargate container through the task definition's `secrets` block. The ARN goes in the template, and the ECS agent fetches the value at task start.
@@ -410,7 +410,7 @@ CI (`.github/workflows/ci.yml`) runs five jobs: **lint & type-check** (`uv lock 
 
 Two of those are worth explaining:
 
-- **The import check** loads each built image and runs it with `--network none` and no credentials to import its real entry modules. Building alone never executes an import, so a missing `COPY` or an import-time AWS/HTTP call used to fail at cold start instead of in CI.
+- **The import check** loads each built image and runs it with `--network none` and no credentials to import its real entry modules. Building alone never executes an import, so without this a missing `COPY` or an import-time AWS/HTTP call surfaces at cold start rather than in CI.
 - **The dependency scan** audits the *installed* tree (`uv sync --frozen --no-dev --no-install-project`, then `pip-audit --strict --path .venv/...`) because that's the set the images install, already narrowed to the platform that ships. `--no-install-project` matters: pip-audit reports an editable distribution as unauditable and `--strict` turns that into a failure. `gitleaks` runs over **full history**, since a shallow clone only ever sees the tip and would never find a key committed earlier and removed later.
 
   Heads-up for operators: `pip-audit --strict` demands zero known advisories in the locked set, so a new advisory in a transitive dependency **will red an unrelated push**. The escalation order is `uv lock --upgrade` → remove unused dependencies → relax version caps, with `--ignore-vuln` as a last resort after confirming the code path is unreachable.
