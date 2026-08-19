@@ -237,14 +237,36 @@ Build and push **both** images first (see [Docker images](#docker-images)), then
 
 Use the repo-pinned CDK CLI, not a global `cdk`. The CLI is pinned in `package.json` to a version compatible with the `aws-cdk-lib` in `pyproject.toml`, and a global one can lag the library and fail with a cloud-assembly schema mismatch.
 
+The **order matters on a fresh account**, because the foundation stack owns the only ECR repository and the application stack's Lambdas resolve their image out of it. There is nowhere to push before the foundation exists, and `deploy --all` fails when Lambda cannot resolve an image.
+
 ```bash
 npm install                                       # once: installs the pinned CDK CLI
+export AWS_PROFILE=<profile>
+
+# 1. Once per account+region: create the CDK bootstrap resources (staging bucket, roles).
+npx cdk bootstrap -a "uv run python scripts/deploy.py"
+
+# 2. Foundation FIRST — it creates the ECR repo the images are pushed to.
+npx cdk deploy '*-foundation' -a "uv run python scripts/deploy.py"
+
+# 3. Log in to that repo and push both images (see Docker images below).
+#    The URI is derived, not looked up: <account>.dkr.ecr.<region>.amazonaws.com/<project>-<stage>-agent
+ECR_URI="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.<region>.amazonaws.com/omnisummary-<stage>-agent"
+aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin "${ECR_URI%%/*}"
+docker build --platform linux/amd64 --provenance=false -t "$ECR_URI:latest" . && docker push "$ECR_URI:latest"
+docker buildx build --platform linux/arm64 --provenance=false -f Dockerfile.agentcore -t "$ECR_URI:arm64" . --push
+
+# 4. Deploy everything, pinning the pushed digest.
 export DIGEST_IMAGE_REF=sha256:<pushed-digest>    # AGENTCORE_IMAGE_REF defaults to :arm64
-AWS_PROFILE=<profile> npx cdk deploy --all -a "uv run python scripts/deploy.py"
-AWS_PROFILE=<profile> uv run python scripts/put_secrets.py             # then write the secrets
-AWS_PROFILE=<profile> uv run python scripts/put_secrets.py --verify    # read-only: any left unset?
-AWS_PROFILE=<profile> uv run python scripts/put_inference_profiles.py  # once per account/stage
+npx cdk deploy --all -a "uv run python scripts/deploy.py"
+
+# 5. Secrets and cost attribution.
+uv run python scripts/put_secrets.py             # then write the secrets
+uv run python scripts/put_secrets.py --verify    # read-only: any left unset?
+uv run python scripts/put_inference_profiles.py  # once per account/stage
 ```
+
+On every later deploy only steps 3-4 apply: push the new images, then `deploy --all` with the fresh digest.
 
 ### What gets created
 
@@ -296,7 +318,12 @@ Complementing this, every `get_model()` call takes a `stage=` and logs `LLM usag
 
 Both images install the **exact set `uv.lock` pins** (`uv export` → `uv pip install --system`, the project itself `--no-deps`), so an image can never run a dependency set CI never tested. Dependencies install before the source is copied, so a code-only change reuses that layer. Both run **non-root** (uid 10001), and `.dockerignore` keeps `.env`, `.venv`, `logs/` and `cdk.out` out of the build context.
 
+Both go to the ECR repository the **foundation stack** creates, `<account>.dkr.ecr.<region>.amazonaws.com/<project>-<stage>-agent`, so log in to it first (the Docker credential is short-lived; re-run the login when a push 401s).
+
 ```bash
+aws ecr get-login-password --region <region> \
+  | docker login --username AWS --password-stdin <account>.dkr.ecr.<region>.amazonaws.com
+
 # Lambda (amd64)
 docker build --platform linux/amd64 --provenance=false -t <ecr-uri>:latest .
 docker push <ecr-uri>:latest
@@ -353,7 +380,7 @@ omnisummary/
 ├── Dockerfile               # Lambda (amd64)
 ├── Dockerfile.agentcore     # AgentCore (arm64)
 ├── collectors/              # RSS, Reddit, RSSHub (X), YouTube, WebSearch + the S3 park loader
-├── pipeline/                # Aggregator, Ranker, DigestGenerator, TrendTracker, DailyVisualMaker
+├── pipeline/                # Aggregator, Ranker, DigestGenerator, TrendTracker, DailyVisualMaker, runner (orchestration)
 ├── agent/                   # Deep-research agent + its 8 tools, VisualGenerator, DigestStateManager
 ├── agent_runtime/           # Bedrock AgentCore HTTP server
 ├── shared/                  # Config, models, prompts, state store, AgentCore memory, research, media

@@ -236,14 +236,36 @@ uv run python scripts/sync_youtube_to_s3.py  # YouTube만
 
 CDK CLI는 전역 `cdk`가 아니라 저장소에 핀된 것을 쓴다. CLI는 `pyproject.toml`의 `aws-cdk-lib`와 호환되는 버전으로 `package.json`에 핀돼 있고, 전역 CLI는 라이브러리보다 뒤처져 cloud-assembly 스키마 불일치로 실패할 수 있다.
 
+**빈 계정에서는 순서가 중요하다.** 유일한 ECR 리포지토리를 foundation 스택이 만들고, application 스택의 Lambda가 그 리포에서 이미지를 해석한다. 그러니 foundation 이전에는 푸시할 곳 자체가 없고, 이미지가 없으면 `deploy --all`은 실패한다.
+
 ```bash
 npm install                                       # 1회. 핀된 CDK CLI 설치
+export AWS_PROFILE=<profile>
+
+# 1. 계정+리전당 1회. CDK 부트스트랩 리소스(스테이징 버킷, 역할) 생성
+npx cdk bootstrap -a "uv run python scripts/deploy.py"
+
+# 2. foundation을 먼저. 이미지를 푸시할 ECR 리포를 여기서 만든다
+npx cdk deploy '*-foundation' -a "uv run python scripts/deploy.py"
+
+# 3. 그 리포에 로그인하고 두 이미지를 푸시한다(아래 Docker 이미지 참고).
+#    URI는 조회하는 게 아니라 규칙으로 만든다: <account>.dkr.ecr.<region>.amazonaws.com/<project>-<stage>-agent
+ECR_URI="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.<region>.amazonaws.com/omnisummary-<stage>-agent"
+aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin "${ECR_URI%%/*}"
+docker build --platform linux/amd64 --provenance=false -t "$ECR_URI:latest" . && docker push "$ECR_URI:latest"
+docker buildx build --platform linux/arm64 --provenance=false -f Dockerfile.agentcore -t "$ECR_URI:arm64" . --push
+
+# 4. 푸시된 digest를 고정해 전체 배포
 export DIGEST_IMAGE_REF=sha256:<pushed-digest>    # AGENTCORE_IMAGE_REF은 기본 :arm64
-AWS_PROFILE=<profile> npx cdk deploy --all -a "uv run python scripts/deploy.py"
-AWS_PROFILE=<profile> uv run python scripts/put_secrets.py             # 이어서 시크릿 기록
-AWS_PROFILE=<profile> uv run python scripts/put_secrets.py --verify    # 읽기 전용. 미설정이 남았나?
-AWS_PROFILE=<profile> uv run python scripts/put_inference_profiles.py  # 계정/스테이지당 1회
+npx cdk deploy --all -a "uv run python scripts/deploy.py"
+
+# 5. 시크릿과 비용 귀속
+uv run python scripts/put_secrets.py             # 이어서 시크릿 기록
+uv run python scripts/put_secrets.py --verify    # 읽기 전용. 미설정이 남았나?
+uv run python scripts/put_inference_profiles.py  # 계정/스테이지당 1회
 ```
+
+이후 배포에서는 3-4단계만 반복한다. 새 이미지를 푸시하고 새 digest로 `deploy --all`.
 
 ### 생성되는 리소스
 
@@ -295,7 +317,12 @@ X 세션 쿠키는 Fargate 태스크 정의의 `secrets` 블록으로 컨테이�
 
 두 이미지 모두 `uv.lock`이 핀한 정확한 집합을 설치한다(`uv export`로 뽑아 `uv pip install --system`하고 프로젝트 자신은 `--no-deps`). 그래서 CI가 테스트한 적 없는 의존성 집합이 이미지에서 도는 일이 있을 수 없다. 의존성은 소스 COPY보다 먼저 설치되니 코드만 바뀐 변경은 그 레이어를 재사용한다. 둘 다 non-root(uid 10001)로 돌고, `.dockerignore`가 `.env`와 `.venv`, `logs/`, `cdk.out`을 빌드 컨텍스트에서 제외한다.
 
+둘 다 foundation 스택이 만든 ECR 리포지토리 `<account>.dkr.ecr.<region>.amazonaws.com/<project>-<stage>-agent`로 간다. 먼저 로그인해야 한다(Docker 크리덴셜은 만료되니 푸시가 401이면 다시 로그인).
+
 ```bash
+aws ecr get-login-password --region <region> \
+  | docker login --username AWS --password-stdin <account>.dkr.ecr.<region>.amazonaws.com
+
 # Lambda (amd64)
 docker build --platform linux/amd64 --provenance=false -t <ecr-uri>:latest .
 docker push <ecr-uri>:latest
@@ -352,7 +379,7 @@ omnisummary/
 ├── Dockerfile               # Lambda (amd64)
 ├── Dockerfile.agentcore     # AgentCore (arm64)
 ├── collectors/              # RSS, Reddit, RSSHub(X), YouTube, WebSearch, S3 park 로더
-├── pipeline/                # Aggregator, Ranker, DigestGenerator, TrendTracker, DailyVisualMaker
+├── pipeline/                # Aggregator, Ranker, DigestGenerator, TrendTracker, DailyVisualMaker, runner (orchestration)
 ├── agent/                   # 딥 리서치 에이전트와 도구 8개, VisualGenerator, DigestStateManager
 ├── agent_runtime/           # Bedrock AgentCore HTTP 서버
 ├── shared/                  # 설정, 모델, 프롬프트, 상태 저장소, AgentCore 메모리, research, media

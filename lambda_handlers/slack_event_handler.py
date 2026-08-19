@@ -23,6 +23,36 @@ if not logger.handlers:
 
 SIGNATURE_EXPIRATION_SEC = int(os.environ.get("SLACK_SIGNATURE_EXPIRATION_SEC", "300"))
 EVENT_DEDUP_TTL_SEC = int(os.environ.get("EVENT_DEDUPLICATION_TTL_SEC", "300"))
+# How long a warm container may reuse an SSM secret it already fetched.
+SECRET_CACHE_TTL_SEC = int(os.environ.get("SECRET_CACHE_TTL_SEC", "300"))
+# parameter path -> (value, monotonic fetch time).
+_secret_cache: dict[str, tuple[str, float]] = {}
+
+
+def _ssm_secret(name: str) -> str:
+    """The SecureString at /{project}/{stage}/{name}, memoized in-process for SECRET_CACHE_TTL_SEC.
+    Returns "" when it cannot be read — and a failure is NEVER cached, so a transient SSM error does
+    not pin the handler shut for the rest of the container's life.
+
+    The cache exists because the signing secret is fetched on EVERY request, before the HMAC is even
+    computed: every unauthenticated request that clears WAF cost one ssm:GetParameter with
+    decryption, so at the configured WAF rate limit (2000 / 5 min / IP) a single IP could drive
+    GetParameter into throttling — and this fetch is fail-closed, which turns a cheap flood into a
+    401 outage of the only interactive path. A rotated secret is picked up within the TTL (and
+    immediately on the next cold start)."""
+    project = os.environ.get("PROJECT_NAME", "omnisummary")
+    stage = os.environ.get("STAGE", "dev")
+    path = f"/{project}/{stage}/{name}"
+    cached = _secret_cache.get(path)
+    if cached is not None and (time.monotonic() - cached[1]) < SECRET_CACHE_TTL_SEC:
+        return cached[0]
+    try:
+        value = boto3.client("ssm").get_parameter(Name=path, WithDecryption=True)["Parameter"]["Value"]
+    except Exception as e:
+        logger.error("Failed to fetch SSM secret '%s': %s", path, e)
+        return ""
+    _secret_cache[path] = (value, time.monotonic())
+    return value
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -255,21 +285,7 @@ def _resolve_slack_bot_token() -> str:
     test_handler_imports_nothing_outside_the_zip). The region is NOT one of those duplications —
     Lambda always sets AWS_REGION, so boto3 resolves it, and a baked-in default only ever sent the
     call to the wrong region."""
-    token = os.environ.get("SLACK_BOT_TOKEN", "")
-    if token:
-        return token
-    project = os.environ.get("PROJECT_NAME", "omnisummary")
-    stage = os.environ.get("STAGE", "dev")
-    try:
-        return boto3.client("ssm").get_parameter(
-            Name=f"/{project}/{stage}/slack-bot-token",
-            WithDecryption=True,
-        )[
-            "Parameter"
-        ]["Value"]
-    except Exception as e:
-        logger.error("Failed to resolve Slack bot token for fallback: %s", e)
-        return ""
+    return os.environ.get("SLACK_BOT_TOKEN", "") or _ssm_secret("slack-bot-token")
 
 
 def _verify_slack_signature(headers: dict[str, str], body: str) -> bool:
@@ -289,19 +305,9 @@ def _verify_slack_signature(headers: dict[str, str], body: str) -> bool:
     if abs(time.time() - ts) > SIGNATURE_EXPIRATION_SEC:
         return False
 
-    project_name = os.environ.get("PROJECT_NAME", "omnisummary")
-    stage = os.environ.get("STAGE", "dev")
-    ssm = boto3.client("ssm")
-
-    try:
-        secret = ssm.get_parameter(
-            Name=f"/{project_name}/{stage}/slack-signing-secret",
-            WithDecryption=True,
-        )[
-            "Parameter"
-        ]["Value"]
-    except Exception as e:
-        logger.error("Failed to fetch Slack signing secret: %s", e)
+    # Fail CLOSED when the secret can't be read: an unverifiable request is not an authentic one.
+    secret = _ssm_secret("slack-signing-secret")
+    if not secret:
         return False
 
     sig_basestring = f"v0:{timestamp}:{body}"

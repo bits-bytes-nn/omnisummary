@@ -82,7 +82,7 @@ AWS 아키텍처(스케줄 다이제스트와 Slack 트리거 딥 리서치, 두
 | 경로 | 책임 |
 |------|------|
 | `collectors/` | `BaseCollector` ABC와 공유 `load_items_from_s3`(로컬에서 S3로 올린 park 파일 로더), 그리고 RSS, Reddit(`.rss` 피드), RSSHub(X/Twitter), YouTube, WebSearch(Tavily) 구현 |
-| `pipeline/` | `ContentAggregator`, `ContentRanker`, `DigestGenerator`, `TrendTracker`, `DailyVisualMaker` |
+| `pipeline/` | `ContentAggregator`, `ContentRanker`, `DigestGenerator`, `TrendTracker`, `DailyVisualMaker`, 그리고 오케스트레이션(`runner.py`: `run_collectors_with_health`, `run_pipeline`, `persist_digest`, `resolve_digest_window`) — CLI와 다이제스트 Lambda가 함께 타는 단일 경로 |
 | `agent/` | 딥 리서치 Strands 에이전트(`research_agent.py`)와 도구 8개(`research_tools.py`), 다이제스트·비주얼 파이프라인용 인메모리 상태 `DigestStateManager`(`tool_state.py`), 데일리 비주얼이 쓰는 자유형 이미지 생성기 `VisualGenerator`(`visuals.py`) |
 | `agent_runtime/` | Bedrock AgentCore HTTP 서버(`BedrockAgentCoreApp`). 딥 리서치 에이전트의 invoke 엔트리포인트 |
 | `shared/` | config(공유 `KOREAN_STYLE_RULES` 포함), models, constants(`TRENDS_KEY` 포함), utils(Bedrock 팩토리), logger, prompts, state_store, memory, history_store(cross-day dedup 원장과 롤링 로그), research(`research_backends.py`, Tavily와 Semantic Scholar), media(`og_image.py`, OG 이미지 fetch), proxy |
@@ -431,7 +431,7 @@ UTC로 정규화한다. naive datetime을 tz-aware cutoff와 비교하다 TypeEr
 카운트를 `run_meta`(park-meta 키)에 남겨 sync 스크립트가 항목과 함께 park하게 한다. 원래 RSSHub 전용 코드였던
 것을 모든 수집기가 쓰는 한 구현으로 올렸다. 한 소스만 반쪽 상태를 보고하고 나머지는 침묵하는 일을 없애야 했다. 이 메서드들은 보고만 하고 어떤 항목도 필터링하지 않는다.
 
-`main.run_collectors_with_health()`는 헬스 리포팅을 위해 동일 작업을 실행하되
+`pipeline.runner.run_collectors_with_health()`는 헬스 리포팅을 위해 동일 작업을 실행하되
 `HealthReport`([§8](#8-헬스-체크와-알림) 참조)를 반환한다. `gather_collector_results`는 다른 호출자들을 위해
 그대로 유지된다.
 
@@ -441,7 +441,7 @@ UTC로 정규화한다. naive datetime을 tz-aware cutoff와 비교하다 TypeEr
 전역으로는 성립하지 않았다. 한 소스의 작업이 다른 소스 뒤에 큐잉된 채 타임아웃이 만료될 수 있었다.
 `asyncio.run`이 루프와 함께 풀을 정리한다.
 
-**수집 윈도는 순수 함수가 소유한다.** `main._resolve_digest_window(config, date_arg)`가 다이제스트 날짜와
+**수집 윈도는 순수 함수가 소유한다.** `pipeline.runner.resolve_digest_window(config, date_arg)`가 다이제스트 날짜와
 reference time을 함께 돌려준다. reference time은 `config.aws.timezone` 기준으로 다이제스트 날짜 **다음날**
 자정이고, 모든 수집기의 `lookback_hours`가 거기서부터 거슬러 센다. 그래서 19:00 KST 실행도 그날 전체를 보고,
 `--date`로 지난 날을 재실행하면 지금 끝나는 윈도가 아니라 그날이 가졌던 윈도를 본다. CLI와 다이제스트 Lambda가
@@ -457,7 +457,7 @@ URL로 먼저, 그다음 정규화된 제목으로 중복을 제거한다.
 `fbclid`, `ref` 등), fragment를 접어서 같은 기사가 https 기준으로 일치하게 만든다. cross-day 원장도 같은
 정규형을 공유한다.
 
-**cross-day dedup.** `aggregate(items, exclude_urls=...)`에서 호출자(`main.run_pipeline`)가 넘긴 정규화 URL
+**cross-day dedup.** `aggregate(items, exclude_urls=...)`에서 호출자(`pipeline.runner.run_pipeline`)가 넘긴 정규화 URL
 집합(최근 발행 기사들)을 랭킹 이전에 제외한다. 같은 스토리가 며칠 간격으로 재요약되지 않게 하는 것이
 목적이고, 부수적으로 랭커 토큰도 절약된다([§7.3](#73-cross-day-dedup-히스토리-sharedhistory_storepy) 참조). 다만 핀
 항목(`--pin-url`)은 URL과 제목 dedup을 모두 우회한다. 사용자가 오늘 명시적으로 요청한 URL이니, 최근
@@ -611,7 +611,7 @@ implication만 세어서 한국어 제목이 예산 밖에서 소비되었고, �
   백스톱이다.
 - `recent_titles`는 직전 다이제스트가 실은 스토리 제목 목록이며, 오늘이 그것의 재방송이 되지 않게 하려는
   것이다. 프레이밍은 한 줄이고 임계나 유사도 휴리스틱은 없다. 실제로 재발행을 막는 것은 여전히 URL 원장이고
-  여기서는 정보로만 준다. `main.run_pipeline`이 cross-day dedup이 이미 가져온 스냅샷에서 뽑으니 추가 호출도
+  여기서는 정보로만 준다. `pipeline.runner.run_pipeline`이 cross-day dedup이 이미 가져온 스냅샷에서 뽑으니 추가 호출도
   없다.
 
 **Slack 마크업이 없다.** 다이제스트 경로는 `sanitize_slack_mrkdwn`을 호출하지 않는다. 그 정규화는 이제 딥
@@ -1015,7 +1015,7 @@ Lambda는 자기가 트리거된 날짜의 콘텐츠를 게시해야 하니 최�
 
 읽기 자체가 실패하면(스로틀이나 거부) `None`이 아니라 `MemoryReadError`를 raise한다. 예전에는 그 날
 다이제스트가 없는 것과 구분되지 않아서 비주얼 Lambda가 게시를 건너뛰고 200을 반환했다. 게시 경로는 그대로
-터뜨려 Errors 알람과 DLQ로 보내고(`retry_attempts=0`이다), 보강용 읽기인 `main.py`의 cross-day dedup 시드만
+터뜨려 Errors 알람과 DLQ로 보내고(`retry_attempts=0`이다), 보강용 읽기인 `pipeline/runner.py`의 cross-day dedup 시드만
 catch해서 degrade한다.
 
 `get_latest_digest()`도 남아 있고, `_digest_session_ids`는 `list_sessions`를 NextToken으로 페이지네이션한다.
@@ -1062,7 +1062,7 @@ read-modify-write는 여전히 원자적이 아니지만(락이 없다) 남의 �
 **`published_urls_from_snapshots`.** 과거 다이제스트 스냅샷의 `content.items[].url`을 뽑아, dedup이 원장뿐
 아니라 AgentCore Memory 히스토리로도 self-heal되게 한다. 원장이 비어도 작동한다.
 
-**시드와 기록(`main.run_pipeline`).** exclude 집합을 원장과 최근 AgentCore Memory 스냅샷 양쪽에서
+**시드와 기록(`pipeline.runner.run_pipeline`).** exclude 집합을 원장과 최근 AgentCore Memory 스냅샷 양쪽에서
 시드한다(`get_recent_digests(ttl, exclude_date=today, after_date=today-ttl)`으로 같은 TTL 윈도로 날짜를
 한정한다). 생성 후에는 발행된 `content.items` URL을 원장에 기록하고, lead를 `recent_leads.json`에 append하되
 AGI 카운트다운 프리픽스를 제거한다(`_editorial_lead`). novelty 신호가 고정 보일러플레이트가 아니라 편집 각이
@@ -1307,7 +1307,7 @@ content_type 바이트를 S3 키(`{prefix}threads/research_<sha>.<ext>`)로 host
 **스탠드얼론 zip 제약이 먼저다.** 이 핸들러는 `lambda_handlers/`만 담긴 독립 zip으로 패키징되니 `shared`는
 물론 어떤 형제 패키지도 import해서는 안 된다. zip에 없으니 cold start에서 `ImportModuleError`로 깨진다. 그래서
 의존성 없는 stdlib `logging` 로거를 자체적으로 둔다.
-`tests/test_slack_event_handler.py::test_handler_has_no_sibling_package_imports`가 이 규약을 가드한다.
+`tests/test_slack_event_handler.py::test_handler_imports_nothing_outside_the_zip`가 이 규약을 가드한다.
 
 ingress 흐름은 이렇다.
 
@@ -1569,9 +1569,9 @@ AWS 프로파일에 결과가 좌우되지 않고, 실 SSM 왕복으로 낭비�
 
 - 수집기(공용 `collectors.base.fetch_feed`를 모킹해 재시도와 분류, 프록시 폴백, 헬스 판정을 돈다).
 - Slack 이벤트 핸들러(서명 검증과 중복 제거, 그리고 형제 패키지 import 금지 가드
-  `test_handler_has_no_sibling_package_imports`).
+  `test_handler_imports_nothing_outside_the_zip`).
 - 집계기와 랭커 파싱, 슬롯과 origin-cap 로직, 그리고 배치 재시도와 전면 실패 승격, fan-out 상한.
-- **`main.run_pipeline` 오케스트레이션(`test_run_pipeline.py`)** — 집계 후 빈 입력과 임계 미달 조기 반환,
+- **`pipeline.runner.run_pipeline` 오케스트레이션(`test_run_pipeline.py`)** — 집계 후 빈 입력과 임계 미달 조기 반환,
   원장과 leads 기록, 트렌드 갱신, 원장과 AgentCore 스냅샷 양쪽에서 시드하는 cross-day dedup(URL 정규화 포함),
   dry-run이 상태를 쓰지 않고 아무 채널에도 보내지 않음, 로컬 인라인 비주얼 실행과 그 실패의 non-fatal성. LLM과
   네트워크 협력자만 스텁하고 원장과 롤링 로그, 집계는 임시 디렉터리 StateStore로 실제 실행한다.
@@ -1697,6 +1697,15 @@ uv run python scripts/ci_synth.py                       # 오프라인 CDK synth
 # DIGEST_IMAGE_REF로 넘겨 배포한다(태그 문자열이 안 바뀌면 CFN이 Lambda를 재배포하지 않는다). CDK CLI는
 # npm install 후 npx로 쓴다. package.json에 aws-cdk-lib와 호환되게 핀돼 있어 글로벌 cdk의 스키마 미스매치를 피한다.
 npm install                                             # 1회 — 핀된 CDK CLI 설치
+# 빈 계정에서는 순서가 중요하다. 유일한 ECR 리포는 foundation 스택(foundation_stack.py의 AgentEcrRepo)이
+# 만들고 application 스택의 Lambda가 거기서 이미지를 해석하니, foundation 전에는 푸시할 곳이 없고
+# 이미지가 없으면 deploy --all이 실패한다.
+npx cdk bootstrap -a "uv run python scripts/deploy.py"  # 계정+리전당 1회
+npx cdk deploy '*-foundation' -a "uv run python scripts/deploy.py"   # ECR 리포부터 만든다
+# 리포 URI는 규칙으로 만든다: <account>.dkr.ecr.<region>.amazonaws.com/{project}-{stage}-agent
+aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin <account>.dkr.ecr.<region>.amazonaws.com
+docker build --platform linux/amd64 --provenance=false -t <ecr>:latest . && docker push <ecr>:latest
+docker buildx build --platform linux/arm64 --provenance=false -f Dockerfile.agentcore -t <ecr>:arm64 . --push
 export DIGEST_IMAGE_REF=sha256:<pushed>                 # AGENTCORE_IMAGE_REF 기본 :arm64
 AWS_PROFILE=${AWS_PROFILE:-research} npx cdk deploy --all -a "uv run python scripts/deploy.py"
 # 시크릿은 템플릿에 없다. 배포 직후 실제 값을 SecureString으로 기록한다(§3.5).

@@ -125,9 +125,10 @@ omit = [
 ]
 
 [tool.coverage.report]
-# Set a few points BELOW the measured value (86% at the time of writing) so ordinary run-to-run
-# variance can't red the build, while a real coverage regression still does.
-fail_under = 80
+# Set a few points BELOW the measured value (93% at the time of writing) so ordinary run-to-run
+# variance can't red the build, while a real coverage regression still does. Keep it moving WITH the
+# measurement: a gate left 13 points low lets a real regression pass as comfortably as a typo.
+fail_under = 90
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

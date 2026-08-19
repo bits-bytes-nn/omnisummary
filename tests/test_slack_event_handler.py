@@ -7,9 +7,20 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from lambda_handlers import slack_event_handler as h
 
 SIGNING_SECRET = "test-signing-secret"
+
+
+@pytest.fixture(autouse=True)
+def clear_secret_cache():
+    """The handler memoizes its SSM secrets in a module-level dict for a warm container, so one
+    test's fetched value would otherwise decide what every later test verifies against."""
+    h._secret_cache.clear()
+    yield
+    h._secret_cache.clear()
 
 
 def test_handler_imports_nothing_outside_the_zip():
@@ -386,3 +397,62 @@ class TestEventDedup:
                     second = h.handler({"body": body, "headers": headers}, ctx)
         assert first["statusCode"] == 200 and second["statusCode"] == 200
         assert lambda_client.invoke.call_count == 1  # the retry was suppressed
+
+
+class TestSecretCaching:
+    """The signing secret is fetched BEFORE the HMAC is computed, so every unauthenticated request
+    that clears WAF cost one ssm:GetParameter with decryption — at the WAF rate limit (2000/5min/IP)
+    a single IP could throttle GetParameter, and the fetch is fail-closed, so a cheap flood became a
+    401 outage of the only interactive path."""
+
+    @staticmethod
+    def _request():
+        body = json.dumps({"type": "url_verification", "challenge": "abc123"})
+        return {"body": body, "headers": _signed_headers(body)}
+
+    def test_repeated_requests_reuse_one_fetch(self):
+        with patch.object(h.boto3, "client") as mock_client:
+            mock_client.return_value.get_parameter.return_value = {"Parameter": {"Value": SIGNING_SECRET}}
+            for _ in range(5):
+                assert h.handler(self._request(), None)["statusCode"] == 200
+            assert mock_client.return_value.get_parameter.call_count == 1
+
+    def test_the_value_is_refetched_after_the_ttl(self, monkeypatch):
+        # A rotated secret must be picked up without waiting for a cold start.
+        monkeypatch.setattr(h, "SECRET_CACHE_TTL_SEC", 0)
+        with patch.object(h.boto3, "client") as mock_client:
+            mock_client.return_value.get_parameter.return_value = {"Parameter": {"Value": SIGNING_SECRET}}
+            h.handler(self._request(), None)
+            h.handler(self._request(), None)
+            assert mock_client.return_value.get_parameter.call_count == 2
+
+    def test_a_failed_fetch_is_not_cached_and_still_fails_closed(self):
+        with patch.object(h.boto3, "client") as mock_client:
+            mock_client.return_value.get_parameter.side_effect = RuntimeError("throttled")
+            assert h.handler(self._request(), None)["statusCode"] == 401
+        assert h._secret_cache == {}  # a failure must not pin the handler shut for the container
+
+    def test_the_bot_token_is_cached_too(self, monkeypatch):
+        monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+        with patch.object(h.boto3, "client") as mock_client:
+            mock_client.return_value.get_parameter.return_value = {"Parameter": {"Value": "xoxb-1"}}
+            assert h._resolve_slack_bot_token() == "xoxb-1"
+            assert h._resolve_slack_bot_token() == "xoxb-1"
+            assert mock_client.return_value.get_parameter.call_count == 1
+
+    def test_an_env_token_never_reaches_ssm(self, monkeypatch):
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-env")
+        with patch.object(h.boto3, "client") as mock_client:
+            assert h._resolve_slack_bot_token() == "xoxb-env"
+        mock_client.assert_not_called()
+
+    def test_the_two_parameters_do_not_share_a_cache_entry(self, monkeypatch):
+        monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+        values = {"/omnisummary/dev/slack-signing-secret": SIGNING_SECRET, "/omnisummary/dev/slack-bot-token": "xoxb-1"}
+        with patch.object(h.boto3, "client") as mock_client:
+            mock_client.return_value.get_parameter.side_effect = lambda Name, WithDecryption: {
+                "Parameter": {"Value": values[Name]}
+            }
+            assert h.handler(self._request(), None)["statusCode"] == 200
+            assert h._resolve_slack_bot_token() == "xoxb-1"
+        assert set(h._secret_cache) == set(values)
