@@ -155,6 +155,26 @@ class TestVoiceInjection:
         assert token in prompt
         assert str(cfg.agent.research_slack_target_words) in prompt
 
+    def test_threads_post_cap_comes_from_the_renderer_constant(self):
+        # The prompt used to spell the per-post limit as a literal "500" while the renderer enforced
+        # THREADS_MAX_POST_CHARS, so raising the channel's cap in one place left the other behind and
+        # the agent wrote to a budget the renderer no longer used.
+        from agent.research_agent import SYSTEM_PROMPT_TEMPLATE
+
+        assert "{threads_max_post_chars}" in SYSTEM_PROMPT_TEMPLATE
+        assert "500" not in SYSTEM_PROMPT_TEMPLATE
+
+    def test_threads_scope_is_narrowed_not_compressed(self):
+        # A 6-post cap gave Threads ~2.5k chars of prose against Slack's ~8.7k, and the prompt still
+        # demanded the same facts, figures and conclusions. The only way to obey both was to cut the
+        # explanation, which is what made Threads reports read as assertion lists. The instruction
+        # now trades scope for depth, so it must NOT ask for parity again.
+        from agent.research_agent import SYSTEM_PROMPT_TEMPLATE
+
+        assert "FEWER points" in SYSTEM_PROMPT_TEMPLATE
+        assert "COMPRESSED" not in SYSTEM_PROMPT_TEMPLATE
+        assert "same facts, figures, sources, and conclusions" not in SYSTEM_PROMPT_TEMPLATE
+
     def test_todays_date_is_injected_from_the_clock(self):
         # The prompt interpolated persona, knobs and the tool menu but never the date, so the model
         # judged "latest" against its training prior and had to INVENT a date for recall_digest

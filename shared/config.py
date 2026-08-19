@@ -561,8 +561,16 @@ class AgentConfig(_StrictModel):
     research_max_output_tokens: int = Field(default=100_000, ge=1_000)
     # Hard cap on the number of Threads posts (root + replies) a research report may become.
     # Code-enforced so a too-long report can't fan out into dozens of public posts even if the
-    # agent ignores the prompt's "write a short Threads version" instruction.
-    research_max_threads_posts: int = Field(default=6, ge=1)
+    # agent ignores the prompt's post-count instruction.
+    #
+    # Raised 6 -> 10 because 6 made the channel structurally unable to carry a report. The cap sets
+    # the whole thread's ceiling: 6 * 500 = 3000 chars gross, and the per-post numbering, subheading
+    # and one bare citation URL eat ~500 of that, leaving ~2500 chars of prose against Slack's
+    # ~8700 (research_slack_target_words 1500 * 5.8 chars/word, measured on this repo's Korean).
+    # At 3.5:1 the model could only satisfy "same facts as Slack" by cutting the explanation that
+    # makes a fact mean anything, so Threads reports read as assertion lists. 10 posts brings it to
+    # ~2:1, which the prompt's narrowed scope can actually fill.
+    research_max_threads_posts: int = Field(default=10, ge=1)
     # Hard cap on a single page's extracted text (read_url tool).
     research_content_cap_chars: int = Field(default=50000, ge=1000)
     # OG-image attachment (deep-research delivery only).

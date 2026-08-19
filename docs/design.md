@@ -180,7 +180,7 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 | `research_breadth`, `research_max_iterations` | 프롬프트에 주입되는 검색 폭(쿼리 수)과 깊이(라운드 수) 가이던스. 루프 상한이 아니다 |
 | `research_max_turns`, `research_max_total_tokens`, `research_max_output_tokens` | 툴 루프의 하드 상한(`strands.types.agent.Limits`로 invoke마다 전달한다). SDK가 매 턴 경계에서 검사하고 `stop_reason="limit_*"`으로 멈춘다. 인터넷에서 촉발되는 유일한 경로이고 사이클마다 대화 전체를 다시 보내므로, 이 값들이 없으면 비용과 벽시계 시간에 상한이 없다 |
 | `research_slack_target_words` | Slack 리포트의 목표 분량(단어) 가이던스 |
-| `research_max_threads_posts` | Threads 게시물(root와 reply) 총수 하드 캡(기본 6). 너무 긴 리포트가 공개 게시물 수십 개로 퍼지지 않게 코드가 트림한다 |
+| `research_max_threads_posts` | Threads 게시물(root와 reply) 총수 하드 캡(기본 10). 너무 긴 리포트가 공개 게시물 수십 개로 퍼지지 않게 코드가 트림한다. 6이던 값을 올린 이유는 위 `<delivery>` 항목에 있다 |
 | `research_content_cap_chars` | `read_url` 한 페이지의 추출 텍스트 상한(기본 50000) |
 | `research_max_staged_images` | 한 리서치 실행이 stage할 수 있는 OG 이미지 수 캡(기본 4, invoke당 메모리 bound) |
 | `og_image_timeout_sec`, `og_image_max_bytes` | OG 이미지 fetch 타임아웃과 최대 바이트(스트리밍 중 초과하면 중단한다) |
@@ -1266,9 +1266,13 @@ spec에서 이름과 인자, 한 줄 요약을 뽑아 `<tools>` 블록을 만든
   아웃라인, 작성, 이미지 첨부, 전달 순이다. 검색 폭 `research_breadth`와 깊이 `research_max_iterations`를
   가이던스로 주입한다.
 - **`<delivery>`** — 기본 채널은 Slack이고, 사용자가 "쓰레드"나 "스레드", "threads"를 명시할 때만 Threads다.
-  추가 요청이면 둘 다, 대체 요청이면 Threads만이다. 리서치는 채널과 무관하게 한 번만 깊게 하고, Slack
-  (`research_slack_target_words` 분량)과 Threads(게시물당 500자 이하, `---` 구분,
-  `research_max_threads_posts` 캡)는 같은 사실과 수치, 출처, 결론을 담되 포맷과 길이만 다른 두 아티팩트로 쓴다.
+  추가 요청이면 둘 다, 대체 요청이면 Threads만이다. 리서치는 채널과 무관하게 한 번만 깊게 하고, 두 채널은
+  깊이가 아니라 **범위**로 갈린다. Slack은 `research_slack_target_words` 분량으로 전 섹션을 싣고, Threads는
+  `research_max_threads_posts` 캡 안에서(게시물당 `THREADS_MAX_POST_CHARS` 이하, `---` 구분) 논점을 더 적게
+  가져가되 하나하나를 제대로 설명한다. 예전에는 같은 사실과 수치, 출처, 결론을 그대로 담되 길이만 줄이라고
+  요구했는데, 캡이 6일 때 Threads의 산문 예산은 약 2,600자였고 Slack은 약 8,700자였다. 3.4:1에서 사실을 다
+  남기는 유일한 방법은 그 사실을 의미 있게 만드는 설명을 버리는 것이어서, 리포트가 주장 목록처럼 읽혔다.
+  캡을 10으로 올려 비율을 2.1:1로 낮추고, 프롬프트는 범위를 좁히도록 바꿨다.
 - **`<language>`, `<formatting>`, `<citations>`** — 한국어 규칙(공유 `KOREAN_STYLE_RULES` 주입), Slack mrkdwn과
   Threads 평문의 차이, 출처 구분(검증과 주장, 추론)과 날조 금지.
 

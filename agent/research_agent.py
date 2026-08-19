@@ -14,6 +14,7 @@ from strands.models.bedrock import CacheConfig
 from shared import (
     KOREAN_STYLE_RULES,
     LANGUAGE_MODEL_INFO,
+    THREADS_MAX_POST_CHARS,
     BedrockCrossRegionModelHelper,
     Config,
     EnvVars,
@@ -132,63 +133,36 @@ BOTH: deliver_report(channel="slack") AND deliver_report(channel="threads").
 The "에도/also/둘 다" wording is what signals BOTH; a plain "쓰레드에" means Threads only. When in \
 doubt between "Threads only" and "both", treat it as Threads only.
 
-Do the SAME research regardless of channel — one deep, multi-source investigation. Slack and \
-Threads then present the SAME findings: same facts, figures, sources, and conclusions, same \
-section order. They differ ONLY in format and length, never in substance or in which sources are \
-cited. Threads is the Slack report COMPRESSED to fit, not a different (thinner) story — if Slack \
-cites five sources, Threads draws on the same body of research (cite the key ones inline as bare \
-URLs; don't drop to a single source just because it's shorter).
-- Slack: the full report (~{research_slack_target_words} words) in Slack mrkdwn — every section.
-- Threads: the same report told as ONE CONTINUOUS NARRATIVE broken across \
-{research_max_threads_posts}-or-fewer posts — NOT a list of standalone summaries. This is the key \
-difference from Slack: think of it as a single essay that happens to be paginated, where each post \
-PICKS UP WHERE THE LAST LEFT OFF and carries the argument forward. The reader scrolls top to bottom \
-and should feel one unbroken train of thought, not N disconnected bullet-posts. Same facts, figures, \
-sources, and conclusions as Slack; keep the key citations. \
-SEPARATE EACH POST with a line containing only "---" (that is the ONLY post boundary). Plain text \
-only — NO markdown (Threads renders none); write bare URLs for citations.
-  STRUCTURE EACH POST: a first line of "N/M  짧은 소제목", then a BLANK LINE, then the body. \
-(The blank line inside a post is kept; only "---" splits posts.) The shape (placeholders, not a \
-template to copy — derive the 소제목 and arc from YOUR topic):
+Do the SAME research regardless of channel: one deep, multi-source investigation. The channels then \
+differ in SCOPE, not in depth. Slack has room for every section; Threads does not, so Threads carries \
+FEWER points and explains each one properly instead of listing them all thinly. Pick the points that \
+carry the argument and let the cited sources hold the rest, since a reader who wants everything \
+follows the links.
+- Slack: the full report (~{research_slack_target_words} words) in Slack mrkdwn, every section.
+- Threads: one continuous narrative across at most {research_max_threads_posts} posts, each post \
+developing a single idea and handing off to the next, so the thread reads as one paginated essay \
+rather than N standalone summaries. Open post 1 with the single most important takeaway, then let the \
+rest unfold it. Cover FEWER points than Slack; never squeeze a Slack point down to one sentence to \
+make room for another, drop the point instead. Use only as many posts as the points need, because a \
+padded post reads worse than a short thread.
+  FORMAT: separate posts with a line containing only "---" (the ONLY post boundary). Each post opens \
+with "N/M  짧은 소제목", then a BLANK LINE, then the body (the blank line inside a post is kept). Plain \
+text only; Threads renders no markdown. Derive the 소제목 and the arc from YOUR topic rather than from \
+this shape:
   1/M  <도입 소제목>
 
-  <첫 포스트 본문 — 한 문단으로, 다음 포스트로 자연스럽게 이어지게>
-  ---
-  2/M  <전개 소제목>
-
-  <둘째 포스트 본문 — 앞 포스트의 논지를 이어받아 한 단계 전진>
+  <첫 포스트 본문>
   ---
   M/M  <결론 소제목>
 
-  <마지막 포스트 본문 — 앞의 흐름을 매듭짓는 결론>
-  CONTINUITY RULES (these are what make Threads read well):
-  - Each post DEVELOPS ONE idea fully and HANDS OFF to the next — open a post by building on what the \
-previous one established, with a connective that points back at it; don't restart from scratch.
-  - Do NOT cram a whole section into one post then jump to an unrelated one. Let the argument breathe \
-across posts in order; a post may end mid-thought and the next continues it.
-  - The 소제목 is a sequence signpost for one flowing essay, not a chapter title for an independent unit.
-  CITATIONS ARE MANDATORY ON THREADS TOO — this is not optional and not Slack-only. A fact-bearing \
-post (a number, a launch, a named product/partnership, a quote) ends with the bare source URL it \
-came from, on its own line after the body. A post that asserts facts with NO supporting URL is a \
-FAILURE. Because the URL eats into the 500-char budget, write a SHORTER body so the post (소제목 + \
-본문 + URL) still fits under 500 — drop prose to make room for the URL, never the reverse.
-  CITE EACH SOURCE ONCE — no duplicate URLs across the thread. A given URL belongs in the ONE post \
-where that source's fact first carries the argument; later posts that lean on the same source do NOT \
-re-print its URL. So most posts carry exactly one fresh URL, some carry none (when they build on an \
-already-cited source), and no URL appears twice in the whole thread. Across the thread you still draw \
-on the same body of sources you cite on Slack — just each listed a single time. Example tail of a post \
-(placeholder — the sentence carries YOUR topic's key fact, the URL is the source it came from):
-  ...<핵심 수치나 사건을 담은 마지막 문장>.
-  https://example.com/source
-  Hard limits: at most {research_max_threads_posts} posts total (root + replies); each whole post \
-(소제목 + 본문) must be <=500 characters. Write a FULL flowing body paragraph filled toward the \
-ceiling with real narrative explanation — the same detailed/kind/easy voice as Slack — NOT clipped \
-one-line fragments. Open post 1 with the most important takeaway, then let the rest unfold the story. \
-Use FEWER, RICHER posts over many thin ones: prefer {research_max_threads_posts} fully-developed posts \
-that connect, not a dozen shallow fragments. If it won't fit, drop a whole point rather than fragment \
-the flow — never pad, never leave a post stranded with no connection to its neighbors.
-When delivering to both, call deliver_report twice — same content, two formats (full Slack mrkdwn, \
-then the compressed Threads version).
+  <마지막 포스트 본문>
+  CITATIONS: a post asserting a fact (a number, a launch, a named product or partnership, a quote) \
+ends with the bare source URL on its own line after the body. Cite each source ONCE across the whole \
+thread; a later post leaning on an already-cited source does not reprint the URL.
+  LIMIT: each whole post (소제목 + 본문 + URL) must fit {threads_max_post_chars} characters. Write a \
+full paragraph within that, in the same voice as Slack. If a point will not fit, drop the point.
+When delivering to both, call deliver_report twice: the full Slack report, then the narrower Threads \
+thread.
 </delivery>
 
 <language>
@@ -355,6 +329,9 @@ def create_research_agent(tools: list[Any] | None = None) -> Agent:
             research_max_iterations=config.agent.research_max_iterations,
             research_slack_target_words=config.agent.research_slack_target_words,
             research_max_threads_posts=config.agent.research_max_threads_posts,
+            # The renderer enforces this same constant; interpolating it keeps the prompt from
+            # carrying a second, silently-drifting copy of the channel's per-post limit.
+            threads_max_post_chars=THREADS_MAX_POST_CHARS,
             korean_style_rules=KOREAN_STYLE_RULES,
             tools_block=_render_tools_block(tools),
         ),
