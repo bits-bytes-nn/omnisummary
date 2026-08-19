@@ -752,20 +752,20 @@ class TestDailyVisualMaker:
         assert entries[0]["date"] == "2026-06-10"
 
     @pytest.mark.asyncio
-    async def test_format_log_records_the_orientation_actually_rendered(self):
+    async def test_format_log_records_the_orientation_that_was_rendered(self):
         # The variation nudge learns from this log, so it must record the shape that was PRODUCED.
-        # A brief whose orientation has no configured size is rendered at another one, and recording
-        # the requested value taught the nudge a shape that never existed.
+        # It now cannot differ from the requested one: an orientation with no configured size raises
+        # in _resolve_size instead of silently rendering another shape and rewriting the brief, and
+        # PipelineConfig pins image_sizes' keys to the orientation vocabulary so that cannot happen
+        # through config either.
         from datetime import date
 
         maker = _maker()
-        maker.generator.image_sizes = {"square": "1024x1024"}
         plan = {"skip": False, "item_number": 1, "research": [], "instruction": "x", "format": "poster"}
 
         async def _generate(instruction, source, context, deadline=None):
             brief = VisualBrief(title="T", caption="C", prompt="draw", orientation="landscape")
-            # The real generator resolves the size (and normalizes the brief) inside render().
-            maker.generator._resolve_size(brief)
+            maker.generator._resolve_size(brief)  # the real generator resolves inside render()
             return b"PNG", brief
 
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
@@ -773,7 +773,7 @@ class TestDailyVisualMaker:
                 maker.generator.generate = _generate
                 with patch("output.slack_handler.send_image_to_slack", new=AsyncMock(return_value=True)):
                     await maker.run(_items(), today=date(2026, 6, 11))
-        assert maker.format_log.entries()[0]["orientation"] == "square"
+        assert maker.format_log.entries()[0]["orientation"] == "landscape"
 
     @pytest.mark.asyncio
     async def test_gather_context_dispatches_by_source(self):

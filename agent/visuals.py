@@ -3,12 +3,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import time
-from typing import Any, cast
+from typing import Any
 
 from shared import (
     BedrockLanguageModelFactory,
     VisualBrief,
-    VisualOrientation,
     VisualSynopsisPrompt,
     logger,
     resolve_secret,
@@ -109,28 +108,20 @@ class VisualGenerator:
     def _resolve_size(self, brief: VisualBrief) -> str:
         """The gpt-image size for the brief's orientation.
 
-        Config validation keeps image_sizes' keys equal to the orientation vocabulary, so a miss
-        here means the two drifted anyway (a hand-built generator, a partially validated config).
-        It used to fall through to `next(iter(...))` in silence, so the image was rendered in a
-        shape nobody chose and the format history then learned that shape as if it had been picked.
-        Now it warns AND rewrites the brief's orientation to what is actually rendered, so the
-        variation nudge can't learn a shape that was never produced."""
+        A miss is not recoverable here and cannot happen through the shipped path: two independent
+        guarantees close it. `VisualBrief.orientation` is typed with the VisualOrientation Literal, so
+        Pydantic rejects any other value, and PipelineConfig validates that image_sizes' keys are
+        exactly that vocabulary, failing at config load rather than at 19:00. A third guard used to
+        sit here — pick an arbitrary configured size, warn, and rewrite the brief's orientation to
+        match so the variation nudge would not learn a shape nobody chose. Removed 2026-08-19: it
+        could only fire if one of those two had already been bypassed, and then rendering SOMETHING
+        is worse than saying so."""
         size = self.image_sizes.get(brief.orientation, "")
-        if size:
-            return size
-        if not self.image_sizes:
-            raise RuntimeError("No image sizes configured (pipeline.image_sizes is empty); cannot render a visual")
-        fallback_orientation, size = next(iter(self.image_sizes.items()))
-        logger.warning(
-            "No image size configured for orientation '%s' (configured: %s); rendering '%s' (%s) instead",
-            brief.orientation,
-            ", ".join(self.image_sizes),
-            fallback_orientation,
-            size,
-        )
-        # The configured keys ARE the orientation vocabulary (asserted by PipelineConfig), so the
-        # fallback key is a valid orientation value.
-        brief.orientation = cast(VisualOrientation, fallback_orientation)
+        if not size:
+            raise RuntimeError(
+                f"No image size configured for orientation '{brief.orientation}' "
+                f"(configured: {', '.join(self.image_sizes) or 'none'}); cannot render a visual"
+            )
         return size
 
     def render(self, brief: VisualBrief) -> bytes:

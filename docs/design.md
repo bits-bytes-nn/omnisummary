@@ -1676,8 +1676,11 @@ oversize든 `None`을 반환하고 절대 raise하지 않는다. 반환 타입�
    `shared/constants.py`의 `VisualOrientation`으로 타이핑되고, `PipelineConfig`가 `image_sizes`의 키 집합이
    정확히 그 어휘이고 값이 `<width>x<height>` 꼴인지 검증한다. 키를 하드코딩 Literal과 별개로 두던 동안에는
    config에서 키 이름 하나만 바꿔도 브리프가 검증에 실패하거나 조용히 기본 orientation으로 coerce됐다. 매핑에
-   없는 orientation이 들어오면 렌더는 WARNING을 남기고 브리프의 orientation을 실제 렌더한 값으로 덮어쓴다.
-   변주 넛지가 만들어진 적 없는 모양을 학습하지 않게 하려는 것이다. 매핑이 비어 있으면 raise한다.
+   없는 orientation이면 raise한다. 그 둘이 이미 닫아둔 구멍이라 여기까지 오려면 하나가 우회된 상태이고, 그때는
+   무언가를 렌더하는 것보다 말하는 게 낫다. 예전에는 WARNING을 남기고 임의의 설정된 size를 골라 브리프의
+   orientation을 그 값으로 덮어썼는데(변주 넛지가 만들어진 적 없는 모양을 학습하지 않게 하려는 것이었다),
+   2026-08-19에 지웠다. 같은 불변식을 지키는 세 번째 가드였고, 앞의 둘 중 하나는 19:00이 아니라 config 로드에서
+   요란하게 실패한다.
    모더레이션 차단은 간헐적으로 나니 완화된 브리프로 한 번 재생성한다.
 5. **게시** — `DigestPublisher`가 `output.slack_handler.send_image_to_slack`(`files_upload_v2`)으로 Slack에
    업로드하고, `enable_threads_post`가 켜져 있으면 Threads에도 게시한다. 이미지는 옵셔널이라 렌더가 실패한

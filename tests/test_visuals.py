@@ -349,28 +349,20 @@ class TestVisualGenerator:
         assert client_kwargs["timeout"] == PipelineConfig().visual_image_timeout_sec
         assert client_kwargs["max_retries"] == PipelineConfig().visual_image_max_retries
 
-    def test_an_unmapped_orientation_warns_and_records_what_was_rendered(self):
-        # image_sizes and the orientation vocabulary can only drift via a hand-built generator (the
-        # config validator rejects it), and the silent `next(iter(...))` fallback then rendered a
-        # shape nobody chose — which the format history recorded as if it had been picked.
+    def test_an_unmapped_orientation_raises_instead_of_rendering_a_shape_nobody_chose(self):
+        # Unreachable through the shipped path: VisualBrief.orientation is a Literal and
+        # PipelineConfig pins image_sizes' keys to the same vocabulary. It used to pick an arbitrary
+        # configured size and rewrite the brief to match, so the format history learned a shape that
+        # was never asked for.
         gen = _generator(image_sizes={"square": "1024x1024"})
-        brief = VisualBrief(title="t", caption="c", prompt="draw", orientation="landscape")
-        resp = MagicMock()
-        resp.data = [MagicMock(b64_json=base64.b64encode(b"X").decode())]
-        client = MagicMock()
-        client.images.generate.return_value = resp
-        with patch("agent.visuals.resolve_secret", return_value="key"):
-            with patch("openai.OpenAI", return_value=client):
-                with patch("agent.visuals.logger") as log:
-                    gen.render(brief)
-        assert client.images.generate.call_args.kwargs["size"] == "1024x1024"
-        assert any("No image size configured" in str(c.args) for c in log.warning.call_args_list)
-        assert brief.orientation == "square"  # the history now learns the shape actually produced
+        brief = VisualBrief(title="t", caption="c", prompt="p", orientation="portrait")
+        with pytest.raises(RuntimeError, match="No image size configured"):
+            gen._resolve_size(brief)
 
     def test_an_empty_size_map_raises_instead_of_rendering_something_arbitrary(self):
         gen = _generator(image_sizes={})
         with patch("agent.visuals.resolve_secret", return_value="key"):
-            with pytest.raises(RuntimeError, match="image_sizes"):
+            with pytest.raises(RuntimeError, match="No image size configured"):
                 gen.render(VisualBrief(title="t", caption="c", prompt="draw"))
 
     def test_generator_requires_every_visual_knob(self):
