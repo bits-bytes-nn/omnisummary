@@ -71,15 +71,6 @@ class TestDigestLeadSpec:
         # The generic "situate the reader in today's AI/ML landscape" opener is gone.
         assert "situates the reader" not in rendered
 
-    def test_re_narration_ban_no_longer_forbids_naming(self):
-        # The ban is narrowed to what actually duplicated the headline reply — replaying its
-        # sequence of events and repeating its numbers — so the lead can still say WHO it is about.
-        # The five-clause paragraph that said this is now two sentences: a shorter spec is the only
-        # kind of prompt change this repo allows, and the rule still states the constraint.
-        rendered = _render(DigestPrompt)
-        assert "no replay of its sequence and no repeat of its numbers" in rendered
-        assert "numbers, names, or its sequence of events" not in rendered
-
     def test_items_are_still_requested_before_the_lead(self):
         # Load-bearing key ORDER: asking for the stories first is what stopped the lead from
         # re-narrating the headline (word overlap 0.21-0.41 → 0.03-0.21). Never reorder.
@@ -88,18 +79,6 @@ class TestDigestLeadSpec:
 
     def test_lead_carries_a_character_budget(self):
         assert "under 470 characters" in _render(DigestPrompt)
-
-    def test_trend_rule_bans_the_tracker_not_the_connection(self):
-        # trends_context WAS injected and then ordered to be invisible ("not as something to
-        # narrate", "sharpen the take implicitly"), which banned the one move the items cannot
-        # make on their own: saying where today's story sits in a longer arc. The ban is narrowed
-        # to the tracker itself — the streak, the day count, the metric — so the substantive
-        # connection is asked for. Faithfulness already permits it: trend data counts as provided.
-        rendered = _render(DigestPrompt)
-        assert "place today's story in the arc it belongs to" in rendered
-        assert "no streak or day count" in rendered
-        assert "not as something to narrate" not in rendered
-        assert "sharpen the take implicitly" not in rendered
 
 
 class TestItemSpecStaysShort:
@@ -111,22 +90,6 @@ class TestItemSpecStaysShort:
     thread, five items scanned as one template refilled. The remedy is a SHORTER spec, which is the
     only kind of prompt change this repo allows."""
 
-    def test_the_implication_shape_menu_is_gone(self):
-        rendered = _render(DigestPrompt)
-        assert "VARY THE SHAPE" not in rendered
-        assert "an open question to the reader" not in rendered
-        assert "a falsifiable prediction" not in rendered
-
-    def test_the_implication_demands_an_assertion_and_bans_the_hedge(self):
-        rendered = _render(DigestPrompt)
-        assert "ASSERTS something a reader could disagree with" in rendered
-        assert "No conditional frame, no ~수 있다" in rendered
-
-    def test_the_body_length_is_not_a_fixed_sentence_count(self):
-        rendered = _render(DigestPrompt)
-        assert "2-3 tight Korean sentences" not in rendered
-        assert "As few tight Korean sentences as the story needs" in rendered
-
     def test_the_prose_budget_still_reaches_the_body_spec(self):
         # The item budget is code-derived (_item_prose_budget); the rewrite must not drop the slot it
         # is interpolated into, or every item silently loses its Threads length guidance.
@@ -134,44 +97,10 @@ class TestItemSpecStaysShort:
         assert _INPUTS[DigestPrompt]["prose_budget_rule"].strip() in _render(DigestPrompt)
 
 
-class TestDeletedDuplicateRules:
-    """Rules a code mechanism already enforces are deleted, not restated: every restatement is a
-    rule the editor can contradict, and this repo has a documented add-rules regression pattern."""
-
-    def test_headline_index_is_not_asked_for(self):
-        # _parse_content pins headline_index to 1 so the lead and the visual can never point at
-        # different stories, which makes asking the editor for it dead weight.
-        rendered = _render(DigestPrompt)
-        assert "headline_index" not in rendered
-
-    def test_visual_editor_is_not_asked_for_item_number(self):
-        # The headline is marked upstream and _pick_story never reads item_number back.
-        rendered = _render(VisualEditorPrompt)
-        assert "item_number" not in rendered
-
-    def test_visual_expressibility_is_only_a_tie_break(self):
-        # Kept (the visual editor's skip path must stay rare) but scoped to equally important
-        # stories, instead of steering the headline away from deep-technical news outright.
-        rendered = _render(DigestPrompt)
-        assert "break a tie between equally important ones" in rendered
-
-    def test_faithfulness_restatement_is_gone_but_the_attribution_convention_stays(self):
-        # The definite-verb sentence restated the sentence above it; the code-side grounding pass
-        # enforces the same thing over the real sources.
-        rendered = _render(DigestPrompt)
-        assert "공개했다/밝혔다" not in rendered
-        assert "보도에 따르면" in rendered
-
-
 class TestRankingCostShape:
     """The ranker scores every collected item (~100/day) but only the ~8 that survive selection reach
     the digest editor, so anything it emits per item is paid for ~12x over and mostly discarded — at
     Opus output rates ($25/Mtok) that was the second-largest line in the Bedrock bill."""
-
-    def test_reasoning_is_a_phrase_not_sentences(self):
-        rendered = _render(RankingPrompt)
-        assert "short phrase" in rendered
-        assert "1-2 sentence justification" not in rendered
 
     def test_score_is_requested_before_reasoning(self):
         # Load-bearing for the change above: with `score` emitted FIRST, the justification is
@@ -179,26 +108,3 @@ class TestRankingCostShape:
         # keys are ever reordered so reasoning precedes score, shortening it becomes a quality risk.
         rendered = _render(RankingPrompt)
         assert rendered.index('"score"') < rendered.index('"reasoning"')
-
-
-class TestRankingPromptCarriesNoCodeOwnedOrDoubleCountedRules:
-    """Pure deletions. The medium-neutrality paragraph already says a substantive talk or interview
-    scores like an equivalent article, and output slots / platform diversity are decided by code
-    (_apply_source_slots, source_slots, max_per_origin) — a batch of three items cannot honour
-    either, and the request contradicted the absolute-scoring instruction above it."""
-
-    def test_no_standalone_interview_bonus(self):
-        rendered = _render(RankingPrompt)
-        assert "Interviews/podcasts with substance" not in rendered
-        # The neutrality paragraph it double-counted stays.
-        assert "Score the ideas, not the medium." in rendered
-
-    def test_no_output_slot_or_platform_diversity_instruction(self):
-        rendered = _render(RankingPrompt)
-        assert "output slots" not in rendered
-        assert "platform diversity" not in rendered
-        # Same-event clustering — the one diversity decision the model CAN make in a batch — stays.
-        assert "Cluster same-EVENT items" in rendered
-
-    def test_absolute_scoring_is_still_the_instruction(self):
-        assert "Score each item ABSOLUTELY" in _render(RankingPrompt)

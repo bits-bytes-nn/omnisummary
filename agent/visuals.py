@@ -6,7 +6,6 @@ import time
 from typing import Any, cast
 
 from shared import (
-    LOGGING_TRUNCATION_CHARS,
     BedrockLanguageModelFactory,
     VisualBrief,
     VisualOrientation,
@@ -104,7 +103,7 @@ class VisualGenerator:
         # with_structured_output is typed as returning dict | BaseModel; re-validate so the
         # type is concretely VisualBrief (and a dict-shaped return is coerced consistently).
         brief = VisualBrief.model_validate(result)
-        logger.info("Generated visual brief '%s'", brief.title[: LOGGING_TRUNCATION_CHARS["brief_title"]])
+        logger.info("Generated visual brief '%s'", brief.title[:60])
         return brief
 
     def _resolve_size(self, brief: VisualBrief) -> str:

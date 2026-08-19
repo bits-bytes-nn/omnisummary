@@ -12,7 +12,7 @@ from typing import Any, ClassVar, Generic, TypeVar
 
 import boto3
 from botocore.config import Config as BotoConfig
-from langchain_aws import ChatBedrock, ChatBedrockConverse
+from langchain_aws import ChatBedrockConverse
 from langchain_core.callbacks import BaseCallbackHandler
 from pydantic import BaseModel
 
@@ -26,16 +26,21 @@ TOKEN_COUNT_MODEL = LanguageModelId.CLAUDE_V4_6_SONNET
 
 
 class LanguageModelInfo(BaseModel):
+    """What the factory actually acts on. It carried four more capability flags (thinking,
+    1M-context, performance-optimization, adaptive-thinking) that no config field and no non-test
+    caller ever set, plus the ChatBedrock branch they shaped, which the cross-region resolver made
+    unreachable — every production call resolves to an application-inference-profile ARN or a
+    `global.*` id, so Converse was always the class. Removed 2026-08-19.
+
+    Hand-verified against Converse and worth keeping written down, since re-establishing it costs
+    real invocations: Sonnet 5 and Opus 4.7/4.8/5 reject a `temperature` param AND the legacy
+    thinking.type="enabled" + budget_tokens form; they need thinking.type="adaptive" +
+    output_config.effort. Only the temperature half is enforced below, because nothing asks for
+    thinking."""
+
     context_window_size: int
     max_output_tokens: int
-    supports_performance_optimization: bool = False
-    supports_thinking: bool = False
-    supports_1m_context_window: bool = False
     supports_temperature: bool = True
-    # Newer models (Sonnet 5, Opus 4.7/4.8) require the adaptive-thinking API
-    # (thinking.type="adaptive" + output_config.effort) and reject the legacy
-    # thinking.type="enabled" + budget_tokens form with a 400. Set True for those.
-    uses_adaptive_thinking: bool = False
 
 
 LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
@@ -46,36 +51,28 @@ LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
     LanguageModelId.CLAUDE_V3_5_HAIKU: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=8192,
-        supports_performance_optimization=True,
     ),
     LanguageModelId.CLAUDE_V4_5_HAIKU: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=64000,
-        supports_thinking=True,
     ),
     LanguageModelId.CLAUDE_V3_5_SONNET: LanguageModelInfo(context_window_size=200000, max_output_tokens=8192),
     LanguageModelId.CLAUDE_V3_5_SONNET_V2: LanguageModelInfo(context_window_size=200000, max_output_tokens=8192),
     LanguageModelId.CLAUDE_V3_7_SONNET: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=64000,
-        supports_thinking=True,
     ),
     LanguageModelId.CLAUDE_V4_SONNET: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=64000,
-        supports_thinking=True,
-        supports_1m_context_window=True,
     ),
     LanguageModelId.CLAUDE_V4_5_SONNET: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=64000,
-        supports_thinking=True,
-        supports_1m_context_window=True,
     ),
     LanguageModelId.CLAUDE_V4_6_SONNET: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=64000,
-        supports_thinking=True,
     ),
     LanguageModelId.CLAUDE_V5_SONNET: LanguageModelInfo(
         context_window_size=1000000,
@@ -83,63 +80,44 @@ LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
         # ainvoke, and Sonnet 5's true 128K ceiling would only raise the HTTP-timeout risk with
         # no caller needing that much output. Bump to 128000 only alongside a streaming path.
         max_output_tokens=64000,
-        supports_thinking=True,
-        supports_1m_context_window=True,
-        # Sonnet 5 rejects non-default sampling params (temperature/top_p/top_k) with a 400,
-        # same as Opus 4.7/4.8. The factory always sends temperature=0.0, so this must be False.
+        # Sonnet 5 rejects non-default sampling params with a 400. The factory always sends
+        # temperature=0.0, so this must be False.
         supports_temperature=False,
-        uses_adaptive_thinking=True,
     ),
     LanguageModelId.CLAUDE_V4_OPUS: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=64000,
-        supports_thinking=True,
-        supports_1m_context_window=True,
     ),
     LanguageModelId.CLAUDE_V4_1_OPUS: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=64000,
-        supports_thinking=True,
-        supports_1m_context_window=True,
     ),
     LanguageModelId.CLAUDE_V4_5_OPUS: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=64000,
-        supports_thinking=True,
-        supports_1m_context_window=True,
     ),
     LanguageModelId.CLAUDE_V4_6_OPUS: LanguageModelInfo(
         context_window_size=1000000,
         max_output_tokens=64000,
-        supports_thinking=True,
     ),
     LanguageModelId.CLAUDE_V4_7_OPUS: LanguageModelInfo(
         context_window_size=1000000,
         max_output_tokens=64000,
-        supports_thinking=True,
-        supports_1m_context_window=True,
         supports_temperature=False,
-        uses_adaptive_thinking=True,
     ),
     LanguageModelId.CLAUDE_V4_8_OPUS: LanguageModelInfo(
         context_window_size=1000000,
         max_output_tokens=64000,
-        supports_thinking=True,
-        supports_1m_context_window=True,
         supports_temperature=False,
-        uses_adaptive_thinking=True,
     ),
     LanguageModelId.CLAUDE_V5_OPUS: LanguageModelInfo(
         context_window_size=1000000,
         max_output_tokens=64000,
-        supports_thinking=True,
-        supports_1m_context_window=True,
         # Verified against Converse on global.anthropic.claude-opus-5: a `temperature` param and the
         # legacy thinking.type="enabled"/budget_tokens form BOTH return ValidationException, while
         # thinking.type="adaptive" + output_config.effort succeeds — the same shape as Opus 4.7/4.8
         # and Sonnet 5.
         supports_temperature=False,
-        uses_adaptive_thinking=True,
     ),
     # NOTE: add new models here
 }
@@ -345,14 +323,8 @@ class BedrockCrossRegionModelHelper:
             raise RuntimeError(f"Failed to check cross-region model availability: {e}") from e
 
 
-class BedrockLanguageModelFactory(
-    BaseBedrockModelFactory[LanguageModelId, LanguageModelInfo, ChatBedrock | ChatBedrockConverse]
-):
+class BedrockLanguageModelFactory(BaseBedrockModelFactory[LanguageModelId, LanguageModelInfo, ChatBedrockConverse]):
     DEFAULT_TEMPERATURE: ClassVar[float] = 0.0
-    DEFAULT_TOP_K: ClassVar[int] = 50
-    DEFAULT_THINKING_BUDGET_TOKENS: ClassVar[int] = 2048
-    DEFAULT_THINKING_EFFORT: ClassVar[str] = "medium"
-    DEFAULT_LATENCY_MODE: ClassVar[str] = "normal"
 
     def _get_boto_service_name(self) -> str:
         return "bedrock-runtime"
@@ -413,9 +385,7 @@ class BedrockLanguageModelFactory(
         logger.warning("Text truncated to <=%d tokens (%d chars)", max_tokens, len(truncated))
         return truncated
 
-    def get_model(
-        self, model_id: LanguageModelId, *, stage: str = "", **kwargs: Any
-    ) -> ChatBedrock | ChatBedrockConverse:
+    def get_model(self, model_id: LanguageModelId, *, stage: str = "", **kwargs: Any) -> ChatBedrockConverse:
         """Build a chat model. `stage` names the caller (ranking / digest / grounding / ...) purely so
         token usage can be attributed in the logs — the bill is per MODEL, and several stages share
         one model, so without it a token total cannot be traced to the call that spent it."""
@@ -425,66 +395,29 @@ class BedrockLanguageModelFactory(
         resolved_model_id = BedrockCrossRegionModelHelper.get_cross_region_model_id(
             self.boto_session, model_id, self.region_name or ""
         )
-        is_cross_region = resolved_model_id != model_id.value
-        enable_thinking = kwargs.get("enable_thinking", False)
-        use_converse = is_cross_region or (enable_thinking and model_info.supports_thinking)
-        model_config = self._build_model_config(model_info, resolved_model_id, use_converse, stage=stage, **kwargs)
-        model_class = ChatBedrockConverse if use_converse else ChatBedrock
-        model = model_class(**model_config)
-        logger.debug(
-            "Created language model: '%s' with class %s",
-            resolved_model_id,
-            model_class.__name__,
-        )
+        model_config = self._build_model_config(model_info, resolved_model_id, stage=stage, **kwargs)
+        model = ChatBedrockConverse(**model_config)
+        logger.debug("Created language model: '%s'", resolved_model_id)
         return model
 
     def _build_model_config(
-        self,
-        model_info: LanguageModelInfo,
-        resolved_model_id: str,
-        use_converse: bool,
-        **kwargs: Any,
+        self, model_info: LanguageModelInfo, resolved_model_id: str, **kwargs: Any
     ) -> dict[str, Any]:
-        # use_converse selects the config SHAPE: ChatBedrockConverse takes top-level
-        # params + camelCase additional fields, ChatBedrock nests them under model_kwargs.
-        enable_thinking = kwargs.get("enable_thinking", False)
-        supports_1m_context_window = kwargs.get("supports_1m_context_window", False)
-        temperature = kwargs.get("temperature", self.DEFAULT_TEMPERATURE)
-        final_temperature = 1.0 if self._should_enable_thinking(enable_thinking, model_info) else temperature
-        if final_temperature != temperature:
-            logger.debug("Adjusting temperature to 1.0 for thinking mode")
         final_max_tokens = self._validate_max_tokens(kwargs.get("max_tokens"), model_info)
-        config = self._build_base_config(resolved_model_id, use_converse, model_info, **kwargs)
+        config = self._build_base_config(resolved_model_id, **kwargs)
         # Telemetry sits with the rest of the config, not bolted on afterwards. The base config
         # takes `callbacks` from kwargs, which is None when the caller passed none, so build the list.
         config["callbacks"] = [
             *(config.get("callbacks") or []),
             _TokenUsageLogger(str(kwargs.get("stage") or "unattributed"), resolved_model_id),
         ]
-        # Newer models (e.g. Opus 4.7/4.8) reject the `temperature` param entirely.
-        params: dict[str, Any] = {"max_tokens": final_max_tokens}
+        # Newer models (Sonnet 5, Opus 4.7/4.8/5) reject the `temperature` param entirely.
+        config["max_tokens"] = final_max_tokens
         if model_info.supports_temperature:
-            params["temperature"] = final_temperature
-        if use_converse:
-            config.update(params)
-        else:
-            config["model_kwargs"].update(params)
-        if supports_1m_context_window and model_info.supports_1m_context_window:
-            if use_converse:
-                config.setdefault("additional_model_request_fields", {}).update(
-                    {"anthropic_beta": ["context-1m-2025-08-07"]}
-                )
-            else:
-                config["model_kwargs"].setdefault("additionalModelRequestFields", {}).update(
-                    {"anthropic_beta": ["context-1m-2025-08-07"]}
-                )
-            logger.debug("Applied 1M context window support")
-        self._apply_model_features(config, model_info, use_converse, **kwargs)
+            config["temperature"] = kwargs.get("temperature", self.DEFAULT_TEMPERATURE)
         return config
 
-    def _build_base_config(
-        self, resolved_model_id: str, use_converse: bool, model_info: LanguageModelInfo, **kwargs: Any
-    ) -> dict[str, Any]:
+    def _build_base_config(self, resolved_model_id: str, **kwargs: Any) -> dict[str, Any]:
         config: dict[str, Any] = {
             "model_id": resolved_model_id,
             "region_name": self.region_name,
@@ -499,52 +432,8 @@ class BedrockLanguageModelFactory(
             config["provider"] = "anthropic"
         if self.boto_session.profile_name and self.boto_session.profile_name != "default":
             config["credentials_profile_name"] = self.boto_session.profile_name
-        common_params = {
-            "stop_sequences": ["\n\nHuman:"],
-        }
-        if use_converse:
-            config.update(common_params)
-        else:
-            model_kwargs: dict[str, Any] = dict(common_params)
-            # Newer models (Sonnet 5, Opus 4.7/4.8) reject non-default sampling params — the same
-            # flag that gates `temperature` also gates `top_k`/`top_p`. Omit them there.
-            if model_info.supports_temperature:
-                model_kwargs["top_k"] = kwargs.get("top_k", self.DEFAULT_TOP_K)
-            config["model_kwargs"] = model_kwargs
+        config["stop_sequences"] = ["\n\nHuman:"]
         return config
-
-    def _apply_model_features(
-        self,
-        config: dict[str, Any],
-        model_info: LanguageModelInfo,
-        use_converse: bool,
-        **kwargs: Any,
-    ) -> None:
-        enable_perf = kwargs.get("enable_performance_optimization", False)
-        enable_think = kwargs.get("enable_thinking", False)
-        if self._should_enable_performance_optimization(enable_perf, model_info, use_converse):
-            latency = kwargs.get("latency_mode", self.DEFAULT_LATENCY_MODE)
-            config.setdefault("performanceConfig", {}).update({"latency": latency})
-            logger.debug("Applied performance optimization (latency_mode='%s')", latency)
-        if self._should_enable_thinking(enable_think, model_info):
-            if model_info.uses_adaptive_thinking:
-                # Newer models (Sonnet 5, Opus 4.7/4.8) require the adaptive form;
-                # the legacy type="enabled" + budget_tokens is rejected with a 400.
-                effort = kwargs.get("thinking_effort", self.DEFAULT_THINKING_EFFORT)
-                think_config: dict[str, Any] = {
-                    "thinking": {"type": "adaptive"},
-                    "output_config": {"effort": effort},
-                }
-                log_detail = f"effort='{effort}'"
-            else:
-                budget = kwargs.get("thinking_budget_tokens", self.DEFAULT_THINKING_BUDGET_TOKENS)
-                think_config = {"thinking": {"type": "enabled", "budget_tokens": budget}}
-                log_detail = f"budget_tokens={budget}"
-            if use_converse:
-                config.setdefault("additional_model_request_fields", {}).update(think_config)
-            else:
-                config.setdefault("model_kwargs", {}).update(think_config)
-            logger.debug("Applied thinking mode (%s)", log_detail)
 
     @staticmethod
     def _validate_max_tokens(max_tokens: int | None, model_info: LanguageModelInfo) -> int:
@@ -557,16 +446,6 @@ class BedrockLanguageModelFactory(
             )
             return model_info.max_output_tokens
         return final_max_tokens
-
-    @staticmethod
-    def _should_enable_performance_optimization(
-        enable: bool, model_info: LanguageModelInfo, use_converse: bool
-    ) -> bool:
-        return enable and model_info.supports_performance_optimization and not use_converse
-
-    @staticmethod
-    def _should_enable_thinking(enable: bool, model_info: LanguageModelInfo) -> bool:
-        return enable and model_info.supports_thinking
 
 
 def _is_parameter_not_found(exc: BaseException) -> bool:

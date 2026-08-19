@@ -75,84 +75,34 @@ class TestTemperatureGating:
         # Opus 4.7/4.8 reject the temperature param -> must not be sent.
         f = _factory()
         info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_8_OPUS]
-        cfg = f._build_model_config(info, "global.anthropic.claude-opus-4-8", True)
+        cfg = f._build_model_config(info, "global.anthropic.claude-opus-4-8")
         assert "temperature" not in cfg
         assert cfg["max_tokens"] > 0
 
     def test_sonnet_46_includes_temperature(self):
         f = _factory()
         info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
-        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-4-6", True)
+        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-4-6")
         assert "temperature" in cfg
 
-    def test_non_cross_region_opus_48_omits_temperature_and_top_k(self):
-        # Models that reject sampling params must omit BOTH temperature and top_k on the
-        # non-converse (ChatBedrock) path, or Bedrock 400s.
-        f = _factory()
-        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_8_OPUS]
-        cfg = f._build_model_config(info, "anthropic.claude-opus-4-8", False)
-        assert "temperature" not in cfg["model_kwargs"]
-        assert "top_k" not in cfg["model_kwargs"]
-
-    def test_non_cross_region_sonnet_46_includes_top_k(self):
-        # A sampling-param-accepting model DOES get top_k on the non-converse path.
+    def test_a_plain_model_id_still_builds_a_converse_config(self):
+        # The id the deleted ChatBedrock branch used to take: cross-region resolution failing back
+        # to the bare model id. Converse accepts it, so the branch removal loses no fallback.
         f = _factory()
         info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
-        cfg = f._build_model_config(info, "anthropic.claude-sonnet-4-6", False)
-        assert cfg["model_kwargs"]["top_k"] == BedrockLanguageModelFactory.DEFAULT_TOP_K
+        cfg = f._build_model_config(info, "anthropic.claude-sonnet-4-6")
+        assert "model_kwargs" not in cfg
+        assert cfg["temperature"] == BedrockLanguageModelFactory.DEFAULT_TEMPERATURE
+        assert cfg["max_tokens"] > 0
 
     def test_sonnet_5_omits_temperature(self):
         # Sonnet 5 rejects non-default sampling params (400), same as Opus 4.7/4.8. It is now
         # the default digest/agent/trend model, so lock the gating in explicitly.
         f = _factory()
         info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
-        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", True)
+        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5")
         assert "temperature" not in cfg
         assert cfg["max_tokens"] > 0
-
-    def test_sonnet_5_omits_top_k_on_non_converse(self):
-        f = _factory()
-        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
-        cfg = f._build_model_config(info, "anthropic.claude-sonnet-5", False)
-        assert "temperature" not in cfg["model_kwargs"]
-        assert "top_k" not in cfg["model_kwargs"]
-
-
-class TestThinkingFormat:
-    """Newer models (Sonnet 5, Opus 4.7/4.8) reject the legacy
-    thinking.type='enabled' + budget_tokens form and require adaptive thinking.
-    Guards against re-emitting the deprecated shape when thinking is enabled."""
-
-    def test_adaptive_model_emits_adaptive_thinking(self):
-        f = _factory()
-        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
-        assert info.uses_adaptive_thinking is True
-        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", True, enable_thinking=True)
-        amrf = cfg["additional_model_request_fields"]
-        assert amrf["thinking"] == {"type": "adaptive"}
-        assert "budget_tokens" not in amrf["thinking"]
-        assert amrf["output_config"]["effort"] == f.DEFAULT_THINKING_EFFORT
-
-    def test_adaptive_model_honors_thinking_effort(self):
-        f = _factory()
-        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_8_OPUS]
-        cfg = f._build_model_config(
-            info,
-            "global.anthropic.claude-opus-4-8",
-            True,
-            enable_thinking=True,
-            thinking_effort="high",
-        )
-        assert cfg["additional_model_request_fields"]["output_config"]["effort"] == "high"
-
-    def test_legacy_model_keeps_budget_form(self):
-        f = _factory()
-        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
-        assert info.uses_adaptive_thinking is False
-        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-4-6", True, enable_thinking=True)
-        thinking = cfg["additional_model_request_fields"]["thinking"]
-        assert thinking["type"] == "enabled"
-        assert thinking["budget_tokens"] == f.DEFAULT_THINKING_BUDGET_TOKENS
 
 
 class TestOpus5Registry:
@@ -164,20 +114,15 @@ class TestOpus5Registry:
     def test_opus_5_is_registered(self):
         assert LanguageModelId.CLAUDE_V5_OPUS in LANGUAGE_MODEL_INFO
 
-    def test_opus_5_rejects_sampling_params_and_uses_adaptive_thinking(self):
-        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_OPUS]
-        assert info.supports_temperature is False
-        assert info.uses_adaptive_thinking is True
-        assert info.supports_thinking is True
+    def test_opus_5_rejects_sampling_params(self):
+        assert LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_OPUS].supports_temperature is False
 
     def test_opus_5_matches_the_other_claude_5_family_gates(self):
-        # Same shape as Sonnet 5 / Opus 4.8 — a new family member that silently differs on these two
-        # flags is the failure mode this pins.
+        # Same shape as Sonnet 5 / Opus 4.8 — a new family member that silently differs on this flag
+        # 400s every call, which is the failure mode this pins.
         opus5 = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_OPUS]
         for sibling in (LanguageModelId.CLAUDE_V5_SONNET, LanguageModelId.CLAUDE_V4_8_OPUS):
-            other = LANGUAGE_MODEL_INFO[sibling]
-            assert opus5.supports_temperature == other.supports_temperature
-            assert opus5.uses_adaptive_thinking == other.uses_adaptive_thinking
+            assert opus5.supports_temperature == LANGUAGE_MODEL_INFO[sibling].supports_temperature
 
 
 class TestModelClassConstructorSurface:
@@ -196,18 +141,17 @@ class TestModelClassConstructorSurface:
         (LanguageModelId.CLAUDE_V5_SONNET, {"enable_performance_optimization": True}),
     ]
 
-    def test_every_built_config_constructs_both_model_classes(self):
-        from langchain_aws import ChatBedrock, ChatBedrockConverse
+    def test_every_built_config_constructs_the_model_class(self):
+        from langchain_aws import ChatBedrockConverse
 
         f = _factory()
-        # conftest's hermetic_env blocks boto3.client outright; these classes build one in a
-        # validator, so opt in with a mock. Still no network — nothing is invoked.
+        # conftest's hermetic_env blocks boto3.client outright; the class builds one in a validator,
+        # so opt in with a mock. Still no network — nothing is invoked.
         with patch("boto3.client", return_value=MagicMock()):
             for model, kwargs in self.CASES:
                 info = LANGUAGE_MODEL_INFO[model]
-                for use_converse, cls in ((True, ChatBedrockConverse), (False, ChatBedrock)):
-                    cfg = f._build_model_config(info, model.value, use_converse, stage="ranking", **kwargs)
-                    cls(**cfg)  # raises on an unknown/renamed kwarg
+                cfg = f._build_model_config(info, model.value, stage="ranking", **kwargs)
+                ChatBedrockConverse(**cfg)  # raises on an unknown/renamed kwarg
 
     def test_the_application_profile_arn_config_constructs(self):
         # The ARN path adds `provider`, which only exists on the converse class — and it is the path
@@ -217,7 +161,7 @@ class TestModelClassConstructorSurface:
         f = _factory()
         info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
         cfg = f._build_model_config(
-            info, "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc", True, stage="digest"
+            info, "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc", stage="digest"
         )
         with patch("boto3.client", return_value=MagicMock()):
             ChatBedrockConverse(**cfg)
@@ -233,7 +177,7 @@ class TestTokenUsageAttribution:
 
         f = _factory()
         info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
-        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", True, stage="ranking")
+        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", stage="ranking")
         loggers = [c for c in cfg["callbacks"] if isinstance(c, _TokenUsageLogger)]
         assert [h.stage for h in loggers] == ["ranking"]
         assert loggers[0].model_id == "global.anthropic.claude-sonnet-5"
@@ -243,7 +187,7 @@ class TestTokenUsageAttribution:
 
         f = _factory()
         info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
-        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", True)
+        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5")
         assert [c.stage for c in cfg["callbacks"] if isinstance(c, _TokenUsageLogger)] == ["unattributed"]
 
     def test_a_caller_supplied_callback_is_kept(self):
@@ -252,7 +196,7 @@ class TestTokenUsageAttribution:
         mine = MagicMock()
         f = _factory()
         info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
-        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", True, callbacks=[mine], stage="digest")
+        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", callbacks=[mine], stage="digest")
         assert mine in cfg["callbacks"]
         assert any(isinstance(c, _TokenUsageLogger) for c in cfg["callbacks"])
 
@@ -330,9 +274,9 @@ class TestApplicationProfileResolution:
         # when passing a model ARN as model_id"), which is exactly what a profile ARN is.
         f = _factory()
         info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
-        cfg = f._build_model_config(info, "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc", True)
+        cfg = f._build_model_config(info, "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc")
         assert cfg["provider"] == "anthropic"
-        assert "provider" not in f._build_model_config(info, "global.anthropic.claude-sonnet-5", True)
+        assert "provider" not in f._build_model_config(info, "global.anthropic.claude-sonnet-5")
 
 
 def _resolution_client(*available: str) -> MagicMock:
@@ -436,20 +380,16 @@ class TestGetModel:
         assert isinstance(model, ChatBedrockConverse)
         assert model.model_id == resolved
 
-    def test_a_standard_id_without_thinking_builds_the_legacy_class(self):
-        from langchain_aws import ChatBedrock
+    def test_a_plain_id_also_builds_the_converse_class(self):
+        # Cross-region resolution falling back to the bare model id used to pick ChatBedrock. Converse
+        # takes the plain id too, so the class is now unconditional and the flags the registry keeps
+        # (supports_temperature) were verified against Converse in the first place.
+        from langchain_aws import ChatBedrockConverse
 
         model_id = LanguageModelId.CLAUDE_V3_5_SONNET
         model = self._built(model_id, model_id.value, stage="digest")
-        assert isinstance(model, ChatBedrock)
-        assert model.model_id == model_id.value
-
-    def test_thinking_on_a_supporting_model_forces_the_converse_class(self):
-        from langchain_aws import ChatBedrockConverse
-
-        model_id = LanguageModelId.CLAUDE_V5_SONNET
-        model = self._built(model_id, model_id.value, stage="ranking", enable_thinking=True)
         assert isinstance(model, ChatBedrockConverse)
+        assert model.model_id == model_id.value
 
     def test_the_stage_reaches_the_usage_logger(self):
         # The bill is per MODEL and several stages share one, so the stage tag is the only way a

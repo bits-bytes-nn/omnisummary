@@ -131,7 +131,6 @@ omit = [
     # their own tests can hold in place.
     "scripts/ci_synth.py",
     "scripts/deploy.py",
-    "scripts/eval_ranking.py",
     "scripts/gen_diagrams.py",
     "scripts/put_inference_profiles.py",
     "scripts/sample_digest.py",

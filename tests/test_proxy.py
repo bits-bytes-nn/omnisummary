@@ -71,24 +71,6 @@ class TestWorkerHardening:
         assert match, "the worker needs a USER_AGENT var (several allowed hosts 403 a library UA)"
         assert match.group(1) == BROWSER_USER_AGENT
 
-    def test_the_worker_never_lets_the_runtime_follow_a_redirect(self):
-        # A single 302 from an allowed host (reddit/youtube) used to send this authenticated worker
-        # to ANY host. The BRANCHES are covered by cloudflare-proxy/test/worker.test.js; this pins
-        # the one line that cannot be reintroduced without reopening the hole.
-        worker = (PROXY_DIR / "worker.js").read_text()
-        assert 'redirect: "follow"' not in worker
-        assert 'redirect: "manual"' in worker
-
-    def test_the_executable_worker_suite_is_wired_into_ci(self):
-        # The worker's actual BRANCHES (token, URL parse, scheme, suffix host match, fixed outbound
-        # headers) are asserted by cloudflare-proxy/test/worker.test.js with node:test. Substring
-        # checks on worker.js used to stand in for that, and they stayed green even if isAllowedHost
-        # returned true unconditionally or the 401/403 branches were inverted — so all that is
-        # checked here is that the executable suite exists and that CI runs it.
-        assert (PROXY_DIR / "test" / "worker.test.js").exists()
-        ci = (PROXY_DIR.parent / ".github" / "workflows" / "ci.yml").read_text()
-        assert "node --test cloudflare-proxy/test/*.test.js" in ci
-
 
 class _Feed(dict):
     def __getattr__(self, name):

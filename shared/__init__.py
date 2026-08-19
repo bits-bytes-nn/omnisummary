@@ -2,7 +2,6 @@ from .alerts import publish_alert
 from .config import KOREAN_STYLE_RULES, Config, get_config
 from .constants import (
     DOMAIN_TO_SOURCE,
-    LOGGING_TRUNCATION_CHARS,
     METRIC_NAMESPACE,
     THREADS_MAX_POST_CHARS,
     THREADS_POST_SEPARATOR,
@@ -93,7 +92,6 @@ __all__ = [
     "BedrockCrossRegionModelHelper",
     "BedrockLanguageModelFactory",
     "DOMAIN_TO_SOURCE",
-    "LOGGING_TRUNCATION_CHARS",
     "COUNTDOWN_SUFFIX_SEPARATOR",
     "YOUTUBE_VIEWS_EMOJI",
     "agi_countdown_intro",

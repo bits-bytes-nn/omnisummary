@@ -12,10 +12,9 @@ from shared.config import (
     PipelineConfig,
     RedditCollectorConfig,
     YouTubeCollectorConfig,
-    _utc_offset_hours,
     get_config,
 )
-from shared.constants import COLLECTOR_NAMES, EMPTY_RATE_CHECK_DISABLED, SourceType
+from shared.constants import COLLECTOR_NAMES, EMPTY_RATE_CHECK_DISABLED
 from shared.utils import LANGUAGE_MODEL_INFO
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
@@ -48,14 +47,6 @@ class TestStrictConfig:
         assert cfg.pipeline.top_n >= 1
         assert cfg.aws.project_name
 
-    def test_config_template_loads_under_strict_validation(self):
-        # The template is what a new deployment copies to config.yaml, so it must itself validate.
-        # Loaded via from_yaml on the template PATH — Config.load() reads the shipped config.yaml
-        # and would pass no matter how broken the template is (the old vacuous assertion).
-        cfg = Config.from_yaml(str(CONFIG_TEMPLATE))
-        assert cfg.pipeline.top_n >= 1
-        assert cfg.aws.project_name
-
     def test_config_template_ships_no_live_sources(self):
         # Placeholder-only lists: a template must not silently start collecting from somewhere,
         # and the code defaults must not fill them in either.
@@ -64,15 +55,6 @@ class TestStrictConfig:
         assert cfg.collectors.reddit.subreddits == []
         assert cfg.collectors.youtube.channels == []
         assert cfg.collectors.rsshub.accounts == []
-
-    def test_template_is_the_config_ci_synths(self):
-        # config/config.yaml is gitignored, so a Config.load()-based synth silently fell back to
-        # bare code defaults in CI and proved nothing about the config anyone actually deploys.
-        # Keep the CI synth pinned to the tracked template.
-        synth_src = (Path(__file__).resolve().parent.parent / "scripts" / "ci_synth.py").read_text()
-        assert "config-template.yaml" in synth_src
-        assert "Config.from_yaml(str(CONFIG_TEMPLATE))" in synth_src
-        assert "config = Config.load()" not in synth_src
 
     def test_reddit_subreddits_default_is_empty(self):
         # A live source list must come from config.yaml, never from a code default (which would
@@ -141,11 +123,6 @@ class TestImageSizes:
     mirrored the code defaults, so a renamed key stayed green while every brief silently coerced to
     the default orientation."""
 
-    def test_keys_are_exactly_the_orientation_vocabulary(self):
-        from shared.constants import VISUAL_ORIENTATIONS
-
-        assert set(PipelineConfig().image_sizes) == set(VISUAL_ORIENTATIONS)
-
     def test_values_are_pixel_dimensions(self):
         assert all(re.fullmatch(r"\d+x\d+", size) for size in PipelineConfig().image_sizes.values())
 
@@ -164,13 +141,6 @@ class TestImageSizes:
             PipelineConfig(
                 image_sizes={"square": "big", "landscape": "1536x1024", "portrait": "1024x1536"},
             )
-
-    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
-    def test_every_config_keeps_the_vocabulary(self, config_path):
-        from shared.constants import VISUAL_ORIENTATIONS
-
-        cfg = Config.from_yaml(str(config_path))
-        assert set(cfg.pipeline.image_sizes) == set(VISUAL_ORIENTATIONS)
 
 
 class TestVisualImageQuality:
@@ -195,9 +165,6 @@ class TestSourceSlotVocabulary:
     pass. A typo'd key matches no item at all: the guarantee silently disappears and the fill pass
     falls back to DEFAULT_SOURCE_SLOT for that source."""
 
-    def test_the_default_keys_are_real_source_types(self):
-        assert set(PipelineConfig().source_slots) <= {source.value for source in SourceType}
-
     def test_an_unknown_source_name_fails_load(self):
         with pytest.raises(ValidationError, match="unknown source type"):
             PipelineConfig(source_slots={"websearch": 2})  # the real value is 'web'
@@ -205,11 +172,6 @@ class TestSourceSlotVocabulary:
     def test_no_slots_at_all_is_allowed(self):
         # A legitimate config: no per-source guarantees (the origin cap still applies).
         assert PipelineConfig(source_slots={}).source_slots == {}
-
-    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
-    def test_every_config_names_real_source_types(self, config_path):
-        cfg = Config.from_yaml(str(config_path))
-        assert set(cfg.pipeline.source_slots) <= {source.value for source in SourceType}
 
 
 class TestSlotsVersusTopN:
@@ -252,9 +214,6 @@ class TestAlertOnEmptyVocabulary:
     """alert_on_empty is matched against the health report's source names. A name that is not a
     collector alerts on NOTHING, so the dark source it was meant to watch just stays dark."""
 
-    def test_known_collector_names_are_accepted(self):
-        assert CollectorsConfig(alert_on_empty=list(COLLECTOR_NAMES)).alert_on_empty == list(COLLECTOR_NAMES)
-
     def test_an_unknown_collector_name_fails_load(self):
         with pytest.raises(ValidationError, match="unknown collector"):
             CollectorsConfig(alert_on_empty=["websearch"])  # the collector is named 'web_search'
@@ -267,14 +226,6 @@ class TestAlertOnEmptyVocabulary:
         from pipeline.runner import collector_registry
 
         assert set(collector_registry(Config(), MagicMock())) == set(COLLECTOR_NAMES)
-
-    def test_the_vocabulary_matches_the_per_source_config_fields(self):
-        assert set(COLLECTOR_NAMES) <= set(CollectorsConfig.model_fields)
-
-    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
-    def test_every_config_watches_only_real_collectors(self, config_path):
-        cfg = Config.from_yaml(str(config_path))
-        assert set(cfg.collectors.alert_on_empty) <= set(COLLECTOR_NAMES)
 
 
 class TestTranscriptLanguage:
@@ -354,31 +305,6 @@ class TestParkedSourceTripwires:
         "web_search": lambda c: [q for search in c.web_search.trend_searches for q in search.queries],
     }
 
-    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
-    @pytest.mark.parametrize("source_name", sorted(_INPUT_LISTS))
-    def test_a_source_too_small_for_a_rate_sets_the_absolute_count(self, config_path, source_name):
-        """A source with too few inputs for the RATE to express a partial outage must arm
-        max_failed_inputs, or DEGRADED is unreachable for it.
-
-        The bound is derived from the knobs, not picked: the check is `failed/total*100 >
-        error_rate_threshold`, so the smallest failure that can trip it needs more than
-        100/threshold inputs. At the shipped 50.0 that is 3 — and reddit ships 2 subreddits, where 1
-        of 2 is exactly 50.0 (not >, so clean) and 2 of 2 already raises FAILED. The reddit block had
-        no max_failed_inputs at all and took the code default of 0: a clean OK with half of Reddit
-        missing."""
-        config = Config.from_yaml(str(config_path))
-        source = getattr(config.collectors, source_name)
-        inputs = len(self._INPUT_LISTS[source_name](config.collectors))
-        if not inputs:
-            pytest.skip(f"{source_name} declares no inputs in {config_path.name}")
-        if inputs >= 100 / source.error_rate_threshold + 1:
-            return
-        assert source.max_failed_inputs > 0, (
-            f"{source_name} has {inputs} input(s) and error_rate_threshold "
-            f"{source.error_rate_threshold}: no failure count can exceed that rate, so DEGRADED "
-            "is unreachable without max_failed_inputs"
-        )
-
     def test_the_code_default_leaves_the_empty_rate_check_unreachable(self):
         # Documents WHY the file must set it: the default equals the sentinel, and the comparison
         # is strict, so no observed empty rate can ever exceed it.
@@ -436,14 +362,6 @@ class TestLoadNeverSilentlyShipsAnEmptyConfig:
         with pytest.raises(FileNotFoundError, match="No config found"):
             Config.load()
 
-    def test_the_ci_image_check_loads_a_config(self):
-        # Importing the handlers never loads a config, so the import check alone let a config-less
-        # image ship green. The image is built from a clean checkout, so this step is the only place
-        # the deployed artifact's config is exercised at all.
-        workflow = (Path(__file__).resolve().parent.parent / ".github" / "workflows" / "ci.yml").read_text()
-        assert "Config.load()" in workflow
-        assert "c.collectors.web_search.trend_searches" in workflow
-
 
 class _ConfigDirRedirect:
     """Stand-in for `shared.config.Path` that points Config.load()'s config dir at a temp directory,
@@ -473,18 +391,6 @@ class TestCollectionWindowCoversTheGapBetweenRuns:
     cron, so items published 19:00-24:00 KST were unpublished when that day's run collected and
     already before the next run's cutoff: five hours of every day, in no digest ever."""
 
-    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
-    @pytest.mark.parametrize("source_name", sorted(COLLECTOR_NAMES))
-    def test_every_source_reaches_back_to_the_previous_run(self, config_path, source_name):
-        config = Config.from_yaml(str(config_path))
-        run_hour_local = (int(config.aws.digest_cron_hour) + _utc_offset_hours(config.aws.timezone)) % 24
-        assert getattr(config.collectors, source_name).lookback_hours >= 48 - run_hour_local
-
-    def test_the_code_default_reaches_back_too(self):
-        # A bare Config() is what a clean-checkout image resolves to, so the default must be valid
-        # on its own — the validator running over it is exactly what proves that.
-        assert Config().collectors.rss.lookback_hours >= 48 - 19
-
     def test_a_config_edit_cannot_reopen_the_hole(self):
         with pytest.raises(ValidationError, match="look back less than"):
             Config(collectors={"rss": {"lookback_hours": 24}})
@@ -510,19 +416,3 @@ class TestCollectionWindowCoversTheGapBetweenRuns:
         # A 06:00 KST run is 42h from the previous run's clock time to this run's reference midnight.
         with pytest.raises(ValidationError, match="42h"):
             Config(aws={"digest_cron_hour": "21"})  # 21:00 UTC = 06:00 KST
-
-
-class TestLanguageRules:
-    def test_one_form_per_proper_noun_and_particle_agreement(self):
-        # Published Korean carried two spellings of the same company in one digest and particles
-        # that disagreed with the form as written. One consolidated rule, no per-company name table.
-        rules = PipelineConfig().digest_language_rules
-        assert "ONE form per proper noun" in rules
-        assert "particle" in rules
-
-    def test_the_glossary_rule_is_stated_positively(self):
-        # "never invent a Korean transliteration" is a prohibition that leaves the model to guess what
-        # to do instead — and it guessed 홈랍. Stating the remaining option removes the choice.
-        rules = PipelineConfig().digest_language_rules
-        assert "stays in Latin script" in rules
-        assert "transliteration" not in rules

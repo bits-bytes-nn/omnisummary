@@ -116,14 +116,6 @@ METRIC_NAMESPACE: str = "OmniSummary"
 # are both attributed per project/stage, so both need the same fallback.
 DEFAULT_PROJECT_NAME: str = "omnisummary"
 
-# Character limits applied to titles/queries when written to log lines. Centralized so
-# log verbosity can be tuned in one place instead of scattered slice literals.
-LOGGING_TRUNCATION_CHARS: dict[str, int] = {
-    "title": 70,
-    "title_short": 50,
-    "brief_title": 60,
-}
-
 # Threads caps each post at 500 characters, and one item's post is assembled as
 # title / source line / prose / URL joined by blank lines. Both live HERE because three layers
 # depend on them and used to carry their own literal: the renderer that fits a post to the cap, the

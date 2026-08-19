@@ -993,16 +993,22 @@ INFO "skipping" 한 줄이었다.
 
 ### 모델 팩토리
 
-`BedrockLanguageModelFactory.get_model(model_id, **kwargs)`가 모델 역량(`LANGUAGE_MODEL_INFO`)에 맞게 구성된
-`ChatBedrock` 또는 `ChatBedrockConverse`를 반환한다. 구성하는 역량은 thinking과 1M 컨텍스트, 성능 레이턴시,
-프롬프트 캐싱이다. 리전은 `BedrockCrossRegionModelHelper`가 가능하면 `global.`이나 `apac.`
-inference-profile ID로 해석한다.
+`BedrockLanguageModelFactory.get_model(model_id, stage=..., **kwargs)`가 `ChatBedrockConverse`를 반환한다.
+리전은 `BedrockCrossRegionModelHelper`가 가능하면 `global.`이나 `apac.` inference-profile ID로 해석하고,
+이 프로젝트의 application inference profile이 있으면 그 ARN을 우선한다.
 
-**생성자 표면은 테스트로 고정한다.** 두 클래스 모두 pydantic `extra="forbid"`이니 프레임워크 메이저
+**클래스가 하나인 것은 단순화의 결과다.** 예전에는 `use_converse = is_cross_region or (enable_thinking and
+supports_thinking)`으로 `ChatBedrock`과 갈렸고, 팩토리가 thinking과 1M 컨텍스트, 성능 레이턴시 역량을 함께
+구성했다. 그런데 `enable_thinking`과 `thinking_effort`, `latency_mode`, `supports_1m_context_window`를 넘기는
+config 필드도 프로덕션 호출자도 없었고, 해석기가 항상 profile ARN이나 `global.*` id를 돌려주니 `is_cross_region`이
+참이어서 `ChatBedrock`은 구성된 적이 없다. 게다가 남은 유일한 역량 플래그 `supports_temperature`가 **Converse에
+대고** 검증된 값이라, 그 분기가 돌면 플래그 의미가 성립하지 않는 잠재적 불일치였다. 2026-08-19에 그 레이어
+전체(약 164줄)를 지웠다. 해석이 맨 모델 id로 폴백해도 Converse가 그것을 받으니 폴백을 잃지도 않는다.
+
+**생성자 표면은 테스트로 고정한다.** `ChatBedrockConverse`가 pydantic `extra="forbid"`이니 프레임워크 메이저
 업그레이드가 kwarg 하나를 renaming하면 즉시 깨진다. 그런데 나머지 테스트는 전부 config 딕셔너리만 검증하니,
 그 딕셔너리를 실제 클래스에 넣어보지 않으면 그린으로 배포된다. 그래서 `tests/test_model_factory.py`의
-`TestModelClassConstructorSurface`가 모든 조합으로, 배포 환경에서만 도는 profile ARN 경로까지 포함해 실제
-인스턴스를 생성한다.
+`TestModelClassConstructorSurface`가 배포 환경에서만 도는 profile ARN 경로까지 포함해 실제 인스턴스를 생성한다.
 
 **모델 ID.** `shared/constants.py`의 `LanguageModelId`에 열거되어 있고 최신은 Opus 5와 Sonnet 5다(Opus 4.8도
 유지한다). Opus 5의 역량 플래그는 버전 번호로 추정하지 않고 Converse로 직접 검증했다. `temperature`와 레거시
@@ -1010,9 +1016,10 @@ inference-profile ID로 해석한다.
 `output_config.effort`만 통과한다. Opus 4.7과 4.8, Sonnet 5도 같다. 단가도 Opus 4.8과 같으니 비용 옵션이
 아니라 품질 옵션이다.
 
-**샘플링 파라미터 게이팅.** Sonnet 5와 Opus 4.7/4.8은 비기본 `temperature`와 `top_k`, `top_p`를 400으로
-거부한다. 그래서 해당 모델은 `LanguageModelInfo.supports_temperature=False`로 표시하고, 팩토리가
-`temperature`와 `top_k`를 함께 생략한다.
+**샘플링 파라미터 게이팅.** Sonnet 5와 Opus 4.7/4.8/5는 비기본 `temperature`를 400으로 거부한다. 그래서 해당
+모델은 `LanguageModelInfo.supports_temperature=False`로 표시하고 팩토리가 `temperature`를 생략한다. 레지스트리에
+남은 역량 플래그는 이것 하나다. Converse로 직접 검증한 사실(레거시 thinking 형태를 거부하고 adaptive와 effort가
+필요하다는 것)은 재확인에 실제 호출 비용이 드니 `LanguageModelInfo`의 docstring에 문장으로 남겨두었다.
 
 ### 단계 태깅과 사용량 로깅
 

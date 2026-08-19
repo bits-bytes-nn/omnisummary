@@ -8,7 +8,6 @@ from langchain_core.output_parsers import StrOutputParser
 
 from shared import (
     ENGAGEMENT_SIGNAL_BLOCK,
-    LOGGING_TRUNCATION_CHARS,
     BedrockLanguageModelFactory,
     CollectedItem,
     RankedItem,
@@ -174,7 +173,7 @@ class ContentRanker:
                 " (backfill)" if r.backfill else (" (grace)" if r.grace else ""),
                 r.item.source_type.value,
                 r.score,
-                r.item.title[: LOGGING_TRUNCATION_CHARS["title"]],
+                r.item.title[:70],
             )
         return selected
 
