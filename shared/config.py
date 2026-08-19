@@ -275,6 +275,13 @@ class PipelineConfig(_StrictModel):
     agi_countdown_position: Literal["prefix", "suffix"] = "prefix"
     item_text_max_tokens: int = Field(default=8000, ge=1)
     ranking_batch_size: int = Field(default=40, ge=1)
+    # Share of the ranking model's context window one batch of items may fill. The rest is the
+    # system prompt plus the JSON the model writes back; a batch that overflows fails the Converse
+    # call and used to take its whole batch of candidates with it.
+    ranking_batch_token_budget_ratio: float = Field(default=0.7, gt=0.0, le=1.0)
+    # Context window assumed when the model registry has no entry for the ranking model (so the
+    # budget above still bounds the batch instead of falling back to an unbounded one).
+    ranking_context_window_fallback: int = Field(default=200_000, ge=1)
     # How many ranking batches may be in flight against Bedrock at once. Unbounded fan-out threw
     # every batch at Converse simultaneously, so a large day self-throttled (ThrottlingException)
     # and dropped whole batches of candidates.

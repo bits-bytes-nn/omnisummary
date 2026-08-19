@@ -65,7 +65,7 @@ class ContentRanker:
         # Sort by normalized title first so near-duplicate stories co-locate in the same
         # batch, where the prompt's same-topic clustering/dedup can still see both.
         ordered = sorted(items, key=lambda it: (normalize_title(it.title), it.item_id))
-        batches = self._make_batches(ordered)
+        batches = await self._make_batches(ordered)
         if len(batches) > 1:
             logger.info(
                 "Ranking in %d parallel batches (<=%d items each)", len(batches), self.config.ranking_batch_size
@@ -101,6 +101,7 @@ class ContentRanker:
             items_total=len(items),
             items_scored=len(ranked_items),
             items_lost=lost,
+            min_coverage_ratio=self.config.ranking_min_coverage_ratio,
         )
         self._apply_origin_weights(ranked_items)
 
@@ -230,6 +231,7 @@ class ContentRanker:
             coverage,
             self.config.ranking_min_coverage_ratio,
         )
+        recovered: list[RankedItem] = []
         try:
             recovered = await self._score_batch(missing, semaphore)
         except Exception:
@@ -237,11 +239,17 @@ class ContentRanker:
             # batch into a failed one (rank() would then count it toward the all-batches-failed
             # outage check), so keep exactly what the first pass produced.
             logger.warning("Ranking coverage re-ask failed; keeping the partially scored batch", exc_info=True)
-            return ranked
 
         extra = [r for r in recovered if r.item.item_id not in scored_ids]
         logger.info("Coverage re-ask recovered %d of %d omitted item(s)", len(extra), len(missing))
-        return ranked + extra
+        scored = ranked + extra
+        if not scored:
+            # NOTHING parsed, twice over (a malformed JSON response both times): returning [] left
+            # `failures` empty and items_lost at 0, so RankingHealth read clean and every ranking
+            # alert stayed silent while a whole batch of candidates vanished from the day's pool.
+            # Raising makes rank() count the batch as failed — one bad batch is still tolerated.
+            raise RuntimeError(f"Ranking batch of {len(items)} items produced no parsed rankings")
+        return scored
 
     async def _score_batch(self, items: list[CollectedItem], semaphore: asyncio.Semaphore) -> list[RankedItem]:
         """Score one batch, retrying the Converse call before giving up. The failure used to be
@@ -390,7 +398,11 @@ class ContentRanker:
                 origin_counts[origin_key] += 1
 
         for source_key, slot_count in self._slot_order(above_threshold, source_slots):
-            taken = 0
+            # Start from what the pins already consumed of THIS source's slots. Starting at 0
+            # ignored the seed above, so a pinned `web` item plus web's guaranteed slot produced two
+            # web stories and pushed the lowest-scoring source out of the core entirely — breaking
+            # the diversity guarantee exactly on the days the operator intervened.
+            taken = source_counts[source_key]
             for item in above_threshold:
                 if taken >= slot_count or len(selected) >= limit:
                     break
@@ -468,23 +480,28 @@ class ContentRanker:
                 best[src] = max(best.get(src, 0.0), r.score)
         return sorted(source_slots.items(), key=lambda kv: (-best.get(kv[0], 0.0), kv[0]))
 
-    def _make_batches(self, ordered: list[CollectedItem]) -> list[list[CollectedItem]]:
+    async def _make_batches(self, ordered: list[CollectedItem]) -> list[list[CollectedItem]]:
         """Split ranking input into batches capped by BOTH item count (ranking_batch_size) and a
         cumulative input-token budget. A fixed count alone can blow the model's context window:
         ranking_batch_size(40) × item_text_max_tokens(10k) = 400k > Opus 200k, and a batch that
         overflows fails the Converse call → _rank_batch drops the WHOLE batch silently. Bound the
-        batch by ~70% of the context window (leaving room for the system prompt + JSON output).
-        Each item's truncated-text count is cached (truncate runs anyway), so this adds no API cost."""
+        batch by ranking_batch_token_budget_ratio of the context window (leaving room for the system
+        prompt + JSON output). Each item's truncated-text count is cached (truncate runs anyway), so
+        this adds no API cost.
+
+        The counts are measured CONCURRENTLY in threads: truncate_to_tokens and count_tokens are
+        sync boto3 CountTokens calls, so measuring the day's ~90 candidates one at a time from this
+        async caller blocked the event loop for 90+ serialized round-trips before the first Converse
+        request even left the process."""
         model_info = self.llm_factory.get_model_info(self.config.ranking_model)
-        window = model_info.context_window_size if model_info else 200_000
-        token_budget = int(window * 0.7)
+        window = model_info.context_window_size if model_info else self.config.ranking_context_window_fallback
+        token_budget = int(window * self.config.ranking_batch_token_budget_ratio)
         count_cap = self.config.ranking_batch_size
+        token_counts = await asyncio.gather(*(asyncio.to_thread(self._count_item_tokens, item) for item in ordered))
         batches: list[list[CollectedItem]] = []
         current: list[CollectedItem] = []
         current_tokens = 0
-        for item in ordered:
-            truncated = self._truncate(item.text or "", self.config.item_text_max_tokens)
-            item_tokens = self.llm_factory.count_tokens(truncated) if truncated else 0
+        for item, item_tokens in zip(ordered, token_counts, strict=True):
             # Start a new batch when adding this item would exceed either cap (but never emit an
             # empty batch — a single item over budget still goes in its own batch).
             if current and (len(current) >= count_cap or current_tokens + item_tokens > token_budget):
@@ -495,6 +512,12 @@ class ContentRanker:
         if current:
             batches.append(current)
         return batches
+
+    def _count_item_tokens(self, item: CollectedItem) -> int:
+        """Input tokens one item contributes, as the prompt will actually carry it (truncated).
+        Sync on purpose — the caller runs it in a thread."""
+        truncated = self._truncate(item.text or "", self.config.item_text_max_tokens)
+        return self.llm_factory.count_tokens(truncated) if truncated else 0
 
     def _format_items(self, items: list[CollectedItem]) -> str:
         parts: list[str] = []

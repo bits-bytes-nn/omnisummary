@@ -88,18 +88,29 @@ class RankingHealth(BaseModel):
     items_total: int = 0
     items_scored: int = 0
     items_lost: int = 0
+    # Coverage the run was judged against (pipeline.ranking_min_coverage_ratio), carried so the
+    # verdict below needs no config access. 0.0 — the default for a directly constructed or older
+    # persisted health — means "coverage alone never degrades the run".
+    min_coverage_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    @property
+    def coverage(self) -> float:
+        """Share of the day's candidates that ended up scored; 1.0 when there was nothing to rank."""
+        return self.items_scored / self.items_total if self.items_total else 1.0
 
     @property
     def degraded(self) -> bool:
-        """True when candidates were LOST — a batch that failed every retry. Model omissions alone
-        (items_scored < items_total) are handled by the coverage re-ask and stay log-only."""
-        return self.batches_failed > 0
+        """True when candidates were LOST — a batch that failed every retry — or when the pass
+        scored less than min_coverage_ratio of the day's candidates. The coverage arm matters
+        because a batch whose response never parsed twice over used to leave every counter at
+        zero, so the alerting stayed silent while a whole batch vanished from the pool."""
+        return self.batches_failed > 0 or self.coverage < self.min_coverage_ratio
 
     def summary(self) -> str:
         return (
             f"{self.batches_failed}/{self.batches_total} ranking batches failed permanently; "
             f"{self.items_lost} of {self.items_total} candidates never reached the digest "
-            f"({self.items_scored} scored)"
+            f"({self.items_scored} scored, coverage {self.coverage:.0%})"
         )
 
 

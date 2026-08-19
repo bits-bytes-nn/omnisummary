@@ -58,10 +58,14 @@ class TestRankEndToEnd:
         assert ids == {"a", "c"}  # b (0.55) filtered out
 
     @pytest.mark.asyncio
-    async def test_llm_failure_returns_empty(self):
+    async def test_unparseable_llm_output_fails_the_run_instead_of_emptying_it(self):
+        # A response that never parses (even after the coverage re-ask) used to return [] with every
+        # health counter at zero, so the digest published off a shortened pool and every ranking
+        # alert stayed silent. With a single batch that is a total outage, so it raises.
         items = _items([("a", SourceType.RSS)])
         ranker = _ranker("garbage not json", top_n=5, min_score=0.6)
-        assert await ranker.rank(items) == []
+        with pytest.raises(RuntimeError, match="ranking batches failed"):
+            await ranker.rank(items)
 
     @pytest.mark.asyncio
     async def test_result_never_exceeds_top_n(self):
@@ -157,6 +161,36 @@ class TestRankEndToEnd:
         result = await ranker.rank(items)
         assert len(result) == 3
         assert result[0].item.item_id == "p"  # pinned still leads
+
+    @pytest.mark.asyncio
+    async def test_pin_consumes_its_own_source_slot(self):
+        # rank() reserves room for the pin and seeds the slot counters with it, but the guaranteed-
+        # slot pass restarted at 0 — so a pinned web item yielded TWO web stories and pushed the
+        # lowest-scoring source out of the core, breaking the diversity guarantee on exactly the
+        # days the operator intervened. Distinct hosts keep max_per_origin out of the way.
+        pin = CollectedItem(
+            item_id="p",
+            source_type=SourceType.WEB,
+            title="t-p",
+            url="https://pinned.example/a",
+            metadata={"pinned": True},
+        )
+        web = CollectedItem(item_id="w1", source_type=SourceType.WEB, title="t-w1", url="https://other.example/a")
+        rest = _items(
+            [("x1", SourceType.X), ("r1", SourceType.RSS), ("rd1", SourceType.REDDIT), ("y1", SourceType.YOUTUBE)]
+        )
+        ranker = _ranker(
+            _rankings({"p": 0.7, "w1": 0.95, "x1": 0.9, "r1": 0.85, "rd1": 0.8, "y1": 0.75}),
+            top_n=5,
+            min_score=0.6,
+            source_slots={"web": 1, "x": 1, "rss": 1, "reddit": 1, "youtube": 1},
+        )
+        result = await ranker.rank([pin, web, *rest])
+        ids = [r.item.item_id for r in result]
+        assert len(result) == 5
+        assert ids[0] == "p"
+        # Every source keeps its guaranteed slot; the pin's own source does not get a second one.
+        assert set(ids) == {"p", "x1", "r1", "rd1", "y1"}
 
     @pytest.mark.asyncio
     async def test_results_sorted_by_score_desc(self):
@@ -304,7 +338,8 @@ class TestRankEndToEnd:
         assert len(result) == 8  # every batch still scored
         assert state["peak"] <= 2, f"fan-out exceeded ranking_max_concurrency: peak={state['peak']}"
 
-    def test_batches_split_on_token_budget_not_just_count(self):
+    @pytest.mark.asyncio
+    async def test_batches_split_on_token_budget_not_just_count(self):
         # Even under the item-count cap, a batch must not exceed the context-window token budget:
         # big items force more, smaller batches so a single Converse call can't overflow.
         config = PipelineConfig(ranking_batch_size=40, item_text_max_tokens=100_000)
@@ -318,7 +353,7 @@ class TestRankEndToEnd:
             for n in range(6)
         ]
         ranker = ContentRanker(config, factory)
-        batches = ranker._make_batches(big_items)
+        batches = await ranker._make_batches(big_items)
         # Every batch stays within the token budget (each ~50k-token item → <=2 per 140k batch).
         assert all(len(b) <= 3 for b in batches)
         assert sum(len(b) for b in batches) == 6  # no item lost
@@ -508,6 +543,47 @@ class TestRankingHealthVerdict:
         assert ranker.health.batches_failed == 2 and ranker.health.batches_total == 3
         assert ranker.health.items_lost == 2
         assert err.called
+
+    @pytest.mark.asyncio
+    async def test_a_batch_that_parses_to_nothing_counts_as_lost(self):
+        # Both the first pass and the coverage re-ask returned unparseable JSON, so the batch used to
+        # return [] without raising: failures stayed empty, items_lost stayed 0 and every ranking
+        # alert was silent while a whole batch vanished from the pool.
+        items = _items([("a", SourceType.WEB), ("b", SourceType.WEB)])
+        config = PipelineConfig(
+            top_n=5, min_score=0.6, source_slots={}, ranking_batch_size=1, ranking_retry_backoff_sec=0
+        )
+        factory = _mock_factory()
+
+        def _respond(prompt_value):
+            return AIMessage(content="garbage not json" if "t-b" in str(prompt_value) else _rankings({"a": 0.9}))
+
+        factory.get_model.return_value = RunnableLambda(_respond)
+        ranker = ContentRanker(config, factory)
+        result = await ranker.rank(items)
+
+        assert {r.item.item_id for r in result} == {"a"}  # the healthy batch still publishes
+        assert ranker.health.batches_failed == 1
+        assert ranker.health.items_lost == 1
+        assert ranker.health.degraded is True
+
+    @pytest.mark.asyncio
+    async def test_coverage_below_the_configured_ratio_is_degraded(self):
+        # No batch FAILED, but the model omitted most of the pool and the re-ask did not recover it.
+        # That is a shortened candidate pool the operator has to hear about.
+        items = _items([(f"i{n}", SourceType.RSS) for n in range(4)])
+        ranker, _seen = _ranker_with_outputs(
+            [_rankings({"i0": 0.9})],
+            top_n=5,
+            min_score=0.6,
+            source_slots={},
+            ranking_min_coverage_ratio=0.9,
+            ranking_retry_backoff_sec=0,
+        )
+        await ranker.rank(items)
+        assert ranker.health.batches_failed == 0
+        assert ranker.health.items_scored == 1 and ranker.health.items_total == 4
+        assert ranker.health.degraded is True
 
     @pytest.mark.asyncio
     async def test_a_clean_run_is_not_degraded(self):
