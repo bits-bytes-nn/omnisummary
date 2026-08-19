@@ -406,7 +406,7 @@ class TestPublishPost:
         with patch.object(threads_handler, "_create_container", new=AsyncMock(return_value="c1")) as create:
             with patch.object(threads_handler, "_publish_container", new=AsyncMock(return_value="p1")):
                 await threads_handler._publish_post(client, "u", "tok", text="x" * 900, reply_to_id="rid")
-        assert len(create.await_args.kwargs["text"]) == threads_handler.THREADS_MAX_TEXT_LENGTH
+        assert len(create.await_args.kwargs["text"]) == threads_handler.THREADS_MAX_POST_CHARS
         assert create.await_args.kwargs["reply_to_id"] == "rid"
 
     @pytest.mark.asyncio
@@ -491,7 +491,7 @@ class TestWireProtocol:
                     ok = await post_to_threads(root_text="R", replies=["가" * 900])
         assert ok.published is True
         creates = [self._form(r) for r in recorded if r.url.path.endswith("/threads")]
-        assert all(len(c["text"]) <= threads_handler.THREADS_MAX_TEXT_LENGTH for c in creates)
+        assert all(len(c["text"]) <= threads_handler.THREADS_MAX_POST_CHARS for c in creates)
 
     @pytest.mark.asyncio
     async def test_api_rejection_on_the_publish_step_is_reported_not_swallowed(self):

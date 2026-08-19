@@ -33,7 +33,7 @@ class TestTavilySearch:
     @pytest.mark.asyncio
     async def test_no_key_returns_message(self):
         with patch.object(rb, "_get_tavily_client", return_value=None):
-            result = await rb._tavily_search("q")
+            result = await rb.tavily_search("q")
         assert "TAVILY_API_KEY not configured" in result
 
     @pytest.mark.asyncio
@@ -42,7 +42,7 @@ class TestTavilySearch:
         client.search = AsyncMock(return_value={"results": [{"title": "t", "url": "u", "content": "c"}]})
         client.close = AsyncMock()
         with patch.object(rb, "_get_tavily_client", return_value=client):
-            await rb._tavily_search("q", topic="news", include_domains=["x.com"])
+            await rb.tavily_search("q", topic="news", include_domains=["x.com"])
         kwargs = client.search.call_args.kwargs
         assert kwargs["topic"] == "news"
         assert kwargs["include_domains"] == ["x.com"]
@@ -53,7 +53,7 @@ class TestTavilySearch:
         client.search = AsyncMock(return_value={"results": [{"title": "t", "url": "u", "content": "c"}]})
         client.close = AsyncMock()
         with patch.object(rb, "_get_tavily_client", return_value=client):
-            await rb._tavily_search("q")
+            await rb.tavily_search("q")
         client.close.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -62,7 +62,7 @@ class TestTavilySearch:
         client.search = AsyncMock(return_value={"results": []})
         client.close = AsyncMock()
         with patch.object(rb, "_get_tavily_client", return_value=client):
-            result = await rb._tavily_search("q")
+            result = await rb.tavily_search("q")
         assert result == "No results found."
 
     @pytest.mark.asyncio
@@ -71,7 +71,7 @@ class TestTavilySearch:
         client.search = AsyncMock(side_effect=RuntimeError("down"))
         client.close = AsyncMock()
         with patch.object(rb, "_get_tavily_client", return_value=client):
-            result = await rb._tavily_search("q")
+            result = await rb.tavily_search("q")
         assert "Search failed" in result
 
 
@@ -123,7 +123,7 @@ class TestExtractUrl:
         assert "No readable content" in result
 
     @pytest.mark.asyncio
-    async def test_search_papers_author_missing_name(self):
+    async def test_semantic_scholar_search_author_missing_name(self):
         # Some Semantic Scholar author objects lack 'name' — must not KeyError.
         payload = {
             "data": [
@@ -139,7 +139,7 @@ class TestExtractUrl:
         resp = MagicMock(status_code=200)
         resp.json.return_value = payload
         with patch.object(rb, "retry_async", new=AsyncMock(return_value=resp)):
-            result = await rb._search_papers("q")
+            result = await rb.semantic_scholar_search("q")
         assert "Real" in result and "T" in result
 
     @pytest.mark.asyncio
@@ -169,7 +169,7 @@ class TestSearchPapers:
         resp = MagicMock(status_code=200)
         resp.json.return_value = payload
         with patch.object(rb, "retry_async", new=AsyncMock(return_value=resp)):
-            result = await rb._search_papers("transformers")
+            result = await rb.semantic_scholar_search("transformers")
         assert "Attention Is All You Need" in result
         assert "Vaswani" in result
         assert "http://paper" in result
@@ -181,7 +181,7 @@ class TestSearchPapers:
             "retry_async",
             new=AsyncMock(side_effect=httpx.HTTPStatusError("429", request=MagicMock(), response=MagicMock())),
         ):
-            result = await rb._search_papers("q")
+            result = await rb.semantic_scholar_search("q")
         assert "SEARCH_FAILED" in result
 
     @pytest.mark.asyncio
@@ -189,5 +189,5 @@ class TestSearchPapers:
         resp = MagicMock(status_code=200)
         resp.json.return_value = {"data": []}
         with patch.object(rb, "retry_async", new=AsyncMock(return_value=resp)):
-            result = await rb._search_papers("q")
+            result = await rb.semantic_scholar_search("q")
         assert result == "No related papers found."

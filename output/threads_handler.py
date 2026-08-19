@@ -7,10 +7,9 @@ from typing import Any, NamedTuple
 import boto3
 import httpx
 
-from shared import logger, resolve_secret
+from shared import THREADS_MAX_POST_CHARS, logger, resolve_secret
 
 THREADS_API_BASE = "https://graph.threads.net/v1.0"
-THREADS_MAX_TEXT_LENGTH = 500
 # Meta processes the media container asynchronously; publishing too early fails.
 THREADS_MEDIA_PROCESS_WAIT_SEC = 30
 # After an image root is published it isn't immediately addressable as a reply target; replies
@@ -112,7 +111,7 @@ async def _publish_post(
 ) -> str:
     params: dict[str, Any] = {"media_type": "IMAGE" if image_url else "TEXT"}
     if text:
-        params["text"] = text[:THREADS_MAX_TEXT_LENGTH]
+        params["text"] = text[:THREADS_MAX_POST_CHARS]
     if image_url:
         params["image_url"] = image_url
     if reply_to_id:
@@ -269,12 +268,12 @@ async def post_to_threads(
 
     # Renderer already fits each item into one <=500-char post at a sentence boundary; keep the
     # one-item-one-reply mapping and only hard-cap as a last-resort safety net (no re-splitting).
-    posts: list[str] = [r[:THREADS_MAX_TEXT_LENGTH] for r in (replies or []) if r.strip()]
+    posts: list[str] = [r[:THREADS_MAX_POST_CHARS] for r in (replies or []) if r.strip()]
 
     try:
         async with httpx.AsyncClient(timeout=request_timeout) as client:
             root_id = await _publish_post(
-                client, user_id, token, text=root_text[:THREADS_MAX_TEXT_LENGTH], image_url=image_url
+                client, user_id, token, text=root_text[:THREADS_MAX_POST_CHARS], image_url=image_url
             )
             logger.info("Posted Threads root '%s'", root_id)
             # An image root needs time to become addressable as a reply target. Poll it ONCE with

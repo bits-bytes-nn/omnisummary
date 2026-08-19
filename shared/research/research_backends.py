@@ -27,7 +27,7 @@ def _format_search_results(results: list[dict], preview_chars: int) -> str:
     )
 
 
-async def _tavily_search(query: str, *, topic: str | None = None, include_domains: list[str] | None = None) -> str:
+async def tavily_search(query: str, *, topic: str | None = None, include_domains: list[str] | None = None) -> str:
     client = _get_tavily_client()
     if not client:
         return "TAVILY_API_KEY not configured."
@@ -79,7 +79,7 @@ async def extract_url(url: str) -> str:
     return content[:cap]
 
 
-async def _search_papers(query: str) -> str:
+async def semantic_scholar_search(query: str) -> str:
     agent_config = get_config().agent
     async with httpx.AsyncClient(timeout=agent_config.search_request_timeout) as client:
 

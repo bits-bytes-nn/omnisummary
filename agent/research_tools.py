@@ -9,7 +9,7 @@ from strands import tool
 from output.delivery import DeliveryContext, current_delivery_context, request_context
 from shared import get_config, logger
 from shared.media import fetch_og_image
-from shared.research import _search_papers, _tavily_search, extract_url
+from shared.research import extract_url, semantic_scholar_search, tavily_search
 
 __all__ = [
     "DeliveryContext",
@@ -36,7 +36,7 @@ async def web_search(query: str, recency: str = "general") -> str:
         recency: "general" (default) or "news" for recent news framing.
     """
     topic = "news" if recency.lower().strip() == "news" else None
-    return await _tavily_search(query, topic=topic)
+    return await tavily_search(query, topic=topic)
 
 
 @tool
@@ -48,7 +48,7 @@ async def community_search(query: str) -> str:
         query: The search query.
     """
     domains = get_config().agent.community_search_domains
-    return await _tavily_search(query, include_domains=domains)
+    return await tavily_search(query, include_domains=domains)
 
 
 @tool
@@ -58,7 +58,7 @@ async def search_papers(query: str) -> str:
     Args:
         query: The search query.
     """
-    return await _search_papers(query)
+    return await semantic_scholar_search(query)
 
 
 @tool

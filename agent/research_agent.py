@@ -10,8 +10,8 @@ from strands.models import BedrockModel
 from strands.models.bedrock import CacheConfig
 
 from shared import (
-    _LANGUAGE_MODEL_INFO,
     KOREAN_STYLE_RULES,
+    LANGUAGE_MODEL_INFO,
     BedrockCrossRegionModelHelper,
     Config,
     EnvVars,
@@ -30,7 +30,7 @@ from .research_tools import (
     web_search,
 )
 
-# max_tokens when the model id isn't in _LANGUAGE_MODEL_INFO (kept in one place so the warning
+# max_tokens when the model id isn't in LANGUAGE_MODEL_INFO (kept in one place so the warning
 # message and the actual fallback can't drift).
 _DEFAULT_MAX_OUTPUT_TOKENS = 64000
 
@@ -286,7 +286,7 @@ def create_research_agent(tools: list[Any] | None = None) -> Agent:
     )
 
     model_id = config.agent.model_id
-    model_info = _LANGUAGE_MODEL_INFO.get(model_id)
+    model_info = LANGUAGE_MODEL_INFO.get(model_id)
     if model_info is None:
         logger.warning(
             "No model info for model_id '%s'; falling back to max_tokens=%d (check model configuration)",

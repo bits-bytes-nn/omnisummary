@@ -1,17 +1,16 @@
 from output.renderers import (
     SLACK_MAX_BLOCKS_PER_MESSAGE,
     SLACK_MAX_SECTION_CHARS,
-    THREADS_MAX_POST_CHARS,
     _hard_split_link_safe,
     _split_long_paragraph,
-    _strip_slack_mrkdwn,
     render_agent_blocks,
     render_research_blocks,
     render_slack_blocks,
     render_threads_posts,
     render_threads_research,
-    threads_item_overhead_chars,
 )
+from shared.constants import THREADS_MAX_POST_CHARS
+from shared.formatting import strip_slack_mrkdwn, threads_item_overhead_chars
 from shared.models import DigestContent, DigestItem
 
 
@@ -110,7 +109,7 @@ class TestThreadsPosts:
 
     def test_source_line_never_publishes_a_slack_emoji_shortcode(self):
         # Regression (2026-08-18, live post): metrics carried the Slack shortcode
-        # `:arrow_forward:`, and _strip_slack_mrkdwn removes `_`, so Threads published a bare
+        # `:arrow_forward:`, and strip_slack_mrkdwn removes `_`, so Threads published a bare
         # ":arrowforward:". Metric emoji must survive the strip intact — i.e. be real Unicode.
         from shared.formatting import YOUTUBE_VIEWS_EMOJI
 
@@ -366,23 +365,23 @@ class TestResearchBlocks:
 
 class TestStripSlackMrkdwn:
     def test_link_becomes_label_and_url(self):
-        assert _strip_slack_mrkdwn("<https://x.com|엑스>") == "엑스 (https://x.com)"
+        assert strip_slack_mrkdwn("<https://x.com|엑스>") == "엑스 (https://x.com)"
 
     def test_bare_angle_link(self):
-        assert _strip_slack_mrkdwn("<https://x.com>") == "https://x.com"
+        assert strip_slack_mrkdwn("<https://x.com>") == "https://x.com"
 
     def test_drops_bold_italic_code(self):
-        assert _strip_slack_mrkdwn("*굵게* _기울임_ `코드`") == "굵게 기울임 코드"
+        assert strip_slack_mrkdwn("*굵게* _기울임_ `코드`") == "굵게 기울임 코드"
 
     def test_strips_leading_bullets_and_headings(self):
-        assert _strip_slack_mrkdwn("- 항목\n## 제목") == "항목\n제목"
+        assert strip_slack_mrkdwn("- 항목\n## 제목") == "항목\n제목"
 
     def test_preserves_underscores_in_linked_url(self):
         # Regression: the [*_`] strip must not corrupt URLs (arxiv/github/query params use '_').
-        assert _strip_slack_mrkdwn("<https://arxiv.org/abs/2_3_4|논문>") == "논문 (https://arxiv.org/abs/2_3_4)"
+        assert strip_slack_mrkdwn("<https://arxiv.org/abs/2_3_4|논문>") == "논문 (https://arxiv.org/abs/2_3_4)"
 
     def test_preserves_underscores_in_bare_url(self):
-        out = _strip_slack_mrkdwn("참고 https://github.com/a_b/c_d *굵게*")
+        out = strip_slack_mrkdwn("참고 https://github.com/a_b/c_d *굵게*")
         assert "https://github.com/a_b/c_d" in out
         assert "굵게" in out and "*" not in out
 

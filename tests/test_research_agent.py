@@ -258,7 +258,7 @@ class TestAgentTemperatureGating:
             from shared.config import Config
 
             model_id = Config.load().agent.model_id
-            with patch.dict(ra._LANGUAGE_MODEL_INFO, {model_id: temp_ok}, clear=False):
+            with patch.dict(ra.LANGUAGE_MODEL_INFO, {model_id: temp_ok}, clear=False):
                 ra.create_research_agent()
 
         assert captured.get("temperature") == 0.0
@@ -274,7 +274,7 @@ class TestAgentMaxTokensFallback:
                 "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
                 return_value="global.anthropic.claude-sonnet-5",
             ),
-            patch("agent.research_agent._LANGUAGE_MODEL_INFO", {}),
+            patch("agent.research_agent.LANGUAGE_MODEL_INFO", {}),
             patch("agent.research_agent.logger") as log,
         ):
             from agent.research_agent import create_research_agent

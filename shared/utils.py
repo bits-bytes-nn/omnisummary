@@ -38,7 +38,7 @@ class LanguageModelInfo(BaseModel):
     uses_adaptive_thinking: bool = False
 
 
-_LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
+LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
     LanguageModelId.CLAUDE_V3_HAIKU: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=4096,
@@ -380,7 +380,7 @@ class BedrockLanguageModelFactory(
         return "bedrock-runtime"
 
     def _get_model_info_dict(self) -> dict[LanguageModelId, LanguageModelInfo]:
-        return _LANGUAGE_MODEL_INFO
+        return LANGUAGE_MODEL_INFO
 
     def count_tokens(self, text: str) -> int:
         """Authoritative token count via the Bedrock CountTokens API (not a local heuristic).

@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from shared.config import Config, PipelineConfig, RedditCollectorConfig, YouTubeCollectorConfig, get_config
-from shared.utils import _LANGUAGE_MODEL_INFO
+from shared.utils import LANGUAGE_MODEL_INFO
 
 CONFIG_TEMPLATE = Path(__file__).resolve().parent.parent / "config" / "config-template.yaml"
 LOCAL_CONFIG = Path(__file__).resolve().parent.parent / "config" / "config.yaml"
@@ -98,11 +98,11 @@ class TestConfiguredModelsAreRegistered:
             cfg.collectors.web_search.refine_model,
             cfg.agent.model_id,
         }
-        missing = [m.value for m in configured if m not in _LANGUAGE_MODEL_INFO]
-        assert not missing, f"template models missing from _LANGUAGE_MODEL_INFO: {missing}"
+        missing = [m.value for m in configured if m not in LANGUAGE_MODEL_INFO]
+        assert not missing, f"template models missing from LANGUAGE_MODEL_INFO: {missing}"
 
     def test_every_configured_model_has_registry_info(self):
-        # A model set in config that lacks a _LANGUAGE_MODEL_INFO entry passes Pydantic load
+        # A model set in config that lacks a LANGUAGE_MODEL_INFO entry passes Pydantic load
         # (valid enum) but hits the runtime max_tokens/gating fallback with only a warning.
         # This locks the two in sync so a Sonnet-5-style bump can't half-land. Read the LOCAL
         # config.yaml directly: Config.load() falls back to code defaults when it's absent, which
@@ -117,8 +117,8 @@ class TestConfiguredModelsAreRegistered:
             cfg.collectors.web_search.refine_model,
             cfg.agent.model_id,
         }
-        missing = [m.value for m in configured if m not in _LANGUAGE_MODEL_INFO]
-        assert not missing, f"configured models missing from _LANGUAGE_MODEL_INFO: {missing}"
+        missing = [m.value for m in configured if m not in LANGUAGE_MODEL_INFO]
+        assert not missing, f"configured models missing from LANGUAGE_MODEL_INFO: {missing}"
 
 
 class TestImageSizes:

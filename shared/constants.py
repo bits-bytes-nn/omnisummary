@@ -116,3 +116,10 @@ LOGGING_TRUNCATION_CHARS: dict[str, int] = {
     "brief_title": 60,
     "user_query": 100,
 }
+
+# Threads caps each post at 500 characters, and one item's post is assembled as
+# title / source line / prose / URL joined by blank lines. Both live HERE because three layers
+# depend on them and used to carry their own literal: the renderer that fits a post to the cap, the
+# publisher that truncates to it, and the prose budget the digest editor is told about.
+THREADS_MAX_POST_CHARS: int = 500
+THREADS_POST_SEPARATOR: str = "\n\n"

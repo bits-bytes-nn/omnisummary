@@ -10,26 +10,26 @@ from shared import ImageAsset
 class TestSearchTools:
     @pytest.mark.asyncio
     async def test_web_search_general(self):
-        with patch.object(rt, "_tavily_search", new=AsyncMock(return_value="ok")) as tav:
+        with patch.object(rt, "tavily_search", new=AsyncMock(return_value="ok")) as tav:
             await rt.web_search._tool_func("q")
         assert tav.await_args.kwargs.get("topic") is None
 
     @pytest.mark.asyncio
     async def test_web_search_news_maps_topic(self):
-        with patch.object(rt, "_tavily_search", new=AsyncMock(return_value="ok")) as tav:
+        with patch.object(rt, "tavily_search", new=AsyncMock(return_value="ok")) as tav:
             await rt.web_search._tool_func("q", recency="news")
         assert tav.await_args.kwargs.get("topic") == "news"
 
     @pytest.mark.asyncio
     async def test_community_search_passes_domains(self):
-        with patch.object(rt, "_tavily_search", new=AsyncMock(return_value="ok")) as tav:
+        with patch.object(rt, "tavily_search", new=AsyncMock(return_value="ok")) as tav:
             await rt.community_search._tool_func("q")
         domains = rt.get_config().agent.community_search_domains
         assert tav.await_args.kwargs.get("include_domains") == domains
 
     @pytest.mark.asyncio
-    async def test_search_papers_delegates(self):
-        with patch.object(rt, "_search_papers", new=AsyncMock(return_value="papers")) as sp:
+    async def test_semantic_scholar_search_delegates(self):
+        with patch.object(rt, "semantic_scholar_search", new=AsyncMock(return_value="papers")) as sp:
             result = await rt.search_papers._tool_func("transformers")
         sp.assert_awaited_once_with("transformers")
         assert result == "papers"

@@ -3,16 +3,31 @@ from __future__ import annotations
 import re
 from typing import NamedTuple
 
-from shared import DigestContent, logger
+from shared import (
+    THREADS_MAX_POST_CHARS,
+    THREADS_POST_SEPARATOR,
+    URL_RE,
+    DigestContent,
+    logger,
+    split_sentences,
+    strip_slack_mrkdwn,
+    truncate_at_word,
+)
+
+__all__ = [
+    "SLACK_MAX_BLOCKS_PER_MESSAGE",
+    "SLACK_MAX_SECTION_CHARS",
+    "render_agent_blocks",
+    "render_research_blocks",
+    "render_slack_blocks",
+    "render_threads_posts",
+    "render_threads_research",
+]
 
 # Slack caps a single message at 50 blocks; chunk item blocks across messages under it.
 SLACK_MAX_BLOCKS_PER_MESSAGE = 45
 # A single Slack section's text field is capped at 3000 chars.
 SLACK_MAX_SECTION_CHARS = 2900
-# Threads caps each post at 500 characters.
-THREADS_MAX_POST_CHARS = 500
-# One item's post is assembled as title / source line / prose / URL joined by blank lines.
-THREADS_POST_SEPARATOR = "\n\n"
 
 
 def _split_long_paragraph(para: str, max_len: int) -> list[str]:
@@ -21,8 +36,8 @@ def _split_long_paragraph(para: str, max_len: int) -> list[str]:
     two messages, leaving both halves as dead raw text)."""
     pieces: list[str] = []
     current = ""
-    for sentence in _sentences(para) or [para]:
-        unit = sentence if len(sentence) <= max_len else _truncate_at_word(sentence, max_len)
+    for sentence in split_sentences(para) or [para]:
+        unit = sentence if len(sentence) <= max_len else truncate_at_word(sentence, max_len)
         # If the sentence itself overflows even after word-trim is impossible without a space,
         # fall back to a link-safe hard split of the raw sentence.
         units = [unit] if len(sentence) <= max_len else _hard_split_link_safe(sentence, max_len)
@@ -216,42 +231,6 @@ def _chunk_blocks(blocks: list[dict]) -> list[list[dict]]:
     return chunks or [[]]
 
 
-_SENTENCE_END = ("다.", "다!", "다?", ". ", "。", "! ", "? ", "…")
-
-
-def _sentences(text: str) -> list[str]:
-    """Split prose into sentences without losing characters, breaking only AFTER a
-    sentence-ending boundary (Korean '다.' / '?' / '!' or '. '). Whitespace-only tails
-    are dropped. Used so a post is trimmed at a clean sentence, never mid-word."""
-    out: list[str] = []
-    start = 0
-    i = 0
-    n = len(text)
-    while i < n:
-        matched = next((e for e in _SENTENCE_END if text.startswith(e, i)), None)
-        if matched:
-            end = i + len(matched)
-            out.append(text[start:end].strip())
-            start = end
-            i = end
-        else:
-            i += 1
-    if text[start:].strip():
-        out.append(text[start:].strip())
-    return [s for s in out if s]
-
-
-def _truncate_at_word(text: str, max_len: int) -> str:
-    """Trim text to <=max_len on a whitespace boundary (never mid-word); if there's no space
-    in range, fall back to a hard character cut. Used only when prose has no sentence boundary."""
-    text = text.strip()
-    if len(text) <= max_len:
-        return text
-    window = text[:max_len]
-    cut = window.rfind(" ")
-    return (window[:cut] if cut > 0 else window).rstrip()
-
-
 def _fit_one_post(
     title: str, meta: str, body: str, implication: str, url: str, max_len: int = THREADS_MAX_POST_CHARS
 ) -> str:
@@ -279,7 +258,7 @@ def _fit_one_post(
             blocks.append(impl)
         return THREADS_POST_SEPARATOR.join(blocks + tail)
 
-    body_sents = _sentences(body)
+    body_sents = split_sentences(body)
     # Drop body sentences from the end while keeping the implication block.
     while body_sents:
         candidate = assemble(" ".join(body_sents))
@@ -295,24 +274,11 @@ def _fit_one_post(
     bare = assemble("", keep_impl=False)
     room = max_len - len(bare) - len(THREADS_POST_SEPARATOR)
     if room > 0 and body.strip():
-        return assemble(_truncate_at_word(body, room), keep_impl=False)
+        return assemble(truncate_at_word(body, room), keep_impl=False)
     if len(bare) <= max_len:
         return bare
     room = max_len - (len(url.strip()) + len(THREADS_POST_SEPARATOR) if url.strip() else 0)
-    return THREADS_POST_SEPARATOR.join([p for p in (_truncate_at_word(title, max(0, room)), url.strip()) if p])
-
-
-def threads_item_overhead_chars(meta: str, url: str) -> int:
-    """Characters ONE item's Threads post spends on the parts CODE owns: the source line, the URL,
-    and the blank-line separators between title / source / body / implication / URL. Everything left
-    over is what the editor may write (title + body + implication), so the prose budget it is told
-    about is derived from this — not from a hand-estimated "~120 chars in practice".
-
-    The implication is its own block, hence one separator MORE than there are code-owned parts
-    (title | body | implication is 2 separators even with no meta and no URL). An item with no
-    implication is charged that separator anyway — a slightly smaller budget, never a too-large one."""
-    parts = [p for p in (meta.strip(), url.strip()) if p]
-    return sum(len(p) for p in parts) + len(THREADS_POST_SEPARATOR) * (len(parts) + 2)
+    return THREADS_POST_SEPARATOR.join([p for p in (truncate_at_word(title, max(0, room)), url.strip()) if p])
 
 
 def _item_post_overflows(title: str, meta: str, body: str, implication: str, url: str) -> bool:
@@ -349,10 +315,10 @@ def _fit_lead(lead: str, countdown: str = "") -> str:
 
 def _pack_sentences(text: str, max_len: int) -> str:
     """Keep whole leading sentences up to max_len; word-trim when even the first one overflows."""
-    kept = _sentences(text)
+    kept = split_sentences(text)
     while kept and len(" ".join(kept)) > max_len:
         kept.pop()
-    return " ".join(kept) if kept else _truncate_at_word(text, max_len)
+    return " ".join(kept) if kept else truncate_at_word(text, max_len)
 
 
 def render_threads_posts(content: DigestContent, countdown: str = "") -> tuple[str, list[str]]:
@@ -385,48 +351,21 @@ def _item_meta(item) -> str:
     """The provenance line, same composition Slack's context block uses — but stripped of markup.
     `source_tag` is stored backtick-wrapped for Slack mrkdwn (`` `r/LocalLLaMA` ``), and Threads
     renders no markup, so the backticks would show up literally in the post."""
-    return _strip_slack_mrkdwn(" · ".join(p for p in (item.source_tag, item.metrics) if p)).strip()
-
-
-_URL_RE = re.compile(r"https?://\S+")
-
-
-def _strip_slack_mrkdwn(text: str) -> str:
-    """Convert Slack mrkdwn to plain text for Threads (which renders no markup): turn
-    <url|label> into 'label (url)', drop *bold*/_italic_/`code` markers, and remove
-    leading bullet/heading glyphs. URLs are protected from the marker strip — they
-    legitimately contain '_'/'*' (arxiv, github, query params), so stripping those
-    characters globally would silently break the links. Whitespace structure is preserved."""
-    text = re.sub(r"<([^|>]+)\|([^>]+)>", r"\2 (\1)", text)
-    text = re.sub(r"<([^>]+)>", r"\1", text)
-
-    # Stash URLs so the [*_`] strip below can't corrupt them, then restore verbatim.
-    urls: list[str] = []
-
-    def _stash(match: re.Match) -> str:
-        urls.append(match.group(0))
-        return f"\x00{len(urls) - 1}\x00"
-
-    text = _URL_RE.sub(_stash, text)
-    # Strip leading bullet/heading glyphs FIRST (so a "* 항목" or "- 항목" bullet is removed as a
-    # unit), THEN drop inline *bold*/_italic_/`code` markers.
-    out_lines = [re.sub(r"^\s*(?:[-*•]\s+|#{1,6}\s+)", "", line) for line in text.split("\n")]
-    text = re.sub(r"[*_`]", "", "\n".join(out_lines))
-    return re.sub(r"\x00(\d+)\x00", lambda m: urls[int(m.group(1))], text)
+    return strip_slack_mrkdwn(" · ".join(p for p in (item.source_tag, item.metrics) if p)).strip()
 
 
 def _trim_long_sentence(sentence: str, max_len: int) -> str:
     """Word-trim an over-length sentence to fit max_len, but PRESERVE a trailing citation URL
     (research sentences often end in '... (https://...)'). Reserve room for the last URL, trim
     the prose before it, then re-append the URL — so a hard-trim never drops the citation."""
-    urls = _URL_RE.findall(sentence)
+    urls = URL_RE.findall(sentence)
     if not urls:
-        return _truncate_at_word(sentence, max_len)
+        return truncate_at_word(sentence, max_len)
     tail = urls[-1].rstrip(").,")
     if len(tail) >= max_len:  # the URL alone overflows — nothing useful to keep but the URL
         return tail[:max_len]
     prose = sentence[: sentence.rfind(tail)].rstrip(" (")
-    trimmed = _truncate_at_word(prose, max_len - len(tail) - 1)
+    trimmed = truncate_at_word(prose, max_len - len(tail) - 1)
     return f"{trimmed} {tail}".strip()
 
 
@@ -445,7 +384,7 @@ def _pack_by_sentence(text: str) -> list[str]:
     posts: list[str] = []
     current = ""
     for section in [s.strip() for s in text.split("\n\n") if s.strip()]:
-        for sentence in _sentences(section) or [section]:
+        for sentence in split_sentences(section) or [section]:
             sentence = sentence.strip()
             if not sentence:
                 continue
@@ -487,10 +426,10 @@ def _trim_oversize_post(post: str) -> str:
         return _trim_long_sentence(post, THREADS_MAX_POST_CHARS)
     # A research post ends in a citation URL; reserve room for it so trimming the prose from the
     # end never drops the source. Keep leading sentences that fit, then re-append the citation.
-    body_urls = _URL_RE.findall(body)
+    body_urls = URL_RE.findall(body)
     citation = body_urls[-1].rstrip(").,") if body_urls else ""
     prose_room = room - (len(citation) + 1) if citation else room
-    sentences = _sentences(body) or [body]
+    sentences = split_sentences(body) or [body]
     kept: list[str] = []
     for sentence in sentences:
         # Don't double-count the citation: a sentence that is just the trailing URL is folded in
@@ -504,7 +443,7 @@ def _trim_oversize_post(post: str) -> str:
     trimmed = " ".join(kept).strip()
     if not trimmed or len(trimmed) > max(0, prose_room):
         # Even the first body sentence overflows the room — word-trim it to fit the prose room.
-        trimmed = _truncate_at_word(sentences[0], max(0, prose_room))
+        trimmed = truncate_at_word(sentences[0], max(0, prose_room))
     if citation and citation not in trimmed:
         trimmed = f"{trimmed} {citation}".strip()
     result = f"{heading}\n\n{trimmed}".strip()
@@ -539,7 +478,7 @@ def render_threads_research(report: str, *, max_posts: int = 0) -> ThreadsResear
     `max_posts` (>0) hard-caps the total post count (root + replies) so a too-long report can't
     fan out into dozens of public posts; excess posts are dropped. Returns the render plus the
     dropped/trimmed counts, so the caller can report an incomplete report as incomplete."""
-    plain = _strip_slack_mrkdwn(report).strip()
+    plain = strip_slack_mrkdwn(report).strip()
     # A leading "---" (delimiter as the report's first line) isn't matched by the split regex,
     # which requires a preceding newline; drop it so it can't ride into the first post as text.
     plain = _THREADS_LEADING_DELIMITER.sub("", plain).strip()

@@ -6,7 +6,7 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime
 from urllib.parse import urlparse
 
-from .constants import SourceType
+from .constants import THREADS_POST_SEPARATOR, SourceType
 from .logger import logger
 from .models import CollectedItem
 
@@ -216,3 +216,87 @@ def format_origin_label(item: CollectedItem) -> str:
     if item.source_type == SourceType.WEB:
         return urlparse(item.url).netloc.removeprefix("www.")
     return ""
+
+
+# Sentence-ending boundaries: Korean '다.' plus the usual terminators. Splitting AFTER a boundary
+# (never on a fixed stride) is what lets a post be trimmed at a clean sentence.
+_SENTENCE_END = ("다.", "다!", "다?", ". ", "。", "! ", "? ", "…")
+# A bare http(s) URL run. Public so the renderers can protect/extract citation URLs with the same
+# pattern strip_slack_mrkdwn uses, instead of re-declaring it.
+URL_RE = re.compile(r"https?://\S+")
+
+
+def split_sentences(text: str) -> list[str]:
+    """Split prose into sentences without losing characters, breaking only AFTER a
+    sentence-ending boundary (Korean '다.' / '?' / '!' or '. '). Whitespace-only tails
+    are dropped. Used so a post is trimmed at a clean sentence, never mid-word.
+
+    Channel-agnostic on purpose: the pipeline's prose budget and the Threads renderer both need it,
+    and the pipeline used to reach into the renderer's private helper to get it."""
+    out: list[str] = []
+    start = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        matched = next((e for e in _SENTENCE_END if text.startswith(e, i)), None)
+        if matched:
+            end = i + len(matched)
+            out.append(text[start:end].strip())
+            start = end
+            i = end
+        else:
+            i += 1
+    if text[start:].strip():
+        out.append(text[start:].strip())
+    return [s for s in out if s]
+
+
+def truncate_at_word(text: str, max_len: int) -> str:
+    """Trim text to <=max_len on a whitespace boundary (never mid-word); if there's no space
+    in range, fall back to a hard character cut. Used only when prose has no sentence boundary."""
+    text = text.strip()
+    if len(text) <= max_len:
+        return text
+    window = text[:max_len]
+    cut = window.rfind(" ")
+    return (window[:cut] if cut > 0 else window).rstrip()
+
+
+def strip_slack_mrkdwn(text: str) -> str:
+    """Convert Slack mrkdwn to plain text (for channels that render no markup, and for measuring
+    how long a string really is): turn <url|label> into 'label (url)', drop *bold*/_italic_/`code`
+    markers, and remove leading bullet/heading glyphs. URLs are protected from the marker strip —
+    they legitimately contain '_'/'*' (arxiv, github, query params), so stripping those characters
+    globally would silently break the links. Whitespace structure is preserved."""
+    text = re.sub(r"<([^|>]+)\|([^>]+)>", r"\2 (\1)", text)
+    text = re.sub(r"<([^>]+)>", r"\1", text)
+
+    # Stash URLs so the [*_`] strip below can't corrupt them, then restore verbatim.
+    urls: list[str] = []
+
+    def _stash(match: re.Match) -> str:
+        urls.append(match.group(0))
+        return f"\x00{len(urls) - 1}\x00"
+
+    text = URL_RE.sub(_stash, text)
+    # Strip leading bullet/heading glyphs FIRST (so a "* 항목" or "- 항목" bullet is removed as a
+    # unit), THEN drop inline *bold*/_italic_/`code` markers.
+    out_lines = [re.sub(r"^\s*(?:[-*•]\s+|#{1,6}\s+)", "", line) for line in text.split("\n")]
+    text = re.sub(r"[*_`]", "", "\n".join(out_lines))
+    return re.sub(r"\x00(\d+)\x00", lambda m: urls[int(m.group(1))], text)
+
+
+def threads_item_overhead_chars(meta: str, url: str) -> int:
+    """Characters ONE item's Threads post spends on the parts CODE owns: the source line, the URL,
+    and the blank-line separators between title / source / body / implication / URL. Everything left
+    over is what the editor may write (title + body + implication), so the prose budget it is told
+    about is derived from this — not from a hand-estimated "~120 chars in practice".
+
+    The implication is its own block, hence one separator MORE than there are code-owned parts
+    (title | body | implication is 2 separators even with no meta and no URL). An item with no
+    implication is charged that separator anyway — a slightly smaller budget, never a too-large one.
+
+    Lives beside the other post-length primitives (not in the renderer) so the pipeline can derive
+    the editor's budget without importing an output channel."""
+    parts = [p for p in (meta.strip(), url.strip()) if p]
+    return sum(len(p) for p in parts) + len(THREADS_POST_SEPARATOR) * (len(parts) + 2)

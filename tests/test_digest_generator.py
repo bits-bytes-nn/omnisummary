@@ -268,7 +268,7 @@ class TestDerivedBudgets:
         return RankedItem(item=CollectedItem(item_id=url, source_type=SourceType.WEB, title="T", url=url), score=0.8)
 
     def test_budget_shrinks_with_the_real_fixed_parts(self):
-        from output.renderers import THREADS_MAX_POST_CHARS
+        from shared.constants import THREADS_MAX_POST_CHARS
 
         gen = self._gen(digest_item_prose_max_chars=0)  # ceiling off: pure derivation
         short_url, long_url = "https://e.com/a", "https://e.com/" + "p" * 120
@@ -288,7 +288,7 @@ class TestDerivedBudgets:
         assert gen._item_prose_budget([self._web("https://e.com/a")]) == 100
 
     def test_lead_budget_reserves_the_code_owned_countdown(self):
-        from output.renderers import THREADS_MAX_POST_CHARS
+        from shared.constants import THREADS_MAX_POST_CHARS
 
         gen = self._gen(agi_countdown_position="suffix")
         intro = "AGI 등장 100일 전이다. "

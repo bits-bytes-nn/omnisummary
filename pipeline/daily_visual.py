@@ -509,15 +509,15 @@ class DailyVisualMaker:
         return "\n\n".join(blocks)
 
     async def _run_research_step(self, step: dict) -> str:
-        from shared.research import _search_papers, _tavily_search
+        from shared.research import semantic_scholar_search, tavily_search
 
         query = step["query"]
         source = str(step.get("source", "news")).lower()
         if source == "papers":
-            return await _search_papers(query)
+            return await semantic_scholar_search(query)
         if source == "community":
-            return await _tavily_search(query, include_domains=self.config.agent.community_search_domains)
-        return await _tavily_search(query, topic="news")
+            return await tavily_search(query, include_domains=self.config.agent.community_search_domains)
+        return await tavily_search(query, topic="news")
 
     async def _post(self, image_bytes: bytes | None, brief: VisualBrief | None) -> bool:
         if not self.config.pipeline.enable_slack_post:

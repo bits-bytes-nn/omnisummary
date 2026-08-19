@@ -8,10 +8,10 @@ from dataclasses import dataclass, field
 
 from slack_sdk.web.async_client import AsyncWebClient
 
-from shared import ImageAsset, get_config, logger, resolve_secret, sanitize_slack_mrkdwn
+from shared import ImageAsset, get_config, logger, resolve_secret, sanitize_slack_mrkdwn, strip_slack_mrkdwn
 from shared.media import extension_for
 
-from .renderers import _strip_slack_mrkdwn, render_research_blocks, render_threads_research
+from .renderers import render_research_blocks, render_threads_research
 
 # Header shown above a deep-research report in Slack — mirrors the daily digest's
 # ":satellite: OmniSummary — <date> · N stories" so the two read as one product.
@@ -120,7 +120,7 @@ async def _deliver_slack(report: str, delivery: DeliveryContext, *, bot_token: s
     # (## headings, **bold**, [text](url), emoji) so this primary path matches the fallback path.
     report = sanitize_slack_mrkdwn(report)
     # Notification/preview text: plain prose, not raw <url|...>/*bold* markup.
-    notify = _strip_slack_mrkdwn(report)[:200]
+    notify = strip_slack_mrkdwn(report)[:200]
 
     client = AsyncWebClient(token=token)
     chunks = render_research_blocks(report, header=_SLACK_RESEARCH_HEADER)

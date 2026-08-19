@@ -2,6 +2,8 @@ from .config import KOREAN_STYLE_RULES, Config, get_config
 from .constants import (
     DOMAIN_TO_SOURCE,
     LOGGING_TRUNCATION_CHARS,
+    THREADS_MAX_POST_CHARS,
+    THREADS_POST_SEPARATOR,
     TRENDS_KEY,
     EnvVars,
     LanguageModelId,
@@ -10,6 +12,7 @@ from .constants import (
 )
 from .formatting import (
     COUNTDOWN_SUFFIX_SEPARATOR,
+    URL_RE,
     YOUTUBE_VIEWS_EMOJI,
     agi_countdown_intro,
     clean_rss_feed_name,
@@ -20,6 +23,10 @@ from .formatting import (
     normalize_title,
     place_countdown_intro,
     resolve_origin_key,
+    split_sentences,
+    strip_slack_mrkdwn,
+    threads_item_overhead_chars,
+    truncate_at_word,
 )
 from .history_store import PublishedUrlLedger, RollingLog, ThreadsPostLedger, published_urls_from_snapshots
 from .logger import get_correlation_id, is_running_in_aws, logger, set_correlation_id
@@ -52,7 +59,7 @@ from .prompts import (
 )
 from .state_store import LocalStateStore, S3StateStore, StateReadError, StateStore, create_state_store
 from .utils import (
-    _LANGUAGE_MODEL_INFO,
+    LANGUAGE_MODEL_INFO,
     BedrockCrossRegionModelHelper,
     BedrockLanguageModelFactory,
     LanguageModelInfo,
@@ -82,9 +89,16 @@ __all__ = [
     "format_origin_label",
     "normalize_title",
     "resolve_origin_key",
+    "URL_RE",
+    "split_sentences",
+    "strip_slack_mrkdwn",
+    "threads_item_overhead_chars",
+    "truncate_at_word",
+    "THREADS_MAX_POST_CHARS",
+    "THREADS_POST_SEPARATOR",
     "LanguageModelId",
     "LanguageModelInfo",
-    "_LANGUAGE_MODEL_INFO",
+    "LANGUAGE_MODEL_INFO",
     "CollectedItem",
     "Config",
     "get_config",

@@ -105,3 +105,34 @@ class TestFormatOriginLabel:
         assert format_origin_label(_sourced(SourceType.YOUTUBE, channel_url="c")) == "c"
         assert format_origin_label(_sourced(SourceType.X, author="karpathy")) == "@karpathy"
         assert format_origin_label(_sourced(SourceType.RSS, feed_title="The Verge")) == "The Verge"
+
+
+class TestPublicPackageBoundaries:
+    """Two boundary violations kept biting refactors: `shared.research` and `shared` exported
+    UNDERSCORE names as their cross-package contract, and the pipeline's prose budget imported an
+    output channel's private helpers. Both are now public names in shared/."""
+
+    def test_shared_exports_no_underscore_names(self):
+        import shared
+        import shared.research
+
+        assert not [name for name in shared.__all__ if name.startswith("_")]
+        assert not [name for name in shared.research.__all__ if name.startswith("_")]
+
+    def test_the_digest_generator_does_not_import_from_the_output_layer(self):
+        # Its Threads-aware prose budget used to depend on output.renderers' PRIVATE helpers, so
+        # renaming a renderer internal broke the pipeline. (daily_visual legitimately imports the
+        # delivery handlers — it is the publish path; the generator only computes a budget.)
+        from pathlib import Path
+
+        source = (Path(__file__).resolve().parent.parent / "pipeline" / "digest_generator.py").read_text()
+        assert "from output" not in source and "import output" not in source
+
+    def test_the_threads_post_cap_has_one_definition(self):
+        from output import renderers, threads_handler
+        from pipeline import digest_generator
+        from shared.constants import THREADS_MAX_POST_CHARS
+
+        assert renderers.THREADS_MAX_POST_CHARS is THREADS_MAX_POST_CHARS
+        assert threads_handler.THREADS_MAX_POST_CHARS is THREADS_MAX_POST_CHARS
+        assert digest_generator.THREADS_MAX_POST_CHARS is THREADS_MAX_POST_CHARS

@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from shared.constants import LanguageModelId
-from shared.utils import _LANGUAGE_MODEL_INFO, TOKEN_COUNT_MODEL, BedrockLanguageModelFactory
+from shared.utils import LANGUAGE_MODEL_INFO, TOKEN_COUNT_MODEL, BedrockLanguageModelFactory
 
 
 def _factory(client=None):
@@ -72,14 +72,14 @@ class TestTemperatureGating:
     def test_opus_48_omits_temperature(self):
         # Opus 4.7/4.8 reject the temperature param -> must not be sent.
         f = _factory()
-        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_8_OPUS]
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_8_OPUS]
         cfg = f._build_model_config(info, "global.anthropic.claude-opus-4-8", True)
         assert "temperature" not in cfg
         assert cfg["max_tokens"] > 0
 
     def test_sonnet_46_includes_temperature(self):
         f = _factory()
-        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
         cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-4-6", True)
         assert "temperature" in cfg
 
@@ -87,7 +87,7 @@ class TestTemperatureGating:
         # Models that reject sampling params must omit BOTH temperature and top_k on the
         # non-converse (ChatBedrock) path, or Bedrock 400s.
         f = _factory()
-        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_8_OPUS]
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_8_OPUS]
         cfg = f._build_model_config(info, "anthropic.claude-opus-4-8", False)
         assert "temperature" not in cfg["model_kwargs"]
         assert "top_k" not in cfg["model_kwargs"]
@@ -95,7 +95,7 @@ class TestTemperatureGating:
     def test_non_cross_region_sonnet_46_includes_top_k(self):
         # A sampling-param-accepting model DOES get top_k on the non-converse path.
         f = _factory()
-        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
         cfg = f._build_model_config(info, "anthropic.claude-sonnet-4-6", False)
         assert cfg["model_kwargs"]["top_k"] == BedrockLanguageModelFactory.DEFAULT_TOP_K
 
@@ -103,14 +103,14 @@ class TestTemperatureGating:
         # Sonnet 5 rejects non-default sampling params (400), same as Opus 4.7/4.8. It is now
         # the default digest/agent/trend model, so lock the gating in explicitly.
         f = _factory()
-        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
         cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", True)
         assert "temperature" not in cfg
         assert cfg["max_tokens"] > 0
 
     def test_sonnet_5_omits_top_k_on_non_converse(self):
         f = _factory()
-        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
         cfg = f._build_model_config(info, "anthropic.claude-sonnet-5", False)
         assert "temperature" not in cfg["model_kwargs"]
         assert "top_k" not in cfg["model_kwargs"]
@@ -123,7 +123,7 @@ class TestThinkingFormat:
 
     def test_adaptive_model_emits_adaptive_thinking(self):
         f = _factory()
-        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
         assert info.uses_adaptive_thinking is True
         cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", True, enable_thinking=True)
         amrf = cfg["additional_model_request_fields"]
@@ -133,7 +133,7 @@ class TestThinkingFormat:
 
     def test_adaptive_model_honors_thinking_effort(self):
         f = _factory()
-        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_8_OPUS]
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_8_OPUS]
         cfg = f._build_model_config(
             info,
             "global.anthropic.claude-opus-4-8",
@@ -145,7 +145,7 @@ class TestThinkingFormat:
 
     def test_legacy_model_keeps_budget_form(self):
         f = _factory()
-        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
         assert info.uses_adaptive_thinking is False
         cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-4-6", True, enable_thinking=True)
         thinking = cfg["additional_model_request_fields"]["thinking"]
@@ -160,10 +160,10 @@ class TestOpus5Registry:
     thinking.type="adaptive" + output_config.effort succeeds. Getting these wrong 400s every call."""
 
     def test_opus_5_is_registered(self):
-        assert LanguageModelId.CLAUDE_V5_OPUS in _LANGUAGE_MODEL_INFO
+        assert LanguageModelId.CLAUDE_V5_OPUS in LANGUAGE_MODEL_INFO
 
     def test_opus_5_rejects_sampling_params_and_uses_adaptive_thinking(self):
-        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_OPUS]
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_OPUS]
         assert info.supports_temperature is False
         assert info.uses_adaptive_thinking is True
         assert info.supports_thinking is True
@@ -172,9 +172,9 @@ class TestOpus5Registry:
     def test_opus_5_matches_the_other_claude_5_family_gates(self):
         # Same shape as Sonnet 5 / Opus 4.8 — a new family member that silently differs on these two
         # flags is the failure mode this pins.
-        opus5 = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_OPUS]
+        opus5 = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_OPUS]
         for sibling in (LanguageModelId.CLAUDE_V5_SONNET, LanguageModelId.CLAUDE_V4_8_OPUS):
-            other = _LANGUAGE_MODEL_INFO[sibling]
+            other = LANGUAGE_MODEL_INFO[sibling]
             assert opus5.supports_temperature == other.supports_temperature
             assert opus5.uses_adaptive_thinking == other.uses_adaptive_thinking
 
@@ -203,7 +203,7 @@ class TestModelClassConstructorSurface:
         # validator, so opt in with a mock. Still no network — nothing is invoked.
         with patch("boto3.client", return_value=MagicMock()):
             for model, kwargs in self.CASES:
-                info = _LANGUAGE_MODEL_INFO[model]
+                info = LANGUAGE_MODEL_INFO[model]
                 for use_converse, cls in ((True, ChatBedrockConverse), (False, ChatBedrock)):
                     cfg = f._build_model_config(info, model.value, use_converse, stage="ranking", **kwargs)
                     cls(**cfg)  # raises on an unknown/renamed kwarg
@@ -214,7 +214,7 @@ class TestModelClassConstructorSurface:
         from langchain_aws import ChatBedrockConverse
 
         f = _factory()
-        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
         cfg = f._build_model_config(
             info, "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc", True, stage="digest"
         )
@@ -231,7 +231,7 @@ class TestTokenUsageAttribution:
         from shared.utils import _TokenUsageLogger
 
         f = _factory()
-        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
         cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", True, stage="ranking")
         loggers = [c for c in cfg["callbacks"] if isinstance(c, _TokenUsageLogger)]
         assert [h.stage for h in loggers] == ["ranking"]
@@ -241,7 +241,7 @@ class TestTokenUsageAttribution:
         from shared.utils import _TokenUsageLogger
 
         f = _factory()
-        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
         cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", True)
         assert [c.stage for c in cfg["callbacks"] if isinstance(c, _TokenUsageLogger)] == ["unattributed"]
 
@@ -250,7 +250,7 @@ class TestTokenUsageAttribution:
 
         mine = MagicMock()
         f = _factory()
-        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
         cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", True, callbacks=[mine], stage="digest")
         assert mine in cfg["callbacks"]
         assert any(isinstance(c, _TokenUsageLogger) for c in cfg["callbacks"])
@@ -328,7 +328,7 @@ class TestApplicationProfileResolution:
         # ChatBedrockConverse refuses an ARN without a provider ("Model provider should be supplied
         # when passing a model ARN as model_id"), which is exactly what a profile ARN is.
         f = _factory()
-        info = _LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
         cfg = f._build_model_config(info, "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc", True)
         assert cfg["provider"] == "anthropic"
         assert "provider" not in f._build_model_config(info, "global.anthropic.claude-sonnet-5", True)

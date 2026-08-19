@@ -1,3 +1,3 @@
-from .research_backends import _search_papers, _tavily_search, extract_url
+from .research_backends import extract_url, semantic_scholar_search, tavily_search
 
-__all__ = ["_search_papers", "_tavily_search", "extract_url"]
+__all__ = ["extract_url", "semantic_scholar_search", "tavily_search"]

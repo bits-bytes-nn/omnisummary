@@ -5,10 +5,10 @@ from urllib.parse import urlparse, urlsplit
 
 from langchain_core.output_parsers import StrOutputParser
 
-from output.renderers import THREADS_MAX_POST_CHARS, _sentences, threads_item_overhead_chars
 from pipeline.aggregator import normalize_url
 from shared import (
     COUNTDOWN_SUFFIX_SEPARATOR,
+    THREADS_MAX_POST_CHARS,
     YOUTUBE_VIEWS_EMOJI,
     BedrockLanguageModelFactory,
     CollectedItem,
@@ -26,6 +26,9 @@ from shared import (
     parse_json_from_llm_output,
     place_countdown_intro,
     retry_async,
+    split_sentences,
+    strip_slack_mrkdwn,
+    threads_item_overhead_chars,
 )
 from shared.config import PipelineConfig
 
@@ -183,10 +186,8 @@ class DigestGenerator:
     def _threads_meta_line(cls, item: CollectedItem) -> str:
         """The item's provenance line exactly as the Threads renderer shows it (Slack markup
         stripped), so the budget is computed off the string that really occupies the post."""
-        from output.renderers import _strip_slack_mrkdwn
-
         tag, metrics = cls._source_tag_and_metrics(item)
-        return _strip_slack_mrkdwn(" · ".join(p for p in (tag, metrics) if p)).strip()
+        return strip_slack_mrkdwn(" · ".join(p for p in (tag, metrics) if p)).strip()
 
     def _parse_content(self, raw: str) -> DigestContent:
         """Turn the editor's raw output into a DigestContent, or raise DigestContentError.
@@ -423,7 +424,7 @@ def _format_recent_leads(recent_leads: list[str] | None) -> str:
 
 def _first_sentence(text: str) -> str:
     """The text's first sentence, hard-capped as a backstop for prose with no sentence boundary."""
-    sentences = _sentences(text)
+    sentences = split_sentences(text)
     first = (sentences[0] if sentences else text).strip()
     if len(first) <= RECENT_LEAD_PREVIEW_CHARS:
         return first
