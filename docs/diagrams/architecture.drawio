@@ -81,7 +81,7 @@
         <mxCell id="runtime" value="Bedrock AgentCore Runtime&#10;Deep research agent (Sonnet 5)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
           <mxGeometry x="1010" y="390" width="68" height="68" as="geometry"/>
         </mxCell>
-        <mxCell id="tools" value="Agent tools&#10;web_search · community_search · search_papers&#10;read_url · recall_trends&#10;attach_image (OG image) · deliver_report" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#888888;align=center;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="tools" value="Agent tools (8)&#10;web_search · community_search · search_papers&#10;read_url · recall_trends · recall_digest&#10;attach_image (OG image) · deliver_report" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#888888;align=center;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="1130" y="384" width="280" height="80" as="geometry"/>
         </mxCell>
         <mxCell id="openai" value="OG image fetch&#10;(source article → attach)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#10A37F;strokeColor=#0A6E55;fontColor=#FFFFFF;fontStyle=1;fontSize=11;" vertex="1" parent="1">

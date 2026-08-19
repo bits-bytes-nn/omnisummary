@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""Generate the Excalidraw concept diagram (hand-drawn style).
+"""Build an Excalidraw (hand-drawn style) scene for the AWS architecture.
 
-Render with:
-  node scripts/render_excalidraw.mjs docs/diagrams/concept-pipeline.excalidraw docs/diagrams/concept-pipeline.png
+The two diagrams the READMEs actually embed are maintained differently, so keep them straight:
 
-(render_excalidraw.mjs screenshots the font-embedded SVG in a headless browser so the
-hand-drawn Virgil font is preserved; the plain `excalidraw-to-png` PNG path rasterizes
-via resvg, which drops the embedded font and falls back to sans-serif.)
+- `docs/diagrams/architecture.drawio` is hand-edited; export it with
+  `drawio -x -f png -s 2 -b 10 -o docs/diagrams/architecture.png docs/diagrams/architecture.drawio`
+  (never `-e`, which breaks image processing downstream).
+- `docs/diagrams/concept-pipeline.excalidraw` is edited in place and re-rendered with
+  `node scripts/render_excalidraw.mjs docs/diagrams/concept-pipeline.excalidraw docs/diagrams/concept-pipeline.png`.
+  That script screenshots the font-embedded SVG in a headless browser so the hand-drawn font
+  survives; the plain `excalidraw-to-png` PNG path rasterizes via resvg, which drops the embedded
+  font and falls back to sans-serif.
+
+This script writes `docs/diagrams/architecture.excalidraw` — the hand-drawn alternative to the
+drawio architecture diagram, kept for regenerating that layout from code.
 """
 
 import json
@@ -228,7 +235,7 @@ def build_architecture():
     c.node(LX, rows[0], "EventBridge\ndaily cron", PINK, PINK_S)
     c.node(LX, rows[1], "Digest Lambda\n(Docker, VPC)", ORANGE, ORANGE_S)
     c.node(LX, rows[2], "Collectors (async)\nRSS·Reddit·YouTube\nWeb·X (RSSHub)", GREY, GREY_S, 12)
-    c.node(LX, rows[3], "Pipeline\nRank (Opus 4.8) →\nDigest (Sonnet 4.6)", GREY, GREY_S, 12)
+    c.node(LX, rows[3], "Pipeline\nRank (Opus 4.8) →\nDigest (Sonnet 5)", GREY, GREY_S, 12)
     c.node(LX, rows[4], "Slack channel\n(daily digest)", GREEN, GREEN_S)
     for a, b in zip(rows, rows[1:], strict=False):
         c.arrow(lcol, a + NH, lcol, b, GREY_S)
