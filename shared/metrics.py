@@ -5,7 +5,7 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
-from .constants import DEFAULT_PROJECT_NAME, METRIC_NAMESPACE, EnvVars
+from .constants import DEFAULT_PROJECT_NAME, METRIC_NAMESPACE
 
 
 def metric_dimensions(project: str, stage: str) -> dict[str, str]:
@@ -31,8 +31,8 @@ def emit_emf(values: dict[str, int | float], extra: dict[str, Any] | None = None
     as epoch-UTC ms, so on a non-UTC runtime every datapoint would be filed at the wrong time (and
     far enough off, CloudWatch rejects it outright)."""
     dimensions = metric_dimensions(
-        os.environ.get(EnvVars.PROJECT_NAME.value, DEFAULT_PROJECT_NAME),
-        os.environ.get(EnvVars.STAGE.value, ""),
+        os.environ.get("PROJECT_NAME", DEFAULT_PROJECT_NAME),
+        os.environ.get("STAGE", ""),
     )
     record: dict[str, Any] = {
         "_aws": {

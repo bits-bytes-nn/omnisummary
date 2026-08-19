@@ -213,9 +213,14 @@ class TestSourceSlotVocabulary:
 
 
 class TestSlotsVersusTopN:
-    """`_apply_source_slots` stops at top_n, so once the guaranteed slots add up to it the relaxation
-    passes are unreachable and the score only orders items WITHIN a source. The shipped config is
-    exactly at that point (top_n 5, five 1-item slots) and it was recorded nowhere."""
+    """Slots that OVER-subscribe top_n are the real misconfiguration: one source's guarantee cannot be
+    honoured and which one loses depends on iteration order.
+
+    Slots that exactly FILL top_n is the evenly-sourced digest slots exist to produce, and it is both
+    the code default (top_n 7, slots summing 7) and the shipped config (top_n 5, five 1-slots) — so
+    warning on `>=` fired on every Config load in the process, including scripts/ci_synth.py. An
+    always-on warning carries no information, which is the same pattern as the five self-alerting
+    knobs removed in 6bcdafc."""
 
     @staticmethod
     def _warnings(**overrides):
@@ -224,9 +229,17 @@ class TestSlotsVersusTopN:
             PipelineConfig(**overrides)
         return [call.args[0] for call in log.warning.call_args_list]
 
-    def test_slots_filling_the_whole_digest_warns(self):
-        warnings = self._warnings(top_n=5, source_slots={"web": 1, "x": 1, "rss": 1, "reddit": 1, "youtube": 1})
-        assert any("orders items WITHIN a source" in message for message in warnings)
+    def test_over_subscribed_slots_warn(self):
+        warnings = self._warnings(top_n=5, source_slots={"web": 2, "x": 1, "rss": 1, "reddit": 1, "youtube": 1})
+        assert any("cannot be honoured" in message for message in warnings)
+
+    def test_slots_exactly_filling_the_digest_are_silent(self):
+        # The shipped config. It was the loudest caller of this warning and it is not a mistake.
+        assert self._warnings(top_n=5, source_slots={"web": 1, "x": 1, "rss": 1, "reddit": 1, "youtube": 1}) == []
+
+    def test_the_code_defaults_are_silent(self):
+        # A bare PipelineConfig() must not warn: ci_synth and every unit test construct one.
+        assert self._warnings() == []
 
     def test_a_slot_left_over_for_score_is_silent(self):
         assert self._warnings(top_n=6, source_slots={"web": 1, "x": 1, "rss": 1, "reddit": 1, "youtube": 1}) == []

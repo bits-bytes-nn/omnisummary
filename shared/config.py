@@ -582,13 +582,20 @@ class PipelineConfig(_StrictModel):
         source, and a source's 0.50 outranks another source's 0.78 by construction. That is a legitimate
         configuration (an evenly-sourced digest is the point of slots at all) but it was recorded
         nowhere, so a shipped digest of low-scoring items read as a ranking failure. A warning, not an
-        error: the operator chose the numbers."""
+        error: the operator chose the numbers.
+
+        The test is OVER-subscription (`>`), not exhaustion (`>=`). Slots that exactly fill top_n is
+        the evenly-sourced digest slots exist to produce — it is both the code default (top_n 7,
+        slots summing 7) and the shipped config (top_n 5, five 1-slots), so `>=` fired on every
+        single Config load including `scripts/ci_synth.py`, and a warning that is always on carries
+        no information. Over-subscription is the case that is genuinely wrong and was silent: some
+        source's guarantee CANNOT be honoured, and which one loses depends on iteration order."""
         total = sum(slot for slot in self.source_slots.values() if slot >= 1)
-        if total >= self.top_n:
+        if total > self.top_n:
             logger.warning(
-                "pipeline.source_slots guarantee %d of the %d reader slots, so the ranking score only "
-                "orders items WITHIN a source: no slot is left for a cross-source comparison. Lower a "
-                "slot or raise top_n to give score something to choose.",
+                "pipeline.source_slots guarantee %d slots but top_n is only %d, so at least one "
+                "source's guarantee cannot be honoured and which one loses depends on iteration "
+                "order. Lower a slot or raise top_n.",
                 total,
                 self.top_n,
             )

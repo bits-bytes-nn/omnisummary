@@ -10,7 +10,6 @@ from shared import (
     DigestContent,
     VisualBrief,
     agi_countdown_intro,
-    create_state_store,
     get_correlation_id,
     logger,
 )
@@ -37,12 +36,15 @@ class DigestPublisher:
     Best-effort in both directions: no failure escapes into the pipeline, and every outcome is left
     on `threads_outcome` so the caller can alert on a partial or missing delivery."""
 
-    def __init__(self, config: Config, store: StateStore | None = None) -> None:
+    def __init__(self, config: Config, store: StateStore | None) -> None:
         self.config = config
         # Last Threads publish outcome (posted/expected posts), for the caller's metrics/alerts.
         self.threads_outcome: ThreadsDelivery | None = None
-        if store is None:
-            store = _open_state_store(config)
+        # `store` is REQUIRED, and None means "the caller tried and it failed" — not "not supplied".
+        # With a default of None plus an `if store is None` fallback, those two cases were
+        # indistinguishable, so a caller whose own create_state_store had just failed triggered a
+        # second attempt here: two inits and two ERROR logs for one broken store. Both call sites
+        # already pass it explicitly, so the fallback only ever ran on the failure path.
         self.threads_ledger: ThreadsPostLedger | None = ThreadsPostLedger(store) if store is not None else None
 
     def has_a_destination(self, content: DigestContent | None, post_date: date, force_republish: bool) -> bool:
@@ -235,17 +237,3 @@ class DigestPublisher:
             post_date,
             self.config.pipeline.agi_countdown_after,
         )
-
-
-def _open_state_store(config: Config) -> StateStore | None:
-    """The store behind the Threads idempotency ledger, or None when it cannot be opened.
-
-    ERROR, not warning: without the store this run cannot tell an already-published day from a fresh
-    one. Deliberately NOT raised — see StateReadError's contract: a lost digest is strictly worse
-    than a run without idempotency, and retry_attempts=0 means nothing would auto-retry the
-    publish."""
-    try:
-        return create_state_store(config)
-    except Exception:
-        logger.error("The Threads post ledger is unavailable (state store init failed)", exc_info=True)
-        return None

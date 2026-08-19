@@ -6,7 +6,7 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .constants import EnvVars, LocalPaths
+from .constants import LocalPaths
 
 _correlation_id: ContextVar[str] = ContextVar("correlation_id", default="")
 
@@ -124,7 +124,7 @@ def configure_logger(config: LoggerConfig) -> logging.Logger:
 
 
 def get_default_logger(name: str = "omnisummary") -> logging.Logger:
-    log_level_str = os.getenv(EnvVars.LOG_LEVEL.value, "INFO").upper()
+    log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
     log_level = getattr(logging, log_level_str, logging.INFO)
     config = LoggerConfig(name=name, level=log_level, json_logging=is_running_in_aws())
     return configure_logger(config)

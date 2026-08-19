@@ -273,6 +273,13 @@ async def deliver_research_report(report: str, *, channel: str, delivery: Delive
         # Idempotency: a retried/duplicated tool call must not double-post the report.
         logger.warning("Report already posted to '%s'; the text of this call was NOT published", channel)
         return DeliveryOutcome.NOT_POSTED
+    # Reset before dispatch so the partial branch below reads THIS attempt's counts. A channel
+    # handler that fails before writing any stats (Slack's missing-token guard is one) used to leave
+    # the PREVIOUS channel's numbers in place, so "deliver to threads (8/8), then to slack with no
+    # token" reported the Slack call as delivered 8/8, spent the channel so no retry could post it,
+    # and sent an incomplete-delivery notice naming threads. Resetting here covers every handler
+    # rather than the one guard that happened to be found.
+    delivery.last_stats = DeliveryStats(channel=channel)
     if delivery.dry_run:
         ok = _dry_run_print(report, channel, delivery)
     elif channel == "threads":
