@@ -9,13 +9,9 @@ import httpx
 from bs4 import BeautifulSoup
 
 from shared import ImageAsset, get_config, logger
+from shared.constants import BROWSER_USER_AGENT
 
-_BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-    )
-}
+_BROWSER_HEADERS = {"User-Agent": BROWSER_USER_AGENT}
 # og:image / twitter:image, in preference order.
 _META_IMAGE_KEYS = (
     ("property", "og:image"),

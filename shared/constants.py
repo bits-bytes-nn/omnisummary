@@ -63,6 +63,13 @@ DOMAIN_TO_SOURCE: dict[str, SourceType] = {
     "twitter.com": SourceType.X,
 }
 
+# User-Agent for every server-side fetch of a third-party page or feed. ONE definition: several
+# hosts (Reddit's public .rss above all) answer a bare library UA with 403/429, and the feed fetch
+# and the OG-image fetch used to carry their own literal — which drifted.
+BROWSER_USER_AGENT: str = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+
 # Platform aliases that RSSHub routes through its `twitter` namespace.
 TWITTER_PLATFORMS: tuple[str, ...] = ("x", "twitter")
 

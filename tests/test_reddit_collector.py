@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
+from collectors.base import TransientStatusError
 from collectors.reddit import RedditCollector
 from shared.config import RedditCollectorConfig
 from shared.constants import SourceType
@@ -29,8 +30,8 @@ class _Feed(dict):
             raise AttributeError(name) from e
 
 
-def _feed(entries, *, bozo=False, bozo_exception=None, status=200):
-    return _Feed(entries=entries, bozo=bozo, bozo_exception=bozo_exception, status=status)
+def _feed(entries):
+    return _Feed(entries=entries, bozo=False)
 
 
 class _Entry(dict):
@@ -58,6 +59,21 @@ def _entry(title="Test Post", link="https://www.reddit.com/r/LocalLLaMA/comments
     return e
 
 
+def _fetch(*outcomes):
+    """Stand-in for collectors.base.fetch_feed: yields the given outcomes in order (the last one
+    repeats), raising any that is an exception so the collector's retry chain still runs."""
+    calls: list[str] = []
+
+    async def _do(url, **kwargs):
+        calls.append(url)
+        outcome = outcomes[min(len(calls) - 1, len(outcomes) - 1)]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    return _do, calls
+
+
 class TestRedditCollect:
     @pytest.mark.asyncio
     async def test_no_subreddits_returns_empty(self):
@@ -67,7 +83,8 @@ class TestRedditCollect:
     @pytest.mark.asyncio
     async def test_collects_via_rss(self):
         collector = RedditCollector(_config())
-        with patch("collectors.reddit.parse_feed_with_fallback", return_value=_feed([_entry()])):
+        fetch, _ = _fetch(_feed([_entry()]))
+        with patch("collectors.base.fetch_feed", side_effect=fetch):
             items = await collector.collect()
         assert len(items) == 1
         item = items[0]
@@ -80,7 +97,8 @@ class TestRedditCollect:
     async def test_filters_old_posts(self):
         old = _entry(published_parsed=(2026, 5, 1, 0, 0, 0, 0, 0, 0))
         collector = RedditCollector(_config())
-        with patch("collectors.reddit.parse_feed_with_fallback", return_value=_feed([old])):
+        fetch, _ = _fetch(_feed([old]))
+        with patch("collectors.base.fetch_feed", side_effect=fetch):
             items = await collector.collect()
         assert items == []
 
@@ -88,88 +106,104 @@ class TestRedditCollect:
     async def test_total_outage_raises_for_health_alert(self):
         # All subreddits failing (e.g. proxy/upstream error) must surface as a failure
         # so the health check marks Reddit FAILED rather than a silent empty day.
-        bad = _feed([], bozo=True, bozo_exception=Exception("parse error"))
         collector = RedditCollector(_config())
-        with patch("collectors.reddit.parse_feed_with_fallback", return_value=bad):
+        fetch, _ = _fetch(RuntimeError("Failed to parse Reddit feed"))
+        with patch("collectors.base.fetch_feed", side_effect=fetch):
             with pytest.raises(RuntimeError):
                 await collector.collect()
-
-    @pytest.mark.asyncio
-    async def test_http_error_status_raises(self):
-        collector = RedditCollector(_config())
-        with patch("collectors.reddit.parse_feed_with_fallback", return_value=_feed([], status=503)):
-            with pytest.raises(RuntimeError):
-                await collector.collect()
-
-    @pytest.mark.asyncio
-    async def test_bozo_with_entries_still_parses(self):
-        # feedparser sets bozo on minor XML issues but still yields entries — must parse them.
-        feed = _feed([_entry()], bozo=True, bozo_exception=Exception("minor xml warning"))
-        collector = RedditCollector(_config())
-        with patch("collectors.reddit.parse_feed_with_fallback", return_value=feed):
-            items = await collector.collect()
-        assert len(items) == 1
 
     @pytest.mark.asyncio
     async def test_partial_failure_keeps_succeeding_subreddits(self):
-        good = _feed([_entry()])
-        bad = _feed([], bozo=True, bozo_exception=Exception("boom"))
         collector = RedditCollector(_config(subreddits=["LocalLLaMA", "MachineLearning"]))
-        with patch("collectors.reddit.parse_feed_with_fallback", side_effect=[good, bad]):
+
+        async def _do(url, **kwargs):
+            if "MachineLearning" in url:
+                raise RuntimeError("boom")
+            return _feed([_entry()])
+
+        with patch("collectors.base.fetch_feed", side_effect=_do):
             items = await collector.collect()
         assert len(items) == 1  # one subreddit failed, the other survived
 
     @pytest.mark.asyncio
     async def test_retries_429_then_succeeds(self):
         # A rate-limited (429) fetch must be retried, not dropped on the first hit. Second attempt
-        # returns a good feed → the subreddit is collected instead of lost.
-        rate_limited = _feed([], status=429)
-        good = _feed([_entry()])
+        # returns a good feed -> the subreddit is collected instead of lost.
         collector = RedditCollector(_config(max_retries=3))
-        with patch("collectors.reddit.parse_feed_with_fallback", side_effect=[rate_limited, good]):
+        fetch, calls = _fetch(TransientStatusError("returned HTTP 429"), _feed([_entry()]))
+        with patch("collectors.base.fetch_feed", side_effect=fetch):
             items = await collector.collect()
         assert len(items) == 1
+        assert len(calls) == 2
 
     @pytest.mark.asyncio
     async def test_429_exhausts_retries_then_fails(self):
-        # Persistent 429 across all attempts surfaces as a failure (single subreddit → total outage
+        # Persistent 429 across all attempts surfaces as a failure (single subreddit -> total outage
         # raises for the health alert).
         collector = RedditCollector(_config(max_retries=2))
-        with patch("collectors.reddit.parse_feed_with_fallback", return_value=_feed([], status=429)) as mock_parse:
+        fetch, calls = _fetch(TransientStatusError("returned HTTP 429"))
+        with patch("collectors.base.fetch_feed", side_effect=fetch):
             with pytest.raises(RuntimeError):
                 await collector.collect()
-        assert mock_parse.call_count == 2  # retried up to max_retries
-
-    @pytest.mark.asyncio
-    async def test_transport_error_is_retried(self):
-        # feedparser reports a connection failure as a bozo feed with NO status, which used to be
-        # classified permanent — a DNS hiccup dropped the subreddit for the whole day.
-        from urllib.error import URLError
-
-        broken = _Feed(entries=[], bozo=True, bozo_exception=URLError("dns failure"))
-        collector = RedditCollector(_config(max_retries=3))
-        with patch("collectors.reddit.parse_feed_with_fallback", side_effect=[broken, _feed([_entry()])]):
-            items = await collector.collect()
-        assert len(items) == 1
+        assert len(calls) == 2  # retried up to max_retries
 
     @pytest.mark.asyncio
     async def test_404_is_not_retried(self):
-        # A permanent 4xx (e.g. 404) must NOT be retried — fail fast.
+        # A permanent 4xx (e.g. 404) must NOT be retried - fail fast.
         collector = RedditCollector(_config(max_retries=3))
-        with patch("collectors.reddit.parse_feed_with_fallback", return_value=_feed([], status=404)) as mock_parse:
+        fetch, calls = _fetch(RuntimeError("returned HTTP 404"))
+        with patch("collectors.base.fetch_feed", side_effect=fetch):
             with pytest.raises(RuntimeError):
                 await collector.collect()
-        assert mock_parse.call_count == 1  # not retried
+        assert len(calls) == 1  # not retried
 
     @pytest.mark.asyncio
     async def test_builds_correct_rss_url(self):
         collector = RedditCollector(_config(sort="top"))
-        with patch("collectors.reddit.parse_feed_with_fallback", return_value=_feed([])) as mock_parse:
+        fetch, calls = _fetch(_feed([]))
+        with patch("collectors.base.fetch_feed", side_effect=fetch):
             await collector.collect()
-        called_url = mock_parse.call_args.args[0]
-        assert "/r/LocalLLaMA/top/.rss" in called_url
-        assert "limit=5" in called_url
-        assert "t=day" in called_url  # sort=top must request the daily window
+        assert "/r/LocalLLaMA/top/.rss" in calls[0]
+        assert "limit=5" in calls[0]
+        assert "t=day" in calls[0]  # sort=top must request the daily window
+
+    @pytest.mark.asyncio
+    async def test_a_quiet_direct_feed_is_not_turned_into_a_failure_by_the_proxy(self, monkeypatch):
+        # THE REGRESSION: the direct fetch answers 200 with no entries (a quiet subreddit) and the
+        # proxy attempt then 429s. Returning the LAST attempt made that 429 the outcome, so every
+        # retry burned and both configured subreddits reported FAILED on a clean empty day.
+        monkeypatch.setenv("CLOUDFLARE_PROXY_URL", "https://proxy.example.com")
+        monkeypatch.setenv("CLOUDFLARE_PROXY_TOKEN", "tok")
+        collector = RedditCollector(_config(subreddits=["LocalLLaMA", "MachineLearning"], max_retries=3))
+        calls: list[str] = []
+
+        async def _do(url, **kwargs):
+            calls.append(url)
+            if "proxy.example.com" in url:
+                raise TransientStatusError("returned HTTP 429")
+            return _feed([])
+
+        with patch("collectors.base.fetch_feed", side_effect=_do):
+            items = await collector.collect()
+        assert items == []  # a quiet day, not a failure
+        assert collector.run_meta == {"accounts_total": 2, "accounts_failed": 0, "accounts_empty": 2}
+        assert len(calls) == 4  # one direct + one proxy attempt per subreddit, no retry storm
+
+    @pytest.mark.asyncio
+    async def test_one_failed_subreddit_of_two_is_degraded_when_configured(self):
+        # With 2 subreddits the failure RATE cannot express this: 1 of 2 is exactly 50% (clean) and
+        # 2 of 2 already raises FAILED, so DEGRADED was unreachable without the absolute knob.
+        collector = RedditCollector(_config(subreddits=["LocalLLaMA", "MachineLearning"], max_failed_inputs=1))
+
+        async def _do(url, **kwargs):
+            if "MachineLearning" in url:
+                raise RuntimeError("returned HTTP 404")
+            return _feed([_entry()])
+
+        with patch("collectors.base.fetch_feed", side_effect=_do):
+            items = await collector.collect()
+        assert len(items) == 1
+        assert "1/2 subreddits failed" in collector.degraded_detail
 
 
 class TestExtractPostId:

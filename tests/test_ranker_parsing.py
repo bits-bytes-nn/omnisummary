@@ -79,6 +79,23 @@ class TestParseRankings:
         result = self._parse(raw, _items(3))
         assert [r.item.item_id for r in result] == ["item_1"]
 
+    def test_repeated_item_id_collapsed_to_the_first_entry(self):
+        # A repeat used to make len(ranked) == len(items) even though item_3 was never scored, so
+        # the coverage reconciliation saw 1.0 and the editor got the same story twice.
+        raw = json.dumps(
+            {
+                "rankings": [
+                    {"item_id": "item_1", "score": 0.9, "reasoning": "first"},
+                    {"item_id": "item_2", "score": 0.8},
+                    {"item_id": "item_1", "score": 0.4, "reasoning": "second"},
+                ]
+            }
+        )
+        result = self._parse(raw, _items(3))
+        assert [r.item.item_id for r in result] == ["item_1", "item_2"]
+        assert result[0].score == 0.9
+        assert result[0].reasoning == "first"
+
     def test_invalid_json_returns_empty(self):
         result = self._parse("not valid json at all")
         assert result == []

@@ -24,6 +24,10 @@ collectors:
     sort: hot
     limit: 20
     lookback_hours: 24
+    # With only a handful of subreddits the failure RATE cannot express a partial outage: 1 of 2 is
+    # exactly error_rate_threshold (clean) and 2 of 2 already raises FAILED, so DEGRADED was
+    # unreachable. Degrade as soon as this many inputs fail, whatever the rate. 0 disables it.
+    max_failed_inputs: 1
   rss:
     enabled: true
     feeds: []
@@ -70,6 +74,16 @@ collectors:
       #   platform: x
     lookback_hours: 72
     max_concurrency: 5
+    # Expired X session cookies make every account feed answer 200 with NO entries: no failure rate
+    # trips, and as long as one account still had a post the source reported a clean OK. Percent of
+    # inputs that may come back empty before the source is DEGRADED. Set per source — many RSS blogs
+    # legitimately publish nothing on a given day, whereas 40 X accounts going quiet is a broken
+    # session. 100 (the code default, i.e. every other source here) disables the check.
+    empty_rate_threshold: 90.0
+  # Width of the ONE thread pool the whole run shares. Each collector's max_concurrency bounds only
+  # its own fan-out; every asyncio.to_thread lands in this pool, whose stdlib default is 6 threads on
+  # a 2-vCPU Lambda — so the per-collector bounds did not hold globally.
+  thread_pool_max_workers: 16
   # Sources whose EMPTY result is an incident worth an SNS alert. A dark source raises no exception
   # and leaves no stale park file, so nothing else notices it — but reddit/x are legitimately quiet
   # on many days, so this is an explicit opt-in list rather than "alert on any empty source".
@@ -144,6 +158,12 @@ pipeline:
 
 agent:
   model_id: "anthropic.claude-sonnet-5"
+  # Hard per-invocation bounds on the research tool loop, enforced by the Strands SDK at every turn
+  # boundary (research_breadth/research_max_iterations are prompt guidance, not bounds). A run that
+  # trips one is reported to the user as cut short.
+  research_max_turns: 40
+  research_max_total_tokens: 2000000
+  research_max_output_tokens: 100000
 
 slack:
   bot_token: ""    # Or set SLACK_BOT_TOKEN env var

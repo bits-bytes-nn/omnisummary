@@ -4,17 +4,21 @@ import asyncio
 import json
 import os
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from http.client import HTTPException
 from typing import Any
 
 import boto3
+import feedparser
+import httpx
 from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field, ValidationError
 
-from shared import CollectedItem, logger
+from shared import CollectedItem, SourceType, generate_item_id, logger, parse_feed_published_date, retry_async
+from shared.constants import BROWSER_USER_AGENT
+from shared.proxy import fetch_with_proxy_fallback
 
 # HTTP statuses worth another attempt: rate limiting and server-side faults. Everything else —
 # notably 403 (quota exhausted / revoked key) and 404 (unknown resource) — is a verdict retrying
@@ -38,6 +42,9 @@ def feed_status_failure(description: str, status: int) -> Exception:
     caller retries), permanent for everything else."""
     message = f"{description} returned HTTP {status}"
     return TransientStatusError(message) if status in RETRIABLE_STATUS_CODES else RuntimeError(message)
+
+
+FEED_FETCH_HEADERS = {"User-Agent": BROWSER_USER_AGENT}
 
 
 def feed_parse_failure(description: str, bozo_exception: object) -> Exception:
@@ -100,6 +107,39 @@ class ParkedItems(BaseModel):
         return self.outcome in (ParkOutcome.STALE, ParkOutcome.ERROR)
 
 
+def degradation_reason(
+    *,
+    total: int,
+    failed: int,
+    empty: int,
+    what: str,
+    threshold: float,
+    empty_threshold: float,
+    max_failed: int,
+) -> str:
+    """Why a source that produced items is nonetheless DEGRADED, or "" when it is healthy. Shared by
+    the live path and the park-file path so the two verdicts cannot drift.
+
+    Three independent tripwires, any of which is enough:
+    - `threshold`: percent of inputs that FAILED (a rate, for sources with many inputs);
+    - `max_failed`: an ABSOLUTE failed count, because a rate cannot see a small input list — with
+      2 subreddits, 1 of 2 is exactly 50% (clean at the default) and 2 of 2 already raises FAILED,
+      so DEGRADED was unreachable;
+    - `empty_threshold`: percent of inputs that answered with ZERO items. All-200-and-empty (expired
+      RSSHub cookies, a paywalled 200, a playlist that resolves to nothing) is the same
+      disappearance shape as a failure, but it trips no failure rate at all — and as long as ONE
+      input still produced an item, the source reported a clean OK."""
+    fail_rate = failed / total * 100
+    empty_rate = empty / total * 100
+    if failed > 0 and fail_rate > threshold:
+        return f"{failed}/{total} {what} failed (>{threshold:.0f}%)"
+    if max_failed > 0 and failed >= max_failed:
+        return f"{failed}/{total} {what} failed (>={max_failed})"
+    if empty > 0 and empty_rate > empty_threshold:
+        return f"{empty}/{total} {what} returned nothing (>{empty_threshold:.0f}%)"
+    return ""
+
+
 class BaseCollector(ABC):
     # Set by collectors that read an S3 park file (YouTube, RSSHub), so run_collectors_with_health
     # can classify a stalled/unreadable park as STALE instead of a healthy OK.
@@ -127,9 +167,11 @@ class BaseCollector(ABC):
         threshold: float,
         what: str,
         hint: str = "",
+        empty_threshold: float = 100.0,
+        max_failed: int = 0,
     ) -> None:
-        """Record how many of the source's inputs answered, and report the source DEGRADED when
-        more than `threshold` percent of them failed.
+        """Record how many of the source's inputs answered, and report the source DEGRADED when too
+        many of them failed OR came back empty.
 
         One implementation for every collector: a fresh, on-time result says nothing about a run
         that collected from 3 of 40 inputs, which is the shape of a source quietly vanishing from
@@ -139,30 +181,54 @@ class BaseCollector(ABC):
             PARK_META_ACCOUNTS_FAILED: failed,
             PARK_META_ACCOUNTS_EMPTY: empty,
         }
-        if total <= 0 or failed <= 0:
+        if total <= 0:
             return
-        fail_rate = failed / total * 100
-        if fail_rate <= threshold:
+        reason = degradation_reason(
+            total=total,
+            failed=failed,
+            empty=empty,
+            what=what,
+            threshold=threshold,
+            empty_threshold=empty_threshold,
+            max_failed=max_failed,
+        )
+        if not reason:
             return
-        self.degraded_detail = f"{failed}/{total} {what} failed (>{threshold:.0f}%)" + (f"; {hint}" if hint else "")
+        self.degraded_detail = reason + (f"; {hint}" if hint else "")
         logger.warning("Collector is DEGRADED: %s", self.degraded_detail)
 
-    def flag_degraded_park(self, parked: ParkedItems, *, threshold: float, what: str, hint: str = "") -> None:
+    def flag_degraded_park(
+        self,
+        parked: ParkedItems,
+        *,
+        threshold: float,
+        what: str,
+        hint: str = "",
+        empty_threshold: float = 100.0,
+        max_failed: int = 0,
+    ) -> None:
         """Report a park file that a HALF-DEAD sync wrote as DEGRADED. The file itself is fresh and
         carries items, so nothing else in the health check can tell that the local sync collected
-        from 3 of 40 inputs. Judged with the SAME threshold the live path uses; silent for legacy
-        files that carry no meta block. Reporting only: every item still reaches the aggregator."""
+        from 3 of 40 inputs — or that every input it reached answered with nothing. Judged with the
+        SAME thresholds the live path uses; silent for legacy files that carry no meta block.
+        Reporting only: every item still reaches the aggregator."""
         total = parked.meta.get(PARK_META_ACCOUNTS_TOTAL) or 0
         failed = parked.meta.get(PARK_META_ACCOUNTS_FAILED) or 0
-        if not isinstance(total, int) or not isinstance(failed, int) or total <= 0 or failed <= 0:
+        empty = parked.meta.get(PARK_META_ACCOUNTS_EMPTY) or 0
+        if not all(isinstance(value, int) for value in (total, failed, empty)) or total <= 0:
             return
-        fail_rate = failed / total * 100
-        if fail_rate <= threshold:
-            return
-        self.degraded_detail = (
-            f"parked sync collected from {total - failed}/{total} {what} ({fail_rate:.0f}% failed)"
-            + (f"; {hint}" if hint else "")
+        reason = degradation_reason(
+            total=total,
+            failed=failed,
+            empty=empty,
+            what=what,
+            threshold=threshold,
+            empty_threshold=empty_threshold,
+            max_failed=max_failed,
         )
+        if not reason:
+            return
+        self.degraded_detail = f"parked sync: {reason}" + (f"; {hint}" if hint else "")
         logger.warning("Park file is DEGRADED: %s", self.degraded_detail)
 
 
@@ -341,3 +407,123 @@ async def gather_collector_results(
         raise RuntimeError(f"All {len(failures)} collector tasks failed: {failures[0]}")
 
     return CollectorRunResult(items=items, total=len(results), failed=len(failures), empty=empty)
+
+
+async def fetch_feed(url: str, *, description: str, timeout: float) -> Any:
+    """Fetch ONE feed and parse it, applying the shared transient/permanent classification.
+
+    The body is downloaded with httpx and only then handed to feedparser. feedparser.parse(url)
+    fetches through urllib with NO socket timeout, so a hung host held its worker forever — and
+    asyncio.wait_for cannot cancel an asyncio.to_thread worker, so every timed-out attempt leaked a
+    thread for the rest of the process's life (up to max_retries per feed). An httpx timeout inside
+    a coroutine is a real, cancellable timeout, and it costs nothing once given up on.
+
+    Raises TransientStatusError for a timeout / transport failure / 429 / 5xx (the caller retries),
+    and a plain RuntimeError for a permanent status or an unparseable document."""
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=FEED_FETCH_HEADERS) as client:
+            response = await client.get(url)
+    except httpx.TimeoutException as e:
+        raise TransientStatusError(f"{description} timed out after {timeout}s") from e
+    except httpx.HTTPError as e:
+        # A transport failure (DNS, reset, TLS) is transient, exactly as feedparser's transport-level
+        # bozo_exception is: a DNS hiccup used to lose the feed for the whole day.
+        raise TransientStatusError(f"{description} fetch failed: {e}") from e
+
+    if response.status_code >= 400:
+        raise feed_status_failure(description, response.status_code)
+    feed = feedparser.parse(response.content)
+    if feed.bozo and not feed.entries:
+        raise feed_parse_failure(description, feed.get("bozo_exception"))
+    return feed
+
+
+async def fetch_feed_with_retry(
+    url: str,
+    *,
+    description: str,
+    timeout: float,
+    max_retries: int,
+    backoff_sec: float,
+    proxy_fallback: bool = False,
+) -> Any:
+    """fetch_feed with the retry policy every feed collector shares: a timeout / transport failure /
+    429 / 5xx is retried with jittered linear backoff, a permanent verdict (403/404, malformed body)
+    is not. The jitter seed is the URL, so the dozens of feeds retrying at once don't resynchronise
+    into the burst the upstream rate-limited.
+
+    With proxy_fallback each attempt tries the direct URL first and then the Cloudflare proxy,
+    keeping the best usable response of the two (see fetch_with_proxy_fallback)."""
+
+    async def _attempt() -> Any:
+        if proxy_fallback:
+            return await fetch_with_proxy_fallback(
+                url,
+                lambda candidate: fetch_feed(candidate, description=description, timeout=timeout),
+                has_entries=lambda feed: bool(feed.entries),
+            )
+        return await fetch_feed(url, description=description, timeout=timeout)
+
+    return await retry_async(
+        _attempt,
+        max_retries=max_retries,
+        backoff_sec=backoff_sec,
+        retry_on=(TransientStatusError,),
+        description=description,
+        jitter_seed=url,
+    )
+
+
+def parse_feed_entries(
+    feed: Any,
+    *,
+    source_type: SourceType,
+    cutoff: datetime,
+    description: str,
+    metadata: dict[str, Any],
+    author: str | None = None,
+    item_id_of: Callable[[Any, str], str] | None = None,
+) -> list[CollectedItem]:
+    """Turn a parsed feed's entries into CollectedItems: drop anything published before `cutoff`,
+    take the title/link, prefer full content over the summary, and skip (never fail on) a
+    structurally broken entry.
+
+    One implementation for every feed-based source — RSS, RSSHub and Reddit carried byte-for-byte
+    identical loops, so a fix to one silently left the other two behind. `author` overrides the
+    entry's own (RSSHub attributes every item to the account) and `item_id_of` overrides the
+    entry-id-or-hash default (Reddit derives the post id from the permalink)."""
+    items: list[CollectedItem] = []
+    for entry in feed.entries:
+        try:
+            published_at = parse_feed_published_date(entry)
+            if published_at and published_at < cutoff:
+                continue
+
+            title = entry.get("title", "")
+            link = entry.get("link", "")
+
+            text = ""
+            if hasattr(entry, "content") and entry.content:
+                text = entry.content[0].get("value", "")
+            elif hasattr(entry, "summary"):
+                text = entry.summary or ""
+
+            item_id = item_id_of(entry, link) if item_id_of else (entry.get("id", "") or generate_item_id(link))
+
+            items.append(
+                CollectedItem(
+                    item_id=item_id,
+                    source_type=source_type,
+                    title=title,
+                    url=link,
+                    text=text,
+                    author=entry.get("author") if author is None else author,
+                    published_at=published_at,
+                    metadata=metadata,
+                )
+            )
+            logger.info("Collected item from %s: '%s'", description, title)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            logger.warning("Failed to process an entry from %s", description, exc_info=True)
+
+    return items

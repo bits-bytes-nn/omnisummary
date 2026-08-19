@@ -211,7 +211,19 @@ class OmniSummaryFoundationStack(Stack):
             "SlackEventRole",
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
         )
-        self.slack_role.add_to_policy(ssm_read_statement)
+        # NOT the shared ssm_read_statement: that covers parameter/{project}/{stage}/*, which is the
+        # OpenAI/Tavily/YouTube keys, the Threads access token and the X session cookies. The handler
+        # reads exactly two parameters (_verify_slack_signature and _resolve_slack_bot_token), so the
+        # internet-reachable component gets exactly those two ARNs.
+        self.slack_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["ssm:GetParameter"],
+                resources=[
+                    f"arn:aws:ssm:{self.region}:{self.account}:parameter/{project_name}/{stage}/{name}"
+                    for name in ("slack-signing-secret", "slack-bot-token")
+                ],
+            )
+        )
         self.slack_role.add_to_policy(logs_statement)
         self.dedup_table.grant_read_write_data(self.slack_role)
         self.slack_role.add_to_policy(
@@ -264,13 +276,17 @@ class OmniSummaryFoundationStack(Stack):
         )
         self.memory_id = self.memory.attr_memory_id
 
+        # Scoped to THIS stack's memory (the ARN is already in scope above) instead of memory/* —
+        # otherwise both roles could read and write the event history of every AgentCore memory in
+        # the account, which in a shared account is other projects' conversation state. The `/*`
+        # companion covers the per-session sub-resources the data-plane actions address.
         memory_data_statement = iam.PolicyStatement(
             actions=[
                 "bedrock-agentcore:CreateEvent",
                 "bedrock-agentcore:ListEvents",
                 "bedrock-agentcore:ListSessions",
             ],
-            resources=[f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:memory/*"],
+            resources=[self.memory.attr_memory_arn, f"{self.memory.attr_memory_arn}/*"],
         )
         self.lambda_role.add_to_policy(memory_data_statement)
         self.agentcore_role.add_to_policy(memory_data_statement)

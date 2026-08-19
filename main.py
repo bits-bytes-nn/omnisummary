@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -50,6 +51,19 @@ def _positive_int(value: str) -> int:
     return ivalue
 
 
+def _resolve_digest_window(config: Config, date_arg: str | None = None) -> tuple[date, datetime]:
+    """The digest's date and the collection cutoff derived from it.
+
+    The reference time is MIDNIGHT AT THE END of the digest date in config.aws.timezone, and every
+    collector's lookback_hours counts back from it — so a run at 19:00 KST still sees the whole day,
+    and `--date` re-runs a past day with exactly the window that day had rather than the window
+    ending now. Pure, so the boundary is testable without running the pipeline."""
+    tz = ZoneInfo(config.aws.timezone)
+    digest_date = date.fromisoformat(date_arg) if date_arg else datetime.now(tz).date()
+    next_day = digest_date + timedelta(days=1)
+    return digest_date, datetime(next_day.year, next_day.month, next_day.day, tzinfo=tz)
+
+
 def _build_collector_tasks(
     config: Config,
     llm_factory: BedrockLanguageModelFactory,
@@ -90,11 +104,26 @@ def _build_collector_tasks(
     return tasks, labels, collectors
 
 
+def _install_bounded_executor(config: Config) -> None:
+    """Install ONE bounded thread pool as the running loop's default executor.
+
+    Each collector's max_concurrency bounds only its own fan-out, but every asyncio.to_thread call
+    in the process lands in the SAME default executor — min(32, cpu+4), i.e. 6 threads on a 2-vCPU
+    Lambda — so the per-collector bounds the docstrings rely on did not hold globally: a source's
+    timeout could expire while its work was still queued behind another source's. Sized by
+    collectors.thread_pool_max_workers; asyncio.run shuts the pool down with the loop."""
+    executor = ThreadPoolExecutor(
+        max_workers=config.collectors.thread_pool_max_workers, thread_name_prefix="omnisummary"
+    )
+    asyncio.get_running_loop().set_default_executor(executor)
+
+
 async def run_collectors_with_health(
     config: Config,
     llm_factory: BedrockLanguageModelFactory,
     sources: list[str] | None = None,
 ) -> tuple[list[CollectedItem], HealthReport]:
+    _install_bounded_executor(config)
     tasks, labels, collectors = _build_collector_tasks(config, llm_factory, sources)
     if not tasks:
         logger.warning("No active collectors")
@@ -340,11 +369,7 @@ async def main() -> None:
     if args.top_n is not None:
         config.pipeline.top_n = args.top_n
 
-    tz = ZoneInfo(config.aws.timezone)
-    digest_date = date.fromisoformat(args.date) if args.date else datetime.now(tz).date()
-
-    next_day = digest_date + timedelta(days=1)
-    reference_time = datetime(next_day.year, next_day.month, next_day.day, tzinfo=tz)
+    digest_date, reference_time = _resolve_digest_window(config, args.date)
     config.collectors.set_reference_time(reference_time)
 
     logger.info(

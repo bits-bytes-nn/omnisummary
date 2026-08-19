@@ -1699,7 +1699,6 @@ dependencies = [
     { name = "strands-agents" },
     { name = "strands-agents-tools" },
     { name = "tavily-python" },
-    { name = "tenacity" },
     { name = "youtube-transcript-api" },
     { name = "yt-dlp" },
 ]
@@ -1742,7 +1741,6 @@ requires-dist = [
     { name = "strands-agents", specifier = ">=1.12.0" },
     { name = "strands-agents-tools", specifier = ">0.2.9" },
     { name = "tavily-python", specifier = ">=0.5.0" },
-    { name = "tenacity", specifier = ">=9.1.2" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "youtube-transcript-api", specifier = ">=1.2.2" },
     { name = "yt-dlp", specifier = ">=2025.10.22" },

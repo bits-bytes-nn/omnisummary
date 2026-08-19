@@ -162,14 +162,19 @@ async def test_reddit_partial_subreddit_loss_reports_degraded():
         "summary": "body",
         "author": "alice",
     }
-    good = _Feed(entries=[entry], bozo=False, bozo_exception=None, status=200)
-    dead = _Feed(entries=[], bozo=False, bozo_exception=None, status=404)
+    good = _Feed(entries=[entry], bozo=False)
 
     config = RedditCollectorConfig(
         subreddits=["a", "b", "c", "d", "e", "f"], retry_backoff_sec=0, error_rate_threshold=50.0
     )
     collector = RedditCollector(config)
-    with patch("collectors.reddit.parse_feed_with_fallback", side_effect=[good, good, dead, dead, dead, dead]):
+
+    async def _fetch(url, **kwargs):
+        if "/r/a/" in url or "/r/b/" in url:
+            return good
+        raise RuntimeError("Reddit feed returned HTTP 404")
+
+    with patch("collectors.base.fetch_feed", side_effect=_fetch):
         items = await collector.collect()
 
     # Reporting only: the two healthy subreddits' items still reach the aggregator.
@@ -189,9 +194,8 @@ async def test_reddit_all_subreddits_answering_is_not_degraded():
             except KeyError as e:
                 raise AttributeError(name) from e
 
-    empty_feed = _Feed(entries=[], bozo=False, bozo_exception=None, status=200)
     collector = RedditCollector(RedditCollectorConfig(subreddits=["a", "b"], retry_backoff_sec=0))
-    with patch("collectors.reddit.parse_feed_with_fallback", return_value=empty_feed):
+    with patch("collectors.base.fetch_feed", return_value=_Feed(entries=[], bozo=False)):
         assert await collector.collect() == []
 
     # A quiet day (every feed answered, nothing new) must NOT be reported as degraded.

@@ -1,9 +1,10 @@
 import re
 from pathlib import Path
-from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
-from shared.proxy import get_proxied_url, is_proxy_configured, parse_feed_with_fallback
+import pytest
+
+from shared.proxy import fetch_with_proxy_fallback, get_proxied_url, is_proxy_configured
 
 PROXY_DIR = Path(__file__).resolve().parent.parent / "cloudflare-proxy"
 
@@ -77,26 +78,76 @@ class _Feed(dict):
             raise AttributeError(name) from e
 
 
-class TestParseFeedWithFallback:
-    def test_direct_success_no_proxy_attempt(self):
-        good = _Feed(status=200, bozo=False, entries=[{"x": 1}])
-        with patch("shared.proxy.feedparser.parse", return_value=good) as mp:
-            feed = parse_feed_with_fallback("https://example.com/feed")
-        assert feed.entries
-        assert mp.call_count == 1  # no proxy configured -> single direct attempt
+def _fetcher(outcomes: dict[str, object]):
+    """A stand-in fetch keyed by URL; an exception value is raised, anything else returned. Records
+    which candidates were attempted, in order."""
+    seen: list[str] = []
 
-    def test_falls_back_to_proxy_when_direct_blocked(self, monkeypatch):
-        monkeypatch.setenv("CLOUDFLARE_PROXY_URL", "https://proxy.example.com")
-        monkeypatch.setenv("CLOUDFLARE_PROXY_TOKEN", "tok")
-        blocked = _Feed(status=403, bozo=False, entries=[])
-        good = _Feed(status=200, bozo=False, entries=[{"x": 1}])
-        with patch("shared.proxy.feedparser.parse", side_effect=[blocked, good]) as mp:
-            feed = parse_feed_with_fallback("https://example.com/feed")
-        assert feed.entries  # second (proxy) attempt succeeded
-        assert mp.call_count == 2
+    async def _fetch(url: str):
+        seen.append(url)
+        outcome = outcomes[url]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
-    def test_returns_last_when_all_fail(self):
-        bad = _Feed(status=503, bozo=True, bozo_exception=Exception("x"), entries=[])
-        with patch("shared.proxy.feedparser.parse", return_value=bad):
-            feed = parse_feed_with_fallback("https://example.com/feed")
-        assert feed.get("status") == 503  # caller can inspect failure
+    return _fetch, seen
+
+
+def _has_entries(feed) -> bool:
+    return bool(feed.entries)
+
+
+@pytest.fixture
+def proxy_env(monkeypatch):
+    monkeypatch.setenv("CLOUDFLARE_PROXY_URL", "https://proxy.example.com")
+    monkeypatch.setenv("CLOUDFLARE_PROXY_TOKEN", "tok")
+
+
+class TestFetchWithProxyFallback:
+    URL = "https://example.com/feed"
+
+    @pytest.mark.asyncio
+    async def test_direct_success_no_proxy_attempt(self):
+        good = _Feed(entries=[{"x": 1}])
+        fetch, seen = _fetcher({self.URL: good})
+        feed = await fetch_with_proxy_fallback(self.URL, fetch, has_entries=_has_entries)
+        assert feed is good
+        assert seen == [self.URL]  # no proxy configured -> single direct attempt
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_proxy_when_direct_blocked(self, proxy_env):
+        good = _Feed(entries=[{"x": 1}])
+        proxied = get_proxied_url(self.URL)
+        fetch, seen = _fetcher({self.URL: RuntimeError("returned HTTP 403"), proxied: good})
+        feed = await fetch_with_proxy_fallback(self.URL, fetch, has_entries=_has_entries)
+        assert feed is good
+        assert seen == [self.URL, proxied]
+
+    @pytest.mark.asyncio
+    async def test_a_quiet_direct_feed_wins_over_a_failing_proxy(self, proxy_env):
+        # THE REGRESSION: a direct 200 with zero entries (a quiet subreddit) used to be overwritten
+        # by the proxy's 429, so the caller saw a transient failure, burned every retry, and with two
+        # configured subreddits reported the whole source FAILED on a clean empty day.
+        quiet = _Feed(entries=[])
+        proxied = get_proxied_url(self.URL)
+        fetch, seen = _fetcher({self.URL: quiet, proxied: RuntimeError("returned HTTP 429")})
+        feed = await fetch_with_proxy_fallback(self.URL, fetch, has_entries=_has_entries)
+        assert feed is quiet
+        assert seen == [self.URL, proxied]  # the proxy is still tried; its failure just doesn't win
+
+    @pytest.mark.asyncio
+    async def test_entries_beat_an_earlier_empty_candidate(self, proxy_env):
+        quiet = _Feed(entries=[])
+        good = _Feed(entries=[{"x": 1}])
+        proxied = get_proxied_url(self.URL)
+        fetch, _ = _fetcher({self.URL: quiet, proxied: good})
+        assert await fetch_with_proxy_fallback(self.URL, fetch, has_entries=_has_entries) is good
+
+    @pytest.mark.asyncio
+    async def test_raises_the_last_error_when_every_candidate_failed(self, proxy_env):
+        proxied = get_proxied_url(self.URL)
+        fetch, _ = _fetcher({self.URL: RuntimeError("returned HTTP 403"), proxied: RuntimeError("returned HTTP 429")})
+        # The LAST error is the proxy's, which for a datacenter-blocked host is the informative one
+        # (and transient, so the caller's retry chain still applies).
+        with pytest.raises(RuntimeError, match="429"):
+            await fetch_with_proxy_fallback(self.URL, fetch, has_entries=_has_entries)

@@ -57,6 +57,17 @@ class BaseCollectorConfig(_StrictModel):
     # aggregator. One number for every collector — a source that answers from 2 of 40 inputs looks
     # exactly like a healthy one in the item count alone.
     error_rate_threshold: float = Field(default=50.0, ge=0.0, le=100.0)
+    # Share of a source's inputs that may come back EMPTY before the source is reported DEGRADED.
+    # All-200-with-no-entries (expired RSSHub cookies, a paywalled 200, a playlist that resolves to
+    # nothing) is the same disappearance shape as a failure, but it trips no failure rate — and as
+    # long as ONE input still produced an item the source reported OK. Source-dependent: many RSS
+    # blogs legitimately publish nothing on a given day, whereas 40 X accounts all going quiet is a
+    # broken session. 100 (the default) disables the check; set it per source in config.yaml.
+    empty_rate_threshold: float = Field(default=100.0, ge=0.0, le=100.0)
+    # ABSOLUTE companion to error_rate_threshold, for a source with FEW inputs where a rate cannot
+    # express the verdict: with 2 subreddits, 1 of 2 failing is exactly 50% (clean at the default)
+    # and 2 of 2 already raises FAILED, so DEGRADED was unreachable. 0 (the default) disables it.
+    max_failed_inputs: int = Field(default=0, ge=0)
 
 
 class YouTubeCollectorConfig(BaseCollectorConfig):
@@ -140,6 +151,12 @@ class CollectorsConfig(_StrictModel):
     rss: RSSCollectorConfig = Field(default_factory=RSSCollectorConfig)
     web_search: WebSearchCollectorConfig = Field(default_factory=WebSearchCollectorConfig)
     rsshub: RSSHubCollectorConfig = Field(default_factory=RSSHubCollectorConfig)
+    # Width of the ONE thread pool the whole run shares (installed as the event loop's default
+    # executor). Each collector's max_concurrency bounds only its OWN fan-out, but every
+    # asyncio.to_thread call lands in the same default executor — min(32, cpu+4), i.e. 6 threads on
+    # a 2-vCPU Lambda — so the per-collector bounds did not hold globally and a source's timeout
+    # could expire while its work was still queued behind another source's.
+    thread_pool_max_workers: int = Field(default=16, ge=1)
     # Sources whose EMPTY result is an INCIDENT worth an alert, by collector name (e.g.
     # ["rss", "web_search"]). A dark source produces no items, no exception and no stale park file,
     # so nothing else notices it; but reddit/x are legitimately quiet on many days, which is why
@@ -508,6 +525,14 @@ class AgentConfig(_StrictModel):
     research_breadth: int = Field(default=4, ge=1)
     research_max_iterations: int = Field(default=3, ge=1)
     research_slack_target_words: int = Field(default=1500, ge=200)
+    # HARD per-invocation bounds handed to the Strands agent loop (strands.types.agent.Limits),
+    # checked at every turn boundary. Unlike the guidance knobs above these are enforced by the SDK:
+    # the one internet-triggered path re-sends the whole conversation each cycle, so without them a
+    # loop that never converges is unbounded in both cost and wall time. Generous enough that a
+    # normal run (~breadth x iterations tool rounds) never trips one.
+    research_max_turns: int = Field(default=40, ge=1)
+    research_max_total_tokens: int = Field(default=2_000_000, ge=10_000)
+    research_max_output_tokens: int = Field(default=100_000, ge=1_000)
     # Hard cap on the number of Threads posts (root + replies) a research report may become.
     # Code-enforced so a too-long report can't fan out into dozens of public posts even if the
     # agent ignores the prompt's "write a short Threads version" instruction.

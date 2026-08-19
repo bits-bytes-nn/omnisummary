@@ -455,6 +455,24 @@ class TestRankingCoverage:
         assert {r.item.item_id for r in result} == {"a"}
 
     @pytest.mark.asyncio
+    async def test_repeated_id_still_counts_as_a_shortfall(self):
+        # The model scored a twice and never scored b: 1/2 coverage, so the re-ask must still fire
+        # and b must be recovered. With duplicates counted, coverage read 1.0 and b was lost.
+        items = _items([("a", SourceType.RSS), ("b", SourceType.RSS)])
+        duplicated = json.dumps({"rankings": [{"item_id": "a", "score": 0.9}, {"item_id": "a", "score": 0.7}]})
+        ranker, seen = _ranker_with_outputs(
+            [duplicated, _rankings({"b": 0.8})],
+            top_n=5,
+            min_score=0.6,
+            source_slots={},
+            ranking_retry_backoff_sec=0,
+        )
+        result = await ranker.rank(items)
+        assert sorted(r.item.item_id for r in result) == ["a", "b"]
+        assert len(seen) == 2
+        assert ranker.health.items_scored == 2
+
+    @pytest.mark.asyncio
     async def test_shortfall_above_ratio_is_logged_but_not_reasked(self):
         items = _items([(f"i{n}", SourceType.RSS) for n in range(4)])
         ranker, seen = _ranker_with_outputs(

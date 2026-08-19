@@ -8,13 +8,16 @@ from typing import Any
 import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from slack_sdk.web import WebClient
+from strands.types.agent import Limits
 
 from agent import create_research_agent
 from agent.research_tools import DeliveryContext, request_context
 from output.renderers import render_agent_blocks
-from shared import logger, sanitize_slack_mrkdwn, set_correlation_id
+from shared import get_config, logger, sanitize_slack_mrkdwn, set_correlation_id
 
 app = BedrockAgentCoreApp()
+
+LIMIT_NOTICE = "\n\n_This report was cut short: the research run reached its per-request budget cap._"
 
 
 def _emit_agent_error_metric() -> None:
@@ -34,6 +37,35 @@ def _emit_agent_error_metric() -> None:
         "AgentErrors": 1,
     }
     print(json.dumps(emf))
+
+
+def _emit_agent_limit_metric(stop_reason: str) -> None:
+    """Emit a CloudWatch EMF counter when the loop was stopped by a budget cap. A capped run still
+    returns text, so without this a topic that systematically fails to converge (and burns the whole
+    budget every time) is indistinguishable from a normal day."""
+    emf = {
+        "_aws": {
+            "Timestamp": int(datetime.now(UTC).timestamp() * 1000),
+            "CloudWatchMetrics": [
+                {"Namespace": "OmniSummary", "Dimensions": [[]], "Metrics": [{"Name": "AgentLimitStops"}]}
+            ],
+        },
+        "AgentLimitStops": 1,
+        "StopReason": stop_reason,
+    }
+    print(json.dumps(emf))
+
+
+def _run_limits() -> Limits:
+    """Hard per-invocation bounds for the tool loop. The Strands SDK checks them at each turn
+    boundary and stops with stop_reason='limit_*'; the guidance knobs interpolated into the agent's
+    prompt (research_breadth/research_max_iterations) enforce nothing."""
+    agent_config = get_config().agent
+    return Limits(
+        turns=agent_config.research_max_turns,
+        total_tokens=agent_config.research_max_total_tokens,
+        output_tokens=agent_config.research_max_output_tokens,
+    )
 
 
 def _emit_agent_run_metrics(usage: dict[str, Any], cycles: int, tool_calls: int) -> None:
@@ -136,11 +168,19 @@ def invoke(payload: dict[str, Any]) -> str:
 
     # contextvar-scoped per-invocation delivery: a warm container handling concurrent
     # invocations can't leak one request's channel into another.
+    notice = ""
     with request_context(delivery):
         try:
-            result = agent(prompt)
+            result = agent(prompt, limits=_run_limits())
             _log_agent_run(result)
             response = sanitize_slack_mrkdwn(str(result))
+            stop_reason = str(getattr(result, "stop_reason", "") or "")
+            if stop_reason.startswith("limit_"):
+                # The loop stops at a turn boundary, so the last message is whatever the agent had
+                # written by then. Say so rather than passing a partial report off as finished.
+                logger.warning("Research run stopped by a budget cap (%s); the report is partial", stop_reason)
+                _emit_agent_limit_metric(stop_reason)
+                notice = LIMIT_NOTICE
         except Exception as e:
             logger.error("Agent execution failed: %s", e, exc_info=True)
             _emit_agent_error_metric()
@@ -153,7 +193,7 @@ def invoke(payload: dict[str, Any]) -> str:
         # succeeded on Threads must not also dump the (Threads-formatted) report into Slack.
         # Prefer the actual report the agent produced over its terminal one-line confirmation.
         if channel_id and not delivery.delivered_channels:
-            fallback_text = delivery.last_report or response
+            fallback_text = (delivery.last_report or response) + notice
             # This is the last-resort "always give the user something" path — a raise here (rate
             # limit, bad channel) must not turn the whole invocation into a hard error.
             try:
@@ -165,7 +205,7 @@ def invoke(payload: dict[str, Any]) -> str:
                 logger.error("Fallback Slack post failed: %s", e, exc_info=True)
                 _emit_agent_error_metric()
 
-    return response
+    return response + notice
 
 
 if __name__ == "__main__":

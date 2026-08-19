@@ -131,6 +131,27 @@ class TestSlackLambdaLeastPrivilege:
         assert "lambda:InvokeFunction" in actions
         assert "ssm:GetParameter" in actions
 
+    def test_slack_role_reads_only_its_two_slack_parameters(self, templates):
+        # The shared ssm_read_statement covers parameter/{project}/{stage}/* — the OpenAI/Tavily/
+        # YouTube keys, the Threads token and the X cookies. The handler reads exactly the signing
+        # secret and the bot token, so the only internet-reachable component gets exactly those.
+        foundation, _ = templates
+        resources: list[str] = []
+        for props in foundation.find_resources("AWS::IAM::Policy").values():
+            if "SlackEventRole" not in json.dumps(props["Properties"].get("Roles", "")):
+                continue
+            for statement in props["Properties"]["PolicyDocument"]["Statement"]:
+                action = statement.get("Action")
+                actions = [action] if isinstance(action, str) else action
+                if not any(a.startswith("ssm:") for a in actions):
+                    continue
+                resource = statement.get("Resource")
+                resources.extend([resource] if isinstance(resource, str) else resource)
+        assert resources, "expected an ssm statement on SlackEventRole"
+        assert not [r for r in resources if r.endswith("/dev/*")]
+        suffixes = sorted(r.rsplit("/", 1)[-1] for r in resources)
+        assert suffixes == ["slack-bot-token", "slack-signing-secret"]
+
 
 class TestFoundationStack:
     def test_sns_topic_created(self, templates):
@@ -209,6 +230,21 @@ class TestFoundationStack:
         assert "bedrock-agentcore:CreateEvent" in rendered
         # Recall is gone (trends live in trends.json); RetrieveMemoryRecords removed.
         assert "bedrock-agentcore:RetrieveMemoryRecords" not in rendered
+
+    def test_memory_data_plane_scoped_to_this_stacks_memory(self, templates):
+        # memory/* handed both roles the event history of every AgentCore memory in the account,
+        # although this stack's own memory ARN is in scope where the statement is built.
+        foundation, _ = templates
+        memory_logical_id = next(iter(foundation.find_resources("AWS::BedrockAgentCore::Memory")))
+        for props in foundation.find_resources("AWS::IAM::Policy").values():
+            for statement in props["Properties"]["PolicyDocument"]["Statement"]:
+                action = statement.get("Action")
+                actions = [action] if isinstance(action, str) else action
+                if "bedrock-agentcore:CreateEvent" not in actions:
+                    continue
+                rendered_resource = json.dumps(statement["Resource"])
+                assert ":memory/*" not in rendered_resource
+                assert memory_logical_id in rendered_resource
 
 
 class TestApplicationStack:

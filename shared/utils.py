@@ -703,6 +703,21 @@ def parse_json_from_llm_output(raw: str) -> Any:
     return json.loads(extract_json_from_llm_output(raw), strict=False)
 
 
+def backoff_delay(backoff_sec: float, attempt: int, jitter_seed: str = "") -> float:
+    """Delay before `attempt`'s retry: linear (backoff_sec * attempt), plus a deterministic
+    0..backoff_sec jitter when a seed is given.
+
+    Plain linear backoff re-synchronises concurrent retries into exactly the burst the upstream
+    rate-limited — with 40 RSSHub account feeds, every retry came back at the same instant. The
+    jitter is derived from the seed (the feed / subreddit name) rather than an RNG, so a retry
+    schedule stays reproducible in tests and logs."""
+    delay = backoff_sec * attempt
+    if not jitter_seed:
+        return delay
+    frac = int(hashlib.sha256(f"{jitter_seed}:{attempt}".encode()).hexdigest(), 16) % 1000 / 1000.0
+    return delay + backoff_sec * frac
+
+
 async def retry_async(
     func: Callable[[], Awaitable[Any]],
     *,
@@ -710,12 +725,14 @@ async def retry_async(
     backoff_sec: float,
     retry_on: tuple[type[BaseException], ...] = (Exception,),
     description: str = "operation",
+    jitter_seed: str = "",
 ) -> Any:
     """Run an async callable with linear backoff on transient failures.
 
-    Retries up to max_retries attempts, sleeping backoff_sec * attempt between tries
-    (so the delay grows linearly: backoff_sec, 2*backoff_sec, ...).
-    Re-raises the last exception once attempts are exhausted.
+    Retries up to max_retries attempts, sleeping backoff_delay(backoff_sec, attempt, jitter_seed)
+    between tries. Re-raises the last exception once attempts are exhausted. Pass jitter_seed
+    (anything stable and per-caller, e.g. a feed URL) when many callers retry the same upstream at
+    once, so their retries don't resynchronise into one burst.
     """
     last_error: BaseException | None = None
     for attempt in range(1, max_retries + 1):
@@ -724,8 +741,16 @@ async def retry_async(
         except retry_on as e:
             last_error = e
             if attempt < max_retries:
-                logger.warning("%s failed (attempt %d/%d): %s", description, attempt, max_retries, e)
-                await asyncio.sleep(backoff_sec * attempt)
+                delay = backoff_delay(backoff_sec, attempt, jitter_seed)
+                logger.warning(
+                    "%s failed (attempt %d/%d): %s; retrying in %.1fs",
+                    description,
+                    attempt,
+                    max_retries,
+                    e,
+                    delay,
+                )
+                await asyncio.sleep(delay)
     assert last_error is not None
     raise last_error
 

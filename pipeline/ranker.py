@@ -200,6 +200,7 @@ class ContentRanker:
                 continue
             item.backfill = True
             extras.append(item)
+            chosen_ids.add(item.item.item_id)
         return extras
 
     async def _rank_batch(self, items: list[CollectedItem], semaphore: asyncio.Semaphore) -> list[RankedItem]:
@@ -564,11 +565,20 @@ class ContentRanker:
             return []
 
         ranked_items: list[RankedItem] = []
+        # One RankedItem per INPUT id, at most. A model that repeats an id (and, in practice, omits
+        # another to compensate) otherwise made len(ranked) == len(items): coverage read 1.0, the
+        # re-ask never fired, items_scored overstated the pool, and the editor was handed the same
+        # story twice. First entry wins — deterministic, and it is the one the model committed to.
+        seen_ids: set[str] = set()
+        duplicate_ids: list[str] = []
         for entry in rankings:
             try:
                 item_id = str(entry["item_id"])
                 if item_id not in items_by_id:
                     logger.warning("Unknown item_id in ranking response: '%s'", item_id)
+                    continue
+                if item_id in seen_ids:
+                    duplicate_ids.append(item_id)
                     continue
                 ranked_items.append(
                     RankedItem(
@@ -578,7 +588,14 @@ class ContentRanker:
                         categories=entry.get("categories", []),
                     )
                 )
+                seen_ids.add(item_id)
             except (KeyError, ValueError, TypeError) as exc:
                 logger.warning("Skipping malformed ranking entry: %s (%s)", entry, exc)
 
+        if duplicate_ids:
+            logger.warning(
+                "Ranking response repeated %d item_id(s); kept the first entry for each: %s",
+                len(duplicate_ids),
+                duplicate_ids,
+            )
         return ranked_items

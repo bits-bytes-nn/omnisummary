@@ -2,21 +2,32 @@ import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from botocore.exceptions import ClientError
 
 from collectors.base import (
+    FEED_FETCH_HEADERS,
     BaseCollector,
     ParkedItems,
     ParkOutcome,
+    TransientStatusError,
     dump_items_envelope,
+    fetch_feed,
+    fetch_feed_with_retry,
     gather_collector_results,
     load_items_from_s3,
     park_file_key,
     park_root_prefix,
+    parse_feed_entries,
 )
 from shared.constants import SourceType
 from shared.models import CollectedItem
+
+RSS_BODY = b"""<?xml version="1.0"?><rss version="2.0"><channel><title>Example</title>
+<item><title>Post</title><link>https://example.com/p/1</link><guid>p1</guid>
+<description>body</description><author>alice@example.com (alice)</author>
+<pubDate>Tue, 02 Jun 2026 00:00:00 GMT</pubDate></item></channel></rss>"""
 
 
 def _s3_client_returning(body_bytes: bytes) -> MagicMock:
@@ -103,12 +114,281 @@ class TestDegradationReporting:
             meta={"accounts_total": 12, "accounts_failed": 10},
         )
         c.flag_degraded_park(parked, threshold=50.0, what="channels")
-        assert "2/12 channels" in c.degraded_detail
+        assert "10/12 channels failed" in c.degraded_detail
 
     def test_park_without_meta_is_never_reported_degraded(self):
         c = _Collector()
         c.flag_degraded_park(ParkedItems(outcome=ParkOutcome.FRESH, items=[_item("v1")]), threshold=50.0, what="x")
         assert c.degraded_detail == ""
+
+
+class TestEmptyAndAbsoluteDegradation:
+    """A source whose inputs all answer 200 with ZERO entries (expired RSSHub cookies, a paywalled
+    200, a playlist that resolves to nothing) trips no failure rate at all — and reported a clean OK
+    as long as ONE input still produced an item. And a rate cannot express the verdict for a source
+    with few inputs: 1 of 2 subreddits is exactly 50%, 2 of 2 already raises FAILED."""
+
+    def test_mostly_empty_inputs_are_degraded_when_configured(self):
+        c = _Collector()
+        c.record_run_health(total=40, failed=0, empty=39, threshold=50.0, empty_threshold=90.0, what="account feeds")
+        assert "39/40 account feeds returned nothing" in c.degraded_detail
+
+    def test_empty_inputs_are_ignored_by_default(self):
+        # Off by default: many RSS blogs legitimately publish nothing on a given day, so the knob is
+        # a per-source opt-in rather than a new daily alert for everyone.
+        c = _Collector()
+        c.record_run_health(total=40, failed=0, empty=39, threshold=50.0, what="feeds")
+        assert c.degraded_detail == ""
+        assert c.run_meta["accounts_empty"] == 39
+
+    def test_absolute_failed_count_reaches_a_verdict_a_rate_cannot(self):
+        c = _Collector()
+        c.record_run_health(total=2, failed=1, empty=0, threshold=50.0, max_failed=1, what="subreddits")
+        assert "1/2 subreddits failed" in c.degraded_detail
+
+    def test_absolute_count_is_disabled_by_default(self):
+        c = _Collector()
+        c.record_run_health(total=2, failed=1, empty=0, threshold=50.0, what="subreddits")
+        assert c.degraded_detail == ""
+
+    def test_park_path_sees_empty_inputs_too(self):
+        # The park file records accounts_empty, which flag_degraded_park ignored entirely — so a
+        # fresh park file written by a sync whose every feed came back empty read as healthy.
+        c = _Collector()
+        parked = ParkedItems(
+            outcome=ParkOutcome.FRESH,
+            items=[_item("v1")],
+            meta={"accounts_total": 40, "accounts_failed": 0, "accounts_empty": 39},
+        )
+        c.flag_degraded_park(parked, threshold=50.0, empty_threshold=90.0, what="account feeds")
+        assert "39/40 account feeds returned nothing" in c.degraded_detail
+        assert c.degraded_detail.startswith("parked sync: ")
+
+
+class _FakeClient:
+    """Stands in for httpx.AsyncClient: records the kwargs it was constructed with and answers every
+    GET with a fixed response or exception."""
+
+    constructed: list[dict] = []
+
+    def __init__(self, outcome, **kwargs):
+        self.outcome = outcome
+        type(self).constructed.append(kwargs)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url):
+        self.requested = url
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+
+def _client_factory(outcome):
+    _FakeClient.constructed = []
+    return lambda **kwargs: _FakeClient(outcome, **kwargs)
+
+
+def _response(status: int = 200, content: bytes = RSS_BODY) -> httpx.Response:
+    return httpx.Response(status_code=status, content=content)
+
+
+class TestFetchFeed:
+    """feedparser.parse(url) fetches through urllib with NO socket timeout, and asyncio.wait_for
+    cannot cancel the asyncio.to_thread worker that ran it — so every timed-out attempt leaked a
+    thread for the rest of the process's life. The body is fetched with httpx instead."""
+
+    @pytest.mark.asyncio
+    async def test_body_is_fetched_with_the_configured_timeout_then_parsed(self):
+        with patch("collectors.base.httpx.AsyncClient", _client_factory(_response())):
+            feed = await fetch_feed("https://example.com/feed", description="RSS feed", timeout=7)
+        assert [e.get("title") for e in feed.entries] == ["Post"]
+        assert _FakeClient.constructed[0]["timeout"] == 7
+        assert _FakeClient.constructed[0]["headers"] == FEED_FETCH_HEADERS
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_is_transient(self):
+        with patch("collectors.base.httpx.AsyncClient", _client_factory(httpx.ReadTimeout("hung"))):
+            with pytest.raises(TransientStatusError, match="timed out"):
+                await fetch_feed("https://hang.example/feed", description="RSS feed", timeout=1)
+
+    @pytest.mark.asyncio
+    async def test_a_transport_failure_is_transient_not_a_dead_feed(self):
+        # A DNS hiccup used to lose the feed for the whole day while an HTTP 503 got three attempts.
+        with patch("collectors.base.httpx.AsyncClient", _client_factory(httpx.ConnectError("dns"))):
+            with pytest.raises(TransientStatusError, match="fetch failed"):
+                await fetch_feed("https://gone.example/feed", description="RSS feed", timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_5xx_is_transient_and_4xx_is_a_verdict(self):
+        with patch("collectors.base.httpx.AsyncClient", _client_factory(_response(status=503))):
+            with pytest.raises(TransientStatusError, match="HTTP 503"):
+                await fetch_feed("https://x.example/feed", description="RSS feed", timeout=5)
+        with patch("collectors.base.httpx.AsyncClient", _client_factory(_response(status=403))):
+            with pytest.raises(RuntimeError, match="HTTP 403") as exc:
+                await fetch_feed("https://x.example/feed", description="RSS feed", timeout=5)
+        assert not isinstance(exc.value, TransientStatusError)
+
+    @pytest.mark.asyncio
+    async def test_an_unparseable_body_is_a_permanent_failure(self):
+        with patch("collectors.base.httpx.AsyncClient", _client_factory(_response(content=b"not xml at all"))):
+            with pytest.raises(RuntimeError, match="Failed to parse") as exc:
+                await fetch_feed("https://x.example/feed", description="RSS feed", timeout=5)
+        assert not isinstance(exc.value, TransientStatusError)
+
+
+class TestFetchFeedWithRetry:
+    @pytest.mark.asyncio
+    async def test_transient_failure_is_retried_then_succeeds(self):
+        good = MagicMock(entries=[{"title": "t"}])
+        outcomes = [TransientStatusError("HTTP 503"), good]
+
+        async def _fetch(url, **kwargs):
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        with patch("collectors.base.fetch_feed", side_effect=_fetch):
+            feed = await fetch_feed_with_retry(
+                "https://x.example/feed", description="RSS feed", timeout=1, max_retries=3, backoff_sec=0
+            )
+        assert feed is good
+        assert outcomes == []
+
+    @pytest.mark.asyncio
+    async def test_a_permanent_failure_burns_no_retry_budget(self):
+        with patch("collectors.base.fetch_feed", side_effect=RuntimeError("HTTP 404")) as fetch:
+            with pytest.raises(RuntimeError, match="404"):
+                await fetch_feed_with_retry(
+                    "https://x.example/feed", description="RSS feed", timeout=1, max_retries=3, backoff_sec=0
+                )
+        assert fetch.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_retries_are_jittered_per_url(self):
+        # Plain linear backoff resynchronises dozens of concurrent feed retries into exactly the
+        # burst the upstream rate-limited, so the delay carries a per-URL offset.
+        delays: list[float] = []
+
+        async def _sleep(seconds):
+            delays.append(seconds)
+
+        with patch("collectors.base.fetch_feed", side_effect=TransientStatusError("HTTP 429")):
+            with patch("shared.utils.asyncio.sleep", side_effect=_sleep):
+                with pytest.raises(TransientStatusError):
+                    await fetch_feed_with_retry(
+                        "https://a.example/feed", description="a", timeout=1, max_retries=2, backoff_sec=5
+                    )
+                with pytest.raises(TransientStatusError):
+                    await fetch_feed_with_retry(
+                        "https://b.example/feed", description="b", timeout=1, max_retries=2, backoff_sec=5
+                    )
+        assert len(delays) == 2
+        assert delays[0] != delays[1]
+        assert all(5 <= d <= 10 for d in delays)
+
+    @pytest.mark.asyncio
+    async def test_proxy_fallback_is_opt_in(self, monkeypatch):
+        monkeypatch.setenv("CLOUDFLARE_PROXY_URL", "https://proxy.example.com")
+        monkeypatch.setenv("CLOUDFLARE_PROXY_TOKEN", "tok")
+        good = MagicMock(entries=[{"title": "t"}])
+        seen: list[str] = []
+
+        async def _fetch(url, **kwargs):
+            seen.append(url)
+            if "proxy.example.com" not in url:
+                raise RuntimeError("HTTP 403")
+            return good
+
+        with patch("collectors.base.fetch_feed", side_effect=_fetch):
+            feed = await fetch_feed_with_retry(
+                "https://www.reddit.com/r/x/.rss",
+                description="Reddit feed",
+                timeout=1,
+                max_retries=1,
+                backoff_sec=0,
+                proxy_fallback=True,
+            )
+        assert feed is good
+        assert len(seen) == 2
+
+
+class TestParseFeedEntries:
+    """RSS, RSSHub and Reddit carried byte-for-byte identical entry loops, so a fix to one silently
+    left the other two behind."""
+
+    CUTOFF = datetime(2026, 6, 1, tzinfo=UTC)
+
+    @staticmethod
+    def _entry(**overrides):
+        entry = {
+            "title": "Post",
+            "link": "https://example.com/p/1",
+            "id": "p1",
+            "summary": "body",
+            "author": "alice",
+            "published_parsed": (2026, 6, 2, 0, 0, 0, 0, 0, 0),
+        }
+        entry.update(overrides)
+        return _AttrDict(entry)
+
+    def _parse(self, entries, **kwargs):
+        feed = _AttrDict({"entries": entries})
+        return parse_feed_entries(
+            feed,
+            source_type=kwargs.pop("source_type", SourceType.RSS),
+            cutoff=kwargs.pop("cutoff", self.CUTOFF),
+            description="RSS feed 'f'",
+            metadata=kwargs.pop("metadata", {"feed_url": "f"}),
+            **kwargs,
+        )
+
+    def test_builds_an_item_from_an_entry(self):
+        items = self._parse([self._entry()])
+        assert len(items) == 1
+        assert items[0].item_id == "p1"
+        assert items[0].author == "alice"
+        assert items[0].text == "body"
+        assert items[0].metadata == {"feed_url": "f"}
+
+    def test_entry_before_the_cutoff_is_dropped(self):
+        old = self._entry(published_parsed=(2026, 5, 1, 0, 0, 0, 0, 0, 0))
+        assert self._parse([old]) == []
+
+    def test_full_content_beats_the_summary(self):
+        entry = self._entry(content=[{"value": "full text"}])
+        assert self._parse([entry])[0].text == "full text"
+
+    def test_entry_without_an_id_falls_back_to_a_url_hash(self):
+        item = self._parse([self._entry(id="")])[0]
+        assert item.item_id and item.item_id != "p1"
+
+    def test_a_malformed_entry_is_skipped_not_fatal(self):
+        broken = self._entry(content="not a list of dicts")
+        items = self._parse([broken, self._entry(id="p2", link="https://example.com/p/2")])
+        assert [i.item_id for i in items] == ["p2"]
+
+    def test_author_override_wins(self):
+        # RSSHub attributes every item to the account, not to the entry's own author field.
+        assert self._parse([self._entry()], author="karpathy")[0].author == "karpathy"
+
+    def test_item_id_override_wins(self):
+        # Reddit derives the post id from the permalink.
+        items = self._parse([self._entry()], item_id_of=lambda entry, link: f"custom-{link[-1]}")
+        assert items[0].item_id == "custom-1"
+
+
+class _AttrDict(dict):
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as e:
+            raise AttributeError(name) from e
 
 
 class TestLoadItemsFromS3:

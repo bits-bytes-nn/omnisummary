@@ -1,30 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import re
 
-from shared import CollectedItem, SourceType, generate_item_id, logger, parse_feed_published_date
+from shared import CollectedItem, SourceType, generate_item_id, logger
 from shared.config import RedditCollectorConfig
-from shared.proxy import parse_feed_with_fallback
 
 from .base import (
     BaseCollector,
-    TransientStatusError,
     cutoff_datetime,
-    feed_parse_failure,
-    feed_status_failure,
+    fetch_feed_with_retry,
+    parse_feed_entries,
 )
 
 RSS_BASE = "https://www.reddit.com"
-
-
-def _jittered_backoff(base_sec: float, attempt: int, seed: str) -> float:
-    """Linear backoff with deterministic per-subreddit jitter. Plain linear backoff would
-    re-synchronize concurrent retries into the same burst Reddit rate-limits; the jitter (0..base,
-    derived from the subreddit name + attempt so it needs no RNG) spreads them out."""
-    frac = int(hashlib.sha256(f"{seed}:{attempt}".encode()).hexdigest(), 16) % 1000 / 1000.0
-    return base_sec * attempt + base_sec * frac
 
 
 class RedditCollector(BaseCollector):
@@ -86,6 +75,8 @@ class RedditCollector(BaseCollector):
             failed=len(failures),
             empty=empty,
             threshold=self.config.error_rate_threshold,
+            empty_threshold=self.config.empty_rate_threshold,
+            max_failed=self.config.max_failed_inputs,
             what="subreddits",
         )
         return items
@@ -95,94 +86,25 @@ class RedditCollector(BaseCollector):
         feed_url = f"{RSS_BASE}/r/{subreddit_name}/{self.config.sort}/.rss?limit={self.config.limit}"
         if self.config.sort == "top":
             feed_url += "&t=day"
-        # Retry a rate-limited/transient fetch with jittered backoff instead of dropping the
-        # subreddit on the first 429. The parse itself runs in a thread (feedparser is sync).
-        last_error: Exception | None = None
-        for attempt in range(1, self.config.max_retries + 1):
-            try:
-                # feedparser.parse has no timeout; bound each attempt so a hung fetch doesn't block
-                # its worker thread indefinitely. A timeout is transient → retried like a 429/5xx.
-                return await asyncio.wait_for(
-                    asyncio.to_thread(self._parse_feed, feed_url, subreddit_name),
-                    timeout=self.config.request_timeout,
-                )
-            except TimeoutError:
-                last_error = TransientStatusError(
-                    f"Reddit 'r/{subreddit_name}' timed out after {self.config.request_timeout}s"
-                )
-                if attempt < self.config.max_retries:
-                    delay = _jittered_backoff(self.config.retry_backoff_sec, attempt, subreddit_name)
-                    logger.warning(
-                        "Reddit 'r/%s' fetch timed out (attempt %d/%d); retrying in %.1fs",
-                        subreddit_name,
-                        attempt,
-                        self.config.max_retries,
-                        delay,
-                    )
-                    await asyncio.sleep(delay)
-            except TransientStatusError as e:
-                last_error = e
-                if attempt < self.config.max_retries:
-                    delay = _jittered_backoff(self.config.retry_backoff_sec, attempt, subreddit_name)
-                    logger.warning(
-                        "Reddit 'r/%s' fetch failed (attempt %d/%d): %s; retrying in %.1fs",
-                        subreddit_name,
-                        attempt,
-                        self.config.max_retries,
-                        e,
-                        delay,
-                    )
-                    await asyncio.sleep(delay)
-        assert last_error is not None
-        raise last_error
-
-    def _parse_feed(self, feed_url: str, subreddit_name: str) -> list[CollectedItem]:
-        feed = parse_feed_with_fallback(feed_url)
-        description = f"Reddit feed 'r/{subreddit_name}'"
-        status = feed.get("status")
-        # 429 (rate limit) and 5xx are transient — signal a retry. 4xx (e.g. 404) is permanent, and
-        # so is a malformed body; a TRANSPORT failure (feedparser reports it in bozo_exception with
-        # no status at all) is transient, and used to lose the subreddit for the whole day.
-        if status is not None and status >= 400:
-            raise feed_status_failure(description, status)
-        if feed.bozo and not feed.entries:
-            raise feed_parse_failure(description, feed.get("bozo_exception"))
-
-        cutoff = cutoff_datetime(self.config.lookback_hours, self.config.reference_time)
-        items: list[CollectedItem] = []
-
-        for entry in feed.entries:
-            try:
-                published_at = parse_feed_published_date(entry)
-                if published_at and published_at < cutoff:
-                    continue
-
-                link = entry.get("link", "")
-                text = ""
-                if hasattr(entry, "content") and entry.content:
-                    text = entry.content[0].get("value", "")
-                elif hasattr(entry, "summary"):
-                    text = entry.summary or ""
-
-                item_id = self._extract_post_id(entry.get("id", ""), link)
-
-                items.append(
-                    CollectedItem(
-                        item_id=item_id,
-                        source_type=SourceType.REDDIT,
-                        title=entry.get("title", ""),
-                        url=link,
-                        text=text,
-                        author=entry.get("author"),
-                        published_at=published_at,
-                        metadata={"subreddit": subreddit_name},
-                    )
-                )
-                logger.info("Collected Reddit post: '%s'", entry.get("title", ""))
-            except Exception:
-                logger.warning("Failed to process Reddit entry in 'r/%s'", subreddit_name, exc_info=True)
-
-        return items
+        # A rate-limited/transient fetch is retried with jittered backoff instead of dropping the
+        # subreddit on the first 429; each attempt tries the direct URL first and then the Cloudflare
+        # proxy (Reddit blocks datacenter IPs, the proxy is blocked by other hosts).
+        feed = await fetch_feed_with_retry(
+            feed_url,
+            description=f"Reddit feed 'r/{subreddit_name}'",
+            timeout=self.config.request_timeout,
+            max_retries=self.config.max_retries,
+            backoff_sec=self.config.retry_backoff_sec,
+            proxy_fallback=True,
+        )
+        return parse_feed_entries(
+            feed,
+            source_type=SourceType.REDDIT,
+            cutoff=cutoff_datetime(self.config.lookback_hours, self.config.reference_time),
+            description=f"Reddit feed 'r/{subreddit_name}'",
+            metadata={"subreddit": subreddit_name},
+            item_id_of=lambda entry, link: self._extract_post_id(entry.get("id", ""), link),
+        )
 
     @staticmethod
     def _extract_post_id(entry_id: str, link: str) -> str:

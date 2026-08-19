@@ -27,6 +27,7 @@ if "bedrock_agentcore" not in sys.modules:
 
 from agent_runtime import app as app_module  # noqa: E402
 from output.delivery import _request_delivery  # noqa: E402
+from shared.config import get_config  # noqa: E402
 from shared.logger import get_correlation_id  # noqa: E402
 
 
@@ -89,7 +90,7 @@ class TestInvoke:
         agent = self._agent("research answer")
         captured: dict[str, object] = {}
 
-        def fake_agent_call(prompt):
+        def fake_agent_call(prompt, **kwargs):
             captured["delivery"] = _request_delivery.get()
             return "research answer"
 
@@ -110,7 +111,7 @@ class TestInvoke:
 
     def test_no_fallback_when_slack_already_delivered(self):
         # When the agent delivered to Slack via the tool, the runtime must NOT double-post.
-        def fake_agent_call(prompt):
+        def fake_agent_call(prompt, **kwargs):
             _request_delivery.get().delivered_channels.add("slack")
             return "delivered already"
 
@@ -152,7 +153,7 @@ class TestInvoke:
     def test_no_slack_fallback_when_threads_only_delivered(self):
         # A Threads-only request that succeeded on Threads must NOT also dump the report into
         # Slack — the fallback fires only when NOTHING was delivered.
-        def fake_agent_call(prompt):
+        def fake_agent_call(prompt, **kwargs):
             _request_delivery.get().delivered_channels.add("threads")
             return "report text"
 
@@ -181,6 +182,57 @@ class TestInvoke:
                     result = app_module.invoke({"prompt": "p", "channel_id": "C"})
         assert result == "report text"  # still answered, never raised
         emit.assert_called_once()
+
+
+class TestRunLimits:
+    """The tool loop re-sends the whole conversation each cycle, so the one internet-triggered path
+    needs hard per-invocation caps — research_breadth/research_max_iterations are prompt guidance."""
+
+    def test_limits_are_passed_from_config(self):
+        agent = MagicMock(return_value="ok")
+        with patch.object(app_module, "create_research_agent", return_value=agent):
+            with patch.object(app_module, "_send_slack_message"):
+                app_module.invoke({"prompt": "p", "channel_id": "C"})
+        limits = agent.call_args.kwargs["limits"]
+        expected = get_config().agent
+        assert limits["turns"] == expected.research_max_turns
+        assert limits["total_tokens"] == expected.research_max_total_tokens
+        assert limits["output_tokens"] == expected.research_max_output_tokens
+
+    @staticmethod
+    def _capped_result(stop_reason: str) -> MagicMock:
+        result = MagicMock()
+        result.__str__ = lambda _self: "partial report"  # type: ignore[assignment]
+        result.stop_reason = stop_reason
+        result.metrics = None
+        return result
+
+    def test_capped_run_tells_the_user_the_report_is_partial(self):
+        agent = MagicMock(return_value=self._capped_result("limit_turns"))
+        with patch.object(app_module, "create_research_agent", return_value=agent):
+            with patch.object(app_module, "_send_slack_message") as send:
+                result = app_module.invoke({"prompt": "p", "channel_id": "C"})
+        assert result.startswith("partial report")
+        assert "cut short" in result
+        assert "cut short" in send.call_args.args[1]
+
+    def test_capped_run_emits_the_emf_counter(self, capsys):
+        agent = MagicMock(return_value=self._capped_result("limit_total_tokens"))
+        with patch.object(app_module, "create_research_agent", return_value=agent):
+            with patch.object(app_module, "_send_slack_message"):
+                app_module.invoke({"prompt": "p", "channel_id": "C"})
+        records = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+        emf = next(r for r in records if "AgentLimitStops" in r)
+        assert emf["AgentLimitStops"] == 1
+        assert emf["StopReason"] == "limit_total_tokens"
+
+    def test_a_normal_stop_reason_adds_no_notice(self, capsys):
+        agent = MagicMock(return_value=self._capped_result("end_turn"))
+        with patch.object(app_module, "create_research_agent", return_value=agent):
+            with patch.object(app_module, "_send_slack_message"):
+                result = app_module.invoke({"prompt": "p", "channel_id": "C"})
+        assert result == "partial report"
+        assert "AgentLimitStops" not in capsys.readouterr().out
 
 
 class TestRunMetrics:

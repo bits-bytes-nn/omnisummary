@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from collections.abc import Iterable
 
-import feedparser
+import httpx
 
-from shared import CollectedItem, SourceType, generate_item_id, logger, parse_feed_published_date, retry_async
+from shared import CollectedItem, SourceType, logger, retry_async
 from shared.config import RSSHubCollectorConfig
 from shared.constants import TWITTER_PLATFORMS
 
@@ -17,9 +16,9 @@ from .base import (
     BaseCollector,
     TransientStatusError,
     cutoff_datetime,
-    feed_parse_failure,
-    feed_status_failure,
+    fetch_feed_with_retry,
     load_items_from_s3,
+    parse_feed_entries,
 )
 
 __all__ = [
@@ -60,6 +59,8 @@ class RSSHubCollector(BaseCollector):
             self.flag_degraded_park(
                 parked,
                 threshold=self.config.error_rate_threshold,
+                empty_threshold=self.config.empty_rate_threshold,
+                max_failed=self.config.max_failed_inputs,
                 what=_INPUT_LABEL,
                 hint=_failure_hint(a.platform for a in self.config.accounts),
             )
@@ -69,7 +70,7 @@ class RSSHubCollector(BaseCollector):
             logger.info("No RSSHub accounts configured, skipping")
             return []
 
-        await asyncio.to_thread(self._check_reachable)
+        await self._check_reachable()
 
         # Bound the fan-out. Every account's feedparser.parse occupies a worker thread, and with
         # 40+ accounts the default executor is oversubscribed: a feed's wait_for could expire
@@ -109,8 +110,10 @@ class RSSHubCollector(BaseCollector):
             failed=len(failed_accounts),
             empty=len(empty_accounts),
             threshold=self.config.error_rate_threshold,
+            empty_threshold=self.config.empty_rate_threshold,
+            max_failed=self.config.max_failed_inputs,
             what=_INPUT_LABEL,
-            hint=_failure_hint(failed_platforms),
+            hint=_failure_hint(failed_platforms if failed_accounts else [a.platform for a in self.config.accounts]),
         )
         logger.info(
             "RSSHub collector gathered %d items from %d/%d accounts (%d failed, %d empty)",
@@ -140,65 +143,52 @@ class RSSHubCollector(BaseCollector):
             raise RuntimeError(f"All {total} RSSHub feeds failed: {', '.join(failed_accounts[:10])}")
         return items
 
-    def _check_reachable(self) -> None:
+    async def _check_reachable(self) -> None:
         """Raise if the RSSHub service is unreachable, so a total outage is reported
         as FAILED (→ alert) instead of looking like an all-accounts-empty quiet day."""
-        import httpx
-
         base = self.config.base_url.rstrip("/")
-        last_error: Exception | None = None
-        for attempt in range(1, self.config.max_retries + 1):
-            try:
-                resp = httpx.get(base, timeout=self.config.request_timeout, follow_redirects=True)
-                if resp.status_code >= 500:
-                    raise RuntimeError(f"RSSHub at {base} returned HTTP {resp.status_code}")
-                return
-            except (httpx.HTTPError, RuntimeError) as e:
-                last_error = e
-                if attempt < self.config.max_retries:
-                    logger.warning("RSSHub reachability check failed (attempt %d): %s", attempt, e)
-                    time.sleep(self.config.retry_backoff_sec * attempt)
-        raise RuntimeError(f"RSSHub unreachable at {base}: {last_error}") from last_error
+
+        async def _probe() -> None:
+            async with httpx.AsyncClient(timeout=self.config.request_timeout, follow_redirects=True) as client:
+                response = await client.get(base)
+            if response.status_code >= 500:
+                raise TransientStatusError(f"RSSHub at {base} returned HTTP {response.status_code}")
+
+        try:
+            await retry_async(
+                _probe,
+                max_retries=self.config.max_retries,
+                backoff_sec=self.config.retry_backoff_sec,
+                retry_on=(httpx.HTTPError, TransientStatusError),
+                description=f"RSSHub reachability check for {base}",
+            )
+        except Exception as e:
+            raise RuntimeError(f"RSSHub unreachable at {base}: {e}") from e
 
     async def _collect_account(self, username: str, platform: str, semaphore: asyncio.Semaphore) -> list[CollectedItem]:
         feed_path = self._build_feed_path(username, platform)
         feed_url = f"{self.config.base_url.rstrip('/')}/{feed_path}"
-        # feedparser.parse has no built-in timeout; bound it (as RSSCollector does) so one hung
-        # feed host can't block its worker thread indefinitely and starve the digest's time budget.
         async with semaphore:
             logger.info("Collecting RSSHub feed: '%s'", feed_url)
-
-            # The retry wraps the TIMEOUT, so every attempt gets its own full request_timeout.
-            # Without it a single transient blip on the largest source (~41 accounts) dropped that
-            # author for the whole day and could push RSSHub past error_rate_threshold.
-            # Worst case per account = max_retries * request_timeout + linear backoff, and accounts
-            # run max_concurrency at a time (see the bound in collect()).
-            async def _attempt() -> list[CollectedItem]:
-                return await asyncio.wait_for(
-                    asyncio.to_thread(self._parse_feed, feed_url, username, platform),
-                    timeout=self.config.request_timeout,
-                )
-
-            try:
-                return await retry_async(
-                    _attempt,
-                    max_retries=self.config.max_retries,
-                    backoff_sec=self.config.retry_backoff_sec,
-                    # A hung fetch and a 429/5xx are transient. An unparseable body or a permanent
-                    # 4xx raises a plain RuntimeError and is NOT retried — the verdict won't change.
-                    retry_on=(TimeoutError, TransientStatusError),
-                    description=f"RSSHub feed '{feed_url}'",
-                )
-            except TimeoutError as e:
-                # Counted as a failure (not an empty feed) so an all-accounts-hung RSSHub reports
-                # FAILED; one hung feed among many is still only logged and skipped by collect().
-                logger.warning(
-                    "RSSHub feed '%s' timed out after %d attempts of %ds, skipping",
-                    feed_url,
-                    self.config.max_retries,
-                    self.config.request_timeout,
-                )
-                raise RuntimeError(f"RSSHub feed '{feed_url}' timed out after {self.config.request_timeout}s") from e
+            # A hung fetch and a 429/5xx are transient: without a retry a single blip on the largest
+            # source (~41 accounts) dropped that author for the whole day and could push RSSHub past
+            # error_rate_threshold. An unparseable body or a permanent 4xx raises straight out, and
+            # that raise is what lets collect() report an all-accounts-failed run as FAILED.
+            feed = await fetch_feed_with_retry(
+                feed_url,
+                description=f"RSSHub feed '{feed_url}'",
+                timeout=self.config.request_timeout,
+                max_retries=self.config.max_retries,
+                backoff_sec=self.config.retry_backoff_sec,
+            )
+            return parse_feed_entries(
+                feed,
+                source_type=self._detect_source_type(platform),
+                cutoff=cutoff_datetime(self.config.lookback_hours, self.config.reference_time),
+                description=f"RSSHub feed '{feed_url}'",
+                metadata={"rsshub_feed": feed_url, "platform": platform},
+                author=username,
+            )
 
     @staticmethod
     def _build_feed_path(username: str, platform: str) -> str:
@@ -211,57 +201,6 @@ class RSSHubCollector(BaseCollector):
         if platform_lower in TWITTER_PLATFORMS:
             return f"twitter/user/{username}"
         return f"{platform_lower}/user/{username}"
-
-    def _parse_feed(self, feed_url: str, username: str, platform: str) -> list[CollectedItem]:
-        feed = feedparser.parse(feed_url)
-        description = f"RSSHub feed '{feed_url}'"
-        status = feed.get("status")
-        # RSSHub's OWN status was never inspected, so a 502 with an empty body surfaced as a generic
-        # unparseable-feed RuntimeError and was never retried. An unparseable feed is still a
-        # failure, not an empty one — see collect()'s all-failed check.
-        if status is not None and status >= 400:
-            raise feed_status_failure(description, status)
-        if feed.bozo and not feed.entries:
-            raise feed_parse_failure(description, feed.get("bozo_exception"))
-
-        cutoff = cutoff_datetime(self.config.lookback_hours, self.config.reference_time)
-        source_type = self._detect_source_type(platform)
-
-        items: list[CollectedItem] = []
-        for entry in feed.entries:
-            try:
-                published_at = parse_feed_published_date(entry)
-                if published_at and published_at < cutoff:
-                    continue
-
-                title = entry.get("title", "")
-                link = entry.get("link", "")
-
-                text = ""
-                if hasattr(entry, "content") and entry.content:
-                    text = entry.content[0].get("value", "")
-                elif hasattr(entry, "summary"):
-                    text = entry.summary or ""
-
-                item_id = entry.get("id", "") or generate_item_id(link)
-
-                items.append(
-                    CollectedItem(
-                        item_id=item_id,
-                        source_type=source_type,
-                        title=title,
-                        url=link,
-                        text=text,
-                        author=username,
-                        published_at=published_at,
-                        metadata={"rsshub_feed": feed_url, "platform": platform},
-                    )
-                )
-                logger.info("Collected RSSHub item: '%s'", title)
-            except (AttributeError, KeyError, TypeError, ValueError):
-                logger.warning("Failed to process RSSHub entry from '%s'", feed_url, exc_info=True)
-
-        return items
 
     @staticmethod
     def _detect_source_type(platform: str) -> SourceType:

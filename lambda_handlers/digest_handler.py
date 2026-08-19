@@ -3,13 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import boto3
 
-from main import persist_digest, run_collectors_with_health, run_pipeline
+from main import _resolve_digest_window, persist_digest, run_collectors_with_health, run_pipeline
 from shared import (
     BedrockLanguageModelFactory,
     Config,
@@ -125,10 +124,7 @@ async def _run() -> None:
     if rsshub_url:
         config.collectors.rsshub.base_url = rsshub_url
 
-    tz = ZoneInfo(config.aws.timezone)
-    digest_date = datetime.now(tz).date()
-    next_day = digest_date + timedelta(days=1)
-    reference_time = datetime(next_day.year, next_day.month, next_day.day, tzinfo=tz)
+    digest_date, reference_time = _resolve_digest_window(config)
     config.collectors.set_reference_time(reference_time)
 
     boto_session = boto3.Session(region_name=config.aws.bedrock_region)
