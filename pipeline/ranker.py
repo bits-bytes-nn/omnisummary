@@ -296,10 +296,13 @@ class ContentRanker:
         # weight would double-count authority and distort the scale non-linearly
         # (and inflate mid-range scores most). nudge = (weight-1.0) * factor, clamped.
         nudge_factor = self.config.origin_weight_nudge
+        matched: set[str] = set()
         for ranked in ranked_items:
             origin_key = resolve_origin_key(ranked.item)
             if not origin_key:
                 continue
+            if origin_key in weights:
+                matched.add(origin_key)
             weight = weights.get(origin_key, default_weight)
             if weight != 1.0:
                 original = ranked.score
@@ -312,6 +315,14 @@ class ContentRanker:
                     original,
                     ranked.score,
                 )
+        # An origin key is matched CASE-SENSITIVELY against resolve_origin_key's output, so
+        # 'Karpathy' vs 'karpathy' — or a handle commented out of collectors.rsshub.accounts —
+        # applies no nudge at all and used to log nothing. A configured weight that matched no item
+        # on a day the source did collect is a typo; on a day the source was dark it is expected,
+        # which is why this is a WARNING and not a load-time failure.
+        unmatched = sorted(set(weights) - matched)
+        if unmatched:
+            logger.warning("origin_weights matched no item this run: %s", ", ".join(unmatched))
 
     def _grace_candidates(
         self, ranked_items: list[RankedItem], above_threshold: list[RankedItem], pinned: list[RankedItem]
@@ -326,7 +337,11 @@ class ContentRanker:
         as covered and exclude pinned ids from the candidate pool. Otherwise a pinned item that is
         its source's only above-threshold entry (it's stripped from above_threshold) makes the
         source look shut out, and grace would re-admit the pin itself (double emission) or pad the
-        source with a below-threshold filler it should not get."""
+        source with a below-threshold filler it should not get.
+
+        The coupling to source_slots is INTENTIONAL: grace exists to keep a source's GUARANTEED slot
+        fillable, so with no guaranteed slots there is nothing to rescue and admitting a
+        below-threshold item would just lower the global bar."""
         grace = self.config.source_slot_score_grace
         if not grace or not self.config.source_slots:
             return []
@@ -344,7 +359,9 @@ class ContentRanker:
                 if r.item.source_type.value == src and floor <= r.score and r.item.item_id not in pinned_ids
             ]
             if candidates:
-                best = max(candidates, key=lambda r: r.score)
+                # (-score, item_id), like every other selection path here: plain max() broke a score
+                # tie by the LLM's response order within a batch, which is not stable run to run.
+                best = min(candidates, key=lambda r: (-r.score, r.item.item_id))
                 extra.append(best)
                 logger.info(
                     "Source '%s' had nothing above %.2f; admitting best item at %.2f (grace floor %.2f)",
@@ -364,9 +381,10 @@ class ContentRanker:
     ) -> list[RankedItem]:
         grace_ids = grace_ids or set()
         source_slots = self.config.source_slots
-        if not source_slots:
-            return above_threshold[:limit]
-
+        # NOTE: an empty source_slots skips only the GUARANTEED-SLOT pass below (the loop simply has
+        # nothing to iterate) — the origin-cap fill passes still run. Returning above_threshold[:limit]
+        # here instead dropped max_per_origin along with the slots, so one feed could take every
+        # story: the exact failure the origin cap exists to prevent.
         selected: list[RankedItem] = []
         selected_ids: set[str] = set()
         source_counts: dict[str, int] = defaultdict(int)

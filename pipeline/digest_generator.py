@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from datetime import UTC, date, datetime
 from urllib.parse import urlparse
 
@@ -25,6 +26,7 @@ from shared import (
     logger,
     parse_json_from_llm_output,
     place_countdown_intro,
+    resolve_origin_key,
     retry_async,
     split_sentences,
     strip_slack_mrkdwn,
@@ -152,7 +154,46 @@ class DigestGenerator:
             generated_at=datetime.now(UTC),
             total_collected=len(all_items),
             total_ranked=len(ranked_items),
+            diversity_breaches=self._audit_shipped_diversity(shipped_sources, ranked_items),
         )
+
+    def _audit_shipped_diversity(self, shipped: list[CollectedItem], ranked_items: list[RankedItem]) -> list[str]:
+        """Check the diversity caps against the digest that actually SHIPS.
+
+        The ranker enforces max_per_origin and the guaranteed source slots on the ranked core, but the
+        merge-backfill candidates it hands over deliberately ignore both, and nothing verified that
+        the editor used a backfill item as a REPLACEMENT rather than an addition — the prompt only
+        asks. So a shipped digest can carry two stories from one subreddit/handle while a source that
+        HAD a candidate drops out entirely.
+
+        Detection only, by design: reported (ERROR log + DigestResult) so the alerting path can say
+        so, never acted on by swapping stories — that would change what ships."""
+        breaches: list[str] = []
+        cap = self.config.max_per_origin
+        origins = Counter(key for key in (resolve_origin_key(item) for item in shipped) if key)
+        over = sorted((origin, count) for origin, count in origins.items() if count > cap)
+        if over:
+            breaches.append(
+                f"max_per_origin={cap} exceeded by "
+                + ", ".join(f"'{origin}' ({count} stories)" for origin, count in over)
+            )
+        # Only a source that HAD a ranked candidate can be said to have been dropped: a collector
+        # that returned nothing is a quiet day, not a diversity failure, and alerting on it would
+        # page every morning reddit or X is empty.
+        shipped_sources = {item.source_type.value for item in shipped}
+        available = {r.item.source_type.value for r in ranked_items}
+        dropped = sorted(
+            source
+            for source, slot in self.config.source_slots.items()
+            if slot >= 1 and source in available and source not in shipped_sources
+        )
+        if dropped:
+            breaches.append(
+                f"source(s) with a guaranteed slot and a ranked candidate shipped nothing: {', '.join(dropped)}"
+            )
+        for breach in breaches:
+            logger.error("Digest diversity breach (as shipped): %s", breach)
+        return breaches
 
     def _item_prose_budget(self, ranked_items: list[RankedItem]) -> int:
         """Characters the editor may spend on ONE item's title + body + implication.

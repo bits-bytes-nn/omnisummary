@@ -5,7 +5,15 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from shared.config import Config, PipelineConfig, RedditCollectorConfig, YouTubeCollectorConfig, get_config
+from shared.config import (
+    CollectorsConfig,
+    Config,
+    PipelineConfig,
+    RedditCollectorConfig,
+    YouTubeCollectorConfig,
+    get_config,
+)
+from shared.constants import COLLECTOR_NAMES, SourceType
 from shared.utils import LANGUAGE_MODEL_INFO
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
@@ -161,6 +169,57 @@ class TestImageSizes:
 
         cfg = Config.from_yaml(str(config_path))
         assert set(cfg.pipeline.image_sizes) == set(VISUAL_ORIENTATIONS)
+
+
+class TestSourceSlotVocabulary:
+    """source_slots keys are matched against item.source_type.value in the ranker's guaranteed-slot
+    pass. A typo'd key matches no item at all: the guarantee silently disappears and the fill pass
+    falls back to DEFAULT_SOURCE_SLOT for that source."""
+
+    def test_the_default_keys_are_real_source_types(self):
+        assert set(PipelineConfig().source_slots) <= {source.value for source in SourceType}
+
+    def test_an_unknown_source_name_fails_load(self):
+        with pytest.raises(ValidationError, match="unknown source type"):
+            PipelineConfig(source_slots={"websearch": 2})  # the real value is 'web'
+
+    def test_no_slots_at_all_is_allowed(self):
+        # A legitimate config: no per-source guarantees (the origin cap still applies).
+        assert PipelineConfig(source_slots={}).source_slots == {}
+
+    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
+    def test_every_config_names_real_source_types(self, config_path):
+        cfg = Config.from_yaml(str(config_path))
+        assert set(cfg.pipeline.source_slots) <= {source.value for source in SourceType}
+
+
+class TestAlertOnEmptyVocabulary:
+    """alert_on_empty is matched against the health report's source names. A name that is not a
+    collector alerts on NOTHING, so the dark source it was meant to watch just stays dark."""
+
+    def test_known_collector_names_are_accepted(self):
+        assert CollectorsConfig(alert_on_empty=list(COLLECTOR_NAMES)).alert_on_empty == list(COLLECTOR_NAMES)
+
+    def test_an_unknown_collector_name_fails_load(self):
+        with pytest.raises(ValidationError, match="unknown collector"):
+            CollectorsConfig(alert_on_empty=["websearch"])  # the collector is named 'web_search'
+
+    def test_the_vocabulary_matches_the_collector_registry(self):
+        # The names must be exactly what the runner can actually build; otherwise a source could be
+        # named here that never appears in a health report (or vice versa).
+        from unittest.mock import MagicMock
+
+        from pipeline.runner import collector_registry
+
+        assert set(collector_registry(Config(), MagicMock())) == set(COLLECTOR_NAMES)
+
+    def test_the_vocabulary_matches_the_per_source_config_fields(self):
+        assert set(COLLECTOR_NAMES) <= set(CollectorsConfig.model_fields)
+
+    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
+    def test_every_config_watches_only_real_collectors(self, config_path):
+        cfg = Config.from_yaml(str(config_path))
+        assert set(cfg.collectors.alert_on_empty) <= set(COLLECTOR_NAMES)
 
 
 class TestTranscriptLanguage:

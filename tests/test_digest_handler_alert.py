@@ -127,6 +127,12 @@ class TestRankingHealthAlert:
     follows looks entirely normal. Published separately from the collector alert (which runs BEFORE
     the pipeline), so a pipeline exception can never swallow the collector notice."""
 
+    @staticmethod
+    def _digest(**kwargs):
+        from shared.models import DigestResult
+
+        return DigestResult(digest_text="body", **kwargs)
+
     def test_publishes_when_candidates_were_lost(self, monkeypatch):
         from datetime import date
 
@@ -136,7 +142,7 @@ class TestRankingHealthAlert:
         sns = MagicMock()
         health = RankingHealth(batches_total=3, batches_failed=1, items_total=90, items_scored=60, items_lost=30)
         with patch("lambda_handlers.digest_handler.boto3.client", return_value=sns):
-            digest_handler._maybe_alert_ranking(health, date(2026, 8, 18))
+            digest_handler._maybe_alert_ranking(self._digest(ranking_health=health), date(2026, 8, 18))
         sns.publish.assert_called_once()
         assert "Ranking Health" in sns.publish.call_args.kwargs["Subject"]
         assert "30 of 90 candidates" in sns.publish.call_args.kwargs["Message"]
@@ -148,6 +154,21 @@ class TestRankingHealthAlert:
 
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:::topic")
         with patch("lambda_handlers.digest_handler.boto3.client") as client:
-            digest_handler._maybe_alert_ranking(RankingHealth(batches_total=2, items_total=60), date(2026, 8, 18))
+            clean = RankingHealth(batches_total=2, items_total=60)
+            digest_handler._maybe_alert_ranking(self._digest(ranking_health=clean), date(2026, 8, 18))
             digest_handler._maybe_alert_ranking(None, date(2026, 8, 18))
         client.assert_not_called()
+
+    def test_publishes_a_diversity_breach_in_the_shipped_digest(self, monkeypatch):
+        # The ranker guarantees max_per_origin on the ranked CORE; the editor's backfill candidates
+        # ignore it, so a shipped digest can carry two stories from one origin with the ranking pass
+        # itself perfectly clean.
+        from datetime import date
+
+        monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:::topic")
+        sns = MagicMock()
+        digest = self._digest(diversity_breaches=["max_per_origin=1 exceeded by 'r/LocalLLaMA' (2 stories)"])
+        with patch("lambda_handlers.digest_handler.boto3.client", return_value=sns):
+            digest_handler._maybe_alert_ranking(digest, date(2026, 8, 18))
+        sns.publish.assert_called_once()
+        assert "r/LocalLLaMA" in sns.publish.call_args.kwargs["Message"]

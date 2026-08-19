@@ -8,7 +8,7 @@ import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .constants import RSSHUB_PORT, VISUAL_ORIENTATIONS, LanguageModelId
+from .constants import COLLECTOR_NAMES, RSSHUB_PORT, VISUAL_ORIENTATIONS, LanguageModelId, SourceType
 
 
 class _StrictModel(BaseModel):
@@ -163,6 +163,19 @@ class CollectorsConfig(_StrictModel):
     # this is an explicit opt-in list rather than "alert whenever any source is empty" — that would
     # page daily and be muted within a week. Empty (the default) never alerts on EMPTY.
     alert_on_empty: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _alert_on_empty_names_known_collectors(self) -> "CollectorsConfig":
+        """A name here that is not a collector alerts on NOTHING: the list is matched against the
+        health report's source names, so `websearch` (or a renamed source) leaves the very source it
+        was meant to watch silently dark. Fail at config load instead."""
+        unknown = sorted(set(self.alert_on_empty) - set(COLLECTOR_NAMES))
+        if unknown:
+            raise ValueError(
+                f"collectors.alert_on_empty names unknown collector(s) {unknown}; "
+                f"valid names are {sorted(COLLECTOR_NAMES)}"
+            )
+        return self
 
     def set_reference_time(self, reference_time: datetime) -> None:
         for cfg in (self.youtube, self.reddit, self.rss, self.web_search, self.rsshub):
@@ -482,6 +495,19 @@ class PipelineConfig(_StrictModel):
         "Draw him with correct, natural human anatomy and proportions and well-formed hands, as a "
         "polished, professionally-drawn character in whatever art style the day calls for."
     )
+
+    @model_validator(mode="after")
+    def _source_slots_name_real_source_types(self) -> "PipelineConfig":
+        """source_slots keys are matched against `item.source_type.value` in the ranker's guaranteed-
+        slot pass, so a typo'd or renamed key matches no item: the guarantee silently vanishes and
+        the fill pass falls back to DEFAULT_SOURCE_SLOT for that source. Fail at config load."""
+        unknown = sorted(set(self.source_slots) - {source.value for source in SourceType})
+        if unknown:
+            raise ValueError(
+                f"pipeline.source_slots names unknown source type(s) {unknown}; "
+                f"valid keys are {sorted(source.value for source in SourceType)}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _image_sizes_match_the_orientation_vocabulary(self) -> "PipelineConfig":

@@ -12,8 +12,8 @@ from pipeline import persist_digest, resolve_digest_window, run_collectors_with_
 from shared import (
     BedrockLanguageModelFactory,
     Config,
+    DigestResult,
     HealthReport,
-    RankingHealth,
     SourceStatus,
     emit_emf,
     get_correlation_id,
@@ -61,17 +61,21 @@ def _maybe_alert(health: HealthReport, alert_on_empty: list[str] | None = None) 
     publish_alert("Source Health", "ALERT", fields)
 
 
-def _maybe_alert_ranking(health: RankingHealth | None, digest_date: date) -> None:
-    """Notice when the digest was built on an INCOMPLETE candidate pool: a ranking batch that failed
-    every retry deletes ~40 candidates from the day, and the resulting digest reads perfectly
-    normally. Silent when nothing was lost."""
-    if health is None or not health.degraded:
+def _maybe_alert_ranking(digest: DigestResult | None, digest_date: date) -> None:
+    """Notice when the digest was built on an INCOMPLETE candidate pool (a ranking batch that failed
+    every retry deletes ~40 candidates from the day), or when the digest AS SHIPPED broke a diversity
+    cap the ranker guarantees only on the ranked core. Either way the digest itself reads perfectly
+    normally, which is why it needs saying. Silent when nothing was lost and nothing was breached."""
+    health = digest.ranking_health if digest else None
+    breaches = digest.diversity_breaches if digest else []
+    if not breaches and (health is None or not health.degraded):
         return
-    publish_alert(
-        "Ranking Health",
-        "ALERT",
-        {"Digest date": digest_date.isoformat(), "Detail": health.summary()},
-    )
+    fields = {"Digest date": digest_date.isoformat()}
+    if health is not None and health.degraded:
+        fields["Detail"] = health.summary()
+    if breaches:
+        fields["Diversity"] = "; ".join(breaches)
+    publish_alert("Ranking Health", "ALERT", fields)
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -128,7 +132,7 @@ async def _run() -> None:
     # keeping them apart means a pipeline exception can never swallow the collector notice, and a
     # digest built on a pool that lost a whole ranking batch is reported even though the digest
     # itself looks entirely normal.
-    _maybe_alert_ranking(digest.ranking_health if digest else None, digest_date)
+    _maybe_alert_ranking(digest, digest_date)
 
     if items and ranked_items and digest:
         try:

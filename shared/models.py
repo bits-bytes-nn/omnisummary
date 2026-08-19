@@ -126,6 +126,12 @@ class DigestResult(BaseModel):
     # Set by the pipeline after ranking, so the delivery/alerting layer can report a digest built on
     # an incomplete candidate pool. None means "not recorded" (older snapshots, direct construction).
     ranking_health: RankingHealth | None = None
+    # Diversity caps broken by the digest as SHIPPED, one human-readable line each. The ranker
+    # guarantees them on the ranked core, but the editor's merge-backfill candidates deliberately
+    # ignore both caps and nothing verified the editor used one as a REPLACEMENT rather than an
+    # addition. Empty = the shipped digest respects the caps. Detection only: carried so the
+    # alerting layer can report it, never acted on by reselecting stories.
+    diversity_breaches: list[str] = Field(default_factory=list)
 
 
 class VisualBrief(BaseModel):

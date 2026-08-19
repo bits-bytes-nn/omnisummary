@@ -146,6 +146,33 @@ class TestOriginCap:
         assert ids == {"w1", "w3", "r1"}
 
 
+class TestOriginCapWithoutSourceSlots:
+    """`source_slots: {}` is a legitimate config (no per-source guarantees). It used to short-circuit
+    before ANY origin accounting, so max_per_origin vanished with the slots and one feed could take
+    every story — the exact failure the origin cap exists to prevent."""
+
+    def test_the_origin_cap_still_applies(self):
+        ranker = _ranker(top_n=2, min_score=0.5, source_slots={}, max_per_origin=1)
+        items = [
+            _ranked(0.95, SourceType.RSS, item_id="r1", feed="https://one.example/feed"),
+            _ranked(0.94, SourceType.RSS, item_id="r2", feed="https://one.example/feed"),
+            _ranked(0.60, SourceType.RSS, item_id="r3", feed="https://two.example/feed"),
+        ]
+        selected = ranker._apply_source_slots(items, ranker.config.top_n)
+        assert {r.item.item_id for r in selected} == {"r1", "r3"}
+
+    def test_the_digest_still_fills_when_only_one_origin_has_candidates(self):
+        # The relaxed passes must still run: a reader must not lose a story to a diversity that has
+        # no candidates to spend on.
+        ranker = _ranker(top_n=2, min_score=0.5, source_slots={}, max_per_origin=1)
+        items = [
+            _ranked(0.95, SourceType.RSS, item_id="r1", feed="https://one.example/feed"),
+            _ranked(0.94, SourceType.RSS, item_id="r2", feed="https://one.example/feed"),
+        ]
+        selected = ranker._apply_source_slots(items, ranker.config.top_n)
+        assert {r.item.item_id for r in selected} == {"r1", "r2"}
+
+
 class TestSlotOrder:
     def test_short_limit_gives_slots_to_the_strongest_sources(self):
         # limit(2) < sum(source_slots)(3): the guaranteed pass used to walk the config key order, so
@@ -288,6 +315,17 @@ class TestSourceSlotGrace:
         ranked = [_ranked(0.55, SourceType.YOUTUBE, item_id="y1", channel="c")]
         assert ranker._grace_candidates(ranked, [], []) == []
 
+    def test_a_score_tie_breaks_deterministically_on_item_id(self):
+        # plain max() kept the FIRST equal-scoring candidate, i.e. the LLM's response order within a
+        # batch — not stable run to run, unlike every other selection path here.
+        ranker = _ranker(min_score=0.6, source_slot_score_grace=0.1, source_slots={"youtube": 1})
+        tied = [
+            _ranked(0.55, SourceType.YOUTUBE, item_id="y_b", channel="c"),
+            _ranked(0.55, SourceType.YOUTUBE, item_id="y_a", channel="c"),
+        ]
+        assert [r.item.item_id for r in ranker._grace_candidates(tied, [], [])] == ["y_a"]
+        assert [r.item.item_id for r in ranker._grace_candidates(list(reversed(tied)), [], [])] == ["y_a"]
+
 
 class TestOriginWeights:
     def test_named_origin_weight_is_additive_nudge(self):
@@ -309,6 +347,17 @@ class TestOriginWeights:
         items = [_ranked(0.8, SourceType.YOUTUBE, item_id="v1", channel="chanB")]
         ranker._apply_origin_weights(items)
         assert items[0].score == 0.8
+
+    def test_a_weight_that_matched_nothing_is_reported(self, caplog):
+        # Keys are matched case-sensitively against resolve_origin_key's output, so 'ChanA' vs
+        # 'chanA' — or a handle commented out of the RSSHub accounts — nudges nothing and used to
+        # log nothing at all.
+        ranker = _ranker(origin_weights={"ChanA": 1.5, "chanA": 1.5}, origin_weight_nudge=0.1)
+        items = [_ranked(0.5, SourceType.YOUTUBE, item_id="v1", channel="chanA")]
+        with caplog.at_level("WARNING"):
+            ranker._apply_origin_weights(items)
+        assert "ChanA" in caplog.text
+        assert "chanA," not in caplog.text  # the one that DID match is not reported
 
     def test_nudge_clamped_to_unit_range(self):
         ranker = _ranker(origin_weights={"chanA": 5.0}, origin_weight_default=1.0, origin_weight_nudge=0.1)

@@ -874,3 +874,85 @@ class TestDroppedStoryIsAnError:
         with patch("pipeline.digest_generator.logger.error") as err:
             _generator("")._parse_content(raw)
         assert not err.called
+
+
+class TestShippedDiversityAudit:
+    """_apply_source_slots guarantees max_per_origin on the ranked CORE, but ranker._backfill_candidates
+    deliberately ignores both caps and the prompt only ASKS the editor to use a backfill item as a
+    replacement. So the digest that actually ships can carry two stories from one subreddit/handle and
+    drop a source. Detection only: reported, never reselected."""
+
+    @staticmethod
+    def _reddit(item_id: str, sub: str) -> CollectedItem:
+        return CollectedItem(
+            item_id=item_id,
+            source_type=SourceType.REDDIT,
+            title=item_id,
+            url=f"http://reddit.test/{item_id}",
+            metadata={"subreddit": sub},
+        )
+
+    @staticmethod
+    def _rss(item_id: str, feed: str = "https://feed.test/rss") -> CollectedItem:
+        return CollectedItem(
+            item_id=item_id,
+            source_type=SourceType.RSS,
+            title=item_id,
+            url=f"http://rss.test/{item_id}",
+            metadata={"feed_url": feed},
+        )
+
+    def _generator(self, **overrides):
+        config = PipelineConfig(**overrides)
+        return DigestGenerator(config, MagicMock())
+
+    def test_two_stories_from_one_origin_are_reported(self):
+        gen = self._generator(max_per_origin=1, source_slots={})
+        shipped = [self._reddit("p1", "LocalLLaMA"), self._reddit("p2", "LocalLLaMA")]
+        ranked = [RankedItem(item=item, score=0.9) for item in shipped]
+        with patch("pipeline.digest_generator.logger.error") as err:
+            breaches = gen._audit_shipped_diversity(shipped, ranked)
+        assert len(breaches) == 1 and "LocalLLaMA" in breaches[0]
+        assert err.called  # invisible in the digest itself, so it must be loud in the logs
+
+    def test_a_compliant_digest_reports_nothing(self):
+        gen = self._generator(max_per_origin=1, source_slots={"reddit": 1, "rss": 1})
+        shipped = [self._reddit("p1", "LocalLLaMA"), self._rss("r1")]
+        ranked = [RankedItem(item=item, score=0.9) for item in shipped]
+        with patch("pipeline.digest_generator.logger.error") as err:
+            assert gen._audit_shipped_diversity(shipped, ranked) == []
+        assert not err.called
+
+    def test_a_slotted_source_that_had_a_candidate_but_shipped_nothing_is_reported(self):
+        gen = self._generator(max_per_origin=2, source_slots={"reddit": 1, "rss": 1})
+        shipped = [self._reddit("p1", "LocalLLaMA")]
+        ranked = [RankedItem(item=item, score=0.9) for item in (*shipped, self._rss("r1"))]
+        breaches = gen._audit_shipped_diversity(shipped, ranked)
+        assert len(breaches) == 1 and "rss" in breaches[0]
+
+    def test_a_source_with_no_candidate_at_all_is_a_quiet_day_not_a_breach(self):
+        # A dark collector (reddit/x on a quiet day) must not alert here — that would page daily.
+        gen = self._generator(max_per_origin=2, source_slots={"reddit": 1, "rss": 1})
+        shipped = [self._rss("r1")]
+        ranked = [RankedItem(item=shipped[0], score=0.9)]
+        assert gen._audit_shipped_diversity(shipped, ranked) == []
+
+    @pytest.mark.asyncio
+    async def test_the_verdict_rides_on_the_digest_result(self):
+        emitted = {
+            "items": [
+                {"title": "T1", "url": "http://reddit.test/p1", "body": "본문."},
+                {"title": "T2", "url": "http://reddit.test/p2", "body": "본문."},
+            ],
+            "lead": "리드 문장.",
+        }
+        config = PipelineConfig(max_per_origin=1, source_slots={}, top_n=2, enable_grounding_check=False)
+        factory = MagicMock()
+        factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content=json.dumps(emitted)))
+        gen = DigestGenerator(config, factory)
+        ranked = [
+            RankedItem(item=self._reddit("p1", "LocalLLaMA"), score=0.9),
+            RankedItem(item=self._reddit("p2", "LocalLLaMA"), score=0.88),
+        ]
+        result = await gen.generate(ranked, [r.item for r in ranked])
+        assert result.diversity_breaches and "LocalLLaMA" in result.diversity_breaches[0]

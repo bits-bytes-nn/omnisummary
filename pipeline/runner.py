@@ -9,9 +9,11 @@ important consumer too."""
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from collectors import (
@@ -64,6 +66,23 @@ def resolve_digest_window(config: Config, date_arg: str | None = None) -> tuple[
     return digest_date, datetime(next_day.year, next_day.month, next_day.day, tzinfo=tz)
 
 
+def collector_registry(
+    config: Config, llm_factory: BedrockLanguageModelFactory
+) -> dict[str, tuple[Callable[..., BaseCollector], Any, dict[str, Any]]]:
+    """collector name -> (class, its config, extra constructor kwargs).
+
+    The keys are COLLECTOR_NAMES, which is also what `collectors.alert_on_empty` is validated
+    against — a source this registry names but that vocabulary doesn't could never be watched for
+    going dark."""
+    return {
+        "reddit": (RedditCollector, config.collectors.reddit, {}),
+        "rsshub": (RSSHubCollector, config.collectors.rsshub, {}),
+        "rss": (RSSCollector, config.collectors.rss, {}),
+        "web_search": (WebSearchCollector, config.collectors.web_search, {"llm_factory": llm_factory}),
+        "youtube": (YouTubeCollector, config.collectors.youtube, {}),
+    }
+
+
 def _build_collector_tasks(
     config: Config,
     llm_factory: BedrockLanguageModelFactory,
@@ -72,13 +91,7 @@ def _build_collector_tasks(
     """Build the collect() coroutines plus the collector instances behind them. The instances are
     returned (not just the coroutines) so run_collectors_with_health can read each collector's
     park_status afterwards and report a stalled/unreadable S3 park file as STALE."""
-    collectors_map = {
-        "reddit": (RedditCollector, config.collectors.reddit, {}),
-        "rsshub": (RSSHubCollector, config.collectors.rsshub, {}),
-        "rss": (RSSCollector, config.collectors.rss, {}),
-        "web_search": (WebSearchCollector, config.collectors.web_search, {"llm_factory": llm_factory}),
-        "youtube": (YouTubeCollector, config.collectors.youtube, {}),
-    }
+    collectors_map = collector_registry(config, llm_factory)
 
     active_sources = (
         [name for name, (_, cfg, _kw) in collectors_map.items() if cfg.enabled] if sources is None else sources

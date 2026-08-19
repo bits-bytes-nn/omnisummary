@@ -116,6 +116,12 @@ ALL_SSM_SECRET_ENV_VARS: dict[str, str] = {**SSM_SECRET_ENV_VARS, **SSM_RSSHUB_S
 # (logged, feature skipped) rather than sending the literal placeholder to an API as a token.
 SSM_PLACEHOLDER: str = "PLACEHOLDER-run-scripts/put_secrets.py"
 
+# The collector names the pipeline knows: the keys of pipeline/runner.py's collector registry, the
+# per-source fields of CollectorsConfig, and the vocabulary `collectors.alert_on_empty` is validated
+# against. ONE definition, because a typo'd alert_on_empty entry never matches a source name — the
+# dark source it was meant to watch simply stays dark, with no signal anywhere.
+COLLECTOR_NAMES: tuple[str, ...] = ("reddit", "rss", "rsshub", "web_search", "youtube")
+
 # CloudWatch namespace every EMF record and every metric-backed alarm uses. ONE definition: the
 # emitting code and the CDK alarm must agree, and a drifting literal makes an alarm watch a
 # namespace nothing writes to (which reads as "no data", i.e. permanently green).
