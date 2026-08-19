@@ -2,7 +2,7 @@
 
 record_run_health/flag_degraded_park default empty_threshold to 100.0 and max_failed to 0 — both
 disabled. A collector that passes only `threshold=` therefore silently ignores
-`collectors.<source>.empty_rate_threshold` / `max_failed_inputs`: the strict config model accepts
+`collectors.<source>.empty_rate_threshold` : the strict config model accepts
 `empty_rate_threshold: 90`, and 9 channels that all resolve but all return nothing still report OK.
 The invariant is asserted over the call SITES so it also holds for collectors added later.
 """
@@ -25,7 +25,6 @@ HEALTH_METHODS = ("record_run_health", "flag_degraded_park")
 REQUIRED_KNOBS = {
     "threshold": "self.config.error_rate_threshold",
     "empty_threshold": "self.config.empty_rate_threshold",
-    "max_failed": "self.config.max_failed_inputs",
 }
 COLLECTORS = (RedditCollector, RSSCollector, RSSHubCollector, WebSearchCollector, YouTubeCollector)
 
@@ -67,7 +66,6 @@ class TestYouTubeForwardsTheKnobsAtRuntime:
             with patch.object(collector, "flag_degraded_park") as flag:
                 await collector.collect()
         assert flag.call_args.kwargs["empty_threshold"] == 42.0
-        assert flag.call_args.kwargs["max_failed"] == 0
 
     @pytest.mark.asyncio
     async def test_the_live_path_judges_with_the_configured_knobs(self, monkeypatch):
@@ -78,4 +76,3 @@ class TestYouTubeForwardsTheKnobsAtRuntime:
                 with patch.object(collector, "record_run_health") as record:
                     await collector.collect()
         assert record.call_args.kwargs["empty_threshold"] == 42.0
-        assert record.call_args.kwargs["max_failed"] == 0

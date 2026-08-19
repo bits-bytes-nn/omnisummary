@@ -118,35 +118,6 @@ class TestParseRankings:
         assert result[0].reasoning == "sonnet json notes"
 
 
-class TestEngagementGuidance:
-    """`view_count` is set by the YouTube collector alone, so on a batch with no such item the
-    *Engagement Signal* block described a bonus nothing in the batch could receive — and for the one
-    medium that does carry it, that bonus stacked on the medium-neutrality paragraph and the
-    source-slot score grace."""
-
-    def _ranker(self) -> ContentRanker:
-        from shared.config import PipelineConfig
-
-        ranker = ContentRanker.__new__(ContentRanker)
-        ranker.config = PipelineConfig()
-        return ranker
-
-    def test_no_block_when_the_batch_carries_no_engagement_data(self):
-        assert self._ranker()._engagement_guidance(_items()) == ""
-
-    def test_the_block_and_the_configured_tiers_appear_when_it_does(self):
-        video = CollectedItem(
-            item_id="v",
-            source_type=SourceType.YOUTUBE,
-            title="t",
-            url="https://y/v",
-            metadata={"view_count": 20000},
-        )
-        block = self._ranker()._engagement_guidance([*_items(), video])
-        assert "*Engagement Signal*" in block
-        assert "10,000+ views" in block
-
-
 class TestItemIdResolution:
     """The `=== Item N ===` header the prompt builder emits invites the model to answer with the
     DISPLAY ORDINAL, and production logs show it doing exactly that ('30', '27', '18', '9', '5'),

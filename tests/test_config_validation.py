@@ -174,42 +174,6 @@ class TestSourceSlotVocabulary:
         assert PipelineConfig(source_slots={}).source_slots == {}
 
 
-class TestSlotsVersusTopN:
-    """Slots that OVER-subscribe top_n are the real misconfiguration: one source's guarantee cannot be
-    honoured and which one loses depends on iteration order.
-
-    Slots that exactly FILL top_n is the evenly-sourced digest slots exist to produce, and it is both
-    the code default (top_n 7, slots summing 7) and the shipped config (top_n 5, five 1-slots) — so
-    warning on `>=` fired on every Config load in the process, including scripts/ci_synth.py. An
-    always-on warning carries no information, which is the same pattern as the five self-alerting
-    knobs removed in 6bcdafc."""
-
-    @staticmethod
-    def _warnings(**overrides):
-        # The project logger sets propagate=False, so caplog cannot see it; assert on the call.
-        with patch("shared.config.logger") as log:
-            PipelineConfig(**overrides)
-        return [call.args[0] for call in log.warning.call_args_list]
-
-    def test_over_subscribed_slots_warn(self):
-        warnings = self._warnings(top_n=5, source_slots={"web": 2, "x": 1, "rss": 1, "reddit": 1, "youtube": 1})
-        assert any("cannot be honoured" in message for message in warnings)
-
-    def test_slots_exactly_filling_the_digest_are_silent(self):
-        # The shipped config. It was the loudest caller of this warning and it is not a mistake.
-        assert self._warnings(top_n=5, source_slots={"web": 1, "x": 1, "rss": 1, "reddit": 1, "youtube": 1}) == []
-
-    def test_the_code_defaults_are_silent(self):
-        # A bare PipelineConfig() must not warn: ci_synth and every unit test construct one.
-        assert self._warnings() == []
-
-    def test_a_slot_left_over_for_score_is_silent(self):
-        assert self._warnings(top_n=6, source_slots={"web": 1, "x": 1, "rss": 1, "reddit": 1, "youtube": 1}) == []
-
-    def test_a_disabled_slot_does_not_count_against_top_n(self):
-        assert self._warnings(top_n=2, source_slots={"web": 1, "x": 0}) == []
-
-
 class TestAlertOnEmptyVocabulary:
     """alert_on_empty is matched against the health report's source names. A name that is not a
     collector alerts on NOTHING, so the dark source it was meant to watch just stays dark."""
@@ -317,7 +281,6 @@ class TestParkedSourceTripwires:
                 what="channels",
                 threshold=50.0,
                 empty_threshold=EMPTY_RATE_CHECK_DISABLED,
-                max_failed=0,
             )
             == ""
         )
@@ -330,7 +293,6 @@ class TestParkedSourceTripwires:
             what="account feeds",
             threshold=50.0,
             empty_threshold=90.0,
-            max_failed=0,
         )
         assert "returned nothing" in reason
 

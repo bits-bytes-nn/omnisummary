@@ -129,7 +129,6 @@ class YouTubeCollector(BaseCollector):
                 parked,
                 threshold=self.config.error_rate_threshold,
                 empty_threshold=self.config.empty_rate_threshold,
-                max_failed=self.config.max_failed_inputs,
                 what="channels",
             )
             # Through the SAME window both live branches apply: a stale park file otherwise fed
@@ -177,7 +176,6 @@ class YouTubeCollector(BaseCollector):
             empty=result.empty,
             threshold=self.config.error_rate_threshold,
             empty_threshold=self.config.empty_rate_threshold,
-            max_failed=self.config.max_failed_inputs,
             what="channels",
         )
         return result.items

@@ -60,7 +60,6 @@ class RSSHubCollector(BaseCollector):
                 parked,
                 threshold=self.config.error_rate_threshold,
                 empty_threshold=self.config.empty_rate_threshold,
-                max_failed=self.config.max_failed_inputs,
                 what=_INPUT_LABEL,
                 hint=_failure_hint(a.platform for a in self.config.accounts),
             )
@@ -118,7 +117,6 @@ class RSSHubCollector(BaseCollector):
             empty=len(empty_accounts),
             threshold=self.config.error_rate_threshold,
             empty_threshold=self.config.empty_rate_threshold,
-            max_failed=self.config.max_failed_inputs,
             what=_INPUT_LABEL,
             hint=_failure_hint(failed_platforms if failed_accounts else [a.platform for a in self.config.accounts]),
         )

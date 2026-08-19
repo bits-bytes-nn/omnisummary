@@ -122,7 +122,7 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 
 | 그룹 | 필드 | 설명 |
 |------|------|------|
-| 공통(상속) | `enabled`, `lookback_hours`, `reference_time`, `request_timeout`, `max_retries`, `retry_backoff_sec`, `park_max_age_hours`(기본 36), `error_rate_threshold`(기본 50.0), `empty_rate_threshold`(기본 100.0=비활성), `max_failed_inputs`(기본 0=비활성) | 활성화 여부, 조회 윈도, 타임아웃, 재시도, S3 park 파일의 나이 예산(초과하면 항목은 쓰되 헬스를 STALE로 보고한다), 그리고 DEGRADED 판정 세 갈래: 입력(피드·계정·채널·쿼리) 실패율, 입력 빈 응답률, 절대 실패 개수. 어느 하나만 걸려도 DEGRADED이고 보고만 할 뿐 항목은 그대로 전달한다 |
+| 공통(상속) | `enabled`, `lookback_hours`, `reference_time`, `request_timeout`, `max_retries`, `retry_backoff_sec`, `park_max_age_hours`(기본 36), `error_rate_threshold`(기본 50.0), `empty_rate_threshold`(기본 100.0=비활성) | 활성화 여부, 조회 윈도, 타임아웃, 재시도, S3 park 파일의 나이 예산(초과하면 항목은 쓰되 헬스를 STALE로 보고한다), 그리고 DEGRADED 판정 두 갈래: 입력(피드·계정·채널·쿼리) 실패율과 입력 빈 응답률. 어느 하나만 걸려도 DEGRADED이고 보고만 할 뿐 항목은 그대로 전달한다 |
 | `rss` | `feeds`, `max_concurrency`(기본 5) | RSS 피드 URL 목록과 동시 fetch 상한 |
 | `reddit` | `subreddits`, `sort`, `limit` | 서브레딧, 정렬, 개수 |
 | `youtube` | `channels`, `max_videos_per_channel`, `resolve_timeout`, `transcript_timeout`, `transcript_language` | 채널, 영상 수, 자막 관련 설정 |
@@ -153,7 +153,12 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 달라서(RSS 블로그는 하루 글이 없는 게 정상이고, X 계정 40개가 모두 조용한 건 세션이 깨진 것이다) 기본값은
 비활성인 100.0이고 config.yaml에서 소스별로 켠다. 둘째, 입력이 적은 소스에서는 비율이 판정을 표현할 수 없다.
 서브레딧 2개면 1개 실패가 정확히 기본 임계값 50%(=깨끗함)이고 2개 실패는 이미 FAILED로 올라가서 DEGRADED에
-닿을 수 없었다. `max_failed_inputs`는 비율과 무관하게 절대 개수로 판정한다(0이면 비활성).
+닿을 수 없었다. 절대 개수로 판정하는 `max_failed_inputs`가 이 자리에 있었는데 2026-08-19에 지웠다. 비율로
+표현이 안 될 만큼 입력이 적은 소스는 reddit뿐이고, 30회 실행을 재보니 r/MachineLearning이 29회에서 429를 받고
+그중 4회 재시도를 소진한다. 1로 무장하면 97%의 실행에 존재하는 조건으로 월 4회 페이징하는데 조치할 게 없다
+(Reddit이 데이터센터 IP를 레이트리밋하는 것이고, 재시도 후 프록시 폴백이 완화 수단이며 나머지 26일에는 그게
+동작했다). 그 4일에도 reddit은 자기 슬롯에 스토리를 실었다. 두 설정 파일 중 무장한 곳이 여기뿐이라 필드도 함께
+지웠다.
 
 `collectors.alert_on_empty`(기본 `[]`)는 EMPTY가 사건인 소스의 이름 목록이다(예: `["rss", "web_search"]`).
 목록이 필요한 이유는 이렇다. 어두워진 소스는 예외도 남기지 않고 stale park 파일도 남기지 않고 실패율도
@@ -170,7 +175,7 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | 영역 | 필드 | 설명 |
 |------|------|------|
 | 모델 | `ranking_model`(실효 Opus 4.8), `digest_model`(Sonnet 5), `trend_model` | 단계별 모델 |
-| 랭킹 | `ranking_batch_size`, `ranking_batch_token_budget_ratio`(기본 0.7), `ranking_context_window_fallback`(기본 200000), `ranking_max_concurrency`(기본 4), `ranking_max_retries`(기본 3), `ranking_retry_backoff_sec`(기본 5), `ranking_min_coverage_ratio`(기본 0.9), `engagement_tiers`, `ranking_categories`, `ranking_duplicate_score_penalty`, `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치, 배치가 채울 수 있는 컨텍스트 창 비율과 미등록 모델의 대체 창 크기, Bedrock fan-out 상한, 배치 재시도, 커버리지 재질의 기준, 참여도 보정, 카테고리, 점수 루브릭 |
+| 랭킹 | `ranking_batch_size`, `ranking_batch_token_budget_ratio`(기본 0.7), `ranking_context_window_fallback`(기본 200000), `ranking_max_concurrency`(기본 4), `ranking_max_retries`(기본 3), `ranking_retry_backoff_sec`(기본 5), `ranking_min_coverage_ratio`(기본 0.9), `ranking_categories`, `ranking_duplicate_score_penalty`, `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치, 배치가 채울 수 있는 컨텍스트 창 비율과 미등록 모델의 대체 창 크기, Bedrock fan-out 상한, 배치 재시도, 커버리지 재질의 기준, 카테고리, 점수 루브릭 |
 | 선정과 다양성 | `top_n`, `min_score`, `source_slot_score_grace`(기본 0.1), `source_slot_grace_max_admissions`(기본 1), `source_slots`, `source_cap_multiplier`, `max_per_origin` | 상위 N, 소스 슬롯, grace 밴드(슬롯 보유 소스가 `min_score` 위 항목이 전무하면 grace 밴드 안의 최선 1건을 구제하고, 구제된 항목은 `RankedItem.grace`로 표시되어 에디터와 다양성 감사에 보인다), 한 실행에서 허용하는 구제 건수, origin 상한 |
 | 다이제스트 버퍼와 중복 | `digest_candidate_buffer`(기본 3), `published_url_ttl_days`(기본 6), `recent_leads_window`(기본 5) | 랭커 오버선정 버퍼(소스 슬롯은 `top_n` 코어에만 적용하고 버퍼분은 `backfill` 플래그로 넘겨 병합 보충용임을 항목별로 알린다), cross-day dedup 원장 TTL, 반복 방지용 최근 lead 윈도 |
 | 트렌드 | `trend_retention_days`, `trend_cooling_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존과 냉각 기간, 증거와 active 캡, momentum 반감기 |
@@ -305,7 +310,7 @@ cutoff 사이의 슬라이스가 어느 park 파일에도 없으면서 다음 �
 
 `meta`는 park 파일을 쓴 sync가 남긴 수집 방식 기록이며 선택적이다. RSSHub sync는 `accounts_total`,
 `accounts_failed`, `accounts_empty`를 적고, 수집기는 그것을 되읽어 라이브 경로와 **같은** 세 임계
-(`error_rate_threshold`, `empty_rate_threshold`, `max_failed_inputs`)로 판정한 뒤 `degraded_detail`을 세워
+(`error_rate_threshold`, `empty_rate_threshold`)로 판정한 뒤 `degraded_detail`을 세워
 헬스를 DEGRADED로 만든다. 신선한 park 파일만으로는 40개 계정 중 3개만 모은 sync를 건강한 sync와 구분할 수
 없었다. 빈 응답 개수(`accounts_empty`)를 park 경로가 무시하던 동안에는, 모든 계정이 200에 entries 0으로
 답한 sync가 쓴 신선한 park 파일이 완전히 건강하게 읽혔다.
@@ -955,14 +960,16 @@ Threads 게시물은 이미지 root와 reply chain이 한 세트라 이미지를
 **이미지 호스팅.** Threads는 바이트 업로드를 받지 않고 공개 URL만 fetch하니, PNG를 S3에 올리고 단기 presigned
 URL을 Meta에 한 번 넘긴다(`_upload_image_for_hosting`).
 
-**인덱싱 지연 폴링.** 방금 게시된 이미지 root는 곧바로 reply 대상이 되지 못해서 Meta가 "media not
-found"(code 24 / subcode 4279009)를 반환할 수 있다. reply의 create-container 쓰기를 blind하게 재시도하면 매
-시도가 낭비 쓰기에 sleep까지 붙으니, 대신 값싼 GET으로 root가 addressable해질 때까지 한 번
-폴링하고(`_wait_until_addressable`) 그다음 reply chain을 시작한다. 준비 여부는 root의 속성이니 chain 전체가
-하나의 예산(`THREADS_INDEXING_BUDGET_SEC`, 약 270초)을 공유하고, 비주얼 Lambda의 15분 타임아웃이 총량을
-bound한다. 이미지가 없는 TEXT-only root는 거의 즉시 인덱싱되니 폴링을 생략한다. reply에는 GET이
-200을 준 뒤에도 드물게 나는 eventual-consistency 경계용으로 짧은 안전망 재시도만
-남겼다(`_publish_reply_with_retry`, 기본 3회).
+**인덱싱 지연.** 방금 게시된 이미지 root는 곧바로 reply 대상이 되지 못해서 Meta가 "media not found"(code 24 /
+subcode 4279009)를 반환할 수 있다. reply마다 create-container를 하나의 공유 예산
+(`THREADS_INDEXING_BUDGET_SEC`, 약 270초) 안에서 재시도한다. 비주얼 Lambda의 15분 타임아웃이 총량을 bound한다.
+
+값싼 GET으로 root가 addressable해질 때까지 먼저 폴링하는 단계가 여기 있었고 2026-08-19에 지웠다. 배포 후 30회
+실행에서 "root가 예산 안에 addressable해지지 않았다"가 **0번** 발화한 반면 reply 재시도는 25일간 **77번** 났고,
+82건의 code-24 실패에서 `error_user_msg`를 디코딩해보니 Meta가 지목하는 media id는 root가 아니라 **reply 자신의
+create-container**였다. 즉 root 준비 프로브로는 이 지연을 구조적으로 막을 수 없었고, GET은 매번 첫 시도에 200을
+돌려줬으며 반환값은 호출부에서 쓰이지도 않았다. 77건을 실제로 회복시킨 것은 reply 쪽 재시도
+(`_publish_reply_with_retry`, 기본 3회)와 공유 예산이고, 그쪽은 그대로 남아 있다.
 
 **per-reply best-effort와 전달량 회계(`ThreadsDelivery`).** reply 게시는 건별로 try/except다. 한 reply가
 실패해도 나머지를 포기하지 않아 댓글 chain이 중간에 끊기지 않는다. 반환값은 bool이 아니라 root를 포함한
@@ -1246,11 +1253,16 @@ AGI 카운트다운 프리픽스를 제거한다(`_editorial_lead`). novelty 신
 - `HealthReport(sources)`는 `failed_sources`, `stale_sources`, `degraded_sources`, `empty_sources`, `summary()`를
   갖는다. 넷 다 이름 목록을 돌려준다. 예전에는 FAILED만 `has_failures`라는 bool이어서 알림 쪽이 쓸 수 없었고,
   `_maybe_alert`가 같은 판정을 인라인 컴프리헨션으로 다시 구현해 두 벌이 됐다.
-- `RankingHealth(batches_total, batches_failed, items_total, items_scored, items_lost, min_coverage_ratio)`는
-  `coverage`와 `degraded`, `summary()`를 갖고 `DigestResult.ranking_health`로 실려 나간다. `degraded`는 두 가지
-  경우다. 재시도까지 실패한 배치가 있거나, 채점 커버리지가 `min_coverage_ratio`(랭커가 config 값을 실어 준다)
-  아래로 떨어진 경우다. 기본값 0.0은 커버리지만으로는 degrade하지 않는다는 뜻이고, 직접 만든 값이나 예전
-  스냅샷이 그렇다.
+- `RankingHealth(batches_total, batches_failed, items_total, items_scored, items_lost)`는
+  `coverage`와 `degraded`, `summary()`를 갖고 `DigestResult.ranking_health`로 실려 나간다. `degraded`는 재시도까지
+  실패한 배치가 있을 때다. 커버리지가 `min_coverage_ratio` 아래면 degrade하는 arm이 함께 있었는데 2026-08-19에
+  지웠다. 그 arm은 응답이 두 번 다 파싱되지 않아 모든 카운터가 0으로 남는 배치를 위해 추가됐는데, 같은 커밋이
+  그 경우를 raise로 바꿔서 자기 독스트링대로 죽어 있었다. 30회 실행의 일별 커버리지도 0.93~1.0 또는 0.0으로
+  이분되어, 튜닝된 비율이 `batches_failed`가 이미 잡는 것과 다른 무언가를 가려낸 적이 없다.
+
+  랭커 쪽 `ranking_min_coverage_ratio`는 남는다. 그쪽은 알림이 아니라 **재질의 게이트**이고, 모델이 한 id를 두 번
+  채점하고 다른 하나를 빠뜨리는 경우를 복구한다. 중복을 세던 동안에는 커버리지가 1.0으로 읽혀 그 항목이 조용히
+  유실됐다.
 
 STALE과 DEGRADED는 실패가 아니니 `failed_sources`에 들어가지 않는다. FAILED 승격 경로와 분리되어 있다.
 
@@ -1279,7 +1291,7 @@ STALE과 DEGRADED는 실패가 아니니 `failed_sources`에 들어가지 않는
 
 **랭킹 헬스 알림(`_maybe_alert_ranking`, 파이프라인 이후).** 위 수집기 알림은 파이프라인 이전 호출을 그대로
 두고, 랭킹 판정은 별도로 게시한다. 파이프라인 예외가 수집기 알림을 삼켜서는 안 된다. 재시도까지
-실패한 배치가 있거나(약 후보 40건 소실) 채점 커버리지가 `ranking_min_coverage_ratio` 아래면 겉보기 정상인
+실패한 배치가 있으면(약 후보 40건 소실) 겉보기 정상인
 다이제스트에도 알림이 간다. **실제로 나간 다이제스트의 다양성 위반도 같은 알림에 실린다.** 랭커는
 `max_per_origin`과 보장 슬롯을 랭크 코어에서만 보장하는데, 병합 backfill 후보는 두 캡을 의도적으로 무시하고
 프롬프트는 그것을 교체로 쓰라고 부탁만 한다. `DigestGenerator`가 `_fill_source_metadata`가 돌려주는 '실제 게시된
@@ -1564,14 +1576,15 @@ self-invoke가 throw하면 `_release_event_marker`로 마커를 해제하고 500
    private 헬퍼로 있던 동안에는 상한이 이 경로에만 적용되고 `research_cli.py`는 `agent(prompt)`를 맨몸으로
    호출했다. 프롬프트를 반복 수정하는 로컬 경로가 곧 수렴 실패가 가장 잘 나는 경로이고, 한 번 돌면 전체 토큰
    예산까지 갈 수 있는 경로다. 지금은 두 엔트리포인트가 같은 함수를 쓰고, 테스트가 AST로 모든 `agent(...)`
-   호출에 `limits=`가 붙어 있는지 확인한다. `stop_reason`이 `limit_*`이면 WARNING과 EMF 카운터(`AgentLimitStops`)를 남기고 응답과 폴백
+   호출에 `limits=`가 붙어 있는지 확인한다. `stop_reason`이 `limit_*`이면 WARNING을 남기고 응답과 폴백
    게시물 끝에 "리포트가 중간에 끊겼다"는 한 줄을 붙인다. 상한에 걸린 실행도 텍스트를 반환하니, 그러지 않으면
    수렴하지 못해 매번 예산을 태우는 주제를 정상적인 날과 구분할 수 없다. 응답은 `sanitize_slack_mrkdwn`을
-   거친다. `AgentResult`를 버리지 않고
-   누적 usage와 cycle 수, 도구별 호출 수를 파이프라인 단계들과 같은 형식(`LLM usage stage=research ...`)으로
-   남기고 EMF(`AgentInputTokens`, `AgentOutputTokens`, `AgentCycles`, `AgentToolCalls`)로도 찍는다. 예전에는
-   `str(agent(prompt))`로 끝내서, 가장 비싼 구성요소가 유일하게 지출이 기록되지 않는 단계였다. EMF는 로그 한
-   줄이라 새 AWS 리소스가 필요하지 않다. 예외가 나면
+   거친다. `AgentResult`를 버리지 않고 누적 usage와 cycle 수, 도구별 호출 수를 파이프라인 단계들과 같은
+   형식(`LLM usage stage=research ...`)으로 남긴다. 예전에는 `str(agent(prompt))`로 끝내서, 가장 비싼
+   구성요소가 유일하게 지출이 기록되지 않는 단계였다. 같은 값을 EMF 메트릭(`AgentInputTokens`,
+   `AgentOutputTokens`, `AgentCycles`, `AgentToolCalls`, `AgentLimitStops`)으로도 찍었는데 2026-08-19에
+   지웠다. 이 다섯 개를 참조하는 알람도 대시보드도 없어서, 같은 사실을 두 형식으로 내보내는 것 말고 하는 일이
+   없었다. 로그 쪽이 단계 태깅과 형식을 파이프라인과 공유하니 그쪽을 남겼다. 예외가 나면
    `_emit_agent_error_metric`(EMF `OmniSummary/AgentErrors`)을 찍고 raw 예외 문자열이 아닌 일반 안내 메시지로
    응답한다. 모델 ID나 ARN, 백엔드 오류 바디가 Slack에 새지 않게 한다.
 

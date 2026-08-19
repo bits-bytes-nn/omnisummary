@@ -131,75 +131,6 @@ class TestPostToThreads:
         assert "first" in seen and "third" in seen
 
     @pytest.mark.asyncio
-    async def test_polls_root_readiness_before_replies(self, monkeypatch):
-        # An image root isn't instantly addressable. The handler must POLL it (cheap GET) until
-        # ready and only THEN post replies — so a reply doesn't 400 on an un-indexed root.
-        monkeypatch.setattr(threads_handler, "THREADS_READINESS_POLL_INTERVAL_SEC", 0)
-        monkeypatch.setattr(threads_handler.asyncio, "sleep", AsyncMock())
-
-        get_calls = {"n": 0}
-
-        class FakeClient:
-            async def get(self, url, params=None):
-                get_calls["n"] += 1
-                # not ready on the first probe, ready on the second
-                return httpx.Response(200 if get_calls["n"] >= 2 else 400, request=httpx.Request("GET", url))
-
-        published: list[str] = []
-
-        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
-            published.append(reply_to_id or "root")
-            return "rid"
-
-        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
-            with patch.object(threads_handler, "_upload_image_for_hosting", return_value="https://s3/i.png"):
-                with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
-                    with patch.object(threads_handler.httpx, "AsyncClient", return_value=_ctx(FakeClient())):
-                        ok = await post_to_threads(
-                            root_text="R", replies=["only"], image_bytes=b"P", image_bucket="b", image_key="k"
-                        )
-        assert ok.published is True
-        assert get_calls["n"] >= 2  # polled until ready
-        assert published == ["root", "rid"]  # reply posted after the root indexed
-
-    @pytest.mark.asyncio
-    async def test_root_never_indexes_reports_failure(self, monkeypatch):
-        # If the image root never becomes addressable within the budget, no replies land → a
-        # lone-image, story-less digest. Report failure so the ledger rollback keeps it retryable.
-        monkeypatch.setattr(threads_handler, "THREADS_READINESS_POLL_INTERVAL_SEC", 10)
-        monkeypatch.setattr(threads_handler, "THREADS_INDEXING_BUDGET_SEC", 100)
-
-        clock = {"t": 0.0}
-        monkeypatch.setattr(threads_handler.time, "monotonic", lambda: clock["t"])
-
-        async def fake_sleep(sec):
-            clock["t"] += sec
-
-        req = httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads")
-        resp = httpx.Response(400, request=req, json={"error": {"code": 24, "error_subcode": 4279009}})
-        not_found = httpx.HTTPStatusError("media not found", request=req, response=resp)
-
-        class FakeClient:
-            async def get(self, url, params=None):
-                return httpx.Response(400, request=httpx.Request("GET", url))  # never ready
-
-        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
-            if reply_to_id:  # the un-indexed root can't accept replies
-                raise not_found
-            return "rid"
-
-        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
-            with patch.object(threads_handler, "_upload_image_for_hosting", return_value="https://s3/i.png"):
-                with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
-                    with patch.object(threads_handler.asyncio, "sleep", side_effect=fake_sleep):
-                        with patch.object(threads_handler.httpx, "AsyncClient", return_value=_ctx(FakeClient())):
-                            ok = await post_to_threads(
-                                root_text="R", replies=["a"], image_bytes=b"P", image_bucket="b", image_key="k"
-                            )
-        # poll never succeeds and the reply can't land → overall failure (retryable)
-        assert ok.published is False
-
-    @pytest.mark.asyncio
     async def test_media_not_found_retries_past_fixed_cap_until_budget(self, monkeypatch):
         # Regression (2026-07-25): the up-front GET poll reported the image root addressable, but
         # it wasn't yet a valid REPLY target, so the first replies 400'd code-24 and each burned only
@@ -541,10 +472,9 @@ class TestImageHosting:
         with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
             with patch.object(threads_handler, "_upload_image_for_hosting", return_value="https://s3/x"):
                 with patch.object(threads_handler, "_publish_post", new=AsyncMock(return_value="rid")):
-                    with patch.object(threads_handler, "_wait_until_addressable", new=AsyncMock(return_value=True)):
-                        with_image = await post_to_threads(
-                            root_text="R", replies=["a"], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
-                        )
+                    with_image = await post_to_threads(
+                        root_text="R", replies=["a"], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
+                    )
         assert with_image.published is True and with_image.with_image is True
 
         with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
@@ -564,28 +494,6 @@ class TestImageHosting:
         assert ok.published is True
         up.assert_not_called()
         assert pub.await_args_list[0].kwargs["image_url"] == ""
-
-
-class TestAddressability:
-    @pytest.mark.asyncio
-    async def test_addressable_on_200_and_not_on_400(self):
-        req = httpx.Request("GET", "https://graph.threads.net/v1.0/rid")
-        client = MagicMock()
-        client.get = AsyncMock(return_value=httpx.Response(200, request=req, json={"id": "rid"}))
-        assert await threads_handler._is_addressable(client, "rid", "tok") is True
-        client.get = AsyncMock(return_value=httpx.Response(400, request=req, text="media not found"))
-        assert await threads_handler._is_addressable(client, "rid", "tok") is False
-
-    @pytest.mark.asyncio
-    async def test_transport_error_is_not_addressable(self):
-        client = MagicMock()
-        client.get = AsyncMock(side_effect=httpx.ConnectError("no route"))
-        assert await threads_handler._is_addressable(client, "rid", "tok") is False
-
-    def test_error_detail_survives_an_unreadable_body(self):
-        exc = MagicMock()
-        type(exc).response = property(lambda self: (_ for _ in ()).throw(RuntimeError("gone")))
-        assert threads_handler._error_detail(exc) == "<no response body>"
 
 
 class TestIndexingBudget:

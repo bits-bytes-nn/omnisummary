@@ -123,26 +123,28 @@ def degradation_reason(
     what: str,
     threshold: float,
     empty_threshold: float,
-    max_failed: int,
 ) -> str:
     """Why a source that produced items is nonetheless DEGRADED, or "" when it is healthy. Shared by
     the live path and the park-file path so the two verdicts cannot drift.
 
-    Three independent tripwires, any of which is enough:
+    Two independent tripwires, either of which is enough:
     - `threshold`: percent of inputs that FAILED (a rate, for sources with many inputs);
-    - `max_failed`: an ABSOLUTE failed count, because a rate cannot see a small input list — with
-      2 subreddits, 1 of 2 is exactly 50% (clean at the default) and 2 of 2 already raises FAILED,
-      so DEGRADED was unreachable;
     - `empty_threshold`: percent of inputs that answered with ZERO items. All-200-and-empty (expired
       RSSHub cookies, a paywalled 200, a playlist that resolves to nothing) is the same
       disappearance shape as a failure, but it trips no failure rate at all — and as long as ONE
-      input still produced an item, the source reported a clean OK."""
+      input still produced an item, the source reported a clean OK.
+
+    An ABSOLUTE failed-count tripwire (`max_failed_inputs`) sat here too, for input lists too short
+    for a rate to express a partial outage. Removed 2026-08-19: reddit was the only source small
+    enough to need it, and measured over 30 production runs r/MachineLearning 429s on 29 of them and
+    exhausts its retries on 4 — so armed at 1 it paged 4 times a month on a condition present in 97%
+    of runs, with no action available (Reddit rate-limits datacenter IPs; the retry-then-proxy
+    fallback IS the mitigation and worked the other 26 days). On all four days reddit still shipped a
+    story in its slot. It was the only arming in either config file, so the field went with it."""
     fail_rate = failed / total * 100
     empty_rate = empty / total * 100
     if failed > 0 and fail_rate > threshold:
         return f"{failed}/{total} {what} failed (>{threshold:.0f}%)"
-    if max_failed > 0 and failed >= max_failed:
-        return f"{failed}/{total} {what} failed (>={max_failed})"
     if empty > 0 and empty_rate > empty_threshold:
         return f"{empty}/{total} {what} returned nothing (>{empty_threshold:.0f}%)"
     return ""
@@ -176,7 +178,6 @@ class BaseCollector(ABC):
         what: str,
         hint: str = "",
         empty_threshold: float = EMPTY_RATE_CHECK_DISABLED,
-        max_failed: int = 0,
     ) -> None:
         """Record how many of the source's inputs answered, and report the source DEGRADED when too
         many of them failed OR came back empty.
@@ -198,7 +199,6 @@ class BaseCollector(ABC):
             what=what,
             threshold=threshold,
             empty_threshold=empty_threshold,
-            max_failed=max_failed,
         )
         if not reason:
             return
@@ -213,7 +213,6 @@ class BaseCollector(ABC):
         what: str,
         hint: str = "",
         empty_threshold: float = EMPTY_RATE_CHECK_DISABLED,
-        max_failed: int = 0,
     ) -> None:
         """Report a park file that a HALF-DEAD sync wrote as DEGRADED. The file itself is fresh and
         carries items, so nothing else in the health check can tell that the local sync collected
@@ -232,7 +231,6 @@ class BaseCollector(ABC):
             what=what,
             threshold=threshold,
             empty_threshold=empty_threshold,
-            max_failed=max_failed,
         )
         if not reason:
             return

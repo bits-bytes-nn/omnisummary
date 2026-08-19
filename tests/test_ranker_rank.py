@@ -509,20 +509,6 @@ class TestRankingCoverage:
         assert len(seen) == 2
         assert ranker.health.items_scored == 2
 
-    @pytest.mark.asyncio
-    async def test_shortfall_above_ratio_is_logged_but_not_reasked(self):
-        items = _items([(f"i{n}", SourceType.RSS) for n in range(4)])
-        ranker, seen = _ranker_with_outputs(
-            [_rankings({"i0": 0.9, "i1": 0.85, "i2": 0.8})],
-            top_n=5,
-            min_score=0.6,
-            source_slots={},
-            ranking_min_coverage_ratio=0.5,  # 3/4 coverage clears the bar
-        )
-        result = await ranker.rank(items)
-        assert {r.item.item_id for r in result} == {"i0", "i1", "i2"}
-        assert len(seen) == 1
-
 
 class TestRankingPromptOrigin:
     """What the ranker actually SHOWS the model. The prompt scores "Source Authority", so a web
@@ -620,24 +606,6 @@ class TestRankingHealthVerdict:
         assert {r.item.item_id for r in result} == {"a"}  # the healthy batch still publishes
         assert ranker.health.batches_failed == 1
         assert ranker.health.items_lost == 1
-        assert ranker.health.degraded is True
-
-    @pytest.mark.asyncio
-    async def test_coverage_below_the_configured_ratio_is_degraded(self):
-        # No batch FAILED, but the model omitted most of the pool and the re-ask did not recover it.
-        # That is a shortened candidate pool the operator has to hear about.
-        items = _items([(f"i{n}", SourceType.RSS) for n in range(4)])
-        ranker, _seen = _ranker_with_outputs(
-            [_rankings({"i0": 0.9})],
-            top_n=5,
-            min_score=0.6,
-            source_slots={},
-            ranking_min_coverage_ratio=0.9,
-            ranking_retry_backoff_sec=0,
-        )
-        await ranker.rank(items)
-        assert ranker.health.batches_failed == 0
-        assert ranker.health.items_scored == 1 and ranker.health.items_total == 4
         assert ranker.health.degraded is True
 
     @pytest.mark.asyncio

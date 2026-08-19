@@ -106,7 +106,6 @@ class WebSearchCollector(BaseCollector):
             empty=broad.empty,
             threshold=self.config.error_rate_threshold,
             empty_threshold=self.config.empty_rate_threshold,
-            max_failed=self.config.max_failed_inputs,
             what="search queries",
         )
 

@@ -95,10 +95,6 @@ class RankingHealth(BaseModel):
     items_total: int = 0
     items_scored: int = 0
     items_lost: int = 0
-    # Coverage the run was judged against (pipeline.ranking_min_coverage_ratio), carried so the
-    # verdict below needs no config access. 0.0 — the default for a directly constructed or older
-    # persisted health — means "coverage alone never degrades the run".
-    min_coverage_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
 
     @property
     def coverage(self) -> float:
@@ -107,11 +103,14 @@ class RankingHealth(BaseModel):
 
     @property
     def degraded(self) -> bool:
-        """True when candidates were LOST — a batch that failed every retry — or when the pass
-        scored less than min_coverage_ratio of the day's candidates. The coverage arm matters
-        because a batch whose response never parsed twice over used to leave every counter at
-        zero, so the alerting stayed silent while a whole batch vanished from the pool."""
-        return self.batches_failed > 0 or self.coverage < self.min_coverage_ratio
+        """True when candidates were LOST — a batch that failed every retry.
+
+        A `coverage < min_coverage_ratio` arm sat beside this. It was added for the batch whose
+        response never parsed twice over, leaving every counter at zero while the alerting stayed
+        silent — but the same commit made that case RAISE, so the arm was dead by its own docstring.
+        Measured over 30 production runs, per-day coverage is bimodal (0.93-1.0 or 0.0), so the
+        tuned ratio never separated anything the batches_failed count did not already catch."""
+        return self.batches_failed > 0
 
     def summary(self) -> str:
         return (

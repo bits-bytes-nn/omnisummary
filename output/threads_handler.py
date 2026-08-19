@@ -19,7 +19,6 @@ THREADS_MEDIA_PROCESS_WAIT_SEC = 30
 # whole reply chain without indexing retries. Readiness is a property of the ROOT, shared by every
 # reply, so it's waited for ONCE up front — bounded by a single deadline so a never-indexing root
 # can't blow the 15-min Lambda timeout mid-chain.
-THREADS_READINESS_POLL_INTERVAL_SEC = 10
 # Total time to wait for the image root to become addressable (~4.5 min). render (~4 min) + this
 # leaves margin under the 15-min Lambda timeout.
 THREADS_INDEXING_BUDGET_SEC = 270
@@ -154,17 +153,6 @@ def _error_detail(exc: httpx.HTTPStatusError) -> str:
         return "<no response body>"
 
 
-async def _is_addressable(client: httpx.AsyncClient, post_id: str, token: str) -> bool:
-    """Cheap readiness probe: GET the post's id. A 200 means Meta has indexed it and it can now
-    be used as a reply target; a 400 'media not found' means indexing is still in flight. Any
-    other error is treated as not-ready (the caller keeps polling within its budget)."""
-    try:
-        resp = await client.get(f"{THREADS_API_BASE}/{post_id}", params={"fields": "id", "access_token": token})
-        return resp.status_code == 200
-    except httpx.HTTPError:
-        return False
-
-
 def _indexing_budget_sec(deadline: float | None) -> float:
     """How long this run may wait for the image root to index.
 
@@ -177,21 +165,6 @@ def _indexing_budget_sec(deadline: float | None) -> float:
         return float(THREADS_INDEXING_BUDGET_SEC)
     left = deadline - time.monotonic() - THREADS_PUBLISH_RESERVE_SEC
     return max(0.0, min(float(THREADS_INDEXING_BUDGET_SEC), left))
-
-
-async def _wait_until_addressable(client: httpx.AsyncClient, post_id: str, token: str, deadline: float) -> bool:
-    """Poll the root with cheap GETs until it's addressable as a reply target or the shared
-    deadline passes. Returns True once ready. Replaces blind create-container retries: a read poll
-    costs nothing on the write path and lets the reply chain start the instant the root indexes."""
-    while True:
-        if await _is_addressable(client, post_id, token):
-            return True
-        budget_left = deadline - time.monotonic()
-        if budget_left <= 0:
-            logger.warning("Threads root '%s' not addressable within indexing budget", post_id)
-            return False
-        logger.info("Waiting for Threads root to index (~%ds budget left)", int(budget_left))
-        await asyncio.sleep(min(THREADS_READINESS_POLL_INTERVAL_SEC, budget_left))
 
 
 async def _publish_reply_with_retry(
@@ -276,13 +249,14 @@ async def post_to_threads(
                 client, user_id, token, text=root_text[:THREADS_MAX_POST_CHARS], image_url=image_url
             )
             logger.info("Posted Threads root '%s'", root_id)
-            # An image root needs time to become addressable as a reply target. Poll it ONCE with
-            # cheap GETs (shared across all replies — readiness is a root property) instead of
-            # blind-retrying create-container writes per reply. A TEXT root (no image) indexes
-            # ~immediately, so skip the poll there.
+            # An image root needs time to become addressable as a reply target, so every reply
+            # carries this deadline and retries its own create-container against it. A root-readiness
+            # GET poll used to run here first; over 30 production runs it never once reported the
+            # root unready (GET 200 on the first probe every time) while the reply retries fired 77
+            # times, because decoding error_user_msg on all 82 code-24 failures showed the media id
+            # Meta names is the REPLY's own container, not the root — so a root probe structurally
+            # cannot gate the delay it was written for.
             indexing_deadline = time.monotonic() + _indexing_budget_sec(deadline)
-            if image_url and posts:
-                await _wait_until_addressable(client, root_id, token, indexing_deadline)
             # All replies hang off the ROOT (a flat thread), not off each other — otherwise
             # they nest as reply-of-reply and only the first shows under the root. Each reply is
             # best-effort: a single failure must not abandon the rest, so the digest never posts a

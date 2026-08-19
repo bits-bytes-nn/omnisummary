@@ -42,10 +42,6 @@ collectors:
     sort: hot
     limit: 20
     lookback_hours: *lookback_hours
-    # With only a handful of subreddits the failure RATE cannot express a partial outage: 1 of 2 is
-    # exactly error_rate_threshold (clean) and 2 of 2 already raises FAILED, so DEGRADED was
-    # unreachable. Degrade as soon as this many inputs fail, whatever the rate. 0 disables it.
-    max_failed_inputs: 1
   rss:
     enabled: true
     feeds: []
@@ -126,9 +122,6 @@ pipeline:
   ranking_max_concurrency: 4
   ranking_max_retries: 3
   ranking_retry_backoff_sec: 5
-  # Below this share of a batch actually scored, the omitted items get ONE extra re-ask (the
-  # shortfall is logged either way). Full coverage — the normal case — costs no extra call.
-  ranking_min_coverage_ratio: 0.9
   source_slots:
     web: 1
     x: 1

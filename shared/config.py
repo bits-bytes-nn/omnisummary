@@ -89,10 +89,6 @@ class BaseCollectorConfig(_StrictModel):
     # broken session. EMPTY_RATE_CHECK_DISABLED (the default) disables the check; set it per source
     # in config.yaml for the sources whose silence is never legitimate.
     empty_rate_threshold: float = Field(default=EMPTY_RATE_CHECK_DISABLED, ge=0.0, le=100.0)
-    # ABSOLUTE companion to error_rate_threshold, for a source with FEW inputs where a rate cannot
-    # express the verdict: with 2 subreddits, 1 of 2 failing is exactly 50% (clean at the default)
-    # and 2 of 2 already raises FAILED, so DEGRADED was unreachable. 0 (the default) disables it.
-    max_failed_inputs: int = Field(default=0, ge=0)
 
 
 class YouTubeCollectorConfig(BaseCollectorConfig):
@@ -378,11 +374,18 @@ class PipelineConfig(_StrictModel):
     # delete ~40 candidates from the day's pool with only a warning.
     ranking_max_retries: int = Field(default=3, ge=1)
     ranking_retry_backoff_sec: float = Field(default=5.0, ge=0)
+    # Below this share of a batch actually scored, the omitted items get ONE extra re-ask (the
+    # shortfall is logged either way). It stays a ratio rather than "re-ask on any shortfall"
+    # because a trivial shortfall is not worth a second Bedrock call, and it stays live because the
+    # case it recovers is a real defect: the model scores one id twice and drops another, which read
+    # as 1.0 coverage and silently lost the item. Only the ALERTING arm that keyed off this ratio
+    # (RankingHealth.degraded) was removed — the raise added in the same commit already covers the
+    # twice-failed batch it was written for.
+    ranking_min_coverage_ratio: float = Field(default=0.9, ge=0.0, le=1.0)
     # Minimum share of a batch's items the ranker must actually score. A model that quietly omits
     # ids returns a valid response, so those candidates never reach the digest; below this ratio the
     # omitted items get ONE extra re-ask (the shortfall is logged either way). A full-coverage
     # batch — the normal case — makes no extra Bedrock call. 1.0 re-asks on any omission, 0 never.
-    ranking_min_coverage_ratio: float = Field(default=0.9, ge=0.0, le=1.0)
     # Per-source guaranteed slots, applied to the top_n stories the READER gets (never to the padded
     # top_n + digest_candidate_buffer candidate list).
     source_slots: dict[str, int] = Field(
@@ -395,13 +398,9 @@ class PipelineConfig(_StrictModel):
         }
     )
     source_cap_multiplier: int = Field(default=2, ge=1)
-    max_per_origin: int = Field(default=1, ge=1)
-    # Engagement bonus tiers (views threshold -> score bonus) the ranking prompt applies
-    # to items carrying view counts. Tunable instead of baked into the prompt text.
-    engagement_tiers: list[tuple[int, float]] = Field(
-        default_factory=lambda: [(10000, 0.05), (100000, 0.1), (500000, 0.15)]
-    )
-    # Taxonomy the ranking prompt assigns to each item. Configurable so non-AI
+    max_per_origin: int = Field(
+        default=1, ge=1
+    )  # Taxonomy the ranking prompt assigns to each item. Configurable so non-AI
     # deployments can supply their own categories.
     ranking_categories: list[str] = Field(
         default_factory=lambda: [
@@ -561,35 +560,6 @@ class PipelineConfig(_StrictModel):
             raise ValueError(
                 f"pipeline.source_slots names unknown source type(s) {unknown}; "
                 f"valid keys are {sorted(source.value for source in SourceType)}"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _slots_leave_room_for_score_to_choose(self) -> "PipelineConfig":
-        """Warn when the guaranteed slots fill the whole digest, because at that point the ranking
-        score stops deciding anything ACROSS sources.
-
-        `_apply_source_slots` stops at top_n, so once every source has contributed its guaranteed
-        slot there is no room left for the relaxation passes to run: score only orders items WITHIN a
-        source, and a source's 0.50 outranks another source's 0.78 by construction. That is a legitimate
-        configuration (an evenly-sourced digest is the point of slots at all) but it was recorded
-        nowhere, so a shipped digest of low-scoring items read as a ranking failure. A warning, not an
-        error: the operator chose the numbers.
-
-        The test is OVER-subscription (`>`), not exhaustion (`>=`). Slots that exactly fill top_n is
-        the evenly-sourced digest slots exist to produce — it is both the code default (top_n 7,
-        slots summing 7) and the shipped config (top_n 5, five 1-slots), so `>=` fired on every
-        single Config load including `scripts/ci_synth.py`, and a warning that is always on carries
-        no information. Over-subscription is the case that is genuinely wrong and was silent: some
-        source's guarantee CANNOT be honoured, and which one loses depends on iteration order."""
-        total = sum(slot for slot in self.source_slots.values() if slot >= 1)
-        if total > self.top_n:
-            logger.warning(
-                "pipeline.source_slots guarantee %d slots but top_n is only %d, so at least one "
-                "source's guarantee cannot be honoured and which one loses depends on iteration "
-                "order. Lower a slot or raise top_n.",
-                total,
-                self.top_n,
             )
         return self
 

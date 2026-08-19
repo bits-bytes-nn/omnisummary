@@ -21,29 +21,6 @@ def _emit_agent_error_metric() -> None:
     emit_emf({"AgentErrors": 1})
 
 
-def _emit_agent_limit_metric(stop_reason: str) -> None:
-    """Emit a CloudWatch EMF counter when the loop was stopped by a budget cap. A capped run still
-    returns text, so without this a topic that systematically fails to converge (and burns the whole
-    budget every time) is indistinguishable from a normal day. The stop reason rides along as a
-    non-metric property: it is context an operator reads, not something to alarm on."""
-    emit_emf({"AgentLimitStops": 1}, {"StopReason": stop_reason})
-
-
-def _emit_agent_run_metrics(usage: dict[str, Any], cycles: int, tool_calls: int) -> None:
-    """Emit the run's token usage as CloudWatch EMF, next to the error metric. EMF is just a log
-    line, so this needs no new AWS resource — and it is the only way the agent's spend (the most
-    expensive component) is attributable at all, since a research turn re-sends the whole
-    conversation and the runtime is billed per token like every pipeline stage."""
-    emit_emf(
-        {
-            "AgentInputTokens": int(usage.get("inputTokens", 0) or 0),
-            "AgentOutputTokens": int(usage.get("outputTokens", 0) or 0),
-            "AgentCycles": cycles,
-            "AgentToolCalls": tool_calls,
-        }
-    )
-
-
 def _log_agent_run(result: Any) -> None:
     """Log what the run cost in the SAME shape every pipeline stage logs (`LLM usage stage=...`),
     plus the cycle count and per-tool call counts.
@@ -69,7 +46,6 @@ def _log_agent_run(result: Any) -> None:
             cycles,
             tool_calls or "{}",
         )
-        _emit_agent_run_metrics(usage, cycles, sum(tool_calls.values()))
     except Exception:  # pragma: no cover - telemetry must never break a completed run
         logger.debug("Could not read agent run metrics", exc_info=True)
 
@@ -128,7 +104,6 @@ def invoke(payload: dict[str, Any]) -> str:
                 # The loop stops at a turn boundary, so the last message is whatever the agent had
                 # written by then. Say so rather than passing a partial report off as finished.
                 logger.warning("Research run stopped by a budget cap (%s); the report is partial", stop_reason)
-                _emit_agent_limit_metric(stop_reason)
                 notice = LIMIT_NOTICE
         except Exception as e:
             logger.error("Agent execution failed: %s", e, exc_info=True)

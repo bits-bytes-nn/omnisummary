@@ -1,5 +1,4 @@
 from .prompts import (
-    ENGAGEMENT_SIGNAL_BLOCK,
     BasePrompt,
     DigestPrompt,
     GroundingCheckPrompt,
@@ -11,7 +10,6 @@ from .prompts import (
 )
 
 __all__ = [
-    "ENGAGEMENT_SIGNAL_BLOCK",
     "BasePrompt",
     "DigestPrompt",
     "GroundingCheckPrompt",

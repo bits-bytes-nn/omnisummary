@@ -198,22 +198,6 @@ class TestRedditCollect:
         assert collector.run_meta == {"accounts_total": 2, "accounts_failed": 0, "accounts_empty": 2}
         assert len(calls) == 4  # one direct + one proxy attempt per subreddit, no retry storm
 
-    @pytest.mark.asyncio
-    async def test_one_failed_subreddit_of_two_is_degraded_when_configured(self):
-        # With 2 subreddits the failure RATE cannot express this: 1 of 2 is exactly 50% (clean) and
-        # 2 of 2 already raises FAILED, so DEGRADED was unreachable without the absolute knob.
-        collector = RedditCollector(_config(subreddits=["LocalLLaMA", "MachineLearning"], max_failed_inputs=1))
-
-        async def _do(url, **kwargs):
-            if "MachineLearning" in url:
-                raise RuntimeError("returned HTTP 404")
-            return _feed([_entry()])
-
-        with patch("collectors.base.fetch_feed", side_effect=_do):
-            items = await collector.collect()
-        assert len(items) == 1
-        assert "1/2 subreddits failed" in collector.degraded_detail
-
 
 class TestExtractPostId:
     def test_from_comments_link(self):

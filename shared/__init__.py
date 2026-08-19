@@ -57,7 +57,6 @@ from .models import (
     VisualBrief,
 )
 from .prompts import (
-    ENGAGEMENT_SIGNAL_BLOCK,
     DigestPrompt,
     GroundingCheckPrompt,
     RankingPrompt,
@@ -125,7 +124,6 @@ __all__ = [
     "coerce_bool",
     "get_config",
     "KOREAN_STYLE_RULES",
-    "ENGAGEMENT_SIGNAL_BLOCK",
     "DigestPrompt",
     "GroundingCheckPrompt",
     "DigestContent",

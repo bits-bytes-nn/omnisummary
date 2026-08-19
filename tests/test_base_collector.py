@@ -164,7 +164,7 @@ class TestAMissingParkFileWhereItIsThePrimaryPath:
         assert "STATE_BUCKET" in load_items_from_s3("youtube_items.json").detail
 
 
-class TestEmptyAndAbsoluteDegradation:
+class TestEmptyRateDegradation:
     """A source whose inputs all answer 200 with ZERO entries (expired RSSHub cookies, a paywalled
     200, a playlist that resolves to nothing) trips no failure rate at all — and reported a clean OK
     as long as ONE input still produced an item. And a rate cannot express the verdict for a source
@@ -182,11 +182,6 @@ class TestEmptyAndAbsoluteDegradation:
         c.record_run_health(total=40, failed=0, empty=39, threshold=50.0, what="feeds")
         assert c.degraded_detail == ""
         assert c.run_meta["accounts_empty"] == 39
-
-    def test_absolute_failed_count_reaches_a_verdict_a_rate_cannot(self):
-        c = _Collector()
-        c.record_run_health(total=2, failed=1, empty=0, threshold=50.0, max_failed=1, what="subreddits")
-        assert "1/2 subreddits failed" in c.degraded_detail
 
     def test_absolute_count_is_disabled_by_default(self):
         c = _Collector()

@@ -1,7 +1,5 @@
-import json
 import sys
 import types
-from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -248,23 +246,13 @@ class TestRunLimits:
         assert "cut short" in result
         assert "cut short" in send.call_args.args[1]
 
-    def test_capped_run_emits_the_emf_counter(self, capsys):
-        agent = MagicMock(return_value=self._capped_result("limit_total_tokens"))
-        with patch.object(app_module, "create_research_agent", return_value=agent):
-            with patch.object(app_module, "_send_slack_message"):
-                app_module.invoke({"prompt": "p", "channel_id": "C"})
-        records = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
-        emf = next(r for r in records if "AgentLimitStops" in r)
-        assert emf["AgentLimitStops"] == 1
-        assert emf["StopReason"] == "limit_total_tokens"
-
     def test_a_normal_stop_reason_adds_no_notice(self, capsys):
         agent = MagicMock(return_value=self._capped_result("end_turn"))
         with patch.object(app_module, "create_research_agent", return_value=agent):
             with patch.object(app_module, "_send_slack_message"):
                 result = app_module.invoke({"prompt": "p", "channel_id": "C"})
         assert result == "partial report"
-        assert "AgentLimitStops" not in capsys.readouterr().out
+        assert "cut short" not in result
 
 
 class TestRunMetrics:
@@ -299,18 +287,6 @@ class TestRunMetrics:
         assert line.args[1:5] == (1200, 340, 900, 10)
         assert line.args[5] == 4  # cycles
         assert line.args[6] == {"web_search": 3, "search_papers": 1}
-
-    def test_usage_is_emitted_as_emf(self, capsys):
-        agent = MagicMock(return_value=self._result("report text"))
-        with patch.object(app_module, "create_research_agent", return_value=agent):
-            with patch.object(app_module, "_send_slack_message"):
-                app_module.invoke({"prompt": "p", "channel_id": "C"})
-        records = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
-        emf = next(r for r in records if "AgentInputTokens" in r)
-        assert emf["AgentInputTokens"] == 1200 and emf["AgentOutputTokens"] == 340
-        assert emf["AgentCycles"] == 4 and emf["AgentToolCalls"] == 4
-        # EMF reads Timestamp as epoch-UTC ms; a naive local clock files every point at the wrong time.
-        assert abs(emf["_aws"]["Timestamp"] - int(datetime.now(UTC).timestamp() * 1000)) < 60_000
 
     def test_a_result_without_metrics_is_not_fatal(self):
         # Telemetry must never break a completed run (an older SDK, a stubbed agent in tests).

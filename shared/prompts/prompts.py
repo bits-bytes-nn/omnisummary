@@ -36,24 +36,9 @@ class BasePrompt(ABC):
                 raise ValueError(f"Input variable '{var}' not found in any prompt template.")
 
 
-# The *Engagement Signal* block. Injected by the ranker ONLY for a batch that actually carries
-# engagement data: `view_count` is set by the YouTube collector alone, so on every other batch this
-# block instructed the model about a field it would never see — and told it a bonus applies while
-# nothing could receive one. `{tiers}` is the configured engagement_tiers, rendered by the ranker;
-# it lives here so the prompt text stays in the prompt module.
-ENGAGEMENT_SIGNAL_BLOCK: str = """
-*Engagement Signal*
-High engagement is a STRONG quality signal. Apply this bonus based on the Engagement field:
-- {tiers}
-- Items with NO engagement data (most sources): judge purely on content quality.
-Engagement bonus stacks with content quality — a high-engagement AND substantive item should score very high.
-"""
-
-
 class RankingPrompt(BasePrompt):
     input_variables = [
         "items_text",
-        "engagement_guidance",
         "ranking_categories",
         "duplicate_score_penalty",
         "scoring_rubric",
@@ -85,7 +70,6 @@ Product/service promotion, thin content, beginner questions, memes, self-promoti
 Score each item ABSOLUTELY against these criteria — do NOT grade on a curve or target a fixed
 count; identical items must get the same score regardless of what else is in this set.
 
-{engagement_guidance}
 *Other Bonuses*
 Expert paper summaries: score on paper significance. \
 Major model releases (open or proprietary): score on significance.

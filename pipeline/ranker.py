@@ -7,7 +7,6 @@ from collections import Counter, defaultdict
 from langchain_core.output_parsers import StrOutputParser
 
 from shared import (
-    ENGAGEMENT_SIGNAL_BLOCK,
     BedrockLanguageModelFactory,
     CollectedItem,
     RankedItem,
@@ -103,7 +102,6 @@ class ContentRanker:
             items_total=len(items),
             items_scored=len(ranked_items),
             items_lost=lost,
-            min_coverage_ratio=self.config.ranking_min_coverage_ratio,
         )
         # Pinned items (user-specified via --pin-url) are guaranteed a slot regardless of score
         # or diversity caps — they're kept aside and prepended after slotting fills the rest.
@@ -277,7 +275,6 @@ class ContentRanker:
             return await chain.ainvoke(
                 {
                     "items_text": items_text,
-                    "engagement_guidance": self._engagement_guidance(items),
                     "ranking_categories": ", ".join(self.config.ranking_categories),
                     "duplicate_score_penalty": self.config.ranking_duplicate_score_penalty,
                     "scoring_rubric": self.config.ranking_scoring_rubric,
@@ -293,17 +290,6 @@ class ContentRanker:
                 description=f"Ranking batch of {len(items)} items",
             )
         return self._parse_rankings(raw_output, items)
-
-    def _engagement_guidance(self, items: list[CollectedItem]) -> str:
-        """The *Engagement Signal* block, or "" for a batch that carries no engagement data at all.
-
-        `view_count` is set by the YouTube collector alone, so on most batches this block described a
-        bonus nothing in the batch could receive — and stacked, for the one medium that does carry it,
-        on top of the medium-neutrality paragraph and the source-slot score grace."""
-        if not any(self._format_engagement(item) for item in items):
-            return ""
-        tiers = ", ".join(f"{views:,}+ views → +{bonus}" for views, bonus in sorted(self.config.engagement_tiers))
-        return ENGAGEMENT_SIGNAL_BLOCK.format(tiers=f"Items with view counts: {tiers}.")
 
     def _grace_candidates(
         self, ranked_items: list[RankedItem], above_threshold: list[RankedItem], pinned: list[RankedItem]
