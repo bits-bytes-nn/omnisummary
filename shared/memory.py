@@ -10,6 +10,7 @@ from typing import Any
 import boto3
 
 from .logger import logger
+from .utils import aws_region
 
 DEFAULT_ACTOR_ID = "omnisummary"
 
@@ -131,8 +132,7 @@ class AgentCoreMemoryStore(MemoryStore):
     ) -> None:
         self.memory_id = memory_id
         self.actor_id = actor_id
-        region = region_name or os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2"))
-        self._client = boto3.client("bedrock-agentcore", region_name=region)
+        self._client = boto3.client("bedrock-agentcore", region_name=region_name or aws_region())
 
     MAX_EVENT_TEXT = 100_000
     # Safety cap on list_sessions pagination (100 sessions/page) so a runaway token loop can't

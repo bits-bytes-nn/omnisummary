@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from shared.utils import (
+    aws_region,
     backoff_delay,
     coerce_bool,
     extract_json_from_llm_output,
@@ -16,6 +17,43 @@ from shared.utils import (
     retry_async,
     sanitize_slack_mrkdwn,
 )
+
+
+class TestAwsRegion:
+    """Four modules carried the literal os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION",
+    "ap-northeast-2")) — one developer's region baked into the code, free to diverge from
+    config.aws.region and to send an SSM/AgentCore call to the wrong region anywhere else."""
+
+    def test_prefers_the_runtime_environment(self, monkeypatch):
+        monkeypatch.setenv("AWS_REGION", "eu-west-1")
+        assert aws_region() == "eu-west-1"
+
+    def test_falls_back_to_aws_default_region(self, monkeypatch):
+        monkeypatch.delenv("AWS_REGION", raising=False)
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-2")
+        assert aws_region() == "us-east-2"
+
+    def test_falls_back_to_the_configured_region_not_a_literal(self, monkeypatch):
+        monkeypatch.delenv("AWS_REGION", raising=False)
+        monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+        from shared.config import Config, get_config
+
+        configured = Config()
+        configured.aws.region = "ap-southeast-2"
+        get_config.cache_clear()
+        with patch("shared.config.Config.load", return_value=configured):
+            assert aws_region() == "ap-southeast-2"
+
+    def test_none_when_nothing_is_configured_so_boto3_resolves_it(self, monkeypatch):
+        monkeypatch.delenv("AWS_REGION", raising=False)
+        monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+        from shared.config import Config, get_config
+
+        configured = Config()
+        configured.aws.region = ""
+        get_config.cache_clear()
+        with patch("shared.config.Config.load", return_value=configured):
+            assert aws_region() is None
 
 
 class TestResolveSecret:

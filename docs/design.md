@@ -99,7 +99,9 @@ AWS 아키텍처(스케줄 다이제스트와 Slack 트리거 딥 리서치, 두
 `config/config.yaml`은 gitignore 대상이고 **`config/config-template.yaml`만 추적된다.** 그래서 CI synth와
 인프라 테스트는 이 템플릿을 로드한다. 예전에는 그냥 `Config.load()`를 불렀는데, CI에는 `config.yaml`이
 없으니 조용히 코드 기본값으로 떨어져 아무도 배포하지 않는 스택을 synth하고 있었다. 아무것도 증명하지 못하는
-테스트였다.
+테스트였다. 같은 이유로 config 불변식 테스트(모델 레지스트리 동기화, 코드 기본값과 배포 설정의 일치,
+orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를 parametrize한다. `config.yaml`이 있을 때만
+돌던 동안에는 CI에서 다섯 개가 skip되어 노트북 한 대에서만 검사됐다.
 
 값의 우선순위는 `config.yaml`이 Pydantic 필드 기본값을 재정의하는 쪽이다. 모델 ID는 코드에 하드코딩되어 있지
 않다. 예컨대 `PipelineConfig`는 `ranking_model`과 `digest_model` 둘 다 Sonnet 5를 기본값으로 두지만
@@ -120,7 +122,7 @@ AWS 아키텍처(스케줄 다이제스트와 Slack 트리거 딥 리서치, 두
 
 | 그룹 | 필드 | 설명 |
 |------|------|------|
-| 공통(상속) | `enabled`, `lookback_hours`, `reference_time`, `request_timeout`, `max_retries`, `retry_backoff_sec`, `park_max_age_hours`(기본 36), `error_rate_threshold`(기본 50.0) | 활성화 여부, 조회 윈도, 타임아웃, 재시도, S3 park 파일의 나이 예산(초과하면 항목은 쓰되 헬스를 STALE로 보고한다), 입력(피드·계정·채널·쿼리) 실패율 임계(넘으면 소스를 DEGRADED로 보고만 하고 항목은 그대로 전달한다) |
+| 공통(상속) | `enabled`, `lookback_hours`, `reference_time`, `request_timeout`, `max_retries`, `retry_backoff_sec`, `park_max_age_hours`(기본 36), `error_rate_threshold`(기본 50.0), `empty_rate_threshold`(기본 100.0=비활성), `max_failed_inputs`(기본 0=비활성) | 활성화 여부, 조회 윈도, 타임아웃, 재시도, S3 park 파일의 나이 예산(초과하면 항목은 쓰되 헬스를 STALE로 보고한다), 그리고 DEGRADED 판정 세 갈래: 입력(피드·계정·채널·쿼리) 실패율, 입력 빈 응답률, 절대 실패 개수. 어느 하나만 걸려도 DEGRADED이고 보고만 할 뿐 항목은 그대로 전달한다 |
 | `rss` | `feeds`, `max_concurrency`(기본 5) | RSS 피드 URL 목록과 동시 fetch 상한 |
 | `reddit` | `subreddits`, `sort`, `limit` | 서브레딧, 정렬, 개수 |
 | `youtube` | `channels`, `max_videos_per_channel`, `resolve_timeout`, `transcript_timeout`, `transcript_language` | 채널, 영상 수, 자막 관련 설정 |
@@ -129,6 +131,14 @@ AWS 아키텍처(스케줄 다이제스트와 Slack 트리거 딥 리서치, 두
 
 `error_rate_threshold`는 RSSHub 전용이 아니라 `BaseCollectorConfig`의 공통 노브다. 같은 뜻의 숫자를 두 벌
 만들지 않으려는 것이고, RSS와 YouTube와 web_search도 같은 임계로 DEGRADED를 보고한다.
+
+실패율만으로는 못 보는 두 모양이 있어서 노브가 둘 더 있다. 첫째, 입력 전부가 HTTP 200에 entries 0으로
+답하는 경우다(만료된 RSSHub 쿠키, 페이월 200, 아무것도 없는 플레이리스트). 실패율은 0이고 항목을 낸 입력이
+하나라도 있으면 소스는 OK로 읽혔다. `empty_rate_threshold`가 빈 응답률로 이것을 잡는다. 소스마다 성격이
+달라서(RSS 블로그는 하루 글이 없는 게 정상이고, X 계정 40개가 모두 조용한 건 세션이 깨진 것이다) 기본값은
+비활성인 100.0이고 config.yaml에서 소스별로 켠다. 둘째, 입력이 적은 소스에서는 비율이 판정을 표현할 수 없다.
+서브레딧 2개면 1개 실패가 정확히 기본 임계값 50%(=깨끗함)이고 2개 실패는 이미 FAILED로 올라가서 DEGRADED에
+닿을 수 없었다. `max_failed_inputs`는 비율과 무관하게 절대 개수로 판정한다(0이면 비활성).
 
 `collectors.alert_on_empty`(기본 `[]`)는 EMPTY가 사건인 소스의 이름 목록이다(예: `["rss", "web_search"]`).
 목록이 필요한 이유는 이렇다. 어두워진 소스는 예외도 남기지 않고 stale park 파일도 남기지 않고 실패율도
@@ -163,7 +173,8 @@ AWS 아키텍처(스케줄 다이제스트와 Slack 트리거 딥 리서치, 두
 | 필드 | 설명 |
 |------|------|
 | `model_id` | 에이전트 모델(기본 Sonnet 5) |
-| `research_breadth`, `research_max_iterations` | 프롬프트에 주입되는 검색 폭(쿼리 수)과 깊이(라운드 수) 가이던스 |
+| `research_breadth`, `research_max_iterations` | 프롬프트에 주입되는 검색 폭(쿼리 수)과 깊이(라운드 수) 가이던스. 루프 상한이 아니다 |
+| `research_max_turns`, `research_max_total_tokens`, `research_max_output_tokens` | 툴 루프의 하드 상한(`strands.types.agent.Limits`로 invoke마다 전달한다). SDK가 매 턴 경계에서 검사하고 `stop_reason="limit_*"`으로 멈춘다. 인터넷에서 촉발되는 유일한 경로이고 사이클마다 대화 전체를 다시 보내므로, 이 값들이 없으면 비용과 벽시계 시간에 상한이 없다 |
 | `research_slack_target_words` | Slack 리포트의 목표 분량(단어) 가이던스 |
 | `research_max_threads_posts` | Threads 게시물(root와 reply) 총수 하드 캡(기본 6). 너무 긴 리포트가 공개 게시물 수십 개로 퍼지지 않게 코드가 트림한다 |
 | `research_content_cap_chars` | `read_url` 한 페이지의 추출 텍스트 상한(기본 50000) |
@@ -252,9 +263,11 @@ X 세션 쿠키만 경로가 다르다. Fargate 태스크 정의의 `secrets` �
 남기고 `run_collectors_with_health`가 그것을 읽는다.
 
 `meta`는 park 파일을 쓴 sync가 남긴 수집 방식 기록이며 선택적이다. RSSHub sync는 `accounts_total`,
-`accounts_failed`, `accounts_empty`를 적고, 수집기는 그것을 되읽어 실패율이 `error_rate_threshold`(라이브
-경고와 같은 노브다)를 넘으면 `degraded_detail`을 세워 헬스를 DEGRADED로 만든다. 신선한 park 파일만으로는
-40개 계정 중 3개만 모은 sync를 건강한 sync와 구분할 수 없었다.
+`accounts_failed`, `accounts_empty`를 적고, 수집기는 그것을 되읽어 라이브 경로와 **같은** 세 임계
+(`error_rate_threshold`, `empty_rate_threshold`, `max_failed_inputs`)로 판정한 뒤 `degraded_detail`을 세워
+헬스를 DEGRADED로 만든다. 신선한 park 파일만으로는 40개 계정 중 3개만 모은 sync를 건강한 sync와 구분할 수
+없었다. 빈 응답 개수(`accounts_empty`)를 park 경로가 무시하던 동안에는, 모든 계정이 200에 entries 0으로
+답한 sync가 쓴 신선한 park 파일이 완전히 건강하게 읽혔다.
 
 **신선도 봉투.** sync 스크립트는 `{generated_at, items, meta?}` 봉투(`dump_items_envelope`)로 적재한다.
 `meta`는 비어 있으면 아예 쓰지 않아서 구버전 리더와 바이트 호환이다. 로더는 봉투와 레거시 bare-list를 모두
@@ -279,27 +292,33 @@ X 세션 쿠키만 경로가 다르다. Fargate 태스크 정의의 `secrets` �
 
 ### 4.3 RSS (`rss.py`)
 
-`config.collectors.rss.feeds`의 피드를 feedparser로 읽고 `feed_url`과 `feed_title`을 메타데이터로 남긴다.
+`config.collectors.rss.feeds`의 피드를 읽고 `feed_url`과 `feed_title`을 메타데이터로 남긴다. fetch와 파싱과
+엔트리 루프는 모두 `collectors/base.py`의 공용 헬퍼가 소유한다(`fetch_feed`, `fetch_feed_with_retry`,
+`parse_feed_entries`). RSS와 Reddit, RSSHub가 글자 그대로 같은 엔트리 루프를 각자 들고 있던 동안에는 한쪽을
+고쳐도 나머지 둘이 조용히 뒤처졌다.
 
-**fan-out 상한(`max_concurrency`, 기본 5)이 필요한 이유.** 피드마다 `feedparser.parse`가 워커 스레드를
-점유한다. 수십 개 피드를 한꺼번에 던지면 기본 asyncio executor(2 vCPU Lambda에서 6개)가 초과 구독되어 파싱이
-시작되기도 전에 per-feed 타임아웃이 만료된다. 멀쩡한 피드가 FAILED로 집계되는 것이다. 그래서 세마포어를
-`collect()` 안에서, 다시 말해 실행 중인 루프에서 만들고 per-feed 타임아웃보다 먼저 획득해서, 타임아웃이 큐 대기가 아니라
-fetch 자체를 재게 한다. RSSHub와 같은 패턴이다.
+**본문은 httpx로 받아서 feedparser에 넘긴다.** `feedparser.parse(url)`은 urllib으로 직접 가져오고 소켓
+타임아웃이 없다. 게다가 `asyncio.wait_for`는 `asyncio.to_thread` 워커를 취소할 수 없어서, 타임아웃된 시도마다
+워커 하나가 프로세스가 사는 동안 그대로 남았다(피드당 최대 `max_retries`개). 코루틴 안의 httpx 타임아웃은
+진짜로 취소되는 타임아웃이고, 포기한 뒤에 아무 비용도 남기지 않는다.
 
-**일시적 실패는 재시도한다.** 타임아웃과 일시적 상태 코드(429와 5xx로, YouTube 수집기의
-`_RETRIABLE_STATUS_CODES`를 그대로 재사용한다)는 `retry_async`로 `max_retries`(기본 3)까지 재시도한다.
-재시도가 타임아웃을 감싸니 매 시도가 자기 `request_timeout`을 온전히 갖는다. 예전에는 한 번의 blip이 그
-피드의 하루치 항목을 통째로 잃었다. 반면 403이나 404, 파싱 불가 본문은 재시도해도 결론이 바뀌지 않으니 첫
-응답에서 즉시 실패시킨다.
+**fan-out 상한(`max_concurrency`, 기본 5)이 필요한 이유.** 한 번에 도는 fetch 수를 묶어서 수집기의 최악
+wall time을 계산 가능하게 유지한다. 세마포어는 `collect()` 안에서, 다시 말해 실행 중인 루프에서 만든다
+(임포트나 `__init__`이 아니다). RSSHub와 같은 패턴이다.
+
+**일시적 실패는 재시도한다.** 타임아웃과 전송 계층 실패, 일시적 상태 코드(429와 5xx)는
+`fetch_feed_with_retry`가 `retry_async`로 `max_retries`(기본 3)까지 재시도하고, 매 시도가 자기
+`request_timeout`을 온전히 갖는다. 예전에는 한 번의 blip이 그 피드의 하루치 항목을 통째로 잃었다. backoff는
+URL을 시드로 한 지터를 얹은 선형이다. 지터가 없으면 동시에 재시도하는 수십 개 피드가 상류가 레이트리밋한 바로
+그 버스트로 다시 뭉친다. 반면 403이나 404, 파싱 불가 본문은 재시도해도 결론이 바뀌지 않으니 첫 응답에서 즉시
+실패시킨다.
 
 분류는 `collectors/base.py`의 `feed_status_failure(description, status)`와
 `feed_parse_failure(description, bozo_exception)` 한 쌍이 소유하고 RSS와 Reddit, RSSHub가 함께 쓴다. 상태
-코드는 `RETRIABLE_STATUS_CODES`(429와 5xx)로 판정한다. 전송 계층 실패도 여기서 갈린다. feedparser는 연결
-오류에 예외를 던지지 않고 `status` 없이 `bozo_exception`에 `URLError`나 소켓 타임아웃을 담아 돌려주는데, 이를
-영구 파싱 실패로 취급하는 동안에는 DNS 한 번의 흔들림이 그 피드를 하루 통째로 날렸다. 같은 피드의 HTTP 503은
-세 번 시도하는 상황과 정확히 반대였다. 이제 전송 계층 예외(`OSError` 계열과 `HTTPException`)는 transient이고,
-진짜 malformed 문서만 영구 실패다.
+코드는 `RETRIABLE_STATUS_CODES`(429와 5xx)로 판정한다. 전송 계층 실패도 여기서 갈린다. httpx의
+`TimeoutException`과 나머지 `HTTPError`(DNS, reset, TLS)는 transient로 올리고, 진짜 malformed 문서만 영구
+실패다. 이를 영구 파싱 실패로 취급하는 동안에는 DNS 한 번의 흔들림이 그 피드를 하루 통째로 날렸다. 같은
+피드의 HTTP 503은 세 번 시도하는 상황과 정확히 반대였다.
 
 **최악 wall time.** 피드당 `max_retries * request_timeout + 선형 backoff`이므로 기본값에서
 `3*30s + (5s+10s)` = 105초다. 피드는 `max_concurrency`개씩 도니 수집기 전체는
@@ -317,14 +336,20 @@ fetch 자체를 재게 한다. RSSHub와 같은 패턴이다.
 동결했고(Responsible Builder Policy, 2025-11) `.json` API는 데이터센터 IP를 차단했지만 `.rss` 피드는 열려
 있기 때문이다. 그래서 자격증명도 앱 등록도 필요하지 않다.
 
-경로는 `parse_feed_with_fallback`으로 직접 요청을 먼저 하고 Cloudflare 프록시를 폴백으로 둔다. 순서가 반대인
-이유는 `.rss`가 프록시에서는 403이고 직접 요청은 200이기 때문이다. 이 조합이면 AWS Lambda IP에서도 동작한다.
+경로는 `fetch_feed_with_retry(..., proxy_fallback=True)`이고, 시도마다 직접 요청을 먼저 하고 Cloudflare
+프록시를 폴백으로 둔다(`shared/proxy.py`의 `fetch_with_proxy_fallback`). 순서가 반대인 이유는 `.rss`가
+프록시에서는 403이고 직접 요청은 200이기 때문이다. 이 조합이면 AWS Lambda IP에서도 동작한다.
+
+**후보 선택은 마지막 시도가 아니라 최선의 사용 가능한 응답이다.** 순서는 이렇다. (1) entries가 있는 첫 후보,
+(2) 없으면 오류 없이 답한 첫 후보(진짜로 조용한 피드다), (3) 모든 후보가 오류일 때만 오류를 올린다(프록시가
+설정돼 있으면 마지막 것, 즉 차단된 호스트에 대해 더 정보가 많은 쪽이다). 마지막 시도를 돌려주던 동안에는
+직접 요청의 200-entries-0(조용한 서브레딧)이 프록시의 429로 덮여서, 호출자는 일시적 실패를 보고 재시도를 전부
+소진했고 서브레딧 2개 구성에서는 깨끗하게 빈 날에 소스 전체가 FAILED로 보고됐다.
 
 **레이트리밋 대응.** 서브레딧을 `asyncio.gather`로 동시 요청하면 단일 IP의 버스트가 429를 유발하고, 관측상 매
 실행마다 한 서브레딧을 잃었다. 그래서 순차로 수집하고 요청 사이에 간격을 두며, 각 fetch는 지터를 곁들여
-재시도한다. 429와 5xx만 재시도하고, 지터는 서브레딧명을 시드로 한 결정적 값이며, 404 같은 영구 오류는 즉시
-실패시킨다. `feedparser.parse`에는 타임아웃이 없어서 `asyncio.wait_for`로 감싸 매달린 fetch를 막고, 그
-타임아웃도 재시도 대상이다. 전 서브레딧이 실패했을 때만 RuntimeError로 올려 헬스체크가 FAILED로 알린다.
+재시도한다. 429와 5xx와 타임아웃만 재시도하고, 지터는 URL을 시드로 한 결정적 값이며, 404 같은 영구 오류는 즉시
+실패시킨다. 전 서브레딧이 실패했을 때만 RuntimeError로 올려 헬스체크가 FAILED로 알린다.
 일부만 실패한 실행은 `record_run_health(total, failed, empty, threshold, what="subreddits")`로 보고한다. 이
 호출이 없던 동안에는 6개 중 4개가 프록시 429로 죽어도 소스가 OK로 읽혔고 아무것도 알리지 않았다.
 
@@ -336,21 +361,19 @@ fetch 자체를 재게 한다. RSSHub와 같은 패턴이다.
 로컬이나 컨테이너 RSSHub를 통해 X/Twitter 피드를 읽고, S3에 사전 동기화된 스냅샷(`rsshub_items.json`,
 `scripts/sync_rsshub_to_s3.py`가 적재한다)이 있으면 공유 `load_items_from_s3`로 그것을 쓴다.
 
-계정별 `feedparser.parse`를 `asyncio.wait_for(request_timeout)`로 감싸서(RSS와 같다) 매달린 피드 호스트가 워커
-스레드를 무한 점유하지 못하게 한다. 타임아웃은 빈 결과가 아니라 실패로 집계한다. 그 타임아웃을 다시
-`retry_async`가 감싸니 매 시도가 자기 `request_timeout`을 온전히 갖고, RSSHub 자신의 HTTP 상태도 분류한다.
-429와 5xx는 재시도하고 그 밖의 4xx와 파싱 불가 본문은 즉시 실패시킨다. 예전에는 시도가 딱 한 번이라, 계정이
-약 41개인 최대 소스에서 한 번의 blip이 그 저자를 하루 통째로 잃게 했고 `error_rate_threshold`까지 밀 수 있었다.
-빈 본문의 502도 일반 파싱 실패로 올라와 재시도 대상이 아니었다.
+계정별 fetch도 RSS와 같은 공용 `fetch_feed_with_retry`를 쓴다. httpx 타임아웃이 매달린 피드 호스트를 끊고,
+타임아웃은 빈 결과가 아니라 실패로 집계한다. 매 시도가 자기 `request_timeout`을 온전히 갖고, RSSHub 자신의
+HTTP 상태도 분류한다. 429와 5xx는 재시도하고 그 밖의 4xx와 파싱 불가 본문은 즉시 실패시킨다. 예전에는 시도가
+딱 한 번이라, 계정이 약 41개인 최대 소스에서 한 번의 blip이 그 저자를 하루 통째로 잃게 했고
+`error_rate_threshold`까지 밀 수 있었다. 빈 본문의 502도 일반 파싱 실패로 올라와 재시도 대상이 아니었다.
 
 degraded 힌트는 실제로 실패한 계정의 platform에서 뽑는다. Twitter 쿠키 만료를 무조건 단정하면 mastodon 같은
 다른 라우트가 죽은 날에 운영자를 엉뚱한 컨테이너 설정으로 보낸다.
 
-**팬아웃 상한.** 계정 수가 40개를 넘으니 모든 `parse`를 한 번에 띄우면 기본 asyncio executor가 과가입되고,
-아직 시작도 못 한 fetch의 `wait_for`가 먼저 만료된다. 그래서 `collect()` 안에서, 임포트나 `__init__`이 아니라
-실행 중인 루프에서 `asyncio.Semaphore(max_concurrency)`를 만들고 타임아웃보다 먼저 획득해서 타임아웃이 큐
-대기가 아닌 실제 fetch를 재게 한다. 최악 벽시계는 `ceil(accounts / max_concurrency) × request_timeout`으로
-Lambda 예산 안에 있다.
+**팬아웃 상한.** 계정 수가 40개를 넘으니 한 번에 모두 띄우면 상류에 대한 버스트가 되고 최악 벽시계를 계산할
+수 없게 된다. 그래서 `collect()` 안에서, 임포트나 `__init__`이 아니라 실행 중인 루프에서
+`asyncio.Semaphore(max_concurrency)`를 만든다. 최악 벽시계는
+`ceil(accounts / max_concurrency) × request_timeout`으로 Lambda 예산 안에 있다.
 
 **헬스.** 실패한 계정과 빈 계정을 자체 추적하며 `error_rate_threshold`를 갖는다. 서비스
 도달성(`_check_reachable`)은 OK인데 모든 계정이 실패하면 RuntimeError로 올려 FAILED로 알린다. 조용한 날과
@@ -404,13 +427,25 @@ UTC로 정규화한다. naive datetime을 tz-aware cutoff와 비교하다 TypeEr
 그대로다.
 
 `BaseCollector.record_run_health(total, failed, empty, threshold, what, hint)`와
-`flag_degraded_park(parked, ...)`는 실패율이 `error_rate_threshold`를 넘으면 `degraded_detail`을 세우고, 같은
+`flag_degraded_park(parked, ...)`는 세 임계 중 하나라도 걸리면 `degraded_detail`을 세우고, 같은
 카운트를 `run_meta`(park-meta 키)에 남겨 sync 스크립트가 항목과 함께 park하게 한다. 원래 RSSHub 전용 코드였던
 것을 모든 수집기가 쓰는 한 구현으로 올렸다. 한 소스만 반쪽 상태를 보고하고 나머지는 침묵하는 일을 없애야 했다. 이 메서드들은 보고만 하고 어떤 항목도 필터링하지 않는다.
 
 `main.run_collectors_with_health()`는 헬스 리포팅을 위해 동일 작업을 실행하되
 `HealthReport`([§8](#8-헬스-체크와-알림) 참조)를 반환한다. `gather_collector_results`는 다른 호출자들을 위해
 그대로 유지된다.
+
+**공유 스레드 풀은 하나다.** 이 함수가 시작할 때 `collectors.thread_pool_max_workers`(기본 16) 크기의
+`ThreadPoolExecutor`를 루프의 기본 executor로 설치한다. 수집기별 `max_concurrency`는 자기 fan-out만 묶고,
+`asyncio.to_thread` 호출은 전부 같은 기본 executor(2 vCPU Lambda에서 6개)로 들어가서 문서가 기대하는 상한이
+전역으로는 성립하지 않았다. 한 소스의 작업이 다른 소스 뒤에 큐잉된 채 타임아웃이 만료될 수 있었다.
+`asyncio.run`이 루프와 함께 풀을 정리한다.
+
+**수집 윈도는 순수 함수가 소유한다.** `main._resolve_digest_window(config, date_arg)`가 다이제스트 날짜와
+reference time을 함께 돌려준다. reference time은 `config.aws.timezone` 기준으로 다이제스트 날짜 **다음날**
+자정이고, 모든 수집기의 `lookback_hours`가 거기서부터 거슬러 센다. 그래서 19:00 KST 실행도 그날 전체를 보고,
+`--date`로 지난 날을 재실행하면 지금 끝나는 윈도가 아니라 그날이 가졌던 윈도를 본다. CLI와 다이제스트 Lambda가
+각자 사본을 들고 있었고, 그 계산은 그날 무엇이 보이는지를 결정하는 load-bearing 코드다.
 
 ## 5. 파이프라인
 
@@ -460,6 +495,11 @@ web-search 항목도 포함한다. URL 호스트를 쓰며 `resolve_origin_key`�
 올린다. 예전에는 `[]`를 반환했고, 그러면 `failures`가 비고 `items_lost`가 0이라 `RankingHealth`가 깨끗해 보여서
 후보 한 배치가 사라진 날에도 알림이 전부 침묵했다. 핀 복구 경로는 그대로다. 그 배치의 핀을 `min_score`로
 되살린다.
+
+**응답의 item_id는 유일하게 접는다(`_parse_rankings`).** 입력 id당 `RankedItem`은 최대 하나이고 첫 항목이
+이긴다. 모델이 한 id를 반복하고 다른 하나를 빠뜨리면(실무에서 같이 온다) `len(ranked) == len(items)`가 되어
+커버리지가 1.0으로 읽혀 재질의가 뜨지 않았고, `items_scored`가 실제 풀보다 컸고, 에디터가 같은 스토리를 두 번
+받았다.
 
 **배치 구성(`_make_batches`).** 항목 수(`ranking_batch_size`)와 누적 입력 토큰 예산을 모두 상한으로 쓴다. 수만
 상한으로 두면 `ranking_batch_size` x `item_text_max_tokens`가 모델 컨텍스트 창을 넘길 수 있고, 넘친 배치는
@@ -519,8 +559,15 @@ Claude Sonnet 5로 `DigestPrompt`를 호출해 구조화 `DigestContent`를 얻�
 
 **LLM은 산문만 쓴다.** lead와 body, implication만 모델이 작성하고 source tag와 metrics는
 코드(`_fill_source_metadata`)가 URL로 매칭해 채운다. 매칭 키는 집계기의 `normalize_url`이다. 에디터가 URL을
-되쓸 때 생긴 trailing slash나 http에서 https로의 차이, utm 파라미터 때문에 소스 줄이 통째로 사라지면 안 되기 때문이다. URL이 이미 동일하면 동작에 변화가 없다. 랭킹 소스와 끝내 매칭되지 않는 항목은 최후 수단으로
-`urlsplit(url).netloc`을 태그로 쓴다. 도메인 매핑 표는 두지 않는다.
+되쓸 때 생긴 trailing slash나 http에서 https로의 차이, utm 파라미터 때문에 소스 줄이 통째로 사라지면 안 되기
+때문이다. URL이 이미 동일하면 동작에 변화가 없다.
+
+**매칭되지 않는 항목은 독자에게 가지 않는다.** 어떤 후보와도 매칭되지 않는 항목은 에디터가 만들어낸 스토리이거나
+URL을 정규화로도 복구 못 할 만큼 망친 것이다. 예전에는 자기 host를 태그로 붙여 그대로 독자에게 실렸고, 게시된
+URL 원장에도 기록되어 TTL 윈도 내내 **진짜** 기사를 억제했다. 지금은 드롭하고 ERROR로 남긴다. 그것이
+헤드라인이면 `DigestContentError`로 emission 자체를 거부한다. lead와 데일리 비주얼이 둘 다 `items[0]`을 두고
+쓰이므로 건질 것이 없고, 호출자의 재질의가 곧 해결책이다(그래서 트림과 매칭이 재시도 클로저 안에 있다).
+이 함수는 살아남은 스토리별 소스 항목을 반환해서 그라운딩 검사가 실제로 실린 것만 보게 한다.
 
 **파싱 견고성 (`_parse_content`).** LLM JSON은 `parse_json_from_llm_output`으로 파싱한다(`strict=False`로
 두어 문자열 값 안의 raw 제어문자를 허용한다). 그리고 items를 개별 검증해, 한 항목이 malformed여도 그 항목만
@@ -575,7 +622,11 @@ implication만 세어서 한국어 제목이 예산 밖에서 소비되었고, �
 트렌드 분류기와 AgentCore 스냅샷이 그것을 쓴다.
 
 **그라운딩(옵션, `enable_grounding_check`).** 산문 필드의 구체적 주장을 소스 항목과 코드가 산출한 트렌드
-사실에 대조해, 근거 없는 부분만 외과적으로 수정한다.
+사실에 대조해, 근거 없는 부분만 외과적으로 수정한다. 대조 대상은 실제로 실린 스토리의 소스뿐이다
+(`_fill_source_metadata`가 돌려주는 매칭 결과). 랭킹 후보 전체를 이어 붙이던 동안에는 근거가 탈락한 backfill
+후보에만 있는 숫자나 제품명이 근거 있음으로 통과했다. 만들어낸 구체 사실을 잡으려고 존재하는 단 한 번의
+패스에서의 false negative이고, 동시에 버퍼만큼의 잉여 입력 토큰(항목당 `item_text_max_tokens`)을 크리티컬
+패스에 실었다.
 
 ### 5.5 채널별 렌더링 (`output/renderers.py`)
 
@@ -667,6 +718,11 @@ instruction에 주입해 연속된 비주얼이 모양과 구성에서 실제로
 
 **플랜 파싱이 실패하면 그냥 건너뛴다.** 에디터 JSON을 못 읽으면 `{"skip": True}`로 취급한다. 재질의로 LLM을 한
 번 더 부르지도 않고, 일반 폴백 instruction으로 gpt-image를 태우는 낭비 렌더도 하지 않는다.
+
+**플랜의 불리언은 `coerce_bool`로 강제한다.** `skip`과 `multi_panel`, `use_character`는 모델이 손으로 쓴 JSON
+값이라 문자열일 수 있다. 맨 truthiness는 `"false"`를 True로 읽어서, 불리언에 인용부호를 붙이는 모델이
+`"skip": "false"` 하나로 그날 비주얼을 아무 오류도 없이 죽였고, `"use_character": "false"`는 에디터 판단과
+반대로 마스코트 시트를 주입한 뒤 내일의 유도를 결정하는 변주 윈도에 `use_character=True`를 적었다.
 
 **비주얼 실패가 다이제스트를 삼키지 않는다.** 이미지는 첨부물이고, 이 함수가 Threads의 유일한 게시 경로다.
 OpenAI 키가 없거나 에디터 호출이 실패하거나 에디터가 skip하거나 렌더가 실패하는 경우는 모두 `_make_visual`
@@ -854,6 +910,17 @@ cross-region `global.`이나 `us.` 같은 프리픽스는 베이스 id로 스트
 `resolve_secret(env_var, ssm_suffix)`는 env를 먼저 보고 그다음 SSM(`/{project}/{stage}/{suffix}`,
 SecureString 복호화)을 본다. OpenAI 키는 이제 데일리 비주얼의 gpt-image 렌더에서만 쓰이고(에이전트 측 이미지
 생성 도구는 제거됐다), Tavily 키는 리서치 백엔드와 웹서치 수집기에서 env를 먼저, 그다음 SSM으로 해소된다.
+
+**사다리는 하나다.** AgentCore 런타임의 Slack 폴백도 이 함수를 쓴다. 같은 env→SSM 사다리를 15줄로 다시 쓴
+사본이 있었는데, 그 사본은 플레이스홀더 처리도 리전 해석도 갖지 못했다. 유일하게 남은 사본은
+`lambda_handlers/slack_event_handler.py`의 것이고, 그 핸들러는 `lambda_handlers/`만 담은 독립 zip으로 배포되어
+`shared`를 임포트할 수 없기 때문이다(`test_handler_imports_nothing_outside_the_zip`이 이를 고정한다).
+
+**리전은 `aws_region()`이 정한다.** env(`AWS_REGION` → `AWS_DEFAULT_REGION`), 없으면 `config.aws.region`,
+그것도 비면 `None`을 돌려 boto3가 프로파일에서 풀게 한다. 네 모듈이
+`os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2"))` 리터럴을 각자 들고 있었다. 개발자
+한 명의 리전이 코드에 박혀서 `config.aws.region`과 얼마든지 갈라질 수 있었고, 다른 배포에서는 SSM이나
+AgentCore 호출이 엉뚱한 리전으로 갔다.
 
 ### 프롬프트 캐싱
 
@@ -1050,6 +1117,12 @@ STALE과 DEGRADED는 실패가 아니니 `has_failures`를 켜지 않는다. FAI
 두고, 랭킹 판정은 별도로 게시한다. 파이프라인 예외가 수집기 알림을 삼켜서는 안 된다. 재시도까지
 실패한 배치가 있거나(약 후보 40건 소실) 채점 커버리지가 `ranking_min_coverage_ratio` 아래면 겉보기 정상인
 다이제스트에도 알림이 간다.
+
+**알림은 귀속 가능해야 한다(`format_alarm`).** subject는 `[{project}/{stage}] {event} — {STATUS}`이고
+project와 stage를 각 함수의 env(`PROJECT_NAME`, `STAGE`)에서 읽는다. 하드코딩된 기본값만 쓰던 동안에는 dev
+스테이지 알림과 prod 스테이지 알림이 바이트 단위로 같았고, 두 번째 배포는 엉뚱한 이름으로 알렸다. 본문 마지막
+필드는 correlation id다. 매 invoke마다 세팅되면서 알림에는 한 번도 실리지 않아서, 운영자가 메일에서 대응되는
+JSON 로그 줄로 건너갈 수 없었다.
 
 ### 핸들러 예외 전파
 
@@ -1266,7 +1339,13 @@ self-invoke가 throw하면 `_release_event_marker`로 마커를 해제하고 500
 1. payload의 `correlation_id`로 correlation id를 시드한다.
 2. `DeliveryContext(channel_id, thread_ts)`를 만들고 `create_research_agent()`로 에이전트를 생성한다.
 3. `request_context(delivery)`로 contextvar 스코프 안에서 에이전트를 실행한다. 동시 invoke가 한 요청의 채널을
-   다른 요청으로 누출하면 안 된다. 응답은 `sanitize_slack_mrkdwn`을 거친다. `AgentResult`를 버리지 않고
+   다른 요청으로 누출하면 안 된다. 호출은 `agent(prompt, limits=_run_limits())`이고, `Limits`는
+   `research_max_turns`와 `research_max_total_tokens`, `research_max_output_tokens`를 config에서 읽는다. 툴
+   루프는 사이클마다 대화 전체를 다시 보내고 이것이 인터넷에서 촉발되는 유일한 경로였는데, 비용도 벽시계 시간도
+   상한이 없었다. `stop_reason`이 `limit_*`이면 WARNING과 EMF 카운터(`AgentLimitStops`)를 남기고 응답과 폴백
+   게시물 끝에 "리포트가 중간에 끊겼다"는 한 줄을 붙인다. 상한에 걸린 실행도 텍스트를 반환하니, 그러지 않으면
+   수렴하지 못해 매번 예산을 태우는 주제를 정상적인 날과 구분할 수 없다. 응답은 `sanitize_slack_mrkdwn`을
+   거친다. `AgentResult`를 버리지 않고
    누적 usage와 cycle 수, 도구별 호출 수를 파이프라인 단계들과 같은 형식(`LLM usage stage=research ...`)으로
    남기고 EMF(`AgentInputTokens`, `AgentOutputTokens`, `AgentCycles`, `AgentToolCalls`)로도 찍는다. 예전에는
    `str(agent(prompt))`로 끝내서, 가장 비싼 구성요소가 유일하게 지출이 기록되지 않는 단계였다. EMF는 로그 한
@@ -1378,7 +1457,10 @@ SNS 알림 토픽과 선택적 이메일 구독, AgentCore Memory 리소스와 �
 
 **IAM은 최소 권한으로 잡는다.**
 
-- `ssm:GetParameter*`는 `/{project}/{stage}/*`로 스코프한다.
+- `ssm:GetParameter*`는 `/{project}/{stage}/*`로 스코프한다. 단 Slack 이벤트 역할은 그 공용 statement를 쓰지
+  않고 `slack-signing-secret`과 `slack-bot-token` **두 파라미터 ARN**만 갖는다. 핸들러가 읽는 것이 정확히 그
+  둘이고, 공용 경로는 OpenAI/Tavily/YouTube 키와 Threads 토큰과 X 세션 쿠키까지 포함하므로 인터넷에서 닿는
+  유일한 컴포넌트에 줄 이유가 없다.
 - `bedrock:InvokeModel*`은 foundation-model과 inference-profile, application-inference-profile ARN으로
   스코프한다. 마지막 것은 별도 리소스 타입이며 필수다. 모델 리졸버가 비용 귀속용 application inference
   profile을 선호하니, 빠뜨리면 프로필이 존재하는 순간 모든 Bedrock 호출이 AccessDenied가 된다. 그날
@@ -1390,7 +1472,10 @@ SNS 알림 토픽과 선택적 이메일 구독, AgentCore Memory 리소스와 �
 - S3 객체 접근은 프로젝트 루트 prefix(`config.aws.s3_prefix`에 `/*`를 붙인 것)로 스코프한다. 상태 버킷은 기존
   공유 버킷일 수 있고, 이 prefix가 프로젝트가 만지는 모든 키를 덮는다. state_store의 `digest_state`와 수집기
   park 파일, 데일리 비주얼의 `threads/*.png`가 그 안에 있다. 버킷 레벨 List는 CDK가 붙이고 그대로 둔다.
-- `bedrock-agentcore:InvokeAgentRuntime`과 Memory 데이터플레인 액션.
+- `bedrock-agentcore:InvokeAgentRuntime`과 Memory 데이터플레인 액션(`CreateEvent`/`ListEvents`/
+  `ListSessions`). 후자는 `memory/*`가 아니라 **이 스택이 만든 memory ARN**(과 그 `/*` 하위 리소스)으로
+  스코프한다. ARN은 statement를 만드는 자리에서 이미 손에 있는데 와일드카드로 두면 공유 계정의 다른
+  프로젝트 대화 상태까지 읽고 쓸 수 있었다.
 - CloudWatch Logs는 프로젝트 로그 그룹 ARN으로 스코프한다.
 - 계정 전역 관리형 정책은 쓰지 않는다.
 
@@ -1482,7 +1567,7 @@ AWS 프로파일에 결과가 좌우되지 않고, 실 SSM 왕복으로 낭비�
 
 커버하는 영역은 다음과 같다.
 
-- 수집기(HTTP와 feedparser를 모킹한다).
+- 수집기(공용 `collectors.base.fetch_feed`를 모킹해 재시도와 분류, 프록시 폴백, 헬스 판정을 돈다).
 - Slack 이벤트 핸들러(서명 검증과 중복 제거, 그리고 형제 패키지 import 금지 가드
   `test_handler_has_no_sibling_package_imports`).
 - 집계기와 랭커 파싱, 슬롯과 origin-cap 로직, 그리고 배치 재시도와 전면 실패 승격, fan-out 상한.
@@ -1504,7 +1589,8 @@ AWS 프로파일에 결과가 좌우되지 않고, 실 SSM 왕복으로 낭비�
   research와 threads 블록), OG 이미지(`test_og_image.py`), 리서치 CLI(`test_research_cli.py`),
   `VisualGenerator`(`test_visuals.py`).
 - AgentCore 엔트리포인트(`agent_runtime/app.py`의 에이전트 생성과 Slack 토큰 env/SSM 해석, invoke 해피패스와
-  예외 처리, correlation ID, Slack 폴백, 실행 usage 로그와 EMF).
+  예외 처리, correlation ID, Slack 폴백, 실행 usage 로그와 EMF, 그리고 per-invocation `Limits` 전달과
+  `limit_*` 중단 처리).
 - trend_tracker(trim과 evidence-cap, archived-merge).
 - CDK assertion(`aws-cdk.assertions`로 두 스택을 검증한다).
 
@@ -1522,9 +1608,16 @@ AWS 프로파일에 결과가 좌우되지 않고, 실 SSM 왕복으로 낭비�
 **Cloudflare 워커 테스트.** 같은 잡에서 Node 22를 깔고 `node --test cloudflare-proxy/test/*.test.js`를 돈다
 (의존성은 없다. `node:test`와 `node:assert`만 쓴다). 레포에서 유일하게 인터넷에 노출되는 컴포넌트인데,
 파이썬 쪽 테스트는 `worker.js`에 특정 문자열이 있는지만 볼 수 있었다. `isAllowedHost`가 무조건 true를
-반환하거나 401·403 분기가 뒤집혀도 통과하는 검사다. 이제 실제 분기를 돈다. 토큰 누락·오류·미설정,
-파싱 불가 url, `ftp:`와 `file:` 스킴, `evil-reddit.com`과 169.254 대상, 허용 서브도메인, 호출자가 준
-`?headers=`가 outbound fetch에 닿지 않는지다. 패턴이 아무것도 매치하지 않으면 `node --test`가 0으로 끝나므로
+반환하거나 401·403 분기가 뒤집혀도 통과하는 검사다. 이제 실제 분기를 돈다. 토큰 누락·오류·미설정·길이만
+다른 값, 파싱 불가 url, `ftp:`와 `file:` 스킴, `evil-reddit.com`과 169.254 대상, 허용 서브도메인, 호출자가 준
+`?headers=`가 outbound fetch에 닿지 않는지, 그리고 리다이렉트다.
+
+**리다이렉트가 허용 목록을 우회하지 못하게 한다.** 워커는 `redirect: "manual"`로 fetch하고 매 홉의 `Location`을
+`isAllowedHost`로 다시 검사하며 홉 수에 상한을 둔다. `redirect: "follow"`이던 동안에는 허용 호스트(reddit이나
+youtube)의 302 한 번이 이 인증된 워커를 임의의 호스트로 보냈다. 허용 목록이 막으려던 것이 바로 그
+open proxy다. 토큰 비교는 상수 시간이고, outbound User-Agent는 `wrangler.toml`의 `USER_AGENT` var다
+(파이썬 쪽 `shared.constants.BROWSER_USER_AGENT`와 같은 문자열이어야 하며, 하드코딩 사본 둘은 이미 Chrome
+메이저 하나만큼 벌어져 있었다). 패턴이 아무것도 매치하지 않으면 `node --test`가 0으로 끝나므로
 스텝은 `ls`를 먼저 돌려 스위트가 사라진 경우를 실패로 만든다.
 
 **잡 상한과 캐시.** 모든 잡에 `timeout-minutes`가 있다. 기본 6시간 러너 타임아웃에 걸린 채 멈춘 빌드를 방치하지 않기 위해서다. uv 휠 캐시는 `uv.lock`으로 키를 잡아 의존성이 바뀌면 재설치되니, 깨진 의존성 집합을 캐시가 가릴

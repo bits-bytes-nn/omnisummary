@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import re
 from abc import ABC, abstractmethod
 from calendar import timegm
@@ -603,6 +604,27 @@ def _is_parameter_not_found(exc: BaseException) -> bool:
     return False
 
 
+def aws_region() -> str | None:
+    """Region for a boto3 client built OUTSIDE a Session: the environment's, else the config's,
+    else None so boto3 resolves it from the profile as usual.
+
+    Four modules carried the literal
+    ``os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2"))`` — one developer's
+    region baked into the code, free to diverge from config.aws.region and silently sending an SSM or
+    AgentCore call to the wrong region in any other deployment. Lambda and AgentCore always set
+    AWS_REGION; the config covers a local run."""
+    region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+    if region:
+        return region
+    from .config import get_config
+
+    try:
+        return get_config().aws.region or None
+    except Exception:
+        logger.warning("Could not read aws.region from config; leaving the region to boto3", exc_info=True)
+        return None
+
+
 class SecretUnavailableError(RuntimeError):
     """SSM could not be read (outage, throttle, denied) — as opposed to the secret being unset.
     Only raised for callers that opt into strict=True; every other caller keeps the ""-degrades
@@ -620,17 +642,14 @@ def resolve_secret(env_var: str, ssm_suffix: str, *, strict: bool = False) -> st
     reporting "nothing to refresh" — which is indistinguishable from "no token configured" and
     quietly let the token lapse. A parameter that is genuinely absent/placeholder still returns "".
     """
-    import os
-
     value = os.getenv(env_var, "")
     if value:
         return value
 
     project = os.getenv("PROJECT_NAME", "omnisummary")
     stage = os.getenv("STAGE", "dev")
-    region = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2"))
     try:
-        ssm = boto3.client("ssm", region_name=region)
+        ssm = boto3.client("ssm", region_name=aws_region())
         resolved = ssm.get_parameter(Name=f"/{project}/{stage}/{ssm_suffix}", WithDecryption=True)["Parameter"]["Value"]
     except Exception as e:
         if strict and not _is_parameter_not_found(e):

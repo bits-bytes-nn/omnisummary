@@ -9,6 +9,12 @@ compatibility_date = "2024-01-01"
 # forward arbitrary traffic (incl. to internal endpoints) under this worker's IP.
 ALLOWED_HOSTS = "reddit.com,youtube.com,youtu.be,ytimg.com"
 
+# User-Agent for every outbound fetch. Several of these hosts answer a bare library UA with 403/429,
+# so it has to look like a browser. Kept HERE rather than in worker.js because the Python side sends
+# the same string (shared.constants.BROWSER_USER_AGENT) and the two hardcoded copies had already
+# drifted a Chrome major apart; worker.js keeps this exact value only as a fallback.
+USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+
 # PROXY_TOKEN is NOT stored here: a [vars] entry lives in version control in plaintext.
 # Set it as a secret once per environment (prompts for the value, never written to disk):
 #   wrangler secret put PROXY_TOKEN

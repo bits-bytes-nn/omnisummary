@@ -316,7 +316,7 @@ npx wrangler secret put PROXY_TOKEN   # 시크릿으로 넣는다. wrangler.toml
 npx wrangler deploy
 ```
 
-이 워커는 의도적으로 범용 프록시가 아니다. `ALLOWED_HOSTS` 변수에 있는 호스트만 fetch하고(정확 일치 또는 suffix 일치) 나머지는 `403`이다. 호출자가 보낸 `headers` 블롭은 아웃바운드 요청에 병합되지 않으니 토큰 소지자가 `Cookie`나 `Authorization`, `Host`를 위조할 수 없다. 토큰이 쿼리 문자열에 있는 것은 의도적인데, 두 호출자 모두 프록시 URL을 `feedparser.parse`에 그대로 넘기고 그쪽은 헤더를 붙일 수 없기 때문이다.
+이 워커는 의도적으로 범용 프록시가 아니다. `ALLOWED_HOSTS` 변수에 있는 호스트만 fetch하고(정확 일치 또는 suffix 일치) 나머지는 `403`이다. 리다이렉트는 홉 수에 상한을 두고 직접 따라가면서 매 `Location`을 같은 허용 목록으로 다시 검사하니, 허용 호스트의 `302` 한 번이 이것을 open proxy로 만들 수 없다. 호출자가 보낸 `headers` 블롭은 아웃바운드 요청에 병합되지 않으니 토큰 소지자가 `Cookie`나 `Authorization`, `Host`를 위조할 수 없다. 토큰 비교는 상수 시간이다. 토큰이 쿼리 문자열에 있는 것은 의도적인데, 호출자들이 프록시 URL을 헤더를 제어할 수 없는 평범한 GET에 그대로 넘기기 때문이다.
 
 ### 로컬 크론
 

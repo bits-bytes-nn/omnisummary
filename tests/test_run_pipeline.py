@@ -313,3 +313,122 @@ class TestRecentStoryTitles:
         assert main._recent_story_titles([]) == []
         assert main._recent_story_titles([{"digest_result": None}]) == []
         assert main._recent_story_titles([{"digest_result": {"content": {"items": []}}}]) == []
+
+
+class TestResolveDigestWindow:
+    """The collection cutoff is load-bearing: every collector's lookback_hours counts back from it,
+    so an off-by-a-day reference time silently changes what the digest can even see. Extracted as a
+    pure helper (from main.main and digest_handler._run, which each had their own copy)."""
+
+    def test_defaults_to_today_in_the_configured_timezone(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        config = Config()
+        config.aws.timezone = "Asia/Seoul"
+        digest_date, reference_time = main._resolve_digest_window(config)
+        assert digest_date == datetime.now(ZoneInfo("Asia/Seoul")).date()
+        assert reference_time.tzinfo == ZoneInfo("Asia/Seoul")
+
+    def test_explicit_date_gets_that_days_own_window(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        config = Config()
+        config.aws.timezone = "Asia/Seoul"
+        digest_date, reference_time = main._resolve_digest_window(config, "2026-06-03")
+        assert digest_date == date(2026, 6, 3)
+        # Midnight at the END of the digest date, so a 19:00 run still sees the whole day and a
+        # re-run of a past day sees that day rather than a window ending now.
+        assert reference_time == datetime(2026, 6, 4, tzinfo=ZoneInfo("Asia/Seoul"))
+
+    def test_the_boundary_follows_the_configured_timezone(self):
+        from datetime import UTC, datetime
+        from zoneinfo import ZoneInfo
+
+        config = Config()
+        config.aws.timezone = "America/New_York"
+        _, reference_time = main._resolve_digest_window(config, "2026-06-03")
+        assert reference_time == datetime(2026, 6, 4, tzinfo=ZoneInfo("America/New_York"))
+        # 04:00 UTC on the 4th, not 00:00 — the same date means a different instant per timezone.
+        assert reference_time.astimezone(UTC) == datetime(2026, 6, 4, 4, 0, tzinfo=UTC)
+
+
+class TestBuildCollectorTasks:
+    """Patched out by every other caller, so none of these branches ever executed: the --sources
+    override, the unknown-source warning, the disabled-source skip, and llm_factory being passed to
+    web_search alone."""
+
+    @staticmethod
+    def _config() -> Config:
+        config = Config()
+        for cfg in (
+            config.collectors.rss,
+            config.collectors.reddit,
+            config.collectors.youtube,
+            config.collectors.web_search,
+        ):
+            cfg.enabled = True
+        config.collectors.rsshub.enabled = False
+        return config
+
+    @staticmethod
+    def _close(tasks) -> None:
+        # The coroutines are never awaited here; close them so pytest reports no un-awaited warning.
+        for task in tasks:
+            task.close()
+
+    def test_enabled_sources_are_collected_when_no_override_is_given(self):
+        tasks, labels, collectors = main._build_collector_tasks(self._config(), MagicMock())
+        self._close(tasks)
+        assert labels == ["reddit", "rss", "web_search", "youtube"]  # rsshub is disabled
+        assert len(collectors) == len(labels) == len(tasks)
+
+    def test_sources_override_selects_exactly_what_was_asked_for(self):
+        tasks, labels, _ = main._build_collector_tasks(self._config(), MagicMock(), ["rss", "reddit"])
+        self._close(tasks)
+        assert labels == ["rss", "reddit"]  # the caller's order, not the map's
+
+    def test_an_unknown_source_is_warned_about_and_skipped(self):
+        with patch.object(main, "logger") as log:
+            tasks, labels, _ = main._build_collector_tasks(self._config(), MagicMock(), ["rss", "nope"])
+        self._close(tasks)
+        assert labels == ["rss"]
+        assert any("Unknown source" in str(c.args) for c in log.warning.call_args_list)
+
+    def test_an_explicitly_requested_but_disabled_source_is_skipped(self):
+        # --sources rsshub on a deployment where rsshub is disabled must NOT start it.
+        tasks, labels, _ = main._build_collector_tasks(self._config(), MagicMock(), ["rsshub", "rss"])
+        self._close(tasks)
+        assert labels == ["rss"]
+
+    def test_only_web_search_receives_the_llm_factory(self):
+        from collectors.web_search import WebSearchCollector
+
+        factory = MagicMock()
+        tasks, labels, collectors = main._build_collector_tasks(self._config(), factory, ["web_search", "rss"])
+        self._close(tasks)
+        web = collectors[labels.index("web_search")]
+        assert isinstance(web, WebSearchCollector)
+        # The factory is only ever used to build the query-refine model; without it, web_search
+        # silently loses query refinement.
+        assert web._llm is factory.get_model.return_value
+        factory.get_model.assert_called_once()
+        assert factory.get_model.call_args.kwargs["stage"] == "query-refine"
+
+
+class TestBoundedExecutor:
+    @pytest.mark.asyncio
+    async def test_one_bounded_pool_is_installed_from_config(self):
+        # Each collector's max_concurrency bounds only its own fan-out; every asyncio.to_thread call
+        # lands in the loop's DEFAULT executor (6 threads on a 2-vCPU Lambda), so the per-collector
+        # bounds did not hold globally.
+        import asyncio
+
+        config = Config()
+        config.collectors.thread_pool_max_workers = 9
+        with patch.object(main, "_build_collector_tasks", return_value=([], [], [])):
+            await main.run_collectors_with_health(config=config, llm_factory=None)
+        executor = asyncio.get_running_loop()._default_executor
+        assert executor is not None
+        assert executor._max_workers == 9

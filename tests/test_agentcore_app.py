@@ -32,12 +32,16 @@ from shared.logger import get_correlation_id  # noqa: E402
 
 
 class TestSendSlackMessage:
+    """The token comes from shared.resolve_secret — the ONE env-then-SSM ladder (which also treats
+    the put_secrets placeholder as unset and resolves the region from the environment/config instead
+    of a baked-in ap-northeast-2). This module used to carry a 15-line copy of it."""
+
     def test_uses_env_token_without_ssm(self, monkeypatch):
         monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-env")
         client = MagicMock()
         boto = MagicMock()
         with patch.object(app_module, "WebClient", return_value=client) as web_client:
-            with patch.object(app_module.boto3, "client", boto):
+            with patch("shared.utils.boto3.client", boto):
                 app_module._send_slack_message("C1", "hello", "")
         web_client.assert_called_once_with(token="xoxb-env")
         boto.assert_not_called()  # env token short-circuits SSM
@@ -54,7 +58,7 @@ class TestSendSlackMessage:
         ssm.get_parameter.return_value = {"Parameter": {"Value": "xoxb-ssm"}}
         client = MagicMock()
         with patch.object(app_module, "WebClient", return_value=client) as web_client:
-            with patch.object(app_module.boto3, "client", return_value=ssm):
+            with patch("shared.utils.boto3.client", return_value=ssm):
                 app_module._send_slack_message("C2", "hi", "ts-1")
         web_client.assert_called_once_with(token="xoxb-ssm")
         assert ssm.get_parameter.call_args.kwargs["Name"] == "/proj/prod/slack-bot-token"
@@ -65,9 +69,22 @@ class TestSendSlackMessage:
         ssm = MagicMock()
         ssm.get_parameter.side_effect = RuntimeError("access denied")
         with patch.object(app_module, "WebClient") as web_client:
-            with patch.object(app_module.boto3, "client", return_value=ssm):
+            with patch("shared.utils.boto3.client", return_value=ssm):
                 app_module._send_slack_message("C3", "text", "")
         web_client.assert_not_called()  # no token -> no Slack client constructed
+
+    def test_the_ssm_placeholder_is_treated_as_no_token(self, monkeypatch):
+        # The stack creates every parameter holding a placeholder; a deploy whose put_secrets step
+        # was skipped must not send that literal to Slack as a bearer token.
+        from shared.constants import SSM_PLACEHOLDER
+
+        monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+        ssm = MagicMock()
+        ssm.get_parameter.return_value = {"Parameter": {"Value": SSM_PLACEHOLDER}}
+        with patch.object(app_module, "WebClient") as web_client:
+            with patch("shared.utils.boto3.client", return_value=ssm):
+                app_module._send_slack_message("C4", "text", "")
+        web_client.assert_not_called()
 
     def test_splits_long_messages_into_chunks(self, monkeypatch):
         monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb")

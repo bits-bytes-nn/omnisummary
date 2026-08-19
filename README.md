@@ -317,7 +317,7 @@ npx wrangler secret put PROXY_TOKEN   # a secret, NOT a wrangler.toml [vars] ent
 npx wrangler deploy
 ```
 
-The worker is deliberately not a general-purpose proxy. Only hosts in the `ALLOWED_HOSTS` var are fetched (exact or suffix match), anything else gets a `403`; a caller-supplied `headers` blob is never merged into the outbound request, so a token holder can't forge `Cookie`/`Authorization`/`Host`; and the token stays in the query string on purpose, because both callers hand the proxied URL straight to `feedparser.parse`, which can't attach headers.
+The worker is deliberately not a general-purpose proxy. Only hosts in the `ALLOWED_HOSTS` var are fetched (exact or suffix match), anything else gets a `403`; redirects are followed manually with a bounded hop count and every `Location` re-checked against the same allowlist, so one `302` from an allowed host can't turn it into an open proxy; a caller-supplied `headers` blob is never merged into the outbound request, so a token holder can't forge `Cookie`/`Authorization`/`Host`; the token compare is constant-time; and the token stays in the query string on purpose, because the callers hand the proxied URL straight to a plain GET whose headers they don't control.
 
 ### Local cron
 

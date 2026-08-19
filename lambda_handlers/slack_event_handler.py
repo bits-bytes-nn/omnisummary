@@ -250,17 +250,23 @@ def _post_fallback(channel: str, thread_ts: str) -> None:
 
 
 def _resolve_slack_bot_token() -> str:
+    """The env-then-SSM ladder, duplicated from shared.resolve_secret ON PURPOSE: this handler ships
+    as a standalone zip containing only lambda_handlers/, so it cannot import `shared` (see
+    test_handler_imports_nothing_outside_the_zip). The region is NOT one of those duplications —
+    Lambda always sets AWS_REGION, so boto3 resolves it, and a baked-in default only ever sent the
+    call to the wrong region."""
     token = os.environ.get("SLACK_BOT_TOKEN", "")
     if token:
         return token
     project = os.environ.get("PROJECT_NAME", "omnisummary")
     stage = os.environ.get("STAGE", "dev")
-    region = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2"))
     try:
-        return boto3.client("ssm", region_name=region).get_parameter(
+        return boto3.client("ssm").get_parameter(
             Name=f"/{project}/{stage}/slack-bot-token",
             WithDecryption=True,
-        )["Parameter"]["Value"]
+        )[
+            "Parameter"
+        ]["Value"]
     except Exception as e:
         logger.error("Failed to resolve Slack bot token for fallback: %s", e)
         return ""

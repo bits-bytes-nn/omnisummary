@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import UTC, datetime
 from typing import Any
 
-import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from slack_sdk.web import WebClient
 from strands.types.agent import Limits
@@ -13,7 +11,7 @@ from strands.types.agent import Limits
 from agent import create_research_agent
 from agent.research_tools import DeliveryContext, request_context
 from output.renderers import render_agent_blocks
-from shared import get_config, logger, sanitize_slack_mrkdwn, set_correlation_id
+from shared import get_config, logger, resolve_secret, sanitize_slack_mrkdwn, set_correlation_id
 
 app = BedrockAgentCoreApp()
 
@@ -123,27 +121,13 @@ def _log_agent_run(result: Any) -> None:
         logger.debug("Could not read agent run metrics", exc_info=True)
 
 
-def _resolve_bot_token() -> str:
-    bot_token = os.environ.get("SLACK_BOT_TOKEN", "")
-    if bot_token:
-        return bot_token
-    project = os.environ.get("PROJECT_NAME", "omnisummary")
-    stage = os.environ.get("STAGE", "dev")
-    region = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2"))
-    try:
-        return boto3.client("ssm", region_name=region).get_parameter(
-            Name=f"/{project}/{stage}/slack-bot-token",
-            WithDecryption=True,
-        )["Parameter"]["Value"]
-    except Exception as e:
-        logger.error("Failed to get Slack token: %s", e)
-        return ""
-
-
 def _send_slack_message(channel: str, text: str, thread_ts: str = "") -> None:
     """Fallback delivery: post the agent's final text to Slack when the agent finished without
     calling deliver_report. The happy path delivers through the deliver_report tool instead."""
-    bot_token = _resolve_bot_token()
+    # resolve_secret is THE env-then-SSM ladder (it also treats the put_secrets placeholder as
+    # unset and resolves the region from the environment/config rather than a baked-in default).
+    # This module already imports from shared, so a 15-line copy of that ladder was pure duplication.
+    bot_token = resolve_secret("SLACK_BOT_TOKEN", "slack-bot-token")
     if not bot_token:
         return
     client = WebClient(token=bot_token)

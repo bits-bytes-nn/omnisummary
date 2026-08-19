@@ -8,8 +8,15 @@ from pydantic import ValidationError
 from shared.config import Config, PipelineConfig, RedditCollectorConfig, YouTubeCollectorConfig, get_config
 from shared.utils import LANGUAGE_MODEL_INFO
 
-CONFIG_TEMPLATE = Path(__file__).resolve().parent.parent / "config" / "config-template.yaml"
-LOCAL_CONFIG = Path(__file__).resolve().parent.parent / "config" / "config.yaml"
+CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+CONFIG_TEMPLATE = CONFIG_DIR / "config-template.yaml"
+
+# EVERY config file in the repo, parametrized. config/config.yaml is gitignored, so a test that
+# skipped without it asserted nothing in CI — the model-registry-sync and code-default-vs-deployed
+# invariants only ever ran on one laptop. The tracked template is always present, so the assertion
+# is never vacuous, and a developer's local config.yaml is checked on top of it.
+CONFIG_FILES = sorted(CONFIG_DIR.glob("*.yaml"))
+CONFIG_IDS = [p.name for p in CONFIG_FILES]
 
 
 class TestStrictConfig:
@@ -21,15 +28,13 @@ class TestStrictConfig:
         with pytest.raises(ValidationError):
             Config(pipeline={"min_scor": 0.5})  # typo of min_score
 
-    def test_real_config_yaml_still_loads(self):
-        # The LOCAL config.yaml must contain only known keys (guards against a strict-mode
-        # regression where a real key isn't modeled). config.yaml is gitignored, so Config.load()
-        # silently fell back to bare code defaults when absent and asserted nothing about it — read
-        # the file directly and skip LOUDLY instead of passing vacuously. The tracked template is
-        # covered separately by test_config_template_loads_under_strict_validation.
-        if not LOCAL_CONFIG.exists():
-            pytest.skip(f"no local config at {LOCAL_CONFIG} (gitignored); template is checked separately")
-        cfg = Config.from_yaml(str(LOCAL_CONFIG))
+    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
+    def test_every_config_file_loads_under_strict_validation(self, config_path):
+        # Every config file must contain only known keys (guards against a strict-mode regression
+        # where a real key isn't modeled). Parametrized over the DIRECTORY, so the tracked template
+        # always makes this non-vacuous: config.yaml is gitignored and the old skip meant CI checked
+        # nothing at all.
+        cfg = Config.from_yaml(str(config_path))
         assert cfg.pipeline.top_n >= 1
         assert cfg.aws.project_name
 
@@ -102,15 +107,13 @@ class TestConfiguredModelsAreRegistered:
         missing = [m.value for m in configured if m not in LANGUAGE_MODEL_INFO]
         assert not missing, f"template models missing from LANGUAGE_MODEL_INFO: {missing}"
 
-    def test_every_configured_model_has_registry_info(self):
+    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
+    def test_every_configured_model_has_registry_info(self, config_path):
         # A model set in config that lacks a LANGUAGE_MODEL_INFO entry passes Pydantic load
         # (valid enum) but hits the runtime max_tokens/gating fallback with only a warning.
-        # This locks the two in sync so a Sonnet-5-style bump can't half-land. Read the LOCAL
-        # config.yaml directly: Config.load() falls back to code defaults when it's absent, which
-        # made this assert the defaults rather than the models anyone actually deploys.
-        if not LOCAL_CONFIG.exists():
-            pytest.skip(f"no local config at {LOCAL_CONFIG} (gitignored); the template is checked above")
-        cfg = Config.from_yaml(str(LOCAL_CONFIG))
+        # This locks the two in sync so a Sonnet-5-style bump can't half-land. Parametrized over
+        # every config file: gated on config.yaml alone it never ran in CI.
+        cfg = Config.from_yaml(str(config_path))
         configured = {
             cfg.pipeline.ranking_model,
             cfg.pipeline.digest_model,
@@ -152,12 +155,11 @@ class TestImageSizes:
                 image_sizes={"square": "big", "landscape": "1536x1024", "portrait": "1024x1536"},
             )
 
-    def test_the_local_config_keeps_the_vocabulary(self):
+    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
+    def test_every_config_keeps_the_vocabulary(self, config_path):
         from shared.constants import VISUAL_ORIENTATIONS
 
-        if not LOCAL_CONFIG.exists():
-            pytest.skip(f"no local config at {LOCAL_CONFIG} (gitignored)")
-        cfg = Config.from_yaml(str(LOCAL_CONFIG))
+        cfg = Config.from_yaml(str(config_path))
         assert set(cfg.pipeline.image_sizes) == set(VISUAL_ORIENTATIONS)
 
 
@@ -173,24 +175,22 @@ class TestCodeDefaultsMatchTheDeployedConfig:
     """A code default that disagrees with config.yaml is a live trap: it is what a deployment
     without a config.yaml (and every PipelineConfig() in a test) silently gets."""
 
-    def test_countdown_position_default_matches_the_local_config(self):
+    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
+    def test_countdown_position_default_matches_every_config(self, config_path):
         # The INVARIANT is what matters — a code default that disagrees with the deployed config is
         # what a config-less deployment (and every PipelineConfig() in a test) silently gets. The
         # VALUE is the owner's editorial call: the countdown is the account's signature, so it opens
         # the lead today, but pinning the literal here would break this test on every such decision.
-        if not LOCAL_CONFIG.exists():
-            pytest.skip(f"no local config at {LOCAL_CONFIG} (gitignored)")
-        cfg = Config.from_yaml(str(LOCAL_CONFIG))
+        cfg = Config.from_yaml(str(config_path))
         assert cfg.pipeline.agi_countdown_position == PipelineConfig().agi_countdown_position
 
-    def test_delivery_toggles_are_explicit_in_the_local_config(self):
+    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
+    def test_delivery_toggles_are_explicit_in_every_config(self, config_path):
         # Delivery routing must come from the file, never a code default: the visual Lambda is the
         # only Threads publish path, and enable_threads_post defaults to False in code.
-        if not LOCAL_CONFIG.exists():
-            pytest.skip(f"no local config at {LOCAL_CONFIG} (gitignored)")
         import yaml
 
-        raw = yaml.safe_load(LOCAL_CONFIG.read_text(encoding="utf-8"))["pipeline"]
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))["pipeline"]
         assert "enable_threads_post" in raw
         assert "enable_slack_post" in raw
 

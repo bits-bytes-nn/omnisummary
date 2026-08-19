@@ -59,6 +59,25 @@ class TestWorkerHardening:
         for live_host in ("www.reddit.com", "www.youtube.com"):
             assert any(live_host == h or live_host.endswith(f".{h}") for h in hosts), live_host
 
+    def test_the_outbound_user_agent_is_one_string_with_the_python_side(self):
+        # The worker and shared/media/og_image.py each carried their own hardcoded UA and had
+        # already drifted a Chrome major apart. The worker's lives in [vars] so it is configuration,
+        # and it must be the same string the Python fetches send.
+        from shared.constants import BROWSER_USER_AGENT
+
+        toml = (PROXY_DIR / "wrangler.toml").read_text()
+        match = re.search(r'^\s*USER_AGENT\s*=\s*"([^"]*)"', toml, re.MULTILINE)
+        assert match, "the worker needs a USER_AGENT var (several allowed hosts 403 a library UA)"
+        assert match.group(1) == BROWSER_USER_AGENT
+
+    def test_the_worker_never_lets_the_runtime_follow_a_redirect(self):
+        # A single 302 from an allowed host (reddit/youtube) used to send this authenticated worker
+        # to ANY host. The BRANCHES are covered by cloudflare-proxy/test/worker.test.js; this pins
+        # the one line that cannot be reintroduced without reopening the hole.
+        worker = (PROXY_DIR / "worker.js").read_text()
+        assert 'redirect: "follow"' not in worker
+        assert 'redirect: "manual"' in worker
+
     def test_the_executable_worker_suite_is_wired_into_ci(self):
         # The worker's actual BRANCHES (token, URL parse, scheme, suffix host match, fixed outbound
         # headers) are asserted by cloudflare-proxy/test/worker.test.js with node:test. Substring
