@@ -2,7 +2,7 @@
 
 # 🗞️ OmniSummary
 
-**A proactive AI/ML daily digest. It collects from five source families, ranks with an LLM, writes a Korean editorial digest, and delivers it to Slack and Threads. A Slack-triggered deep-research agent researches any topic across web, papers, and community, then posts a persona-voiced, cited report.**
+**A proactive AI/ML daily digest. It collects from five source families, ranks with an LLM, writes a Korean editorial digest, and delivers it to whichever channels the config enables (Slack, Threads, or both). A Slack-triggered deep-research agent researches any topic across web, papers, and community, then posts a persona-voiced, cited report.**
 
 Runs on AWS · Bedrock AgentCore (Runtime + Memory) · Amazon Bedrock (Claude).
 

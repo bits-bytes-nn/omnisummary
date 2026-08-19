@@ -203,9 +203,11 @@ class PipelineConfig(_StrictModel):
     # source items and surgically revise unsupported ones (prompt rules alone couldn't
     # move the faithfulness score). Best-effort; disable to skip the extra LLM call.
     enable_grounding_check: bool = True
-    # Language rules injected into the digest prompt's *Language* block. Defaults to the
-    # Korean editorial rules + translation glossary; other deployments can override to
-    # write the digest in another language without forking the prompt.
+    # Korean editorial rules + translation glossary, injected into the digest prompt's *Language*
+    # block so the glossary can be tuned without editing the prompt. NOT a language switch: the
+    # digest prompt states the Korean requirement itself and the trend tracker injects Korean
+    # recurrence facts, so overriding this alone cannot move the digest to another language.
+    # Korean-only is the intended product.
     digest_language_rules: str = (
         "- Write in Korean (95%+); English ONLY for proper nouns and untranslatable technical terms. "
         "Use ONE form per proper noun across the whole digest, as the source writes it — never invent "

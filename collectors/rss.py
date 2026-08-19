@@ -44,7 +44,7 @@ class RSSCollector(BaseCollector):
             result.empty,
         )
         # A partial outage that still returns items is neither OK nor FAILED: without this, RSS
-        # could shrink from 22 feeds to 2 and the health report would call it healthy.
+        # could shrink to a couple of live feeds and the health report would call it healthy.
         self.record_run_health(
             total=result.total,
             failed=result.failed,
@@ -64,9 +64,9 @@ class RSSCollector(BaseCollector):
             # Worst case per feed = max_retries * request_timeout + linear backoff
             #                     = 3 * 30s + (5s + 10s) = 105s (defaults),
             # and feeds run max_concurrency at a time, so the collector's worst case is
-            # ceil(feeds / max_concurrency) * 105s — with the shipped 22 feeds / 5 concurrent that
-            # is ~8.8 min, still inside the digest Lambda's 15-min timeout alongside the others
-            # (all collectors run concurrently, so this is the bound for the whole collect step).
+            # ceil(feeds / max_concurrency) * 105s. The feed count is config's, so no number is
+            # pinned here; the constraint is that this product stays inside the digest Lambda's
+            # 15-min timeout, which every collector shares (they all run concurrently).
             async def _attempt() -> list[CollectedItem]:
                 return await asyncio.wait_for(
                     asyncio.to_thread(self._parse_feed, feed_url),
