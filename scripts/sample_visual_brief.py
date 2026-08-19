@@ -41,7 +41,7 @@ async def main() -> None:
         raw = json.loads(cache_path.read_text(encoding="utf-8"))
         collected = [CollectedItem.model_validate(it) for it in raw]
     else:
-        from main import run_collectors_with_health
+        from pipeline import run_collectors_with_health
 
         collected, _ = await run_collectors_with_health(config, factory)
 

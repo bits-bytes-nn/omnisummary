@@ -8,7 +8,8 @@ from aws_cdk.assertions import Match, Template
 from infrastructure.application_stack import OmniSummaryApplicationStack
 from infrastructure.foundation_stack import OmniSummaryFoundationStack
 from shared import Config
-from shared.constants import ALL_SSM_SECRET_ENV_VARS, RSSHUB_PORT, SSM_PLACEHOLDER
+from shared.constants import ALL_SSM_SECRET_ENV_VARS, METRIC_NAMESPACE, RSSHUB_PORT, SSM_PLACEHOLDER
+from shared.metrics import metric_dimensions
 
 # The TRACKED config, matching what scripts/ci_synth.py synths: config/config.yaml is gitignored,
 # so asserting against Config.load() checked a different stack locally than in CI (where it fell
@@ -280,6 +281,20 @@ class TestApplicationStack:
         app.has_resource_properties("AWS::CloudWatch::Alarm", {"MetricName": "AgentErrors"})
         app.has_resource_properties("AWS::CloudWatch::Alarm", {"MetricName": "ApproximateNumberOfMessagesVisible"})
 
+    def test_emf_alarms_read_this_deployments_datapoints_only(self, templates):
+        # The EMF records are dimensioned by project/stage (shared/metrics.py). An undimensioned
+        # alarm aggregates every deployment into one series: a dev run of 5 items kept prod's
+        # Maximum<1 empty-digest alarm green on a day prod shipped nothing, and dev agent failures
+        # paged on prod's error alarm.
+        _, app = templates
+        expected = [{"Name": name, "Value": value} for name, value in metric_dimensions("omnisummary", "dev").items()]
+        assert expected, "the dimension map must not be empty"
+        for metric_name in ("DigestItemsPublished", "AgentErrors"):
+            app.has_resource_properties(
+                "AWS::CloudWatch::Alarm",
+                {"Namespace": METRIC_NAMESPACE, "MetricName": metric_name, "Dimensions": expected},
+            )
+
     def test_openai_ssm_param(self, templates):
         _, app = templates
         params = app.find_resources("AWS::SSM::Parameter")
@@ -331,7 +346,8 @@ class TestLeastPrivilegeGrants:
     handler. Both are scoped down."""
 
     @pytest.fixture(scope="class")
-    def prefixed_foundation(self):
+    @classmethod
+    def prefixed_foundation(cls):
         config = Config.from_yaml(str(CONFIG_TEMPLATE))
         config.aws.state_bucket_name = ""
         config.aws.s3_prefix = "omnisummary"

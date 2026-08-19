@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from shared.constants import LanguageModelId
 from shared.utils import LANGUAGE_MODEL_INFO, TOKEN_COUNT_MODEL, BedrockLanguageModelFactory
 
@@ -332,3 +334,135 @@ class TestApplicationProfileResolution:
         cfg = f._build_model_config(info, "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc", True)
         assert cfg["provider"] == "anthropic"
         assert "provider" not in f._build_model_config(info, "global.anthropic.claude-sonnet-5", True)
+
+
+def _resolution_client(*available: str) -> MagicMock:
+    """A bedrock control-plane client whose SYSTEM_DEFINED profiles are exactly `available`, and
+    which has no APPLICATION profile (so resolution stops at the system-defined id)."""
+    client = MagicMock()
+    client.list_inference_profiles.return_value = {
+        "inferenceProfileSummaries": [{"inferenceProfileId": profile_id} for profile_id in available]
+    }
+    client.get_paginator.return_value.paginate.return_value = [{"inferenceProfileSummaries": []}]
+    return client
+
+
+def _session(client: MagicMock) -> MagicMock:
+    session = MagicMock()
+    session.client.return_value = client
+    return session
+
+
+class TestCrossRegionResolution:
+    """Which model id every stage actually bills against. The global/regional/standard ladder and its
+    broad except decide that, and nothing exercised them: get_model is mocked in every consumer test.
+    A ladder that silently always returned the standard id would look identical in the logs."""
+
+    MODEL = LanguageModelId.CLAUDE_V5_SONNET
+
+    def test_a_global_profile_wins(self):
+        from shared.utils import BedrockCrossRegionModelHelper as H
+
+        client = _resolution_client(f"global.{self.MODEL.value}", f"us.{self.MODEL.value}")
+        assert H.get_cross_region_model_id(_session(client), self.MODEL, "us-west-2") == f"global.{self.MODEL.value}"
+
+    def test_the_regional_profile_is_the_second_choice(self):
+        from shared.utils import BedrockCrossRegionModelHelper as H
+
+        client = _resolution_client(f"us.{self.MODEL.value}")
+        assert H.get_cross_region_model_id(_session(client), self.MODEL, "us-west-2") == f"us.{self.MODEL.value}"
+
+    def test_asia_pacific_regions_use_the_apac_prefix(self):
+        # ap-northeast-2's profiles are named apac.*, not ap.* — the one region family whose prefix
+        # is not the first two characters of its name.
+        from shared.utils import BedrockCrossRegionModelHelper as H
+
+        client = _resolution_client(f"apac.{self.MODEL.value}")
+        assert H.get_cross_region_model_id(_session(client), self.MODEL, "ap-northeast-2") == f"apac.{self.MODEL.value}"
+
+    def test_other_regions_use_their_two_letter_prefix(self):
+        from shared.utils import BedrockCrossRegionModelHelper as H
+
+        client = _resolution_client(f"eu.{self.MODEL.value}")
+        assert H.get_cross_region_model_id(_session(client), self.MODEL, "eu-west-1") == f"eu.{self.MODEL.value}"
+
+    def test_no_cross_region_profile_falls_back_to_the_standard_id(self):
+        from shared.utils import BedrockCrossRegionModelHelper as H
+
+        client = _resolution_client()
+        assert H.get_cross_region_model_id(_session(client), self.MODEL, "us-west-2") == self.MODEL.value
+
+    def test_a_denied_listing_falls_back_to_the_standard_id(self):
+        # ListInferenceProfiles is denied / throttled: the digest must still run against the plain
+        # model id rather than fail at model construction.
+        from shared.utils import BedrockCrossRegionModelHelper as H
+
+        client = MagicMock()
+        client.list_inference_profiles.side_effect = RuntimeError("AccessDenied")
+        client.get_paginator.return_value.paginate.return_value = [{"inferenceProfileSummaries": []}]
+        assert H.get_cross_region_model_id(_session(client), self.MODEL, "us-west-2") == self.MODEL.value
+
+    def test_resolution_is_cached_per_model_and_region(self):
+        # ranker/digest/trend/refine each build a model; without the cache every build pays the
+        # round-trip (and re-risks the AccessDenied path).
+        from shared.utils import BedrockCrossRegionModelHelper as H
+
+        client = _resolution_client(f"global.{self.MODEL.value}")
+        session = _session(client)
+        H.get_cross_region_model_id(session, self.MODEL, "us-west-2")
+        H.get_cross_region_model_id(session, self.MODEL, "us-west-2")
+        assert client.list_inference_profiles.call_count == 1
+        H.get_cross_region_model_id(session, self.MODEL, "eu-west-1")  # a different region is not cached
+        assert client.list_inference_profiles.call_count > 1
+
+
+class TestGetModel:
+    """The public entry point every stage calls. Consumer tests all mock it, so nothing asserted
+    which model class it builds or that the resolved id reaches the model."""
+
+    @staticmethod
+    def _built(model_id: LanguageModelId, resolved: str, **kwargs):
+        from shared.utils import BedrockCrossRegionModelHelper as H
+
+        f = _factory()
+        with patch.object(H, "get_cross_region_model_id", return_value=resolved):
+            with patch("boto3.client", return_value=MagicMock()):
+                return f.get_model(model_id, **kwargs)
+
+    def test_a_cross_region_id_builds_the_converse_class_with_that_id(self):
+        from langchain_aws import ChatBedrockConverse
+
+        resolved = f"global.{LanguageModelId.CLAUDE_V5_SONNET.value}"
+        model = self._built(LanguageModelId.CLAUDE_V5_SONNET, resolved, stage="digest")
+        assert isinstance(model, ChatBedrockConverse)
+        assert model.model_id == resolved
+
+    def test_a_standard_id_without_thinking_builds_the_legacy_class(self):
+        from langchain_aws import ChatBedrock
+
+        model_id = LanguageModelId.CLAUDE_V3_5_SONNET
+        model = self._built(model_id, model_id.value, stage="digest")
+        assert isinstance(model, ChatBedrock)
+        assert model.model_id == model_id.value
+
+    def test_thinking_on_a_supporting_model_forces_the_converse_class(self):
+        from langchain_aws import ChatBedrockConverse
+
+        model_id = LanguageModelId.CLAUDE_V5_SONNET
+        model = self._built(model_id, model_id.value, stage="ranking", enable_thinking=True)
+        assert isinstance(model, ChatBedrockConverse)
+
+    def test_the_stage_reaches_the_usage_logger(self):
+        # The bill is per MODEL and several stages share one, so the stage tag is the only way a
+        # token total is attributable at all.
+        from shared.utils import _TokenUsageLogger
+
+        model = self._built(LanguageModelId.CLAUDE_V5_SONNET, "global.anthropic.claude-sonnet-5", stage="ranking")
+        loggers = [c for c in (model.callbacks or []) if isinstance(c, _TokenUsageLogger)]
+        assert [c.stage for c in loggers] == ["ranking"]
+
+    def test_an_unregistered_model_is_rejected(self):
+        f = _factory()
+        with patch.object(f, "get_model_info", return_value=None):
+            with pytest.raises(ValueError, match="Unsupported language model ID"):
+                f.get_model(LanguageModelId.CLAUDE_V5_SONNET)

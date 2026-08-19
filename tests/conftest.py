@@ -1,6 +1,7 @@
 import pytest
 
 from shared.config import get_config
+from shared.utils import BedrockCrossRegionModelHelper
 
 # Env vars a developer's shell or `.env` supplies in real runs. Any of them leaking into a test
 # changes behavior: a real SLACK_BOT_TOKEN makes a "no token configured" path take the token
@@ -35,6 +36,16 @@ def clear_config_cache():
     get_config.cache_clear()
     yield
     get_config.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def clear_model_resolution_cache():
+    """BedrockCrossRegionModelHelper memoizes (model_id, region) -> resolved model id on the CLASS.
+    Nothing clears it, so the first test to exercise resolution would decide which id every later
+    test resolves to — including tests that mean to assert the ladder's other branches."""
+    BedrockCrossRegionModelHelper._resolution_cache.clear()
+    yield
+    BedrockCrossRegionModelHelper._resolution_cache.clear()
 
 
 @pytest.fixture(autouse=True)

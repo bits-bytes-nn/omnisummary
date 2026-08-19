@@ -1,4 +1,4 @@
-"""Orchestration tests for main.run_pipeline — the single path both the CLI and the digest Lambda
+"""Orchestration tests for pipeline.runner.run_pipeline — the single path both the CLI and the digest Lambda
 take from collected items to a delivered digest. Only the LLM/network collaborators (ranker, digest
 generator, trend tracker, delivery) are stubbed; the aggregation, cross-day dedup, ledger, leads log
 and state-store wiring under test run for real against a temp-dir state store."""
@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import main
+from pipeline import runner
 from shared.config import Config
 from shared.constants import SourceType
 from shared.history_store import PUBLISHED_URLS_KEY, RECENT_LEADS_KEY
@@ -40,7 +40,7 @@ def _digest(items: list[CollectedItem], lead: str = "리드 문장이다.") -> D
 
 
 class _Pipeline:
-    """Stubbed LLM collaborators + a real temp-dir state store, patched into main for one run."""
+    """Stubbed LLM collaborators + a real temp-dir state store, patched into pipeline.runner for one run."""
 
     def __init__(self, tmpdir: str, *, digest: DigestResult | None = None, ranked: list[RankedItem] | None = None):
         self.store = LocalStateStore(tmpdir)
@@ -72,13 +72,13 @@ class _Pipeline:
         self.ranker.rank = AsyncMock(side_effect=rank)
         self.generator.generate = AsyncMock(side_effect=generate)
         self._patches = [
-            patch.object(main, "create_state_store", return_value=self.store),
-            patch.object(main, "create_memory_store", return_value=self.memory),
-            patch.object(main, "ContentRanker", return_value=self.ranker),
-            patch.object(main, "DigestGenerator", return_value=self.generator),
-            patch.object(main, "TrendTracker", return_value=self.tracker),
-            patch.object(main, "send_digest_to_slack", self.send_slack),
-            patch.object(main, "persist_digest"),
+            patch.object(runner, "create_state_store", return_value=self.store),
+            patch.object(runner, "create_memory_store", return_value=self.memory),
+            patch.object(runner, "ContentRanker", return_value=self.ranker),
+            patch.object(runner, "DigestGenerator", return_value=self.generator),
+            patch.object(runner, "TrendTracker", return_value=self.tracker),
+            patch.object(runner, "send_digest_to_slack", self.send_slack),
+            patch.object(runner, "persist_digest"),
             patch("pipeline.daily_visual.DailyVisualMaker", return_value=self.visual),
         ]
         started = [p.start() for p in self._patches]
@@ -102,7 +102,7 @@ def _config(**pipeline_overrides) -> Config:
 
 
 async def _run(pipeline: _Pipeline, config: Config, items: list[CollectedItem], **kwargs):
-    return await main.run_pipeline(config, MagicMock(), items, digest_date=DIGEST_DATE, **kwargs)
+    return await runner.run_pipeline(config, MagicMock(), items, digest_date=DIGEST_DATE, **kwargs)
 
 
 class TestRunPipelineShortCircuits:
@@ -155,7 +155,7 @@ class TestRunPipelineHappyPath:
         # The countdown is a fixed daily template; storing it would make every lead look similar
         # to the novelty check, defeating the anti-repetition feedback.
         config = _config(agi_countdown_date="2029-01-01", agi_countdown_template="AGI 등장 {days}일 전이다. ")
-        intro = main.agi_countdown_intro(
+        intro = runner.agi_countdown_intro(
             config.pipeline.agi_countdown_date,
             config.pipeline.agi_countdown_template,
             DIGEST_DATE,
@@ -253,7 +253,7 @@ class TestRunPipelineDelivery:
         items = [_item("https://a.example/1")]
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
-                with patch.object(main, "is_running_in_aws", return_value=False):
+                with patch.object(runner, "is_running_in_aws", return_value=False):
                     await _run(p, _config(enable_daily_visual=True), items, force_republish=True)
         p.visual.run.assert_awaited_once()
         assert p.visual.run.await_args.kwargs["force_republish"] is True
@@ -264,7 +264,7 @@ class TestRunPipelineDelivery:
         items = [_item("https://a.example/1")]
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
-                with patch.object(main, "is_running_in_aws", return_value=True):
+                with patch.object(runner, "is_running_in_aws", return_value=True):
                     await _run(p, _config(enable_daily_visual=True), items)
         p.visual.run.assert_not_awaited()
 
@@ -274,7 +274,7 @@ class TestRunPipelineDelivery:
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
                 p.visual.run.side_effect = RuntimeError("openai down")
-                with patch.object(main, "is_running_in_aws", return_value=False):
+                with patch.object(runner, "is_running_in_aws", return_value=False):
                     collected, ranked, digest = await _run(p, _config(enable_daily_visual=True), items)
         assert collected and ranked and digest  # the digest itself already shipped
 
@@ -283,7 +283,7 @@ class TestRunPipelineDelivery:
         items = [_item("https://a.example/1")]
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
-                with patch.object(main, "is_running_in_aws", return_value=False):
+                with patch.object(runner, "is_running_in_aws", return_value=False):
                     await _run(p, _config(), items)
         # persist_digest is stubbed by _Pipeline; assert the local branch called it with the
         # on-disk fallback dir (in AWS the handler passes base_dir=None for AgentCore Memory).
@@ -307,18 +307,18 @@ class TestRecentStoryTitles:
     def test_titles_come_from_the_newest_snapshot(self):
         newest = {"digest_result": {"content": {"items": [{"title": "어제 1"}, {"title": "어제 2"}]}}}
         older = {"digest_result": {"content": {"items": [{"title": "그제 1"}]}}}
-        assert main._recent_story_titles([newest, older]) == ["어제 1", "어제 2"]
+        assert runner._recent_story_titles([newest, older]) == ["어제 1", "어제 2"]
 
     def test_a_story_less_or_missing_snapshot_degrades_to_nothing(self):
-        assert main._recent_story_titles([]) == []
-        assert main._recent_story_titles([{"digest_result": None}]) == []
-        assert main._recent_story_titles([{"digest_result": {"content": {"items": []}}}]) == []
+        assert runner._recent_story_titles([]) == []
+        assert runner._recent_story_titles([{"digest_result": None}]) == []
+        assert runner._recent_story_titles([{"digest_result": {"content": {"items": []}}}]) == []
 
 
 class TestResolveDigestWindow:
     """The collection cutoff is load-bearing: every collector's lookback_hours counts back from it,
     so an off-by-a-day reference time silently changes what the digest can even see. Extracted as a
-    pure helper (from main.main and digest_handler._run, which each had their own copy)."""
+    pure helper (from the CLI and digest_handler._run, which each had their own copy)."""
 
     def test_defaults_to_today_in_the_configured_timezone(self):
         from datetime import datetime
@@ -326,7 +326,7 @@ class TestResolveDigestWindow:
 
         config = Config()
         config.aws.timezone = "Asia/Seoul"
-        digest_date, reference_time = main._resolve_digest_window(config)
+        digest_date, reference_time = runner.resolve_digest_window(config)
         assert digest_date == datetime.now(ZoneInfo("Asia/Seoul")).date()
         assert reference_time.tzinfo == ZoneInfo("Asia/Seoul")
 
@@ -336,7 +336,7 @@ class TestResolveDigestWindow:
 
         config = Config()
         config.aws.timezone = "Asia/Seoul"
-        digest_date, reference_time = main._resolve_digest_window(config, "2026-06-03")
+        digest_date, reference_time = runner.resolve_digest_window(config, "2026-06-03")
         assert digest_date == date(2026, 6, 3)
         # Midnight at the END of the digest date, so a 19:00 run still sees the whole day and a
         # re-run of a past day sees that day rather than a window ending now.
@@ -348,7 +348,7 @@ class TestResolveDigestWindow:
 
         config = Config()
         config.aws.timezone = "America/New_York"
-        _, reference_time = main._resolve_digest_window(config, "2026-06-03")
+        _, reference_time = runner.resolve_digest_window(config, "2026-06-03")
         assert reference_time == datetime(2026, 6, 4, tzinfo=ZoneInfo("America/New_York"))
         # 04:00 UTC on the 4th, not 00:00 — the same date means a different instant per timezone.
         assert reference_time.astimezone(UTC) == datetime(2026, 6, 4, 4, 0, tzinfo=UTC)
@@ -379,26 +379,26 @@ class TestBuildCollectorTasks:
             task.close()
 
     def test_enabled_sources_are_collected_when_no_override_is_given(self):
-        tasks, labels, collectors = main._build_collector_tasks(self._config(), MagicMock())
+        tasks, labels, collectors = runner._build_collector_tasks(self._config(), MagicMock())
         self._close(tasks)
         assert labels == ["reddit", "rss", "web_search", "youtube"]  # rsshub is disabled
         assert len(collectors) == len(labels) == len(tasks)
 
     def test_sources_override_selects_exactly_what_was_asked_for(self):
-        tasks, labels, _ = main._build_collector_tasks(self._config(), MagicMock(), ["rss", "reddit"])
+        tasks, labels, _ = runner._build_collector_tasks(self._config(), MagicMock(), ["rss", "reddit"])
         self._close(tasks)
         assert labels == ["rss", "reddit"]  # the caller's order, not the map's
 
     def test_an_unknown_source_is_warned_about_and_skipped(self):
-        with patch.object(main, "logger") as log:
-            tasks, labels, _ = main._build_collector_tasks(self._config(), MagicMock(), ["rss", "nope"])
+        with patch.object(runner, "logger") as log:
+            tasks, labels, _ = runner._build_collector_tasks(self._config(), MagicMock(), ["rss", "nope"])
         self._close(tasks)
         assert labels == ["rss"]
         assert any("Unknown source" in str(c.args) for c in log.warning.call_args_list)
 
     def test_an_explicitly_requested_but_disabled_source_is_skipped(self):
         # --sources rsshub on a deployment where rsshub is disabled must NOT start it.
-        tasks, labels, _ = main._build_collector_tasks(self._config(), MagicMock(), ["rsshub", "rss"])
+        tasks, labels, _ = runner._build_collector_tasks(self._config(), MagicMock(), ["rsshub", "rss"])
         self._close(tasks)
         assert labels == ["rss"]
 
@@ -406,7 +406,7 @@ class TestBuildCollectorTasks:
         from collectors.web_search import WebSearchCollector
 
         factory = MagicMock()
-        tasks, labels, collectors = main._build_collector_tasks(self._config(), factory, ["web_search", "rss"])
+        tasks, labels, collectors = runner._build_collector_tasks(self._config(), factory, ["web_search", "rss"])
         self._close(tasks)
         web = collectors[labels.index("web_search")]
         assert isinstance(web, WebSearchCollector)
@@ -427,8 +427,8 @@ class TestBoundedExecutor:
 
         config = Config()
         config.collectors.thread_pool_max_workers = 9
-        with patch.object(main, "_build_collector_tasks", return_value=([], [], [])):
-            await main.run_collectors_with_health(config=config, llm_factory=None)
+        with patch.object(runner, "_build_collector_tasks", return_value=([], [], [])):
+            await runner.run_collectors_with_health(config=config, llm_factory=None)
         executor = asyncio.get_running_loop()._default_executor
         assert executor is not None
         assert executor._max_workers == 9

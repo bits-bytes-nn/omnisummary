@@ -22,7 +22,7 @@ from shared import BedrockLanguageModelFactory, CollectedItem, Config, create_st
 
 
 async def _collect(config, factory) -> list[CollectedItem]:
-    from main import run_collectors_with_health
+    from pipeline import run_collectors_with_health
 
     items, _ = await run_collectors_with_health(config, factory)
     return items

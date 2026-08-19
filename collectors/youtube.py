@@ -4,23 +4,24 @@ import asyncio
 import re
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from typing import Any
 
-import feedparser
 import httpx
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import YouTubeTranscriptApiException
 
-from shared import CollectedItem, SourceType, logger, parse_feed_published_date, resolve_secret, retry_async
+from shared import CollectedItem, SourceType, logger, resolve_secret, retry_async
 from shared.config import YouTubeCollectorConfig
-from shared.proxy import get_proxied_url
 
 from .base import (
     RETRIABLE_STATUS_CODES,
     BaseCollector,
     TransientStatusError,
     cutoff_datetime,
+    fetch_feed_with_retry,
     gather_collector_results,
     load_items_from_s3,
+    parse_feed_entries,
 )
 
 YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
@@ -35,6 +36,19 @@ _HANDLE_PATTERN = re.compile(r"/@([A-Za-z0-9_.-]+)")
 # rows would drop a fresh video that ranks below a stale one — which is why low-cadence channels
 # like Dwarkesh kept getting missed. Over-fetch + sort-by-date fixes that.
 _CHANNEL_FETCH_DEPTH = 15
+# A YouTube video id: exactly 11 base64url chars.
+_VIDEO_ID_PATTERN = re.compile(r"[a-zA-Z0-9_-]{11}")
+
+
+def _entry_video_id(entry: Any, link: str) -> str:
+    """The video id of a channel-feed entry: the feed's own yt_videoid, else read off the watch
+    link. Used as the item id, and everything else about the item (the canonical watch URL, the
+    transcript lookup) is derived from it."""
+    video_id = entry.get("yt_videoid", "") or ""
+    if video_id:
+        return video_id
+    match = re.search(r"v=([a-zA-Z0-9_-]{11})", link)
+    return match.group(1) if match else ""
 
 
 def _retry_after_delay(response: httpx.Response, cap_sec: float) -> float:
@@ -109,7 +123,13 @@ class YouTubeCollector(BaseCollector):
         if parked.usable:
             # A FRESH park file says nothing about a sync that collected from 2 of 12 channels;
             # the meta block the sync writes does. Reporting only — every item is still returned.
-            self.flag_degraded_park(parked, threshold=self.config.error_rate_threshold, what="channels")
+            self.flag_degraded_park(
+                parked,
+                threshold=self.config.error_rate_threshold,
+                empty_threshold=self.config.empty_rate_threshold,
+                max_failed=self.config.max_failed_inputs,
+                what="channels",
+            )
             return parked.items
 
         # One resolution for the whole run, before the fan-out, so no channel task blocks the loop.
@@ -138,6 +158,8 @@ class YouTubeCollector(BaseCollector):
             failed=result.failed,
             empty=result.empty,
             threshold=self.config.error_rate_threshold,
+            empty_threshold=self.config.empty_rate_threshold,
+            max_failed=self.config.max_failed_inputs,
             what="channels",
         )
         return result.items
@@ -284,48 +306,42 @@ class YouTubeCollector(BaseCollector):
             raise RuntimeError(f"Could not resolve channel ID for '{channel_url}'")
 
         rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-        feed = await asyncio.to_thread(feedparser.parse, get_proxied_url(rss_url))
-
-        cutoff = cutoff_datetime(self.config.lookback_hours, self.config.reference_time)
+        description = f"YouTube feed for '{channel_url}'"
+        # Through the SHARED feed path every other feed source uses, instead of a raw
+        # feedparser.parse(url): that fetches through urllib with no socket timeout (so one wedged
+        # host held a worker thread that the outer wait_for cannot cancel, and asyncio.run joins the
+        # executor at close — minutes of dead wall clock after the digest had already posted), never
+        # retried a 5xx/DNS blip, and reported a truncated body as an EMPTY channel instead of a
+        # failed one.
+        feed = await fetch_feed_with_retry(
+            rss_url,
+            description=description,
+            timeout=self.config.request_timeout,
+            max_retries=self.config.max_retries,
+            backoff_sec=self.config.retry_backoff_sec,
+            proxy_fallback=True,
+        )
 
         # The RSS feed isn't reliably newest-first either, so scan a fixed depth of entries,
         # collect every in-window one (no transcript yet), then keep the latest N and fetch
         # transcripts only for those — same over-fetch+sort approach as the API path.
-        in_window: list[CollectedItem] = []
-        for entry in feed.entries[:_CHANNEL_FETCH_DEPTH]:
-            try:
-                video_id = entry.get("yt_videoid", "")
-                if not video_id:
-                    link = entry.get("link", "")
-                    match = re.search(r"v=([a-zA-Z0-9_-]{11})", link)
-                    video_id = match.group(1) if match else ""
-
-                if not video_id:
-                    continue
-
-                published_at = parse_feed_published_date(entry)
-                if published_at and published_at < cutoff:
-                    continue
-
-                in_window.append(
-                    CollectedItem(
-                        item_id=video_id,
-                        source_type=SourceType.YOUTUBE,
-                        title=entry.get("title", ""),
-                        url=f"https://www.youtube.com/watch?v={video_id}",
-                        text=entry.get("summary", ""),
-                        author=entry.get("author", ""),
-                        published_at=published_at,
-                        metadata={"channel_url": channel_url},
-                    )
-                )
-            except (KeyError, ValueError, TypeError, AttributeError):
-                logger.warning("Failed to process YouTube RSS entry", exc_info=True)
+        parsed = parse_feed_entries(
+            feed,
+            source_type=SourceType.YOUTUBE,
+            cutoff=cutoff_datetime(self.config.lookback_hours, self.config.reference_time),
+            description=description,
+            metadata={"channel_url": channel_url},
+            item_id_of=_entry_video_id,
+            limit=_CHANNEL_FETCH_DEPTH,
+        )
+        # An entry whose video id can't be read is dropped: the transcript fetch and the canonical
+        # watch URL are both derived from it, so a hashed fallback id would be useless downstream.
+        in_window = [item for item in parsed if _VIDEO_ID_PATTERN.fullmatch(item.item_id)]
 
         items: list[CollectedItem] = []
         for item in _latest_within_window(in_window, self.config.max_videos_per_channel):
-            video_id = item.url.rsplit("=", 1)[-1]
-            transcript = await self._fetch_transcript(video_id)
+            item.url = f"https://www.youtube.com/watch?v={item.item_id}"
+            transcript = await self._fetch_transcript(item.item_id)
             if transcript:
                 item.text = transcript
             logger.info("Collected YouTube video: '%s'", item.title)

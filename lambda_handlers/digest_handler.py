@@ -3,71 +3,35 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import UTC, date, datetime
+from datetime import date
 from typing import Any
 
 import boto3
 
-from main import _resolve_digest_window, persist_digest, run_collectors_with_health, run_pipeline
+from pipeline import persist_digest, resolve_digest_window, run_collectors_with_health, run_pipeline
 from shared import (
     BedrockLanguageModelFactory,
     Config,
     HealthReport,
     RankingHealth,
     SourceStatus,
-    format_alarm,
+    emit_emf,
     get_correlation_id,
     is_running_in_aws,
     logger,
+    publish_alert,
     set_correlation_id,
 )
 
-METRIC_NAMESPACE = "OmniSummary"
 DIGEST_ITEMS_METRIC = "DigestItemsPublished"
 
 
 def _emit_digest_items_metric(count: int) -> None:
-    """Emit the number of STORIES the digest carries as a CloudWatch EMF metric on stdout. A CDK
-    alarm fires when this is 0 or missing — catching the 'ran clean but produced an empty digest'
-    (or didn't run at all) failure that no error/timeout alarm would surface. It must count the
-    curated digest items, never the ranker's candidate list, or an empty digest reads as full.
-
-    The timestamp is UTC: datetime.now() reads the naive LOCAL clock, while EMF interprets Timestamp
-    as epoch-UTC ms — so on a non-UTC runtime every datapoint would be filed at the wrong time (and
-    far enough off, CloudWatch rejects it outright)."""
-    emf = {
-        "_aws": {
-            "Timestamp": int(datetime.now(UTC).timestamp() * 1000),
-            "CloudWatchMetrics": [
-                {"Namespace": METRIC_NAMESPACE, "Dimensions": [[]], "Metrics": [{"Name": DIGEST_ITEMS_METRIC}]}
-            ],
-        },
-        DIGEST_ITEMS_METRIC: count,
-    }
-    print(json.dumps(emf))
-
-
-def _publish_alert(event: str, status: str, fields: dict[str, str]) -> None:
-    """Publish one SNS notice, or nothing when no topic is wired (local runs, un-wired stages).
-    Never raises: an alerting failure must not fail the run it is reporting on."""
-    topic_arn = os.environ.get("ALERT_SNS_TOPIC_ARN", "")
-    if not topic_arn:
-        return
-    try:
-        # project/stage from the function's own env, so a dev alert can't read as a prod one, and the
-        # correlation id so the operator can jump straight to this run's log lines.
-        subject, message = format_alarm(
-            event=event,
-            status=status,
-            fields=fields,
-            project=os.environ.get("PROJECT_NAME", "omnisummary"),
-            stage=os.environ.get("STAGE", ""),
-            correlation_id=get_correlation_id(),
-        )
-        boto3.client("sns").publish(TopicArn=topic_arn, Subject=subject, Message=message)
-        logger.warning("Published SNS alert (%s): %s", event, fields)
-    except Exception as e:
-        logger.error("Failed to publish SNS alert: %s", e)
+    """Emit the number of STORIES the digest carries as a CloudWatch EMF metric. A CDK alarm fires
+    when this is 0 or missing — catching the 'ran clean but produced an empty digest' (or didn't run
+    at all) failure that no error/timeout alarm would surface. It must count the curated digest
+    items, never the ranker's candidate list, or an empty digest reads as full."""
+    emit_emf({DIGEST_ITEMS_METRIC: count})
 
 
 def _maybe_alert(health: HealthReport, alert_on_empty: list[str] | None = None) -> None:
@@ -94,7 +58,7 @@ def _maybe_alert(health: HealthReport, alert_on_empty: list[str] | None = None) 
     if empty:
         fields["Empty sources"] = ", ".join(empty)
     fields["Report"] = health.summary()
-    _publish_alert("Source Health", "ALERT", fields)
+    publish_alert("Source Health", "ALERT", fields)
 
 
 def _maybe_alert_ranking(health: RankingHealth | None, digest_date: date) -> None:
@@ -103,7 +67,7 @@ def _maybe_alert_ranking(health: RankingHealth | None, digest_date: date) -> Non
     normally. Silent when nothing was lost."""
     if health is None or not health.degraded:
         return
-    _publish_alert(
+    publish_alert(
         "Ranking Health",
         "ALERT",
         {"Digest date": digest_date.isoformat(), "Detail": health.summary()},
@@ -133,7 +97,7 @@ async def _run() -> None:
     if rsshub_url:
         config.collectors.rsshub.base_url = rsshub_url
 
-    digest_date, reference_time = _resolve_digest_window(config)
+    digest_date, reference_time = resolve_digest_window(config)
     config.collectors.set_reference_time(reference_time)
 
     boto_session = boto3.Session(region_name=config.aws.bedrock_region)

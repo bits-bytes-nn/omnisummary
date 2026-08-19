@@ -483,6 +483,7 @@ def parse_feed_entries(
     metadata: dict[str, Any],
     author: str | None = None,
     item_id_of: Callable[[Any, str], str] | None = None,
+    limit: int | None = None,
 ) -> list[CollectedItem]:
     """Turn a parsed feed's entries into CollectedItems: drop anything published before `cutoff`,
     take the title/link, prefer full content over the summary, and skip (never fail on) a
@@ -491,9 +492,11 @@ def parse_feed_entries(
     One implementation for every feed-based source — RSS, RSSHub and Reddit carried byte-for-byte
     identical loops, so a fix to one silently left the other two behind. `author` overrides the
     entry's own (RSSHub attributes every item to the account) and `item_id_of` overrides the
-    entry-id-or-hash default (Reddit derives the post id from the permalink)."""
+    entry-id-or-hash default (Reddit derives the post id from the permalink). `limit` caps how many
+    entries are READ (YouTube over-fetches a fixed depth and then keeps the latest N by date,
+    because its feed is not reliably newest-first)."""
     items: list[CollectedItem] = []
-    for entry in feed.entries:
+    for entry in feed.entries if limit is None else feed.entries[:limit]:
         try:
             published_at = parse_feed_published_date(entry)
             if published_at and published_at < cutoff:

@@ -473,31 +473,94 @@ class TestApiKeyResolution:
         resolve.assert_not_called()
 
 
+class _FeedDict(dict):
+    """Stands in for feedparser's FeedParserDict, which supports both key and attribute access."""
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as e:
+            raise AttributeError(name) from e
+
+
 class TestRssFallback:
+    @staticmethod
+    def _feed(*entries):
+        return _FeedDict(entries=list(entries), bozo=False, feed=_FeedDict(title="Example"))
+
+    @staticmethod
+    def _entry(video_id: str = "rssvid00001", **overrides):
+        entry = _FeedDict(
+            yt_videoid=video_id,
+            title="RSS Video",
+            link=f"https://www.youtube.com/watch?v={video_id}",
+            author="Example",
+            summary="rss summary",
+            published_parsed=(2026, 6, 3, 0, 0, 0, 0, 0, 0),
+        )
+        entry.update(overrides)
+        return entry
+
     @pytest.mark.asyncio
     async def test_rss_fallback_when_no_api_key(self, monkeypatch):
         monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
         collector = YouTubeCollector(_config())
 
-        class _Feed:
-            entries = [
-                {
-                    "yt_videoid": "rssvid00001",
-                    "title": "RSS Video",
-                    "author": "Example",
-                    "summary": "rss summary",
-                    "published_parsed": (2026, 6, 3, 0, 0, 0, 0, 0, 0),
-                }
-            ]
-
         with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
-            with patch("collectors.youtube.feedparser.parse", return_value=_Feed()):
+            with patch(
+                "collectors.youtube.fetch_feed_with_retry",
+                new=AsyncMock(return_value=self._feed(self._entry())),
+            ):
                 with patch.object(collector, "_get_transcript", return_value=""):
                     items = await collector.collect()
 
         assert len(items) == 1
         assert items[0].item_id == "rssvid00001"
+        assert items[0].url == "https://www.youtube.com/watch?v=rssvid00001"
         assert items[0].text == "rss summary"  # falls back to summary when transcript empty
+
+    @pytest.mark.asyncio
+    async def test_the_fallback_feed_goes_through_the_shared_retrying_fetch(self, monkeypatch):
+        # A raw feedparser.parse(url) has no socket timeout, no retry and no bozo check: one 5xx or
+        # DNS blip lost the channel for the day, a truncated body reported EMPTY instead of FAILED,
+        # and the un-cancellable worker thread outlived the channel's wait_for budget.
+        monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
+        config = _config()
+        collector = YouTubeCollector(config)
+        fetch = AsyncMock(return_value=self._feed(self._entry()))
+        with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
+            with patch("collectors.youtube.fetch_feed_with_retry", new=fetch):
+                with patch.object(collector, "_get_transcript", return_value=""):
+                    await collector.collect()
+        kwargs = fetch.await_args.kwargs
+        assert kwargs["timeout"] == config.request_timeout
+        assert kwargs["max_retries"] == config.max_retries
+        assert kwargs["backoff_sec"] == config.retry_backoff_sec
+        assert kwargs["proxy_fallback"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_entry_with_no_readable_video_id_is_dropped(self, monkeypatch):
+        # The transcript lookup and the canonical watch URL are both derived from the video id, so a
+        # hashed fallback id would be useless downstream.
+        monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
+        collector = YouTubeCollector(_config())
+        feed = self._feed(self._entry(), self._entry("", link="https://www.youtube.com/@x"))
+        with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
+            with patch("collectors.youtube.fetch_feed_with_retry", new=AsyncMock(return_value=feed)):
+                with patch.object(collector, "_get_transcript", return_value=""):
+                    items = await collector.collect()
+        assert [item.item_id for item in items] == ["rssvid00001"]
+
+    @pytest.mark.asyncio
+    async def test_the_video_id_is_read_off_the_link_when_the_feed_omits_it(self, monkeypatch):
+        monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
+        collector = YouTubeCollector(_config())
+        feed = self._feed(self._entry("", link="https://www.youtube.com/watch?v=fromlink001"))
+        with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
+            with patch("collectors.youtube.fetch_feed_with_retry", new=AsyncMock(return_value=feed)):
+                with patch.object(collector, "_get_transcript", return_value=""):
+                    items = await collector.collect()
+        assert [item.item_id for item in items] == ["fromlink001"]
 
 
 class TestResolveChannelId:

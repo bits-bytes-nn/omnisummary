@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 import time
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -17,44 +15,26 @@ from shared import (
     BedrockLanguageModelFactory,
     Config,
     create_memory_store,
-    format_alarm,
-    get_correlation_id,
+    emit_emf,
     logger,
+    publish_alert,
     set_correlation_id,
 )
 
-METRIC_NAMESPACE = "OmniSummary"
 THREADS_POSTS_METRIC = "ThreadsPostsPublished"
 THREADS_IMAGE_METRIC = "ThreadsImagePublished"
 
 
 def _emit_threads_metrics(outcome: ThreadsDelivery | None) -> None:
-    """Emit what the day's Threads delivery actually produced, as ONE CloudWatch EMF record on
-    stdout: how many posts (root + replies) landed, and whether the root carried the visual.
+    """Emit what the day's Threads delivery actually produced, as ONE CloudWatch EMF record: how
+    many posts (root + replies) landed, and whether the root carried the visual.
 
     Emitted UNCONDITIONALLY — including for a run with no outcome at all (0 posts). This Lambda is
     the only delivery path, and skipping the datapoint when nothing was delivered is exactly the
-    case worth measuring: a missing datapoint reads as "no data", not as a zero.
-
-    The timestamp is UTC. datetime.now() is the Lambda's naive LOCAL clock; EMF reads Timestamp as
-    epoch-UTC ms, so a non-UTC runtime would file every datapoint at the wrong time."""
+    case worth measuring: a missing datapoint reads as "no data", not as a zero."""
     posted = outcome.posted if outcome else 0
     with_image = 1 if (outcome and outcome.with_image) else 0
-    emf = {
-        "_aws": {
-            "Timestamp": int(datetime.now(UTC).timestamp() * 1000),
-            "CloudWatchMetrics": [
-                {
-                    "Namespace": METRIC_NAMESPACE,
-                    "Dimensions": [[]],
-                    "Metrics": [{"Name": THREADS_POSTS_METRIC}, {"Name": THREADS_IMAGE_METRIC}],
-                }
-            ],
-        },
-        THREADS_POSTS_METRIC: posted,
-        THREADS_IMAGE_METRIC: with_image,
-    }
-    print(json.dumps(emf))
+    emit_emf({THREADS_POSTS_METRIC: posted, THREADS_IMAGE_METRIC: with_image})
 
 
 def _remaining_deadline(context: Any) -> float | None:
@@ -129,35 +109,24 @@ def _requested_date(event: dict[str, Any], tz: ZoneInfo) -> tuple[date, bool]:
 
 def _maybe_alert_threads_outcome(outcome: ThreadsDelivery | None, digest_date: date) -> None:
     """SNS notice when the Threads post did not fully land: a partial reply chain (the reader sees
-    a digest whose stories stop mid-way) or a total delivery failure. No-op without
-    ALERT_SNS_TOPIC_ARN, so local runs and un-wired stages stay silent."""
-    topic_arn = os.environ.get("ALERT_SNS_TOPIC_ARN", "")
-    if not topic_arn or outcome is None or outcome.posted >= outcome.expected:
+    a digest whose stories stop mid-way) or a total delivery failure. Silent on a complete
+    delivery; publish_alert itself is a no-op without ALERT_SNS_TOPIC_ARN, so local runs and
+    un-wired stages stay quiet."""
+    if outcome is None or outcome.posted >= outcome.expected:
         return
-    status = "ALERT" if outcome.published else "FAILED"
-    try:
-        # project/stage from the function's own env, so a dev alert can't read as a prod one, and the
-        # correlation id so the operator can jump straight to this run's log lines.
-        subject, message = format_alarm(
-            event="Threads Delivery",
-            status=status,
-            project=os.environ.get("PROJECT_NAME", "omnisummary"),
-            stage=os.environ.get("STAGE", ""),
-            correlation_id=get_correlation_id(),
-            fields={
-                "Digest date": digest_date.isoformat(),
-                "Delivered": outcome.summary(),
-                "Detail": (
-                    "reply chain incomplete — some stories are missing from the thread"
-                    if outcome.published
-                    else "the digest was NOT published to Threads"
-                ),
-            },
-        )
-        boto3.client("sns").publish(TopicArn=topic_arn, Subject=subject, Message=message)
-        logger.warning("Published SNS alert for Threads delivery (%s)", outcome.summary())
-    except Exception as e:
-        logger.error("Failed to publish Threads delivery alert: %s", e)
+    publish_alert(
+        "Threads Delivery",
+        "ALERT" if outcome.published else "FAILED",
+        {
+            "Digest date": digest_date.isoformat(),
+            "Delivered": outcome.summary(),
+            "Detail": (
+                "reply chain incomplete — some stories are missing from the thread"
+                if outcome.published
+                else "the digest was NOT published to Threads"
+            ),
+        },
+    )
 
 
 async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = None) -> None:

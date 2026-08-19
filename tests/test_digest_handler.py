@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from lambda_handlers import digest_handler
+from shared.constants import METRIC_NAMESPACE
 from shared.models import HealthReport, SourceHealth, SourceStatus
 
 
@@ -201,7 +202,17 @@ class TestRun:
         digest_handler._emit_digest_items_metric(3)
         doc = json.loads(capsys.readouterr().out.strip())
         assert doc["DigestItemsPublished"] == 3
-        assert doc["_aws"]["CloudWatchMetrics"][0]["Namespace"] == "OmniSummary"
+        assert doc["_aws"]["CloudWatchMetrics"][0]["Namespace"] == METRIC_NAMESPACE
+
+    def test_the_metric_is_dimensioned_by_project_and_stage(self, capsys, monkeypatch):
+        # Undimensioned, every deployment publishes into the SAME datapoint: a dev run of 5 items
+        # kept prod's Maximum<1 EmptyDigestAlarm green on a day prod shipped nothing.
+        monkeypatch.setenv("PROJECT_NAME", "omnisummary")
+        monkeypatch.setenv("STAGE", "prod")
+        digest_handler._emit_digest_items_metric(3)
+        doc = json.loads(capsys.readouterr().out.strip())
+        assert doc["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [["Project", "Stage"]]
+        assert doc["Project"] == "omnisummary" and doc["Stage"] == "prod"
 
     async def test_rsshub_base_url_override_from_env(self, monkeypatch):
         monkeypatch.setenv("RSSHUB_BASE_URL", "http://example.local:1200")

@@ -19,7 +19,8 @@ from aws_cdk.aws_bedrockagentcore import CfnRuntime
 from constructs import Construct
 
 from shared import Config
-from shared.constants import RSSHUB_PORT, SSM_PLACEHOLDER, SSM_SECRET_ENV_VARS
+from shared.constants import METRIC_NAMESPACE, RSSHUB_PORT, SSM_PLACEHOLDER, SSM_SECRET_ENV_VARS
+from shared.metrics import metric_dimensions
 
 from .foundation_stack import OmniSummaryFoundationStack
 
@@ -308,6 +309,8 @@ class OmniSummaryApplicationStack(Stack):
             api,
             foundation,
             async_dlq,
+            project_name=project_name,
+            stage=stage,
         )
 
         CfnOutput(self, "SlackWebhookUrl", value=f"{api.url}slack/events")
@@ -320,7 +323,15 @@ class OmniSummaryApplicationStack(Stack):
         api: apigw.RestApi,
         foundation: OmniSummaryFoundationStack,
         async_dlq: sqs.Queue,
+        *,
+        project_name: str,
+        stage: str,
     ) -> None:
+        # The EMF-backed metrics below are published with these dimensions (shared/metrics.py), so
+        # the alarm MUST carry the same map: an undimensioned alarm reads every deployment's
+        # datapoints as one series, which made a dev run of 5 items keep prod's empty-digest alarm
+        # green on a day prod shipped nothing.
+        emf_dimensions = metric_dimensions(project_name, stage)
         alarm_action = cw_actions.SnsAction(foundation.alerts_topic)
         for name, fn in lambdas.items():
             # Crashes (raised exceptions) — Errors metric.
@@ -362,8 +373,9 @@ class OmniSummaryApplicationStack(Stack):
         # rejected by PutMetricAlarm at deploy. Missing-data=BREACHING already covers the skipped-run
         # case without needing extra slack.
         empty_digest = cloudwatch.Metric(
-            namespace="OmniSummary",
+            namespace=METRIC_NAMESPACE,
             metric_name="DigestItemsPublished",
+            dimensions_map=emf_dimensions,
             period=Duration.hours(24),
             statistic="Maximum",
         ).create_alarm(
@@ -390,10 +402,11 @@ class OmniSummaryApplicationStack(Stack):
 
         # The AgentCore runtime (CfnRuntime, not a Lambda) catches its own exceptions and replies
         # with an error message, so a systemic agent break is otherwise invisible. It emits an
-        # OmniSummary/AgentErrors EMF metric on failure; alarm on it.
+        # AgentErrors EMF metric on failure; alarm on it.
         agent_errors = cloudwatch.Metric(
-            namespace="OmniSummary",
+            namespace=METRIC_NAMESPACE,
             metric_name="AgentErrors",
+            dimensions_map=emf_dimensions,
             period=Duration.minutes(5),
             statistic="Sum",
         ).create_alarm(

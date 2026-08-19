@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-from datetime import UTC, datetime
 from typing import Any
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
@@ -11,7 +9,7 @@ from strands.types.agent import Limits
 from agent import create_research_agent
 from agent.research_tools import DeliveryContext, request_context
 from output.renderers import render_agent_blocks
-from shared import get_config, logger, resolve_secret, sanitize_slack_mrkdwn, set_correlation_id
+from shared import emit_emf, get_config, logger, resolve_secret, sanitize_slack_mrkdwn, set_correlation_id
 
 app = BedrockAgentCoreApp()
 
@@ -20,38 +18,16 @@ LIMIT_NOTICE = "\n\n_This report was cut short: the research run reached its per
 
 def _emit_agent_error_metric() -> None:
     """Emit a CloudWatch EMF error metric so a systemic agent break is alarmable — the runtime
-    catches its own exceptions and replies with text, so nothing else would record a failure.
-
-    The timestamp is UTC: datetime.now() reads the naive LOCAL clock while EMF interprets Timestamp
-    as epoch-UTC ms, so on a non-UTC runtime every datapoint is filed at the wrong time (and far
-    enough off, CloudWatch rejects it outright)."""
-    emf = {
-        "_aws": {
-            "Timestamp": int(datetime.now(UTC).timestamp() * 1000),
-            "CloudWatchMetrics": [
-                {"Namespace": "OmniSummary", "Dimensions": [[]], "Metrics": [{"Name": "AgentErrors"}]}
-            ],
-        },
-        "AgentErrors": 1,
-    }
-    print(json.dumps(emf))
+    catches its own exceptions and replies with text, so nothing else would record a failure."""
+    emit_emf({"AgentErrors": 1})
 
 
 def _emit_agent_limit_metric(stop_reason: str) -> None:
     """Emit a CloudWatch EMF counter when the loop was stopped by a budget cap. A capped run still
     returns text, so without this a topic that systematically fails to converge (and burns the whole
-    budget every time) is indistinguishable from a normal day."""
-    emf = {
-        "_aws": {
-            "Timestamp": int(datetime.now(UTC).timestamp() * 1000),
-            "CloudWatchMetrics": [
-                {"Namespace": "OmniSummary", "Dimensions": [[]], "Metrics": [{"Name": "AgentLimitStops"}]}
-            ],
-        },
-        "AgentLimitStops": 1,
-        "StopReason": stop_reason,
-    }
-    print(json.dumps(emf))
+    budget every time) is indistinguishable from a normal day. The stop reason rides along as a
+    non-metric property: it is context an operator reads, not something to alarm on."""
+    emit_emf({"AgentLimitStops": 1}, {"StopReason": stop_reason})
 
 
 def _run_limits() -> Limits:
@@ -71,24 +47,14 @@ def _emit_agent_run_metrics(usage: dict[str, Any], cycles: int, tool_calls: int)
     line, so this needs no new AWS resource — and it is the only way the agent's spend (the most
     expensive component) is attributable at all, since a research turn re-sends the whole
     conversation and the runtime is billed per token like every pipeline stage."""
-    metric_names = ["AgentInputTokens", "AgentOutputTokens", "AgentCycles", "AgentToolCalls"]
-    emf: dict[str, Any] = {
-        "_aws": {
-            "Timestamp": int(datetime.now(UTC).timestamp() * 1000),
-            "CloudWatchMetrics": [
-                {
-                    "Namespace": "OmniSummary",
-                    "Dimensions": [[]],
-                    "Metrics": [{"Name": name} for name in metric_names],
-                }
-            ],
-        },
-        "AgentInputTokens": int(usage.get("inputTokens", 0) or 0),
-        "AgentOutputTokens": int(usage.get("outputTokens", 0) or 0),
-        "AgentCycles": cycles,
-        "AgentToolCalls": tool_calls,
-    }
-    print(json.dumps(emf))
+    emit_emf(
+        {
+            "AgentInputTokens": int(usage.get("inputTokens", 0) or 0),
+            "AgentOutputTokens": int(usage.get("outputTokens", 0) or 0),
+            "AgentCycles": cycles,
+            "AgentToolCalls": tool_calls,
+        }
+    )
 
 
 def _log_agent_run(result: Any) -> None:

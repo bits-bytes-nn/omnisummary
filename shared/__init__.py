@@ -1,7 +1,9 @@
+from .alerts import publish_alert
 from .config import KOREAN_STYLE_RULES, Config, get_config
 from .constants import (
     DOMAIN_TO_SOURCE,
     LOGGING_TRUNCATION_CHARS,
+    METRIC_NAMESPACE,
     THREADS_MAX_POST_CHARS,
     THREADS_POST_SEPARATOR,
     TRENDS_KEY,
@@ -33,6 +35,7 @@ from .formatting import (
 from .history_store import PublishedUrlLedger, RollingLog, ThreadsPostLedger, published_urls_from_snapshots
 from .logger import get_correlation_id, is_running_in_aws, logger, set_correlation_id
 from .memory import AgentCoreMemoryStore, LocalMemoryStore, MemoryReadError, MemoryStore, create_memory_store
+from .metrics import emit_emf, metric_dimensions
 from .models import (
     CollectedItem,
     DigestContent,
@@ -77,6 +80,10 @@ from .utils import (
 )
 
 __all__ = [
+    "METRIC_NAMESPACE",
+    "emit_emf",
+    "metric_dimensions",
+    "publish_alert",
     "BedrockCrossRegionModelHelper",
     "BedrockLanguageModelFactory",
     "DOMAIN_TO_SOURCE",

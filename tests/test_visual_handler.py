@@ -283,3 +283,12 @@ class TestThreadsMetrics:
         record = self._records(capsys)[-1]
         assert record[visual_handler.THREADS_POSTS_METRIC] == 0
         assert record[visual_handler.THREADS_IMAGE_METRIC] == 0
+
+    def test_the_record_is_dimensioned_by_project_and_stage(self, capsys, monkeypatch):
+        # Every deployment publishing into one datapoint means a dev run masks a prod outage.
+        monkeypatch.setenv("PROJECT_NAME", "omnisummary")
+        monkeypatch.setenv("STAGE", "dev")
+        visual_handler._emit_threads_metrics(ThreadsDelivery(6, 6))
+        record = self._records(capsys)[-1]
+        assert record["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [["Project", "Stage"]]
+        assert record["Project"] == "omnisummary" and record["Stage"] == "dev"

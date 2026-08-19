@@ -116,6 +116,15 @@ ALL_SSM_SECRET_ENV_VARS: dict[str, str] = {**SSM_SECRET_ENV_VARS, **SSM_RSSHUB_S
 # (logged, feature skipped) rather than sending the literal placeholder to an API as a token.
 SSM_PLACEHOLDER: str = "PLACEHOLDER-run-scripts/put_secrets.py"
 
+# CloudWatch namespace every EMF record and every metric-backed alarm uses. ONE definition: the
+# emitting code and the CDK alarm must agree, and a drifting literal makes an alarm watch a
+# namespace nothing writes to (which reads as "no data", i.e. permanently green).
+METRIC_NAMESPACE: str = "OmniSummary"
+
+# Project name assumed when PROJECT_NAME is unset (local runs, un-wired stages). Alerts and metrics
+# are both attributed per project/stage, so both need the same fallback.
+DEFAULT_PROJECT_NAME: str = "omnisummary"
+
 # Character limits applied to titles/queries when written to log lines. Centralized so
 # log verbosity can be tuned in one place instead of scattered slice literals.
 LOGGING_TRUNCATION_CHARS: dict[str, int] = {
