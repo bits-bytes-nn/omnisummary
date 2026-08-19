@@ -4,7 +4,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from shared.proxy import fetch_with_proxy_fallback, get_proxied_url, is_proxy_configured
+from shared.proxy import fetch_with_proxy_fallback, get_proxied_url
 
 PROXY_DIR = Path(__file__).resolve().parent.parent / "cloudflare-proxy"
 
@@ -17,13 +17,14 @@ class TestProxy:
     def test_no_proxy_returns_original(self):
         assert get_proxied_url("http://example.com") == "http://example.com"
 
-    def test_not_configured_without_env(self):
-        assert not is_proxy_configured()
+    def test_half_configured_env_does_not_proxy(self, monkeypatch):
+        # Both vars are required: a base URL with no token proxies every fetch into a 401.
+        monkeypatch.setenv("CLOUDFLARE_PROXY_URL", "https://proxy.example.com")
+        assert get_proxied_url("http://example.com") == "http://example.com"
 
     def test_configured_with_env(self, monkeypatch):
         monkeypatch.setenv("CLOUDFLARE_PROXY_URL", "https://proxy.example.com")
         monkeypatch.setenv("CLOUDFLARE_PROXY_TOKEN", "token123")
-        assert is_proxy_configured()
         result = get_proxied_url("http://example.com")
         assert "proxy.example.com" in result
         assert "token123" in result

@@ -28,10 +28,6 @@ def get_proxied_url(target_url: str) -> str:
     return proxied
 
 
-def is_proxy_configured() -> bool:
-    return bool(os.getenv("CLOUDFLARE_PROXY_URL")) and bool(os.getenv("CLOUDFLARE_PROXY_TOKEN"))
-
-
 async def fetch_with_proxy_fallback(
     target_url: str, fetch: Callable[[str], Awaitable[Any]], *, has_entries: Callable[[Any], bool]
 ) -> Any:

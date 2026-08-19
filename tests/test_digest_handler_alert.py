@@ -66,7 +66,7 @@ class TestMaybeAlert:
 
     def test_publishes_on_stale_source(self, monkeypatch):
         # A STALE source (items served off a park file whose local sync stopped) must alert too —
-        # it isn't a FAILURE, so the has_failures-only gate stayed silent for days.
+        # it isn't a FAILURE, so the failed-only gate stayed silent for days.
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:::topic")
         report = HealthReport(
             sources=[

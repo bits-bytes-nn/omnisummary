@@ -14,7 +14,6 @@ from shared import (
     Config,
     DigestResult,
     HealthReport,
-    SourceStatus,
     emit_emf,
     get_correlation_id,
     is_running_in_aws,
@@ -35,7 +34,7 @@ def _emit_digest_items_metric(count: int) -> None:
 
 
 def _maybe_alert(health: HealthReport, alert_on_empty: list[str] | None = None) -> None:
-    failed = [s.name for s in health.sources if s.status == SourceStatus.FAILED]
+    failed = health.failed_sources
     # A STALE source also alerts: it produced items, but off an S3 park file whose local sync has
     # stopped (or that couldn't be read), which otherwise stays invisible for days. So does a
     # DEGRADED one: it produced items on time, but from only a fraction of its feeds.

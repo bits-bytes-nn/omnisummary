@@ -12,8 +12,6 @@ class SourceType(str, Enum):
 
 class LanguageModelId(str, Enum):
     CLAUDE_V3_HAIKU = "anthropic.claude-3-haiku-20240307-v1:0"
-    CLAUDE_V3_SONNET = "anthropic.claude-3-sonnet-20240229-v1:0"
-    CLAUDE_V3_OPUS = "anthropic.claude-3-opus-20240229-v1:0"
     CLAUDE_V3_5_HAIKU = "anthropic.claude-3-5-haiku-20241022-v1:0"
     CLAUDE_V4_5_HAIKU = "anthropic.claude-haiku-4-5-20251001-v1:0"
     CLAUDE_V3_5_SONNET = "anthropic.claude-3-5-sonnet-20240620-v1:0"

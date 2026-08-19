@@ -24,23 +24,11 @@ class DigestStateManager:
             len(self._ranked_items),
         )
 
-    def get_item_by_number(self, number: int) -> RankedItem | None:
-        idx = number - 1
-        if 0 <= idx < len(self._ranked_items):
-            return self._ranked_items[idx]
-        return None
-
-    def get_item(self, item_id: str) -> CollectedItem | None:
-        return self._collected_items.get(item_id)
-
     def get_ranked_items(self) -> list[RankedItem]:
         return self._ranked_items
 
     def get_content(self) -> DigestContent | None:
         return self._digest_result.content if self._digest_result else None
-
-    def get_item_count(self) -> int:
-        return len(self._ranked_items)
 
     def export_state(self) -> dict:
         # Only the ranked items (and the collected items they reference) are ever read
@@ -61,11 +49,6 @@ class DigestStateManager:
                 self._digest_result.model_dump(mode="json", exclude={"ranked_items"}) if self._digest_result else None
             ),
         }
-
-    def clear(self) -> None:
-        self._collected_items.clear()
-        self._ranked_items.clear()
-        self._digest_result = None
 
     @classmethod
     def load_from_dict(cls, data: dict) -> DigestStateManager:

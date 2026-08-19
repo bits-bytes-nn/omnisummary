@@ -32,10 +32,10 @@ def test_export_state_roundtrips_through_load():
 
     restored = DigestStateManager.load_from_dict(mgr.export_state())
 
-    assert restored.get_item_count() == 1
-    assert restored.get_item_by_number(1).item.item_id == "a"
-    assert restored.get_item("a") is not None
-    assert restored.get_item("b") is None  # trimmed out
+    ranked_back = restored.get_ranked_items()
+    assert [ri.item.item_id for ri in ranked_back] == ["a"]
+    assert ranked_back[0].score == 0.7  # the score survives, not just the item
+    assert ranked_back[0].item.title == "t-a"
 
 
 def test_export_state_does_not_double_store_ranked_items():
@@ -55,4 +55,4 @@ def test_export_state_does_not_double_store_ranked_items():
 
     restored = DigestStateManager.load_from_dict(state)
     assert restored.get_content().lead == "lead"  # content round-trips
-    assert restored.get_item_count() == 1  # ranked rebuilt from top-level list
+    assert len(restored.get_ranked_items()) == 1  # ranked rebuilt from top-level list

@@ -121,8 +121,6 @@ class DigestResult(BaseModel):
     ranked_items: list[RankedItem] = Field(default_factory=list)
     content: DigestContent | None = None
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    total_collected: int = 0
-    total_ranked: int = 0
     # Set by the pipeline after ranking, so the delivery/alerting layer can report a digest built on
     # an incomplete candidate pool. None means "not recorded" (older snapshots, direct construction).
     ranking_health: RankingHealth | None = None
@@ -280,8 +278,8 @@ class HealthReport(BaseModel):
     sources: list[SourceHealth] = Field(default_factory=list)
 
     @property
-    def has_failures(self) -> bool:
-        return any(s.status == SourceStatus.FAILED for s in self.sources)
+    def failed_sources(self) -> list[str]:
+        return [s.name for s in self.sources if s.status == SourceStatus.FAILED]
 
     @property
     def stale_sources(self) -> list[str]:

@@ -65,8 +65,6 @@ class DigestGenerator:
                 digest_text="No notable content collected today.",
                 ranked_items=[],
                 generated_at=datetime.now(UTC),
-                total_collected=len(all_items),
-                total_ranked=0,
             )
 
         # The ranker over-selects (top_n + buffer); the editor merges same-event items and
@@ -152,8 +150,6 @@ class DigestGenerator:
             ranked_items=ranked_items,
             content=content,
             generated_at=datetime.now(UTC),
-            total_collected=len(all_items),
-            total_ranked=len(ranked_items),
             diversity_breaches=self._audit_shipped_diversity(shipped_sources, ranked_items),
         )
 

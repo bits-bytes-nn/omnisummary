@@ -47,7 +47,7 @@ async def test_health_report_classifies_sources():
     assert by_name["reddit"].status == SourceStatus.EMPTY
     assert by_name["youtube"].status == SourceStatus.FAILED
     assert "403 blocked" in by_name["youtube"].detail
-    assert report.has_failures is True
+    assert report.failed_sources == ["youtube"]
 
 
 @pytest.mark.asyncio
@@ -59,7 +59,7 @@ async def test_no_active_collectors_returns_empty_report():
 
     assert items == []
     assert report.sources == []
-    assert report.has_failures is False
+    assert report.failed_sources == []
 
 
 @pytest.mark.asyncio
@@ -82,7 +82,7 @@ async def test_stale_park_file_reports_stale_not_ok():
     assert source.status == SourceStatus.STALE
     assert source.item_count == 1
     assert "72.0h old" in source.detail
-    assert report.has_failures is False
+    assert report.failed_sources == []
     assert report.stale_sources == ["youtube"]
 
 
@@ -101,7 +101,7 @@ async def test_unreadable_park_file_reports_stale_after_live_fallback():
 
     assert len(items) == 1
     assert report.sources[0].status == SourceStatus.STALE
-    assert report.has_failures is False
+    assert report.failed_sources == []
 
 
 @pytest.mark.asyncio
@@ -140,7 +140,7 @@ async def test_partially_collected_source_reports_degraded_not_ok():
     assert source.status == SourceStatus.DEGRADED
     assert source.item_count == 1
     assert "30/40" in source.detail
-    assert report.has_failures is False
+    assert report.failed_sources == []
     assert report.degraded_sources == ["rsshub"]
     assert report.stale_sources == []
 

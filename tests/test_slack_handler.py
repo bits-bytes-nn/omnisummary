@@ -9,7 +9,8 @@ from slack_sdk.errors import SlackApiError
 from output.slack_handler import _split_message, send_digest_to_slack, send_image_to_slack
 from shared import get_config
 from shared.config import SlackConfig
-from shared.models import DigestContent, DigestItem, DigestResult
+from shared.constants import SourceType
+from shared.models import CollectedItem, DigestContent, DigestItem, DigestResult, RankedItem
 
 
 class TestSplitMessage:
@@ -54,7 +55,7 @@ class TestSplitMessage:
 
 
 def _make_digest(text: str = "Test digest content") -> DigestResult:
-    return DigestResult(digest_text=text, ranked_items=[], total_collected=0, total_ranked=0)
+    return DigestResult(digest_text=text, ranked_items=[])
 
 
 def _make_digest_with_content(n_items: int = 2) -> DigestResult:
@@ -66,9 +67,7 @@ def _make_digest_with_content(n_items: int = 2) -> DigestResult:
             for i in range(1, n_items + 1)
         ],
     )
-    return DigestResult(
-        digest_text="fallback text", ranked_items=[], total_collected=0, total_ranked=0, content=content
-    )
+    return DigestResult(digest_text="fallback text", ranked_items=[], content=content)
 
 
 def _make_config(bot_token: str = "xoxb-test", channel_id: str = "C123") -> SlackConfig:
@@ -219,7 +218,15 @@ class TestSendDigestToSlack:
     async def test_header_counts_curated_items_not_ranked_items(self):
         # The editor may MERGE ranked items into fewer stories; the header must not overstate.
         digest = _make_digest_with_content(2)
-        digest.total_ranked = 7
+        digest.ranked_items = [
+            RankedItem(
+                item=CollectedItem(
+                    source_type=SourceType.RSS, title=f"ranked {i}", url=f"https://e.com/r{i}", text="body"
+                ),
+                score=0.9,
+            )
+            for i in range(7)
+        ]
         mock_client = AsyncMock()
         with patch("output.slack_handler.AsyncWebClient", return_value=mock_client):
             await send_digest_to_slack(digest, _make_config(), date(2026, 6, 10))
