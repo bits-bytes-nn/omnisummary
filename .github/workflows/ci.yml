@@ -79,6 +79,19 @@ jobs:
         with:
           name: coverage-xml
           path: coverage.xml
+      # The Cloudflare worker is the only internet-reachable component in the repo, and Python can
+      # only grep its source. Its real branches (token, URL parse, scheme, suffix host match, fixed
+      # outbound headers) are asserted by node:test — stdlib only, so there is nothing to install.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # `ls` first: `node --test` on a pattern that matches nothing exits 0, so a deleted or
+      # renamed suite would otherwise pass green.
+      - name: Test the Cloudflare worker
+        run: |
+          ls cloudflare-proxy/test/*.test.js
+          node --test cloudflare-proxy/test/*.test.js
 
   synth:
     name: CDK synth

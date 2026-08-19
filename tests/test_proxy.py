@@ -58,13 +58,15 @@ class TestWorkerHardening:
         for live_host in ("www.reddit.com", "www.youtube.com"):
             assert any(live_host == h or live_host.endswith(f".{h}") for h in hosts), live_host
 
-    def test_worker_enforces_allowlist_and_drops_caller_headers(self):
-        worker = (PROXY_DIR / "worker.js").read_text()
-        assert "isAllowedHost" in worker and "ALLOWED_HOSTS" in worker
-        # No caller-supplied header blob may be merged into the outbound request.
-        assert 'searchParams.get("headers")' not in worker
-        # The token check stays on the query string (feedparser can't send headers).
-        assert 'searchParams.get("token")' in worker
+    def test_the_executable_worker_suite_is_wired_into_ci(self):
+        # The worker's actual BRANCHES (token, URL parse, scheme, suffix host match, fixed outbound
+        # headers) are asserted by cloudflare-proxy/test/worker.test.js with node:test. Substring
+        # checks on worker.js used to stand in for that, and they stayed green even if isAllowedHost
+        # returned true unconditionally or the 401/403 branches were inverted — so all that is
+        # checked here is that the executable suite exists and that CI runs it.
+        assert (PROXY_DIR / "test" / "worker.test.js").exists()
+        ci = (PROXY_DIR.parent / ".github" / "workflows" / "ci.yml").read_text()
+        assert "node --test cloudflare-proxy/test/*.test.js" in ci
 
 
 class _Feed(dict):

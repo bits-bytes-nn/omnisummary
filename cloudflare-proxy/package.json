@@ -1,0 +1,9 @@
+{
+  "name": "omnisummary-proxy",
+  "private": true,
+  "type": "module",
+  "description": "Declares the ESM boundary for the worker. worker.js is `export default {...}` (Workers module syntax) and test/worker.test.js imports it, so Node must parse both as modules — the repo-root package.json (which pins the CDK CLI) would otherwise have them loaded as CommonJS. No dependencies: the tests use node:test/node:assert.",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
