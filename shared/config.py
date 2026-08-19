@@ -283,14 +283,6 @@ class PipelineConfig(_StrictModel):
     # source items and surgically revise unsupported ones (prompt rules alone couldn't
     # move the faithfulness score). Best-effort; disable to skip the extra LLM call.
     enable_grounding_check: bool = True
-    # Deterministic prose checks on the editor's Korean (shared/prose_lint.py), verified in code
-    # rather than asked for again: the comma-after-a-finished-predicate KOREAN_STYLE_RULES bans BY
-    # NAME still shipped, and so did a lead re-telling items[0]'s numbers that the prompt explicitly
-    # forbids. Every check must trace to a rule stated HERE — an em-dash pattern that no rule backed
-    # fired on 3 of 4 shipped digests over idiomatic Korean before it was deleted. A hit re-asks ONCE
-    # (PROSE_LINT_MAX_REASKS, not digest_max_retries: the re-send is byte-identical), then the content
-    # is kept anyway, because a style slip is strictly better than no digest.
-    enable_prose_lint: bool = True
     # Korean editorial rules + translation glossary, injected into the digest prompt's *Language*
     # block so the glossary can be tuned without editing the prompt. NOT a language switch: the
     # digest prompt states the Korean requirement itself and the trend tracker injects Korean

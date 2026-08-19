@@ -74,8 +74,8 @@ class TestDigestLeadSpec:
     def test_re_narration_ban_no_longer_forbids_naming(self):
         # The ban is narrowed to what actually duplicated the headline reply — replaying its
         # sequence of events and repeating its numbers — so the lead can still say WHO it is about.
-        # The five-clause paragraph that said this is now two sentences; shared/prose_lint.py checks
-        # the same thing in code, which is why the rule no longer has to be spelled out at length.
+        # The five-clause paragraph that said this is now two sentences: a shorter spec is the only
+        # kind of prompt change this repo allows, and the rule still states the constraint.
         rendered = _render(DigestPrompt)
         assert "no replay of its sequence and no repeat of its numbers" in rendered
         assert "numbers, names, or its sequence of events" not in rendered

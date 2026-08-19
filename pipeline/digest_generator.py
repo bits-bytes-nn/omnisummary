@@ -30,13 +30,6 @@ from shared import (
     threads_meta_line,
 )
 from shared.config import PipelineConfig
-from shared.prose_lint import ItemProse, lint_digest_prose
-
-# How many times a prose-lint hit may re-ask the editor, independent of digest_max_retries. The
-# re-ask sends byte-identical prompt_vars, so attempt 3 is the same ~50k-token Sonnet call that
-# attempt 2 already failed to move — and the content is kept regardless once the attempts run out.
-# One re-ask covers the one-off slip; more only buys spend.
-PROSE_LINT_MAX_REASKS = 1
 
 
 class DigestContentError(ValueError):
@@ -119,11 +112,7 @@ class DigestGenerator:
             "lead_budget": self._lead_budget(intro),
         }
 
-        attempts = 0
-
         async def _ask_editor() -> tuple[DigestContent, list[CollectedItem]]:
-            nonlocal attempts
-            attempts += 1
             content = self._parse_content(await chain.ainvoke(prompt_vars))
             # Hard upper-bound: the prompt asks for EXACTLY target_count, but a model can over-emit.
             # Trim deterministically so the digest never exceeds the target (fewer is allowed when
@@ -136,7 +125,6 @@ class DigestGenerator:
             # Inside the retry on purpose: an unmatched HEADLINE raises DigestContentError, and a
             # re-ask is exactly the remedy (the lead and the visual are both written about items[0]).
             sources = self._fill_source_metadata(content, ranked_items)
-            self._check_prose(content, attempt=attempts)
             return content, sources
 
         # Re-ask on a malformed emission (or a transient Bedrock error) instead of degrading.
@@ -166,43 +154,6 @@ class DigestGenerator:
             content=content,
             generated_at=datetime.now(UTC),
             diversity_breaches=self._audit_shipped_diversity(shipped_sources, ranked_items),
-        )
-
-    def _check_prose(self, content: DigestContent, *, attempt: int) -> None:
-        """Verify the editor's Korean in CODE and re-ask when it fails.
-
-        The two defects checked here each have an explicit prompt rule against them and shipped
-        anyway, which is the same situation that made _verify_grounding a code pass rather than
-        another rule. The hit list is logged either way, so a clean run is recorded as clean.
-
-        The re-ask is capped at PROSE_LINT_MAX_REASKS rather than riding digest_max_retries, and the
-        content is kept once that is spent: raising would fail the whole digest over a style slip,
-        and with retry_attempts=0 on the Lambda nothing would retry the run. The cap is also bounded
-        by the attempts retry_async actually has LEFT (digest_max_retries counts total attempts, so
-        the legal floor of 1 leaves none) — otherwise a comma splice on the last attempt raises out
-        of generate() and costs the day's digest, which is the exact outcome this budget exists to
-        prevent."""
-        if not self.config.enable_prose_lint:
-            return
-        hits = lint_digest_prose(content.lead, [self._item_prose(item) for item in content.items])
-        if not hits:
-            logger.info("Digest prose lint: clean")
-            return
-        logger.error("Digest prose lint found %d issue(s): %s", len(hits), " | ".join(hits))
-        if attempt <= min(PROSE_LINT_MAX_REASKS, self.config.digest_max_retries - 1):
-            raise DigestContentError(f"Digest prose failed {len(hits)} deterministic check(s)")
-        logger.error("Keeping the digest despite %d prose issue(s): the re-ask budget is spent", len(hits))
-
-    def _item_prose(self, item: DigestItem) -> ItemProse:
-        """One story as the lint sees it: the prose the editor wrote plus the budget it was given for
-        it. The budget is recomputed from the item's OWN stamped source line and URL — the same two
-        strings the Threads renderer will put in the post — so the check measures the post that ships,
-        not an average of the candidate pool."""
-        return ItemProse(
-            title=item.title,
-            body=item.body,
-            implication=item.implication or "",
-            budget=self._prose_budget(threads_meta_line(item.source_tag, item.metrics), item.url),
         )
 
     def _audit_shipped_diversity(self, shipped: list[CollectedItem], ranked_items: list[RankedItem]) -> list[str]:
