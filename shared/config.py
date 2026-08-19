@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -5,9 +6,9 @@ from typing import Literal
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .constants import RSSHUB_PORT, LanguageModelId
+from .constants import RSSHUB_PORT, VISUAL_ORIENTATIONS, LanguageModelId
 
 
 class _StrictModel(BaseModel):
@@ -149,6 +150,11 @@ class CollectorsConfig(_StrictModel):
     def set_reference_time(self, reference_time: datetime) -> None:
         for cfg in (self.youtube, self.reddit, self.rss, self.web_search, self.rsshub):
             cfg.reference_time = reference_time
+
+
+# gpt-image sizes are "<width>x<height>"; anything else is rejected at config load rather than
+# surfacing as an OpenAI 400 in the visual Lambda, hours later and only on the day it renders.
+_IMAGE_SIZE_RE = re.compile(r"\d+x\d+")
 
 
 class PipelineConfig(_StrictModel):
@@ -352,7 +358,8 @@ class PipelineConfig(_StrictModel):
     enable_daily_visual: bool = True
     image_model: str = "gpt-image-2"
     # orientation -> gpt-image size. The synopsis brief picks the orientation that fits the
-    # visual (wide strip / tall infographic / square meme); not locked to one aspect ratio.
+    # visual (wide strip / tall infographic / square meme); not locked to one aspect ratio. The KEYS
+    # are not free-form: they are the VisualBrief orientation vocabulary, checked below.
     image_sizes: dict[str, str] = Field(
         default_factory=lambda: {
             "square": "1024x1024",
@@ -456,6 +463,26 @@ class PipelineConfig(_StrictModel):
         "Draw him with correct, natural human anatomy and proportions and well-formed hands, as a "
         "polished, professionally-drawn character in whatever art style the day calls for."
     )
+
+    @model_validator(mode="after")
+    def _image_sizes_match_the_orientation_vocabulary(self) -> "PipelineConfig":
+        """image_sizes is advertised as overridable, but its KEYS are the VisualBrief orientation
+        vocabulary: the editor is offered `", ".join(image_sizes)` and the brief's orientation is
+        looked up in the same dict. A renamed or dropped key used to make every brief either fail
+        validation or coerce to the default orientation, with no signal at all."""
+        expected = set(VISUAL_ORIENTATIONS)
+        actual = set(self.image_sizes)
+        if actual != expected:
+            raise ValueError(
+                "pipeline.image_sizes keys must be exactly the visual orientation vocabulary "
+                f"{sorted(expected)} (got {sorted(actual)}); the keys are what the visual editor is "
+                "offered and what VisualBrief.orientation is validated against, so only the SIZES "
+                "are tunable here"
+            )
+        bad_sizes = sorted(size for size in self.image_sizes.values() if not _IMAGE_SIZE_RE.fullmatch(size))
+        if bad_sizes:
+            raise ValueError(f"pipeline.image_sizes values must look like '1024x1536' (got {bad_sizes})")
+        return self
 
 
 class AgentConfig(_StrictModel):

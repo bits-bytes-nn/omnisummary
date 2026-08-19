@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -122,16 +123,42 @@ class TestConfiguredModelsAreRegistered:
 
 
 class TestImageSizes:
-    def test_default_orientation_map(self):
-        # orientation -> gpt-image size; the brief picks the orientation per visual.
-        sizes = PipelineConfig().image_sizes
-        assert sizes["square"] == "1024x1024"
-        assert sizes["landscape"] == "1536x1024"
-        assert sizes["portrait"] == "1024x1536"
+    """image_sizes' keys are the VisualBrief orientation vocabulary, not free-form labels: the editor
+    is offered the keys and the brief's orientation is looked up in the same dict. The old test just
+    mirrored the code defaults, so a renamed key stayed green while every brief silently coerced to
+    the default orientation."""
 
-    def test_orientation_map_is_overridable(self):
+    def test_keys_are_exactly_the_orientation_vocabulary(self):
+        from shared.constants import VISUAL_ORIENTATIONS
+
+        assert set(PipelineConfig().image_sizes) == set(VISUAL_ORIENTATIONS)
+
+    def test_values_are_pixel_dimensions(self):
+        assert all(re.fullmatch(r"\d+x\d+", size) for size in PipelineConfig().image_sizes.values())
+
+    def test_sizes_are_overridable(self):
         cfg = PipelineConfig(image_sizes={"square": "512x512", "landscape": "768x512", "portrait": "512x768"})
         assert cfg.image_sizes["portrait"] == "512x768"
+
+    def test_a_renamed_or_missing_orientation_key_fails_load(self):
+        with pytest.raises(ValidationError, match="orientation vocabulary"):
+            PipelineConfig(image_sizes={"tall": "1024x1536", "wide": "1536x1024", "square": "1024x1024"})
+        with pytest.raises(ValidationError, match="orientation vocabulary"):
+            PipelineConfig(image_sizes={"square": "1024x1024", "landscape": "1536x1024"})
+
+    def test_a_non_pixel_size_fails_load(self):
+        with pytest.raises(ValidationError, match="1024x1536"):
+            PipelineConfig(
+                image_sizes={"square": "big", "landscape": "1536x1024", "portrait": "1024x1536"},
+            )
+
+    def test_the_local_config_keeps_the_vocabulary(self):
+        from shared.constants import VISUAL_ORIENTATIONS
+
+        if not LOCAL_CONFIG.exists():
+            pytest.skip(f"no local config at {LOCAL_CONFIG} (gitignored)")
+        cfg = Config.from_yaml(str(LOCAL_CONFIG))
+        assert set(cfg.pipeline.image_sizes) == set(VISUAL_ORIENTATIONS)
 
 
 class TestTranscriptLanguage:

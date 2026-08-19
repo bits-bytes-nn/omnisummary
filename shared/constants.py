@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import Literal, get_args
 
 
 class SourceType(str, Enum):
@@ -123,3 +124,10 @@ LOGGING_TRUNCATION_CHARS: dict[str, int] = {
 # publisher that truncates to it, and the prose budget the digest editor is told about.
 THREADS_MAX_POST_CHARS: int = 500
 THREADS_POST_SEPARATOR: str = "\n\n"
+
+
+# Aspect ratios a visual brief may choose. ONE definition: VisualBrief.orientation is typed with it
+# and pipeline.image_sizes is validated to map exactly these keys, so renaming an image_sizes key
+# now fails config load instead of silently making every brief coerce to the default orientation.
+VisualOrientation = Literal["square", "landscape", "portrait"]
+VISUAL_ORIENTATIONS: tuple[str, ...] = get_args(VisualOrientation)

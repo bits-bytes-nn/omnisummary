@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import time
-from typing import Any
+from typing import Any, cast
 
 from shared import (
     LOGGING_TRUNCATION_CHARS,
     BedrockLanguageModelFactory,
     VisualBrief,
+    VisualOrientation,
     VisualSynopsisPrompt,
     logger,
     resolve_secret,
@@ -106,6 +107,33 @@ class VisualGenerator:
         logger.info("Generated visual brief '%s'", brief.title[: LOGGING_TRUNCATION_CHARS["brief_title"]])
         return brief
 
+    def _resolve_size(self, brief: VisualBrief) -> str:
+        """The gpt-image size for the brief's orientation.
+
+        Config validation keeps image_sizes' keys equal to the orientation vocabulary, so a miss
+        here means the two drifted anyway (a hand-built generator, a partially validated config).
+        It used to fall through to `next(iter(...))` in silence, so the image was rendered in a
+        shape nobody chose and the format history then learned that shape as if it had been picked.
+        Now it warns AND rewrites the brief's orientation to what is actually rendered, so the
+        variation nudge can't learn a shape that was never produced."""
+        size = self.image_sizes.get(brief.orientation, "")
+        if size:
+            return size
+        if not self.image_sizes:
+            raise RuntimeError("No image sizes configured (pipeline.image_sizes is empty); cannot render a visual")
+        fallback_orientation, size = next(iter(self.image_sizes.items()))
+        logger.warning(
+            "No image size configured for orientation '%s' (configured: %s); rendering '%s' (%s) instead",
+            brief.orientation,
+            ", ".join(self.image_sizes),
+            fallback_orientation,
+            size,
+        )
+        # The configured keys ARE the orientation vocabulary (asserted by PipelineConfig), so the
+        # fallback key is a valid orientation value.
+        brief.orientation = cast(VisualOrientation, fallback_orientation)
+        return size
+
     def render(self, brief: VisualBrief) -> bytes:
         api_key = resolve_secret("OPENAI_API_KEY", "openai-api-key")
         if not api_key:
@@ -114,7 +142,7 @@ class VisualGenerator:
 
         if not brief.prompt:
             raise ValueError("Visual brief has no image prompt")
-        size = self.image_sizes.get(brief.orientation) or next(iter(self.image_sizes.values()))
+        size = self._resolve_size(brief)
         # Bound the render: the SDK defaults (10-min timeout, 2 retries) can outlive the visual
         # Lambda's 15-min budget, which shows up as a timeout with no image instead of a clean
         # failure. Both bounds are config-driven (PipelineConfig.visual_image_*).

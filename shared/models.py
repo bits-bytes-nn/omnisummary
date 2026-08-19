@@ -4,11 +4,11 @@ import hashlib
 import re
 from datetime import UTC, date, datetime
 from enum import Enum
-from typing import Any, Literal, get_args
+from typing import Any, get_args
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .constants import SourceType
+from .constants import SourceType, VisualOrientation
 from .logger import logger
 
 # An XML/HTML-style tag: needs a letter after '<' and a closing '>', so prose like "<2%" survives.
@@ -134,8 +134,10 @@ class VisualBrief(BaseModel):
     prompt: str = Field(min_length=1, max_length=4000)
 
     # The synopsis chooses the aspect ratio that fits the visual (a wide 4-panel strip,
-    # a square meme, a tall infographic); the generator maps it to a supported size.
-    orientation: Literal["square", "landscape", "portrait"] = "portrait"
+    # a square meme, a tall infographic); the generator maps it to a supported size. The vocabulary
+    # lives in shared/constants (VisualOrientation) because pipeline.image_sizes must offer exactly
+    # these keys — a hardcoded Literal here let the two drift silently.
+    orientation: VisualOrientation = "portrait"
 
     @field_validator("title", "caption", mode="after")
     @classmethod

@@ -5,10 +5,12 @@ from .constants import (
     THREADS_MAX_POST_CHARS,
     THREADS_POST_SEPARATOR,
     TRENDS_KEY,
+    VISUAL_ORIENTATIONS,
     EnvVars,
     LanguageModelId,
     LocalPaths,
     SourceType,
+    VisualOrientation,
 )
 from .formatting import (
     COUNTDOWN_SUFFIX_SEPARATOR,
@@ -95,6 +97,8 @@ __all__ = [
     "threads_item_overhead_chars",
     "truncate_at_word",
     "THREADS_MAX_POST_CHARS",
+    "VISUAL_ORIENTATIONS",
+    "VisualOrientation",
     "THREADS_POST_SEPARATOR",
     "LanguageModelId",
     "LanguageModelInfo",
