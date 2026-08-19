@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from aws_cdk import CfnOutput, Duration, Stack, Tags
+from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack, Tags
 from aws_cdk import aws_apigateway as apigw
 from aws_cdk import aws_cloudwatch as cloudwatch
 from aws_cdk import aws_cloudwatch_actions as cw_actions
@@ -145,7 +145,7 @@ class OmniSummaryApplicationStack(Stack):
             # Failures go to the DLQ for manual replay instead.
             retry_attempts=0,
             on_failure=destinations.SqsDestination(async_dlq),
-            log_retention=logs.RetentionDays.ONE_MONTH,
+            log_group=self._log_group("DailyVisualLambdaLogGroup", f"{project_name}-{stage}-visual"),
             environment={
                 "AWS_BEDROCK_REGION": bedrock_region,
                 "PROJECT_NAME": project_name,
@@ -181,7 +181,7 @@ class OmniSummaryApplicationStack(Stack):
             # re-posts the digest). A failure goes to the DLQ for inspection/manual replay.
             retry_attempts=0,
             on_failure=destinations.SqsDestination(async_dlq),
-            log_retention=logs.RetentionDays.ONE_MONTH,
+            log_group=self._log_group("DigestPipelineLambdaLogGroup", f"{project_name}-{stage}-digest"),
             environment={
                 "STATE_BUCKET": foundation.state_bucket.bucket_name,
                 "S3_PREFIX": f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state",
@@ -225,7 +225,7 @@ class OmniSummaryApplicationStack(Stack):
             timeout=Duration.seconds(60),
             memory_size=128,
             role=foundation.slack_role,
-            log_retention=logs.RetentionDays.ONE_MONTH,
+            log_group=self._log_group("SlackEventLambdaLogGroup", f"{project_name}-{stage}-slack-events"),
             # The handler fires the (minutes-long) AgentCore runtime without awaiting its result,
             # so a self-invoke that errored should NOT auto-retry — a retry re-runs the whole deep
             # research, double-posting to Slack/Threads. retry_attempts=0 + DLQ matches the digest/
@@ -286,7 +286,7 @@ class OmniSummaryApplicationStack(Stack):
             # value Lambda would retry the async (EventBridge) invoke twice, re-calling the
             # Threads refresh endpoint. One attempt + the alarm is what we want.
             retry_attempts=0,
-            log_retention=logs.RetentionDays.ONE_MONTH,
+            log_group=self._log_group("ThreadsRefreshLambdaLogGroup", f"{project_name}-{stage}-threads-refresh"),
             environment={"PROJECT_NAME": project_name, "STAGE": stage},
         )
         events.Rule(
@@ -417,6 +417,28 @@ class OmniSummaryApplicationStack(Stack):
             treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
         )
         agent_errors.add_alarm_action(alarm_action)
+
+    def _log_group(self, construct_id: str, function_name: str) -> logs.LogGroup:
+        """A function's log group, DECLARED, instead of the deprecated `log_retention=` prop.
+
+        That prop does not set a property — it renders a `Custom::LogRetention` Lambda per function,
+        each with its own execution role holding `logs:PutRetentionPolicy` AND
+        `logs:DeleteRetentionPolicy` on Resource `"*"`. Four extra Lambdas, four extra roles, and a
+        wildcard permission that can silently shorten or drop the retention of ANY log group in a
+        shared account, all to set one property CloudWatch exposes on the group itself. Declaring the
+        group also brings it inside the template-wide wildcard-resource and retention assertions.
+
+        NOTE for the first deploy after this change: Lambda has already implicitly created
+        `/aws/lambda/<function_name>` for every existing function, and CloudFormation will not adopt
+        an existing log group. Delete the four groups (or import them) before deploying.
+        """
+        return logs.LogGroup(
+            self,
+            construct_id,
+            log_group_name=f"/aws/lambda/{function_name}",
+            retention=logs.RetentionDays.ONE_MONTH,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
 
     def _attach_waf(self, api: apigw.RestApi, project_name: str, stage: str, rate_limit: int) -> None:
         managed_groups = [

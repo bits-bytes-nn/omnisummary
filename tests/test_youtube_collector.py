@@ -497,6 +497,29 @@ class TestS3Preload:
         assert [i.item_id for i in items] == ["vFresh"]
 
     @pytest.mark.asyncio
+    async def test_a_day_old_park_file_still_delivers_its_items(self, monkeypatch):
+        # "Stale beats empty" only holds if the window is wide enough to contain what a one-cadence-old
+        # sync parked. At lookback_hours 24 the cutoff was midnight at the START of the digest date, so
+        # every dated item in a STALE file fell before it and the source reported STALE carrying ZERO
+        # items — the contract inverted. The shipped default reaches back past the previous run.
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config())
+        collector.config.lookback_hours = YouTubeCollectorConfig().lookback_hours
+        parked = [
+            CollectedItem(
+                item_id="vEvening",
+                source_type=SourceType.YOUTUBE,
+                title="published after the previous run collected",
+                url="https://y/evening",
+                published_at=datetime(2026, 6, 1, 20, tzinfo=UTC),
+            )
+        ]
+        stale = ParkedItems(outcome=ParkOutcome.STALE, items=parked, age_hours=25.0, detail="25.0h old")
+        with patch("collectors.youtube.load_items_from_s3", return_value=stale):
+            items = await collector.collect()
+        assert [i.item_id for i in items] == ["vEvening"]
+
+    @pytest.mark.asyncio
     async def test_a_backfill_run_does_not_ingest_todays_parked_items(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
         collector = YouTubeCollector(_config())

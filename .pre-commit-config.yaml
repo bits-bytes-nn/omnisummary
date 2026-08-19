@@ -4,20 +4,26 @@
 # hook: it needs the full dependency set resolved and takes long enough that people start passing
 # --no-verify, which costs more than it saves.
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.4
+  # ruff and black run through `uv run`, i.e. the versions uv.lock pins and CI installs with
+  # `uv sync --frozen` — literally the same binaries as the gate. Pinned `rev:`s drifted instead: the
+  # hooks held black 25.9.0 / ruff v0.14.4 while the lock resolved black 26.5.1 / ruff 0.16.3, so a
+  # file the hook had just formatted could be rejected by `uv run black --check .` seconds later. A
+  # rev bump only postpones that to the next lock update; there is no version here to drift.
+  - repo: local
     hooks:
       - id: ruff
-        args: [--fix]
-      - id: ruff-format
-        # black owns formatting in this repo (line-length 120 in pyproject); ruff-format would
-        # fight it, so only the linter runs here.
-        stages: [manual]
-
-  - repo: https://github.com/psf/black
-    rev: 25.9.0
-    hooks:
+        name: ruff check (uv.lock version)
+        entry: uv run ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+      # black owns formatting in this repo (line-length 120 in pyproject), so ruff-format never runs.
       - id: black
+        name: black (uv.lock version)
+        entry: uv run black
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0

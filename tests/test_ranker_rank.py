@@ -380,6 +380,23 @@ class TestGraceIntegration:
         assert {r.item.item_id for r in result} == {"r1", "y1"}
 
     @pytest.mark.asyncio
+    async def test_a_grace_item_is_marked_grace_and_nothing_else_is(self):
+        # Tracked as a local id set inside the ranker, the intent to keep that source represented did
+        # not survive the handoff: the editor saw only a low Score, and the diversity audit read the
+        # source as available-but-declined and alerted. The flag mirrors `backfill`.
+        items = _items([("r1", SourceType.RSS), ("y1", SourceType.YOUTUBE)])
+        ranker = _ranker(
+            _rankings({"r1": 0.80, "y1": 0.55}),
+            top_n=5,
+            min_score=0.6,
+            source_slot_score_grace=0.1,
+            source_slots={"rss": 1, "youtube": 1},
+        )
+        result = await ranker.rank(items)
+        assert {r.item.item_id for r in result if r.grace} == {"y1"}
+        assert not any(r.grace and r.backfill for r in result)
+
+    @pytest.mark.asyncio
     async def test_grace_item_does_not_fill_fallback_slots(self):
         # Quiet day: one strong RSS item + sub-threshold grace items in two slotted sources.
         # Grace items take ONLY their own guaranteed slot — they must NOT be pulled into the

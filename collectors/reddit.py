@@ -8,7 +8,6 @@ from shared.config import RedditCollectorConfig
 
 from .base import (
     BaseCollector,
-    cutoff_datetime,
     fetch_feed_with_retry,
     parse_feed_entries,
 )
@@ -100,7 +99,8 @@ class RedditCollector(BaseCollector):
         return parse_feed_entries(
             feed,
             source_type=SourceType.REDDIT,
-            cutoff=cutoff_datetime(self.config.lookback_hours, self.config.reference_time),
+            lookback_hours=self.config.lookback_hours,
+            reference_time=self.config.reference_time,
             description=f"Reddit feed 'r/{subreddit_name}'",
             metadata={"subreddit": subreddit_name},
             item_id_of=lambda entry, link: self._extract_post_id(entry.get("id", ""), link),

@@ -3,6 +3,7 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 import yaml
 from dotenv import load_dotenv
@@ -16,6 +17,7 @@ from .constants import (
     LanguageModelId,
     SourceType,
 )
+from .logger import logger
 
 
 class _StrictModel(BaseModel):
@@ -50,7 +52,13 @@ KOREAN_STYLE_RULES: str = (
 
 class BaseCollectorConfig(_StrictModel):
     enabled: bool = True
-    lookback_hours: int = 24
+    # Must reach back to the PREVIOUS run, not just cover one day: the cutoff is anchored at midnight
+    # at the END of the digest date while the cron collects hours before that midnight, so at 24 the
+    # slice between the run and midnight was unpublished when that day's run collected and already
+    # before the next run's cutoff. Config._lookback_reaches_the_previous_run validates the floor
+    # (48 - the run's local hour); this default is the floor for the shipped 19:00 KST cron plus
+    # an hour of margin.
+    lookback_hours: int = Field(default=30, ge=1)
     reference_time: datetime | None = None
     request_timeout: int = Field(default=30, ge=1)
     max_retries: int = Field(default=3, ge=1)
@@ -202,6 +210,15 @@ class CollectorsConfig(_StrictModel):
             cfg.reference_time = reference_time
 
 
+def _utc_offset_hours(timezone: str) -> int:
+    """Whole-hour UTC offset of `timezone` right now, for turning the UTC cron hour into a local one.
+
+    Read from the CURRENT moment rather than a fixed anchor date so a DST-observing deployment is
+    judged against the offset it is actually running under."""
+    offset = datetime.now(ZoneInfo(timezone)).utcoffset()
+    return round(offset.total_seconds() / 3600) if offset else 0
+
+
 # gpt-image sizes are "<width>x<height>"; anything else is rejected at config load rather than
 # surfacing as an OpenAI 400 in the visual Lambda, hours later and only on the day it renders.
 _IMAGE_SIZE_RE = re.compile(r"\d+x\d+")
@@ -254,10 +271,12 @@ class PipelineConfig(_StrictModel):
     # move the faithfulness score). Best-effort; disable to skip the extra LLM call.
     enable_grounding_check: bool = True
     # Deterministic prose checks on the editor's Korean (shared/prose_lint.py), verified in code
-    # rather than asked for again: the comma-after-a-finished-predicate the style rules ban BY NAME
-    # still shipped, and so did a lead re-telling items[0]'s numbers that the prompt explicitly
-    # forbids. A hit re-asks through the existing digest retry path — and on the LAST attempt the
-    # content is kept anyway, because a style slip is strictly better than no digest.
+    # rather than asked for again: the comma-after-a-finished-predicate KOREAN_STYLE_RULES bans BY
+    # NAME still shipped, and so did a lead re-telling items[0]'s numbers that the prompt explicitly
+    # forbids. Every check must trace to a rule stated HERE — an em-dash pattern that no rule backed
+    # fired on 3 of 4 shipped digests over idiomatic Korean before it was deleted. A hit re-asks ONCE
+    # (PROSE_LINT_MAX_REASKS, not digest_max_retries: the re-send is byte-identical), then the content
+    # is kept anyway, because a style slip is strictly better than no digest.
     enable_prose_lint: bool = True
     # Korean editorial rules + translation glossary, injected into the digest prompt's *Language*
     # block so the glossary can be tuned without editing the prompt. NOT a language switch: the
@@ -372,9 +391,6 @@ class PipelineConfig(_StrictModel):
     )
     source_cap_multiplier: int = Field(default=2, ge=1)
     max_per_origin: int = Field(default=1, ge=1)
-    origin_weights: dict[str, float] = Field(default_factory=dict)
-    origin_weight_default: float = Field(default=1.0, ge=0.0)
-    origin_weight_nudge: float = Field(default=0.1, ge=0.0, le=1.0)
     # Engagement bonus tiers (views threshold -> score bonus) the ranking prompt applies
     # to items carrying view counts. Tunable instead of baked into the prompt text.
     engagement_tiers: list[tuple[int, float]] = Field(
@@ -654,6 +670,42 @@ class Config(_StrictModel):
     slack: SlackConfig = Field(default_factory=SlackConfig)
     aws: AWSConfig = Field(default_factory=AWSConfig)
 
+    @model_validator(mode="after")
+    def _lookback_reaches_the_previous_run(self) -> "Config":
+        """Every source's lookback_hours must reach back to the PREVIOUS run, or a slice of every
+        single day appears in no digest ever.
+
+        The cutoff is anchored at midnight at the END of the digest date (`resolve_digest_window`),
+        but the run happens hours BEFORE that midnight. All five sources shipped `lookback_hours: 24`
+        against a 10:00 UTC (19:00 KST) cron, so the window was exactly the digest date while the
+        collectors ran at 19:00 — and everything published 19:00-24:00 KST was still unpublished when
+        that day's run collected and already before the next run's cutoff. Five hours of every day,
+        permanently. The required minimum is therefore `48 - <run hour, local>`: the span from the
+        previous run's clock time to this run's reference time.
+
+        Widening is safe rather than duplicative because cross-day repeats are excluded by identity,
+        not by the window (`PublishedUrlLedger` plus recent AgentCore snapshots), and it restores the
+        park files' 'stale beats empty' contract: with a 24h window a STALE park file's dated items
+        were all older than the cutoff, so the source reported STALE carrying zero items.
+
+        Skipped when the cron hour is not a single integer: a multi-run expression has no one gap."""
+        if not self.aws.digest_cron_hour.isdigit():
+            return self
+        run_hour_local = (int(self.aws.digest_cron_hour) + _utc_offset_hours(self.aws.timezone)) % 24
+        minimum = 48 - run_hour_local
+        short = {
+            name: hours
+            for name in sorted(COLLECTOR_NAMES)
+            if (hours := getattr(self.collectors, name).lookback_hours) < minimum
+        }
+        if short:
+            raise ValueError(
+                f"collectors {short} look back less than the {minimum}h between the "
+                f"{run_hour_local:02d}:00 {self.aws.timezone} run and the previous one; items published "
+                "after a run and before the next cutoff would appear in no digest at all"
+            )
+        return self
+
     @classmethod
     def from_yaml(cls, file_path: str) -> "Config":
         with open(file_path, encoding="utf-8") as f:
@@ -662,11 +714,34 @@ class Config(_StrictModel):
 
     @classmethod
     def load(cls) -> "Config":
+        """The deployed config: `config/config.yaml`, falling back to the tracked template.
+
+        Returning bare code defaults for a missing file was silent and wrong. config.yaml is
+        gitignored, both Dockerfiles COPY config/, so a clean-checkout image — which is exactly what
+        CI builds and validates — resolved to empty rss/reddit/youtube lists and region us-east-1 and
+        started up perfectly happily. The first sign was a digest with no stories.
+
+        The template is tracked and always present, so it is a real config rather than nothing: the
+        source lists are placeholders, but every knob is the shipped one and the WARNING names what
+        happened. With neither file there is nothing to deploy, and load() says so."""
         load_dotenv()
-        config_path = Path(__file__).parent.parent / "config" / "config.yaml"
-        if not config_path.exists():
-            return cls()
-        return cls.from_yaml(str(config_path))
+        config_dir = Path(__file__).parent.parent / "config"
+        config_path = config_dir / "config.yaml"
+        if config_path.exists():
+            return cls.from_yaml(str(config_path))
+        template_path = config_dir / "config-template.yaml"
+        if not template_path.exists():
+            raise FileNotFoundError(
+                f"No config found: neither '{config_path}' nor '{template_path}' exists. "
+                "Copy config/config-template.yaml to config/config.yaml and fill it in."
+            )
+        logger.warning(
+            "'%s' is missing; falling back to the tracked template '%s'. Its source lists are "
+            "PLACEHOLDERS, so this config collects nothing.",
+            config_path,
+            template_path,
+        )
+        return cls.from_yaml(str(template_path))
 
 
 @lru_cache(maxsize=1)

@@ -10,6 +10,7 @@ from botocore.config import Config as BotoConfig
 from strands import Agent
 from strands.models import BedrockModel
 from strands.models.bedrock import CacheConfig
+from strands.types.agent import Limits
 
 from shared import (
     KOREAN_STYLE_RULES,
@@ -17,7 +18,6 @@ from shared import (
     THREADS_MAX_POST_CHARS,
     BedrockCrossRegionModelHelper,
     Config,
-    EnvVars,
     available_boto_profile,
     logger,
 )
@@ -36,6 +36,24 @@ from .research_tools import (
 # max_tokens when the model id isn't in LANGUAGE_MODEL_INFO (kept in one place so the warning
 # message and the actual fallback can't drift).
 _DEFAULT_MAX_OUTPUT_TOKENS = 64000
+
+
+def research_run_limits(config: Config | None = None) -> Limits:
+    """Hard per-invocation bounds for the tool loop, for EVERY caller of the agent.
+
+    The Strands SDK checks them at each turn boundary and stops with stop_reason='limit_*'; the
+    guidance knobs interpolated into the system prompt (research_breadth/research_max_iterations)
+    enforce nothing. Lives beside the agent rather than in one entrypoint because it applied in only
+    one: research_cli.py called `agent(prompt)` bare, so the local path — the one used for prompt
+    iteration, where non-convergence is most likely and a run can reach the full token budget — had
+    no cap at all."""
+    agent_config = (config or Config.load()).agent
+    return Limits(
+        turns=agent_config.research_max_turns,
+        total_tokens=agent_config.research_max_total_tokens,
+        output_tokens=agent_config.research_max_output_tokens,
+    )
+
 
 SYSTEM_PROMPT_TEMPLATE: str = """\
 <role>
@@ -256,7 +274,7 @@ def create_research_agent(tools: list[Any] | None = None) -> Agent:
     # looks for — down the profile_name="research" branch inside a container with no ~/.aws/config,
     # so the agent could not be constructed at all there.
     boto_session = boto3.Session(
-        region_name=os.environ.get(EnvVars.AWS_BEDROCK_REGION.value) or config.aws.bedrock_region,
+        region_name=os.environ.get("AWS_BEDROCK_REGION") or config.aws.bedrock_region,
         profile_name=available_boto_profile(config.aws.profile),
     )
 

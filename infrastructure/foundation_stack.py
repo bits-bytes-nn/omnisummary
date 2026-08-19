@@ -8,6 +8,7 @@ from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_ecr as ecr
 from aws_cdk import aws_ecs as ecs
 from aws_cdk import aws_iam as iam
+from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_servicediscovery as sd
 from aws_cdk import aws_sns as sns
@@ -316,7 +317,9 @@ class OmniSummaryFoundationStack(Stack):
             "RSSHubContainer",
             image=ecs.ContainerImage.from_registry("diygod/rsshub:latest"),
             port_mappings=[ecs.PortMapping(container_port=RSSHUB_PORT)],
-            logging=ecs.LogDrivers.aws_logs(stream_prefix="rsshub"),
+            # With no retention the CDK-generated group also carries DeletionPolicy: Retain, so this
+            # was the one log group in either stack kept forever — and the only one nothing asserted.
+            logging=ecs.LogDrivers.aws_logs(stream_prefix="rsshub", log_retention=logs.RetentionDays.ONE_MONTH),
             environment={
                 "NODE_ENV": "production",
                 "CACHE_TYPE": "memory",

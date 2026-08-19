@@ -9,7 +9,14 @@ collectors:
     channels: []
       # - "https://www.youtube.com/@channel_name"
     max_videos_per_channel: 3
-    lookback_hours: 24
+    # ONE collection window for every source, defined here and aliased below. The cutoff is anchored
+    # at midnight at the END of the digest date, but the cron collects hours before that midnight —
+    # so at 24 the window was exactly the digest date and everything published between the run and
+    # that midnight fell before the NEXT run's cutoff, appearing in no digest ever. Config validates
+    # the floor (48 - the run's local hour, i.e. 29h for a 19:00 run); 30 leaves an hour of margin.
+    # Widening cannot re-run a story: cross-day repeats are excluded by URL identity
+    # (PublishedUrlLedger + recent AgentCore snapshots), not by the window.
+    lookback_hours: &lookback_hours 30
     # Channels collected at once (each parks worker threads for the scrape/transcript fetches);
     # same bound as rss.max_concurrency.
     max_concurrency: 5
@@ -19,16 +26,17 @@ collectors:
     # (the local cron runs daily): at the code default of 36 a completely skipped sync day still read
     # FRESH/OK, which is the very thing this budget exists to catch.
     park_max_age_hours: 24
-    # All channels answering with nothing is the shape of an IP block or a revoked key, not a quiet
-    # day — see rsshub.empty_rate_threshold below for why the code default cannot catch it.
-    empty_rate_threshold: 90.0
+    # empty_rate_threshold is deliberately NOT armed for youtube (see rsshub below, where it is). The
+    # all-200-and-empty shape it targets has no YouTube analogue — a revoked key, an exhausted quota
+    # or a datacenter-IP block RAISES and already reports FAILED. Armed, it fires on a day when every
+    # low-cadence channel happens to be quiet, which is a normal day and pure alert fatigue.
   reddit:
     enabled: true
     subreddits: []
       # - "subreddit_name"
     sort: hot
     limit: 20
-    lookback_hours: 24
+    lookback_hours: *lookback_hours
     # With only a handful of subreddits the failure RATE cannot express a partial outage: 1 of 2 is
     # exactly error_rate_threshold (clean) and 2 of 2 already raises FAILED, so DEGRADED was
     # unreachable. Degrade as soon as this many inputs fail, whatever the rate. 0 disables it.
@@ -37,7 +45,7 @@ collectors:
     enabled: true
     feeds: []
       # - "https://example.substack.com/feed"
-    lookback_hours: 24
+    lookback_hours: *lookback_hours
     # Each feed parse parks a worker thread; keep this at/below the asyncio executor width so a
     # feed's timeout measures its fetch, not its wait in the queue.
     max_concurrency: 5
@@ -122,9 +130,6 @@ pipeline:
     rss: 1
     reddit: 1
     youtube: 1
-  origin_weight_default: 1.0
-  origin_weights: {}
-    # Per-origin weight multiplier. Key = X handle, channel URL, subreddit, or feed URL.
   trend_model: "anthropic.claude-sonnet-5"
   trend_retention_days: 30
   trend_cooling_days: 7

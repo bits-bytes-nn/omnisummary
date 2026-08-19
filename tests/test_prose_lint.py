@@ -1,3 +1,5 @@
+import pytest
+
 from shared.prose_lint import lead_specificity_hits, lint_digest_prose, specifics
 
 
@@ -30,13 +32,70 @@ class TestCommaAfterAFinishedPredicate:
         assert hits and hits[0].startswith("lead:")
 
 
-class TestEmDashBetweenFinishedClauses:
-    def test_an_em_dash_after_a_predicate_is_caught(self):
-        hits = lint_digest_prose("리드다.", [("모델이 나왔다 — 값은 따로다.", "")])
-        assert hits and "em-dash between two finished clauses" in hits[0]
+class TestOnlyRulesTheConfigStatesAreChecked:
+    """A check with no rule behind it is a style opinion with a re-ask budget attached.
 
-    def test_an_em_dash_inside_one_clause_is_left_alone(self):
-        assert lint_digest_prose("리드다.", [("모델 — 특히 소형 모델 — 이 늘었다.", "")]) == []
+    An em-dash-after-a-predicate pattern once lived here, cited KOREAN_STYLE_RULES as its source of
+    truth, and appears nowhere in it: the rules ban the colon and the comma BY NAME and say nothing
+    about a dash. It fired on 3 of the 4 shipped digests over idiomatic Korean editorial prose, each
+    hit costing a byte-identical ~50k-token Sonnet re-ask that kept the content anyway.
+
+    The sentences below are verbatim from digest_2026-06-11/06-16/06-21."""
+
+    SHIPPED_EM_DASH_PROSE = (
+        "인간은 훨씬 적은 샘플로 훨씬 많은 것을 배운다 — 그렇다면 AI 진보의 진짜 병목은 데이터의 양이 아니다.",
+        "이것은 단순한 철학적 선언이 아니다 — Microsoft는 모델 경쟁에서 이기는 전략보다 생태계를 택했다.",
+        "돈은 넘치는데 M&A는 줄었다 — 이들이 '사는' 대신 '짓거나 투자하는' 전략으로 전환했다는 뜻이다.",
+        "Anthropic이 그를 어디에 쓸지는 아직 모른다 — 그게 오히려 더 흥미롭다.",
+    )
+
+    def test_the_style_rules_name_the_colon_and_the_comma_and_no_dash(self):
+        from shared.config import KOREAN_STYLE_RULES
+
+        assert "colon" in KOREAN_STYLE_RULES
+        assert "comma after a finished predicate" in KOREAN_STYLE_RULES
+        assert "dash" not in KOREAN_STYLE_RULES
+
+    @pytest.mark.parametrize("prose", SHIPPED_EM_DASH_PROSE)
+    def test_shipped_prose_joined_by_a_dash_is_left_alone(self, prose):
+        assert lint_digest_prose(prose, [("본문이다.", "시사점이다.")]) == []
+        assert lint_digest_prose("리드다.", [(prose, "")]) == []
+        assert lint_digest_prose("리드다.", [("본문이다.", prose)]) == []
+
+
+class TestTheShippedDigestCorpus:
+    """The maintainer's stored digests are the only real sample of what the editor writes. A check
+    that fires on them is a false positive by construction: those digests shipped and were kept.
+
+    digest_state/ is gitignored (it is run output, not source), so this is a local gate and skips
+    where the corpus is absent. The verbatim sentences in TestOnlyRulesTheConfigStatesAreChecked are
+    what pins the same regression in CI."""
+
+    @staticmethod
+    def _stored_digests():
+        import json
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent / "digest_state"
+        for path in sorted(root.glob("digest_*.json")):
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            content = (raw.get("digest_result") or raw).get("content")
+            if content and content.get("items"):
+                yield path.name, content
+
+    def test_the_only_check_that_fires_on_shipped_prose_is_the_one_the_rules_name(self):
+        stored = list(self._stored_digests())
+        if not stored:
+            pytest.skip("no stored digests to lint (digest_state/ is gitignored run output)")
+        fired = set()
+        for name, content in stored:
+            for hit in lint_digest_prose(
+                content["lead"],
+                [(item.get("body", ""), item.get("implication", "")) for item in content["items"]],
+            ):
+                fired.add(hit.split("—")[0].split(": ", 1)[1].strip() if ": " in hit else hit)
+                print(f"{name}: {hit}")
+        assert fired <= {"comma after a finished predicate"}
 
 
 class TestSpecifics:

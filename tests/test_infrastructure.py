@@ -212,15 +212,40 @@ class TestFoundationStack:
         assert "bedrock:ListInferenceProfiles" in rendered
 
     def test_sensitive_actions_not_wildcard_resource(self, templates):
-        foundation, _ = templates
-        policies = foundation.find_resources("AWS::IAM::Policy")
-        sensitive = ("ssm:GetParameter", "logs:PutLogEvents", "bedrock-agentcore:CreateEvent")
-        for policy in policies.values():
-            for stmt in policy["Properties"]["PolicyDocument"]["Statement"]:
-                actions = stmt.get("Action", [])
-                actions = [actions] if isinstance(actions, str) else actions
-                if any(any(s in a for s in sensitive) for a in actions):
-                    assert stmt.get("Resource") != "*", f"sensitive action scoped to *: {actions}"
+        # BOTH templates: inspecting only the foundation's roles missed the four Custom::LogRetention
+        # providers the deprecated `log_retention=` prop rendered into the APPLICATION stack, each
+        # with logs:PutRetentionPolicy + logs:DeleteRetentionPolicy on Resource "*" — an
+        # audit-trail-tampering primitive in a shared account.
+        sensitive = (
+            "ssm:GetParameter",
+            "logs:PutLogEvents",
+            "logs:PutRetentionPolicy",
+            "logs:DeleteRetentionPolicy",
+            "bedrock-agentcore:CreateEvent",
+        )
+        for template in templates:
+            for policy in template.find_resources("AWS::IAM::Policy").values():
+                for stmt in policy["Properties"]["PolicyDocument"]["Statement"]:
+                    actions = stmt.get("Action", [])
+                    actions = [actions] if isinstance(actions, str) else actions
+                    if any(any(s in a for s in sensitive) for a in actions):
+                        assert stmt.get("Resource") != "*", f"sensitive action scoped to *: {actions}"
+
+    def test_no_log_retention_custom_resource(self, templates):
+        # `log_retention=` is deprecated and does not set a property: it renders one Lambda + role per
+        # function purely to call PutRetentionPolicy. Declaring the LogGroup deletes all of it.
+        for template in templates:
+            template.resource_count_is("Custom::LogRetention", 0)
+
+    def test_every_log_group_has_a_retention(self, templates):
+        # The RSSHub container's group had no RetentionInDays AND DeletionPolicy: Retain — the one log
+        # group in either stack kept forever. Assert over BOTH templates so the next log producer
+        # cannot reintroduce an unbounded one.
+        for template in templates:
+            groups = template.find_resources("AWS::Logs::LogGroup")
+            assert groups
+            for logical_id, group in groups.items():
+                assert group["Properties"].get("RetentionInDays"), f"{logical_id} retains logs forever"
 
     def test_ssm_resource_scoped_to_project_path(self, templates):
         foundation, _ = templates

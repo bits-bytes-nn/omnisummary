@@ -7,7 +7,6 @@ from shared.config import RSSCollectorConfig
 
 from .base import (
     BaseCollector,
-    cutoff_datetime,
     fetch_feed_with_retry,
     gather_collector_results,
     parse_feed_entries,
@@ -68,7 +67,8 @@ class RSSCollector(BaseCollector):
             return parse_feed_entries(
                 feed,
                 source_type=SourceType.RSS,
-                cutoff=cutoff_datetime(self.config.lookback_hours, self.config.reference_time),
+                lookback_hours=self.config.lookback_hours,
+                reference_time=self.config.reference_time,
                 description=f"RSS feed '{feed_url}'",
                 metadata={"feed_url": feed_url, "feed_title": feed.feed.get("title", "")},
             )

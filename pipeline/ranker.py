@@ -106,8 +106,6 @@ class ContentRanker:
             items_lost=lost,
             min_coverage_ratio=self.config.ranking_min_coverage_ratio,
         )
-        self._apply_origin_weights(ranked_items)
-
         # Pinned items (user-specified via --pin-url) are guaranteed a slot regardless of score
         # or diversity caps — they're kept aside and prepended after slotting fills the rest.
         pinned = [r for r in ranked_items if r.item.metadata.get("pinned")]
@@ -136,9 +134,6 @@ class ContentRanker:
         grace = self._grace_candidates(ranked_items, above_threshold, pinned)
         above_threshold.extend(grace)
         above_threshold.sort(key=lambda r: (-r.score, r.item.item_id))
-        # Grace items are below min_score; they may ONLY fill their own source's guaranteed slot,
-        # never the relaxed fallback fill (which would pad a quiet day with several weak items).
-        grace_ids = {r.item.item_id for r in grace}
 
         source_scores: dict[str, list[float]] = {}
         for r in ranked_items:
@@ -158,9 +153,9 @@ class ContentRanker:
         # Reserve slots for the pinned items so the source-slotting fills only the remainder,
         # then prepend the pinned items so they always lead and never get crowded out.
         remaining = max(0, core_limit - len(pinned))
-        filled = self._apply_source_slots(above_threshold, remaining, grace_ids, pinned)
+        filled = self._apply_source_slots(above_threshold, remaining, pinned)
         core = pinned + filled
-        extras = self._backfill_candidates(above_threshold, core, grace_ids, limit - len(core))
+        extras = self._backfill_candidates(above_threshold, core, limit - len(core))
         selected = core + extras
 
         if pinned:
@@ -176,7 +171,7 @@ class ContentRanker:
         for r in selected:
             logger.info(
                 "  Selected%s: [%s] %.2f - '%s'",
-                " (backfill)" if r.backfill else "",
+                " (backfill)" if r.backfill else (" (grace)" if r.grace else ""),
                 r.item.source_type.value,
                 r.score,
                 r.item.title[: LOGGING_TRUNCATION_CHARS["title"]],
@@ -184,7 +179,7 @@ class ContentRanker:
         return selected
 
     def _backfill_candidates(
-        self, above_threshold: list[RankedItem], core: list[RankedItem], grace_ids: set[str], room: int
+        self, above_threshold: list[RankedItem], core: list[RankedItem], room: int
     ) -> list[RankedItem]:
         """The extra candidates handed to the editor beyond the core, in score order, flagged as
         backfill. They exist so a merge of two same-event items can still be topped up to top_n
@@ -210,7 +205,7 @@ class ContentRanker:
         for item in above_threshold:
             if len(extras) >= room:
                 break
-            if item.item.item_id in chosen_ids or item.item.item_id in grace_ids:
+            if item.item.item_id in chosen_ids or item.grace:
                 continue
             origin = resolve_origin_key(item.item)
             if origin and origin_counts[origin] >= cap:
@@ -311,44 +306,6 @@ class ContentRanker:
         tiers = ", ".join(f"{views:,}+ views → +{bonus}" for views, bonus in sorted(self.config.engagement_tiers))
         return ENGAGEMENT_SIGNAL_BLOCK.format(tiers=f"Items with view counts: {tiers}.")
 
-    def _apply_origin_weights(self, ranked_items: list[RankedItem]) -> None:
-        weights = self.config.origin_weights
-        default_weight = self.config.origin_weight_default
-        if not weights and default_weight == 1.0:
-            return
-        # A weight is a small ADDITIVE tie-breaker, not a multiplier. The LLM prompt
-        # already judges Source Authority; multiplying its calibrated score by the
-        # weight would double-count authority and distort the scale non-linearly
-        # (and inflate mid-range scores most). nudge = (weight-1.0) * factor, clamped.
-        nudge_factor = self.config.origin_weight_nudge
-        matched: set[str] = set()
-        for ranked in ranked_items:
-            origin_key = resolve_origin_key(ranked.item)
-            if not origin_key:
-                continue
-            if origin_key in weights:
-                matched.add(origin_key)
-            weight = weights.get(origin_key, default_weight)
-            if weight != 1.0:
-                original = ranked.score
-                ranked.score = max(0.0, min(1.0, ranked.score + (weight - 1.0) * nudge_factor))
-                logger.debug(
-                    "Applied origin nudge (w=%.2f) to '%s' (origin='%s'): %.2f → %.2f",
-                    weight,
-                    ranked.item.title[: LOGGING_TRUNCATION_CHARS["title_short"]],
-                    origin_key,
-                    original,
-                    ranked.score,
-                )
-        # An origin key is matched CASE-SENSITIVELY against resolve_origin_key's output, so
-        # 'Karpathy' vs 'karpathy' — or a handle commented out of collectors.rsshub.accounts —
-        # applies no nudge at all and used to log nothing. A configured weight that matched no item
-        # on a day the source did collect is a typo; on a day the source was dark it is expected,
-        # which is why this is a WARNING and not a load-time failure.
-        unmatched = sorted(set(weights) - matched)
-        if unmatched:
-            logger.warning("origin_weights matched no item this run: %s", ", ".join(unmatched))
-
     def _grace_candidates(
         self, ranked_items: list[RankedItem], above_threshold: list[RankedItem], pinned: list[RankedItem]
     ) -> list[RankedItem]:
@@ -357,6 +314,11 @@ class ContentRanker:
         threshold. The absolute-scoring prompt systematically under-rates conversational sources
         (video/podcast transcripts vs tight articles); this keeps a strong-but-0.55 item eligible
         without lowering the global bar for everyone. Generalizes to any under-scored source.
+
+        An admitted item is marked `grace` on the RankedItem itself, which is what makes the ranker's
+        intent survive the handoff: as a local id set it went no further than this module, so the
+        editor saw a 0.50 grace item as just the weakest candidate in the list and dropped it, and the
+        diversity audit then read the source as available-but-declined.
 
         Pinned items are already guaranteed a slot, so a source they cover is NOT empty — treat it
         as covered and exclude pinned ids from the candidate pool. Otherwise a pinned item that is
@@ -387,6 +349,7 @@ class ContentRanker:
                 # (-score, item_id), like every other selection path here: plain max() broke a score
                 # tie by the LLM's response order within a batch, which is not stable run to run.
                 best = min(candidates, key=lambda r: (-r.score, r.item.item_id))
+                best.grace = True
                 extra.append(best)
                 logger.info(
                     "Source '%s' had nothing above %.2f; admitting best item at %.2f (grace floor %.2f)",
@@ -401,10 +364,8 @@ class ContentRanker:
         self,
         above_threshold: list[RankedItem],
         limit: int,
-        grace_ids: set[str] | None = None,
         pinned: list[RankedItem] | None = None,
     ) -> list[RankedItem]:
-        grace_ids = grace_ids or set()
         source_slots = self.config.source_slots
         # NOTE: an empty source_slots skips only the GUARANTEED-SLOT pass below (the loop simply has
         # nothing to iterate) — the origin-cap fill passes still run. Returning above_threshold[:limit]
@@ -466,7 +427,7 @@ class ContentRanker:
             for item in above_threshold:
                 if len(selected) >= limit:
                     break
-                if item.item.item_id in selected_ids or item.item.item_id in grace_ids:
+                if item.item.item_id in selected_ids or item.grace:
                     continue
                 src = item.item.source_type.value
                 cap = source_slots.get(src, DEFAULT_SOURCE_SLOT) * self.config.source_cap_multiplier

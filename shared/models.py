@@ -51,6 +51,13 @@ class RankedItem(BaseModel):
     # usable — just not part of the diversified core. Defaults to False, so a snapshot stored before
     # this field existed still loads.
     backfill: bool = False
+    # True for a candidate admitted by the source-slot score GRACE: its score is below min_score, and
+    # it is here only because its source has a guaranteed slot and landed nothing above the bar. It
+    # was tracked as a local `grace_ids` set inside the ranker alone, so by the time the editor saw
+    # it, a 0.50 grace item looked identical to a 0.70 one and predictably lost — the ranker's intent
+    # to keep that source represented was invisible to the stage that decides what ships. Mirrors
+    # `backfill`, including the default that lets a pre-existing snapshot load.
+    grace: bool = False
 
 
 class DigestItem(BaseModel):

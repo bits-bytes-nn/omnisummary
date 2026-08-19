@@ -27,7 +27,7 @@ from shared import (
 )
 from shared.config import WebSearchCollectorConfig
 
-from .base import BaseCollector, cutoff_datetime, gather_collector_results
+from .base import BaseCollector, gather_collector_results, in_collection_window
 from .youtube import YOUTUBE_API_BASE, fetch_youtube_transcript
 
 # Failures another attempt can plausibly fix: a hung request (asyncio's TimeoutError and Tavily's
@@ -211,7 +211,6 @@ class WebSearchCollector(BaseCollector):
         response: dict,
         trend_name: str | None = None,
     ) -> list[CollectedItem]:
-        cutoff = cutoff_datetime(self.config.lookback_hours, self.config.reference_time)
         items: list[CollectedItem] = []
 
         for result in response.get("results", []):
@@ -229,7 +228,11 @@ class WebSearchCollector(BaseCollector):
                 if not published_at:
                     logger.debug("Unparseable date for: '%s'", title[:60])
                     continue
-                if published_at < cutoff:
+                if not in_collection_window(
+                    published_at,
+                    lookback_hours=self.config.lookback_hours,
+                    reference_time=self.config.reference_time,
+                ):
                     continue
 
                 score = result.get("score")

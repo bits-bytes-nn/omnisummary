@@ -163,6 +163,23 @@ jobs:
           docker run --rm --network none --entrypoint python omnisummary-digest:ci -c
           "import lambda_handlers.digest_handler, lambda_handlers.visual_handler,
           lambda_handlers.threads_refresh_handler, main; print('digest image imports OK')"
+      # Importing the handlers never loads a config, so green CI did not imply a DEPLOYABLE image:
+      # config/config.yaml is gitignored and both Dockerfiles COPY config/, so the image CI validates
+      # resolved to bare code defaults — empty source lists, region us-east-1 — and started up
+      # happily. Loading the config here fails the BUILD instead, on a missing COPY, a config the
+      # image cannot validate, or a Config.load() that has nothing to fall back to.
+      #
+      # trend_searches, NOT rss.feeds: the template deliberately ships no live source lists (a
+      # template must not start collecting from someone else's feeds), but it does carry the trend
+      # searches, and their code default is empty. So this is non-vacuous on a clean checkout and
+      # still fails the moment the image resolves to bare defaults. The remaining gap — proving the
+      # image carries the OPERATOR's feeds — cannot be closed while config.yaml is untracked.
+      - name: Config-check digest image
+        run: >
+          docker run --rm --network none --entrypoint python omnisummary-digest:ci -c
+          "from shared import Config; c = Config.load();
+          assert c.collectors.web_search.trend_searches, 'the image resolved to bare code defaults';
+          print('digest image config loads OK:', c.aws.region, c.pipeline.digest_model.value)"
       # The agentcore image is deployed as arm64, but CI builds it amd64: the base image and every
       # dependency are multi-arch, and a native build keeps the import check runnable without QEMU
       # emulation (a QEMU pip install blows the job budget). What this catches is arch-independent

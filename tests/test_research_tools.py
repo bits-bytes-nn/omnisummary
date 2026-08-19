@@ -348,3 +348,51 @@ class TestCitationGuard:
             with patch("output.delivery.deliver_research_report", new=AsyncMock(return_value=True)) as deliver:
                 await rt.deliver_report._tool_func("URL 없는 리포트다.", channel="slack")
         deliver.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        "citation",
+        [
+            "<https://real.example/a|Real Example>",
+            "<https://real.example/a|Real>",
+            "<https://real.example/a>",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_the_slack_link_form_the_system_prompt_mandates_is_allowed(self, citation):
+        # The default channel is slack and the system prompt REQUIRES <url|label>, so matching the
+        # raw URL pattern (which does not stop at '|') refused the entire default happy path.
+        delivery = DeliveryContext(channel_id="C")
+        with request_context(delivery):
+            with patch(
+                "agent.research_tools.tavily_search",
+                new=AsyncMock(return_value="- T\n  URL: https://real.example/a\n  Content: x"),
+            ):
+                await rt.web_search._tool_func("q")
+            with patch("output.delivery.deliver_research_report", new=AsyncMock(return_value=True)) as deliver:
+                msg = await rt.deliver_report._tool_func(f"근거: {citation}", channel="slack")
+        deliver.assert_awaited_once()
+        assert "NOT delivered" not in msg
+
+    @pytest.mark.asyncio
+    async def test_a_fabricated_url_in_slack_link_form_is_still_refused(self):
+        delivery = DeliveryContext(channel_id="C")
+        with request_context(delivery):
+            with patch("output.delivery.deliver_research_report", new=AsyncMock(return_value=True)) as deliver:
+                msg = await rt.deliver_report._tool_func(
+                    "근거: <https://invented.example/paper|그럴듯한 논문>", channel="slack"
+                )
+        deliver.assert_not_awaited()
+        assert "NOT delivered" in msg
+        assert "https://invented.example/paper" in msg
+        assert "그럴듯한" not in msg
+
+    @pytest.mark.asyncio
+    async def test_a_tool_result_in_slack_link_form_is_recorded(self):
+        delivery = DeliveryContext(channel_id="C")
+        with request_context(delivery):
+            with patch(
+                "agent.research_tools.tavily_search",
+                new=AsyncMock(return_value="- <https://real.example/a|Real Example>"),
+            ):
+                await rt.web_search._tool_func("q")
+        assert "real.example/a" in delivery.seen_urls

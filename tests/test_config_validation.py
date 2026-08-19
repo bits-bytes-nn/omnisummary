@@ -12,6 +12,7 @@ from shared.config import (
     PipelineConfig,
     RedditCollectorConfig,
     YouTubeCollectorConfig,
+    _utc_offset_hours,
     get_config,
 )
 from shared.constants import COLLECTOR_NAMES, EMPTY_RATE_CHECK_DISABLED, SourceType
@@ -273,15 +274,16 @@ class TestCodeDefaultsMatchTheDeployedConfig:
 
 
 class TestParkedSourceTripwires:
-    """The two S3-parked sources (youtube, rsshub) are collected by a DAILY local sync cron, so both
-    of their health tripwires have to be armed in the file — the code defaults leave them off:
+    """The two S3-parked sources (youtube, rsshub) are collected by a DAILY local sync cron, so
+    park_max_age_hours has to be set in the file: the code default of 36 is MORE than one sync
+    cadence, so a completely skipped sync day still read FRESH/OK — and with rsshub_desired_count=0
+    the park file is the only X path there is.
 
-    - empty_rate_threshold defaults to EMPTY_RATE_CHECK_DISABLED and degradation_reason tests
-      `empty_rate > empty_threshold`, so the all-200-with-no-entries outage its own docstring names
-      (expired X cookies making every account feed answer empty) reported a clean OK;
-    - park_max_age_hours defaults to 36, which is MORE than one sync cadence, so a completely
-      skipped sync day still read FRESH/OK — and with rsshub_desired_count=0 the park file is the
-      only X path there is.
+    The empty-rate tripwire is per source, and only rsshub arms it. It targets all-200-with-no-entries
+    (expired X cookies making every account feed answer empty), which trips no failure rate at all.
+    YouTube has no such shape: a revoked key, an exhausted quota and a datacenter-IP block all RAISE
+    and already report FAILED, so arming it there only fired on days when every low-cadence channel
+    was quiet — a normal day, and exactly the alert fatigue alert_on_empty's comment argues against.
     """
 
     # The local sync runs once a day, so a park file older than one cadence has missed a whole run.
@@ -289,16 +291,57 @@ class TestParkedSourceTripwires:
     _PARKED_SOURCES = ("youtube", "rsshub")
 
     @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
-    @pytest.mark.parametrize("source_name", _PARKED_SOURCES)
-    def test_the_empty_rate_tripwire_is_armed(self, config_path, source_name):
-        source = getattr(Config.from_yaml(str(config_path)).collectors, source_name)
+    def test_the_empty_rate_tripwire_is_armed_for_the_source_with_a_silent_outage(self, config_path):
+        source = Config.from_yaml(str(config_path)).collectors.rsshub
         assert source.empty_rate_threshold < EMPTY_RATE_CHECK_DISABLED
+
+    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
+    def test_youtube_does_not_alert_on_a_quiet_day(self, config_path):
+        # 9 weekly-cadence channels at max_videos_per_channel 1 all being quiet is 100% empty, which
+        # any armed threshold reports as DEGRADED → an SNS 'Source Health' ALERT on a normal day.
+        config = Config.from_yaml(str(config_path))
+        assert config.collectors.youtube.empty_rate_threshold == EMPTY_RATE_CHECK_DISABLED
+        assert "youtube" not in config.collectors.alert_on_empty
 
     @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
     @pytest.mark.parametrize("source_name", _PARKED_SOURCES)
     def test_a_skipped_sync_day_cannot_read_fresh(self, config_path, source_name):
         source = getattr(Config.from_yaml(str(config_path)).collectors, source_name)
         assert source.park_max_age_hours <= self._ONE_SYNC_CADENCE_HOURS
+
+    # How many INPUTS a source declares, per collector name — what the failure RATE is computed over.
+    _INPUT_LISTS = {
+        "rss": lambda c: c.rss.feeds,
+        "reddit": lambda c: c.reddit.subreddits,
+        "youtube": lambda c: c.youtube.channels,
+        "rsshub": lambda c: c.rsshub.accounts,
+        "web_search": lambda c: [q for search in c.web_search.trend_searches for q in search.queries],
+    }
+
+    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
+    @pytest.mark.parametrize("source_name", sorted(_INPUT_LISTS))
+    def test_a_source_too_small_for_a_rate_sets_the_absolute_count(self, config_path, source_name):
+        """A source with too few inputs for the RATE to express a partial outage must arm
+        max_failed_inputs, or DEGRADED is unreachable for it.
+
+        The bound is derived from the knobs, not picked: the check is `failed/total*100 >
+        error_rate_threshold`, so the smallest failure that can trip it needs more than
+        100/threshold inputs. At the shipped 50.0 that is 3 — and reddit ships 2 subreddits, where 1
+        of 2 is exactly 50.0 (not >, so clean) and 2 of 2 already raises FAILED. The reddit block had
+        no max_failed_inputs at all and took the code default of 0: a clean OK with half of Reddit
+        missing."""
+        config = Config.from_yaml(str(config_path))
+        source = getattr(config.collectors, source_name)
+        inputs = len(self._INPUT_LISTS[source_name](config.collectors))
+        if not inputs:
+            pytest.skip(f"{source_name} declares no inputs in {config_path.name}")
+        if inputs >= 100 / source.error_rate_threshold + 1:
+            return
+        assert source.max_failed_inputs > 0, (
+            f"{source_name} has {inputs} input(s) and error_rate_threshold "
+            f"{source.error_rate_threshold}: no failure count can exceed that rate, so DEGRADED "
+            "is unreachable without max_failed_inputs"
+        )
 
     def test_the_code_default_leaves_the_empty_rate_check_unreachable(self):
         # Documents WHY the file must set it: the default equals the sentinel, and the comparison
@@ -328,6 +371,97 @@ class TestParkedSourceTripwires:
             max_failed=0,
         )
         assert "returned nothing" in reason
+
+
+class TestLoadNeverSilentlyShipsAnEmptyConfig:
+    """`if not config_path.exists(): return cls()` was silent and wrong.
+
+    config/config.yaml is gitignored and both Dockerfiles COPY config/, so a clean-checkout image —
+    which is exactly what CI builds and validates — resolved to bare code defaults: empty
+    rss/reddit/youtube lists and region us-east-1. Nothing raised; the first sign was a digest with
+    no stories."""
+
+    def test_a_missing_config_falls_back_to_the_tracked_template(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("shared.config.Path", _ConfigDirRedirect(tmp_path, keep=("config-template.yaml",)))
+        config = Config.load()
+        assert config.collectors.web_search.trend_searches == (
+            Config.from_yaml(str(CONFIG_TEMPLATE)).collectors.web_search.trend_searches
+        )
+
+    def test_the_fallback_is_a_real_config_not_code_defaults(self):
+        # What the CI image check asserts: the template carries no live source lists (deliberately),
+        # but it does carry the trend searches, whose code default is empty. So "a config file backed
+        # this load" is checkable, and it is what distinguishes the fallback from bare defaults.
+        assert Config().collectors.web_search.trend_searches == []
+        assert Config.from_yaml(str(CONFIG_TEMPLATE)).collectors.web_search.trend_searches
+
+    def test_no_config_at_all_raises_instead_of_returning_defaults(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("shared.config.Path", _ConfigDirRedirect(tmp_path, keep=()))
+        with pytest.raises(FileNotFoundError, match="No config found"):
+            Config.load()
+
+    def test_the_ci_image_check_loads_a_config(self):
+        # Importing the handlers never loads a config, so the import check alone let a config-less
+        # image ship green. The image is built from a clean checkout, so this step is the only place
+        # the deployed artifact's config is exercised at all.
+        workflow = (Path(__file__).resolve().parent.parent / ".github" / "workflows" / "ci.yml").read_text()
+        assert "Config.load()" in workflow
+        assert "c.collectors.web_search.trend_searches" in workflow
+
+
+class _ConfigDirRedirect:
+    """Stand-in for `shared.config.Path` that points Config.load()'s config dir at a temp directory,
+    optionally pre-seeded with copies of the real config files. Only the `Path(__file__)` call inside
+    load() is redirected; every other use of Path stays real."""
+
+    def __init__(self, tmp_path, *, keep: tuple[str, ...]):
+        self._config_dir = tmp_path / "config"
+        self._config_dir.mkdir()
+        for name in keep:
+            (self._config_dir / name).write_text((CONFIG_DIR / name).read_text(encoding="utf-8"), encoding="utf-8")
+
+    def __call__(self, *_args, **_kwargs):
+        return self
+
+    @property
+    def parent(self):
+        return self
+
+    def __truediv__(self, other):
+        return self._config_dir if other == "config" else self._config_dir / other
+
+
+class TestCollectionWindowCoversTheGapBetweenRuns:
+    """The cutoff is anchored at midnight at the END of the digest date, but the cron collects hours
+    before that midnight. All five sources shipped lookback_hours 24 against a 10:00 UTC (19:00 KST)
+    cron, so items published 19:00-24:00 KST were unpublished when that day's run collected and
+    already before the next run's cutoff: five hours of every day, in no digest ever."""
+
+    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
+    @pytest.mark.parametrize("source_name", sorted(COLLECTOR_NAMES))
+    def test_every_source_reaches_back_to_the_previous_run(self, config_path, source_name):
+        config = Config.from_yaml(str(config_path))
+        run_hour_local = (int(config.aws.digest_cron_hour) + _utc_offset_hours(config.aws.timezone)) % 24
+        assert getattr(config.collectors, source_name).lookback_hours >= 48 - run_hour_local
+
+    def test_the_code_default_reaches_back_too(self):
+        # A bare Config() is what a clean-checkout image resolves to, so the default must be valid
+        # on its own — the validator running over it is exactly what proves that.
+        assert Config().collectors.rss.lookback_hours >= 48 - 19
+
+    def test_a_config_edit_cannot_reopen_the_hole(self):
+        with pytest.raises(ValidationError, match="look back less than"):
+            Config(collectors={"rss": {"lookback_hours": 24}})
+
+    def test_a_multi_run_cron_expression_is_not_second_guessed(self):
+        # "*/6" has no single gap between runs, so there is no floor to derive; the check steps aside
+        # rather than inventing one.
+        assert Config(aws={"digest_cron_hour": "*/6"}, collectors={"rss": {"lookback_hours": 1}})
+
+    def test_an_earlier_run_needs_a_wider_window(self):
+        # A 06:00 KST run is 42h from the previous run's clock time to this run's reference midnight.
+        with pytest.raises(ValidationError, match="42h"):
+            Config(aws={"digest_cron_hour": "21"})  # 21:00 UTC = 06:00 KST
 
 
 class TestLanguageRules:

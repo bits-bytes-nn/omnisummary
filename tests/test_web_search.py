@@ -43,6 +43,13 @@ class TestParseResults:
         resp = {"results": [_result(0.9, days_old=10, title="old")]}
         assert c._parse_results(resp, trend_name="t") == []
 
+    def test_filters_results_published_after_the_reference_time(self):
+        # Only the parked path closed the upper end, so a `--date` backfill's Tavily results were
+        # filtered against a cutoff alone and today's live hits were ingested as that day's.
+        c = _collector(min_search_score=0.0)
+        resp = {"results": [_result(0.9, days_old=-2, title="tomorrow")]}
+        assert c._parse_results(resp, trend_name="t") == []
+
     def test_skips_missing_date(self):
         c = _collector(min_search_score=0.0)
         resp = {"results": [{"url": "u", "title": "no-date", "content": "x", "score": 0.9}]}

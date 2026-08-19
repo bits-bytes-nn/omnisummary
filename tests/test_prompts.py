@@ -102,6 +102,38 @@ class TestDigestLeadSpec:
         assert "sharpen the take implicitly" not in rendered
 
 
+class TestItemSpecStaysShort:
+    """Both item fields were specified by menu, and a menu invites the safest option.
+
+    10 of 20 shipped implications were 'IF X, THEN maybe Y' conditional-modal hedges (~다면/~라면 +
+    ~수 있다) — the safest of the six shapes the prompt offered. 17 of 20 bodies were exactly three
+    sentences with the same '핵심은...' middle beat, because the spec asked for '2-3'. Read as a
+    thread, five items scanned as one template refilled. The remedy is a SHORTER spec, which is the
+    only kind of prompt change this repo allows."""
+
+    def test_the_implication_shape_menu_is_gone(self):
+        rendered = _render(DigestPrompt)
+        assert "VARY THE SHAPE" not in rendered
+        assert "an open question to the reader" not in rendered
+        assert "a falsifiable prediction" not in rendered
+
+    def test_the_implication_demands_an_assertion_and_bans_the_hedge(self):
+        rendered = _render(DigestPrompt)
+        assert "ASSERTS something a reader could disagree with" in rendered
+        assert "No conditional frame, no ~수 있다" in rendered
+
+    def test_the_body_length_is_not_a_fixed_sentence_count(self):
+        rendered = _render(DigestPrompt)
+        assert "2-3 tight Korean sentences" not in rendered
+        assert "As few tight Korean sentences as the story needs" in rendered
+
+    def test_the_prose_budget_still_reaches_the_body_spec(self):
+        # The item budget is code-derived (_item_prose_budget); the rewrite must not drop the slot it
+        # is interpolated into, or every item silently loses its Threads length guidance.
+        assert "prose_budget_rule" in DigestPrompt.input_variables
+        assert _INPUTS[DigestPrompt]["prose_budget_rule"].strip() in _render(DigestPrompt)
+
+
 class TestDeletedDuplicateRules:
     """Rules a code mechanism already enforces are deleted, not restated: every restatement is a
     rule the editor can contradict, and this repo has a documented add-rules regression pattern."""

@@ -303,6 +303,21 @@ _SENTENCE_END = ("다.", "다!", "다?", ". ", "。", "! ", "? ", "…")
 # A bare http(s) URL run. Public so the renderers can protect/extract citation URLs with the same
 # pattern strip_slack_mrkdwn uses, instead of re-declaring it.
 URL_RE = re.compile(r"https?://\S+")
+# Punctuation a URL can pick up from the prose around it (a closing paren, a sentence period, the
+# '>' of a Slack link). Trimmed from the right by both the URL extractor and the citation normalizer.
+_URL_TRAILING_PUNCT = "').,;:\"]>"
+
+
+def extract_urls(text: str) -> list[str]:
+    """Every http(s) URL in `text`, in order of appearance, with Slack mrkdwn unwrapped first and
+    trailing prose punctuation trimmed.
+
+    URL_RE's `\\S+` does not stop at '|', so a well-formed Slack link `<https://ex.com/a|Label>`
+    matches as `https://ex.com/a|Label` and can never equal the bare URL a tool returned — which
+    made the citation guard refuse every correctly formatted Slack report. strip_slack_mrkdwn is
+    the converter that already knows this markup, so extraction goes through it rather than
+    growing a second URL pattern that has to be kept in sync with it."""
+    return [url.strip().rstrip(_URL_TRAILING_PUNCT) for url in URL_RE.findall(strip_slack_mrkdwn(text))]
 
 
 def normalize_citation_url(url: str) -> str:
@@ -313,7 +328,7 @@ def normalize_citation_url(url: str) -> str:
     FABRICATED citation, so it must never reject a real one the model rewrote from http to https or
     quoted inside parentheses. The query string is kept — it is what distinguishes one video or
     search result from another."""
-    trimmed = url.strip().rstrip("').,;:\"]>")
+    trimmed = url.strip().rstrip(_URL_TRAILING_PUNCT)
     parsed = urlparse(trimmed if "//" in trimmed else f"//{trimmed}")
     host = parsed.netloc.removeprefix("www.").lower()
     path = parsed.path.rstrip("/")

@@ -7,7 +7,7 @@ from strands import tool
 # DeliveryContext + request scoping live in the delivery layer (output/), which owns the
 # delivery contract; re-exported here for the agent entrypoints and tools that bind them.
 from output.delivery import DeliveryContext, current_delivery_context, request_context
-from shared import URL_RE, get_config, logger, normalize_citation_url
+from shared import extract_urls, get_config, logger, normalize_citation_url
 from shared.media import fetch_og_image
 from shared.research import extract_url, semantic_scholar_search, tavily_search
 
@@ -34,7 +34,7 @@ def _record_seen_urls(text: str, *extra: str) -> str:
     research backends: the backends are shared with the digest pipeline, which has no delivery
     context, and the tool result is exactly what the model got to read."""
     delivery = current_delivery_context()
-    delivery.seen_urls.update(normalize_citation_url(url) for url in URL_RE.findall(text))
+    delivery.seen_urls.update(normalize_citation_url(url) for url in extract_urls(text))
     delivery.seen_urls.update(normalize_citation_url(url) for url in extra if url)
     return text
 
@@ -43,14 +43,14 @@ def _uncited_urls(report: str) -> list[str]:
     """URLs the report cites that no tool result contained, in the order they appear.
 
     A report is allowed to cite nothing; it is not allowed to cite something that was never
-    returned. The comparison is lenient (normalize_citation_url) so an http→https rewrite or a URL in
-    parentheses still matches."""
+    returned. The comparison is lenient (extract_urls + normalize_citation_url) so an http→https
+    rewrite, a URL in parentheses, or the `<url|label>` form the system prompt MANDATES for Slack
+    still matches — matching the raw pattern refused every well-formed Slack report."""
     seen = current_delivery_context().seen_urls
     unknown: list[str] = []
-    for url in URL_RE.findall(report):
-        cleaned = url.strip().rstrip("').,;:\"]>")
-        if normalize_citation_url(cleaned) not in seen and cleaned not in unknown:
-            unknown.append(cleaned)
+    for url in extract_urls(report):
+        if normalize_citation_url(url) not in seen and url not in unknown:
+            unknown.append(url)
     return unknown
 
 

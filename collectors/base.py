@@ -13,7 +13,7 @@ from typing import Any
 import boto3
 import feedparser
 import httpx
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 from pydantic import BaseModel, Field, ValidationError
 
 from shared import CollectedItem, SourceType, generate_item_id, logger, parse_feed_published_date, retry_async
@@ -241,6 +241,30 @@ def _as_aware_utc(moment: datetime) -> datetime:
     return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
 
 
+def in_collection_window(
+    published_at: datetime | None,
+    *,
+    lookback_hours: int,
+    reference_time: datetime | None,
+) -> bool:
+    """Whether an item's publish time belongs to the run's collection window.
+
+    The window is `[reference_time - lookback_hours, reference_time]`, closed at BOTH ends. ONE
+    definition for every source: the live paths each compared against `cutoff_datetime` alone, so
+    only the parked path bounded the upper end and a `--date` backfill of an older day ingested
+    TODAY's live items alongside that day's. `reference_time` is midnight at the END of the digest
+    date (`resolve_digest_window`), so anything after it belongs to a later digest.
+
+    `published_at is None` is IN the window: a missing date is not evidence of falling outside it,
+    and dropping it would silently shrink a source over a metadata gap."""
+    if published_at is None:
+        return True
+    published = _as_aware_utc(published_at)
+    if published < _as_aware_utc(cutoff_datetime(lookback_hours, reference_time)):
+        return False
+    return reference_time is None or published <= _as_aware_utc(reference_time)
+
+
 def parked_items_in_window(
     items: list[CollectedItem],
     *,
@@ -250,27 +274,19 @@ def parked_items_in_window(
 ) -> list[CollectedItem]:
     """Keep the parked items that belong to the run's collection window.
 
-    The live paths filter every entry against cutoff_datetime; the park path returned the file's
-    items verbatim, so two windows were silently ignored. A STALE-but-usable file let items up to
+    Same `in_collection_window` every live path uses; the park path returned the file's items
+    verbatim, so two windows were silently ignored. A STALE-but-usable file let items up to
     park_max_age + lookback old into ranking, and the run's reference time (`--date`, the digest
-    handler's set_reference_time) applied to nothing — a backfill of an older day ingested TODAY'S
-    parked items. The window is closed at BOTH ends for exactly that reason: the reference time is
-    midnight at the END of the digest date, so anything after it belongs to a later digest.
+    handler's set_reference_time) applied to nothing.
 
-    An item with no published_at is KEPT: a missing date is not evidence of falling outside the
-    window, and dropping it would silently shrink a source over a metadata gap. The out-of-window
-    count is logged — a rising one is itself a stalled-sync signal."""
+    The out-of-window count is logged — a rising one is itself a stalled-sync signal."""
     cutoff = _as_aware_utc(cutoff_datetime(lookback_hours, reference_time))
     latest = _as_aware_utc(reference_time) if reference_time is not None else None
-    kept: list[CollectedItem] = []
-    for item in items:
-        if item.published_at is None:
-            kept.append(item)
-            continue
-        published = _as_aware_utc(item.published_at)
-        if published < cutoff or (latest is not None and published > latest):
-            continue
-        kept.append(item)
+    kept = [
+        item
+        for item in items
+        if in_collection_window(item.published_at, lookback_hours=lookback_hours, reference_time=reference_time)
+    ]
     dropped = len(items) - len(kept)
     if dropped:
         logger.warning(
@@ -335,7 +351,8 @@ def load_items_from_s3(filename: str, max_age_hours: int = S3_ITEMS_MAX_AGE_HOUR
 
     Returns a ParkedItems describing the outcome — `usable` says whether the items came from the
     park file, `degraded` says whether the health report must read STALE. ABSENT (no STATE_BUCKET,
-    or no object) and ERROR (unreadable object, denied read, unexpected S3 error) both fall back to
+    or no object) and ERROR (unreadable object, denied read, missing credentials, a connect timeout,
+    any other unexpected S3 or botocore error) both fall back to
     live collection; the difference is only how loudly they are reported, and neither ever raises.
 
     Accepts both the newer envelope ({"generated_at", "items"}) and the legacy bare list; when a
@@ -382,6 +399,13 @@ def load_items_from_s3(filename: str, max_age_hours: int = S3_ITEMS_MAX_AGE_HOUR
             logger.info("No items found at 's3://%s/%s', falling back to live collection", bucket, s3_key)
             return ParkedItems(outcome=ParkOutcome.ABSENT)
         detail = f"could not read park file 's3://{bucket}/{s3_key}': {e}"
+        logger.warning("%s — falling back to live collection", detail)
+        return ParkedItems(outcome=ParkOutcome.ERROR, detail=detail)
+    except BotoCoreError as e:
+        # NOT a ClientError: no credentials, an endpoint that won't resolve, a connect/read timeout.
+        # These raised straight out of the collector and failed the whole source, which contradicts
+        # this function's contract that every S3 failure falls back to live collection.
+        detail = f"could not reach S3 for park file 's3://{bucket}/{s3_key}': {e}"
         logger.warning("%s — falling back to live collection", detail)
         return ParkedItems(outcome=ParkOutcome.ERROR, detail=detail)
     except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as e:
@@ -526,16 +550,17 @@ def parse_feed_entries(
     feed: Any,
     *,
     source_type: SourceType,
-    cutoff: datetime,
+    lookback_hours: int,
+    reference_time: datetime | None,
     description: str,
     metadata: dict[str, Any],
     author: str | None = None,
     item_id_of: Callable[[Any, str], str] | None = None,
     limit: int | None = None,
 ) -> list[CollectedItem]:
-    """Turn a parsed feed's entries into CollectedItems: drop anything published before `cutoff`,
-    take the title/link, prefer full content over the summary, and skip (never fail on) a
-    structurally broken entry.
+    """Turn a parsed feed's entries into CollectedItems: drop anything outside the run's collection
+    window (`in_collection_window`), take the title/link, prefer full content over the summary, and
+    skip (never fail on) a structurally broken entry.
 
     One implementation for every feed-based source — RSS, RSSHub and Reddit carried byte-for-byte
     identical loops, so a fix to one silently left the other two behind. `author` overrides the
@@ -547,7 +572,7 @@ def parse_feed_entries(
     for entry in feed.entries if limit is None else feed.entries[:limit]:
         try:
             published_at = parse_feed_published_date(entry)
-            if published_at and published_at < cutoff:
+            if not in_collection_window(published_at, lookback_hours=lookback_hours, reference_time=reference_time):
                 continue
 
             title = entry.get("title", "")

@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, NoCredentialsError, ReadTimeoutError
 
 from collectors.base import (
     FEED_FETCH_HEADERS,
@@ -322,7 +322,10 @@ class TestParseFeedEntries:
     """RSS, RSSHub and Reddit carried byte-for-byte identical entry loops, so a fix to one silently
     left the other two behind."""
 
-    CUTOFF = datetime(2026, 6, 1, tzinfo=UTC)
+    # Window [2026-06-01, 2026-06-03]: the reference time is midnight at the END of the digest date,
+    # so the upper bound is real and an entry past it belongs to a later digest.
+    REFERENCE_TIME = datetime(2026, 6, 3, tzinfo=UTC)
+    LOOKBACK_HOURS = 48
 
     @staticmethod
     def _entry(**overrides):
@@ -342,7 +345,8 @@ class TestParseFeedEntries:
         return parse_feed_entries(
             feed,
             source_type=kwargs.pop("source_type", SourceType.RSS),
-            cutoff=kwargs.pop("cutoff", self.CUTOFF),
+            lookback_hours=kwargs.pop("lookback_hours", self.LOOKBACK_HOURS),
+            reference_time=kwargs.pop("reference_time", self.REFERENCE_TIME),
             description="RSS feed 'f'",
             metadata=kwargs.pop("metadata", {"feed_url": "f"}),
             **kwargs,
@@ -359,6 +363,19 @@ class TestParseFeedEntries:
     def test_entry_before_the_cutoff_is_dropped(self):
         old = self._entry(published_parsed=(2026, 5, 1, 0, 0, 0, 0, 0, 0))
         assert self._parse([old]) == []
+
+    def test_entry_after_the_reference_time_is_dropped(self):
+        # Only the parked path used to close the upper end, so a `--date` backfill of an older day
+        # ingested TODAY's live items from every feed-based source alongside that day's.
+        future = self._entry(published_parsed=(2026, 6, 4, 0, 0, 0, 0, 0, 0))
+        assert self._parse([future]) == []
+
+    def test_entry_without_a_date_is_kept(self):
+        # A missing date is not evidence of falling outside the window; dropping it would silently
+        # shrink a source over a metadata gap.
+        undated = self._entry()
+        del undated["published_parsed"]
+        assert len(self._parse([undated])) == 1
 
     def test_full_content_beats_the_summary(self):
         entry = self._entry(content=[{"value": "full text"}])
@@ -459,6 +476,24 @@ class TestLoadItemsFromS3:
         assert parked.outcome == ParkOutcome.ERROR
         assert parked.usable is False and parked.degraded is True
         assert "AccessDenied" in parked.detail
+
+    @pytest.mark.parametrize(
+        "error",
+        [NoCredentialsError(), ReadTimeoutError(endpoint_url="https://s3.example")],
+        ids=["no-credentials", "read-timeout"],
+    )
+    def test_a_botocore_error_falls_back_instead_of_failing_the_source(self, monkeypatch, error):
+        # Only ClientError was caught, so a missing credential chain or a connect/read timeout raised
+        # straight out of the collector and failed the whole source — contradicting this function's
+        # documented contract that EVERY S3 failure degrades to live collection.
+        monkeypatch.setenv("STATE_BUCKET", "b")
+        monkeypatch.setenv("S3_PREFIX", "omnisummary/digest_state")
+        client = MagicMock()
+        client.get_object.side_effect = error
+        with patch("collectors.base.boto3.client", return_value=client):
+            parked = load_items_from_s3("youtube_items.json")
+        assert parked.outcome == ParkOutcome.ERROR
+        assert parked.usable is False and parked.degraded is True
 
     def test_reads_envelope_shape(self, monkeypatch):
         # The newer {"generated_at", "items"} envelope must load like the legacy bare list.

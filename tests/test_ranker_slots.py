@@ -13,6 +13,7 @@ def _ranked(
     sub: str = "",
     feed: str = "",
     url: str = "",
+    grace: bool = False,
 ) -> RankedItem:
     metadata = {}
     if channel:
@@ -29,7 +30,7 @@ def _ranked(
         author=author or None,
         metadata=metadata,
     )
-    return RankedItem(item=item, score=score)
+    return RankedItem(item=item, score=score, grace=grace)
 
 
 def _ranker(**overrides):
@@ -257,7 +258,7 @@ class TestPinnedCaps:
             _ranked(0.94, SourceType.WEB, item_id="w2", url="https://site-b.example/2"),
             _ranked(0.93, SourceType.RSS, item_id="r1", feed="https://f.example/feed"),
         ]
-        selected = ranker._apply_source_slots(items, ranker.config.top_n - len(pinned), None, pinned)
+        selected = ranker._apply_source_slots(items, ranker.config.top_n - len(pinned), pinned)
         ids = {r.item.item_id for r in selected}
         assert "w1" not in ids
         assert ids == {"w2", "r1"}
@@ -341,45 +342,6 @@ class TestSourceSlotGrace:
         assert [r.item.item_id for r in ranker._grace_candidates(list(reversed(tied)), [], [])] == ["y_a"]
 
 
-class TestOriginWeights:
-    def test_named_origin_weight_is_additive_nudge(self):
-        # weight 1.5 with nudge 0.1 -> +0.05 (NOT multiplicative 0.5*1.5=0.75)
-        ranker = _ranker(origin_weights={"chanA": 1.5}, origin_weight_default=1.0, origin_weight_nudge=0.1)
-        items = [_ranked(0.5, SourceType.YOUTUBE, item_id="v1", channel="chanA")]
-        ranker._apply_origin_weights(items)
-        assert abs(items[0].score - 0.55) < 1e-9
-
-    def test_default_weight_nudges_unlisted_origin(self):
-        # default 0.8 -> (0.8-1.0)*0.1 = -0.02
-        ranker = _ranker(origin_weights={}, origin_weight_default=0.8, origin_weight_nudge=0.1)
-        items = [_ranked(0.8, SourceType.YOUTUBE, item_id="v1", channel="chanB")]
-        ranker._apply_origin_weights(items)
-        assert abs(items[0].score - 0.78) < 1e-9
-
-    def test_no_op_when_default_one_and_no_weights(self):
-        ranker = _ranker(origin_weights={}, origin_weight_default=1.0)
-        items = [_ranked(0.8, SourceType.YOUTUBE, item_id="v1", channel="chanB")]
-        ranker._apply_origin_weights(items)
-        assert items[0].score == 0.8
-
-    def test_a_weight_that_matched_nothing_is_reported(self, caplog):
-        # Keys are matched case-sensitively against resolve_origin_key's output, so 'ChanA' vs
-        # 'chanA' — or a handle commented out of the RSSHub accounts — nudges nothing and used to
-        # log nothing at all.
-        ranker = _ranker(origin_weights={"ChanA": 1.5, "chanA": 1.5}, origin_weight_nudge=0.1)
-        items = [_ranked(0.5, SourceType.YOUTUBE, item_id="v1", channel="chanA")]
-        with caplog.at_level("WARNING"):
-            ranker._apply_origin_weights(items)
-        assert "ChanA" in caplog.text
-        assert "chanA," not in caplog.text  # the one that DID match is not reported
-
-    def test_nudge_clamped_to_unit_range(self):
-        ranker = _ranker(origin_weights={"chanA": 5.0}, origin_weight_default=1.0, origin_weight_nudge=0.1)
-        items = [_ranked(0.95, SourceType.YOUTUBE, item_id="v1", channel="chanA")]
-        ranker._apply_origin_weights(items)
-        assert items[0].score == 1.0  # 0.95 + 0.4 clamped to 1.0
-
-
 class TestLastResortSourceCapRelaxation:
     """When a collector outage leaves every remaining candidate on one source, the source cap alone
     would ship a short digest. The relaxation runs LAST, only while the digest is short, and prefers
@@ -429,9 +391,9 @@ class TestLastResortSourceCapRelaxation:
         )
         items = [
             _ranked(0.9, SourceType.RSS, item_id="r1", feed="f1"),
-            _ranked(0.55, SourceType.YOUTUBE, item_id="g1", channel="c1"),
+            _ranked(0.55, SourceType.YOUTUBE, item_id="g1", channel="c1", grace=True),
         ]
-        selected = ranker._apply_source_slots(items, ranker.config.top_n, grace_ids={"g1"})
+        selected = ranker._apply_source_slots(items, ranker.config.top_n)
         assert {r.item.item_id for r in selected} == {"r1"}
 
 
@@ -452,7 +414,7 @@ class TestBackfillHonoursTheOriginCap:
             _ranked(0.94, SourceType.REDDIT, item_id="b", sub="LocalLLaMA"),
             _ranked(0.70, SourceType.REDDIT, item_id="c", sub="MachineLearning"),
         ]
-        extras = ranker._backfill_candidates(candidates, core, grace_ids=set(), room=2)
+        extras = ranker._backfill_candidates(candidates, core, room=2)
         # The merge-topup purpose is intact: the freed slot is filled by the next DISTINCT origin.
         assert [r.item.item_id for r in extras] == ["c"]
         assert all(r.backfill for r in extras)
@@ -464,5 +426,5 @@ class TestBackfillHonoursTheOriginCap:
             _ranked(0.95, SourceType.REDDIT, item_id="a", sub="LocalLLaMA"),
             _ranked(0.94, SourceType.REDDIT, item_id="b", sub="LocalLLaMA"),
         ]
-        extras = ranker._backfill_candidates(candidates, core, grace_ids=set(), room=2)
+        extras = ranker._backfill_candidates(candidates, core, room=2)
         assert [r.item.item_id for r in extras] == ["a"]

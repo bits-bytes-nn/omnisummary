@@ -178,6 +178,42 @@ class TestPublicPackageBoundaries:
         assert digest_generator.THREADS_MAX_POST_CHARS is THREADS_MAX_POST_CHARS
 
 
+class TestExtractUrls:
+    """URL_RE's `\\S+` does not stop at '|', so the raw pattern read a Slack `<url|label>` link as
+    `url|label` and the citation guard refused every well-formed Slack report. extract_urls unwraps
+    the markup first, through the converter that already knows it."""
+
+    def test_a_slack_link_with_a_label_yields_the_bare_url(self):
+        from shared.formatting import URL_RE, extract_urls
+
+        report = "근거: <https://real.example/a|Real Example>"
+        assert extract_urls(report) == ["https://real.example/a"]
+        assert URL_RE.findall(report) == ["https://real.example/a|Real"]
+
+    def test_a_multi_word_label_does_not_leak_into_the_url(self):
+        from shared.formatting import extract_urls
+
+        assert extract_urls("<https://ex.example/p?q=1|한 줄 라벨>") == ["https://ex.example/p?q=1"]
+
+    def test_an_angle_wrapped_url_yields_the_bare_url(self):
+        from shared.formatting import extract_urls
+
+        assert extract_urls("출처 <https://ex.example/p>") == ["https://ex.example/p"]
+
+    def test_prose_punctuation_is_trimmed_and_order_preserved(self):
+        from shared.formatting import extract_urls
+
+        text = "본문 (https://a.example/1). 그리고 https://b.example/2, 끝."
+        assert extract_urls(text) == ["https://a.example/1", "https://b.example/2"]
+
+    def test_a_slack_link_and_the_bare_url_normalize_to_the_same_identity(self):
+        from shared.formatting import extract_urls, normalize_citation_url
+
+        surfaced = normalize_citation_url("http://www.real.example/a/")
+        (cited,) = extract_urls("<https://real.example/a|Real Example>")
+        assert normalize_citation_url(cited) == surfaced
+
+
 class TestFormatAlarm:
     """The subject is what an operator sees first, and it used to carry a hardcoded project with no
     stage — so a dev alert and a prod alert were byte-identical."""

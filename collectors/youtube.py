@@ -18,9 +18,9 @@ from .base import (
     RETRIABLE_STATUS_CODES,
     BaseCollector,
     TransientStatusError,
-    cutoff_datetime,
     fetch_feed_with_retry,
     gather_collector_results,
+    in_collection_window,
     load_items_from_s3,
     parked_items_in_window,
     parse_feed_entries,
@@ -195,7 +195,6 @@ class YouTubeCollector(BaseCollector):
         return await self._collect_via_rss(channel_url)
 
     async def _collect_via_api(self, channel_url: str) -> list[CollectedItem]:
-        cutoff = cutoff_datetime(self.config.lookback_hours, self.config.reference_time)
         items: list[CollectedItem] = []
 
         async with httpx.AsyncClient(timeout=self.config.request_timeout) as client:
@@ -274,7 +273,11 @@ class YouTubeCollector(BaseCollector):
                     published_at = (
                         datetime.fromisoformat(published_str.replace("Z", "+00:00")) if published_str else None
                     )
-                    if published_at and published_at < cutoff:
+                    if not in_collection_window(
+                        published_at,
+                        lookback_hours=self.config.lookback_hours,
+                        reference_time=self.config.reference_time,
+                    ):
                         continue
 
                     in_window.append(
@@ -337,7 +340,8 @@ class YouTubeCollector(BaseCollector):
         parsed = parse_feed_entries(
             feed,
             source_type=SourceType.YOUTUBE,
-            cutoff=cutoff_datetime(self.config.lookback_hours, self.config.reference_time),
+            lookback_hours=self.config.lookback_hours,
+            reference_time=self.config.reference_time,
             description=description,
             metadata={"channel_url": channel_url},
             item_id_of=_entry_video_id,

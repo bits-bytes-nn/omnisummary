@@ -10,7 +10,7 @@ load_dotenv()
 
 logging.basicConfig(level=logging.getLevelName(os.getenv("LOG_LEVEL", "INFO")))
 
-from agent import create_research_agent
+from agent import create_research_agent, research_run_limits
 from agent.research_tools import DeliveryContext, request_context
 from shared import logger
 
@@ -46,7 +46,7 @@ def main() -> None:
 
     with request_context(delivery):
         try:
-            response = str(agent(prompt))
+            response = str(agent(prompt, limits=research_run_limits()))
         except Exception as e:
             logger.error("Agent error: %s", e)
             print(f"\nError: {e}\n")

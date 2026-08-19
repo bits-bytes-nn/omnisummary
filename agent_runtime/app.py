@@ -4,12 +4,11 @@ from typing import Any
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from slack_sdk.web import WebClient
-from strands.types.agent import Limits
 
-from agent import create_research_agent
+from agent import create_research_agent, research_run_limits
 from agent.research_tools import DeliveryContext, request_context
 from output.renderers import render_agent_blocks
-from shared import emit_emf, get_config, logger, resolve_secret, sanitize_slack_mrkdwn, set_correlation_id
+from shared import emit_emf, logger, resolve_secret, sanitize_slack_mrkdwn, set_correlation_id
 
 app = BedrockAgentCoreApp()
 
@@ -28,18 +27,6 @@ def _emit_agent_limit_metric(stop_reason: str) -> None:
     budget every time) is indistinguishable from a normal day. The stop reason rides along as a
     non-metric property: it is context an operator reads, not something to alarm on."""
     emit_emf({"AgentLimitStops": 1}, {"StopReason": stop_reason})
-
-
-def _run_limits() -> Limits:
-    """Hard per-invocation bounds for the tool loop. The Strands SDK checks them at each turn
-    boundary and stops with stop_reason='limit_*'; the guidance knobs interpolated into the agent's
-    prompt (research_breadth/research_max_iterations) enforce nothing."""
-    agent_config = get_config().agent
-    return Limits(
-        turns=agent_config.research_max_turns,
-        total_tokens=agent_config.research_max_total_tokens,
-        output_tokens=agent_config.research_max_output_tokens,
-    )
 
 
 def _emit_agent_run_metrics(usage: dict[str, Any], cycles: int, tool_calls: int) -> None:
@@ -125,7 +112,7 @@ def invoke(payload: dict[str, Any]) -> str:
             # the user got the Slack ack and then permanent silence, with no AgentErrors metric and
             # no fallback post, which is the one failure shape this whole block exists to prevent.
             agent = create_research_agent()
-            result = agent(prompt, limits=_run_limits())
+            result = agent(prompt, limits=research_run_limits())
             _log_agent_run(result)
             response = sanitize_slack_mrkdwn(str(result))
             stop_reason = str(getattr(result, "stop_reason", "") or "")

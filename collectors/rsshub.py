@@ -15,7 +15,6 @@ from .base import (
     PARK_META_ACCOUNTS_TOTAL,
     BaseCollector,
     TransientStatusError,
-    cutoff_datetime,
     fetch_feed_with_retry,
     load_items_from_s3,
     parked_items_in_window,
@@ -192,7 +191,8 @@ class RSSHubCollector(BaseCollector):
             return parse_feed_entries(
                 feed,
                 source_type=self._detect_source_type(platform),
-                cutoff=cutoff_datetime(self.config.lookback_hours, self.config.reference_time),
+                lookback_hours=self.config.lookback_hours,
+                reference_time=self.config.reference_time,
                 description=f"RSSHub feed '{feed_url}'",
                 metadata={"rsshub_feed": feed_url, "platform": platform},
                 author=username,

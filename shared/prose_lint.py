@@ -10,6 +10,12 @@ Two defects survived every prompt rule written against them, and both shipped in
 The repo already accepts verify-then-reask for a defect prompt rules could not move (_verify_grounding),
 so these are checked in CODE. Every check is a fixed pattern with no threshold to tune: the point is
 that the same prose gets the same verdict every run, not that the checker is clever.
+
+Every check here must trace back to a rule KOREAN_STYLE_RULES or DigestPrompt ALREADY states. A check
+invented here is a style opinion with a re-ask budget attached: an em-dash-after-a-predicate pattern
+once lived here and fired on 3 of the 4 shipped digests over idiomatic Korean ('훨씬 많은 것을
+배운다 — 그렇다면 ...'), because no rule anywhere bans it. Add prose rules to the config the prompt
+reads, and only then check them here.
 """
 
 from __future__ import annotations
@@ -21,9 +27,6 @@ import re
 # clause ends in a final verb form the sentence is over, so what follows the comma is a second
 # sentence glued on with punctuation Korean does not use that way.
 _COMMA_AFTER_PREDICATE = re.compile(r"[가-힣]다,\s*[가-힣]")
-# An em-dash directly after a finished predicate, i.e. two complete clauses joined by a dash. Same
-# defect as the comma above in a different character; Korean prose does not carry it.
-_EM_DASH_AFTER_PREDICATE = re.compile(r"[가-힣]다\s*—")
 
 # What counts as a "specific" when comparing two pieces of prose: a numeric figure, or a Latin-script
 # token (model names, companies, benchmarks). Crude on purpose — it is only ever used SYMMETRICALLY,
@@ -42,15 +45,10 @@ def _quote(text: str, match: re.Match[str]) -> str:
 
 
 def _punctuation_hits(label: str, text: str) -> list[str]:
-    hits: list[str] = []
-    for pattern, what in (
-        (_COMMA_AFTER_PREDICATE, "comma after a finished predicate"),
-        (_EM_DASH_AFTER_PREDICATE, "em-dash between two finished clauses"),
-    ):
-        match = pattern.search(text)
-        if match:
-            hits.append(f"{label}: {what} — '{_quote(text, match)}'")
-    return hits
+    match = _COMMA_AFTER_PREDICATE.search(text)
+    if not match:
+        return []
+    return [f"{label}: comma after a finished predicate — '{_quote(text, match)}'"]
 
 
 def specifics(text: str) -> set[str]:

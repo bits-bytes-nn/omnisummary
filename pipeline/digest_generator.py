@@ -32,6 +32,12 @@ from shared import (
 from shared.config import PipelineConfig
 from shared.prose_lint import lint_digest_prose
 
+# How many times a prose-lint hit may re-ask the editor, independent of digest_max_retries. The
+# re-ask sends byte-identical prompt_vars, so attempt 3 is the same ~50k-token Sonnet call that
+# attempt 2 already failed to move — and the content is kept regardless once the attempts run out.
+# One re-ask covers the one-off slip; more only buys spend.
+PROSE_LINT_MAX_REASKS = 1
+
 
 class DigestContentError(ValueError):
     """The editor's output could not be turned into a digest carrying at least one story.
@@ -169,8 +175,9 @@ class DigestGenerator:
         anyway, which is the same situation that made _verify_grounding a code pass rather than
         another rule. The hit list is logged either way, so a clean run is recorded as clean.
 
-        The LAST attempt keeps the content: raising there would fail the whole digest over a style
-        slip, and with retry_attempts=0 on the Lambda nothing would retry the run."""
+        The re-ask is capped at PROSE_LINT_MAX_REASKS rather than riding digest_max_retries, and the
+        content is kept once that is spent: raising would fail the whole digest over a style slip,
+        and with retry_attempts=0 on the Lambda nothing would retry the run."""
         if not self.config.enable_prose_lint:
             return
         hits = lint_digest_prose(content.lead, [(item.body, item.implication) for item in content.items])
@@ -178,9 +185,9 @@ class DigestGenerator:
             logger.info("Digest prose lint: clean")
             return
         logger.error("Digest prose lint found %d issue(s): %s", len(hits), " | ".join(hits))
-        if attempt < self.config.digest_max_retries:
+        if attempt <= PROSE_LINT_MAX_REASKS:
             raise DigestContentError(f"Digest prose failed {len(hits)} deterministic check(s)")
-        logger.error("Keeping the digest despite %d prose issue(s): the attempts are exhausted", len(hits))
+        logger.error("Keeping the digest despite %d prose issue(s): the re-ask budget is spent", len(hits))
 
     def _audit_shipped_diversity(self, shipped: list[CollectedItem], ranked_items: list[RankedItem]) -> list[str]:
         """Check the diversity caps against the digest that actually SHIPS.
@@ -202,11 +209,16 @@ class DigestGenerator:
                 f"max_per_origin={cap} exceeded by "
                 + ", ".join(f"'{origin}' ({count} stories)" for origin, count in over)
             )
-        # Only a source that HAD a ranked candidate can be said to have been dropped: a collector
-        # that returned nothing is a quiet day, not a diversity failure, and alerting on it would
-        # page every morning reddit or X is empty.
+        # Only a source that had a CORE candidate can be said to have been dropped. `ranked_items` is
+        # the over-selected list (top_n + digest_candidate_buffer), and its backfill and grace entries
+        # are explicitly offered as optional: the prompt tells the editor to use a backfill item as a
+        # REPLACEMENT for a merged story, and a grace item is below min_score and only there so its
+        # source's guaranteed slot stays fillable. Auditing against the full list therefore alerted on
+        # the buffer working as designed — the editor declining exactly what it was told it may
+        # decline reached SNS as a 'Ranking Health' ALERT. A collector that returned nothing is a
+        # quiet day either way, not a diversity failure.
         shipped_sources = {item.source_type.value for item in shipped}
-        available = {r.item.source_type.value for r in ranked_items}
+        available = {r.item.source_type.value for r in ranked_items if not r.backfill and not r.grace}
         dropped = sorted(
             source
             for source, slot in self.config.source_slots.items()
@@ -446,6 +458,20 @@ class DigestGenerator:
             # infer which candidates are spare from their position in the list.
             elif ranked.backfill:
                 fields.insert(0, ("BACKFILL", "spare candidate — use it to replace a merged item, not in addition"))
+            # A grace item is below min_score BY DESIGN: it is the best its source had, and it is here
+            # so that source's guaranteed slot stays fillable. Without saying so, its low Score was the
+            # only thing the editor could see and it lost to every ordinary candidate — the youtube
+            # grace candidate of digest_2026-07-12 is in ranked_items and absent from the shipped five.
+            elif ranked.grace:
+                fields.insert(
+                    0,
+                    (
+                        "SOURCE COVERAGE",
+                        f"best candidate its source ({item.source_type.value}) had — its low score reflects "
+                        "the medium, not the story; prefer it over a second story from a source already "
+                        "represented",
+                    ),
+                )
             parts.append(
                 format_collected_item(
                     item,

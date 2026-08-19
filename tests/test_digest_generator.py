@@ -847,6 +847,19 @@ class TestBackfillMarking:
         assert "MUST INCLUDE" in text
         assert "BACKFILL" not in text  # a pin is never "spare"
 
+    def test_a_grace_candidate_says_why_its_score_is_low(self):
+        # Tracked only as a local id set inside the ranker, a 0.50 grace item reached the editor
+        # indistinguishable from the weakest ordinary candidate and predictably lost, defeating the
+        # source-coverage guarantee it exists to serve.
+        items = self._pair()
+        items[1].backfill = False
+        items[1].grace = True
+        text = _generator("")._format_ranked_items(items)
+        blocks = text.split("=== Item ")
+        assert "SOURCE COVERAGE" not in next(b for b in blocks if "Title: Core" in b)
+        assert "SOURCE COVERAGE" in next(b for b in blocks if "Title: Spare" in b)
+        assert "BACKFILL" not in text
+
 
 class TestDroppedStoryIsAnError:
     """A digest that lost a story to item-level validation still looks completely normal
@@ -937,6 +950,41 @@ class TestShippedDiversityAudit:
         ranked = [RankedItem(item=shipped[0], score=0.9)]
         assert gen._audit_shipped_diversity(shipped, ranked) == []
 
+    def test_declining_a_backfill_candidate_is_not_a_breach(self):
+        # `ranked_items` is the OVER-selected list (top_n + digest_candidate_buffer), and the prompt
+        # tells the editor to use a backfill item as a REPLACEMENT for a merged story. Auditing against
+        # the full list turned the editor obeying that instruction into an SNS 'Ranking Health' ALERT.
+        gen = self._generator(max_per_origin=2, source_slots={"reddit": 1, "rss": 1})
+        shipped = [self._reddit("p1", "LocalLLaMA")]
+        ranked = [
+            RankedItem(item=shipped[0], score=0.9),
+            RankedItem(item=self._rss("r1"), score=0.72, backfill=True),
+        ]
+        assert gen._audit_shipped_diversity(shipped, ranked) == []
+
+    def test_declining_a_grace_candidate_is_not_a_breach(self):
+        # A grace item is below min_score by design: it exists so its source's guaranteed slot stays
+        # fillable, not as a promise the source will ship. Its absence is not a diversity failure.
+        gen = self._generator(max_per_origin=2, min_score=0.6, source_slots={"reddit": 1, "rss": 1})
+        shipped = [self._reddit("p1", "LocalLLaMA")]
+        ranked = [
+            RankedItem(item=shipped[0], score=0.9),
+            RankedItem(item=self._rss("r1"), score=0.5, grace=True),
+        ]
+        assert gen._audit_shipped_diversity(shipped, ranked) == []
+
+    def test_a_declined_CORE_candidate_is_still_a_breach(self):
+        # The mechanism is narrowed to the buffer, not removed: a source whose candidate the ranker
+        # put in the diversified core is a real guarantee, and dropping it still reports.
+        gen = self._generator(max_per_origin=2, source_slots={"reddit": 1, "rss": 1})
+        shipped = [self._reddit("p1", "LocalLLaMA")]
+        ranked = [
+            RankedItem(item=shipped[0], score=0.9),
+            RankedItem(item=self._rss("r1"), score=0.85),
+        ]
+        breaches = gen._audit_shipped_diversity(shipped, ranked)
+        assert len(breaches) == 1 and "rss" in breaches[0]
+
     @pytest.mark.asyncio
     async def test_the_verdict_rides_on_the_digest_result(self):
         emitted = {
@@ -999,10 +1047,14 @@ class TestProseLintReAsk:
         assert result.content.items[0].implication == "값이 문제다."
 
     @pytest.mark.asyncio
-    async def test_the_last_attempt_ships_anyway(self):
+    async def test_a_persistent_hit_costs_exactly_one_re_ask_then_ships(self):
         # A style slip must never cost the whole digest: retry_attempts=0 on the Lambda means nothing
-        # would retry the run, so an exhausted lint keeps the content and logs at ERROR.
-        gen, seen = self._generator([self._emitted("못 쓴다, 그게 문제다.")], digest_max_retries=2)
+        # would retry the run, so a spent lint budget keeps the content and logs at ERROR. And the
+        # budget is ONE re-ask regardless of digest_max_retries (3 here): the re-send is byte-identical
+        # prompt_vars, so a second and third one is a ~50k-token Sonnet call for a prompt that already
+        # failed to move the model.
+        gen, seen = self._generator([self._emitted("못 쓴다, 그게 문제다.")])
+        assert gen.config.digest_max_retries == 3
         ranked = self._ranked()
         result = await gen.generate(ranked, [r.item for r in ranked])
         assert len(seen) == 2
