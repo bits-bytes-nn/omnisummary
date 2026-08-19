@@ -37,6 +37,12 @@ def _ranked():
     ]
 
 
+def _sources():
+    """What the grounding check is given: the source items that actually SHIPPED, as
+    _fill_source_metadata returns them."""
+    return [r.item for r in _ranked()]
+
+
 def _content(lead="정확히 $7B 투자.", body="본문.", implication="시사점."):
     return DigestContent(
         lead=lead,
@@ -98,20 +104,20 @@ class TestGroundingCheck:
                 "corrected_digest": "LEAD: 보도에 따르면 대규모 투자.\nITEM 0 BODY: 본문.\nITEM 0 IMPLICATION: 시사점.",
             }
         )
-        result = await _generator(out)._verify_grounding(_content(), _ranked())
+        result = await _generator(out)._verify_grounding(_content(), _sources())
         assert "보도에 따르면" in result.lead
 
     @pytest.mark.asyncio
     async def test_no_violation_keeps_original(self):
         content = _content(lead="근거 있는 문장.")
         out = json.dumps({"violations": [], "corrected_digest": "should be ignored"})
-        result = await _generator(out)._verify_grounding(content, _ranked())
+        result = await _generator(out)._verify_grounding(content, _sources())
         assert result.lead == "근거 있는 문장."
 
     @pytest.mark.asyncio
     async def test_malformed_check_keeps_original(self):
         content = _content(lead="원본 다이제스트.")
-        result = await _generator("not json")._verify_grounding(content, _ranked())
+        result = await _generator("not json")._verify_grounding(content, _sources())
         assert result.lead == "원본 다이제스트."
 
 
@@ -702,20 +708,110 @@ class TestSourceMatchingByNormalizedUrl:
         gen._fill_source_metadata(content, ranked)
         assert content.items[0].source_tag == "`Interconnects`"
 
-    def test_unmatched_item_falls_back_to_its_host(self):
-        # Last resort so the reader still sees provenance; derived from the URL, never a table.
+    def test_the_match_map_is_returned_for_the_grounding_check(self):
         gen, ranked = self._generator_with("https://interconnects.ai/p/x")
         content = DigestContent(
-            lead="l", headline_index=1, items=[DigestItem(title="T", url="https://www.newsite.com/a/b", body="b")]
+            lead="l", headline_index=1, items=[DigestItem(title="T", url="https://interconnects.ai/p/x", body="b")]
         )
-        gen._fill_source_metadata(content, ranked)
-        assert content.items[0].source_tag == "`newsite.com`"
+        assert gen._fill_source_metadata(content, ranked) == [ranked[0].item]
 
-    def test_unmatched_item_without_a_host_keeps_no_tag(self):
-        gen, ranked = self._generator_with("https://interconnects.ai/p/x")
-        content = DigestContent(lead="l", headline_index=1, items=[DigestItem(title="T", url="", body="b")])
-        gen._fill_source_metadata(content, ranked)
-        assert content.items[0].source_tag == ""
+
+class TestUnmatchedItemsNeverShip:
+    """An item matching no ranked candidate is a story the editor invented (or whose URL it mangled
+    beyond normalization). It used to be tagged with its own host, shipped to the reader, and written
+    into the published-URL ledger — which then suppressed the REAL article for the whole TTL window."""
+
+    @staticmethod
+    def _ranked_two():
+        return [
+            RankedItem(
+                item=CollectedItem(
+                    item_id=str(n),
+                    source_type=SourceType.RSS,
+                    title="T",
+                    url=f"https://interconnects.ai/p/{n}",
+                    metadata={"feed_title": "Interconnects"},
+                ),
+                score=0.9,
+            )
+            for n in (1, 2)
+        ]
+
+    def test_an_unmatched_non_headline_item_is_dropped(self):
+        gen = _generator("{}")
+        ranked = self._ranked_two()
+        content = DigestContent(
+            lead="l",
+            headline_index=1,
+            items=[
+                DigestItem(title="T1", url="https://interconnects.ai/p/1", body="b"),
+                DigestItem(title="Invented", url="https://www.newsite.com/a/b", body="b"),
+            ],
+        )
+        sources = gen._fill_source_metadata(content, ranked)
+        assert [it.url for it in content.items] == ["https://interconnects.ai/p/1"]
+        assert [s.item_id for s in sources] == ["1"]
+
+    def test_an_unmatched_headline_rejects_the_whole_emission(self):
+        # The lead and the daily visual are both written about items[0], so there is nothing to
+        # salvage — DigestContentError is what makes generate()'s retry re-ask.
+        gen = _generator("{}")
+        content = DigestContent(
+            lead="l",
+            headline_index=1,
+            items=[
+                DigestItem(title="Invented", url="https://www.newsite.com/a/b", body="b"),
+                DigestItem(title="T1", url="https://interconnects.ai/p/1", body="b"),
+            ],
+        )
+        with pytest.raises(DigestContentError, match="Headline item"):
+            gen._fill_source_metadata(content, self._ranked_two())
+
+    @pytest.mark.asyncio
+    async def test_generate_re_asks_and_recovers_from_an_invented_headline(self):
+        first = json.dumps(
+            {"lead": "리드.", "items": [{"title": "Invented", "url": "https://nowhere.example/x", "body": "b"}]}
+        )
+        second = json.dumps({"lead": "리드.", "items": [{"title": "T", "url": "u", "body": "b"}]})
+        outputs = [first, second]
+        factory = MagicMock()
+        factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content=outputs.pop(0)))
+        gen = DigestGenerator(
+            PipelineConfig(enable_grounding_check=False, digest_max_retries=2, digest_retry_backoff_sec=0), factory
+        )
+        result = await gen.generate(_ranked(), [])
+        assert result.content is not None
+        assert [it.url for it in result.content.items] == ["u"]
+        assert outputs == []  # the first emission was re-asked, not shipped
+
+    @pytest.mark.asyncio
+    async def test_grounding_sees_only_the_sources_that_shipped(self):
+        # Joining ALL ranked candidates meant a specific claim whose only support was a DROPPED
+        # backfill candidate read as grounded — a false negative in the one pass that exists to
+        # catch invented specifics — and carried the buffer's surplus input tokens.
+        shipped = RankedItem(
+            item=CollectedItem(item_id="a", source_type=SourceType.RSS, title="Shipped", url="u1", text="kept body"),
+            score=0.9,
+        )
+        dropped = RankedItem(
+            item=CollectedItem(item_id="b", source_type=SourceType.RSS, title="Backfill", url="u2", text="unused body"),
+            score=0.8,
+            backfill=True,
+        )
+        payload = json.dumps({"lead": "리드.", "items": [{"title": "T", "url": "u1", "body": "b"}]})
+        factory = MagicMock()
+        seen: list[str] = []
+
+        def _respond(prompt_value):
+            seen.append(str(prompt_value))
+            return AIMessage(content=payload if len(seen) == 1 else json.dumps({"violations": [], "corrected": ""}))
+
+        factory.get_model.return_value = RunnableLambda(_respond)
+        factory.truncate_to_tokens.side_effect = lambda text, max_tokens: text
+        gen = DigestGenerator(PipelineConfig(enable_grounding_check=True, top_n=1), factory)
+        await gen.generate([shipped, dropped], [])
+        assert "kept body" in seen[1]
+        assert "unused body" not in seen[1]
 
 
 class TestBackfillMarking:

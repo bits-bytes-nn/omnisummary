@@ -23,12 +23,14 @@ def format_alarm(
     status: str,
     fields: dict[str, str],
     project: str = "omnisummary",
+    stage: str = "",
+    correlation_id: str = "",
     timestamp: datetime | None = None,
 ) -> tuple[str, str]:
     """Build a ``(subject, message)`` pair in the project family's unified alarm
     format, shared verbatim across tech-digest/paper-bridge/scholar-lens:
 
-        Subject: [<project>] <event> — <STATUS>
+        Subject: [<project>/<stage>] <event> — <STATUS>
 
         <event> <STATUS>
 
@@ -40,9 +42,17 @@ def format_alarm(
     ordered mapping; single-line values render as an aligned ``Key: Value`` block,
     multi-line values render under their own ``Key:`` header. Omit a row by leaving
     it out of the dict.
+
+    ``project``/``stage`` come from the caller's environment: with the default project and no stage,
+    a dev-stage and a prod-stage alert were byte-identical, so a second deployment alerted under the
+    wrong name. ``correlation_id`` is appended as the last field — it is set on every handler
+    invocation and appeared in no alert, so an operator could not get from the mail to the matching
+    JSON log lines.
     """
     ts = (timestamp or datetime.now(UTC)).strftime("%Y-%m-%d %H:%M:%S")
-    subject = f"[{project}] {event} — {status}"
+    subject = f"[{project}/{stage}] {event} — {status}" if stage else f"[{project}] {event} — {status}"
+    if correlation_id:
+        fields = {**fields, "Correlation id": correlation_id}
 
     inline = {k: v for k, v in fields.items() if "\n" not in v}
     block = {k: v for k, v in fields.items() if "\n" in v}

@@ -703,6 +703,24 @@ def parse_json_from_llm_output(raw: str) -> Any:
     return json.loads(extract_json_from_llm_output(raw), strict=False)
 
 
+_FALSEY_STRINGS = frozenset({"false", "0", "no", "off", "none", "null", ""})
+
+
+def coerce_bool(value: Any, default: bool = False) -> bool:
+    """A boolean flag out of an LLM's JSON, where the model may have written a STRING.
+
+    Bare truthiness reads "false" as True, which for the visual editor's plan flags meant a returned
+    `"skip": "false"` silently killed the day's visual and a `"use_character": "false"` injected the
+    mascot sheet against the editor's judgment (and then wrote use_character=True into the variation
+    window that steers tomorrow). Missing/None falls back to `default`; anything that is not a
+    recognisable false spelling keeps normal truthiness."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().casefold() not in _FALSEY_STRINGS
+    return bool(value)
+
+
 def backoff_delay(backoff_sec: float, attempt: int, jitter_seed: str = "") -> float:
     """Delay before `attempt`'s retry: linear (backoff_sec * attempt), plus a deterministic
     0..backoff_sec jitter when a seed is given.

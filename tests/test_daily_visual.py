@@ -857,6 +857,38 @@ class TestDailyVisualMaker:
         assert await maker._pick_story(_items()) == {"skip": True}
 
     @pytest.mark.asyncio
+    async def test_a_stringly_typed_skip_flag_does_not_kill_the_visual(self):
+        # `if plan.get("skip")` read the STRING "false" as True, so an editor that quoted its
+        # booleans silently killed the day's visual with no error anywhere.
+        from shared.models import DigestContent, DigestItem
+
+        maker = _maker()
+        maker.config.pipeline.enable_slack_post = False
+        maker.config.pipeline.enable_threads_post = False
+        content = DigestContent(
+            lead="리드.", headline_index=1, items=[DigestItem(title="헤드라인", url="http://e.com/1", body="본문.")]
+        )
+        gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", caption="C", prompt="draw")))
+        plan = {"skip": "false", "research": [], "instruction": "draw it"}
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                maker.generator.generate = gen
+                await maker.run(_items(), content, today=date(2026, 6, 10))
+        gen.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_stringly_typed_character_flag_is_not_an_opt_in(self):
+        # `bool(plan.get("use_character"))` on "false" injected the mascot sheet against the
+        # editor's judgment, and then wrote use_character=True into the variation window that
+        # steers tomorrow's nudge.
+        maker = _maker()
+        instruction, use_character = maker._build_instruction(
+            {"instruction": "draw", "use_character": "false"}, None, date(2026, 6, 10), "Headline", [], ""
+        )
+        assert use_character is False
+        assert "RECURRING CHARACTER" not in instruction
+
+    @pytest.mark.asyncio
     async def test_unparseable_plan_renders_nothing(self):
         from langchain_core.messages import AIMessage
         from langchain_core.runnables import RunnableLambda

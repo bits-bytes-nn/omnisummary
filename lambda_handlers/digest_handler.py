@@ -54,7 +54,16 @@ def _publish_alert(event: str, status: str, fields: dict[str, str]) -> None:
     if not topic_arn:
         return
     try:
-        subject, message = format_alarm(event=event, status=status, fields=fields)
+        # project/stage from the function's own env, so a dev alert can't read as a prod one, and the
+        # correlation id so the operator can jump straight to this run's log lines.
+        subject, message = format_alarm(
+            event=event,
+            status=status,
+            fields=fields,
+            project=os.environ.get("PROJECT_NAME", "omnisummary"),
+            stage=os.environ.get("STAGE", ""),
+            correlation_id=get_correlation_id(),
+        )
         boto3.client("sns").publish(TopicArn=topic_arn, Subject=subject, Message=message)
         logger.warning("Published SNS alert (%s): %s", event, fields)
     except Exception as e:

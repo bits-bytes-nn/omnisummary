@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from urllib.parse import urlparse, urlsplit
+from urllib.parse import urlparse
 
 from langchain_core.output_parsers import StrOutputParser
 
@@ -110,29 +110,31 @@ class DigestGenerator:
             "lead_budget": self._lead_budget(intro),
         }
 
-        async def _ask_editor() -> DigestContent:
-            return self._parse_content(await chain.ainvoke(prompt_vars))
+        async def _ask_editor() -> tuple[DigestContent, list[CollectedItem]]:
+            content = self._parse_content(await chain.ainvoke(prompt_vars))
+            # Hard upper-bound: the prompt asks for EXACTLY target_count, but a model can over-emit.
+            # Trim deterministically so the digest never exceeds the target (fewer is allowed when
+            # the editor genuinely found fewer distinct stories). headline_index is pinned to 1, so
+            # the headline is always retained. Pinned URLs are kept even if they'd fall past the
+            # cutoff, so a user-pinned story the editor ranked low isn't trimmed out of the digest.
+            if len(content.items) > target_count:
+                logger.info("Digest emitted %d items; trimming to target %d", len(content.items), target_count)
+                content.items = self._trim_keeping_pinned(content.items, target_count, ranked_items)
+            # Inside the retry on purpose: an unmatched HEADLINE raises DigestContentError, and a
+            # re-ask is exactly the remedy (the lead and the visual are both written about items[0]).
+            return content, self._fill_source_metadata(content, ranked_items)
 
         # Re-ask on a malformed emission (or a transient Bedrock error) instead of degrading.
         # Exhausting the attempts raises, so a story-less digest is never persisted or posted.
-        content: DigestContent = await retry_async(
+        content, shipped_sources = await retry_async(
             _ask_editor,
             max_retries=self.config.digest_max_retries,
             backoff_sec=self.config.digest_retry_backoff_sec,
             description="Digest content generation",
         )
-        # Hard upper-bound: the prompt asks for EXACTLY target_count, but a model can over-emit.
-        # Trim deterministically so the digest never exceeds the target (fewer is allowed when the
-        # editor genuinely found fewer distinct stories). headline_index is pinned to 1, so the
-        # headline is always retained. Pinned URLs are kept even if they'd fall past the cutoff,
-        # so a user-pinned story the editor ranked low isn't trimmed out of the digest.
-        if len(content.items) > target_count:
-            logger.info("Digest emitted %d items; trimming to target %d", len(content.items), target_count)
-            content.items = self._trim_keeping_pinned(content.items, target_count, ranked_items)
-        self._fill_source_metadata(content, ranked_items)
 
         if self.config.enable_grounding_check:
-            content = await self._verify_grounding(content, ranked_items, trends_context)
+            content = await self._verify_grounding(content, shipped_sources, trends_context)
 
         # Attach the AGI countdown to the lead at generation time, using the digest's own date
         # (the single KST clock for the run) so the day count is consistent with trend stamps and
@@ -272,40 +274,66 @@ class DigestGenerator:
             kept.append(it)
         return kept
 
-    def _fill_source_metadata(self, content: DigestContent, ranked_items: list[RankedItem]) -> None:
+    def _fill_source_metadata(self, content: DigestContent, ranked_items: list[RankedItem]) -> list[CollectedItem]:
         """Code owns the source tag/metrics (not the LLM): match each item to its ranked source and
-        stamp the backtick tag + emoji metrics the renderers display.
+        stamp the backtick tag + emoji metrics the renderers display. Returns the source item behind
+        each SURVIVING story, so the grounding check can be scoped to what actually shipped.
 
         Matched on the aggregator's normalize_url, not an exact string: the editor echoes the URL
         back, and one trailing slash / http→https / dropped utm param was enough to lose the match —
         the story then shipped with no source line at all, on Slack and on Threads. Identical URLs
-        take the same path they always did."""
+        take the same path they always did.
+
+        An item that matches NO candidate is a story the editor invented, or whose URL it mangled
+        beyond normalization. It used to be tagged with its own host, shipped to the reader, and
+        recorded in the published-URL ledger — which then suppressed the REAL article for the whole
+        TTL window. It is dropped instead, and an unmatched HEADLINE rejects the emission outright:
+        the lead and the daily visual are both written about items[0], so there is nothing to salvage
+        and the caller's re-ask is the remedy."""
         by_url = {normalize_url(r.item.url): r.item for r in ranked_items}
-        for item in content.items:
+        kept: list[DigestItem] = []
+        sources: list[CollectedItem] = []
+        unmatched: list[str] = []
+        for i, item in enumerate(content.items):
             src = by_url.get(normalize_url(item.url))
             if src is None:
-                # Last resort so the reader still sees a provenance line: the URL's own host. No
-                # per-domain table — that would be a second, drifting source of source names.
-                host = urlsplit(item.url).netloc.removeprefix("www.")
-                if host:
-                    item.source_tag, item.metrics = f"`{host}`", ""
-                    logger.warning("Digest item '%s' matched no ranked source; tagged by host", item.url)
+                if i == 0:
+                    raise DigestContentError(f"Headline item '{item.url}' matches no ranked candidate")
+                unmatched.append(item.url)
                 continue
             item.source_tag, item.metrics = self._source_tag_and_metrics(src)
+            kept.append(item)
+            sources.append(src)
+        if unmatched:
+            # ERROR: the digest that follows looks entirely normal, so a story invented out of
+            # nothing (or with a mangled URL) is otherwise invisible until a reader clicks it.
+            logger.error(
+                "Dropping %d digest item(s) that match no ranked candidate: %s",
+                len(unmatched),
+                unmatched,
+            )
+            content.items = kept
+        return sources
 
     async def _verify_grounding(
-        self, content: DigestContent, ranked_items: list[RankedItem], trends_context: str = ""
+        self, content: DigestContent, sources_items: list[CollectedItem], trends_context: str = ""
     ) -> DigestContent:
         """Check the digest's specific claims against the source items and surgically revise
         unsupported ones. The trend ammunition (days-running, recurrence counts) is code-derived
         fact from trends.json, so it's passed as a valid source — otherwise grounding would strip
         the very recurrence figures that make the lead sharp. Runs over a plain-text serialization
         of the content; on success the corrected text is re-parsed back into the structured fields.
-        Best-effort: any failure keeps the original content."""
+        Best-effort: any failure keeps the original content.
+
+        `sources_items` is what actually SHIPPED (_fill_source_metadata's match map), not every
+        ranked candidate. Joining the whole candidate list meant a number or product name whose only
+        support was a dropped backfill candidate read as grounded — a false negative in the single
+        pass that exists to catch invented specifics — and carried the buffer's surplus input tokens
+        (item_text_max_tokens each) on the critical path."""
         try:
             sources = "\n\n".join(
-                f"[{i + 1}] {r.item.title}\n{self._truncate(r.item.text, self.config.item_text_max_tokens)}"
-                for i, r in enumerate(ranked_items)
+                f"[{i + 1}] {item.title}\n{self._truncate(item.text, self.config.item_text_max_tokens)}"
+                for i, item in enumerate(sources_items)
             )
             if trends_context:
                 sources += f"\n\n[TRENDS] Verified trend-tracking history (recurrence facts):\n{trends_context}"

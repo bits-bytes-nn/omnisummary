@@ -6,6 +6,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from shared.utils import (
+    backoff_delay,
+    coerce_bool,
     extract_json_from_llm_output,
     generate_item_id,
     parse_feed_published_date,
@@ -210,6 +212,61 @@ class TestRetryAsync:
                 await retry_async(always_fail, max_retries=4, backoff_sec=2.0)
         # 4 attempts -> sleeps after attempts 1, 2, 3 (none after the final attempt)
         assert sleeps == [2.0, 4.0, 6.0]
+
+    @pytest.mark.asyncio
+    async def test_a_jitter_seed_spreads_concurrent_retries(self):
+        # Plain linear backoff resynchronises dozens of concurrent callers into exactly the burst
+        # the upstream rate-limited (40 RSSHub account feeds all retrying at the same instant).
+        sleeps: list[float] = []
+
+        async def always_fail():
+            raise ValueError("transient")
+
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        with patch("shared.utils.asyncio.sleep", side_effect=fake_sleep):
+            for seed in ("feed-a", "feed-b"):
+                with pytest.raises(ValueError):
+                    await retry_async(always_fail, max_retries=2, backoff_sec=2.0, jitter_seed=seed)
+        assert len(sleeps) == 2
+        assert sleeps[0] != sleeps[1]
+        assert all(2.0 <= s <= 4.0 for s in sleeps)  # never below the linear delay, never past 2x
+
+
+class TestBackoffDelay:
+    def test_linear_without_a_seed(self):
+        assert backoff_delay(3.0, 2) == 6.0
+
+    def test_jitter_is_deterministic_per_seed_and_attempt(self):
+        first = backoff_delay(5.0, 1, "r/LocalLLaMA")
+        assert first == backoff_delay(5.0, 1, "r/LocalLLaMA")  # no RNG: reproducible
+        assert first != backoff_delay(5.0, 1, "r/MachineLearning")
+        assert first != backoff_delay(5.0, 2, "r/LocalLLaMA")
+
+    def test_jitter_never_shortens_the_linear_delay(self):
+        for attempt in (1, 2, 3):
+            delay = backoff_delay(4.0, attempt, "seed")
+            assert 4.0 * attempt <= delay < 4.0 * (attempt + 1)
+
+
+class TestCoerceBool:
+    """LLM plan flags arrive as JSON the model wrote by hand, so a boolean may be a STRING. Bare
+    truthiness read "false" as True: the visual editor's `skip` silently killed the day's visual and
+    `use_character` injected the mascot against the editor's judgment."""
+
+    def test_false_spellings_are_false(self):
+        for value in ("false", "False", " FALSE ", "0", "no", "off", "none", "null", ""):
+            assert coerce_bool(value) is False, value
+
+    def test_true_spellings_and_real_booleans(self):
+        for value in ("true", "True", "yes", "1", True, 1):
+            assert coerce_bool(value) is True, value
+        assert coerce_bool(False) is False
+
+    def test_missing_falls_back_to_the_default(self):
+        assert coerce_bool(None) is False
+        assert coerce_bool(None, default=True) is True
 
 
 class TestSanitizeSlackMrkdwn:

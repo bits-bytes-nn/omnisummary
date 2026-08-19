@@ -13,7 +13,15 @@ import boto3
 from agent.tool_state import DigestStateManager
 from output.threads_handler import ThreadsDelivery
 from pipeline.daily_visual import DailyVisualMaker
-from shared import BedrockLanguageModelFactory, Config, create_memory_store, format_alarm, logger, set_correlation_id
+from shared import (
+    BedrockLanguageModelFactory,
+    Config,
+    create_memory_store,
+    format_alarm,
+    get_correlation_id,
+    logger,
+    set_correlation_id,
+)
 
 METRIC_NAMESPACE = "OmniSummary"
 THREADS_POSTS_METRIC = "ThreadsPostsPublished"
@@ -128,9 +136,14 @@ def _maybe_alert_threads_outcome(outcome: ThreadsDelivery | None, digest_date: d
         return
     status = "ALERT" if outcome.published else "FAILED"
     try:
+        # project/stage from the function's own env, so a dev alert can't read as a prod one, and the
+        # correlation id so the operator can jump straight to this run's log lines.
         subject, message = format_alarm(
             event="Threads Delivery",
             status=status,
+            project=os.environ.get("PROJECT_NAME", "omnisummary"),
+            stage=os.environ.get("STAGE", ""),
+            correlation_id=get_correlation_id(),
             fields={
                 "Digest date": digest_date.isoformat(),
                 "Delivered": outcome.summary(),

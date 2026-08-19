@@ -40,6 +40,30 @@ class TestMaybeAlert:
         assert "reddit" in kwargs["Message"]
         assert "[FAILED] reddit" in kwargs["Message"]
 
+    def test_subject_names_the_real_project_and_stage(self, monkeypatch):
+        # With the hardcoded default a dev-stage and a prod-stage alert were byte-identical, so a
+        # second deployment alerted under the wrong name.
+        monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:::topic")
+        monkeypatch.setenv("PROJECT_NAME", "omnisummary")
+        monkeypatch.setenv("STAGE", "prod")
+        sns = MagicMock()
+        with patch("lambda_handlers.digest_handler.boto3.client", return_value=sns):
+            digest_handler._maybe_alert(_report_with_failure())
+        assert sns.publish.call_args.kwargs["Subject"] == "[omnisummary/prod] Source Health — ALERT"
+
+    def test_message_carries_the_correlation_id(self, monkeypatch):
+        # The id is set on every invocation but appeared in no alert, so an operator could not get
+        # from the mail to the matching JSON log lines.
+        from shared.logger import set_correlation_id
+
+        monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:::topic")
+        set_correlation_id("abc123def456")
+        sns = MagicMock()
+        with patch("lambda_handlers.digest_handler.boto3.client", return_value=sns):
+            digest_handler._maybe_alert(_report_with_failure())
+        assert "abc123def456" in sns.publish.call_args.kwargs["Message"]
+        assert "Correlation id" in sns.publish.call_args.kwargs["Message"]
+
     def test_publishes_on_stale_source(self, monkeypatch):
         # A STALE source (items served off a park file whose local sync stopped) must alert too —
         # it isn't a FAILURE, so the has_failures-only gate stayed silent for days.

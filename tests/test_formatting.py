@@ -136,3 +136,39 @@ class TestPublicPackageBoundaries:
         assert renderers.THREADS_MAX_POST_CHARS is THREADS_MAX_POST_CHARS
         assert threads_handler.THREADS_MAX_POST_CHARS is THREADS_MAX_POST_CHARS
         assert digest_generator.THREADS_MAX_POST_CHARS is THREADS_MAX_POST_CHARS
+
+
+class TestFormatAlarm:
+    """The subject is what an operator sees first, and it used to carry a hardcoded project with no
+    stage — so a dev alert and a prod alert were byte-identical."""
+
+    @staticmethod
+    def _alarm(**kwargs):
+        from shared.formatting import format_alarm
+
+        base = {"event": "Source Health", "status": "ALERT", "fields": {"Failed sources": "reddit"}}
+        base.update(kwargs)
+        return format_alarm(**base)
+
+    def test_subject_defaults_to_the_family_format(self):
+        subject, _ = self._alarm()
+        assert subject == "[omnisummary] Source Health — ALERT"
+
+    def test_stage_is_named_in_the_subject(self):
+        subject, _ = self._alarm(project="omnisummary", stage="prod")
+        assert subject == "[omnisummary/prod] Source Health — ALERT"
+
+    def test_correlation_id_is_the_last_field(self):
+        _, message = self._alarm(correlation_id="abc123def456")
+        lines = [line for line in message.splitlines() if line.strip()]
+        assert lines[-2].startswith("Correlation id:")  # the timestamp footer is last
+        assert "abc123def456" in message
+
+    def test_no_correlation_row_when_there_is_no_id(self):
+        _, message = self._alarm()
+        assert "Correlation id" not in message
+
+    def test_multi_line_fields_still_render_as_blocks_after_the_id(self):
+        _, message = self._alarm(fields={"Report": "line1\nline2"}, correlation_id="cid")
+        assert "Report:" in message and "line1" in message
+        assert "Correlation id: cid" in message

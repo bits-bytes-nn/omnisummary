@@ -22,6 +22,7 @@ from shared import (
     VisualBrief,
     VisualEditorPrompt,
     agi_countdown_intro,
+    coerce_bool,
     create_state_store,
     editorial_lead,
     get_correlation_id,
@@ -198,7 +199,9 @@ class DailyVisualMaker:
             logger.warning("Daily visual editor failed; publishing the digest text-only", exc_info=True)
             return None, None
 
-        if plan.get("skip"):
+        # coerce_bool, not truthiness: an editor that writes the STRING "false" here silently
+        # killed the day's visual, with no error anywhere.
+        if coerce_bool(plan.get("skip")):
             logger.info("Daily visual: editor could not illustrate the headline; publishing the digest text-only")
             return None, None
 
@@ -233,7 +236,7 @@ class DailyVisualMaker:
                         "date": post_date.isoformat(),
                         "orientation": brief.orientation,
                         "format": plan.get("format", ""),
-                        "multi_panel": bool(plan.get("multi_panel", False)),
+                        "multi_panel": coerce_bool(plan.get("multi_panel")),
                         "use_character": use_character,
                     },
                     dedup_key="date",
@@ -285,7 +288,7 @@ class DailyVisualMaker:
         # The recurring mascot appears only when the editor judged it fits this story (use_character).
         # Inject the character sheet so the image model draws the SAME person; identity rides on the
         # signature props, so it survives the daily-varying art style.
-        use_character = bool(plan.get("use_character", False)) and self.config.pipeline.visual_character_enabled
+        use_character = coerce_bool(plan.get("use_character")) and self.config.pipeline.visual_character_enabled
         if use_character:
             instruction += (
                 "\n\nFEATURE THE RECURRING CHARACTER as a witness reacting inside this scene "
