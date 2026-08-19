@@ -209,7 +209,6 @@ cython_debug/
 cdk.out/
 config/config.yaml
 digest_state/
-docs/
 logs/
 node_modules/
 omnisummary.egg-info/
