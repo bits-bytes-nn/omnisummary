@@ -254,7 +254,12 @@ SOURCE_DESCRIPTORS: dict[SourceType, SourceDescriptor] = {
     SourceType.YOUTUBE: SourceDescriptor(
         origin_key=lambda item: item.metadata.get("channel_url", ""),
         label=lambda item: item.metadata.get("channel_url", ""),
-        tag=lambda item: "`YouTube`",
+        # The CHANNEL, like every other source's tag names the specific origin (a subreddit, an
+        # account, a publication, a host). This was the literal "YouTube" — the platform — so the
+        # reader learned nothing, and the editor compensated by appending the speaker to the item
+        # TITLE instead. `author` is the channelTitle the collector already stores; the RSS-fallback
+        # path has no author, so the platform name remains the floor.
+        tag=lambda item: f"`{item.author}`" if item.author else "`YouTube`",
         metrics=_youtube_metrics,
     ),
 }
@@ -412,11 +417,15 @@ def threads_item_overhead_chars(meta: str, url: str) -> int:
     over is what the editor may write (title + body + implication), so the prose budget it is told
     about is derived from this — not from a hand-estimated "~120 chars in practice".
 
-    The implication is its own block, hence one separator MORE than there are code-owned parts
-    (title | body | implication is 2 separators even with no meta and no URL). An item with no
-    implication is charged that separator anyway — a slightly smaller budget, never a too-large one.
+    The source line rides in parentheses ON the title line, so it costs its own length plus the
+    " (" and ")" around it but adds NO separator — the post is `title (meta)` | body | implication |
+    url. The implication is its own block, hence one separator more than there are separate
+    code-owned blocks (title | body | implication is 2 separators even with no meta and no URL). An
+    item with no implication is charged that separator anyway — a slightly smaller budget, never a
+    too-large one.
 
     Lives beside the other post-length primitives (not in the renderer) so the pipeline can derive
     the editor's budget without importing an output channel."""
-    parts = [p for p in (meta.strip(), url.strip()) if p]
-    return sum(len(p) for p in parts) + len(THREADS_POST_SEPARATOR) * (len(parts) + 2)
+    blocks = [p for p in (url.strip(),) if p]
+    inline_meta = len(meta.strip()) + len(" ()") if meta.strip() else 0
+    return inline_meta + sum(len(p) for p in blocks) + len(THREADS_POST_SEPARATOR) * (len(blocks) + 2)

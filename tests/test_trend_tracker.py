@@ -177,26 +177,6 @@ class TestLifecycle:
         assert t.evidence[0].summary == "e4"
 
     @pytest.mark.asyncio
-    async def test_active_cap_archives_lowest_momentum(self, monkeypatch):
-        trends = [
-            Trend(
-                id=f"t{i}",
-                title=f"T{i}",
-                first_seen="2026-05-01",
-                last_seen=f"2026-06-0{i}",
-                evidence=[TrendEvidence(date=f"2026-06-0{i}", summary="e")],
-            )
-            for i in range(1, 4)
-        ]
-        store = _FakeStore({TRENDS_KEY: TrendMemory(trends=trends).model_dump_json()})
-        tracker = _patched_tracker(store, [], monkeypatch, trend_max_active_trends=2, trend_cooling_days=60)
-        await tracker.update_trends("d", "2026-06-05")
-
-        memory = TrendMemory.model_validate_json(store.data[TRENDS_KEY])
-        active = {t.id for t in memory.trends if t.status == TrendStatus.ACTIVE}
-        assert active == {"t2", "t3"}
-
-    @pytest.mark.asyncio
     async def test_long_archived_trends_are_purged(self, monkeypatch):
         # A trend last seen far beyond 2x retention must be dropped, not retained forever with
         # its evidence (which would bloat trends.json indefinitely).

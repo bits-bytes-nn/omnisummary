@@ -80,13 +80,6 @@ class TestContentAggregator:
         assert result[0].metadata["key1"] == "val1"
         assert result[0].metadata["key2"] == "val2"
 
-    def test_normalizes_metadata(self):
-        from datetime import datetime
-
-        items = [_item(url="http://a.com", metadata={"dt": datetime(2024, 1, 1)})]
-        result = ContentAggregator().aggregate(items)
-        assert isinstance(result[0].metadata["dt"], str)
-
     def test_empty_input(self):
         result = ContentAggregator().aggregate([])
         assert result == []

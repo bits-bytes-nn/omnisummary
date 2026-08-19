@@ -111,9 +111,6 @@ class ContentAggregator:
         if empty_norm:
             logger.info("Kept %d item(s) whose title normalizes to empty out of title dedup", empty_norm)
 
-        for item in deduplicated:
-            item.metadata = self._normalize_metadata(item.metadata)
-
         logger.info(
             "Aggregated %d items → %d after deduplication (%d url, %d title)",
             len(items),
@@ -152,15 +149,3 @@ class ContentAggregator:
             kept.metadata.setdefault(k, v)
 
     _normalize_url = staticmethod(normalize_url)
-
-    @staticmethod
-    def _normalize_metadata(metadata: dict) -> dict:
-        normalized: dict = {}
-        for key, value in metadata.items():
-            if isinstance(value, (str, int, float, bool)) or value is None:
-                normalized[key] = value
-            elif isinstance(value, (list, dict)):
-                normalized[key] = value
-            else:
-                normalized[key] = str(value)
-        return normalized

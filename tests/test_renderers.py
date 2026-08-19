@@ -1,6 +1,7 @@
 from output.renderers import (
     SLACK_MAX_BLOCKS_PER_MESSAGE,
     SLACK_MAX_SECTION_CHARS,
+    _fit_one_post,
     _hard_split_link_safe,
     _split_long_paragraph,
     render_agent_blocks,
@@ -9,9 +10,9 @@ from output.renderers import (
     render_threads_posts,
     render_threads_research,
 )
-from shared.constants import THREADS_MAX_POST_CHARS
-from shared.formatting import strip_slack_mrkdwn, threads_item_overhead_chars
-from shared.models import DigestContent, DigestItem
+from shared.constants import THREADS_MAX_POST_CHARS, SourceType
+from shared.formatting import source_tag_and_metrics, strip_slack_mrkdwn, threads_item_overhead_chars
+from shared.models import CollectedItem, DigestContent, DigestItem
 
 
 def _content(n_items: int = 2, lead: str = "오늘의 리드.") -> DigestContent:
@@ -537,16 +538,56 @@ class TestHardSplitLinkSafe:
         assert all(len(p) <= SLACK_MAX_SECTION_CHARS for p in non_link)
 
 
+class TestThreadsSourceAttribution:
+    """On Threads the source tag is the ONLY thing telling a Reddit thread from an arXiv paper, and
+    it read wrong for two separate reasons. Both shipped in the 2026-08-18 digest."""
+
+    def test_the_source_rides_in_parentheses_on_the_title_line(self):
+        # It was a block of its own. Slack renders the tag as inline code so it reads as metadata;
+        # Threads renders no markup, so a publication name was left as a bare noun phrase alone on a
+        # line, indistinguishable from a stray fragment.
+        post = _fit_one_post("제목이다", "Simon Willison's Weblog", "본문이다.", "시사점이다.", "http://e.com/1")
+        assert post.splitlines()[0] == "제목이다 (Simon Willison's Weblog)"
+        assert "\n\nSimon Willison's Weblog\n\n" not in post
+
+    def test_a_title_with_no_source_is_not_left_with_empty_parentheses(self):
+        assert _fit_one_post("제목이다", "", "본문이다.", "", "").splitlines()[0] == "제목이다"
+
+    def test_the_youtube_tag_names_the_channel_not_the_platform(self):
+        # It was the literal "YouTube" for every video, so the reader learned nothing and the editor
+        # compensated by appending the speaker to the TITLE instead — the source of the em-dash in
+        # "AI를 키우는 건 ... — Ryan Greenblatt". `author` is the channelTitle the collector stores.
+        item = CollectedItem(
+            source_type=SourceType.YOUTUBE,
+            title="t",
+            url="https://www.youtube.com/watch?v=x",
+            author="AI Engineer",
+            metadata={"view_count": 775, "channel_url": "https://youtube.com/@x"},
+        )
+        tag, metrics = source_tag_and_metrics(item)
+        assert tag == "`AI Engineer`"
+        assert metrics == "▶️ 775"
+
+    def test_a_youtube_item_with_no_author_keeps_the_platform_as_the_floor(self):
+        # The RSS-fallback collection path stores no author.
+        item = CollectedItem(
+            source_type=SourceType.YOUTUBE, title="t", url="https://youtu.be/x", metadata={"channel_url": "u"}
+        )
+        assert source_tag_and_metrics(item)[0] == "`YouTube`"
+
+
 class TestThreadsItemOverhead:
     """The per-item prose budget the editor is told about is derived from THIS number, so it has to
     match what the assembled post really spends on the parts code owns."""
 
-    def test_counts_source_line_url_and_separators(self):
-        # title \n\n meta \n\n body \n\n implication \n\n url → 4 separators (8 chars) + meta + url
-        assert threads_item_overhead_chars("src · 👍 +10", "http://e.com/1") == len("src · 👍 +10") + 14 + 8
+    def test_counts_the_inline_source_line_url_and_separators(self):
+        # "title (meta)" \n\n body \n\n implication \n\n url → 3 separators (6 chars) + url + the
+        # meta and the " ()" that wraps it onto the title line, which costs no separator of its own.
+        meta, url = "src · ▶️ 775", "http://e.com/1"
+        assert threads_item_overhead_chars(meta, url) == len(meta) + 3 + len(url) + 6
 
-    def test_no_source_line_means_one_separator_less(self):
-        assert threads_item_overhead_chars("", "http://e.com/1") == 14 + 6
+    def test_no_source_line_costs_neither_the_text_nor_the_parentheses(self):
+        assert threads_item_overhead_chars("", "http://e.com/1") == len("http://e.com/1") + 6
 
     def test_matches_the_real_assembly(self):
         # An item whose title+body+implication exactly fill the derived budget must not be trimmed.

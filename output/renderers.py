@@ -38,10 +38,11 @@ def _split_long_paragraph(para: str, max_len: int) -> list[str]:
     pieces: list[str] = []
     current = ""
     for sentence in split_sentences(para) or [para]:
-        unit = sentence if len(sentence) <= max_len else truncate_at_word(sentence, max_len)
-        # If the sentence itself overflows even after word-trim is impossible without a space,
-        # fall back to a link-safe hard split of the raw sentence.
-        units = [unit] if len(sentence) <= max_len else _hard_split_link_safe(sentence, max_len)
+        # A sentence that overflows on its own gets a link-safe hard split; there is nothing to
+        # word-trim it down to, because the next unit has to carry the remainder either way. A
+        # `truncate_at_word(sentence, max_len)` sat on the fitting side of this guard and was
+        # discarded exactly when it was produced, since this same comparison decides both.
+        units = [sentence] if len(sentence) <= max_len else _hard_split_link_safe(sentence, max_len)
         for u in units:
             candidate = f"{current} {u}".strip() if current else u
             if len(candidate) > max_len and current:
@@ -240,11 +241,20 @@ def _fit_one_post(
     are dropped from the end first, and the implication only goes if the fixed parts still overflow.
     Nothing is cut mid-sentence and the link is never split. Each item maps to exactly one reply.
 
-    `meta` is the "r/LocalLLaMA · 👍 +44" provenance line the pipeline already computes and Slack
+    `meta` is the "r/LocalLLaMA · ▶️ 775" provenance line the pipeline already computes and Slack
     already shows. Threads used to discard it, so a reader could not tell a Reddit thread from an
-    arXiv paper without opening the link. It costs a median of 16 characters and is treated as
-    fixed: knowing the source is worth more than one more clause of body."""
-    fixed = [p for p in (title.strip(), meta.strip()) if p]
+    arXiv paper without opening the link. It is treated as fixed: knowing the source is worth more
+    than one more clause of body.
+
+    It rides in PARENTHESES on the title line rather than as a block of its own. Slack renders the
+    tag as inline code, which marks it as metadata; Threads renders no markup, so the backticks are
+    stripped and a publication name ("Simon Willison's Weblog") was left as a bare noun phrase
+    sitting on its own line, reading like a stray fragment. Parentheses are a self-evident
+    attribution marker in Korean and survive markup-stripping, they work for all five source shapes
+    without a label word, and merging the two blocks saves a separator — net +1 character against
+    the old form. Slack keeps its context block: it was never the channel that read wrong."""
+    titled = f"{title.strip()} ({meta.strip()})" if title.strip() and meta.strip() else (title.strip() or meta.strip())
+    fixed = [titled] if titled else []
     tail = [url.strip()] if url.strip() else []
     impl = implication.strip()
 
@@ -284,9 +294,11 @@ def _fit_one_post(
 
 def _item_post_overflows(title: str, meta: str, body: str, implication: str, url: str) -> bool:
     """True when the item's FULL prose cannot fit one post — i.e. _fit_one_post had to drop
-    something. Mirrors its assembly with nothing trimmed (implication as its own block, so the
-    separator count matches); used for counts-only trim reporting."""
-    blocks = [p for p in (title.strip(), meta.strip(), body.strip(), implication.strip()) if p]
+    something. Mirrors its assembly with nothing trimmed (the source line in parentheses on the
+    title, the implication as its own block, so the separator count matches); used for counts-only
+    trim reporting."""
+    titled = f"{title.strip()} ({meta.strip()})" if title.strip() and meta.strip() else (title.strip() or meta.strip())
+    blocks = [p for p in (titled, body.strip(), implication.strip()) if p]
     tail = [url.strip()] if url.strip() else []
     assembled = THREADS_POST_SEPARATOR.join(blocks + tail)
     return len(assembled) > THREADS_MAX_POST_CHARS

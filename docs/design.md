@@ -783,7 +783,23 @@ implication만 세어서 한국어 제목이 예산 밖에서 소비되었고, �
 메시지당 블록 상한에 맞춰 청크로 분할한다. `output/slack_handler.send_digest_to_slack`이 쓴다.
 
 **`render_threads_posts`.** root는 lead이고 항목마다 평탄한 reply 하나를 만든다. 500자 이하로 문장 경계에서
-트림하며 title과 소스 줄, URL은 유지하고 Slack 마크업은 없다. 여기서 결정이 하나 있다. implication은 body와 한
+트림하며 title과 소스 줄, URL은 유지하고 Slack 마크업은 없다.
+
+소스 줄은 자기 블록이 아니라 **제목 줄의 괄호 안**에 온다(`제목 (r/LocalLLaMA · ▶️ 775)`). 2026-08-19까지는
+블록이었다. Slack은 태그를 인라인 코드로 렌더링해서 그것만으로 메타데이터임이 드러나는데, 쓰레드는 마크업을
+렌더링하지 않아 백틱이 벗겨진다. 그래서 `r/LocalLLaMA`나 `@karpathy`처럼 모양이 스스로를 설명하는 태그는
+살아남았지만 매체명(`Simon Willison's Weblog`)은 줄 하나를 차지한 맨 명사구가 되어 흘러나온 조각처럼 읽혔다.
+괄호는 한국어에서 그 자체로 부가정보 표식이고 마크업 제거를 견디며, 다섯 소스 형태 전부에 라벨 단어 없이
+적용된다. 블록 둘이 하나로 합쳐지며 구분자 하나를 절약해서 실질 순증은 1자다. Slack은 컨텍스트 블록을 그대로
+쓴다. 잘못 읽힌 채널이 아니었다.
+
+같은 날 YouTube 태그도 고쳤다. 다른 네 소스의 태그는 구체적 출처를 지목하는데(서브레딧, 계정, 매체, 호스트)
+YouTube만 리터럴 `YouTube`, 즉 플랫폼 이름이었다. 독자가 얻는 정보가 없고, 그래서 에디터가 화자를 **제목에**
+덧붙여 벌충했다(`AI를 키우는 건 아이를 키우는 것과 다르다 — Ryan Greenblatt`의 em-dash가 여기서 나왔다).
+수집기가 `author`에 `channelTitle`을 이미 담고 있어서 데이터를 새로 구할 필요가 없었다. RSS 폴백 경로는 author를
+남기지 않으니 플랫폼 이름이 바닥값으로 남는다.
+
+여기서 결정이 하나 있다. implication은 body와 한
 단락으로 이어 붙이지 않고 빈 줄로 분리해 자기 블록으로 내보낸다. 이어 붙이면 목소리 줄이 그냥 본문의 마지막
 문장처럼 읽혀서 항목이 착지하는 지점이 사라졌다. 이 추가 구분자는 `threads_item_overhead_chars`(에디터에게
 알려주는 파생 예산)와 `_item_post_overflows`(트림 카운트)에도 똑같이 반영되어 예산이 정확히 유지된다. 산문이
@@ -1150,7 +1166,14 @@ lead, 비주얼 포맷 윈도, Threads 멱등 마커가 한 번의 실패 읽기
   계산한다.
 - momentum은 recency 감쇠다. `0.5^(age/half_life)`이고 `trend_momentum_half_life_days` 기본값은 7일이다.
 - 트렌드당 증거는 `trend_max_evidence`로 캡한다.
-- active 트렌드 수는 `trend_max_active_trends`로 캡하며, 초과분은 최저 momentum부터 아카이브한다.
+- `trend_max_active_trends`는 이제 **읽는 쪽에서만** 캡을 건다(`get_trends_context`). 예전에는 active 트렌드 수가
+  초과하면 최저 momentum부터 status를 ARCHIVED로 바꾸는 루프도 있었는데 2026-08-19에 지웠다. 붙지 않는
+  아카이브였다. 같은 함수의 위쪽 루프가 매 실행 `last_seen` 나이만으로 status를 다시 도출하니, 캡 때문에
+  아카이브된 트렌드는 다음 실행에 아직 최근이면 ACTIVE로 되돌아온다. "Archived low-momentum trend over active
+  cap"이 30일간 365번(실행당 12번), 59개 id에 걸쳐 발화하고 한 id는 13번 아카이브됐다. 그리고 이건 낭비만이
+  아니라 **아래 규칙을 위반**했다. `_render_existing`이 ARCHIVED를 분류기 시야에서 숨기니, 숨겨지는 10개가 매
+  실행 바뀌었고 못 보는 트렌드는 연장될 수 없어 새 id로 다시 생성됐다. `trend_cooling_days`가 이미 안정적이고
+  도출 가능한 규칙으로 active 목록을 묶는다(74개 중 20개가 그 안에 있었다).
 - **아카이브 purge.** 아카이브는 status만 바꾸고 증거를 유지하니 "증거 없는 트렌드 제거" 규칙에 걸리지 않아
   영구히 잔존하고, `trends.json`이 무한 성장했다. 그래서 `last_seen`이 retention의 2배를 넘긴 아카이브
   트렌드는 완전히 제거한다. 짧게 아카이브됐다 되살아날 여지를 남기는 grace다.

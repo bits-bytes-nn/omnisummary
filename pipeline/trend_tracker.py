@@ -90,11 +90,15 @@ class TrendTracker:
         """The DIGEST-facing trend ammunition: the highest-momentum visible trends, with the
         recurrence facts the lead reasons from.
 
-        Capped at trend_max_active_trends (the same knob that bounds how many trends stay active —
-        no second number): `visible` also holds cooling ones, so the block could hand the editor
-        20+ lines, most of them stale threads it will never use. The CLASSIFIER's view
-        (_render_existing) is deliberately NOT capped — hiding a cooling trend there would orphan it
-        and make the model coin a duplicate id for the same thread."""
+        Capped at trend_max_active_trends: `visible` also holds cooling ones, so the block could
+        hand the editor 20+ lines, most of them stale threads it will never use. This is now the
+        knob's ONLY use — a lifecycle loop also archived ACTIVE trends over the same number until
+        2026-08-19, which violated the rule stated next.
+
+        The CLASSIFIER's view (_render_existing) is deliberately NOT capped — hiding a cooling trend
+        there would orphan it and make the model coin a duplicate id for the same thread. That is
+        exactly what the removed loop did, since _render_existing skips ARCHIVED: it hid a different
+        10 trends every run, so the ones it hid could not be extended and came back as new ids."""
         memory = self._load_memory()
         visible = [t for t in memory.trends if t.status != TrendStatus.ARCHIVED]
         if not visible:
@@ -243,14 +247,15 @@ class TrendTracker:
             if today is not None:
                 trend.status = self._compute_status(trend, today)
 
-        active = [t for t in memory.trends if t.status == TrendStatus.ACTIVE]
-        if len(active) > self.config.trend_max_active_trends:
-            half_life = self.config.trend_momentum_half_life_days
-            ref = today or date.today()
-            active.sort(key=lambda t: t.momentum(ref, half_life))
-            for trend in active[: len(active) - self.config.trend_max_active_trends]:
-                trend.status = TrendStatus.ARCHIVED
-                logger.info("Archived low-momentum trend '%s' over active cap", trend.id)
+        # An over-cap archival loop sat here, sorting the ACTIVE list by momentum and archiving the
+        # excess above trend_max_active_trends. Removed 2026-08-19: it could not stick. The loop
+        # above re-derives status from last_seen alone on every run, so a trend archived for being
+        # over the cap comes back ACTIVE the next time it is still recent — "Archived low-momentum
+        # trend over active cap" fired 365 times in 30 days (12 per run) across 59 distinct ids, one
+        # of them 13 times. The harm was not just the churn: _render_existing hides ARCHIVED trends
+        # from the classifier, so the set it could not see changed every run, and a trend it cannot
+        # see cannot be EXTENDED — it gets created again as a new one. trend_cooling_days already
+        # bounds the active list on a stable, derivable rule (20 of 74 trends were seen inside it).
 
         # Purge trends archived long ago. Archiving only sets status; it never removes the trend,
         # and archived trends keep their (capped) evidence so the "drop trends with no evidence"
