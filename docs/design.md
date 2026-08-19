@@ -293,6 +293,16 @@ retry_backoff_sec) * max_retries = 105초`까지 허용하면 직렬 라운드�
 (fresh와 stale), `degraded`면 헬스를 STALE로 올린다(stale과 error). 수집기는 결과를 `self.park_status`에
 남기고 `run_collectors_with_health`가 그것을 읽는다.
 
+park 항목도 라이브 경로와 **같은** 수집 윈도를 통과해야 한다. `parked_items_in_window`가
+`in_collection_window`를 그대로 적용한다. 예전에는 park 경로가 파일 항목을 그대로 넘겨서 윈도 두 개가 조용히
+무시됐다. STALE이지만 쓸 수 있는 파일은 `park_max_age + lookback`만큼 오래된 항목까지 랭킹에 흘려보냈고,
+실행의 기준 시각(`--date`, 다이제스트 핸들러의 `set_reference_time`)은 아무 데도 적용되지 않았다. 윈도 밖으로
+떨어진 개수는 WARNING으로 남는다. 그 수가 올라가는 것 자체가 멈춘 sync의 신호다.
+
+이 필터는 `lookback_hours`가 이전 실행까지 닿는다는 전제에 의존한다(§3.1). 24였을 때는 sync 시각과 다음
+cutoff 사이의 슬라이스가 어느 park 파일에도 없으면서 다음 실행에서는 이미 과거여서, 필터가 정상 경로에
+구멍을 냈다. 앵커 30과 `_lookback_reaches_the_previous_run` 검증이 그 전제를 강제한다.
+
 `meta`는 park 파일을 쓴 sync가 남긴 수집 방식 기록이며 선택적이다. RSSHub sync는 `accounts_total`,
 `accounts_failed`, `accounts_empty`를 적고, 수집기는 그것을 되읽어 라이브 경로와 **같은** 세 임계
 (`error_rate_threshold`, `empty_rate_threshold`, `max_failed_inputs`)로 판정한 뒤 `degraded_detail`을 세워
@@ -387,6 +397,12 @@ URL을 시드로 한 지터를 얹은 선형이다. 지터가 없으면 동시�
 설정돼 있으면 마지막 것, 즉 차단된 호스트에 대해 더 정보가 많은 쪽이다). 마지막 시도를 돌려주던 동안에는
 직접 요청의 200-entries-0(조용한 서브레딧)이 프록시의 429로 덮여서, 호출자는 일시적 실패를 보고 재시도를 전부
 소진했고 서브레딧 2개 구성에서는 깨끗하게 빈 날에 소스 전체가 FAILED로 보고됐다.
+
+**업스트림 윈도는 파생값이다.** 피드 URL에 붙는 `&t=`는 `recency_bucket(lookback_hours)`가 정한다. 업스트림이
+제공하는 이름 있는 창(hour/day/week/month/year) 중 수집 윈도를 **덮는 가장 좁은 것**을 고른다. `day`로 박아뒀을
+때는 30시간 윈도에 대해 업스트림에 24시간만 요청했으니, config에서 `lookback_hours`를 넓혀도 업스트림 쪽은
+그대로였다. 넓게 덮는 것은 안전하다. 어차피 `in_collection_window`가 모든 항목을 다시 거른다. 버킷 표는
+정의값이지 튜닝값이 아니다. 하루는 24시간이고 한 주는 그 7배다.
 
 **레이트리밋 대응.** 서브레딧을 `asyncio.gather`로 동시 요청하면 단일 IP의 버스트가 429를 유발하고, 관측상 매
 실행마다 한 서브레딧을 잃었다. 그래서 순차로 수집하고 요청 사이에 간격을 두며, 각 fetch는 지터를 곁들여
@@ -1220,15 +1236,16 @@ AGI 카운트다운 프리픽스를 제거한다(`_editorial_lead`). novelty 신
 
 - `SourceStatus`는 `ok`, `empty`, `failed`, `stale`, `degraded` 중 하나다.
 - `SourceHealth(name, item_count, status, detail)`.
-- `HealthReport(sources)`는 `has_failures`, `stale_sources`, `degraded_sources`, `empty_sources`, `summary()`를
-  갖는다.
+- `HealthReport(sources)`는 `failed_sources`, `stale_sources`, `degraded_sources`, `empty_sources`, `summary()`를
+  갖는다. 넷 다 이름 목록을 돌려준다. 예전에는 FAILED만 `has_failures`라는 bool이어서 알림 쪽이 쓸 수 없었고,
+  `_maybe_alert`가 같은 판정을 인라인 컴프리헨션으로 다시 구현해 두 벌이 됐다.
 - `RankingHealth(batches_total, batches_failed, items_total, items_scored, items_lost, min_coverage_ratio)`는
   `coverage`와 `degraded`, `summary()`를 갖고 `DigestResult.ranking_health`로 실려 나간다. `degraded`는 두 가지
   경우다. 재시도까지 실패한 배치가 있거나, 채점 커버리지가 `min_coverage_ratio`(랭커가 config 값을 실어 준다)
   아래로 떨어진 경우다. 기본값 0.0은 커버리지만으로는 degrade하지 않는다는 뜻이고, 직접 만든 값이나 예전
   스냅샷이 그렇다.
 
-STALE과 DEGRADED는 실패가 아니니 `has_failures`를 켜지 않는다. FAILED 승격 경로와 분리되어 있다.
+STALE과 DEGRADED는 실패가 아니니 `failed_sources`에 들어가지 않는다. FAILED 승격 경로와 분리되어 있다.
 
 ### 소스 분류 (`run_collectors_with_health`)
 
@@ -1249,7 +1266,7 @@ STALE과 DEGRADED는 실패가 아니니 `has_failures`를 켜지 않는다. FAI
 
 **소스 알림(`_maybe_alert`, 다이제스트 Lambda).** 소스가 FAILED거나 STALE, DEGRADED일 때, 그리고 빈 항목 조기
 반환 이전에 `ALERT_SNS_TOPIC_ARN`으로 게시한다. 아무것도 수집하지 못한 날에도 장애가 알림되어야 한다.
-메시지는 실패와 stale, degraded, empty 소스 목록을 각각 분리해 담는다. `has_failures`만 보던 게이트에서는 죽은
+메시지는 실패와 stale, degraded, empty 소스 목록을 각각 분리해 담는다. FAILED만 보던 게이트에서는 죽은
 로컬 cron이 며칠간 무음이었다. EMPTY는 `collectors.alert_on_empty`가 지목한 소스만 포함한다. reddit이나 X의
 조용한 날이 매일 페이징하지 않게 하는 config 게이트다.
 
