@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import boto3
@@ -19,10 +19,14 @@ app = BedrockAgentCoreApp()
 
 def _emit_agent_error_metric() -> None:
     """Emit a CloudWatch EMF error metric so a systemic agent break is alarmable — the runtime
-    catches its own exceptions and replies with text, so nothing else would record a failure."""
+    catches its own exceptions and replies with text, so nothing else would record a failure.
+
+    The timestamp is UTC: datetime.now() reads the naive LOCAL clock while EMF interprets Timestamp
+    as epoch-UTC ms, so on a non-UTC runtime every datapoint is filed at the wrong time (and far
+    enough off, CloudWatch rejects it outright)."""
     emf = {
         "_aws": {
-            "Timestamp": int(datetime.now().timestamp() * 1000),
+            "Timestamp": int(datetime.now(UTC).timestamp() * 1000),
             "CloudWatchMetrics": [
                 {"Namespace": "OmniSummary", "Dimensions": [[]], "Metrics": [{"Name": "AgentErrors"}]}
             ],
@@ -30,6 +34,61 @@ def _emit_agent_error_metric() -> None:
         "AgentErrors": 1,
     }
     print(json.dumps(emf))
+
+
+def _emit_agent_run_metrics(usage: dict[str, Any], cycles: int, tool_calls: int) -> None:
+    """Emit the run's token usage as CloudWatch EMF, next to the error metric. EMF is just a log
+    line, so this needs no new AWS resource — and it is the only way the agent's spend (the most
+    expensive component) is attributable at all, since a research turn re-sends the whole
+    conversation and the runtime is billed per token like every pipeline stage."""
+    metric_names = ["AgentInputTokens", "AgentOutputTokens", "AgentCycles", "AgentToolCalls"]
+    emf: dict[str, Any] = {
+        "_aws": {
+            "Timestamp": int(datetime.now(UTC).timestamp() * 1000),
+            "CloudWatchMetrics": [
+                {
+                    "Namespace": "OmniSummary",
+                    "Dimensions": [[]],
+                    "Metrics": [{"Name": name} for name in metric_names],
+                }
+            ],
+        },
+        "AgentInputTokens": int(usage.get("inputTokens", 0) or 0),
+        "AgentOutputTokens": int(usage.get("outputTokens", 0) or 0),
+        "AgentCycles": cycles,
+        "AgentToolCalls": tool_calls,
+    }
+    print(json.dumps(emf))
+
+
+def _log_agent_run(result: Any) -> None:
+    """Log what the run cost in the SAME shape every pipeline stage logs (`LLM usage stage=...`),
+    plus the cycle count and per-tool call counts.
+
+    The entrypoint used to do `str(agent(prompt))` and throw the AgentResult — and with it the
+    accumulated usage — away, so the single most expensive component in the system was the one
+    stage whose spend nothing recorded. Telemetry must never break a completed run, hence the
+    blanket except."""
+    try:
+        metrics = getattr(result, "metrics", None)
+        if metrics is None:
+            return
+        usage = dict(getattr(metrics, "accumulated_usage", {}) or {})
+        tool_metrics = getattr(metrics, "tool_metrics", {}) or {}
+        tool_calls = {name: getattr(m, "call_count", 0) for name, m in tool_metrics.items()}
+        cycles = int(getattr(metrics, "cycle_count", 0) or 0)
+        logger.info(
+            "LLM usage stage=research input=%s output=%s cache_read=%s cache_write=%s cycles=%d tools=%s",
+            usage.get("inputTokens"),
+            usage.get("outputTokens"),
+            usage.get("cacheReadInputTokens"),
+            usage.get("cacheWriteInputTokens"),
+            cycles,
+            tool_calls or "{}",
+        )
+        _emit_agent_run_metrics(usage, cycles, sum(tool_calls.values()))
+    except Exception:  # pragma: no cover - telemetry must never break a completed run
+        logger.debug("Could not read agent run metrics", exc_info=True)
 
 
 def _resolve_bot_token() -> str:
@@ -79,7 +138,9 @@ def invoke(payload: dict[str, Any]) -> str:
     # invocations can't leak one request's channel into another.
     with request_context(delivery):
         try:
-            response = sanitize_slack_mrkdwn(str(agent(prompt)))
+            result = agent(prompt)
+            _log_agent_run(result)
+            response = sanitize_slack_mrkdwn(str(result))
         except Exception as e:
             logger.error("Agent execution failed: %s", e, exc_info=True)
             _emit_agent_error_metric()

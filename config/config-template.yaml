@@ -121,7 +121,9 @@ pipeline:
   # --- Daily visual (values below are the code defaults) ---
   enable_daily_visual: true
   image_model: "gpt-image-2"
-  # orientation -> gpt-image size; the editor picks the orientation that fits each visual.
+  # orientation -> gpt-image size; the editor picks the orientation that fits each visual. Only the
+  # SIZES are tunable: the keys are the brief's orientation vocabulary, and config load rejects a
+  # renamed or missing one (it would otherwise coerce every brief to the default orientation).
   image_sizes:
     square: "1024x1024"
     landscape: "1536x1024"

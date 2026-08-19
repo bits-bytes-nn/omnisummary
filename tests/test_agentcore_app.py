@@ -1,5 +1,7 @@
+import json
 import sys
 import types
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -179,6 +181,59 @@ class TestInvoke:
                     result = app_module.invoke({"prompt": "p", "channel_id": "C"})
         assert result == "report text"  # still answered, never raised
         emit.assert_called_once()
+
+
+class TestRunMetrics:
+    """The entrypoint did `str(agent(prompt))` and dropped the AgentResult, so the most expensive
+    component in the system was the only stage whose token spend nothing recorded."""
+
+    @staticmethod
+    def _result(text: str) -> MagicMock:
+        result = MagicMock()
+        result.__str__ = lambda _self: text  # type: ignore[assignment]
+        result.metrics.accumulated_usage = {
+            "inputTokens": 1200,
+            "outputTokens": 340,
+            "cacheReadInputTokens": 900,
+            "cacheWriteInputTokens": 10,
+        }
+        result.metrics.cycle_count = 4
+        result.metrics.tool_metrics = {
+            "web_search": MagicMock(call_count=3),
+            "search_papers": MagicMock(call_count=1),
+        }
+        return result
+
+    def test_usage_is_logged_in_the_same_shape_as_every_pipeline_stage(self, capsys):
+        agent = MagicMock(return_value=self._result("report text"))
+        with patch.object(app_module, "create_research_agent", return_value=agent):
+            with patch.object(app_module, "_send_slack_message"):
+                with patch.object(app_module, "logger") as log:
+                    result = app_module.invoke({"prompt": "p", "channel_id": "C"})
+        assert result == "report text"
+        line = next(c for c in log.info.call_args_list if "LLM usage stage=research" in str(c.args[0]))
+        assert line.args[1:5] == (1200, 340, 900, 10)
+        assert line.args[5] == 4  # cycles
+        assert line.args[6] == {"web_search": 3, "search_papers": 1}
+
+    def test_usage_is_emitted_as_emf(self, capsys):
+        agent = MagicMock(return_value=self._result("report text"))
+        with patch.object(app_module, "create_research_agent", return_value=agent):
+            with patch.object(app_module, "_send_slack_message"):
+                app_module.invoke({"prompt": "p", "channel_id": "C"})
+        records = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+        emf = next(r for r in records if "AgentInputTokens" in r)
+        assert emf["AgentInputTokens"] == 1200 and emf["AgentOutputTokens"] == 340
+        assert emf["AgentCycles"] == 4 and emf["AgentToolCalls"] == 4
+        # EMF reads Timestamp as epoch-UTC ms; a naive local clock files every point at the wrong time.
+        assert abs(emf["_aws"]["Timestamp"] - int(datetime.now(UTC).timestamp() * 1000)) < 60_000
+
+    def test_a_result_without_metrics_is_not_fatal(self):
+        # Telemetry must never break a completed run (an older SDK, a stubbed agent in tests).
+        agent = MagicMock(return_value="plain string, no metrics")
+        with patch.object(app_module, "create_research_agent", return_value=agent):
+            with patch.object(app_module, "_send_slack_message"):
+                assert app_module.invoke({"prompt": "p", "channel_id": "C"}) == "plain string, no metrics"
 
 
 @pytest.fixture(autouse=True)

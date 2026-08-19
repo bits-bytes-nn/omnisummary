@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -42,6 +44,12 @@ deliver a synthesized, well-sourced report in Korean. This is INDEPENDENT web re
 NOT tied to any daily digest. Never ask the user to restate; infer the topic and angle from \
 their message and get to work.
 </role>
+
+<context>
+Today is {today} ({timezone}). Judge "latest" / "recent" against THIS date, not your training data,
+and use it to resolve relative dates in the request ("어제", "지난주") — recall_digest takes an
+absolute YYYY-MM-DD, so a guessed date silently recalls nothing.
+</context>
 
 <voice>
 You are the SAME recurring narrator as the daily digest — keep that identity, just at report \
@@ -337,6 +345,11 @@ def create_research_agent(tools: list[Any] | None = None) -> Agent:
         model=bedrock_model,
         tools=tools,
         system_prompt=SYSTEM_PROMPT_TEMPLATE.format(
+            # Computed from the clock, never left to the model: without it the agent judged "latest"
+            # against its training prior and had to invent a date for recall_digest (which then
+            # recalled nothing, silently).
+            today=datetime.now(ZoneInfo(config.aws.timezone)).date().isoformat(),
+            timezone=config.aws.timezone,
             voice_guidance=config.pipeline.digest_voice_guidance,
             research_breadth=config.agent.research_breadth,
             research_max_iterations=config.agent.research_max_iterations,

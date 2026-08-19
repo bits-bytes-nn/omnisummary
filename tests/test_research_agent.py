@@ -155,6 +155,40 @@ class TestVoiceInjection:
         assert token in prompt
         assert str(cfg.agent.research_slack_target_words) in prompt
 
+    def test_todays_date_is_injected_from_the_clock(self):
+        # The prompt interpolated persona, knobs and the tool menu but never the date, so the model
+        # judged "latest" against its training prior and had to INVENT a date for recall_digest
+        # (which then silently recalled nothing).
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        captured = {}
+
+        def fake_agent(**kwargs):
+            captured.update(kwargs)
+            return MagicMock(tool_names=["t"])
+
+        with (
+            patch("agent.research_agent.BedrockModel", return_value=MagicMock()),
+            patch("agent.research_agent.Agent", side_effect=fake_agent),
+            patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
+            patch(
+                "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
+                return_value="global.anthropic.claude-sonnet-5",
+            ),
+        ):
+            from agent.research_agent import create_research_agent
+            from shared import Config
+
+            create_research_agent()
+            cfg = Config.load()
+
+        prompt = captured["system_prompt"]
+        today = datetime.now(ZoneInfo(cfg.aws.timezone)).date().isoformat()
+        assert f"Today is {today}" in prompt
+        assert cfg.aws.timezone in prompt
+        assert "{today}" not in prompt
+
     def test_tool_menu_is_derived_from_the_bound_tools(self):
         # The prompt used to carry a hand-written numbered tool list beside the separately hardcoded
         # list in create_research_agent, with nothing keeping them in agreement: a renamed, added or
