@@ -86,7 +86,7 @@ AWS 아키텍처(스케줄 다이제스트와 Slack 트리거 딥 리서치, 두
 | `agent/` | 딥 리서치 Strands 에이전트(`research_agent.py`)와 도구 8개(`research_tools.py`), 다이제스트·비주얼 파이프라인용 인메모리 상태 `DigestStateManager`(`tool_state.py`), 데일리 비주얼이 쓰는 자유형 이미지 생성기 `VisualGenerator`(`visuals.py`) |
 | `agent_runtime/` | Bedrock AgentCore HTTP 서버(`BedrockAgentCoreApp`). 딥 리서치 에이전트의 invoke 엔트리포인트 |
 | `shared/` | config(공유 `KOREAN_STYLE_RULES` 포함), models, constants(`TRENDS_KEY` 포함), utils(Bedrock 팩토리), logger, prompts, state_store, memory, history_store(cross-day dedup 원장과 롤링 로그), research(`research_backends.py`, Tavily와 Semantic Scholar), media(`og_image.py`, OG 이미지 fetch), proxy |
-| `output/` | 채널별 렌더러(`renderers.py`), 리서치 전달 오케스트레이션(`delivery.py`), Slack 전달(`slack_handler.py`), Threads 전달(`threads_handler.py`) |
+| `output/` | 채널별 렌더러(`renderers.py`), 다이제스트 게시(`digest_delivery.py`: Slack 이미지 업로드와 Threads 체인, 멱등 원장, 이미지 S3 호스팅), 리서치 전달 오케스트레이션(`delivery.py`), Slack 전달(`slack_handler.py`), Threads 전달(`threads_handler.py`) |
 | `lambda_handlers/` | 다이제스트 핸들러, Slack 이벤트 핸들러, 데일리 비주얼 핸들러(`visual_handler`, 다이제스트 Lambda가 비동기로 호출한다), Threads 토큰 갱신 핸들러(`threads_refresh_handler`) |
 | `infrastructure/` | CDK `foundation_stack`과 `application_stack` |
 | `scripts/` | `deploy.py`, `put_secrets.py`, `put_inference_profiles.py`, `ci_synth.py`, `sync_rsshub_to_s3.py`, `sync_youtube_to_s3.py`, `sync_all_to_s3.sh`(두 sync를 함께 실행한다) |
@@ -136,8 +136,13 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 `Config._lookback_reaches_the_previous_run`이 config 로드에서 검증한다. 넓혀도 같은 기사가 두 번 나가지
 않는다. cross-day 중복은 윈도가 아니라 URL 동일성(`PublishedUrlLedger` + 최근 AgentCore 스냅샷)으로
 배제된다. 그리고 이 폭이 park 파일의 'stale beats empty' 계약을 실제로 성립시킨다. 24였을 때는 STALE 파일의
-날짜 있는 항목이 전부 cutoff보다 앞이어서 소스가 STALE을 항목 0개로 보고했다. config.yaml과 템플릿은 YAML
-앵커로 이 값을 한 번만 정의하고 나머지 네 소스가 alias한다.
+날짜 있는 항목이 전부 cutoff보다 앞이어서 소스가 STALE을 항목 0개로 보고했다.
+
+이 값은 `BaseCollectorConfig`에 `Field(default=30, ge=1)`로 **한 번만** 선언된다. web_search와 rsshub가
+`lookback_hours: int = 72`로 다시 선언하던 동안에는 그 재선언이 FieldInfo를 통째로 갈아치워 `ge=1`까지 같이
+지웠고, 그래서 두 소스만 음수 윈도를 받아들였다. 더 넓은 윈도가 필요한 소스는 나머지 값들과 같은 자리인 YAML에
+쓴다. config.yaml은 YAML 앵커로 다섯 소스가 같은 값을 쓰고, 템플릿은 youtube에 정의한 앵커를 reddit과 rss가
+alias하며 web_search와 rsshub는 72를 따로 적는다.
 
 `error_rate_threshold`는 RSSHub 전용이 아니라 `BaseCollectorConfig`의 공통 노브다. 같은 뜻의 숫자를 두 벌
 만들지 않으려는 것이고, RSS와 YouTube와 web_search도 같은 임계로 DEGRADED를 보고한다.
@@ -166,7 +171,7 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 |------|------|------|
 | 모델 | `ranking_model`(실효 Opus 4.8), `digest_model`(Sonnet 5), `trend_model` | 단계별 모델 |
 | 랭킹 | `ranking_batch_size`, `ranking_batch_token_budget_ratio`(기본 0.7), `ranking_context_window_fallback`(기본 200000), `ranking_max_concurrency`(기본 4), `ranking_max_retries`(기본 3), `ranking_retry_backoff_sec`(기본 5), `ranking_min_coverage_ratio`(기본 0.9), `engagement_tiers`, `ranking_categories`, `ranking_duplicate_score_penalty`, `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치, 배치가 채울 수 있는 컨텍스트 창 비율과 미등록 모델의 대체 창 크기, Bedrock fan-out 상한, 배치 재시도, 커버리지 재질의 기준, 참여도 보정, 카테고리, 점수 루브릭 |
-| 선정과 다양성 | `top_n`, `min_score`, `source_slot_score_grace`(기본 0.1), `source_slots`, `source_cap_multiplier`, `max_per_origin` | 상위 N, 소스 슬롯, grace 밴드(슬롯 보유 소스가 `min_score` 위 항목이 전무하면 grace 밴드 안의 최선 1건을 구제하고, 구제된 항목은 `RankedItem.grace`로 표시되어 에디터와 다양성 감사에 보인다), origin 상한 |
+| 선정과 다양성 | `top_n`, `min_score`, `source_slot_score_grace`(기본 0.1), `source_slot_grace_max_admissions`(기본 1), `source_slots`, `source_cap_multiplier`, `max_per_origin` | 상위 N, 소스 슬롯, grace 밴드(슬롯 보유 소스가 `min_score` 위 항목이 전무하면 grace 밴드 안의 최선 1건을 구제하고, 구제된 항목은 `RankedItem.grace`로 표시되어 에디터와 다양성 감사에 보인다), 한 실행에서 허용하는 구제 건수, origin 상한 |
 | 다이제스트 버퍼와 중복 | `digest_candidate_buffer`(기본 3), `published_url_ttl_days`(기본 6), `recent_leads_window`(기본 5) | 랭커 오버선정 버퍼(소스 슬롯은 `top_n` 코어에만 적용하고 버퍼분은 `backfill` 플래그로 넘겨 병합 보충용임을 항목별로 알린다), cross-day dedup 원장 TTL, 반복 방지용 최근 lead 윈도 |
 | 트렌드 | `trend_retention_days`, `trend_cooling_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존과 냉각 기간, 증거와 active 캡, momentum 반감기 |
 | 전달 | `enable_slack_post`, `enable_threads_post` | 채널별 전달 on/off. 각각 독립 토글이고 코드 기본값은 Slack on / Threads off이며, 실제 상태는 배포 환경 설정을 따른다. Slack은 다이제스트 Lambda가, Threads는 데일리 비주얼 Lambda가 게시한다 |
@@ -301,6 +306,14 @@ retry_backoff_sec) * max_retries = 105초`까지 허용하면 직렬 라운드�
 `S3_ITEMS_MAX_AGE_HOURS`)보다 오래되면 항목은 그대로 반환하면서 `stale`로 표시한다. 오래된 게 빈 것보다
 낫다는 판단이다. 대신 이렇게 해두면 로컬 cron이 조용히 멈춰 며칠 지난 항목을 오늘 것으로 재수집하는 사고가
 정상 실행처럼 보이지 않고 헬스 STALE과 SNS 알림으로 표면화된다.
+
+**park 파일이 그 소스의 주 경로면 부재도 DEGRADED다(`park_required`).** `absent`는 설계상
+`ParkedItems.degraded`에서 빠져 있다. 로컬에서는 '라이브로 수집하라'는 정상 신호이기 때문이다. 그런데 AWS의
+youtube는 그렇지 않다. 자막은 데이터센터 IP로 못 받으니 park 파일이 자막을 실어오는 유일한 경로인데, 라이브
+수집은 메타데이터만으로 항목을 계속 만들어낸다. 그래서 S3_PREFIX 오타나 삭제된 오브젝트나 한 번도 돌지 않은
+sync가 항목을 내놓고 OK로 보고하면서 자막을 전부 조용히 버렸고, 어느 날도 알림이 없었다. `park_required`가 켜진
+소스는 **AWS에서** 부재를 DEGRADED로 올리고 detail에 S3 키를 담는다(`flag_missing_park`). 로컬에서는 라이브
+수집이 바로 그 파일을 쓰는 경로라서 검사하지 않는다. 여기도 보고만 하고 항목은 그대로 전달한다.
 
 **빈 park 파일에는 두 가지 의미가 있다.** 항목이 0건이면서 동시에 나이 예산을 넘긴 봉투는 부재(`absent`)로
 취급해 라이브 수집으로 폴백한다. 그쪽에서 전면 장애면 FAILED로 알림이 간다. 로컬 sync가 멈춰 빈 파일만 남은
@@ -572,6 +585,11 @@ Converse 호출부터 실패한다. 예산은 컨텍스트 창의 `ranking_batch
 짧은 기사에 비해 구조적으로 불리하다. 다만 grace 항목은 자기 소스의 보장 슬롯만 채울 수 있고, 아래의 완화된
 fallback fill에서는 제외된다. 조용한 날 약한 항목으로 패딩하지 않기 위한 제약이다.
 
+구제에는 예산이 있다(`source_slot_grace_max_admissions`, 기본 1). grace 항목은 독자가 읽는 코어 슬롯을 하나
+쓰는데, 예산이 없던 동안에는 조용한 소스가 몇 개든 그만큼 썼다. 2026-07-12 실행이 5칸 중 2칸을 0.56과 0.50에
+내주고 0.78, 0.75, 0.72, 0.68이 떨어진 것이 그 결과다. 예산은 점수가 높은 후보부터, 즉 임계값에 가장 가까운
+소스부터 받는다.
+
 **선정과 다양성 (`_apply_source_slots`).** 순서는 이렇다. 먼저 `source_slots`로 소스별 기본 슬롯을 채우고
 `source_cap_multiplier × slot`까지 오버플로를 채운다. 그리고 `max_per_origin`으로 하나의 origin 키가 차지하는
 항목 수를 제한한다. 단일 채널 독점에 대한 근본 해결책이 이것이다.
@@ -586,6 +604,12 @@ origin은 `resolve_origin_key`로 해석한다. YouTube는 channel_url, Reddit�
 author, Web은 URL 호스트(`urlparse().netloc`에서 `www.` 제거)다. PSL이나 등록가능도메인 휴리스틱을 쓰지 않으니
 서브도메인은 별개 origin이다. 호스트 키가 없던 시절 web 항목은 origin 캡을 전부 우회해 한 매체가 여러 슬롯을
 차지할 수 있었다.
+
+**슬롯 합이 `top_n`에 닿으면 점수는 소스 안에서만 정렬한다.** `_apply_source_slots`는 `top_n`에서 멈추니, 모든
+소스가 보장 슬롯을 하나씩 채운 순간 완화 패스 세 개가 도달 불가가 된다. 그러면 한 소스의 0.50이 다른 소스의
+0.78을 구조적으로 앞선다. 고르게 섞인 다이제스트를 원해서 슬롯을 쓰는 것이니 그 자체는 정당한 설정인데,
+어디에도 기록이 없어서 낮은 점수만 실린 날이 랭킹 실패처럼 읽혔다. 그래서 `sum(source_slots) >= top_n`이면
+config 로드가 WARNING을 남긴다. 숫자를 고른 것은 운영자이니 에러가 아니다.
 
 **`source_slots: {}`도 origin 캡을 잃지 않는다.** 예전에는 슬롯이 비면 `above_threshold[:limit]`로 조기
 반환해서 `max_per_origin`이 슬롯과 함께 사라졌고, 한 피드가 그날 전부를 차지할 수 있었다. origin 캡이 존재하는
@@ -657,8 +681,11 @@ raise한다. 예전의 minimal 폴백(`lead=raw[:1000], items=[]`)이 바로 202
 모델은 쓰는 순서대로 사고하니 그 '정리'는 겹침 회귀다.
 
 **예산은 코드가 계산해서 넘긴다.** 항목 산문 예산은 추정치가 아니라 코드가 소유한 고정 파트에서 파생한다
-(`_item_prose_budget`은 `THREADS_MAX_POST_CHARS`에서 후보 중 최악의 `URL + 소스 줄 + 빈 줄 구분자`, 즉
-`threads_item_overhead_chars`를 뺀 값이다). 그 캡과 계산에 쓰는 채널 무관 프리미티브는 `shared`에 있다.
+(`_item_prose_budget`은 `THREADS_MAX_POST_CHARS`에서 그 항목의 `URL + 소스 줄 + 빈 줄 구분자`, 즉
+`threads_item_overhead_chars`를 뺀 값이다). 예산은 후보마다 따로 계산해서 `PROSE BUDGET`이라는 코드 소유
+필드로 `BACKFILL`, `SOURCE COVERAGE` 옆에 붙여 보낸다. 한때는 후보 전체의 최악 오버헤드로 하나의 숫자를 뽑아
+프롬프트 문장에 박아 넣었는데, 그러면 URL이 짧은 항목이 풀에서 가장 긴 URL 값을 대신 물어서 오지 않은 캡에
+마지막 문장을 잃었다. 그 캡과 계산에 쓰는 채널 무관 프리미티브는 `shared`에 있다.
 `shared/constants.py`의 `THREADS_MAX_POST_CHARS`(500)와 `THREADS_POST_SEPARATOR`,
 `shared/formatting.py`의 `split_sentences`, `truncate_at_word`, `strip_slack_mrkdwn`,
 `threads_item_overhead_chars`다. 예산 계산이 `output/renderers.py`의 private 헬퍼를 import하던 동안에는
@@ -699,10 +726,21 @@ implication만 세어서 한국어 제목이 예산 밖에서 소비되었고, �
 패스에 실었다.
 
 **산문 린트(`enable_prose_lint`, 기본 켜짐, `shared/prose_lint.py`).** 에디터가 쓴 한국어를 코드가 결정론적으로
-검사한다. 검사는 두 가지다. `KOREAN_STYLE_RULES`가 이름까지 대서 금지했는데도 digest_2026-07-12의
-`items[3].implication`에 그대로 실린 '끝난 서술어 다음의 쉼표'(`[가-힣]다,\s*[가-힣]`), 그리고 `DigestPrompt`가
-명시적으로 금지했는데도 통과한 'lead가 `items[0]`의 구체 사실만 되풀이하는 형태'다. 둘 다 프롬프트 규칙이 이미
-실패한 항목이라 규칙을 한 번 더 쓰는 대신 코드로 옮겼다. 그라운딩 패스가 코드 패스가 된 것과 같은 이유다.
+검사한다. 넷 다 프롬프트가 이미 금지했는데도 실린 항목이라 규칙을 한 번 더 쓰는 대신 코드로 옮겼다. 그라운딩
+패스가 코드 패스가 된 것과 같은 이유다.
+
+- **끝난 서술어 다음의 쉼표.** `KOREAN_STYLE_RULES`가 이름까지 대서 금지했는데도 digest_2026-07-12의
+  `items[3].implication`에 그대로 실렸다. 패턴은 `[가-힣]다(,)` 뒤에 조건 두 개를 더 건다. 인용의
+  '라고/라는/라며'는 제외하고, 쉼표 다음 구간이 그 자체로 절로 끝나야 한다. '다'는 보통 명사의 끝 음절이기도
+  해서('소다, 커피, 물' / '바다, 산, 서점') 맨 패턴은 나열 쉼표를 물었고, 히트마다 바이트 단위로 동일한 ~50k
+  토큰 재질의가 붙었다.
+- **lead가 `items[0]`의 구체 사실만 되풀이하는 형태.** `DigestPrompt`가 명시적으로 금지했는데도 통과했다.
+- **lead가 `items[0]`의 숫자를 다시 말하는 형태.** 위 검사는 새 구체 사실이 하나라도 있으면 통과시키는데,
+  digest_2026-07-12은 새 것 셋으로 통과하고 18개 중 15개가 반복이었다. 그래서 숫자만 따로 본다. 라틴 토큰이나
+  한국어 단어에 붙은 숫자('GPT-5', '제3자')는 수치가 아니라 이름이니 제외하고, 소수점 아래는 잘라서 52와
+  52.2를 같은 수치로 본다.
+- **항목 산문이 자기 예산을 넘는 형태.** 예산은 프롬프트가 항목마다 말해주지만 확인하는 곳이 없었고, 렌더러는
+  들어가지 않는 문장을 조용히 잘랐다. digest_2026-07-12의 5개 중 2개가 그렇게 마지막 문장을 잃었다.
 
 여기 들어오는 검사는 `KOREAN_STYLE_RULES`나 `DigestPrompt`가 **이미 말하고 있는** 규칙이어야 한다. 근거 규칙이
 없는 검사는 재질의 예산이 달린 취향이다. 한때 '끝난 서술어 다음의 em-dash' 패턴이 여기 있었고 출처로
@@ -710,11 +748,16 @@ implication만 세어서 한국어 제목이 예산 밖에서 소비되었고, �
 보관된 다이제스트 4개 중 3개에서 자연스러운 한국어 문장을 물었고('훨씬 많은 것을 배운다 — 그렇다면 ...') 그
 히트마다 재질의가 붙었다. 산문 규칙은 프롬프트가 읽는 config에 먼저 쓰고, 그다음에 여기서 검사한다.
 
-히트는 ERROR로 남고 재질의는 **한 번**이다(`PROSE_LINT_MAX_REASKS`). `digest_max_retries`를 타지 않는 이유는
-재질의가 같은 `prompt_vars`를 바이트 단위로 동일하게 다시 보내기 때문이다. 이미 움직이지 않은 프롬프트를 세
-번째로 보내는 것은 ~50k 입력 토큰의 Sonnet 호출을 한 번 더 사는 것에 지나지 않는다. 예산을 쓰고 나면 콘텐츠는
-그대로 실린다. Lambda의 `retry_attempts=0` 때문에 여기서 raise하면 그날 다이제스트가 아예 없어지고, 문체
-하나가 그것보다 비쌀 수는 없다.
+히트는 ERROR로 남고 재질의는 **한 번**이다(`PROSE_LINT_MAX_REASKS`). 이 예산이 `digest_max_retries`를 그대로
+타지 않는 이유는 재질의가 같은 `prompt_vars`를 바이트 단위로 동일하게 다시 보내기 때문이다. 이미 움직이지 않은
+프롬프트를 세 번째로 보내는 것은 ~50k 입력 토큰의 Sonnet 호출을 한 번 더 사는 것에 지나지 않는다. 예산을 쓰고
+나면 콘텐츠는 그대로 실린다. Lambda의 `retry_attempts=0` 때문에 여기서 raise하면 그날 다이제스트가 아예
+없어지고, 문체 하나가 그것보다 비쌀 수는 없다.
+
+다만 재질의는 `retry_async`가 실제로 **남겨둔 시도**를 쓴다. `digest_max_retries`는 총 시도 횟수라서 설정이
+허용하는 최솟값 1에서는 남는 시도가 없고, 그때 raise하면 예산을 지키려던 목적과 반대로 그날 다이제스트를 잃는다.
+그래서 실제 상한은 `min(PROSE_LINT_MAX_REASKS, digest_max_retries - 1)`이고, 1에서는 재질의 없이 히트만 기록한
+뒤 콘텐츠가 실린다.
 
 ### 5.5 채널별 렌더링 (`output/renderers.py`)
 
@@ -827,16 +870,28 @@ OpenAI 키가 없거나 에디터 호출이 실패하거나 에디터가 skip하
 다이제스트를 먼저 생성해 실제 `DigestContent`를 넘기며 없는 편집 관점을 지어내지 않고, 테스트가 두 경로의
 출력이 바이트 단위로 같음을 고정한다.
 
-**이미 게시된 날은 조기 종료한다.** `run()` 맨 앞에서 게시할 것이 남아 있지 않다는 조건을 확인하면 에디터
-호출과 gpt-image 렌더 비용을 아예 쓰지 않는다. Threads 원장에 오늘이 있고 `enable_slack_post`가 꺼져 있으며
-force가 아닌 경우다. 게이트는 의도적으로 좁게 두었다. Slack 전달이 켜져 있으면 이미지에는 Threads 마커와
-무관한 별도 목적지가 있으니 그대로 진행한다.
+**게시는 `output/digest_delivery.py`의 `DigestPublisher`가 한다.** Slack 이미지 업로드, Threads root와 reply
+체인, 그 체인의 멱등 원장, 이미지의 S3 호스팅이 모두 여기 있다. 한때는 이미지 생성으로 이름 붙은 클래스가
+다이제스트의 유일한 게시 경로까지 소유했고, 그 흔적이 코드에 그대로 남아 있었다. `run()`의 조기 종료 세 개 중
+둘은 비주얼 실패가 전달을 건너뛰지 못하게 막으려고만 존재했고, 반환값은 Threads 전용 실행마다 "skipped"로
+보고되는 것을 막으려고 `slack_ok or threads_ok`가 되어야 했다. 지금은 게시기가 이미지를 **옵셔널 인자**로 받으니
+렌더 실패는 구조적으로 텍스트 전용 게시일 뿐이고, 게시 경로는 OpenAI 키 없이 테스트된다. `DailyVisualMaker`는
+`(image_bytes, VisualBrief)`를 만들어 넘기는 일만 한다.
 
-**스토리 없는 날은 렌더를 사지 않는다.** `_render_would_be_wasted(content)`가 판정한다. 스토리가 0건이면
-Threads는 의도적으로 게시하지 않고, `enable_slack_post`가 꺼져 있으면 이미지에 남은 목적지가 없다. 두 조건이
-동시에 참일 때만 렌더 이전에 종료한다. Slack이 켜져 있으면 업로드가 실제 목적지이니 그대로 진행한다. 판정은
-순수 predicate로 두고 로깅과 `threads_outcome = ThreadsDelivery(0, 1)` 기록은 `run()`이 한다. predicate 안에서
-상태를 바꾸지 않으며, 이 기록 덕분에 그날의 전달 알림이 no-op이 되지 않는다.
+**이미 게시된 날은 조기 종료한다.** 렌더 전에 `DigestPublisher.has_a_destination`에 물어서 게시할 것이 남아
+있지 않으면 에디터 호출과 gpt-image 렌더 비용을 아예 쓰지 않는다. Threads 원장에 오늘이 있고
+`enable_slack_post`가 꺼져 있으며 force가 아닌 경우다. 게이트는 의도적으로 좁게 두었다. Slack 전달이 켜져 있으면
+이미지에는 Threads 마커와 무관한 별도 목적지가 있으니 그대로 진행한다.
+
+**스토리 없는 날은 렌더를 사지 않는다.** 스토리가 0건이면 Threads는 의도적으로 게시하지 않고,
+`enable_slack_post`가 꺼져 있으면 이미지에 남은 목적지가 없다. 두 조건이 동시에 참일 때만 렌더 이전에 종료하며,
+Slack이 켜져 있으면 업로드가 실제 목적지이니 그대로 진행한다. 같은 판정 안에서 로그와
+`threads_outcome = ThreadsDelivery(0, 1)`을 남긴다. 그 기록 덕분에 그날의 전달 알림이 no-op이 되지 않는다.
+
+**텍스트만 나간 날도 알린다.** `expected`는 포스트 수만 세기 때문에 이미지가 빠진 날은 그 척도로는 완전한
+성공이었고 아무 말도 하지 않았다. 렌더 실패, OpenAI 키 부재, 시크릿 읽기 실패로 이미지는 조용히 사라지는데
+흔적은 maker 안의 로그 한 줄뿐이었다. 이제 `outcome.published and not outcome.with_image`면 기존
+`shared/alerts.publish_alert` 경로로 ALERT를 보낸다.
 
 **헤드라인 매핑.** `content.headline_index`(큐레이션 items 기준)를 `normalize_url`로 랭킹 항목에 되매핑한다.
 끝내 매칭되지 않으면 예전의 `or 1`(랭킹 1위이므로 lead와는 다른 스토리)로 떨어지지 않고, 큐레이션 헤드라인 자신의
@@ -873,14 +928,14 @@ title과 body, implication을 소스로 브리핑해 이미지와 텍스트의 �
 
 **넘치면 개그가 먼저 나간다.** Threads root가 500자를 넘으면 `_fit_lead`가 코드 소유의 카운트다운 줄을 먼저
 버리고 에디터의 산문, 곧 그날의 논지를 지킨다. 개그를 버리는 조건은 마지막 줄이 그 개그임을 식별할 수 있을
-때뿐이다. 호출자(`daily_visual`)가 계산한 인트로 문자열을 `render_threads_posts(content, countdown)`로 넘겨
+때뿐이다. 호출자(`output/digest_delivery.py`)가 계산한 인트로 문자열을 `render_threads_posts(content, countdown)`로 넘겨
 비교한다. 마지막 줄을 무조건 버리는 방식은 `prefix` 위치나 개그 비활성 상태에서 진짜 산문을 삭제하니 쓰지
 않는다. 식별되지 않으면 앞에서부터 온전한 문장만 남기니 접두 개그는 살아남는다. 트림이 발생하면 WARNING을
 남긴다. 에디터가 산문 예산을 넘겼다는 신호다.
 
 ### 5.8 Threads 전달 (`output/threads_handler.py`, `enable_threads_post`)
 
-**누가 부르는가.** 다이제스트 Lambda가 아니라 데일리 비주얼 Lambda(`DailyVisualMaker.run`)가 게시한다.
+**누가 부르는가.** 다이제스트 Lambda가 아니라 데일리 비주얼 Lambda가 `DigestPublisher.publish`로 게시한다.
 Threads 게시물은 이미지 root와 reply chain이 한 세트라 이미지를 만든 쪽이 함께 보내야 한다. 따라서 Threads
 전달에는 `enable_threads_post`와 `enable_daily_visual`이 둘 다 필요하다.
 
@@ -1380,6 +1435,16 @@ stage한다(`fetch_og_image`). `research_max_staged_images` 캡에 도달하면 
 dropped, trimmed)을 담는다. 예전에는 캡을 넘겨 드롭된 게시물과 500자 컷으로 잘린 게시물, 붙지 않은 reply가 모두
 "Delivered the report"로 보고돼서 에이전트가 최종 답변에서 완전한 전달을 단정했다. 불완전하면 그렇게 말하고
 재전송은 하지 않는다. `delivered_channels` 가드로 두 번째 호출은 no-op이니 재전송 경로 자체를 만들지 않는다.
+같은 채널로 두 번째 호출이 오면 `NOT_POSTED`를 그대로 전달한다. 그 호출의 텍스트는 게시되지 않았고, 두 번째
+호출의 가장 그럴듯한 이유는 **수정된 리포트**다. 예전에는 그것을 첫 시도의 카운트와 함께 "Delivered"로
+보고해서, 나가지도 않은 정정이 나갔다고 요청자에게 말했다.
+
+채널은 **데이터로 받는다.** `DeliveryContext.requested_channels`가 이 invoke가 게시할 수 있는 채널이고,
+엔트리포인트가 정한다. CLI는 `--channel`을 그대로 넣고(예전에는 타입까지 잡아둔 플래그를 다시 한국어 문장으로
+합성해 모델에게 재파싱시켰다), Slack ingress는 `["slack", "threads"]`를 payload에 담는다. Slack 요청이 Threads도
+원하는지는 요청자의 말 안에만 있으니 그 판단은 모델이 계속 하되, 목록에 없는 채널은 알 수 없는 채널과 같은
+자기교정 거부 문자열을 받는다. 공개 계정에 게시할지를 정하는 유일한 신호가 프롬프트의 열거된 표현 목록이었고,
+같은 매처가 'Meta Threads 추천 알고리즘'처럼 주제가 Threads인 요청도 판정했다.
 
 게시 전에 인용 가드가 한 번 더 막는다. 검색·읽기 도구는 결과에 실려 나간 URL을 모두
 `DeliveryContext.seen_urls`에 `normalize_citation_url` 형태로 적어두고, `deliver_report`는 리포트가 인용한
@@ -1560,8 +1625,9 @@ oversize든 `None`을 반환하고 절대 raise하지 않는다. 반환 타입�
    없는 orientation이 들어오면 렌더는 WARNING을 남기고 브리프의 orientation을 실제 렌더한 값으로 덮어쓴다.
    변주 넛지가 만들어진 적 없는 모양을 학습하지 않게 하려는 것이다. 매핑이 비어 있으면 raise한다.
    모더레이션 차단은 간헐적으로 나니 완화된 브리프로 한 번 재생성한다.
-5. **게시** — `DailyVisualMaker`가 `output.slack_handler.send_image_to_slack`(`files_upload_v2`)으로 Slack에
-   업로드하고, `enable_threads_post`가 켜져 있으면 Threads에도 게시한다.
+5. **게시** — `DigestPublisher`가 `output.slack_handler.send_image_to_slack`(`files_upload_v2`)으로 Slack에
+   업로드하고, `enable_threads_post`가 켜져 있으면 Threads에도 게시한다. 이미지는 옵셔널이라 렌더가 실패한
+   날도 텍스트로 나간다.
 
 **기본값을 두 벌 두지 않는다.** 열 개 넘는 비주얼 노브를 모두 필수 키워드 인자로 받는다. 예전에는 같은
 기본값을 여기와 `PipelineConfig`에 두 벌 뒀다가 드리프트했고(`style_aesthetic`이 "clean modern style"로 썩었다)

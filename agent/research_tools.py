@@ -230,13 +230,26 @@ async def deliver_report(report: str, channel: str = "slack") -> str:
         report: The final report text. For Slack use mrkdwn; for Threads use plain text.
         channel: "slack" (default) or "threads".
     """
-    from output.delivery import deliver_research_report
+    from output.delivery import DeliveryOutcome, deliver_research_report
 
+    delivery = current_delivery_context()
     target = channel.lower().strip()
     if target not in ("slack", "threads"):
         # Surface the mistake so the agent can correct itself, rather than silently downgrading
         # an explicit Threads request to Slack.
         return f'Unknown channel "{channel}". Use "slack" or "threads".'
+
+    # The channels this invocation may publish to are DATA the entrypoint set (the CLI's --channel,
+    # the Slack ingress's payload), not something to infer from the request's wording. Same
+    # self-correcting refusal as an unknown channel: nothing is published and the agent can re-call.
+    allowed = delivery.requested_channels
+    if allowed and target not in allowed:
+        permitted = ", ".join(sorted(allowed))
+        logger.error("Refusing to deliver to '%s'; this invocation requested %s", target, permitted)
+        return (
+            f'NOT delivered. This request did not ask for "{target}", so publishing there is not '
+            f"permitted. Call deliver_report again with one of: {permitted}."
+        )
 
     # A citation no tool ever returned is a fabricated source, and this posts to a PUBLIC Threads
     # account. Refuse rather than publish, and name the offending URLs so the agent can drop or
@@ -250,13 +263,19 @@ async def deliver_report(report: str, channel: str = "slack") -> str:
             "search/read tool actually returned, then call deliver_report again."
         )
 
-    delivery = current_delivery_context()
-    ok = await deliver_research_report(report, channel=target, delivery=delivery)
+    outcome = await deliver_research_report(report, channel=target, delivery=delivery)
     # Report what the reader actually got. "Delivered the report" was returned even when half the
     # posts were dropped over the channel cap or trimmed mid-sentence, so the agent's final answer
     # asserted a complete delivery that never happened.
     stats = delivery.last_stats
-    if not ok:
+    if outcome is DeliveryOutcome.NOT_POSTED:
+        # The text of THIS call was not published — saying "delivered" here announced a revision
+        # the reader never received.
+        return (
+            f"NOT posted: {target} already carries this run's report, so the text you just passed was "
+            "never published. Do not call deliver_report for it again; say so in your final answer."
+        )
+    if outcome is DeliveryOutcome.FAILED:
         return f"Failed to deliver the report to {target} ({stats.summary()})."
     if not stats.complete:
         return (

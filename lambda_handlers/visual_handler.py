@@ -109,24 +109,39 @@ def _requested_date(event: dict[str, Any], tz: ZoneInfo) -> tuple[date, bool]:
 
 def _maybe_alert_threads_outcome(outcome: ThreadsDelivery | None, digest_date: date) -> None:
     """SNS notice when the Threads post did not fully land: a partial reply chain (the reader sees
-    a digest whose stories stop mid-way) or a total delivery failure. Silent on a complete
-    delivery; publish_alert itself is a no-op without ALERT_SNS_TOPIC_ARN, so local runs and
-    un-wired stages stay quiet."""
-    if outcome is None or outcome.posted >= outcome.expected:
+    a digest whose stories stop mid-way), a total delivery failure, or a day that published without
+    the visual. Silent on a complete delivery; publish_alert itself is a no-op without
+    ALERT_SNS_TOPIC_ARN, so local runs and un-wired stages stay quiet."""
+    if outcome is None:
         return
-    publish_alert(
-        "Threads Delivery",
-        "ALERT" if outcome.published else "FAILED",
-        {
-            "Digest date": digest_date.isoformat(),
-            "Delivered": outcome.summary(),
-            "Detail": (
-                "reply chain incomplete — some stories are missing from the thread"
-                if outcome.published
-                else "the digest was NOT published to Threads"
-            ),
-        },
-    )
+    if outcome.posted < outcome.expected:
+        publish_alert(
+            "Threads Delivery",
+            "ALERT" if outcome.published else "FAILED",
+            {
+                "Digest date": digest_date.isoformat(),
+                "Delivered": outcome.summary(),
+                "Detail": (
+                    "reply chain incomplete — some stories are missing from the thread"
+                    if outcome.published
+                    else "the digest was NOT published to Threads"
+                ),
+            },
+        )
+        return
+    if outcome.published and not outcome.with_image:
+        # `expected` counts posts only, so a text-only day was complete success by that measure and
+        # said nothing at all: the image is silently dropped on a render failure, a missing OpenAI
+        # key or an unreadable secret, and the only trace was one log line inside the maker.
+        publish_alert(
+            "Threads Delivery",
+            "ALERT",
+            {
+                "Digest date": digest_date.isoformat(),
+                "Delivered": outcome.summary(),
+                "Detail": "published TEXT-ONLY — the day's visual never reached the root post",
+            },
+        )
 
 
 async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = None) -> None:

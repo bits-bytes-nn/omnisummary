@@ -507,3 +507,70 @@ class TestBedrockCostAttributionPermissions:
                 assert "inference-profile/*" in rendered  # system-defined ones still work
                 return
         raise AssertionError("no statement granting bedrock:InvokeModel was found")
+
+
+# A pushed image digest, as `export DIGEST_IMAGE_REF=sha256:...` supplies it.
+_PUSHED_DIGEST = "sha256:" + "ab" * 32
+
+
+@pytest.fixture(scope="module")
+def pinned_template():
+    """The stack as a real deploy renders it: both image refs pinned to a pushed digest.
+
+    The default fixture passes NO refs, so every assertion in this file runs against the `latest`
+    rendering and the pinned branch never renders at all — while pinning is what makes a deploy
+    take effect. CloudFormation only updates a Lambda whose template properties CHANGED, so a
+    constant tag string means the function silently keeps running last week's image; that is a
+    recorded deploy-only failure mode, invisible to a test that never asks for a pin."""
+    config = Config.from_yaml(str(CONFIG_TEMPLATE))
+    env = Environment(account="123456789012", region=config.aws.region)
+    app = App()
+    foundation = OmniSummaryFoundationStack(app, "fnd-pinned", config=config, alert_email="a@example.com", env=env)
+    application = OmniSummaryApplicationStack(
+        app,
+        "app-pinned",
+        config=config,
+        foundation=foundation,
+        agentcore_image_ref=_PUSHED_DIGEST,
+        digest_image_ref=_PUSHED_DIGEST,
+        env=env,
+    )
+    return Template.from_stack(application)
+
+
+class TestThePushedImageDigestReachesEveryFunction:
+    """Three Lambdas share one image, and each takes the pin separately. A refactor that drops it on
+    one of them ships with CI green unless the digest rendering is asserted per function."""
+
+    @staticmethod
+    def _image_uris(template):
+        # Only the image-backed functions; the Slack ingress ships as a zip (no ImageUri at all).
+        funcs = template.find_resources("AWS::Lambda::Function")
+        return {
+            logical_id: json.dumps(func["Properties"]["Code"]["ImageUri"])
+            for logical_id, func in funcs.items()
+            if "ImageUri" in func["Properties"]["Code"]
+        }
+
+    def test_every_lambda_image_uri_carries_the_digest(self, pinned_template):
+        image_uris = self._image_uris(pinned_template)
+        # digest + visual + threads-refresh: each takes the pin separately.
+        assert len(image_uris) == 3, image_uris
+        for logical_id, uri in image_uris.items():
+            assert f"@{_PUSHED_DIGEST}" in uri, logical_id
+            assert ":latest" not in uri, logical_id
+
+    def test_the_unpinned_stack_falls_back_to_the_latest_tag(self, templates):
+        _, app = templates
+        image_uris = self._image_uris(app)
+        assert len(image_uris) == 3, image_uris
+        for logical_id, uri in image_uris.items():
+            assert ":latest" in uri, logical_id
+
+    def test_the_agentcore_runtime_uses_at_for_a_digest_and_colon_for_a_tag(self, pinned_template, templates):
+        pinned = pinned_template.find_resources("AWS::BedrockAgentCore::Runtime")
+        uri = json.dumps(next(iter(pinned.values()))["Properties"]["AgentRuntimeArtifact"])
+        assert f"@{_PUSHED_DIGEST}" in uri
+        _, app = templates
+        default = app.find_resources("AWS::BedrockAgentCore::Runtime")
+        assert ":arm64" in json.dumps(next(iter(default.values()))["Properties"]["AgentRuntimeArtifact"])

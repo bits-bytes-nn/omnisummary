@@ -27,7 +27,7 @@ from shared import (
 )
 from shared.config import WebSearchCollectorConfig
 
-from .base import BaseCollector, gather_collector_results, in_collection_window
+from .base import BaseCollector, collection_window_dates, gather_collector_results, in_collection_window
 from .youtube import YOUTUBE_API_BASE, fetch_youtube_transcript
 
 # Failures another attempt can plausibly fix: a hung request (asyncio's TimeoutError and Tavily's
@@ -172,7 +172,10 @@ class WebSearchCollector(BaseCollector):
         semaphore: asyncio.Semaphore | None = None,
     ) -> list[CollectedItem]:
         logger.info("Searching trend '%s' with query: '%s' (topic='%s')", trend_name, query, topic)
-        days = max(1, self.config.lookback_hours // 24)
+        # The window Tavily is asked about is the run's OWN window, not a day count derived from it:
+        # `days = lookback_hours // 24` truncated a 30-hour window to 1 day for the largest source,
+        # and `days` is anchored to now, so a `--date` backfill searched today either way.
+        start_date, end_date = collection_window_dates(self.config.lookback_hours, self.config.reference_time)
 
         async def _search() -> dict:
             return await asyncio.wait_for(
@@ -181,7 +184,8 @@ class WebSearchCollector(BaseCollector):
                     max_results=self.config.max_results_per_query,
                     include_domains=domains if domains else None,
                     topic=topic,
-                    days=days,
+                    start_date=start_date,
+                    end_date=end_date,
                 ),
                 timeout=self.config.request_timeout,
             )

@@ -26,11 +26,11 @@ from shared import (
     retry_async,
     source_tag_and_metrics,
     split_sentences,
-    strip_slack_mrkdwn,
     threads_item_overhead_chars,
+    threads_meta_line,
 )
 from shared.config import PipelineConfig
-from shared.prose_lint import lint_digest_prose
+from shared.prose_lint import ItemProse, lint_digest_prose
 
 # How many times a prose-lint hit may re-ask the editor, independent of digest_max_retries. The
 # re-ask sends byte-identical prompt_vars, so attempt 3 is the same ~50k-token Sonnet call that
@@ -115,7 +115,7 @@ class DigestGenerator:
             "target_count": target_count,
             "recent_leads": _format_recent_leads(recent_leads),
             "recent_titles": _format_recent_titles(recent_titles),
-            "prose_budget_rule": _prose_budget_rule(self._item_prose_budget(ranked_items)),
+            "prose_budget_rule": _PROSE_BUDGET_RULE,
             "lead_budget": self._lead_budget(intro),
         }
 
@@ -177,17 +177,33 @@ class DigestGenerator:
 
         The re-ask is capped at PROSE_LINT_MAX_REASKS rather than riding digest_max_retries, and the
         content is kept once that is spent: raising would fail the whole digest over a style slip,
-        and with retry_attempts=0 on the Lambda nothing would retry the run."""
+        and with retry_attempts=0 on the Lambda nothing would retry the run. The cap is also bounded
+        by the attempts retry_async actually has LEFT (digest_max_retries counts total attempts, so
+        the legal floor of 1 leaves none) — otherwise a comma splice on the last attempt raises out
+        of generate() and costs the day's digest, which is the exact outcome this budget exists to
+        prevent."""
         if not self.config.enable_prose_lint:
             return
-        hits = lint_digest_prose(content.lead, [(item.body, item.implication) for item in content.items])
+        hits = lint_digest_prose(content.lead, [self._item_prose(item) for item in content.items])
         if not hits:
             logger.info("Digest prose lint: clean")
             return
         logger.error("Digest prose lint found %d issue(s): %s", len(hits), " | ".join(hits))
-        if attempt <= PROSE_LINT_MAX_REASKS:
+        if attempt <= min(PROSE_LINT_MAX_REASKS, self.config.digest_max_retries - 1):
             raise DigestContentError(f"Digest prose failed {len(hits)} deterministic check(s)")
         logger.error("Keeping the digest despite %d prose issue(s): the re-ask budget is spent", len(hits))
+
+    def _item_prose(self, item: DigestItem) -> ItemProse:
+        """One story as the lint sees it: the prose the editor wrote plus the budget it was given for
+        it. The budget is recomputed from the item's OWN stamped source line and URL — the same two
+        strings the Threads renderer will put in the post — so the check measures the post that ships,
+        not an average of the candidate pool."""
+        return ItemProse(
+            title=item.title,
+            body=item.body,
+            implication=item.implication or "",
+            budget=self._prose_budget(threads_meta_line(item.source_tag, item.metrics), item.url),
+        )
 
     def _audit_shipped_diversity(self, shipped: list[CollectedItem], ranked_items: list[RankedItem]) -> list[str]:
         """Check the diversity caps against the digest that actually SHIPS.
@@ -232,25 +248,23 @@ class DigestGenerator:
             logger.error("Digest diversity breach (as shipped): %s", breach)
         return breaches
 
-    def _item_prose_budget(self, ranked_items: list[RankedItem]) -> int:
+    def _prose_budget(self, meta: str, url: str) -> int:
         """Characters the editor may spend on ONE item's title + body + implication.
 
-        Derived from the real fixed parts of a Threads post rather than estimated: the URL and the
-        source line are code-owned and their lengths are already known from the candidates, so the
-        budget is 500 minus the WORST-CASE overhead among them (a budget that only holds for the
-        median item still trims the long-URL ones). The TITLE is inside the number because the
-        editor authors it — the old budget covered body + implication only, so every Korean title
+        Derived from the real fixed parts of THAT item's Threads post rather than estimated: the URL
+        and the source line are code-owned and their lengths are known, so the budget is 500 minus
+        this item's own overhead. It used to be the worst case across the whole candidate pool, which
+        charged every short-URL item for the longest URL in it. The TITLE is inside the number because
+        the editor authors it — the old budget covered body + implication only, so every Korean title
         was spent off-budget and 5 of 95 sampled items lost their closing sentence.
         digest_item_prose_max_chars stays an optional CEILING: 0 means "no channel cap here"."""
-        overhead = max(
-            (threads_item_overhead_chars(self._threads_meta_line(r.item), r.item.url) for r in ranked_items),
-            default=0,
-        )
-        derived = max(0, THREADS_MAX_POST_CHARS - overhead)
+        derived = max(0, THREADS_MAX_POST_CHARS - threads_item_overhead_chars(meta, url))
         ceiling = self.config.digest_item_prose_max_chars
-        budget = min(derived, ceiling) if ceiling > 0 else derived
-        logger.info("Item prose budget: %d chars (derived %d, worst-case fixed parts %d)", budget, derived, overhead)
-        return budget
+        return min(derived, ceiling) if ceiling > 0 else derived
+
+    def _item_prose_budget(self, item: CollectedItem) -> int:
+        """The budget for one ranked candidate, off the provenance line its post will really carry."""
+        return self._prose_budget(self._threads_meta_line(item), item.url)
 
     def _lead_budget(self, intro: str) -> int:
         """Characters the editor may spend on the lead. The lead IS the Threads root post, and the
@@ -264,10 +278,9 @@ class DigestGenerator:
 
     @classmethod
     def _threads_meta_line(cls, item: CollectedItem) -> str:
-        """The item's provenance line exactly as the Threads renderer shows it (Slack markup
-        stripped), so the budget is computed off the string that really occupies the post."""
-        tag, metrics = cls._source_tag_and_metrics(item)
-        return strip_slack_mrkdwn(" · ".join(p for p in (tag, metrics) if p)).strip()
+        """The item's provenance line exactly as the Threads renderer shows it, so the budget is
+        computed off the string that really occupies the post."""
+        return threads_meta_line(*cls._source_tag_and_metrics(item))
 
     def _parse_content(self, raw: str) -> DigestContent:
         """Turn the editor's raw output into a DigestContent, or raise DigestContentError.
@@ -433,6 +446,7 @@ class DigestGenerator:
 
     def _format_ranked_items(self, ranked_items: list[RankedItem]) -> str:
         parts: list[str] = []
+        budgets: list[int] = []
         for i, ranked in enumerate(ranked_items):
             item = ranked.item
             tag, metrics = self._source_tag_and_metrics(item)
@@ -472,6 +486,14 @@ class DigestGenerator:
                         "represented",
                     ),
                 )
+            # This item's OWN prose budget, code-owned like MUST INCLUDE: the fixed parts of a Threads
+            # post differ per item, so one worst-case number for the whole pool charged every
+            # short-URL item for the longest URL in it — and the lint measures each item against
+            # exactly the number stated here.
+            budget = self._item_prose_budget(item)
+            if budget > 0:
+                budgets.append(budget)
+                fields.append(("PROSE BUDGET", f"{budget} characters for `title` + `body` + `implication` together"))
             parts.append(
                 format_collected_item(
                     item,
@@ -481,6 +503,10 @@ class DigestGenerator:
                     truncate=self._truncate,
                 )
             )
+        if budgets:
+            logger.info(
+                "Item prose budgets: %d-%d chars across %d candidates", min(budgets), max(budgets), len(budgets)
+            )
         return "\n".join(parts)
 
     # The per-SourceType tag/metrics table lives in shared/formatting.py beside the origin key and
@@ -489,16 +515,15 @@ class DigestGenerator:
     _source_tag_and_metrics = staticmethod(source_tag_and_metrics)
 
 
-def _prose_budget_rule(max_chars: int) -> str:
-    """The clause telling the editor how much prose actually survives to the post. Empty when no
-    budget is configured, so the sentence reads naturally either way (rather than "under 0 chars")."""
-    if max_chars <= 0:
-        return ""
-    return (
-        f" `title`, `body` and `implication` TOGETHER must stay under {max_chars} characters — the "
-        "renderer drops trailing sentences that do not fit, so an over-long body loses exactly the "
-        "closing detail you wrote last."
-    )
+# The clause telling the editor how much prose actually survives to the post. It points at the
+# PROSE BUDGET stated with each candidate rather than carrying one number for the whole digest: the
+# fixed parts differ per item (a 180-character URL costs what a 20-character one does not), so a
+# single worst-case number charged every short-URL item for the longest URL in the pool.
+_PROSE_BUDGET_RULE = (
+    " `title`, `body` and `implication` TOGETHER must stay under this item's own PROSE BUDGET, stated "
+    "with the item — the renderer drops trailing sentences that do not fit, so an over-long body loses "
+    "exactly the closing detail you wrote last."
+)
 
 
 # Backstop cap for one recent-lead opening (an unterminated lead has no sentence boundary to cut at).

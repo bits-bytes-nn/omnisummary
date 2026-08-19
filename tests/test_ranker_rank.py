@@ -409,11 +409,28 @@ class TestGraceIntegration:
             source_slot_score_grace=0.1,
             source_slots={"rss": 1, "youtube": 1, "x": 1},
             source_cap_multiplier=3,  # fallback could otherwise pull extra items per source
+            source_slot_grace_max_admissions=2,  # both quiet sources may be rescued here
         )
         result = await ranker.rank(items)
         # Each appears exactly once via its own slot; no duplication / fallback padding.
         ids = sorted(r.item.item_id for r in result)
         assert ids == ["r1", "x1", "y1"]
+
+    @pytest.mark.asyncio
+    async def test_the_grace_rescue_is_budgeted(self):
+        # Unbudgeted, grace spent as many of the reader's slots as there were quiet sources: two of
+        # five on 2026-07-12, at 0.56 and 0.50, while ten candidates above the bar were dropped.
+        items = _items([("r1", SourceType.RSS), ("y1", SourceType.YOUTUBE), ("x1", SourceType.X)])
+        ranker = _ranker(
+            _rankings({"r1": 0.90, "y1": 0.52, "x1": 0.58}),
+            top_n=5,
+            min_score=0.6,
+            source_slot_score_grace=0.1,
+            source_slots={"rss": 1, "youtube": 1, "x": 1},
+        )
+        result = await ranker.rank(items)
+        # One rescue, and it goes to the candidate closest to the bar.
+        assert sorted(r.item.item_id for r in result) == ["r1", "x1"]
 
 
 def _ranker_with_outputs(outputs: list[str], **overrides) -> tuple[ContentRanker, list[str]]:

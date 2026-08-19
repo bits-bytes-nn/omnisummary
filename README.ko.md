@@ -73,7 +73,7 @@ collectors:
   youtube:
     enabled: true
     channels: ["https://www.youtube.com/@AndrejKarpathy"]
-    lookback_hours: 24
+    lookback_hours: 30      # 직전 실행까지 닿아야 한다. `48 - 실행 시각`보다 좁으면 config 로드가 거부한다
   web_search:
     enabled: true
     trend_searches:

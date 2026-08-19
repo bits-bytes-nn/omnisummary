@@ -5,6 +5,7 @@ import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from enum import Enum, auto
 
 from slack_sdk.web.async_client import AsyncWebClient
 
@@ -44,6 +45,17 @@ class DeliveryStats:
         return "; ".join(parts)
 
 
+class DeliveryOutcome(Enum):
+    """What ONE deliver_research_report call did. Deliberately not a bool: "nothing was posted
+    because this channel already has the report" and "the post failed" are different answers, and
+    reporting the first as success let a REVISED report be announced as delivered while the reader
+    still had the old one."""
+
+    POSTED = auto()
+    NOT_POSTED = auto()
+    FAILED = auto()
+
+
 @dataclass
 class DeliveryContext:
     """Per-invocation delivery target + staging for the deep-research agent. `staged_images`
@@ -54,8 +66,19 @@ class DeliveryContext:
     channel_id: str = ""
     thread_ts: str = ""
     dry_run: bool = False
+    # The channels this INVOCATION is allowed to publish to, decided by the entrypoint rather than
+    # inferred from prose. Empty means unconstrained. Without it the only thing standing between a
+    # request and a post to a PUBLIC Threads account was an enumerated phrase list in the agent
+    # prompt, applied by the model to the user's own words — so a request whose SUBJECT is Threads
+    # was judged by the same matcher that decides where to publish.
+    requested_channels: set[str] = field(default_factory=set)
     staged_images: list[ImageAsset] = field(default_factory=list)
     delivered_channels: set[str] = field(default_factory=set)
+    # Channels where SOMETHING landed but the delivery was not usable as a whole (a Threads root
+    # with no replies). Not in delivered_channels — the runtime's last-resort Slack fallback should
+    # still give the requester the full report — but a repeat deliver_report must not re-post over
+    # what did land.
+    partial_channels: set[str] = field(default_factory=set)
     # Every URL a tool actually surfaced this invocation, in normalize_citation_url form. The only
     # defence against a fabricated citation on a PUBLIC Threads account used to be prose emphatic
     # enough to be evidence it does not hold; deliver_report now refuses a report citing a URL that
@@ -232,7 +255,7 @@ def _dry_run_print(report: str, channel: str, delivery: DeliveryContext) -> bool
     return True
 
 
-async def deliver_research_report(report: str, *, channel: str, delivery: DeliveryContext) -> bool:
+async def deliver_research_report(report: str, *, channel: str, delivery: DeliveryContext) -> DeliveryOutcome:
     """Render and post a finished research report to the chosen channel, attaching any staged
     OG images. Records the channel in delivery.delivered_channels on success, which BOTH makes a
     repeat deliver_report call a no-op and tells the runtime whether its last-resort Slack fallback
@@ -241,12 +264,15 @@ async def deliver_research_report(report: str, *, channel: str, delivery: Delive
 
     The per-attempt outcome lands in delivery.last_stats so the caller can report a partial
     delivery honestly; a partially-delivered report is NOT re-sent (the recorded channel makes a
-    second attempt a no-op), the requester is told instead."""
+    second attempt a no-op), the requester is told instead. A second call for a channel that already
+    has the report returns NOT_POSTED rather than success: the text was not published, and the likely
+    reason for the second call is a REVISED report — reported as "Delivered", with the FIRST
+    attempt's counts, the requester was told a correction had gone out that never did."""
     delivery.last_report = report
-    if channel in delivery.delivered_channels:
+    if channel in delivery.delivered_channels or channel in delivery.partial_channels:
         # Idempotency: a retried/duplicated tool call must not double-post the report.
-        logger.info("Report already delivered to '%s'; skipping repeat post", channel)
-        return True
+        logger.warning("Report already posted to '%s'; the text of this call was NOT published", channel)
+        return DeliveryOutcome.NOT_POSTED
     if delivery.dry_run:
         ok = _dry_run_print(report, channel, delivery)
     elif channel == "threads":
@@ -257,7 +283,15 @@ async def deliver_research_report(report: str, *, channel: str, delivery: Delive
         delivery.delivered_channels.add(channel)
         if not delivery.last_stats.complete:
             await _notify_incomplete_delivery(delivery)
-    return ok
+        return DeliveryOutcome.POSTED
+    if delivery.last_stats.delivered > 0:
+        # Not usable as a delivery (a Threads root whose replies all failed), but posts DID land on
+        # a public account. Re-sending would duplicate them, so the channel is spent — and the
+        # requester is told, exactly as for any other incomplete delivery.
+        delivery.partial_channels.add(channel)
+        await _notify_incomplete_delivery(delivery)
+        return DeliveryOutcome.POSTED
+    return DeliveryOutcome.FAILED
 
 
 async def _notify_incomplete_delivery(delivery: DeliveryContext) -> None:

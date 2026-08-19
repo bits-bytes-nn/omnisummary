@@ -12,11 +12,10 @@ from shared.constants import SourceType
 def _config(**kwargs) -> RedditCollectorConfig:
     # retry_backoff_sec=0 keeps retries and inter-subreddit spacing instant in tests (jitter and
     # spacing both scale by it), so a retriable-status test doesn't sleep for real.
-    base = {"subreddits": ["LocalLLaMA"], "sort": "hot", "limit": 5, "retry_backoff_sec": 0}
+    base = {"subreddits": ["LocalLLaMA"], "sort": "hot", "limit": 5, "retry_backoff_sec": 0, "lookback_hours": 24}
     base.update(kwargs)
     cfg = RedditCollectorConfig(**base)
     cfg.reference_time = datetime(2026, 6, 2, tzinfo=UTC)
-    cfg.lookback_hours = 24
     return cfg
 
 
@@ -165,7 +164,17 @@ class TestRedditCollect:
             await collector.collect()
         assert "/r/LocalLLaMA/top/.rss" in calls[0]
         assert "limit=5" in calls[0]
-        assert "t=day" in calls[0]  # sort=top must request the daily window
+        assert "t=day" in calls[0]  # a 24h lookback is covered by the daily window
+
+    @pytest.mark.asyncio
+    async def test_the_requested_window_widens_with_the_configured_lookback(self):
+        # `top` ranks WITHIN the requested window, so a pinned t=day asked Reddit for less than the
+        # shipped 30-hour lookback and widening lookback_hours changed nothing upstream.
+        collector = RedditCollector(_config(sort="top", lookback_hours=30))
+        fetch, calls = _fetch(_feed([]))
+        with patch("collectors.base.fetch_feed", side_effect=fetch):
+            await collector.collect()
+        assert "t=week" in calls[0]
 
     @pytest.mark.asyncio
     async def test_a_quiet_direct_feed_is_not_turned_into_a_failure_by_the_proxy(self, monkeypatch):

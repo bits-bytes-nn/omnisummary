@@ -160,7 +160,22 @@ class TestCollect:
         # The per-trend include_domains/topic reach Tavily as configured.
         last = client.search.await_args_list[-1].kwargs
         assert last["include_domains"] == ["arxiv.org"] and last["topic"] == "general"
-        assert last["days"] == 1  # lookback_hours 24 -> 1 day
+        # The window Tavily is asked about is the run's own, anchored to reference_time.
+        assert (last["start_date"], last["end_date"]) == ("2026-06-02", "2026-06-03")
+
+    @pytest.mark.asyncio
+    async def test_the_requested_window_widens_with_the_configured_lookback(self, monkeypatch):
+        # `days = lookback_hours // 24` truncated the shipped 30-hour window to ONE day for the
+        # largest source, so widening lookback_hours changed nothing upstream.
+        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        c = _search_collector(min_search_score=0.3)
+        c.config.lookback_hours = 30
+        client = MagicMock()
+        client.search = AsyncMock(return_value={"results": []})
+        c._client_instance = client
+        await c.collect()
+        kwargs = client.search.await_args_list[0].kwargs
+        assert (kwargs["start_date"], kwargs["end_date"]) == ("2026-06-01", "2026-06-03")
 
     @pytest.mark.asyncio
     async def test_search_fan_out_is_bounded_by_config(self, monkeypatch):

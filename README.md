@@ -73,7 +73,7 @@ collectors:
   youtube:
     enabled: true
     channels: ["https://www.youtube.com/@AndrejKarpathy"]
-    lookback_hours: 24
+    lookback_hours: 30      # must reach back to the previous run: config rejects less than 48 - the run hour
   web_search:
     enabled: true
     trend_searches:

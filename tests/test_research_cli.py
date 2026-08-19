@@ -21,27 +21,43 @@ def _run(argv, agent_response="done"):
         agent.side_effect = call
         return agent
 
+    real_context = research_cli.request_context
+
+    def capture_context(delivery):
+        captured["delivery"] = delivery
+        return real_context(delivery)
+
     with patch.object(sys, "argv", ["research_cli.py", *argv]):
-        with patch.object(research_cli, "create_research_agent", side_effect=fake_create):
-            research_cli.main()
+        with patch.object(research_cli, "request_context", side_effect=capture_context):
+            with patch.object(research_cli, "create_research_agent", side_effect=fake_create):
+                research_cli.main()
     return captured
 
 
-def test_threads_hint_singular():
-    cap = _run(["주제", "--channel", "threads"])
-    assert "쓰레드에 올려줘" in cap["prompt"]
-    assert "에도" not in cap["prompt"]
+class TestTheChannelFlagTravelsAsData:
+    """The typed `--channel` choice used to be converted back into a Korean sentence for the model to
+    re-parse ("(쓰레드에 올려줘)"), two lines above the DeliveryContext that already threads
+    per-invocation state into every tool. deliver_report now enforces the allow-list."""
 
+    def test_threads_only(self):
+        cap = _run(["주제", "--channel", "threads"])
+        assert cap["delivery"].requested_channels == {"threads"}
+        assert "쓰레드" not in cap["prompt"]
 
-def test_both_hint_uses_edo():
-    cap = _run(["주제", "--channel", "both"])
-    assert "쓰레드에도 올려줘" in cap["prompt"]
+    def test_both_channels(self):
+        cap = _run(["주제", "--channel", "both"])
+        assert cap["delivery"].requested_channels == {"slack", "threads"}
 
+    def test_slack_is_the_default_and_the_only_one_allowed(self):
+        cap = _run(["주제"])
+        assert cap["delivery"].requested_channels == {"slack"}
 
-def test_slack_default_no_hint():
-    cap = _run(["주제"])
-    assert "쓰레드" not in cap["prompt"]
-    assert cap["prompt"] == "주제"
+    def test_the_agent_is_told_where_to_publish(self):
+        # It still has to KNOW the target; it is told outright rather than asked to infer it from
+        # prose the user never wrote.
+        cap = _run(["주제", "--channel", "threads"])
+        assert cap["prompt"].startswith("주제")
+        assert "[DELIVERY] Publish the finished report to: threads" in cap["prompt"]
 
 
 class TestEveryInvocationIsBudgeted:

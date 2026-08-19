@@ -16,7 +16,15 @@ import httpx
 from botocore.exceptions import BotoCoreError, ClientError
 from pydantic import BaseModel, Field, ValidationError
 
-from shared import CollectedItem, SourceType, generate_item_id, logger, parse_feed_published_date, retry_async
+from shared import (
+    CollectedItem,
+    SourceType,
+    generate_item_id,
+    is_running_in_aws,
+    logger,
+    parse_feed_published_date,
+    retry_async,
+)
 from shared.constants import BROWSER_USER_AGENT, EMPTY_RATE_CHECK_DISABLED
 from shared.proxy import fetch_with_proxy_fallback
 
@@ -231,9 +239,62 @@ class BaseCollector(ABC):
         self.degraded_detail = f"parked sync: {reason}" + (f"; {hint}" if hint else "")
         logger.warning("Park file is DEGRADED: %s", self.degraded_detail)
 
+    def flag_missing_park(self, parked: ParkedItems, *, required: bool, hint: str = "") -> None:
+        """Report an ABSENT park file as DEGRADED for a source whose park file is the PRIMARY path.
+
+        ABSENT is excluded from ParkedItems.degraded by design: locally it means "collect live", which
+        is the normal path. In AWS, for a source whose config says park_required, it is not — the data
+        that only a residential IP can fetch (YouTube transcripts) is missing while live collection
+        still returns items, so the source reported OK and quietly dropped every transcript. A wrong
+        S3_PREFIX, a deleted object or a sync that never ran looked exactly like a healthy day, on
+        every day. Reporting only: the live items still reach the aggregator."""
+        if not required or parked.outcome is not ParkOutcome.ABSENT or not is_running_in_aws():
+            return
+        self.degraded_detail = f"park file required but absent: {parked.detail or 'no park file found'}" + (
+            f"; {hint}" if hint else ""
+        )
+        logger.error("Collector is DEGRADED: %s", self.degraded_detail)
+
 
 def cutoff_datetime(lookback_hours: int, reference_time: datetime | None = None) -> datetime:
     return (reference_time or datetime.now(UTC)) - timedelta(hours=lookback_hours)
+
+
+def collection_window_dates(lookback_hours: int, reference_time: datetime | None = None) -> tuple[str, str]:
+    """The run's collection window as ISO dates, for an upstream whose recency filter takes dates.
+
+    The same two bounds `in_collection_window` enforces, so a source cannot ask upstream for less than
+    the pipeline believes it has. Day granularity only widens the request, never narrows it, and the
+    per-item filter still decides what is kept — but the request is now anchored to the run's
+    reference time, so a `--date` backfill asks about the day it is rebuilding rather than about
+    today."""
+    start = _as_aware_utc(cutoff_datetime(lookback_hours, reference_time))
+    end = _as_aware_utc(reference_time) if reference_time is not None else datetime.now(UTC)
+    return start.date().isoformat(), end.date().isoformat()
+
+
+# The named recency windows an upstream typically offers, in hours. Definitional, not tuned: a day is
+# 24 hours, a week is 7 of those. Ordered narrowest first so the first one that COVERS the collection
+# window wins.
+_RECENCY_BUCKETS: tuple[tuple[str, int], ...] = (
+    ("hour", 1),
+    ("day", 24),
+    ("week", 7 * 24),
+    ("month", 30 * 24),
+    ("year", 365 * 24),
+)
+
+
+def recency_bucket(lookback_hours: int) -> str:
+    """The narrowest named upstream window that still covers `lookback_hours`.
+
+    Derived rather than pinned: a hardcoded 'day' against a 30-hour window asked the upstream for less
+    than the pipeline believed it had, so widening lookback_hours in config changed nothing upstream.
+    Over-covering is safe — `in_collection_window` filters every item anyway."""
+    for name, hours in _RECENCY_BUCKETS:
+        if lookback_hours <= hours:
+            return name
+    return _RECENCY_BUCKETS[-1][0]
 
 
 def _as_aware_utc(moment: datetime) -> datetime:
@@ -365,7 +426,9 @@ def load_items_from_s3(filename: str, max_age_hours: int = S3_ITEMS_MAX_AGE_HOUR
     legitimately quiet sync day and is returned as-is, so it can't trigger a false alert."""
     bucket = os.environ.get("STATE_BUCKET", "")
     if not bucket:
-        return ParkedItems(outcome=ParkOutcome.ABSENT)
+        # The detail names WHY there is no park file, so a source whose park file is its primary path
+        # can report something actionable rather than a bare "absent".
+        return ParkedItems(outcome=ParkOutcome.ABSENT, detail="STATE_BUCKET is not set")
 
     s3_key = park_file_key(filename, park_root_prefix(os.environ.get("S3_PREFIX", "")))
 
@@ -397,7 +460,7 @@ def load_items_from_s3(filename: str, max_age_hours: int = S3_ITEMS_MAX_AGE_HOUR
         code = str(e.response.get("Error", {}).get("Code", ""))
         if code in _ABSENT_ERROR_CODES:
             logger.info("No items found at 's3://%s/%s', falling back to live collection", bucket, s3_key)
-            return ParkedItems(outcome=ParkOutcome.ABSENT)
+            return ParkedItems(outcome=ParkOutcome.ABSENT, detail=f"no object at 's3://{bucket}/{s3_key}'")
         detail = f"could not read park file 's3://{bucket}/{s3_key}': {e}"
         logger.warning("%s — falling back to live collection", detail)
         return ParkedItems(outcome=ParkOutcome.ERROR, detail=detail)

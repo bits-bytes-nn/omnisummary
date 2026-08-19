@@ -231,8 +231,27 @@ class TestThreadsOutcomeAlert:
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
         sns = MagicMock()
         with patch("lambda_handlers.visual_handler.boto3.client", return_value=sns):
-            visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(6, 6), date(2026, 8, 18))
+            visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(6, 6, True), date(2026, 8, 18))
         sns.publish.assert_not_called()
+
+    def test_alerts_on_a_text_only_day(self, monkeypatch):
+        # `expected` counts POSTS, so a day whose visual never made it was complete success by that
+        # measure and said nothing: the image is dropped on a render failure, a missing OpenAI key or
+        # an unreadable secret, and the only trace was one log line inside the maker.
+        monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
+        sns = MagicMock()
+        with patch("lambda_handlers.visual_handler.boto3.client", return_value=sns):
+            visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(6, 6, False), date(2026, 8, 18))
+        sns.publish.assert_called_once()
+        assert "TEXT-ONLY" in sns.publish.call_args.kwargs["Message"]
+
+    def test_a_failed_day_alerts_once_not_twice(self, monkeypatch):
+        # A total failure has no image either; it must not produce a second, redundant notice.
+        monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
+        sns = MagicMock()
+        with patch("lambda_handlers.visual_handler.boto3.client", return_value=sns):
+            visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(0, 6), date(2026, 8, 18))
+        sns.publish.assert_called_once()
 
     def test_no_op_without_the_topic_env(self, monkeypatch):
         monkeypatch.delenv("ALERT_SNS_TOPIC_ARN", raising=False)

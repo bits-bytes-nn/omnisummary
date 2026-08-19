@@ -10,6 +10,7 @@ from .base import (
     BaseCollector,
     fetch_feed_with_retry,
     parse_feed_entries,
+    recency_bucket,
 )
 
 RSS_BASE = "https://www.reddit.com"
@@ -84,7 +85,11 @@ class RedditCollector(BaseCollector):
         logger.info("Collecting posts from 'r/%s'", subreddit_name)
         feed_url = f"{RSS_BASE}/r/{subreddit_name}/{self.config.sort}/.rss?limit={self.config.limit}"
         if self.config.sort == "top":
-            feed_url += "&t=day"
+            # `top` ranks within a named window, so the window has to be the run's own: a pinned
+            # `t=day` asked for less than the 30-hour lookback the pipeline believes it has, and
+            # widening lookback_hours in config changed nothing here. The bucket only over-covers —
+            # parse_feed_entries filters every entry against the real window below.
+            feed_url += f"&t={recency_bucket(self.config.lookback_hours)}"
         # A rate-limited/transient fetch is retried with jittered backoff instead of dropping the
         # subreddit on the first 429; each attempt tries the direct URL first and then the Cloudflare
         # proxy (Reddit blocks datacenter IPs, the proxy is blocked by other hosts).

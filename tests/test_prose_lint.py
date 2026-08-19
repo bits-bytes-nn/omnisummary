@@ -1,6 +1,17 @@
 import pytest
 
-from shared.prose_lint import lead_specificity_hits, lint_digest_prose, specifics
+from shared.prose_lint import (
+    ItemProse,
+    figures,
+    lead_figure_repeats,
+    lead_specificity_hits,
+    lint_digest_prose,
+    specifics,
+)
+
+
+def item(body: str = "", implication: str = "", *, title: str = "", budget: int = 0) -> ItemProse:
+    return ItemProse(title=title, body=body, implication=implication, budget=budget)
 
 
 class TestCommaAfterAFinishedPredicate:
@@ -9,7 +20,7 @@ class TestCommaAfterAFinishedPredicate:
     already failed is not fixed by writing it again."""
 
     def test_the_shipped_defect_is_caught(self):
-        hits = lint_digest_prose("리드다.", [("본문이다.", "그래서 못 쓴다, 그게 문제다.")])
+        hits = lint_digest_prose("리드다.", [item("본문이다.", "그래서 못 쓴다, 그게 문제다.")])
         assert len(hits) == 1
         assert "items[0].implication" in hits[0]
         assert "comma after a finished predicate" in hits[0]
@@ -19,7 +30,7 @@ class TestCommaAfterAFinishedPredicate:
             assert lint_digest_prose(prose, [])
 
     def test_a_comma_inside_one_sentence_is_fine(self):
-        assert lint_digest_prose("빠르고, 정확하고, 값도 싸다.", [("본문이다.", "시사점이다.")]) == []
+        assert lint_digest_prose("빠르고, 정확하고, 값도 싸다.", [item("본문이다.", "시사점이다.")]) == []
 
     def test_a_period_after_the_predicate_is_fine(self):
         assert lint_digest_prose("성립한다. 그 순간이 오지 않으면 끝이다.", []) == []
@@ -30,6 +41,30 @@ class TestCommaAfterAFinishedPredicate:
     def test_the_lead_is_checked_too(self):
         hits = lint_digest_prose("전제는 성립한다, 문제는 시점이다.", [])
         assert hits and hits[0].startswith("lead:")
+
+
+class TestTheCommaCheckDoesNotFireOnASyllableThatMerelyReadsLikeAPredicate:
+    """'다' is also an ordinary word-final syllable, and it legitimately precedes a comma in the
+    quotative. The bare `[가-힣]다,` pattern fired on both, and every false hit bought a byte-identical
+    ~50k-token re-ask that changed nothing."""
+
+    NO_HIT = (
+        "회의실에 준비한 건 소다, 커피, 물이 전부다.",
+        "그가 좋아하는 건 바다, 산, 그리고 오래된 서점이다.",
+        "가능성은 무한하다, 라고 그는 말했다.",
+        "쉽지 않다, 라는 게 현장의 중론이다.",
+    )
+
+    @pytest.mark.parametrize("prose", NO_HIT)
+    def test_a_list_separator_and_the_quotative_are_left_alone(self, prose):
+        assert lint_digest_prose(prose, []) == []
+        assert lint_digest_prose("리드다.", [item(prose, "")]) == []
+        assert lint_digest_prose("리드다.", [item("본문이다.", prose)]) == []
+
+    def test_a_second_clause_after_a_list_is_still_caught(self):
+        # The tightening must not buy silence: once the segment after the comma stands on its own as a
+        # clause, the form is the one the rules name.
+        assert lint_digest_prose("커피, 물은 준비했다, 소다는 빠졌다.", [])
 
 
 class TestOnlyRulesTheConfigStatesAreChecked:
@@ -58,18 +93,27 @@ class TestOnlyRulesTheConfigStatesAreChecked:
 
     @pytest.mark.parametrize("prose", SHIPPED_EM_DASH_PROSE)
     def test_shipped_prose_joined_by_a_dash_is_left_alone(self, prose):
-        assert lint_digest_prose(prose, [("본문이다.", "시사점이다.")]) == []
-        assert lint_digest_prose("리드다.", [(prose, "")]) == []
-        assert lint_digest_prose("리드다.", [("본문이다.", prose)]) == []
+        assert lint_digest_prose(prose, [item("본문이다.", "시사점이다.")]) == []
+        assert lint_digest_prose("리드다.", [item(prose, "")]) == []
+        assert lint_digest_prose("리드다.", [item("본문이다.", prose)]) == []
 
 
 class TestTheShippedDigestCorpus:
     """The maintainer's stored digests are the only real sample of what the editor writes. A check
-    that fires on them is a false positive by construction: those digests shipped and were kept.
+    that fires on them over a rule NOTHING states is a false positive by construction.
 
     digest_state/ is gitignored (it is run output, not source), so this is a local gate and skips
     where the corpus is absent. The verbatim sentences in TestOnlyRulesTheConfigStatesAreChecked are
     what pins the same regression in CI."""
+
+    # Every check that has a rule behind it: KOREAN_STYLE_RULES names the comma, and DigestPrompt tells
+    # the lead to add to items[0] rather than re-tell it (including its numbers). A hit outside this set
+    # means a check was added without a rule to trace it to.
+    RULE_BACKED = {
+        "comma after a finished predicate",
+        "every specific it names is already in items[0]",
+        "repeats items[0]'s figure(s)",
+    }
 
     @staticmethod
     def _stored_digests():
@@ -83,7 +127,7 @@ class TestTheShippedDigestCorpus:
             if content and content.get("items"):
                 yield path.name, content
 
-    def test_the_only_check_that_fires_on_shipped_prose_is_the_one_the_rules_name(self):
+    def test_no_check_fires_on_shipped_prose_without_a_rule_behind_it(self):
         stored = list(self._stored_digests())
         if not stored:
             pytest.skip("no stored digests to lint (digest_state/ is gitignored run output)")
@@ -91,11 +135,12 @@ class TestTheShippedDigestCorpus:
         for name, content in stored:
             for hit in lint_digest_prose(
                 content["lead"],
-                [(item.get("body", ""), item.get("implication", "")) for item in content["items"]],
+                [item(one.get("body", ""), one.get("implication", "")) for one in content["items"]],
             ):
-                fired.add(hit.split("—")[0].split(": ", 1)[1].strip() if ": " in hit else hit)
+                claim = hit.split("—")[0].split(": ", 1)[1].strip() if ": " in hit else hit
+                fired.add(next((rule for rule in self.RULE_BACKED if claim.startswith(rule)), claim))
                 print(f"{name}: {hit}")
-        assert fired <= {"comma after a finished predicate"}
+        assert fired <= self.RULE_BACKED
 
 
 class TestSpecifics:
@@ -107,6 +152,23 @@ class TestSpecifics:
 
     def test_a_single_latin_letter_is_not_a_name(self):
         assert specifics("A 모델") == set()
+
+
+class TestFigures:
+    def test_a_digit_inside_a_latin_name_is_not_a_figure_of_its_own(self):
+        # 'GPT-5' is already compared as a Latin token; counting its 5 as a figure would make every
+        # mention of the model name a repeated number.
+        assert figures("GPT-5가 나왔다") == set()
+
+    def test_a_digit_inside_a_korean_word_is_not_a_figure(self):
+        # '제3자' is a word, not a quantity; it was the only hit on digest_2026-06-11.
+        assert figures("제3자 테스트를 요구했다") == set()
+
+    def test_precision_does_not_make_two_figures_out_of_one(self):
+        assert figures("52.2%") == figures("52%")
+
+    def test_a_thousands_separator_stays_one_figure(self):
+        assert figures("6,700개") == {"6700"}
 
 
 class TestLeadSpecificity:
@@ -130,9 +192,46 @@ class TestLeadSpecificity:
         # new information relative to what the reader sees directly beneath the lead.
         hits = lint_digest_prose(
             "GPT-5가 40% 빨라졌다.",
-            [("GPT-5는 40% 빠르다.", "의미가 크다."), ("Gemini도 나왔다.", "")],
+            [item("GPT-5는 40% 빠르다.", "의미가 크다."), item("Gemini도 나왔다.", "")],
         )
         assert any("already in items[0]" in hit for hit in hits)
+
+
+class TestLeadFigureRepeats:
+    """The 'any novel specific' escape hatch let the shipped lead through: three novel specifics
+    bought a pass while 15 of its 18 were repeats, and the root Threads post re-told reply 1."""
+
+    def test_a_repeated_figure_is_flagged_even_when_the_lead_adds_new_ones(self):
+        hits = lead_figure_repeats("점유율은 52%다. 신규 계약은 6700건이다.", "점유율 52.2%를 기록했다.")
+        assert hits and "52" in hits[0]
+
+    def test_the_escape_hatch_no_longer_covers_a_repeated_number(self):
+        hits = lint_digest_prose(
+            "점유율 52%가 말하는 건 Gemini의 부재다.",
+            [item("점유율은 52.2%다.", "의미가 크다.")],
+        )
+        assert any("repeats items[0]'s figure" in hit for hit in hits)
+
+    def test_a_lead_that_names_its_own_figures_passes(self):
+        assert lead_figure_repeats("계약은 6700건이다.", "점유율은 52%다.") == []
+
+    def test_a_qualitative_lead_passes(self):
+        assert lead_figure_repeats("의미는 속도가 아니라 배포다.", "점유율은 52%다.") == []
+
+
+class TestItemLength:
+    """The renderer amputates whatever does not fit 500 chars and only logged a count; on
+    digest_2026-07-12 that cost 2 of 5 posts their closing sentence."""
+
+    def test_prose_over_its_own_budget_is_flagged(self):
+        hits = lint_digest_prose("리드다.", [item("본" * 200, "시사점이다.", title="제목", budget=100)])
+        assert hits and "items[0]" in hits[0] and "100-char budget" in hits[0]
+
+    def test_prose_within_the_budget_is_fine(self):
+        assert lint_digest_prose("리드다.", [item("본문이다.", "시사점이다.", title="제목", budget=100)]) == []
+
+    def test_no_budget_means_nothing_to_check_against(self):
+        assert lint_digest_prose("리드다.", [item("본" * 900, "시사점이다.", title="제목")]) == []
 
 
 class TestCleanProse:
@@ -140,7 +239,7 @@ class TestCleanProse:
         assert (
             lint_digest_prose(
                 "Anthropic이 Claude를 공개했다. 관건은 배포 속도다.",
-                [("Claude가 나왔다.", "값이 문제다."), ("다른 소식이다.", "지켜볼 일이다.")],
+                [item("Claude가 나왔다.", "값이 문제다."), item("다른 소식이다.", "지켜볼 일이다.")],
             )
             == []
         )

@@ -57,7 +57,10 @@ class BaseCollectorConfig(_StrictModel):
     # slice between the run and midnight was unpublished when that day's run collected and already
     # before the next run's cutoff. Config._lookback_reaches_the_previous_run validates the floor
     # (48 - the run's local hour); this default is the floor for the shipped 19:00 KST cron plus
-    # an hour of margin.
+    # an hour of margin. Declared ONCE here: web_search and rsshub used to re-declare it as a bare
+    # `lookback_hours: int = 72`, which replaces the FieldInfo wholesale and took the ge=1 with it —
+    # those two sources accepted a negative window while the other three failed loudly. A source that
+    # wants a wider window states it in the YAML, where every other per-source value lives.
     lookback_hours: int = Field(default=30, ge=1)
     reference_time: datetime | None = None
     request_timeout: int = Field(default=30, ge=1)
@@ -67,6 +70,12 @@ class BaseCollectorConfig(_StrictModel):
     # items are still used — stale beats empty — but the source is reported STALE so a stopped
     # local cron is visible instead of looking like a healthy run.
     park_max_age_hours: int = Field(default=36, ge=1)
+    # Whether the park file is this source's PRIMARY path in AWS. When it is, an ABSENT file is a
+    # DEGRADED source rather than a quiet fall-through: YouTube transcripts cannot be fetched from a
+    # datacenter IP, so live collection still yields items (metadata only) and a wrong S3_PREFIX, a
+    # deleted object or a sync that never ran reported OK while every transcript was dropped. Only
+    # checked when running in AWS — locally, collecting live IS the path that writes the file.
+    park_required: bool = False
     # Share of a source's inputs (feeds / accounts / channels / queries) that may fail before the
     # source is reported DEGRADED. Reporting only: every collected item still reaches the
     # aggregator. One number for every collector — a source that answers from 2 of 40 inputs looks
@@ -137,7 +146,6 @@ class TrendSearch(_StrictModel):
 class WebSearchCollectorConfig(BaseCollectorConfig):
     trend_searches: list[TrendSearch] = Field(default_factory=list)
     max_results_per_query: int = Field(default=10, ge=1)
-    lookback_hours: int = 72
     refine_model: LanguageModelId = LanguageModelId.CLAUDE_V5_SONNET
     max_refine_queries: int = Field(default=3, ge=1)
     min_search_score: float = Field(default=0.3, ge=0.0, le=1.0)
@@ -155,7 +163,6 @@ class RSSHubAccount(_StrictModel):
 class RSSHubCollectorConfig(BaseCollectorConfig):
     base_url: str = f"http://localhost:{RSSHUB_PORT}"
     accounts: list[RSSHubAccount] = Field(default_factory=list)
-    lookback_hours: int = 72
     # How many account feeds may be fetched at once. Each fetch parks a worker thread, so this
     # stays at/below the default asyncio executor width (min(32, cpu+4) — 6 on a 2-vCPU Lambda);
     # oversubscribing it made a feed's timeout expire while its parse was still queued. Worst-case
@@ -232,6 +239,12 @@ class PipelineConfig(_StrictModel):
     # absolute-scoring prompt systematically under-rates (e.g. video/podcast transcripts vs
     # articles) isn't shut out entirely. 0 disables the grace (strict threshold for all).
     source_slot_score_grace: float = Field(default=0.1, ge=0.0, le=0.5)
+    # How many sources the grace band may rescue in ONE run. A grace item goes straight into the core
+    # the reader gets, so an unbudgeted rescue competes with nothing: the 2026-07-12 run gave 2 of 5
+    # reader slots to items scored 0.56 and 0.50 while candidates at 0.78/0.75/0.72/0.68 were dropped.
+    # The budget goes to the highest-scoring grace candidates, so the source closest to the bar is the
+    # one rescued. 0 disables the grace as surely as source_slot_score_grace 0 does.
+    source_slot_grace_max_admissions: int = Field(default=1, ge=0)
     # Extra ranked candidates handed to the digest generator beyond top_n, so that when the
     # editor MERGES same-event items (e.g. two takes on one launch) it can still backfill to
     # exactly top_n distinct stories instead of emitting fewer. 0 disables the buffer.
@@ -556,6 +569,28 @@ class PipelineConfig(_StrictModel):
             raise ValueError(
                 f"pipeline.source_slots names unknown source type(s) {unknown}; "
                 f"valid keys are {sorted(source.value for source in SourceType)}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _slots_leave_room_for_score_to_choose(self) -> "PipelineConfig":
+        """Warn when the guaranteed slots fill the whole digest, because at that point the ranking
+        score stops deciding anything ACROSS sources.
+
+        `_apply_source_slots` stops at top_n, so once every source has contributed its guaranteed
+        slot there is no room left for the relaxation passes to run: score only orders items WITHIN a
+        source, and a source's 0.50 outranks another source's 0.78 by construction. That is a legitimate
+        configuration (an evenly-sourced digest is the point of slots at all) but it was recorded
+        nowhere, so a shipped digest of low-scoring items read as a ranking failure. A warning, not an
+        error: the operator chose the numbers."""
+        total = sum(slot for slot in self.source_slots.values() if slot >= 1)
+        if total >= self.top_n:
+            logger.warning(
+                "pipeline.source_slots guarantee %d of the %d reader slots, so the ranking score only "
+                "orders items WITHIN a source: no slot is left for a cross-source comparison. Lower a "
+                "slot or raise top_n to give score something to choose.",
+                total,
+                self.top_n,
             )
         return self
 

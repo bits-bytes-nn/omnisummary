@@ -396,6 +396,16 @@ def strip_slack_mrkdwn(text: str) -> str:
     return re.sub(r"\x00(\d+)\x00", lambda m: urls[int(m.group(1))], text)
 
 
+def threads_meta_line(source_tag: str, metrics: str) -> str:
+    """One item's provenance line exactly as a Threads post shows it: the same composition Slack's
+    context block uses, with the markup stripped (`source_tag` is stored backtick-wrapped for Slack
+    mrkdwn and Threads renders none, so the backticks would show up literally).
+
+    Shared by the renderer that writes the line and the pipeline that budgets for its length, so the
+    budget can never be derived from a string the post does not actually carry."""
+    return strip_slack_mrkdwn(" · ".join(p for p in (source_tag, metrics) if p)).strip()
+
+
 def threads_item_overhead_chars(meta: str, url: str) -> int:
     """Characters ONE item's Threads post spends on the parts CODE owns: the source line, the URL,
     and the blank-line separators between title / source / body / implication / URL. Everything left

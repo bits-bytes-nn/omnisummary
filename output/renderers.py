@@ -11,6 +11,7 @@ from shared import (
     logger,
     split_sentences,
     strip_slack_mrkdwn,
+    threads_meta_line,
     truncate_at_word,
 )
 
@@ -348,10 +349,8 @@ def render_threads_posts(content: DigestContent, countdown: str = "") -> tuple[s
 
 
 def _item_meta(item) -> str:
-    """The provenance line, same composition Slack's context block uses — but stripped of markup.
-    `source_tag` is stored backtick-wrapped for Slack mrkdwn (`` `r/LocalLLaMA` ``), and Threads
-    renders no markup, so the backticks would show up literally in the post."""
-    return strip_slack_mrkdwn(" · ".join(p for p in (item.source_tag, item.metrics) if p)).strip()
+    """The provenance line, composed by the shared helper the pipeline also budgets against."""
+    return threads_meta_line(item.source_tag, item.metrics)
 
 
 def _trim_long_sentence(sentence: str, max_len: int) -> str:

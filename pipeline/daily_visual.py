@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
-import os
 from datetime import date, datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -11,6 +9,7 @@ from zoneinfo import ZoneInfo
 from langchain_core.output_parsers import StrOutputParser
 
 from agent.visuals import VisualGenerator
+from output.digest_delivery import DigestPublisher
 from pipeline.aggregator import normalize_url
 from shared import (
     BedrockLanguageModelFactory,
@@ -25,13 +24,13 @@ from shared import (
     coerce_bool,
     create_state_store,
     editorial_lead,
-    get_correlation_id,
     logger,
     parse_json_from_llm_output,
     resolve_secret,
 )
 from shared.config import Config
 from shared.history_store import VISUAL_FORMATS_KEY, ThreadsPostLedger
+from shared.state_store import StateStore
 
 if TYPE_CHECKING:
     from output.threads_handler import ThreadsDelivery
@@ -39,38 +38,31 @@ if TYPE_CHECKING:
 
 class DailyVisualMaker:
     """Picks one digest story and renders a fun daily visual (meme / parody /
-    illustration / N-panel cartoon), then posts the digest (image + text) to Slack/Threads.
+    illustration / N-panel cartoon), then hands it to the digest publisher as an attachment.
 
     Best-effort in BOTH directions: a visual failure (no OpenAI key, no fit, search/render error)
     is logged and the digest still publishes TEXT-ONLY, and a delivery failure never escapes into
-    the pipeline. This function is the only Threads publish path, so an early return here means
-    the day's digest is never delivered at all."""
+    the pipeline. Publication itself belongs to `output.digest_delivery.DigestPublisher`, which takes
+    the image as an OPTIONAL argument — so no failure on this side can cost the day's digest."""
 
     def __init__(self, config: Config, llm_factory: BedrockLanguageModelFactory) -> None:
         self.config = config
-        # Last Threads publish outcome (posted/expected posts), for the caller's metrics/alerts.
-        self.threads_outcome: ThreadsDelivery | None = None
         self.llm_factory = llm_factory
         self.llm = llm_factory.get_model(config.pipeline.digest_model, stage="visual-editor")
         # Format-variation history is best-effort: if the state store can't be created
         # (misconfigured bucket/profile), degrade to no history rather than crash the visual.
+        store: StateStore | None
         try:
             store = create_state_store(config)
             self.format_log: RollingLog | None = RollingLog(
                 store, VISUAL_FORMATS_KEY, config.pipeline.visual_format_window
             )
-            self.threads_ledger: ThreadsPostLedger | None = ThreadsPostLedger(store)
         except Exception:
-            # ERROR, not warning: without the store there is no Threads idempotency ledger either,
-            # so this run cannot tell an already-published day from a fresh one. Deliberately NOT
-            # raised — see StateReadError's contract: a lost digest is strictly worse than a run
-            # without history, and retry_attempts=0 means nothing would auto-retry the publish.
-            logger.error(
-                "Visual format history AND the Threads post ledger are unavailable (state store init failed)",
-                exc_info=True,
-            )
+            logger.error("Visual format history is unavailable (state store init failed)", exc_info=True)
+            store = None
             self.format_log = None
-            self.threads_ledger = None
+        # The publisher shares this run's store, so one init failure doesn't produce two of them.
+        self.publisher = DigestPublisher(config, store)
         self.generator = VisualGenerator(
             llm_factory,
             config.pipeline.digest_model,
@@ -106,60 +98,30 @@ class DailyVisualMaker:
             return False
 
         post_date = today or datetime.now(ZoneInfo(self.config.aws.timezone)).date()
-        if self._nothing_left_to_publish(post_date, force_republish):
-            logger.info(
-                "Threads digest for %s already posted and no other channel is enabled, skipping "
-                "(use force to re-publish)",
-                post_date,
-            )
-            return False
-        if self._render_would_be_wasted(content):
-            # A story-less digest is deliberately NOT posted to Threads (that shape published the
-            # broken 2026-08-13/08-17 roots), so with Slack off there is no destination left for an
-            # image — and an LLM editor pass plus a gpt-image render would be paid for and thrown
-            # away. Record the same verdict _post_threads would have, HERE rather than inside the
-            # predicate, so the caller's delivery alert still fires for the unpublished day.
-            logger.error(
-                "Digest for %s carries no stories and Slack is disabled; skipping the visual render "
-                "(the day stays retryable)",
-                post_date,
-            )
-            if self.config.pipeline.enable_threads_post:
-                from output.threads_handler import ThreadsDelivery
-
-                self.threads_outcome = ThreadsDelivery(0, 1)
+        # Asked BEFORE the render: a day with nothing left to publish must not pay for an LLM editor
+        # pass plus a gpt-image render it can never deliver.
+        if not self.publisher.has_a_destination(content, post_date, force_republish):
             return False
 
         image_bytes, brief = await self._make_visual(ranked_items, content, post_date, deadline=deadline)
 
-        slack_ok = await self._post(image_bytes, brief)
-        threads_ok = await self._post_threads(
-            image_bytes, content, today=post_date, force_republish=force_republish, deadline=deadline
+        return await self.publisher.publish(
+            content,
+            image_bytes=image_bytes,
+            brief=brief,
+            today=post_date,
+            force_republish=force_republish,
+            deadline=deadline,
         )
-        # Success = at least one enabled channel published. Returning only slack_ok reported
-        # "skipped" for every Threads-only run (the current config), hiding real outcomes.
-        return slack_ok or threads_ok
 
-    def _nothing_left_to_publish(self, post_date: date, force_republish: bool) -> bool:
-        """True when the day is provably done: Threads already carries this date's digest AND no
-        other channel could take the visual. Checked at the TOP of run() so an already-posted day
-        doesn't pay for an LLM editor pass + a gpt-image render it can never publish.
+    @property
+    def threads_outcome(self) -> ThreadsDelivery | None:
+        """The publisher's last Threads verdict, for the caller's metrics/alerts."""
+        return self.publisher.threads_outcome
 
-        Deliberately narrow — with enable_slack_post on, the Slack image upload is a separate
-        delivery the Threads marker says nothing about, so the run must proceed."""
-        if force_republish or self.config.pipeline.enable_slack_post:
-            return False
-        if not self.config.pipeline.enable_threads_post:
-            return False
-        return bool(self.threads_ledger and self.threads_ledger.already_posted(post_date))
-
-    def _render_would_be_wasted(self, content: DigestContent | None) -> bool:
-        """True when the render has no possible destination: the digest carries no stories (Threads
-        refuses that shape) AND Slack — the other real destination for the image — is off. A pure
-        predicate: run() owns the logging and the delivery verdict."""
-        if self.config.pipeline.enable_slack_post:
-            return False
-        return not (content and content.items)
+    @property
+    def threads_ledger(self) -> ThreadsPostLedger | None:
+        return self.publisher.threads_ledger
 
     async def _make_visual(
         self,
@@ -560,119 +522,3 @@ class DailyVisualMaker:
         if source == "community":
             return await tavily_search(query, include_domains=self.config.agent.community_search_domains)
         return await tavily_search(query, topic="news")
-
-    async def _post(self, image_bytes: bytes | None, brief: VisualBrief | None) -> bool:
-        if not self.config.pipeline.enable_slack_post:
-            return False
-        if not image_bytes or not brief:
-            return False
-        from output.slack_handler import send_image_to_slack
-
-        title = brief.title
-        caption = brief.caption
-        emoji = self.config.pipeline.visual_caption_emoji
-        bot_token = self.config.slack.bot_token
-        channel_id = self.config.slack.channel_id
-        return await send_image_to_slack(
-            image_bytes,
-            channel_id=channel_id,
-            title=title,
-            comment=f"{emoji} *{title}*\n{caption}",
-            bot_token=bot_token,
-        )
-
-    async def _post_threads(
-        self,
-        image_bytes: bytes | None,
-        content: DigestContent | None,
-        *,
-        today: date | None = None,
-        force_republish: bool = False,
-        deadline: float | None = None,
-    ) -> bool:
-        if not self.config.pipeline.enable_threads_post:
-            return False
-        from output.renderers import render_threads_posts
-        from output.threads_handler import ThreadsDelivery as Delivery
-        from output.threads_handler import post_to_threads
-
-        # Idempotency: a same-day re-run (manual `main.py`) or an automatic async retry of the
-        # visual Lambda after a timeout would otherwise post the whole root+replies set again.
-        # Skip if today's digest already went to Threads, unless explicitly forced.
-        post_date = today or datetime.now(ZoneInfo(self.config.aws.timezone)).date()
-        if self.threads_ledger and not force_republish and self.threads_ledger.already_posted(post_date):
-            logger.info("Threads digest for %s already posted, skipping (use force to re-publish)", post_date)
-            return False
-
-        # Root = visual image + the digest lead (which already carries the AGI-countdown intro,
-        # prepended at digest generation); replies = one per story.
-        #
-        # A digest with no stories is NOT posted. There used to be a fallback that published the
-        # visual's own title/caption as a lone root with no replies: on 2026-08-13 and 2026-08-17 a
-        # digest whose content failed to parse took that branch and published a story-less post
-        # (one of them carrying leaked `</caption>` markup), consuming the day's ledger slot and
-        # logging success. Skipping instead keeps the day retryable and never ships a broken digest.
-        if not (content and content.items):
-            logger.error("No digest stories to post to Threads for %s; skipping (day stays retryable)", post_date)
-            # Leave a VERDICT behind, don't just return: this is the 2026-08-13/08-17 story-loss
-            # shape (the channel was enabled, the day was unpublished, and nothing went out), and
-            # with threads_outcome left at None the caller's alert was a no-op. expected=1 keeps
-            # posted >= expected false, so the "nothing to report" early-return can't swallow it.
-            self.threads_outcome = Delivery(0, 1)
-            return False
-        # Hand the countdown gag over so an over-long lead drops the fixed daily template rather
-        # than the sentence carrying the day's argument.
-        root_text, replies = render_threads_posts(content, self._countdown_intro(post_date))
-
-        bucket = self.config.aws.state_bucket_name or os.environ.get("STATE_BUCKET", "")
-        prefix = self.config.aws.s3_prefix.rstrip("/") + "/" if self.config.aws.s3_prefix else ""
-        image_key = f"{prefix}threads/{hashlib.sha256(image_bytes).hexdigest()[:16]}.png" if image_bytes else ""
-
-        # Claim the date BEFORE the multi-minute post so concurrent invocations (e.g. a client
-        # that retried a timed-out invoke) see it already taken and skip, instead of all passing
-        # the already_posted() check above and each posting. Roll back if the post fails so a
-        # genuine failure stays retryable — but only if WE added the mark, so a force-republish
-        # failure doesn't wipe out a prior day's successful-post record.
-        # run_id scopes marker ownership: a rollback only releases the marker THIS run wrote, so a
-        # concurrent invocation's failure can't erase the marker of one that succeeded.
-        run_id = get_correlation_id() or ""
-        was_marked = bool(self.threads_ledger and self.threads_ledger.already_posted(post_date))
-        if self.threads_ledger and not was_marked:
-            try:
-                self.threads_ledger.mark(post_date, run_id)
-            except Exception:
-                logger.warning("Failed to record Threads post marker (non-fatal)", exc_info=True)
-
-        try:
-            outcome = await post_to_threads(
-                root_text=root_text,
-                replies=replies,
-                image_bytes=image_bytes,
-                image_bucket=bucket,
-                image_key=image_key,
-                deadline=deadline,
-            )
-        except Exception:
-            # Best-effort like the rest of the visual path: roll the claim back so the post
-            # stays retryable, log, and don't let a Threads failure escape into run(). The verdict
-            # is still recorded (nothing landed of the posts we intended) so the caller can alert.
-            logger.warning("Threads post failed", exc_info=True)
-            self.threads_outcome = Delivery(0, 1 + len([r for r in replies if r.strip()]))
-            if not was_marked:
-                self._release_threads_marker(post_date, run_id)
-            return False
-        # Expose the (posted, expected) counts so the caller can report/alert on a partial chain.
-        # Branch on .published explicitly — the outcome tuple itself is ALWAYS truthy, so `if
-        # outcome:` would treat a 0-of-6 post as a success and skip the ledger rollback.
-        self.threads_outcome = outcome
-        if not outcome.published and not was_marked:
-            self._release_threads_marker(post_date, run_id)
-        return outcome.published
-
-    def _release_threads_marker(self, post_date: date, run_id: str = "") -> None:
-        if not self.threads_ledger:
-            return
-        try:
-            self.threads_ledger.unmark(post_date, run_id)
-        except Exception:
-            logger.warning("Failed to roll back Threads post marker (non-fatal)", exc_info=True)

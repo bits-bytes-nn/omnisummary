@@ -178,6 +178,12 @@ def _handle_async_invocation(event: dict[str, Any], context: Any) -> dict[str, A
                         "prompt": clean_text,
                         "channel_id": channel,
                         "thread_ts": thread_ts,
+                        # The channels this request MAY publish to. A Slack mention always permits
+                        # Slack; Threads only because the requester can ask for it in the same
+                        # message, and their own words are the only place that intent exists. Stated
+                        # explicitly so deliver_report enforces an allow-list instead of the payload
+                        # carrying no channel field at all.
+                        "requested_channels": ["slack", "threads"],
                         "correlation_id": correlation_id,
                     }
                 ),

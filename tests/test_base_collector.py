@@ -12,6 +12,7 @@ from collectors.base import (
     ParkedItems,
     ParkOutcome,
     TransientStatusError,
+    collection_window_dates,
     dump_items_envelope,
     fetch_feed,
     fetch_feed_with_retry,
@@ -20,6 +21,7 @@ from collectors.base import (
     park_file_key,
     park_root_prefix,
     parse_feed_entries,
+    recency_bucket,
 )
 from shared.constants import SourceType
 from shared.models import CollectedItem
@@ -120,6 +122,46 @@ class TestDegradationReporting:
         c = _Collector()
         c.flag_degraded_park(ParkedItems(outcome=ParkOutcome.FRESH, items=[_item("v1")]), threshold=50.0, what="x")
         assert c.degraded_detail == ""
+
+
+class TestAMissingParkFileWhereItIsThePrimaryPath:
+    """ParkOutcome.ABSENT is excluded from `degraded` by design — locally it means "collect live".
+    In AWS, for YouTube, live collection yields metadata with NO transcripts, so a wrong S3_PREFIX, a
+    deleted object or a sync that never ran produced items, reported OK, and dropped every transcript
+    on every day."""
+
+    ABSENT = ParkedItems(outcome=ParkOutcome.ABSENT, detail="no object at 's3://b/k/youtube_items.json'")
+
+    def test_in_aws_an_absent_required_park_is_degraded_and_names_the_key(self):
+        c = _Collector()
+        with patch("collectors.base.is_running_in_aws", return_value=True):
+            c.flag_missing_park(self.ABSENT, required=True, hint="NO transcripts")
+        assert "park file required but absent" in c.degraded_detail
+        assert "s3://b/k/youtube_items.json" in c.degraded_detail
+        assert "NO transcripts" in c.degraded_detail
+
+    def test_locally_it_stays_the_normal_path(self):
+        c = _Collector()
+        with patch("collectors.base.is_running_in_aws", return_value=False):
+            c.flag_missing_park(self.ABSENT, required=True)
+        assert c.degraded_detail == ""
+
+    def test_a_source_that_does_not_require_a_park_file_is_unaffected(self):
+        c = _Collector()
+        with patch("collectors.base.is_running_in_aws", return_value=True):
+            c.flag_missing_park(self.ABSENT, required=False)
+        assert c.degraded_detail == ""
+
+    def test_a_usable_park_file_is_not_a_missing_one(self):
+        c = _Collector()
+        with patch("collectors.base.is_running_in_aws", return_value=True):
+            c.flag_missing_park(ParkedItems(outcome=ParkOutcome.FRESH, items=[_item("v1")]), required=True)
+        assert c.degraded_detail == ""
+
+    def test_the_absent_outcome_carries_why_there_was_no_file(self, monkeypatch):
+        # A bare "absent" is not actionable; the detail is what lands in the health report.
+        monkeypatch.delenv("STATE_BUCKET", raising=False)
+        assert "STATE_BUCKET" in load_items_from_s3("youtube_items.json").detail
 
 
 class TestEmptyAndAbsoluteDegradation:
@@ -316,6 +358,26 @@ class TestFetchFeedWithRetry:
             )
         assert feed is good
         assert len(seen) == 2
+
+
+class TestUpstreamRecencyDerivation:
+    """Both derivations exist so a source cannot ask its upstream for a NARROWER window than the
+    pipeline believes it has: web_search truncated 30 hours to `days=1`, and Reddit pinned `t=day`."""
+
+    def test_the_window_is_the_runs_own_and_anchored_to_the_reference_time(self):
+        # `days`-style parameters are anchored to now, so a --date backfill searched today.
+        assert collection_window_dates(30, datetime(2026, 6, 3, tzinfo=UTC)) == ("2026-06-01", "2026-06-03")
+
+    def test_day_granularity_only_ever_widens_the_request(self):
+        start, end = collection_window_dates(1, datetime(2026, 6, 3, 12, tzinfo=UTC))
+        assert (start, end) == ("2026-06-03", "2026-06-03")
+
+    @pytest.mark.parametrize(
+        ("lookback_hours", "expected"),
+        [(1, "hour"), (24, "day"), (30, "week"), (168, "week"), (200, "month"), (10_000, "year")],
+    )
+    def test_the_bucket_is_the_narrowest_one_that_covers_the_window(self, lookback_hours, expected):
+        assert recency_bucket(lookback_hours) == expected
 
 
 class TestParseFeedEntries:

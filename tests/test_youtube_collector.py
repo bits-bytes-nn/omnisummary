@@ -558,6 +558,39 @@ class TestS3Preload:
                 items = await collector.collect()
         assert items == []
 
+    @pytest.mark.asyncio
+    async def test_a_missing_required_park_file_degrades_the_source_in_aws(self, monkeypatch):
+        # The park file is the ONLY transcript-carrying path in AWS, so falling through to live
+        # collection returns videos with no transcript at all — and reported OK on every such day.
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config(park_required=True))
+        park = ParkedItems(outcome=ParkOutcome.ABSENT, detail="no object at 's3://b/youtube_items.json'")
+        with patch("collectors.base.is_running_in_aws", return_value=True):
+            with patch("collectors.youtube.load_items_from_s3", return_value=park):
+                with patch.object(
+                    collector,
+                    "_collect_channel",
+                    new=AsyncMock(
+                        return_value=[
+                            CollectedItem(item_id="v1", source_type=SourceType.YOUTUBE, title="t", url="https://y/v1")
+                        ]
+                    ),
+                ):
+                    items = await collector.collect()
+        assert len(items) == 1  # still collected: the flag reports, it never filters
+        assert "s3://b/youtube_items.json" in collector.degraded_detail
+        assert "transcripts" in collector.degraded_detail
+
+    @pytest.mark.asyncio
+    async def test_a_missing_park_file_is_silent_when_it_is_not_required(self, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config())
+        with patch("collectors.base.is_running_in_aws", return_value=True):
+            with patch("collectors.youtube.load_items_from_s3", return_value=_absent_park()):
+                with patch.object(collector, "_collect_channel", new=AsyncMock(return_value=[])):
+                    await collector.collect()
+        assert collector.degraded_detail == ""
+
 
 class TestApiKeyResolution:
     @pytest.mark.asyncio

@@ -33,6 +33,7 @@ from .formatting import (
     split_sentences,
     strip_slack_mrkdwn,
     threads_item_overhead_chars,
+    threads_meta_line,
     truncate_at_word,
 )
 from .history_store import PublishedUrlLedger, RollingLog, ThreadsPostLedger, published_urls_from_snapshots
@@ -112,6 +113,7 @@ __all__ = [
     "split_sentences",
     "strip_slack_mrkdwn",
     "threads_item_overhead_chars",
+    "threads_meta_line",
     "truncate_at_word",
     "THREADS_MAX_POST_CHARS",
     "VISUAL_ORIENTATIONS",

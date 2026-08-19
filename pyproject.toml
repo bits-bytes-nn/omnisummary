@@ -120,13 +120,22 @@ omit = [
     ".venv/*",
     "digest_state/*",
     "logs/*",
-    # scripts/ is EXPLICITLY excluded, not accidentally: it holds operator entrypoints (deploy,
-    # ci_synth, the local S3 syncs, one-off sample renderers) that are `sys.path`-mutating __main__
-    # scripts, not importable modules — coverage's source scan skipped them anyway because the
-    # directory is not a package. They are exercised by running them (CI runs scripts/ci_synth.py
-    # through the pinned CDK CLI); the logic worth unit-testing lives in the packages they call.
-    # Listing them here keeps the gate honest: ~460 uncovered LOC can't silently sit inside TOTAL.
-    "scripts/*",
+    # Most of scripts/ is EXPLICITLY excluded, not accidentally: operator entrypoints (deploy,
+    # ci_synth, one-off sample renderers) are `sys.path`-mutating __main__ scripts, not importable
+    # modules, and they are exercised by RUNNING them (CI runs scripts/ci_synth.py through the
+    # pinned CDK CLI). Listing them keeps the gate honest: uncovered LOC can't silently sit in TOTAL.
+    #
+    # The two S3 syncs and put_secrets are NOT in this list, because they have tests. The syncs are
+    # the only supply of X posts and of transcript-carrying YouTube items, and they encode fixes for
+    # documented stale-data incidents (the STATE_BUCKET pop, the empty-envelope stamp) that only
+    # their own tests can hold in place.
+    "scripts/ci_synth.py",
+    "scripts/deploy.py",
+    "scripts/eval_ranking.py",
+    "scripts/gen_diagrams.py",
+    "scripts/put_inference_profiles.py",
+    "scripts/sample_digest.py",
+    "scripts/sample_visual_brief.py",
 ]
 
 [tool.coverage.report]

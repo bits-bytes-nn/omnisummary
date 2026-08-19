@@ -212,6 +212,29 @@ class TestSourceSlotVocabulary:
         assert set(cfg.pipeline.source_slots) <= {source.value for source in SourceType}
 
 
+class TestSlotsVersusTopN:
+    """`_apply_source_slots` stops at top_n, so once the guaranteed slots add up to it the relaxation
+    passes are unreachable and the score only orders items WITHIN a source. The shipped config is
+    exactly at that point (top_n 5, five 1-item slots) and it was recorded nowhere."""
+
+    @staticmethod
+    def _warnings(**overrides):
+        # The project logger sets propagate=False, so caplog cannot see it; assert on the call.
+        with patch("shared.config.logger") as log:
+            PipelineConfig(**overrides)
+        return [call.args[0] for call in log.warning.call_args_list]
+
+    def test_slots_filling_the_whole_digest_warns(self):
+        warnings = self._warnings(top_n=5, source_slots={"web": 1, "x": 1, "rss": 1, "reddit": 1, "youtube": 1})
+        assert any("orders items WITHIN a source" in message for message in warnings)
+
+    def test_a_slot_left_over_for_score_is_silent(self):
+        assert self._warnings(top_n=6, source_slots={"web": 1, "x": 1, "rss": 1, "reddit": 1, "youtube": 1}) == []
+
+    def test_a_disabled_slot_does_not_count_against_top_n(self):
+        assert self._warnings(top_n=2, source_slots={"web": 1, "x": 0}) == []
+
+
 class TestAlertOnEmptyVocabulary:
     """alert_on_empty is matched against the health report's source names. A name that is not a
     collector alerts on NOTHING, so the dark source it was meant to watch just stays dark."""
@@ -457,6 +480,18 @@ class TestCollectionWindowCoversTheGapBetweenRuns:
         # "*/6" has no single gap between runs, so there is no floor to derive; the check steps aside
         # rather than inventing one.
         assert Config(aws={"digest_cron_hour": "*/6"}, collectors={"rss": {"lookback_hours": 1}})
+
+    @pytest.mark.parametrize("source_name", sorted(COLLECTOR_NAMES))
+    def test_no_source_accepts_a_window_of_zero_hours(self, source_name):
+        # web_search and rsshub used to re-declare `lookback_hours: int = 72`, which replaces the
+        # FieldInfo wholesale and dropped the ge=1 with it: those two accepted a NEGATIVE window while
+        # the other three failed loudly. The constraint is declared once, so it holds for all five.
+        with pytest.raises(ValidationError):
+            Config(collectors={source_name: {"lookback_hours": 0}})
+
+    def test_a_wider_window_is_still_configurable_per_source(self):
+        config = Config(collectors={"web_search": {"lookback_hours": 72}})
+        assert config.collectors.web_search.lookback_hours == 72
 
     def test_an_earlier_run_needs_a_wider_window(self):
         # A 06:00 KST run is 42h from the previous run's clock time to this run's reference midnight.

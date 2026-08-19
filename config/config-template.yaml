@@ -9,7 +9,8 @@ collectors:
     channels: []
       # - "https://www.youtube.com/@channel_name"
     max_videos_per_channel: 3
-    # ONE collection window for every source, defined here and aliased below. The cutoff is anchored
+    # The collection window, defined here and aliased by reddit and rss below (web_search and rsshub
+    # state their own, wider one — the code default is this floor for every source). The cutoff is anchored
     # at midnight at the END of the digest date, but the cron collects hours before that midnight —
     # so at 24 the window was exactly the digest date and everything published between the run and
     # that midnight fell before the NEXT run's cutoff, appearing in no digest ever. Config validates
@@ -26,6 +27,10 @@ collectors:
     # (the local cron runs daily): at the code default of 36 a completely skipped sync day still read
     # FRESH/OK, which is the very thing this budget exists to catch.
     park_max_age_hours: 24
+    # In AWS this file is the ONLY transcript-carrying path (a datacenter IP cannot fetch
+    # transcripts), so an absent one is a DEGRADED source, not a quiet fall-through to live
+    # metadata-only collection.
+    park_required: true
     # empty_rate_threshold is deliberately NOT armed for youtube (see rsshub below, where it is). The
     # all-200-and-empty shape it targets has no YouTube analogue — a revoked key, an exhausted quota
     # or a datacenter-IP block RAISES and already reports FAILED. Armed, it fires on a day when every

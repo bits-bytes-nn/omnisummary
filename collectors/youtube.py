@@ -141,6 +141,15 @@ class YouTubeCollector(BaseCollector):
                 description="YouTube park file",
             )
 
+        # In AWS the park file IS the transcript-carrying path, so a missing one is not the quiet
+        # fall-through it is locally: live collection below still returns videos, just without a
+        # single transcript, and nothing said so.
+        self.flag_missing_park(
+            parked,
+            required=self.config.park_required,
+            hint="live collection from a datacenter IP yields videos with NO transcripts",
+        )
+
         # One resolution for the whole run, before the fan-out, so no channel task blocks the loop.
         await self._resolve_api_key()
         # Bound the fan-out. Each channel occupies worker threads (page scrape, transcript fetches)

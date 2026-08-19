@@ -113,6 +113,58 @@ class TestEditorialTakeReachesTheArtDirector:
         assert "GUARDRAILS:" not in self._instruction_for(None, visual_guardrails="")
 
 
+class TestThePublishPathStandsOnItsOwn:
+    """The publish path used to live inside the class that generates the image, so nothing could
+    exercise a delivery without also standing up an image generator (and an OpenAI key). It is now
+    `output.digest_delivery.DigestPublisher`, built from a config and a state store."""
+
+    @staticmethod
+    def _publisher(**pipeline_overrides):
+        from output.digest_delivery import DigestPublisher
+
+        config = Config()
+        for key, value in pipeline_overrides.items():
+            setattr(config.pipeline, key, value)
+        return DigestPublisher(config, _MemoryStore())
+
+    @staticmethod
+    def _content():
+        from shared.models import DigestContent, DigestItem
+
+        return DigestContent(
+            lead="오늘의 리드.",
+            headline_index=1,
+            items=[DigestItem(title="스토리", url="http://e.com/1", body="본문.")],
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_digest_publishes_with_no_image_at_all(self):
+        publisher = self._publisher(enable_threads_post=True, enable_slack_post=False)
+        with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))) as th:
+            assert await publisher.publish(self._content(), today=date(2026, 6, 10)) is True
+        assert th.await_args.kwargs["image_bytes"] is None
+        assert th.await_args.kwargs["image_key"] == ""
+
+    @pytest.mark.asyncio
+    async def test_the_image_is_hosted_under_the_configured_prefix(self):
+        publisher = self._publisher(enable_threads_post=True, enable_slack_post=False)
+        publisher.config.aws.s3_prefix = "omni"
+        with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))) as th:
+            await publisher.publish(self._content(), image_bytes=b"PNG", today=date(2026, 6, 10))
+        assert th.await_args.kwargs["image_key"].startswith("omni/threads/")
+
+    def test_an_already_published_day_has_no_destination_left(self):
+        publisher = self._publisher(enable_threads_post=True, enable_slack_post=False)
+        publisher.threads_ledger.mark(date(2026, 6, 10))
+        assert publisher.has_a_destination(self._content(), date(2026, 6, 10), False) is False
+        assert publisher.has_a_destination(self._content(), date(2026, 6, 10), True) is True
+
+    def test_a_story_less_digest_leaves_a_verdict_before_anything_is_rendered(self):
+        publisher = self._publisher(enable_threads_post=True, enable_slack_post=False)
+        assert publisher.has_a_destination(None, date(2026, 6, 10), False) is False
+        assert publisher.threads_outcome == ThreadsDelivery(0, 1)
+
+
 class TestVisualFailureNeverCostsTheDigest:
     """Regression: run() returned early on a missing OpenAI key, a failed editor call and an editor
     skip — all BEFORE the only Threads publish path. A visual-only problem therefore cost the whole

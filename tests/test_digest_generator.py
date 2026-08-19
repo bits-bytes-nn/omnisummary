@@ -218,19 +218,13 @@ class TestProseBudgetReachesTheEditor:
     editor was never told a budget: 5 of 95 sampled items lost their closing sentence (median 106
     chars — usually the concrete figures), and adding the source line pushed that to 8 of 95."""
 
-    def test_budget_clause_states_the_configured_limit(self):
-        from pipeline.digest_generator import _prose_budget_rule
+    def test_the_budget_clause_points_at_the_items_own_number(self):
+        # One number for the whole digest charged every short-URL item for the longest URL in the
+        # pool, so the clause defers to the PROSE BUDGET stated with each candidate.
+        from pipeline.digest_generator import _PROSE_BUDGET_RULE
 
-        rule = _prose_budget_rule(380)
-        assert "380" in rule
-        assert "implication" in rule
-
-    def test_no_budget_configured_states_no_number(self):
-        # 0 disables the hint for a deployment whose channel has no post cap; the sentence must
-        # still read naturally rather than "under 0 characters".
-        from pipeline.digest_generator import _prose_budget_rule
-
-        assert _prose_budget_rule(0) == ""
+        assert "PROSE BUDGET" in _PROSE_BUDGET_RULE
+        assert "implication" in _PROSE_BUDGET_RULE
 
     @pytest.mark.asyncio
     async def test_budget_is_passed_into_the_prompt(self):
@@ -278,20 +272,28 @@ class TestDerivedBudgets:
 
         gen = self._gen(digest_item_prose_max_chars=0)  # ceiling off: pure derivation
         short_url, long_url = "https://e.com/a", "https://e.com/" + "p" * 120
-        short = gen._item_prose_budget([self._web(short_url)])
-        long_ = gen._item_prose_budget([self._web(long_url)])
+        short = gen._item_prose_budget(self._web(short_url).item)
+        long_ = gen._item_prose_budget(self._web(long_url).item)
         assert short < THREADS_MAX_POST_CHARS
         assert long_ == short - (len(long_url) - len(short_url))
 
-    def test_worst_case_candidate_sets_the_budget(self):
-        # A budget that only holds for the median item still trims the long-URL ones.
+    def test_each_candidate_keeps_its_own_budget(self):
+        # The budget used to be the worst case across the whole pool, so a short-URL item was charged
+        # for the longest URL in it and lost its closing sentence to a cap it never came near.
         gen = self._gen(digest_item_prose_max_chars=0)
-        items = [self._web("https://e.com/a"), self._web("https://e.com/" + "p" * 120)]
-        assert gen._item_prose_budget(items) == gen._item_prose_budget(items[1:])
+        short, long_ = self._web("https://e.com/a"), self._web("https://e.com/" + "p" * 120)
+        assert gen._item_prose_budget(short.item) > gen._item_prose_budget(long_.item)
 
     def test_configured_ceiling_still_applies(self):
         gen = self._gen(digest_item_prose_max_chars=100)
-        assert gen._item_prose_budget([self._web("https://e.com/a")]) == 100
+        assert gen._item_prose_budget(self._web("https://e.com/a").item) == 100
+
+    def test_every_candidates_budget_reaches_the_editor(self):
+        gen = self._gen(digest_item_prose_max_chars=0)
+        items = [self._web("https://e.com/a"), self._web("https://e.com/" + "p" * 120)]
+        rendered = gen._format_ranked_items(items)
+        for ranked in items:
+            assert f"{gen._item_prose_budget(ranked.item)} characters" in rendered
 
     def test_lead_budget_reserves_the_code_owned_countdown(self):
         from shared.constants import THREADS_MAX_POST_CHARS
@@ -1047,19 +1049,38 @@ class TestProseLintReAsk:
         assert result.content.items[0].implication == "값이 문제다."
 
     @pytest.mark.asyncio
-    async def test_a_persistent_hit_costs_exactly_one_re_ask_then_ships(self):
+    @pytest.mark.parametrize(("max_retries", "expected_calls"), [(1, 1), (2, 2), (3, 2)])
+    async def test_a_persistent_hit_ships_at_every_legal_retry_setting(self, max_retries, expected_calls):
         # A style slip must never cost the whole digest: retry_attempts=0 on the Lambda means nothing
-        # would retry the run, so a spent lint budget keeps the content and logs at ERROR. And the
-        # budget is ONE re-ask regardless of digest_max_retries (3 here): the re-send is byte-identical
+        # would retry the run, so a spent lint budget keeps the content and logs at ERROR. The budget
+        # is ONE re-ask regardless of how high digest_max_retries goes (the re-send is byte-identical
         # prompt_vars, so a second and third one is a ~50k-token Sonnet call for a prompt that already
-        # failed to move the model.
-        gen, seen = self._generator([self._emitted("못 쓴다, 그게 문제다.")])
-        assert gen.config.digest_max_retries == 3
+        # failed to move the model) — and at the config's legal floor of 1 total attempt there is no
+        # attempt left to re-ask with, so the hit is logged and the content ships unchanged.
+        gen, seen = self._generator([self._emitted("못 쓴다, 그게 문제다.")], digest_max_retries=max_retries)
+        ranked = self._ranked()
+        result = await gen.generate(ranked, [r.item for r in ranked])
+        assert len(seen) == expected_calls
+        assert result.content is not None
+        assert result.content.items[0].implication == "못 쓴다, 그게 문제다."
+
+    @pytest.mark.asyncio
+    async def test_prose_over_the_stated_budget_re_asks_instead_of_being_amputated(self):
+        # The renderer drops whatever does not fit 500 chars, so an over-budget item silently lost its
+        # closing sentence (2 of 5 posts on digest_2026-07-12). The budget was only ASKED for; now a
+        # breach spends the same single re-ask the style checks do.
+        long_body = json.dumps(
+            {
+                "lead": "Anthropic이 Claude를 공개했다. 관건은 배포다.",
+                "items": [{"title": "T", "url": "u", "body": "본" * 200, "implication": "값이 문제다."}],
+            }
+        )
+        gen, seen = self._generator([long_body, self._emitted("값이 문제다.")], digest_item_prose_max_chars=100)
         ranked = self._ranked()
         result = await gen.generate(ranked, [r.item for r in ranked])
         assert len(seen) == 2
         assert result.content is not None
-        assert result.content.items[0].implication == "못 쓴다, 그게 문제다."
+        assert result.content.items[0].body == "본문이다."
 
     @pytest.mark.asyncio
     async def test_clean_prose_costs_no_extra_call(self):

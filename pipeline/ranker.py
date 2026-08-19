@@ -330,13 +330,14 @@ class ContentRanker:
         fillable, so with no guaranteed slots there is nothing to rescue and admitting a
         below-threshold item would just lower the global bar."""
         grace = self.config.source_slot_score_grace
-        if not grace or not self.config.source_slots:
+        budget = self.config.source_slot_grace_max_admissions
+        if not grace or not budget or not self.config.source_slots:
             return []
         floor = self.config.min_score - grace
         pinned_ids = {r.item.item_id for r in pinned}
         have_above = {r.item.source_type.value for r in above_threshold}
         have_above |= {r.item.source_type.value for r in pinned}
-        extra: list[RankedItem] = []
+        rescued: list[RankedItem] = []
         for src, slot in self.config.source_slots.items():
             if slot < 1 or src in have_above:
                 continue
@@ -348,16 +349,29 @@ class ContentRanker:
             if candidates:
                 # (-score, item_id), like every other selection path here: plain max() broke a score
                 # tie by the LLM's response order within a batch, which is not stable run to run.
-                best = min(candidates, key=lambda r: (-r.score, r.item.item_id))
-                best.grace = True
-                extra.append(best)
-                logger.info(
-                    "Source '%s' had nothing above %.2f; admitting best item at %.2f (grace floor %.2f)",
-                    src,
-                    self.config.min_score,
-                    best.score,
-                    floor,
-                )
+                rescued.append(min(candidates, key=lambda r: (-r.score, r.item.item_id)))
+        # The rescue is BUDGETED. Every admission spends one of the reader's core slots on an item the
+        # ranker put below the bar, and unbudgeted it spent as many as there were empty sources: two of
+        # five on 2026-07-12, at 0.56 and 0.50, over ten candidates above the bar. Same ordering as
+        # everywhere else, so the source closest to the threshold is the one rescued.
+        rescued.sort(key=lambda r: (-r.score, r.item.item_id))
+        extra, over_budget = rescued[:budget], rescued[budget:]
+        for best in extra:
+            best.grace = True
+            logger.info(
+                "Source '%s' had nothing above %.2f; admitting best item at %.2f (grace floor %.2f)",
+                best.item.source_type.value,
+                self.config.min_score,
+                best.score,
+                floor,
+            )
+        for skipped in over_budget:
+            logger.info(
+                "Source '%s' stays uncovered: its best item (%.2f) is past the grace budget of %d",
+                skipped.item.source_type.value,
+                skipped.score,
+                budget,
+            )
         return extra
 
     def _apply_source_slots(

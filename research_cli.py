@@ -22,7 +22,7 @@ def main() -> None:
         "--channel",
         choices=["slack", "threads", "both"],
         default="slack",
-        help="Delivery channel hint (the agent still decides from the prompt)",
+        help="Channel(s) this run may publish to (enforced by deliver_report, not inferred from prose)",
     )
     parser.add_argument("--channel-id", default="", help="Slack channel id to post to (omit for dry-run)")
     parser.add_argument("--thread-ts", default="", help="Slack thread ts to reply within")
@@ -33,15 +33,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    prompt = args.topic
-    if args.channel in ("threads", "both"):
-        prompt += "\n\n(쓰레드에도 올려줘)" if args.channel == "both" else "\n\n(쓰레드에 올려줘)"
-
+    # The typed flag travels as DATA. It used to be turned back into a Korean sentence for the model
+    # to re-parse ("(쓰레드에 올려줘)"), two lines above the context that already threads
+    # per-invocation state into every tool — so a typed choice became a phrase-matching problem.
+    channels = {"slack", "threads"} if args.channel == "both" else {args.channel}
     delivery = DeliveryContext(
         channel_id=args.channel_id,
         thread_ts=args.thread_ts,
         dry_run=args.dry_run or not args.channel_id,
+        requested_channels=channels,
     )
+    # The agent still needs to KNOW where to publish; it is told, not asked to infer it.
+    prompt = f"{args.topic}\n\n[DELIVERY] Publish the finished report to: {', '.join(sorted(channels))}"
     agent = create_research_agent()
 
     with request_context(delivery):

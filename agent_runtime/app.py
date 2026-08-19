@@ -100,7 +100,15 @@ def invoke(payload: dict[str, Any]) -> str:
     set_correlation_id(payload.get("correlation_id") or None)
     logger.info("AgentCore invoked: prompt='%s', channel='%s'", prompt[:100], channel_id)
 
-    delivery = DeliveryContext(channel_id=channel_id, thread_ts=thread_ts)
+    # The channels this invocation may publish to, as the caller stated them. Empty means
+    # unconstrained; the Slack ingress sends both, because whether a Slack request also wants Threads
+    # is in the requester's own words and only the model can read those — but deliver_report now
+    # enforces an explicit allow-list rather than trusting a phrase match with no floor under it.
+    delivery = DeliveryContext(
+        channel_id=channel_id,
+        thread_ts=thread_ts,
+        requested_channels={str(c).lower().strip() for c in (payload.get("requested_channels") or ()) if c},
+    )
 
     # contextvar-scoped per-invocation delivery: a warm container handling concurrent
     # invocations can't leak one request's channel into another.
