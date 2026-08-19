@@ -73,7 +73,9 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     the Errors alarm fire and puts the async invoke in the DLQ. Re-raising is safe because the
     function is configured with retry_attempts=0 and the ThreadsPostLedger marker blocks a
     duplicate post anyway."""
-    set_correlation_id(getattr(context, "aws_request_id", "") or None)
+    # Prefer the id the digest run passed in, so both halves of one digest share a correlation id;
+    # fall back to this invocation's request id for a manual/DLQ-replayed invoke that carries none.
+    set_correlation_id(_requested_correlation_id(event or {}) or getattr(context, "aws_request_id", "") or None)
     logger.info("Visual Lambda invoked")
     try:
         asyncio.run(_run(event or {}, deadline=_remaining_deadline(context)))
@@ -83,20 +85,31 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         raise
 
 
+def _invoke_payload(event: dict[str, Any], key: str) -> dict[str, Any]:
+    """The payload carrying `key`. A DLQ replay hands back the failed invoke's envelope, whose
+    original payload sits under `requestPayload` — honour that too so a replay isn't silently
+    re-dated or stripped of its correlation id."""
+    if key not in event and isinstance(event.get("requestPayload"), dict):
+        return event["requestPayload"]
+    return event
+
+
+def _requested_correlation_id(event: dict[str, Any]) -> str:
+    """The correlation id the digest run passed in, so its pipeline half and this delivery half of
+    the same digest share one traceable id. Empty when the invoke carries none."""
+    return str(_invoke_payload(event, "correlation_id").get("correlation_id", "") or "")
+
+
 def _requested_date(event: dict[str, Any], tz: ZoneInfo) -> tuple[date, bool]:
     """(digest date this invocation must publish, whether the invoke NAMED that date).
 
     The digest Lambda passes the date explicitly so the visual publishes the SAME day's content it
-    was fired for, rather than re-deriving a clock that can have rolled over. A DLQ replay hands
-    back the failed invoke's envelope, whose original payload sits under `requestPayload` — honour
-    that too so a replay isn't silently re-dated.
+    was fired for, rather than re-deriving a clock that can have rolled over.
 
     The flag matters because it says whether a MISSING snapshot is a real failure: an explicit date
     comes from a run that just persisted one, while a today-fallback invoke (local/manual) may
     legitimately find nothing yet."""
-    payload = event
-    if "digest_date" not in payload and isinstance(payload.get("requestPayload"), dict):
-        payload = payload["requestPayload"]
+    payload = _invoke_payload(event, "digest_date")
     raw = str(payload.get("digest_date", "") or "")
     if raw:
         try:

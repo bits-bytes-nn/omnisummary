@@ -237,7 +237,21 @@ class TestTriggerVisual:
         assert kwargs["InvocationType"] == "Event"
         # The date is passed EXPLICITLY so the visual publishes this run's snapshot, and a DLQ
         # replay of the failed invoke carries the same date instead of being re-dated to today.
-        assert json.loads(kwargs["Payload"]) == {"digest_date": "2026-08-18"}
+        payload = json.loads(kwargs["Payload"])
+        assert payload["digest_date"] == "2026-08-18"
+
+    def test_the_visual_invoke_carries_this_run_s_correlation_id(self, monkeypatch):
+        # Without it the visual Lambda minted a fresh unrelated id, so the pipeline half and the
+        # delivery half of one digest could not be traced as a single run.
+        from shared import set_correlation_id
+
+        monkeypatch.setenv("VISUAL_FUNCTION_NAME", "fn")
+        set_correlation_id("abc123def456")
+        lambda_client = MagicMock()
+        with patch("lambda_handlers.digest_handler.boto3.client", return_value=lambda_client):
+            digest_handler._trigger_visual(date(2026, 8, 18))
+        payload = json.loads(lambda_client.invoke.call_args.kwargs["Payload"])
+        assert payload["correlation_id"] == "abc123def456"
 
     def test_invoke_error_raises_so_the_undelivered_day_is_visible(self, monkeypatch):
         # The visual Lambda is the ONLY Threads delivery path. A swallowed invoke error meant the

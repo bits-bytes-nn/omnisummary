@@ -130,6 +130,8 @@ class TestAppMention:
         payload = json.loads(clients["lambda"].invoke.call_args.kwargs["Payload"])
         assert payload["action"] == "invoke_agentcore"
         assert payload["channel"] == "C1"
+        # Minted at the ingress and carried onward, so one research run is traceable across hops.
+        assert payload["correlation_id"]
 
     def test_duplicate_event_short_circuits(self):
         body = json.dumps({"type": "event_callback", "event_id": "Ev1", "event": {"type": "app_mention"}})
@@ -171,14 +173,40 @@ class TestAsyncInvocation:
             "thread_ts": "1.0",
             "event_id": "Ev1",
         }
+        ctx = MagicMock()
+        ctx.aws_request_id = "abcdef12-3456-7890-abcd-ef1234567890"
         with patch.object(h, "_is_duplicate_event", return_value=False):
             with patch.object(h, "_post_ack") as ack:
                 with patch.object(h.boto3, "client") as mock_client:
-                    resp = h.handler(event, MagicMock())
+                    resp = h.handler(event, ctx)
         assert resp["statusCode"] == 200
         mock_client.return_value.invoke_agent_runtime.assert_called_once()
         # The user gets an immediate acknowledgement before the multi-minute runtime call.
         ack.assert_called_once_with("C1", "1.0")
+        kwargs = mock_client.return_value.invoke_agent_runtime.call_args.kwargs
+        # The runtime already reads correlation_id off the payload; it just never had a producer.
+        assert json.loads(kwargs["payload"])["correlation_id"] == "abcdef123456"
+        # Same trace in AgentCore's own per-session logs; the API requires >= 33 characters.
+        assert "abcdef123456" in kwargs["runtimeSessionId"] and len(kwargs["runtimeSessionId"]) >= 33
+
+    def test_the_ingress_correlation_id_is_preserved_across_the_self_invoke(self, monkeypatch):
+        monkeypatch.setenv("AGENTCORE_RUNTIME_ARN", "arn:aws:bedrock-agentcore:::runtime/x")
+        event = {
+            "action": "invoke_agentcore",
+            "text": "hi",
+            "channel": "C1",
+            "thread_ts": "1.0",
+            "event_id": "Ev1",
+            "correlation_id": "fromingress1",
+        }
+        ctx = MagicMock()
+        ctx.aws_request_id = "a-different-request-id"
+        with patch.object(h, "_is_duplicate_event", return_value=False):
+            with patch.object(h, "_post_ack"):
+                with patch.object(h.boto3, "client") as mock_client:
+                    h.handler(event, ctx)
+        kwargs = mock_client.return_value.invoke_agent_runtime.call_args.kwargs
+        assert json.loads(kwargs["payload"])["correlation_id"] == "fromingress1"
 
     def test_read_timeout_is_treated_as_successful_dispatch(self, monkeypatch):
         # invoke_agent_runtime blocks for minutes; we fire it with a short read timeout and do

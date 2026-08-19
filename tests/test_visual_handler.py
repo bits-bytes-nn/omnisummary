@@ -38,6 +38,29 @@ class TestVisualHandler:
         assert log.error.called
 
 
+class TestCorrelationId:
+    """The digest run's correlation id travels with the invoke, so both halves of one digest — the
+    pipeline and its only delivery path — appear under one id in the logs."""
+
+    def test_prefers_the_id_the_digest_run_passed(self):
+        with patch("lambda_handlers.visual_handler._run", new=AsyncMock()):
+            with patch("lambda_handlers.visual_handler.set_correlation_id") as set_id:
+                visual_handler.handler({"digest_date": "2026-08-18", "correlation_id": "abc123"}, MagicMock())
+        assert set_id.call_args.args[0] == "abc123"
+
+    def test_dlq_replay_envelope_is_honoured(self):
+        event = {"version": "1.0", "requestPayload": {"correlation_id": "abc123"}}
+        assert visual_handler._requested_correlation_id(event) == "abc123"
+
+    def test_falls_back_to_the_request_id_when_the_invoke_carries_none(self):
+        context = MagicMock()
+        context.aws_request_id = "req-987"
+        with patch("lambda_handlers.visual_handler._run", new=AsyncMock()):
+            with patch("lambda_handlers.visual_handler.set_correlation_id") as set_id:
+                visual_handler.handler({"digest_date": "2026-08-18"}, context)
+        assert set_id.call_args.args[0] == "req-987"
+
+
 class TestRequestedDate:
     """The digest Lambda passes the digest date explicitly, so the visual publishes the day it was
     fired for. 'Load the latest snapshot' published yesterday's stories when today's was missing,

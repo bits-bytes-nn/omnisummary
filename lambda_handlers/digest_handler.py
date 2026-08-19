@@ -17,6 +17,7 @@ from shared import (
     RankingHealth,
     SourceStatus,
     format_alarm,
+    get_correlation_id,
     is_running_in_aws,
     logger,
     set_correlation_id,
@@ -195,7 +196,10 @@ def _trigger_visual(digest_date: date) -> None:
                 f"VISUAL_FUNCTION_NAME is not set; the {digest_date} digest was persisted but never delivered"
             )
         return
-    payload = json.dumps({"digest_date": digest_date.isoformat()}).encode()
+    # Pass this run's correlation id along: the visual Lambda otherwise mints a fresh unrelated one,
+    # so the two halves of a single digest (pipeline + the only delivery path) could not be traced
+    # as one run — which is the whole point of the structured logger's correlation filter.
+    payload = json.dumps({"digest_date": digest_date.isoformat(), "correlation_id": get_correlation_id()}).encode()
     try:
         boto3.client("lambda").invoke(FunctionName=fn, InvocationType="Event", Payload=payload)
         logger.info("Triggered visual Lambda '%s' for %s", fn, digest_date)

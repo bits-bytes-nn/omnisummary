@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from typing import Any
 
 import boto3
@@ -76,6 +77,10 @@ def _handle_slack_event(event: dict[str, Any], context: Any) -> dict[str, Any]:
                             "channel": evt.get("channel", ""),
                             "thread_ts": evt.get("thread_ts") or evt.get("ts", ""),
                             "event_id": event_id,
+                            # Minted HERE, at the ingress, and carried through the self-invoke into
+                            # the AgentCore payload: every hop otherwise logged under its own fresh
+                            # id, so one research run could not be traced across the three services.
+                            "correlation_id": _correlation_id(context),
                         }
                     ),
                 )
@@ -87,11 +92,22 @@ def _handle_slack_event(event: dict[str, Any], context: Any) -> dict[str, Any]:
     return {"statusCode": 200, "body": "OK"}
 
 
+def _correlation_id(context: Any) -> str:
+    """This request's trace id, derived from the Lambda request id (12 hex chars, matching the
+    shared logger's format). The agent runtime already reads `correlation_id` off its payload — it
+    just never had a producer. Always 12 characters, since the runtimeSessionId built from it has a
+    minimum length."""
+    request_id = str(getattr(context, "aws_request_id", "") or "")
+    return (request_id.replace("-", "") or uuid.uuid4().hex)[:12]
+
+
 def _handle_async_invocation(event: dict[str, Any], context: Any) -> dict[str, Any]:
     text = event.get("text", "")
     channel = event.get("channel", "")
     thread_ts = event.get("thread_ts", "")
     event_id = event.get("event_id", "")
+    # Keep the ingress's id when it sent one; a directly-invoked async event still gets one.
+    correlation_id = str(event.get("correlation_id", "") or "") or _correlation_id(context)
 
     invocation_id = hashlib.sha256(f"{event_id}:{text}".encode()).hexdigest()[:16]
     if _is_duplicate_event(invocation_id):
@@ -123,21 +139,32 @@ def _handle_async_invocation(event: dict[str, Any], context: Any) -> dict[str, A
             agentcore_client.invoke_agent_runtime(
                 agentRuntimeArn=agentcore_arn,
                 qualifier="DEFAULT",
+                # The runtime reads `correlation_id` off the payload; the session id carries the same
+                # trace into AgentCore's own per-session logs. runtimeSessionId has a 33-char
+                # minimum, hence the prefixed form built from the ids we already have.
+                runtimeSessionId=f"omnisummary-{correlation_id}-{invocation_id}",
                 payload=json.dumps(
                     {
                         "prompt": clean_text,
                         "channel_id": channel,
                         "thread_ts": thread_ts,
+                        "correlation_id": correlation_id,
                     }
                 ),
             )
         except ReadTimeoutError:
             # Expected: the request reached the runtime and it's now working; we intentionally
             # don't wait for the (minutes-long) streamed response. NOT a failure.
-            logger.info("AgentCore invocation dispatched for event '%s' (not awaiting result)", event_id)
+            logger.info(
+                "AgentCore invocation dispatched for event '%s' (correlation_id=%s, not awaiting result)",
+                event_id,
+                correlation_id,
+            )
             return {"statusCode": 200, "body": "OK"}
 
-        logger.info("AgentCore invocation returned synchronously for event '%s'", event_id)
+        logger.info(
+            "AgentCore invocation returned synchronously for event '%s' (correlation_id=%s)", event_id, correlation_id
+        )
         return {"statusCode": 200, "body": "OK"}
 
     except Exception as e:
