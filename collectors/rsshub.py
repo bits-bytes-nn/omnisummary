@@ -18,6 +18,7 @@ from .base import (
     cutoff_datetime,
     fetch_feed_with_retry,
     load_items_from_s3,
+    parked_items_in_window,
     parse_feed_entries,
 )
 
@@ -64,7 +65,14 @@ class RSSHubCollector(BaseCollector):
                 what=_INPUT_LABEL,
                 hint=_failure_hint(a.platform for a in self.config.accounts),
             )
-            return parked.items
+            # Through the SAME window the live branch applies below: the park file can be stale (its
+            # items older than lookback) and a --date backfill must not ingest today's parked posts.
+            return parked_items_in_window(
+                parked.items,
+                lookback_hours=self.config.lookback_hours,
+                reference_time=self.config.reference_time,
+                description="RSSHub park file",
+            )
 
         if not self.config.accounts:
             logger.info("No RSSHub accounts configured, skipping")

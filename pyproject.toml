@@ -18,6 +18,11 @@ dependencies = [
     "langchain-core>=1.4.7,<2.0.0",
     "pydantic>=2.12.0",
     "python-dotenv>=1.1.1",
+    # Declared because collectors/youtube.py imports it directly: youtube-transcript-api's fetch is
+    # synchronous and builds a Session with NO socket timeout, so the only real bound is a Session
+    # subclass we pass in. It was already installed transitively; an undeclared import is a break
+    # waiting for that library to swap HTTP clients.
+    "requests>=2.32.0",
     "pyyaml>=6.0.3",
     "slack-sdk>=3.26.0",
     "strands-agents>=1.12.0",

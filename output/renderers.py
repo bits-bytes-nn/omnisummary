@@ -376,6 +376,30 @@ _THREADS_POST_DELIMITER = re.compile(r"\n\s*---\s*\n")
 # A delimiter line at the very START of the report (no preceding newline) the split regex can't
 # see — strip it so a leading "---" never contaminates the first post as literal text.
 _THREADS_LEADING_DELIMITER = re.compile(r"^\s*---\s*\n")
+# The "N/M" index at the head of a post. The RENDERER owns it, because max_posts is applied AFTER the
+# model has written its numbers: a capped report went out publicly as "1/8 ... 6/8" and stopped
+# mid-argument, telling every reader two posts were missing. Any index the model still writes is
+# stripped and replaced from the FINAL post count.
+_THREADS_POST_INDEX = re.compile(r"^\s*\d+\s*/\s*\d+[.:)]?\s*")
+# Separator between the index and the post's own 소제목.
+_THREADS_INDEX_SEPARATOR = "  "
+
+
+def _renumber_threads_posts(posts: list[str]) -> list[str]:
+    """Re-prefix each post with 'N/M' derived from the FINAL list length, replacing whatever index the
+    model wrote. Applied only to agent-delimited posts: the sentence-packing fallback fills each post
+    to the 500-char cap, so prepending an index there would push every post over it and cost each one
+    a trailing sentence — and that fallback exists for output that predates the numbered format
+    anyway."""
+    total = len(posts)
+    renumbered: list[str] = []
+    for index, post in enumerate(posts, start=1):
+        head, separator, rest = post.partition("\n")
+        subheading = _THREADS_POST_INDEX.sub("", head).strip()
+        prefix = f"{index}/{total}"
+        head = f"{prefix}{_THREADS_INDEX_SEPARATOR}{subheading}" if subheading else prefix
+        renumbered.append(head + separator + rest)
+    return renumbered
 
 
 def _pack_by_sentence(text: str) -> list[str]:
@@ -483,23 +507,25 @@ def render_threads_research(report: str, *, max_posts: int = 0) -> ThreadsResear
     # which requires a preceding newline; drop it so it can't ride into the first post as text.
     plain = _THREADS_LEADING_DELIMITER.sub("", plain).strip()
 
-    trimmed = 0
-    if _THREADS_POST_DELIMITER.search(plain):
-        raw_posts = [p.strip() for p in _THREADS_POST_DELIMITER.split(plain) if p.strip()]
-        # Each agent-delimited block is exactly ONE post: keep the heading + body together and only
-        # trim (never fan out) when it overflows, so the 'N/M 소제목' line never orphans.
-        posts = [_trim_oversize_post(p) for p in raw_posts]
-        trimmed = sum(1 for before, after in zip(raw_posts, posts, strict=True) if before != after)
-    else:
-        posts = _pack_by_sentence(plain)
+    delimited = bool(_THREADS_POST_DELIMITER.search(plain))
+    # Each agent-delimited block is exactly ONE post: the heading and body stay together.
+    raw_posts = [p.strip() for p in _THREADS_POST_DELIMITER.split(plain) if p.strip()] if delimited else []
+    if not delimited:
+        raw_posts = _pack_by_sentence(plain)
 
-    if not posts:
+    if not raw_posts:
         # Empty/whitespace report → no post (caller skips delivery). Returning ("", []) here would
         # make post_to_threads create an empty TEXT container, which Meta's API rejects with a 400.
         return ThreadsResearchRender("", [])
     dropped = 0
-    if max_posts > 0 and len(posts) > max_posts:
-        dropped = len(posts) - max_posts
+    if max_posts > 0 and len(raw_posts) > max_posts:
+        dropped = len(raw_posts) - max_posts
         logger.warning("Threads research: dropping %d post(s) over the cap of %d", dropped, max_posts)
-        posts = posts[:max_posts]
+        raw_posts = raw_posts[:max_posts]
+    # Number AFTER the cap, so the published indices describe the thread the reader actually gets.
+    if delimited:
+        raw_posts = _renumber_threads_posts(raw_posts)
+    # Trim LAST, so the index the renderer just added is inside the 500-char guarantee.
+    posts = [_trim_oversize_post(p) for p in raw_posts]
+    trimmed = sum(1 for before, after in zip(raw_posts, posts, strict=True) if before != after)
     return ThreadsResearchRender(posts[0], posts[1:], dropped, trimmed)

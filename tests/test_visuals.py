@@ -177,12 +177,13 @@ class TestVisualGenerator:
 
         with patch("agent.visuals.logger") as log:
             with patch("openai.OpenAI", return_value=client):
-                _generator().render(brief)
+                _generator(image_quality="").render(brief)
         rendered = [c.args[0] % c.args[1:] for c in log.info.call_args_list if "Rendered" in str(c.args[0])]
         assert rendered, "no render log line"
         assert "output=2222" in rendered[0]
-        # Requested -> resolved. With nothing configured we send no `quality` and OpenAI picks a
-        # tier itself, so only the RESPONSE says which of the ~4x-apart prices was billed.
+        # Requested -> resolved. With the tier left EMPTY we send no `quality` and OpenAI picks one
+        # itself, so only the RESPONSE says which of the ~4x-apart prices was billed. config.yaml
+        # pins the tier for exactly that reason; this covers the explicit opt-out.
         assert "quality=auto->high" in rendered[0]
 
     def test_render_logs_unreported_when_the_response_omits_quality(self, monkeypatch):
@@ -198,9 +199,28 @@ class TestVisualGenerator:
 
         with patch("agent.visuals.logger") as log:
             with patch("openai.OpenAI", return_value=client):
-                assert _generator().render(brief) == b"P"
+                assert _generator(image_quality="").render(brief) == b"P"
         rendered = [c.args[0] % c.args[1:] for c in log.info.call_args_list if "Rendered" in str(c.args[0])]
         assert "quality=auto->unreported" in rendered[0]
+
+    def test_a_pinned_tier_is_sent_and_logged(self, monkeypatch):
+        # Left to OpenAI's "auto" the render log could only report `quality=auto->unreported`, so
+        # nothing could say which of the ~4x-apart prices was bought — or how legible the on-image
+        # labels would be.
+        monkeypatch.setenv("OPENAI_API_KEY", "key")
+        brief = VisualBrief(title="T", caption="C", prompt="draw", orientation="landscape")
+        resp = MagicMock(spec=["data", "usage"])
+        resp.data = [MagicMock(b64_json=base64.b64encode(b"P").decode())]
+        resp.usage = MagicMock(input_tokens=1, output_tokens=2, total_tokens=3)
+        client = MagicMock()
+        client.images.generate.return_value = resp
+
+        with patch("agent.visuals.logger") as log:
+            with patch("openai.OpenAI", return_value=client):
+                assert _generator(image_quality="high").render(brief) == b"P"
+        assert client.images.generate.call_args.kwargs["quality"] == "high"
+        rendered = [c.args[0] % c.args[1:] for c in log.info.call_args_list if "Rendered" in str(c.args[0])]
+        assert "quality=high->" in rendered[0]
 
     def test_usage_summary_tolerates_a_missing_or_reshaped_usage(self):
         from agent.visuals import _usage_summary

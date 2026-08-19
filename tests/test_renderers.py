@@ -464,14 +464,15 @@ class TestThreadsResearch:
 
     def test_oversize_delimited_post_is_trimmed_to_one(self):
         # An agent-delimited post over 500 chars is TRIMMED to one post (heading kept), not fanned
-        # out — so the 'N/M 소제목' line never orphans and the post count matches the agent's.
-        heading = "3/4 마스터카드의 전략"
-        big = heading + "\n\n" + "문장이다. " * 120  # >500 chars, multiple body sentences
+        # out — so the 'N/M 소제목' line never orphans and the post count matches the agent's. The
+        # index itself is the renderer's, computed from the final count, so "3/4" becomes "1/2".
+        subheading = "마스터카드의 전략"
+        big = f"3/4 {subheading}" + "\n\n" + "문장이다. " * 120  # >500 chars, multiple body sentences
         root, replies, *_ = render_threads_research(f"{big}\n---\n4/4 끝이다.", max_posts=8)
-        assert root.startswith(heading)  # heading stays attached to its body, not orphaned
+        assert root.startswith(f"1/2  {subheading}")  # heading stays attached to its body
         assert len(root) <= THREADS_MAX_POST_CHARS
         assert len(replies) == 1  # exactly the agent's 2 posts → 1 root + 1 reply, no fan-out
-        assert replies[0].startswith("4/4")
+        assert replies[0].startswith("2/2  끝이다.")
         assert all(len(r) <= THREADS_MAX_POST_CHARS for r in replies)
 
     def test_long_sentence_preserves_trailing_url(self):
@@ -590,3 +591,39 @@ class TestThreadsItemOverhead:
         with patch("output.renderers.logger") as log:
             render_threads_posts(_content(3))
         log.warning.assert_not_called()
+
+
+class TestThreadsResearchNumbering:
+    """max_posts is applied AFTER the model has already written its "N/M" headings, so a capped report
+    went out publicly as "1/8 ... 6/8" and stopped mid-argument — telling every reader two posts were
+    missing. The renderer owns the index: it strips whatever the model wrote and re-derives it from
+    the final post count."""
+
+    def _report(self, count: int) -> str:
+        return "\n---\n".join(f"{i}/{count} 소제목 {i}\n\n본문 {i}이다." for i in range(1, count + 1))
+
+    def test_a_capped_report_is_renumbered_to_what_ships(self):
+        root, replies, dropped, _ = render_threads_research(self._report(8), max_posts=3)
+        assert dropped == 5
+        assert root.startswith("1/3  소제목 1")
+        assert [r.split("\n", 1)[0] for r in replies] == ["2/3  소제목 2", "3/3  소제목 3"]
+
+    def test_an_uncapped_report_keeps_its_own_count(self):
+        root, replies, dropped, _ = render_threads_research(self._report(3), max_posts=10)
+        assert dropped == 0
+        assert root.startswith("1/3  소제목 1")
+        assert replies[-1].startswith("3/3  소제목 3")
+
+    def test_an_unnumbered_report_still_gets_indices(self):
+        # The prompt no longer asks the model to number Threads posts at all.
+        report = "도입 소제목\n\n본문이다.\n---\n결론 소제목\n\n마무리다."
+        root, replies, *_ = render_threads_research(report, max_posts=10)
+        assert root.startswith("1/2  도입 소제목")
+        assert replies[0].startswith("2/2  결론 소제목")
+
+    def test_numbered_posts_stay_within_the_channel_cap(self):
+        # The index is added BEFORE the oversize trim, so it can never push a post past 500 chars.
+        report = "\n---\n".join(f"소제목 {i}\n\n" + "문장이다. " * 90 for i in range(1, 4))
+        root, replies, *_ = render_threads_research(report, max_posts=10)
+        assert all(len(post) <= 500 for post in [root, *replies])
+        assert root.startswith("1/3  소제목 1")

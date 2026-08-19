@@ -126,6 +126,21 @@ class TestInvoke:
         # contextvar is reset once the request finishes
         assert _request_delivery.get() is None
 
+    def test_a_construction_failure_still_reaches_the_user_and_the_metric(self):
+        # create_research_agent resolves credentials, an inference profile and the model registry, so
+        # it can raise. Built OUTSIDE the try/request_context the raise escaped the entrypoint: the
+        # user got the ack and then permanent silence, with no AgentErrors metric and no fallback.
+        with patch.object(app_module, "create_research_agent", side_effect=RuntimeError("no profile")):
+            with patch.object(app_module, "_emit_agent_error_metric") as metric:
+                with patch.object(app_module, "_send_slack_message") as send:
+                    result = app_module.invoke({"prompt": "research X", "channel_id": "C9"})
+
+        assert "the research run failed" in result
+        metric.assert_called_once()
+        send.assert_called_once()
+        # The contextvar is still unwound, so a warm container's next invocation starts clean.
+        assert _request_delivery.get() is None
+
     def test_no_fallback_when_slack_already_delivered(self):
         # When the agent delivered to Slack via the tool, the runtime must NOT double-post.
         def fake_agent_call(prompt, **kwargs):

@@ -32,6 +32,9 @@ def _maker() -> DailyVisualMaker:
     config = Config()
     factory = MagicMock()
     factory.get_model.return_value = MagicMock()
+    # A real (no-op) truncator: the editor's headline block goes through it, and a bare MagicMock
+    # would put its repr into the prompt while every assertion still passed.
+    factory.truncate_to_tokens.side_effect = lambda text, max_tokens: text
     with patch("pipeline.daily_visual.create_state_store", return_value=_MemoryStore()):
         maker = DailyVisualMaker(config, factory)
     return maker
@@ -833,6 +836,59 @@ class TestDailyVisualMaker:
         assert "Story 1" not in source  # never the unrelated top-ranked story
         # No headline marker is handed to the editor when nothing matched.
         assert pick.await_args.args[1] == 0
+
+    @pytest.mark.asyncio
+    async def test_the_editor_is_given_the_headline_body_and_the_digests_angle(self):
+        # The editor writes the joke, the format and the research queries, but it only ever saw
+        # `N. [source] title` rows — the headline's body, the lead and the implication reached the ART
+        # DIRECTOR later, so the decisions that shape the image were made from a title alone.
+        maker = _maker()
+        text = maker._editor_items_text(
+            _items(),
+            headline_index=2,
+            headline_source="헤드라인 제목\n\n본문 전문이 여기 있다.",
+            editorial_take="리드의 각.",
+        )
+        assert "2. [web] Story 2 ← TODAY'S HEADLINE" in text
+        assert "본문 전문이 여기 있다." in text
+        assert "리드의 각." in text
+
+    def test_the_headline_reaches_the_editor_even_with_no_ranked_match(self):
+        # headline_index 0 means NO row carries the marker the prompt promises, so the editor's brief
+        # and the art director's source material used to describe different articles.
+        maker = _maker()
+        text = maker._editor_items_text(
+            _items(), headline_index=0, headline_source="큐레이션된 헤드라인\n\n본문.", editorial_take=""
+        )
+        assert "TODAY'S HEADLINE" in text
+        assert "큐레이션된 헤드라인" in text
+
+    def test_the_headline_body_is_truncated_against_its_own_budget(self):
+        maker = _maker()
+        maker.config.pipeline.visual_editor_source_max_tokens = 7
+        maker._editor_items_text(_items(), headline_index=1, headline_source="본문", editorial_take="")
+        assert maker.llm_factory.truncate_to_tokens.call_args.args[1] == 7
+
+    @pytest.mark.asyncio
+    async def test_the_headline_body_and_take_ride_into_the_editor_call(self):
+        from langchain_core.messages import AIMessage
+        from langchain_core.runnables import RunnableLambda
+
+        from shared.models import DigestContent, DigestItem
+
+        maker = _maker()
+        seen: list[str] = []
+        maker.llm = RunnableLambda(lambda prompt: seen.append(str(prompt)) or AIMessage(content='{"skip": true}'))
+        content = DigestContent(
+            lead="리드 문장이다.",
+            headline_index=1,
+            items=[
+                DigestItem(title="Story 1", url="http://e.com/1", body="본문이다.", implication="시사점이다."),
+            ],
+        )
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            await maker._make_visual(_items(), content, date(2026, 6, 10))
+        assert seen and "시사점이다." in seen[0]
 
     @pytest.mark.asyncio
     async def test_pick_story_parses_prose_wrapped_json(self):

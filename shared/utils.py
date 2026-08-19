@@ -29,7 +29,6 @@ class LanguageModelInfo(BaseModel):
     context_window_size: int
     max_output_tokens: int
     supports_performance_optimization: bool = False
-    supports_prompt_caching: bool = False
     supports_thinking: bool = False
     supports_1m_context_window: bool = False
     supports_temperature: bool = True
@@ -43,48 +42,39 @@ LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
     LanguageModelId.CLAUDE_V3_HAIKU: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=4096,
-        supports_prompt_caching=True,
     ),
     LanguageModelId.CLAUDE_V3_5_HAIKU: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=8192,
         supports_performance_optimization=True,
-        supports_prompt_caching=True,
     ),
     LanguageModelId.CLAUDE_V4_5_HAIKU: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=64000,
-        supports_prompt_caching=True,
         supports_thinking=True,
     ),
     LanguageModelId.CLAUDE_V3_5_SONNET: LanguageModelInfo(context_window_size=200000, max_output_tokens=8192),
-    LanguageModelId.CLAUDE_V3_5_SONNET_V2: LanguageModelInfo(
-        context_window_size=200000, max_output_tokens=8192, supports_prompt_caching=True
-    ),
+    LanguageModelId.CLAUDE_V3_5_SONNET_V2: LanguageModelInfo(context_window_size=200000, max_output_tokens=8192),
     LanguageModelId.CLAUDE_V3_7_SONNET: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=64000,
-        supports_prompt_caching=True,
         supports_thinking=True,
     ),
     LanguageModelId.CLAUDE_V4_SONNET: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=64000,
-        supports_prompt_caching=True,
         supports_thinking=True,
         supports_1m_context_window=True,
     ),
     LanguageModelId.CLAUDE_V4_5_SONNET: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=64000,
-        supports_prompt_caching=True,
         supports_thinking=True,
         supports_1m_context_window=True,
     ),
     LanguageModelId.CLAUDE_V4_6_SONNET: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=64000,
-        supports_prompt_caching=True,
         supports_thinking=True,
     ),
     LanguageModelId.CLAUDE_V5_SONNET: LanguageModelInfo(
@@ -93,7 +83,6 @@ LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
         # ainvoke, and Sonnet 5's true 128K ceiling would only raise the HTTP-timeout risk with
         # no caller needing that much output. Bump to 128000 only alongside a streaming path.
         max_output_tokens=64000,
-        supports_prompt_caching=True,
         supports_thinking=True,
         supports_1m_context_window=True,
         # Sonnet 5 rejects non-default sampling params (temperature/top_p/top_k) with a 400,
@@ -104,34 +93,29 @@ LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
     LanguageModelId.CLAUDE_V4_OPUS: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=64000,
-        supports_prompt_caching=True,
         supports_thinking=True,
         supports_1m_context_window=True,
     ),
     LanguageModelId.CLAUDE_V4_1_OPUS: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=64000,
-        supports_prompt_caching=True,
         supports_thinking=True,
         supports_1m_context_window=True,
     ),
     LanguageModelId.CLAUDE_V4_5_OPUS: LanguageModelInfo(
         context_window_size=200000,
         max_output_tokens=64000,
-        supports_prompt_caching=True,
         supports_thinking=True,
         supports_1m_context_window=True,
     ),
     LanguageModelId.CLAUDE_V4_6_OPUS: LanguageModelInfo(
         context_window_size=1000000,
         max_output_tokens=64000,
-        supports_prompt_caching=True,
         supports_thinking=True,
     ),
     LanguageModelId.CLAUDE_V4_7_OPUS: LanguageModelInfo(
         context_window_size=1000000,
         max_output_tokens=64000,
-        supports_prompt_caching=True,
         supports_thinking=True,
         supports_1m_context_window=True,
         supports_temperature=False,
@@ -140,7 +124,6 @@ LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
     LanguageModelId.CLAUDE_V4_8_OPUS: LanguageModelInfo(
         context_window_size=1000000,
         max_output_tokens=64000,
-        supports_prompt_caching=True,
         supports_thinking=True,
         supports_1m_context_window=True,
         supports_temperature=False,
@@ -149,13 +132,12 @@ LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
     LanguageModelId.CLAUDE_V5_OPUS: LanguageModelInfo(
         context_window_size=1000000,
         max_output_tokens=64000,
-        supports_prompt_caching=True,
         supports_thinking=True,
         supports_1m_context_window=True,
         # Verified against Converse on global.anthropic.claude-opus-5: a `temperature` param and the
         # legacy thinking.type="enabled"/budget_tokens form BOTH return ValidationException, while
         # thinking.type="adaptive" + output_config.effort succeeds — the same shape as Opus 4.7/4.8
-        # and Sonnet 5. Prompt caching is confirmed by cache-write line items in the account's bill.
+        # and Sonnet 5.
         supports_temperature=False,
         uses_adaptive_thinking=True,
     ),
@@ -278,8 +260,6 @@ class BedrockCrossRegionModelHelper:
     def application_profile_name(model_id: LanguageModelId) -> str:
         """Deterministic name for this project/stage's application inference profile for a model.
         Shared by the resolver and scripts/put_inference_profiles.py so neither can drift."""
-        import os
-
         project = os.getenv("PROJECT_NAME", "omnisummary")
         stage = os.getenv("STAGE", "dev")
         slug = re.sub(r"[^A-Za-z0-9]+", "-", model_id.value).strip("-")
@@ -387,8 +367,6 @@ class BedrockLanguageModelFactory(
         'doesn't support counting tokens'). The Claude family shares a tokenizer, so we always
         count with TOKEN_COUNT_MODEL regardless of the caller's model — accurate for all of them
         and avoids per-model 'unsupported' failures. Falls back to a char estimate on error.
-        CountTokens needs the BASE id, so any cross-region 'global.'/'us.' prefix is stripped.
-
         Results are memoized on the factory instance keyed by a text hash: prompt-building counts
         the same item text across ranker/digest/grounding stages, and truncate_to_tokens binary-
         searches many overlapping prefixes — each an identical repeat call otherwise billed anew."""
@@ -403,11 +381,9 @@ class BedrockLanguageModelFactory(
         cached = cache.get(key)
         if cached is not None:
             return cached
-        base_id = TOKEN_COUNT_MODEL.value
-        base_id = base_id.split(".", 1)[1] if base_id.split(".", 1)[0] in ("global", "us", "eu", "apac") else base_id
         try:
             resp = self._client.count_tokens(
-                modelId=base_id,
+                modelId=TOKEN_COUNT_MODEL.value,
                 input={"converse": {"messages": [{"role": "user", "content": [{"text": text}]}]}},
             )
             result = int(resp["inputTokens"])
@@ -620,6 +596,32 @@ def aws_region() -> str | None:
     except Exception:
         logger.warning("Could not read aws.region from config; leaving the region to boto3", exc_info=True)
         return None
+
+
+def available_boto_profile(profile: str) -> str | None:
+    """`profile` when boto3 can actually resolve it here, else None — i.e. "use ambient credentials".
+
+    Picking the credential source by PLATFORM SNIFF was wrong in both directions. is_running_in_aws()
+    looks for AWS_EXECUTION_ENV / AWS_LAMBDA_FUNCTION_NAME / AWS_BATCH_JOB_ID /
+    ECS_CONTAINER_METADATA_URI, and the AgentCore runtime sets none of them (its CfnRuntime
+    environment carries only AWS_BEDROCK_REGION / PROJECT_NAME / STAGE / MEMORY_ID / STATE_BUCKET /
+    S3_PREFIX, and Dockerfile.agentcore only PYTHONUNBUFFERED) — so inside a container with no
+    ~/.aws/config the sniff chose the named-profile branch and the session could not be built at all.
+
+    Ambient credentials are what every managed runtime supplies, so they are the default; the
+    configured profile is honoured exactly where it exists, which is the developer laptop it was
+    added for. Any failure to enumerate profiles also means ambient — cost attribution and
+    convenience must never be able to stop a run."""
+    if not profile:
+        return None
+    try:
+        if profile in boto3.session.Session().available_profiles:
+            return profile
+    except Exception as e:
+        logger.debug("Could not enumerate AWS profiles (%s); using ambient credentials", e)
+        return None
+    logger.info("AWS profile '%s' is not configured here; using ambient credentials", profile)
+    return None
 
 
 class SecretUnavailableError(RuntimeError):

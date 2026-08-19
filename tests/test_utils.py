@@ -356,3 +356,38 @@ class TestSanitizeSlackMrkdwn:
     def test_markdown_link_simple_url(self):
         out = sanitize_slack_mrkdwn("[label](https://example.com/x)")
         assert out == "<https://example.com/x|label>"
+
+
+class TestAvailableBotoProfile:
+    """Credential selection by platform sniff was wrong in both directions, so the question the code
+    asks is now the only one that matters: does this profile actually resolve here?"""
+
+    def test_no_configured_profile_means_ambient(self):
+        from shared.utils import available_boto_profile
+
+        assert available_boto_profile("") is None
+
+    def test_a_configured_profile_that_exists_is_returned(self):
+        from unittest.mock import MagicMock, patch
+
+        from shared.utils import available_boto_profile
+
+        with patch("boto3.session.Session", return_value=MagicMock(available_profiles=["research"])):
+            assert available_boto_profile("research") == "research"
+
+    def test_a_configured_profile_that_does_not_exist_means_ambient(self):
+        from unittest.mock import MagicMock, patch
+
+        from shared.utils import available_boto_profile
+
+        with patch("boto3.session.Session", return_value=MagicMock(available_profiles=["default"])):
+            assert available_boto_profile("research") is None
+
+    def test_an_unenumerable_profile_list_means_ambient(self):
+        # A broken/unreadable ~/.aws/config must never be able to stop a run.
+        from unittest.mock import patch
+
+        from shared.utils import available_boto_profile
+
+        with patch("boto3.session.Session", side_effect=RuntimeError("bad config")):
+            assert available_boto_profile("research") is None

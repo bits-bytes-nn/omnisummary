@@ -373,6 +373,41 @@ class TestParkedItems:
         assert c.park_status is not None and c.park_status.degraded is True
 
     @pytest.mark.asyncio
+    async def test_parked_items_outside_the_lookback_window_are_dropped(self):
+        # A STALE-but-usable park file carries posts older than lookback_hours. The live branch
+        # filters every entry against the cutoff; returning parked.items verbatim did not, so items
+        # up to park_max_age + lookback old reached the ranker.
+        c = RSSHubCollector(_config())
+        in_window = _item("fresh")
+        in_window.published_at = datetime(2026, 6, 2, 12, tzinfo=UTC)
+        too_old = _item("ancient")
+        too_old.published_at = datetime(2026, 5, 20, tzinfo=UTC)
+        stale = ParkedItems(outcome=ParkOutcome.STALE, items=[in_window, too_old], age_hours=72.0, detail="72h")
+        with patch("collectors.rsshub.load_items_from_s3", return_value=stale):
+            items = await c.collect()
+        assert [i.item_id for i in items] == ["fresh"]
+
+    @pytest.mark.asyncio
+    async def test_a_backfill_run_does_not_ingest_todays_parked_items(self):
+        # `--date` moves reference_time to midnight at the END of the requested day, so a post from
+        # after it belongs to a LATER digest. The park path ignored reference_time entirely.
+        c = RSSHubCollector(_config())
+        later = _item("tomorrow")
+        later.published_at = datetime(2026, 6, 5, tzinfo=UTC)
+        parked = ParkedItems(outcome=ParkOutcome.FRESH, items=[later])
+        with patch("collectors.rsshub.load_items_from_s3", return_value=parked):
+            assert await c.collect() == []
+
+    @pytest.mark.asyncio
+    async def test_a_parked_item_with_no_date_is_kept(self):
+        # A missing published_at is a metadata gap, not evidence of being out of window.
+        c = RSSHubCollector(_config())
+        parked = ParkedItems(outcome=ParkOutcome.FRESH, items=[_item("undated")])
+        with patch("collectors.rsshub.load_items_from_s3", return_value=parked):
+            items = await c.collect()
+        assert [i.item_id for i in items] == ["undated"]
+
+    @pytest.mark.asyncio
     async def test_park_age_budget_comes_from_config(self):
         c = RSSHubCollector(_config(park_max_age_hours=72))
         with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()) as load:

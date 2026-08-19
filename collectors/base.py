@@ -17,7 +17,7 @@ from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field, ValidationError
 
 from shared import CollectedItem, SourceType, generate_item_id, logger, parse_feed_published_date, retry_async
-from shared.constants import BROWSER_USER_AGENT
+from shared.constants import BROWSER_USER_AGENT, EMPTY_RATE_CHECK_DISABLED
 from shared.proxy import fetch_with_proxy_fallback
 
 # HTTP statuses worth another attempt: rate limiting and server-side faults. Everything else —
@@ -167,7 +167,7 @@ class BaseCollector(ABC):
         threshold: float,
         what: str,
         hint: str = "",
-        empty_threshold: float = 100.0,
+        empty_threshold: float = EMPTY_RATE_CHECK_DISABLED,
         max_failed: int = 0,
     ) -> None:
         """Record how many of the source's inputs answered, and report the source DEGRADED when too
@@ -204,7 +204,7 @@ class BaseCollector(ABC):
         threshold: float,
         what: str,
         hint: str = "",
-        empty_threshold: float = 100.0,
+        empty_threshold: float = EMPTY_RATE_CHECK_DISABLED,
         max_failed: int = 0,
     ) -> None:
         """Report a park file that a HALF-DEAD sync wrote as DEGRADED. The file itself is fresh and
@@ -234,6 +234,54 @@ class BaseCollector(ABC):
 
 def cutoff_datetime(lookback_hours: int, reference_time: datetime | None = None) -> datetime:
     return (reference_time or datetime.now(UTC)) - timedelta(hours=lookback_hours)
+
+
+def _as_aware_utc(moment: datetime) -> datetime:
+    """A naive datetime read as UTC, so a park file written without an offset still compares."""
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+
+
+def parked_items_in_window(
+    items: list[CollectedItem],
+    *,
+    lookback_hours: int,
+    reference_time: datetime | None,
+    description: str,
+) -> list[CollectedItem]:
+    """Keep the parked items that belong to the run's collection window.
+
+    The live paths filter every entry against cutoff_datetime; the park path returned the file's
+    items verbatim, so two windows were silently ignored. A STALE-but-usable file let items up to
+    park_max_age + lookback old into ranking, and the run's reference time (`--date`, the digest
+    handler's set_reference_time) applied to nothing — a backfill of an older day ingested TODAY'S
+    parked items. The window is closed at BOTH ends for exactly that reason: the reference time is
+    midnight at the END of the digest date, so anything after it belongs to a later digest.
+
+    An item with no published_at is KEPT: a missing date is not evidence of falling outside the
+    window, and dropping it would silently shrink a source over a metadata gap. The out-of-window
+    count is logged — a rising one is itself a stalled-sync signal."""
+    cutoff = _as_aware_utc(cutoff_datetime(lookback_hours, reference_time))
+    latest = _as_aware_utc(reference_time) if reference_time is not None else None
+    kept: list[CollectedItem] = []
+    for item in items:
+        if item.published_at is None:
+            kept.append(item)
+            continue
+        published = _as_aware_utc(item.published_at)
+        if published < cutoff or (latest is not None and published > latest):
+            continue
+        kept.append(item)
+    dropped = len(items) - len(kept)
+    if dropped:
+        logger.warning(
+            "%s: %d of %d parked item(s) fall outside the collection window (%s .. %s) and were skipped",
+            description,
+            dropped,
+            len(items),
+            cutoff.isoformat(),
+            latest.isoformat() if latest else "now",
+        )
+    return kept
 
 
 # Default age budget for sync-parked items: older ones are still used (better stale than empty)

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from botocore.exceptions import ClientError
 
-from .logger import is_running_in_aws, logger
+from .logger import logger
 
 if TYPE_CHECKING:
     from .config import Config
@@ -140,14 +140,19 @@ class S3StateStore(StateStore):
 
 
 def _boto_session(config: Config | None):
-    """A session for the S3 store. In AWS the execution role is ambient, so take the default
-    session; outside AWS honour the configured profile/region — otherwise a developer with
-    STATE_BUCKET in .env would silently lose their credentials."""
+    """A session for the S3 store: ambient credentials, with the configured profile honoured only
+    where it actually resolves.
+
+    Gated on is_running_in_aws() this took the named-profile branch inside the AgentCore runtime —
+    the sniff looks for Lambda/Batch/ECS variables that runtime does not set — and the container has
+    no ~/.aws/config, so every trends.json read and write there failed on ProfileNotFound."""
     import boto3
 
-    if is_running_in_aws() or config is None:
+    from .utils import available_boto_profile
+
+    if config is None:
         return boto3.Session()
-    return boto3.Session(profile_name=config.aws.profile or None, region_name=config.aws.region)
+    return boto3.Session(profile_name=available_boto_profile(config.aws.profile), region_name=config.aws.region or None)
 
 
 def create_state_store(config: Config | None = None) -> StateStore:

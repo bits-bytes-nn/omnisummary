@@ -7,7 +7,7 @@ from strands import tool
 # DeliveryContext + request scoping live in the delivery layer (output/), which owns the
 # delivery contract; re-exported here for the agent entrypoints and tools that bind them.
 from output.delivery import DeliveryContext, current_delivery_context, request_context
-from shared import get_config, logger
+from shared import URL_RE, get_config, logger, normalize_citation_url
 from shared.media import fetch_og_image
 from shared.research import extract_url, semantic_scholar_search, tavily_search
 
@@ -26,6 +26,34 @@ __all__ = [
 ]
 
 
+def _record_seen_urls(text: str, *extra: str) -> str:
+    """Remember every URL a tool actually surfaced, then return the text unchanged.
+
+    deliver_report compares the report's citations against this set, so a URL the model invented can
+    be refused before it is published. Recording happens at the TOOL boundary rather than inside the
+    research backends: the backends are shared with the digest pipeline, which has no delivery
+    context, and the tool result is exactly what the model got to read."""
+    delivery = current_delivery_context()
+    delivery.seen_urls.update(normalize_citation_url(url) for url in URL_RE.findall(text))
+    delivery.seen_urls.update(normalize_citation_url(url) for url in extra if url)
+    return text
+
+
+def _uncited_urls(report: str) -> list[str]:
+    """URLs the report cites that no tool result contained, in the order they appear.
+
+    A report is allowed to cite nothing; it is not allowed to cite something that was never
+    returned. The comparison is lenient (normalize_citation_url) so an http→https rewrite or a URL in
+    parentheses still matches."""
+    seen = current_delivery_context().seen_urls
+    unknown: list[str] = []
+    for url in URL_RE.findall(report):
+        cleaned = url.strip().rstrip("').,;:\"]>")
+        if normalize_citation_url(cleaned) not in seen and cleaned not in unknown:
+            unknown.append(cleaned)
+    return unknown
+
+
 @tool
 async def web_search(query: str, recency: str = "general") -> str:
     """Search the open web for a query. Use recency="news" for recent industry/company/policy
@@ -36,7 +64,7 @@ async def web_search(query: str, recency: str = "general") -> str:
         recency: "general" (default) or "news" for recent news framing.
     """
     topic = "news" if recency.lower().strip() == "news" else None
-    return await tavily_search(query, topic=topic)
+    return _record_seen_urls(await tavily_search(query, topic=topic))
 
 
 @tool
@@ -48,7 +76,7 @@ async def community_search(query: str) -> str:
         query: The search query.
     """
     domains = get_config().agent.community_search_domains
-    return await tavily_search(query, include_domains=domains)
+    return _record_seen_urls(await tavily_search(query, include_domains=domains))
 
 
 @tool
@@ -58,7 +86,7 @@ async def search_papers(query: str) -> str:
     Args:
         query: The search query.
     """
-    return await semantic_scholar_search(query)
+    return _record_seen_urls(await semantic_scholar_search(query))
 
 
 @tool
@@ -69,7 +97,8 @@ async def read_url(url: str) -> str:
     Args:
         url: The page URL to read.
     """
-    return await extract_url(url)
+    # The page URL itself counts as surfaced: the agent read it, so citing it is grounded.
+    return _record_seen_urls(await extract_url(url), url)
 
 
 @tool
@@ -89,21 +118,25 @@ async def recall_trends(query: str) -> str:
     half_life = config.pipeline.trend_momentum_half_life_days
 
     def _load() -> TrendMemory:
-        try:
-            store = create_state_store(config)
-            raw = store.read(TRENDS_KEY) if store.exists(TRENDS_KEY) else None
-        except Exception as e:
-            logger.warning("Failed to open trend store for recall: %s", e)
-            return TrendMemory()
+        store = create_state_store(config)
+        raw = store.read(TRENDS_KEY) if store.exists(TRENDS_KEY) else None
         if not raw:
             return TrendMemory()
-        try:
-            return TrendMemory.model_validate_json(raw)
-        except Exception as e:
-            logger.warning("Failed to load trends for recall: %s", e)
-            return TrendMemory()
+        return TrendMemory.model_validate_json(raw)
 
-    memory = await asyncio.to_thread(_load)
+    try:
+        memory = await asyncio.to_thread(_load)
+    except Exception as e:
+        # Best-effort like every other tool (an exception must not end the run), but "the store
+        # wouldn't answer" is NOT "there is no earlier history": returning TrendMemory() made a
+        # throttled/denied/misconfigured S3 read look identical to a topic that has never appeared,
+        # and the report then asserted that absence. Same distinction recall_digest already draws.
+        logger.error("Failed to read the trend store for recall: %s", e, exc_info=True)
+        return (
+            f"The trend store could not be READ ({e}). This does NOT mean the topic has no earlier "
+            "history — do not claim anything about what previous digests tracked."
+        )
+
     matched = memory.search(query, today=date.today(), half_life_days=half_life, top_k=top_k)
     if not matched:
         return "No earlier trends recalled for that query."
@@ -204,6 +237,18 @@ async def deliver_report(report: str, channel: str = "slack") -> str:
         # Surface the mistake so the agent can correct itself, rather than silently downgrading
         # an explicit Threads request to Slack.
         return f'Unknown channel "{channel}". Use "slack" or "threads".'
+
+    # A citation no tool ever returned is a fabricated source, and this posts to a PUBLIC Threads
+    # account. Refuse rather than publish, and name the offending URLs so the agent can drop or
+    # replace them; a re-call with a corrected report is the remedy.
+    uncited = _uncited_urls(report)
+    if uncited:
+        logger.error("Refusing to deliver a report citing %d unverifiable URL(s): %s", len(uncited), uncited)
+        return (
+            f"NOT delivered. These URLs appear in your report but in NO tool result, so they cannot be "
+            f"published as sources: {', '.join(uncited)}. Remove them, or replace them with a URL a "
+            "search/read tool actually returned, then call deliver_report again."
+        )
 
     delivery = current_delivery_context()
     ok = await deliver_research_report(report, channel=target, delivery=delivery)

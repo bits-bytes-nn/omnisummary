@@ -8,7 +8,14 @@ import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .constants import COLLECTOR_NAMES, RSSHUB_PORT, VISUAL_ORIENTATIONS, LanguageModelId, SourceType
+from .constants import (
+    COLLECTOR_NAMES,
+    EMPTY_RATE_CHECK_DISABLED,
+    RSSHUB_PORT,
+    VISUAL_ORIENTATIONS,
+    LanguageModelId,
+    SourceType,
+)
 
 
 class _StrictModel(BaseModel):
@@ -62,8 +69,9 @@ class BaseCollectorConfig(_StrictModel):
     # nothing) is the same disappearance shape as a failure, but it trips no failure rate — and as
     # long as ONE input still produced an item the source reported OK. Source-dependent: many RSS
     # blogs legitimately publish nothing on a given day, whereas 40 X accounts all going quiet is a
-    # broken session. 100 (the default) disables the check; set it per source in config.yaml.
-    empty_rate_threshold: float = Field(default=100.0, ge=0.0, le=100.0)
+    # broken session. EMPTY_RATE_CHECK_DISABLED (the default) disables the check; set it per source
+    # in config.yaml for the sources whose silence is never legitimate.
+    empty_rate_threshold: float = Field(default=EMPTY_RATE_CHECK_DISABLED, ge=0.0, le=100.0)
     # ABSOLUTE companion to error_rate_threshold, for a source with FEW inputs where a rate cannot
     # express the verdict: with 2 subreddits, 1 of 2 failing is exactly 50% (clean at the default)
     # and 2 of 2 already raises FAILED, so DEGRADED was unreachable. 0 (the default) disables it.
@@ -105,7 +113,9 @@ class RSSCollectorConfig(BaseCollectorConfig):
     # stays at/below the default asyncio executor width (min(32, cpu+4) — 6 on a 2-vCPU Lambda);
     # oversubscribing it made a feed's timeout expire while its parse was still queued, turning a
     # healthy feed into a bogus FAILURE. Same bound as rsshub.max_concurrency. Worst-case wall time
-    # is ceil(feeds / max_concurrency) * request_timeout, well inside the 15-min Lambda.
+    # is ceil(feeds / max_concurrency) * (request_timeout + retry_backoff_sec) * max_retries — the
+    # RETRIES are what makes it ~4x the naive estimate, which is why the source as a whole is bounded
+    # by collectors.collector_budget_sec rather than by this knob alone.
     max_concurrency: int = Field(default=5, ge=1)
 
 
@@ -141,7 +151,9 @@ class RSSHubCollectorConfig(BaseCollectorConfig):
     # How many account feeds may be fetched at once. Each fetch parks a worker thread, so this
     # stays at/below the default asyncio executor width (min(32, cpu+4) — 6 on a 2-vCPU Lambda);
     # oversubscribing it made a feed's timeout expire while its parse was still queued. Worst-case
-    # wall time is ceil(accounts / max_concurrency) * request_timeout, well inside the 15-min Lambda.
+    # wall time is ceil(accounts / max_concurrency) * (request_timeout + retry_backoff_sec) *
+    # max_retries: with the shipped 41 accounts that is ~16 minutes, i.e. MORE than the digest
+    # Lambda's entire budget — hence collectors.collector_budget_sec, which bounds the source itself.
     max_concurrency: int = Field(default=5, ge=1)
 
 
@@ -157,6 +169,14 @@ class CollectorsConfig(_StrictModel):
     # a 2-vCPU Lambda — so the per-collector bounds did not hold globally and a source's timeout
     # could expire while its work was still queued behind another source's.
     thread_pool_max_workers: int = Field(default=16, ge=1)
+    # Wall-clock budget for ONE source's whole collect(), enforced by the runner. The per-INPUT
+    # timeouts do not bound the SOURCE: 41 RSSHub account feeds at max_concurrency 5, each allowed
+    # (request_timeout + retry_backoff_sec) * max_retries = 105s, need ~16 minutes of serialized
+    # rounds — more than the digest Lambda's entire 15-minute budget. So a wedged-but-reachable
+    # source used to kill the whole run instead of being reported FAILED while the other four
+    # shipped; only YouTube had a budget, and only per channel. A timeout here raises, so it lands in
+    # the runner's existing exception branch as that source FAILED. 0 disables the bound.
+    collector_budget_sec: int = Field(default=600, ge=0)
     # Sources whose EMPTY result is an INCIDENT worth an alert, by collector name (e.g.
     # ["rss", "web_search"]). A dark source produces no items, no exception and no stale park file,
     # so nothing else notices it; but reddit/x are legitimately quiet on many days, which is why
@@ -233,6 +253,12 @@ class PipelineConfig(_StrictModel):
     # source items and surgically revise unsupported ones (prompt rules alone couldn't
     # move the faithfulness score). Best-effort; disable to skip the extra LLM call.
     enable_grounding_check: bool = True
+    # Deterministic prose checks on the editor's Korean (shared/prose_lint.py), verified in code
+    # rather than asked for again: the comma-after-a-finished-predicate the style rules ban BY NAME
+    # still shipped, and so did a lead re-telling items[0]'s numbers that the prompt explicitly
+    # forbids. A hit re-asks through the existing digest retry path — and on the LAST attempt the
+    # content is kept anyway, because a style slip is strictly better than no digest.
+    enable_prose_lint: bool = True
     # Korean editorial rules + translation glossary, injected into the digest prompt's *Language*
     # block so the glossary can be tuned without editing the prompt. NOT a language switch: the
     # digest prompt states the Korean requirement itself and the trend tracker injects Korean
@@ -240,9 +266,9 @@ class PipelineConfig(_StrictModel):
     # Korean-only is the intended product.
     digest_language_rules: str = (
         "- Write in Korean (95%+); English ONLY for proper nouns and untranslatable technical terms. "
-        "Use ONE form per proper noun across the whole digest, as the source writes it — never invent "
-        "a Korean transliteration for a term outside the glossary below — and make the particle after "
-        "it agree with that written form (OpenAI는, GPT-5가).\n"
+        "Use ONE form per proper noun across the whole digest, as the source writes it: a term that is "
+        "not in the glossary below stays in Latin script. Make the particle after it agree with that "
+        "written form (OpenAI는, GPT-5가).\n"
         "- Translate terms that have established Korean equivalents: architecture → 아키텍처, "
         "benchmark → 벤치마크, inference → 추론, training → 학습, deployment → 배포, "
         "weight → 가중치, parameter → 파라미터, token → 토큰, open-source → 오픈소스, "
@@ -403,17 +429,25 @@ class PipelineConfig(_StrictModel):
     # exceed the visual Lambda's 15-min budget; one 300s attempt leaves room for the single
     # moderation-softened re-render and still finishes inside the Lambda.
     visual_image_timeout_sec: int = Field(default=300, ge=10)
-    # gpt-image quality tier. Empty sends nothing, leaving OpenAI's "auto" — which picks between
-    # tiers whose published per-image prices differ ~4x ($0.041-0.053 medium vs $0.165-0.211 high at
-    # our sizes), so the monthly bill for one image a day is anywhere from ~$1.3 to ~$5.2 and the
-    # code cannot say which. Set it to make the cost deterministic; the render also logs the
-    # response's token counts either way, so actual spend is measurable rather than estimated.
-    visual_image_quality: str = ""
+    # gpt-image quality tier, PINNED rather than left to OpenAI. Empty sends nothing, leaving its
+    # "auto" — which picks between tiers whose published per-image prices differ ~4x ($0.041-0.053
+    # medium vs $0.165-0.211 high at our sizes), so the monthly bill for one image a day was anywhere
+    # from ~$1.3 to ~$5.2 and the render log could only report `quality=auto->unreported`, i.e.
+    # nothing could say what was bought. It also decides how legible the image's short English labels
+    # come out, which is not a choice to delegate. Typed, so a typo fails at config load instead of
+    # surfacing as an OpenAI 400 inside the visual Lambda hours later.
+    visual_image_quality: Literal["", "low", "medium", "high", "auto"] = "high"
     visual_image_max_retries: int = Field(default=0, ge=0)
     # Cap on the research steps the visual editor may request (each is a live search call). Matches
     # the "1-3 steps" the editor prompt asks for, so a chatty plan can't fan out into ten searches.
     visual_research_max_steps: int = Field(default=3, ge=1)
     visual_synopsis_source_max_tokens: int = Field(default=2000, ge=1)
+    # Budget for the HEADLINE story's body handed to the visual EDITOR. That editor writes the joke,
+    # the format and the research queries off `N. [source] title` rows alone — the headline's body,
+    # the lead and the implication only reached the art director later, so the decisions that shape
+    # the image were made from a title. Its own knob because the editor needs far less than the art
+    # director (one story, not the whole source pack).
+    visual_editor_source_max_tokens: int = Field(default=2000, ge=1)
     visual_synopsis_context_max_tokens: int = Field(default=1500, ge=1)
     # Emoji prefixed to the Slack caption of a generated visual, for scannability.
     visual_caption_emoji: str = "🎨"

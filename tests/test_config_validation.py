@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
+from collectors.base import degradation_reason
 from shared.config import (
     CollectorsConfig,
     Config,
@@ -13,7 +14,7 @@ from shared.config import (
     YouTubeCollectorConfig,
     get_config,
 )
-from shared.constants import COLLECTOR_NAMES, SourceType
+from shared.constants import COLLECTOR_NAMES, EMPTY_RATE_CHECK_DISABLED, SourceType
 from shared.utils import LANGUAGE_MODEL_INFO
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
@@ -171,6 +172,23 @@ class TestImageSizes:
         assert set(cfg.pipeline.image_sizes) == set(VISUAL_ORIENTATIONS)
 
 
+class TestVisualImageQuality:
+    """Unset, the tier was OpenAI's "auto" — which decides both the on-image text legibility and a
+    ~4x per-image price swing, while the render log could only say `quality=auto->unreported`."""
+
+    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
+    def test_every_config_pins_a_tier(self, config_path):
+        assert Config.from_yaml(str(config_path)).pipeline.visual_image_quality
+
+    def test_a_typo_fails_at_config_load(self):
+        # Not as an OpenAI 400 inside the visual Lambda, hours later and only on the day it renders.
+        with pytest.raises(ValidationError):
+            PipelineConfig(visual_image_quality="hihg")
+
+    def test_empty_stays_a_valid_explicit_opt_out(self):
+        assert PipelineConfig(visual_image_quality="").visual_image_quality == ""
+
+
 class TestSourceSlotVocabulary:
     """source_slots keys are matched against item.source_type.value in the ranker's guaranteed-slot
     pass. A typo'd key matches no item at all: the guarantee silently disappears and the fill pass
@@ -254,6 +272,64 @@ class TestCodeDefaultsMatchTheDeployedConfig:
         assert "enable_slack_post" in raw
 
 
+class TestParkedSourceTripwires:
+    """The two S3-parked sources (youtube, rsshub) are collected by a DAILY local sync cron, so both
+    of their health tripwires have to be armed in the file — the code defaults leave them off:
+
+    - empty_rate_threshold defaults to EMPTY_RATE_CHECK_DISABLED and degradation_reason tests
+      `empty_rate > empty_threshold`, so the all-200-with-no-entries outage its own docstring names
+      (expired X cookies making every account feed answer empty) reported a clean OK;
+    - park_max_age_hours defaults to 36, which is MORE than one sync cadence, so a completely
+      skipped sync day still read FRESH/OK — and with rsshub_desired_count=0 the park file is the
+      only X path there is.
+    """
+
+    # The local sync runs once a day, so a park file older than one cadence has missed a whole run.
+    _ONE_SYNC_CADENCE_HOURS = 24
+    _PARKED_SOURCES = ("youtube", "rsshub")
+
+    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
+    @pytest.mark.parametrize("source_name", _PARKED_SOURCES)
+    def test_the_empty_rate_tripwire_is_armed(self, config_path, source_name):
+        source = getattr(Config.from_yaml(str(config_path)).collectors, source_name)
+        assert source.empty_rate_threshold < EMPTY_RATE_CHECK_DISABLED
+
+    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
+    @pytest.mark.parametrize("source_name", _PARKED_SOURCES)
+    def test_a_skipped_sync_day_cannot_read_fresh(self, config_path, source_name):
+        source = getattr(Config.from_yaml(str(config_path)).collectors, source_name)
+        assert source.park_max_age_hours <= self._ONE_SYNC_CADENCE_HOURS
+
+    def test_the_code_default_leaves_the_empty_rate_check_unreachable(self):
+        # Documents WHY the file must set it: the default equals the sentinel, and the comparison
+        # is strict, so no observed empty rate can ever exceed it.
+        assert YouTubeCollectorConfig().empty_rate_threshold == EMPTY_RATE_CHECK_DISABLED
+        assert (
+            degradation_reason(
+                total=10,
+                failed=0,
+                empty=10,
+                what="channels",
+                threshold=50.0,
+                empty_threshold=EMPTY_RATE_CHECK_DISABLED,
+                max_failed=0,
+            )
+            == ""
+        )
+
+    def test_an_armed_threshold_reports_an_all_empty_source(self):
+        reason = degradation_reason(
+            total=10,
+            failed=0,
+            empty=10,
+            what="account feeds",
+            threshold=50.0,
+            empty_threshold=90.0,
+            max_failed=0,
+        )
+        assert "returned nothing" in reason
+
+
 class TestLanguageRules:
     def test_one_form_per_proper_noun_and_particle_agreement(self):
         # Published Korean carried two spellings of the same company in one digest and particles
@@ -261,4 +337,10 @@ class TestLanguageRules:
         rules = PipelineConfig().digest_language_rules
         assert "ONE form per proper noun" in rules
         assert "particle" in rules
-        assert "transliteration" in rules
+
+    def test_the_glossary_rule_is_stated_positively(self):
+        # "never invent a Korean transliteration" is a prohibition that leaves the model to guess what
+        # to do instead — and it guessed 홈랍. Stating the remaining option removes the choice.
+        rules = PipelineConfig().digest_language_rules
+        assert "stays in Latin script" in rules
+        assert "transliteration" not in rules

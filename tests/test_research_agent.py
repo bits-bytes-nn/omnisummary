@@ -336,3 +336,40 @@ class TestAgentMaxTokensFallback:
             create_research_agent()
 
         assert log.warning.called
+
+
+class TestAgentCredentialSelection:
+    """The credential source used to be chosen by platform sniff: is_running_in_aws() looks for
+    AWS_EXECUTION_ENV / AWS_LAMBDA_FUNCTION_NAME / AWS_BATCH_JOB_ID / ECS_CONTAINER_METADATA_URI, and
+    the AgentCore runtime's CfnRuntime environment sets NONE of them — so inside a container with no
+    ~/.aws/config the sniff picked profile_name="research" and the agent could not be built at all."""
+
+    def _session_kwargs(self, *, resolved_profile):
+        with (
+            patch("agent.research_agent.BedrockModel", return_value=MagicMock()),
+            patch("agent.research_agent.Agent", return_value=MagicMock(tool_names=["t"])),
+            patch("agent.research_agent.available_boto_profile", return_value=resolved_profile),
+            patch("agent.research_agent.boto3.Session", return_value=MagicMock()) as session,
+            patch(
+                "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
+                return_value="global.anthropic.claude-sonnet-5",
+            ),
+        ):
+            from agent.research_agent import create_research_agent
+
+            create_research_agent()
+        return session.call_args.kwargs
+
+    def test_an_unresolvable_profile_means_ambient_credentials(self):
+        assert self._session_kwargs(resolved_profile=None)["profile_name"] is None
+
+    def test_a_resolvable_profile_is_honoured(self):
+        assert self._session_kwargs(resolved_profile="research")["profile_name"] == "research"
+
+    def test_the_bedrock_region_falls_back_to_config(self, monkeypatch):
+        # AWS_BEDROCK_REGION is set by the CfnRuntime environment; a local run has only the config,
+        # and passing region_name=None there sent Bedrock calls to boto3's default region.
+        monkeypatch.delenv("AWS_BEDROCK_REGION", raising=False)
+        from shared.config import Config
+
+        assert self._session_kwargs(resolved_profile=None)["region_name"] == Config.load().aws.bedrock_region

@@ -33,8 +33,10 @@ jobs:
           # reinstalls, so the cache can never hide a broken/unlockable dependency set.
           enable-cache: true
           cache-dependency-glob: "uv.lock"
+      # No version argument: the tracked .python-version is the single pin, so CI, the Docker images
+      # and a developer's venv cannot drift onto different minor versions.
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install
       # Fail if uv.lock is out of date with pyproject.toml instead of silently resolving
       # something newer than what was reviewed/tested.
       - name: Check lockfile is current
@@ -63,8 +65,10 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
           cache-dependency-glob: "uv.lock"
+      # No version argument: the tracked .python-version is the single pin, so CI, the Docker images
+      # and a developer's venv cannot drift onto different minor versions.
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install
       - name: Install dependencies
         run: uv sync --frozen --extra dev
       # Coverage scope and the fail-under threshold live in pyproject ([tool.coverage.*]) so the
@@ -105,8 +109,10 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
           cache-dependency-glob: "uv.lock"
+      # No version argument: the tracked .python-version is the single pin, so CI, the Docker images
+      # and a developer's venv cannot drift onto different minor versions.
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install
       - name: Install dependencies
         run: uv sync --frozen --extra dev
       - name: Set up Node
@@ -193,8 +199,10 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
           cache-dependency-glob: "uv.lock"
+      # No version argument: the tracked .python-version is the single pin, so CI, the Docker images
+      # and a developer's venv cannot drift onto different minor versions.
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install
       # Install the EXACT set uv.lock pins — the same set the Docker images install — rather than
       # re-resolving pyproject's ranges, which would audit versions that never ship.
       # --no-install-project deliberately leaves the local package out: pip-audit reports an
@@ -207,10 +215,22 @@ jobs:
       # venv via `ensurepip`, which uv-managed standalone Pythons do not ship (exit 127).
       # Verified in both directions against uv 0.5.11: clean on this lockfile, and failing on the
       # previous one (19 packages with advisories) — a gate that cannot fail is not a gate.
+      #
+      # The path is DERIVED, and asserted non-empty: pip-audit against a nonexistent --path prints
+      # "No known vulnerabilities found" and exits 0, so the hardcoded `python3.12` was the only thing
+      # keeping this gate real — and until .python-version was tracked, nothing pinned that minor
+      # version. A silent interpreter bump would have turned the whole step into a no-op.
+      - name: Locate the installed dependency set
+        id: sitepackages
+        run: |
+          purelib="$(.venv/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+          test -d "$purelib"
+          test -n "$(ls -A "$purelib")"
+          echo "purelib=$purelib" >> "$GITHUB_OUTPUT"
       - name: Audit locked dependencies for known vulnerabilities
         run: >
           uvx --from pip-audit==2.9.0 pip-audit --strict
-          --path .venv/lib/python3.12/site-packages
+          --path "${{ steps.sitepackages.outputs.purelib }}"
       # Secrets: the CloudFormation template used to carry live API tokens in plaintext, and
       # config/config.yaml (gitignored) holds real values — a mis-added file is a live leak.
       - name: Secret scan

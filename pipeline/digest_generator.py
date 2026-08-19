@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import UTC, date, datetime
-from urllib.parse import urlparse
 
 from langchain_core.output_parsers import StrOutputParser
 
@@ -10,7 +9,6 @@ from pipeline.aggregator import normalize_url
 from shared import (
     COUNTDOWN_SUFFIX_SEPARATOR,
     THREADS_MAX_POST_CHARS,
-    YOUTUBE_VIEWS_EMOJI,
     BedrockLanguageModelFactory,
     CollectedItem,
     DigestContent,
@@ -19,20 +17,20 @@ from shared import (
     DigestResult,
     GroundingCheckPrompt,
     RankedItem,
-    SourceType,
     agi_countdown_intro,
-    clean_rss_feed_name,
     format_collected_item,
     logger,
     parse_json_from_llm_output,
     place_countdown_intro,
     resolve_origin_key,
     retry_async,
+    source_tag_and_metrics,
     split_sentences,
     strip_slack_mrkdwn,
     threads_item_overhead_chars,
 )
 from shared.config import PipelineConfig
+from shared.prose_lint import lint_digest_prose
 
 
 class DigestContentError(ValueError):
@@ -46,6 +44,11 @@ class DigestGenerator:
         self.config = config
         self.llm_factory = llm_factory
         self.llm = llm_factory.get_model(config.digest_model, stage="digest")
+        # Its OWN handle: the grounding pass is a SECOND ~50k-token Sonnet call, and billed under
+        # "digest" it was indistinguishable from the generation itself — defeating the only
+        # spend-attribution mechanism the repo has (the bill is per MODEL, and several stages share
+        # this one). Built eagerly beside the digest model so the stage label cannot drift.
+        self.grounding_llm = llm_factory.get_model(config.digest_model, stage="grounding")
 
     def _truncate(self, text: str, max_tokens: int) -> str:
         return self.llm_factory.truncate_to_tokens(text, max_tokens)
@@ -110,7 +113,11 @@ class DigestGenerator:
             "lead_budget": self._lead_budget(intro),
         }
 
+        attempts = 0
+
         async def _ask_editor() -> tuple[DigestContent, list[CollectedItem]]:
+            nonlocal attempts
+            attempts += 1
             content = self._parse_content(await chain.ainvoke(prompt_vars))
             # Hard upper-bound: the prompt asks for EXACTLY target_count, but a model can over-emit.
             # Trim deterministically so the digest never exceeds the target (fewer is allowed when
@@ -122,7 +129,9 @@ class DigestGenerator:
                 content.items = self._trim_keeping_pinned(content.items, target_count, ranked_items)
             # Inside the retry on purpose: an unmatched HEADLINE raises DigestContentError, and a
             # re-ask is exactly the remedy (the lead and the visual are both written about items[0]).
-            return content, self._fill_source_metadata(content, ranked_items)
+            sources = self._fill_source_metadata(content, ranked_items)
+            self._check_prose(content, attempt=attempts)
+            return content, sources
 
         # Re-ask on a malformed emission (or a transient Bedrock error) instead of degrading.
         # Exhausting the attempts raises, so a story-less digest is never persisted or posted.
@@ -152,6 +161,26 @@ class DigestGenerator:
             generated_at=datetime.now(UTC),
             diversity_breaches=self._audit_shipped_diversity(shipped_sources, ranked_items),
         )
+
+    def _check_prose(self, content: DigestContent, *, attempt: int) -> None:
+        """Verify the editor's Korean in CODE and re-ask when it fails.
+
+        The two defects checked here each have an explicit prompt rule against them and shipped
+        anyway, which is the same situation that made _verify_grounding a code pass rather than
+        another rule. The hit list is logged either way, so a clean run is recorded as clean.
+
+        The LAST attempt keeps the content: raising there would fail the whole digest over a style
+        slip, and with retry_attempts=0 on the Lambda nothing would retry the run."""
+        if not self.config.enable_prose_lint:
+            return
+        hits = lint_digest_prose(content.lead, [(item.body, item.implication) for item in content.items])
+        if not hits:
+            logger.info("Digest prose lint: clean")
+            return
+        logger.error("Digest prose lint found %d issue(s): %s", len(hits), " | ".join(hits))
+        if attempt < self.config.digest_max_retries:
+            raise DigestContentError(f"Digest prose failed {len(hits)} deterministic check(s)")
+        logger.error("Keeping the digest despite %d prose issue(s): the attempts are exhausted", len(hits))
 
     def _audit_shipped_diversity(self, shipped: list[CollectedItem], ranked_items: list[RankedItem]) -> list[str]:
         """Check the diversity caps against the digest that actually SHIPS.
@@ -374,7 +403,7 @@ class DigestGenerator:
             )
             if trends_context:
                 sources += f"\n\n[TRENDS] Verified trend-tracking history (recurrence facts):\n{trends_context}"
-            chain = GroundingCheckPrompt.get_prompt() | self.llm | StrOutputParser()
+            chain = GroundingCheckPrompt.get_prompt() | self.grounding_llm | StrOutputParser()
             raw = await chain.ainvoke({"digest_text": _grounding_payload(content), "sources": sources})
             data = parse_json_from_llm_output(raw)
             violations = data.get("violations", [])
@@ -428,33 +457,10 @@ class DigestGenerator:
             )
         return "\n".join(parts)
 
-    @staticmethod
-    def _source_tag_and_metrics(item: CollectedItem) -> tuple[str, str]:
-        """Return (source_tag, metrics) for an item: a backtick-wrapped source label and a
-        ' · '-joined emoji metric string. Code owns this — the LLM never writes source markup."""
-        meta = item.metadata
-        tag = ""
-        metrics: list[str] = []
-
-        if item.source_type == SourceType.REDDIT:
-            # Reddit is collected via the public .rss feed, which carries no
-            # score/num_comments — only the subreddit tag is available.
-            sub = meta.get("subreddit", "")
-            tag = f"`r/{sub}`" if sub else "`Reddit`"
-        elif item.source_type == SourceType.YOUTUBE:
-            tag = "`YouTube`"
-            if meta.get("view_count"):
-                metrics.append(f"{YOUTUBE_VIEWS_EMOJI} {meta['view_count']:,}")
-        elif item.source_type == SourceType.X:
-            tag = f"`@{item.author}`" if item.author else "`X`"
-        elif item.source_type == SourceType.RSS:
-            name = clean_rss_feed_name(meta.get("feed_title", ""), meta.get("feed_url", "")) or "RSS"
-            tag = f"`{name}`"
-        elif item.source_type == SourceType.WEB:
-            domain = urlparse(item.url).netloc.removeprefix("www.")
-            tag = f"`{domain}`" if domain else "`Web`"
-
-        return tag, " · ".join(metrics)
+    # The per-SourceType tag/metrics table lives in shared/formatting.py beside the origin key and
+    # the origin label it has to agree with — three if/elif chains over the same five SourceTypes
+    # each fell through to its own silent default, and only one of them was ever fixed at a time.
+    _source_tag_and_metrics = staticmethod(source_tag_and_metrics)
 
 
 def _prose_budget_rule(max_chars: int) -> str:
@@ -525,9 +531,6 @@ def render_digest_text(content: DigestContent) -> str:
             parts.append(item.implication.strip())
         parts.append("")
     return "\n".join(parts).strip() + "\n"
-
-
-_GROUNDING_FIELDS = ("LEAD", "BODY", "IMPLICATION")
 
 
 def _grounding_payload(content: DigestContent) -> str:

@@ -18,7 +18,7 @@ from shared import (
     BedrockCrossRegionModelHelper,
     Config,
     EnvVars,
-    is_running_in_aws,
+    available_boto_profile,
     logger,
 )
 
@@ -87,9 +87,9 @@ background, the mechanism, and the "so what" generously so a non-expert follows 
 detailed, kind, and easy to read — longer is fine when it earns its length (the no-repetition \
 rule, not brevity, is the limit). A section is several connected sentences of real explanation, \
 not one clipped headline.
-- NUMBER the sections for scannability. Slack: each section gets a numbered bold heading on its \
-own line, e.g. "*1. <섹션 제목>*", "*2. ...*". Threads: prefix each post with its index, e.g. \
-"1/N ...", "2/N ...", so readers can follow the sequence.
+- NUMBER the Slack sections for scannability: each section gets a numbered bold heading on its own \
+line, e.g. "*1. <섹션 제목>*", "*2. ...*". (Threads post indices are added by the publisher — do not \
+write them yourself.)
 (Korean register and style rules — declarative '~다', no honorifics, no colon-enumeration — are in \
 the <language> section below and apply to every word you write.)
 </voice>
@@ -146,14 +146,14 @@ rest unfold it. Cover FEWER points than Slack; never squeeze a Slack point down 
 make room for another, drop the point instead. Use only as many posts as the points need, because a \
 padded post reads worse than a short thread.
   FORMAT: separate posts with a line containing only "---" (the ONLY post boundary). Each post opens \
-with "N/M  짧은 소제목", then a BLANK LINE, then the body (the blank line inside a post is kept). Plain \
-text only; Threads renders no markdown. Derive the 소제목 and the arc from YOUR topic rather than from \
-this shape:
-  1/M  <도입 소제목>
+with a short 소제목 on its own line, then a BLANK LINE, then the body (the blank line inside a post is \
+kept). Plain text only; Threads renders no markdown. Derive the 소제목 and the arc from YOUR topic \
+rather than from this shape:
+  <도입 소제목>
 
   <첫 포스트 본문>
   ---
-  M/M  <결론 소제목>
+  <결론 소제목>
 
   <마지막 포스트 본문>
   CITATIONS: a post asserting a fact (a number, a launch, a named product or partnership, a quote) \
@@ -251,15 +251,14 @@ def _render_tools_block(tools: list[Any]) -> str:
 def create_research_agent(tools: list[Any] | None = None) -> Agent:
     config = Config.load()
 
-    if is_running_in_aws():
-        boto_session = boto3.Session(
-            region_name=os.environ.get(EnvVars.AWS_BEDROCK_REGION.value),
-        )
-    else:
-        boto_session = boto3.Session(
-            region_name=config.aws.bedrock_region,
-            profile_name=config.aws.profile or None,
-        )
+    # Ambient credentials by default, the configured profile only where it resolves. Choosing by
+    # is_running_in_aws() sent the AgentCore runtime — which sets none of the variables that sniff
+    # looks for — down the profile_name="research" branch inside a container with no ~/.aws/config,
+    # so the agent could not be constructed at all there.
+    boto_session = boto3.Session(
+        region_name=os.environ.get(EnvVars.AWS_BEDROCK_REGION.value) or config.aws.bedrock_region,
+        profile_name=available_boto_profile(config.aws.profile),
+    )
 
     boto_config = BotoConfig(
         read_timeout=config.agent.boto_read_timeout,

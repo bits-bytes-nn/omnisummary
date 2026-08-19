@@ -71,8 +71,20 @@ class TestRecallTrends:
         assert "open weights" in result and "GLM released" in result
 
     @pytest.mark.asyncio
-    async def test_store_error_yields_empty(self):
+    async def test_a_store_failure_is_not_reported_as_no_history(self):
+        # "S3 wouldn't tell me" is not "this topic never came up": returning TrendMemory() made a
+        # throttled/denied read indistinguishable from an untracked topic, and the report then
+        # asserted that absence. Same distinction recall_digest draws for the digest store.
         with patch("shared.create_state_store", side_effect=RuntimeError("boom")):
+            result = await rt.recall_trends._tool_func("x")
+        assert "could not be READ" in result
+        assert "No earlier trends recalled" not in result
+
+    @pytest.mark.asyncio
+    async def test_an_empty_store_still_reports_no_history(self):
+        store = MagicMock()
+        store.exists.return_value = False
+        with patch("shared.create_state_store", return_value=store):
             result = await rt.recall_trends._tool_func("x")
         assert "No earlier trends recalled" in result
 
@@ -273,3 +285,66 @@ class TestRequestContext:
         with request_context(custom):
             assert current_delivery_context() is custom
         assert current_delivery_context() is not custom
+
+
+class TestCitationGuard:
+    """deliver_report validated only the channel name, so the sole defence against a fabricated
+    citation on a PUBLIC Threads account was prose emphatic enough to be evidence it does not hold.
+    DeliveryContext already threads through every search tool, so the URLs a tool actually surfaced
+    are recorded there and compared against the report's."""
+
+    @pytest.mark.asyncio
+    async def test_a_url_no_tool_returned_blocks_delivery(self):
+        delivery = DeliveryContext(channel_id="C")
+        with request_context(delivery):
+            with patch("output.delivery.deliver_research_report", new=AsyncMock(return_value=True)) as deliver:
+                msg = await rt.deliver_report._tool_func("근거: https://invented.example/paper", channel="threads")
+        deliver.assert_not_awaited()
+        assert "NOT delivered" in msg
+        assert "https://invented.example/paper" in msg
+
+    @pytest.mark.asyncio
+    async def test_a_url_a_search_tool_surfaced_is_allowed(self):
+        delivery = DeliveryContext(channel_id="C")
+        with request_context(delivery):
+            with patch(
+                "agent.research_tools.tavily_search",
+                new=AsyncMock(return_value="- T\n  URL: https://real.example/a\n  Content: x"),
+            ):
+                await rt.web_search._tool_func("q")
+            with patch("output.delivery.deliver_research_report", new=AsyncMock(return_value=True)) as deliver:
+                msg = await rt.deliver_report._tool_func("근거: https://real.example/a", channel="threads")
+        deliver.assert_awaited_once()
+        assert "Delivered" in msg
+
+    @pytest.mark.asyncio
+    async def test_an_http_to_https_rewrite_or_a_parenthesised_url_still_matches(self):
+        # The comparison must refuse a FABRICATED citation, never a real one the model reformatted.
+        delivery = DeliveryContext(channel_id="C")
+        with request_context(delivery):
+            with patch(
+                "agent.research_tools.tavily_search",
+                new=AsyncMock(return_value="URL: http://www.real.example/a/"),
+            ):
+                await rt.web_search._tool_func("q")
+            with patch("output.delivery.deliver_research_report", new=AsyncMock(return_value=True)) as deliver:
+                await rt.deliver_report._tool_func("본문 (https://real.example/a).", channel="slack")
+        deliver.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_read_page_counts_as_surfaced(self):
+        delivery = DeliveryContext(channel_id="C")
+        with request_context(delivery):
+            with patch("agent.research_tools.extract_url", new=AsyncMock(return_value="page text, no urls")):
+                await rt.read_url._tool_func("https://primary.example/post")
+            with patch("output.delivery.deliver_research_report", new=AsyncMock(return_value=True)) as deliver:
+                await rt.deliver_report._tool_func("출처 https://primary.example/post", channel="slack")
+        deliver.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_report_citing_nothing_is_delivered(self):
+        delivery = DeliveryContext(channel_id="C")
+        with request_context(delivery):
+            with patch("output.delivery.deliver_research_report", new=AsyncMock(return_value=True)) as deliver:
+                await rt.deliver_report._tool_func("URL 없는 리포트다.", channel="slack")
+        deliver.assert_awaited_once()

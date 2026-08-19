@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 
 from aws_cdk import Duration, RemovalPolicy, Stack, Tags
-from aws_cdk import aws_codebuild as codebuild
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_ecr as ecr
@@ -346,49 +345,3 @@ class OmniSummaryFoundationStack(Stack):
                 dns_record_type=sd.DnsRecordType.A,
             ),
         )
-
-        self.codebuild_project = codebuild.Project(
-            self,
-            "ImageBuild",
-            project_name=f"{project_name}-{stage}-agent-build",
-            environment=codebuild.BuildEnvironment(
-                build_image=codebuild.LinuxArmBuildImage.AMAZON_LINUX_2_STANDARD_3_0,
-                compute_type=codebuild.ComputeType.LARGE,
-                privileged=True,
-            ),
-            environment_variables={
-                "AWS_ACCOUNT_ID": codebuild.BuildEnvironmentVariable(value=self.account),
-                "AWS_DEFAULT_REGION": codebuild.BuildEnvironmentVariable(value=self.region),
-                "IMAGE_REPO_NAME": codebuild.BuildEnvironmentVariable(value=self.ecr_repo.repository_name),
-                "IMAGE_TAG": codebuild.BuildEnvironmentVariable(value="latest"),
-            },
-            build_spec=codebuild.BuildSpec.from_object(
-                {
-                    "version": "0.2",
-                    "phases": {
-                        "pre_build": {
-                            "commands": [
-                                "aws ecr get-login-password --region $AWS_DEFAULT_REGION | "
-                                "docker login --username AWS --password-stdin "
-                                "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com",
-                            ]
-                        },
-                        "build": {
-                            "commands": [
-                                "docker build -t $IMAGE_REPO_NAME:$IMAGE_TAG .",
-                                "docker tag $IMAGE_REPO_NAME:$IMAGE_TAG "
-                                "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/"
-                                "$IMAGE_REPO_NAME:$IMAGE_TAG",
-                            ]
-                        },
-                        "post_build": {
-                            "commands": [
-                                "docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/"
-                                "$IMAGE_REPO_NAME:$IMAGE_TAG",
-                            ]
-                        },
-                    },
-                }
-            ),
-        )
-        self.ecr_repo.grant_push(self.codebuild_project)

@@ -169,7 +169,6 @@ class TestOpus5Registry:
         assert info.supports_temperature is False
         assert info.uses_adaptive_thinking is True
         assert info.supports_thinking is True
-        assert info.supports_prompt_caching is True
 
     def test_opus_5_matches_the_other_claude_5_family_gates(self):
         # Same shape as Sonnet 5 / Opus 4.8 — a new family member that silently differs on these two

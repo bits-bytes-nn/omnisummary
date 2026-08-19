@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from langchain_core.output_parsers import StrOutputParser
 
 from shared import (
+    ENGAGEMENT_SIGNAL_BLOCK,
     LOGGING_TRUNCATION_CHARS,
     BedrockLanguageModelFactory,
     CollectedItem,
@@ -23,6 +24,8 @@ from shared import (
     retry_async,
 )
 from shared.config import PipelineConfig
+
+from .aggregator import normalize_url
 
 DEFAULT_SOURCE_SLOT = 1
 
@@ -180,27 +183,43 @@ class ContentRanker:
             )
         return selected
 
-    @staticmethod
     def _backfill_candidates(
-        above_threshold: list[RankedItem], core: list[RankedItem], grace_ids: set[str], room: int
+        self, above_threshold: list[RankedItem], core: list[RankedItem], grace_ids: set[str], room: int
     ) -> list[RankedItem]:
         """The extra candidates handed to the editor beyond the core, in score order, flagged as
         backfill. They exist so a merge of two same-event items can still be topped up to top_n
-        distinct stories; the diversity guarantees belong to the core, so these deliberately ignore
-        the slot/origin caps. Grace items (below min_score) are never backfill — they may only earn
-        their own source's guaranteed slot."""
+        distinct stories. Grace items (below min_score) are never backfill — they may only earn their
+        own source's guaranteed slot.
+
+        max_per_origin is honoured HERE too. It used to be ignored deliberately ("the guarantees
+        belong to the core"), and _audit_shipped_diversity is detection-only by design, so a backfill
+        item the editor used as an ADDITION rather than a replacement shipped a second story from an
+        origin already at its cap — digest_2026-07-12 carried two r/LocalLLaMA GPU benchmarks against
+        max_per_origin=1. Skipping such a candidate uses data already in hand and leaves the
+        merge-topup purpose intact: the freed slot is filled by the next DISTINCT origin instead."""
         if room <= 0:
             return []
         chosen_ids = {r.item.item_id for r in core}
+        origin_counts: dict[str, int] = defaultdict(int)
+        for ranked in core:
+            core_origin = resolve_origin_key(ranked.item)
+            if core_origin:
+                origin_counts[core_origin] += 1
+        cap = self.config.max_per_origin
         extras: list[RankedItem] = []
         for item in above_threshold:
             if len(extras) >= room:
                 break
             if item.item.item_id in chosen_ids or item.item.item_id in grace_ids:
                 continue
+            origin = resolve_origin_key(item.item)
+            if origin and origin_counts[origin] >= cap:
+                continue
             item.backfill = True
             extras.append(item)
             chosen_ids.add(item.item.item_id)
+            if origin:
+                origin_counts[origin] += 1
         return extras
 
     async def _rank_batch(self, items: list[CollectedItem], semaphore: asyncio.Semaphore) -> list[RankedItem]:
@@ -264,7 +283,7 @@ class ContentRanker:
             return await chain.ainvoke(
                 {
                     "items_text": items_text,
-                    "engagement_guidance": self._engagement_guidance(),
+                    "engagement_guidance": self._engagement_guidance(items),
                     "ranking_categories": ", ".join(self.config.ranking_categories),
                     "duplicate_score_penalty": self.config.ranking_duplicate_score_penalty,
                     "scoring_rubric": self.config.ranking_scoring_rubric,
@@ -281,10 +300,16 @@ class ContentRanker:
             )
         return self._parse_rankings(raw_output, items)
 
-    def _engagement_guidance(self) -> str:
-        tiers = sorted(self.config.engagement_tiers)
-        parts = [f"{views:,}+ views → +{bonus}" for views, bonus in tiers]
-        return "Items with view counts: " + ", ".join(parts) + "."
+    def _engagement_guidance(self, items: list[CollectedItem]) -> str:
+        """The *Engagement Signal* block, or "" for a batch that carries no engagement data at all.
+
+        `view_count` is set by the YouTube collector alone, so on most batches this block described a
+        bonus nothing in the batch could receive — and stacked, for the one medium that does carry it,
+        on top of the medium-neutrality paragraph and the source-slot score grace."""
+        if not any(self._format_engagement(item) for item in items):
+            return ""
+        tiers = ", ".join(f"{views:,}+ views → +{bonus}" for views, bonus in sorted(self.config.engagement_tiers))
+        return ENGAGEMENT_SIGNAL_BLOCK.format(tiers=f"Items with view counts: {tiers}.")
 
     def _apply_origin_weights(self, ranked_items: list[RankedItem]) -> None:
         weights = self.config.origin_weights
@@ -571,6 +596,36 @@ class ContentRanker:
             return f"{meta['view_count']:,} views"
         return ""
 
+    @staticmethod
+    def _resolve_item_id(raw_id: str, items: list[CollectedItem]) -> tuple[str, str]:
+        """(item_id, how) for an id the model answered with, or ("", "") when nothing in the batch
+        matches it.
+
+        The `=== Item N ===` header the prompt builder emits invites the model to answer with the
+        DISPLAY ORDINAL, and production logs show it doing exactly that ('30', '27', '18', '9', '5'),
+        alongside a truncated 14-character id and full URLs. All of those were discarded with a
+        warning — and because the coverage re-ask only fires below ranking_min_coverage_ratio, one run
+        logged 'Unknown item_id 30' and then '38/40 scored, coverage 0.95' and never re-asked, so
+        those candidates left the day's pool silently.
+
+        Exact match first, so a genuine id can never be reinterpreted as an ordinal. A prefix is
+        accepted only when it is UNAMBIGUOUS across the batch."""
+        by_id = {item.item_id: item for item in items}
+        if raw_id in by_id:
+            return raw_id, "exact"
+        if raw_id.isdigit():
+            ordinal = int(raw_id)
+            if 1 <= ordinal <= len(items):
+                return items[ordinal - 1].item_id, "ordinal"
+        wanted_url = normalize_url(raw_id)
+        by_url = {normalize_url(item.url): item.item_id for item in items if item.url}
+        if wanted_url in by_url:
+            return by_url[wanted_url], "url"
+        prefixed = [item.item_id for item in items if raw_id and item.item_id.startswith(raw_id)]
+        if len(prefixed) == 1:
+            return prefixed[0], "prefix"
+        return "", ""
+
     def _parse_rankings(self, raw_output: str, items: list[CollectedItem]) -> list[RankedItem]:
         items_by_id = {item.item_id: item for item in items}
 
@@ -589,12 +644,16 @@ class ContentRanker:
         # story twice. First entry wins — deterministic, and it is the one the model committed to.
         seen_ids: set[str] = set()
         duplicate_ids: list[str] = []
+        recovered: Counter[str] = Counter()
         for entry in rankings:
             try:
-                item_id = str(entry["item_id"])
-                if item_id not in items_by_id:
-                    logger.warning("Unknown item_id in ranking response: '%s'", item_id)
+                raw_id = str(entry["item_id"])
+                item_id, how = self._resolve_item_id(raw_id, items)
+                if not item_id:
+                    logger.warning("Unknown item_id in ranking response: '%s'", raw_id)
                     continue
+                if how != "exact":
+                    recovered[how] += 1
                 if item_id in seen_ids:
                     duplicate_ids.append(item_id)
                     continue
@@ -615,5 +674,12 @@ class ContentRanker:
                 "Ranking response repeated %d item_id(s); kept the first entry for each: %s",
                 len(duplicate_ids),
                 duplicate_ids,
+            )
+        if recovered:
+            # WHICH path recovered them: a persistent 'ordinal' count says the model is answering with
+            # the display number, which is a prompt-shape finding, not a transient slip.
+            logger.info(
+                "Ranking response used non-exact item ids; resolved against the batch by %s",
+                ", ".join(f"{how}={count}" for how, count in sorted(recovered.items())),
             )
         return ranked_items

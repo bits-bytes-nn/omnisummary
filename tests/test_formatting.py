@@ -82,7 +82,17 @@ class TestResolveOriginKey:
         assert resolve_origin_key(_sourced(SourceType.REDDIT, subreddit="LocalLLaMA")) == "LocalLLaMA"
         assert resolve_origin_key(_sourced(SourceType.RSS, feed_url="f")) == "f"
         assert resolve_origin_key(_sourced(SourceType.X, author="karpathy")) == "karpathy"
-        assert resolve_origin_key(_sourced(SourceType.RSS)) is None  # no feed metadata -> no origin
+
+    def test_missing_source_metadata_falls_back_to_the_host(self):
+        # An origin-less item escaped max_per_origin entirely, was skipped by pin-origin seeding, and
+        # reached the ranking prompt with no Origin line. Live-fired: DOMAIN_TO_SOURCE relabels a
+        # web-search hit or a pinned x.com URL as SourceType.X, whose origin is item.author — which
+        # those items never carry.
+        assert resolve_origin_key(_sourced(SourceType.X, url="https://x.com/a/status/1")) == "x.com"
+        assert resolve_origin_key(_sourced(SourceType.RSS, url="https://blog.example/p")) == "blog.example"
+
+    def test_no_origin_only_when_there_is_no_host_either(self):
+        assert resolve_origin_key(_sourced(SourceType.RSS, url="notaurl")) is None
 
 
 class TestFormatOriginLabel:
@@ -105,6 +115,36 @@ class TestFormatOriginLabel:
         assert format_origin_label(_sourced(SourceType.YOUTUBE, channel_url="c")) == "c"
         assert format_origin_label(_sourced(SourceType.X, author="karpathy")) == "@karpathy"
         assert format_origin_label(_sourced(SourceType.RSS, feed_title="The Verge")) == "The Verge"
+
+    def test_a_missing_label_falls_back_to_the_host(self):
+        # Otherwise the prompt judges "Source Authority" with the outlet withheld.
+        assert format_origin_label(_sourced(SourceType.X, url="https://x.com/a/status/1")) == "x.com"
+
+
+class TestSourceDescriptorRegistry:
+    """One table keyed by SourceType replaces three if/elif chains over the same five types
+    (resolve_origin_key, format_origin_label, the digest generator's tag/metrics), each of which ended
+    in its own silent fall-through default — so only one of them was ever fixed at a time."""
+
+    def test_every_source_type_has_a_descriptor(self):
+        from shared.formatting import SOURCE_DESCRIPTORS
+
+        assert set(SOURCE_DESCRIPTORS) == set(SourceType)
+
+    def test_the_tag_falls_back_to_the_host(self):
+        from shared.formatting import source_tag_and_metrics
+
+        tag, metrics = source_tag_and_metrics(_sourced(SourceType.X, url="https://x.com/a/status/1"))
+        assert tag == "`x.com`"
+        assert metrics == ""
+
+    def test_only_youtube_carries_metrics(self):
+        from shared.formatting import source_tag_and_metrics
+
+        _, views = source_tag_and_metrics(_sourced(SourceType.YOUTUBE, view_count=12345))
+        assert "12,345" in views
+        # Reddit comes through the public .rss feed, which drops score/num_comments.
+        assert source_tag_and_metrics(_sourced(SourceType.REDDIT, subreddit="LocalLLaMA"))[1] == ""
 
 
 class TestPublicPackageBoundaries:

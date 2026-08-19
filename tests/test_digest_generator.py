@@ -956,3 +956,80 @@ class TestShippedDiversityAudit:
         ]
         result = await gen.generate(ranked, [r.item for r in ranked])
         assert result.diversity_breaches and "LocalLLaMA" in result.diversity_breaches[0]
+
+
+class TestProseLintReAsk:
+    """The two defects shared/prose_lint.py checks each have an explicit prompt rule against them and
+    shipped anyway — the same situation that made grounding a code pass rather than another rule."""
+
+    @staticmethod
+    def _emitted(implication: str) -> str:
+        return json.dumps(
+            {
+                "lead": "Anthropic이 Claude를 공개했다. 관건은 배포다.",
+                "items": [{"title": "T", "url": "u", "body": "본문이다.", "implication": implication}],
+            }
+        )
+
+    def _generator(self, outputs: list[str], **overrides):
+        seen: list[str] = []
+        factory = MagicMock()
+
+        def _respond(prompt):
+            seen.append(str(prompt))
+            return AIMessage(content=outputs[min(len(seen) - 1, len(outputs) - 1)])
+
+        factory.get_model.return_value = RunnableLambda(_respond)
+        config = PipelineConfig(
+            enable_grounding_check=False, agi_countdown_date="", digest_retry_backoff_sec=0, **overrides
+        )
+        return DigestGenerator(config, factory), seen
+
+    @staticmethod
+    def _ranked():
+        return [RankedItem(item=CollectedItem(item_id="i", source_type=SourceType.RSS, title="T", url="u"), score=0.8)]
+
+    @pytest.mark.asyncio
+    async def test_a_prose_hit_re_asks_and_the_clean_retry_ships(self):
+        gen, seen = self._generator([self._emitted("못 쓴다, 그게 문제다."), self._emitted("값이 문제다.")])
+        ranked = self._ranked()
+        result = await gen.generate(ranked, [r.item for r in ranked])
+        assert len(seen) == 2  # one re-ask
+        assert result.content is not None
+        assert result.content.items[0].implication == "값이 문제다."
+
+    @pytest.mark.asyncio
+    async def test_the_last_attempt_ships_anyway(self):
+        # A style slip must never cost the whole digest: retry_attempts=0 on the Lambda means nothing
+        # would retry the run, so an exhausted lint keeps the content and logs at ERROR.
+        gen, seen = self._generator([self._emitted("못 쓴다, 그게 문제다.")], digest_max_retries=2)
+        ranked = self._ranked()
+        result = await gen.generate(ranked, [r.item for r in ranked])
+        assert len(seen) == 2
+        assert result.content is not None
+        assert result.content.items[0].implication == "못 쓴다, 그게 문제다."
+
+    @pytest.mark.asyncio
+    async def test_clean_prose_costs_no_extra_call(self):
+        gen, seen = self._generator([self._emitted("값이 문제다.")])
+        ranked = self._ranked()
+        await gen.generate(ranked, [r.item for r in ranked])
+        assert len(seen) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_lint_is_disableable(self):
+        gen, seen = self._generator([self._emitted("못 쓴다, 그게 문제다.")], enable_prose_lint=False)
+        ranked = self._ranked()
+        await gen.generate(ranked, [r.item for r in ranked])
+        assert len(seen) == 1
+
+
+class TestGroundingStageAttribution:
+    def test_the_grounding_pass_is_billed_under_its_own_stage(self):
+        # A second ~50k-token Sonnet call billed as "digest" is indistinguishable from the generation
+        # itself, which defeats the only spend-attribution mechanism the repo has.
+        factory = MagicMock()
+        factory.get_model.return_value = MagicMock()
+        DigestGenerator(PipelineConfig(), factory)
+        stages = [call.kwargs["stage"] for call in factory.get_model.call_args_list]
+        assert stages == ["digest", "grounding"]

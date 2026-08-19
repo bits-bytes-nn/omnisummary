@@ -974,6 +974,9 @@ ARN(`arn:...:application-inference-profile/<opaque-id>`)이고 그 안에는 둘
 
 **파이프라인에는 적용하지 않는다.** 단발성 프롬프트(랭커와 다이제스트, 트렌드, 시각화 시놉시스로 모두 약 530
 토큰이며 실행당 한 번 호출한다)는 캐시 최소치에 미달하고 호출 간 재사용도 없으니 의도적으로 캐싱하지 않는다.
+그래서 모델 레지스트리에도 `supports_prompt_caching` 같은 플래그를 두지 않는다. 15개 엔트리에 True로 박혀
+있었지만 읽는 곳이 테스트 하나뿐이어서, 레지스트리가 쓰지 않는 능력을 광고하고 파이프라인 스테이지의
+`cache_read`/`cache_write` 로그 필드는 영원히 0이었다.
 
 ## 7. 메모리: 세 개의 분리된 저장소
 
@@ -1492,8 +1495,10 @@ oversize든 `None`을 반환하고 절대 raise하지 않는다. 반환 타입�
 
 **비용 가시성과 결정성.** `quality`는 `visual_image_quality`가 설정될 때만 보낸다. 비우면 OpenAI의 `auto`가
 티어를 고르는데 장당 단가가 약 4배 차이다. 우리 사이즈 기준으로 medium이 $0.041–0.053, high가 $0.165–0.211이다.
-그래서 월 청구가 하루 1장에 약 $1.3에서 $5.2 사이로 불확정이고, 코드가 어느 티어를 산 건지 말할 수 없다. 값을
-고정하면 결정적이 된다. 어느 쪽이든 렌더는 응답이 보고하는 실제 티어와 과금 토큰 수를 로그에 남긴다
+그래서 월 청구가 하루 1장에 약 $1.3에서 $5.2 사이로 불확정이었고 렌더 로그도 `quality=auto->unreported`밖에
+남기지 못했다. 이미지 안에 들어가는 짧은 영문 레이블의 가독성도 같은 티어가 결정한다. 그래서 config가 값을
+못박고(`"high"`), 타입은 low/medium/high/auto와 빈 문자열로 좁혀 오타가 visual Lambda의 OpenAI 400이 아니라
+config 로드에서 걸리게 했다. 어느 쪽이든 렌더는 응답이 보고하는 실제 티어와 과금 토큰 수를 로그에 남긴다
 (`_usage_summary`. usage가 없거나 필드명이 바뀌면 `"unknown"`으로 degrade한다. SDK 변경이 그날 이미지를
 날려서는 안 된다).
 
@@ -1505,7 +1510,7 @@ OpenAI 키(`resolve_secret`으로 env를 먼저, 그다음 SSM에서 해석한�
 ### `foundation_stack`
 
 VPC와 ECR 리포, DynamoDB 중복 제거 테이블(SSE와 prod에서 PITR), S3 상태 버킷(CDK가 생성하는 경우 S3-managed
-암호화와 버저닝, 퍼블릭 차단, SSL 강제), ECS Fargate RSSHub 서비스와 service-discovery, CodeBuild 이미지 빌드,
+암호화와 버저닝, 퍼블릭 차단, SSL 강제), ECS Fargate RSSHub 서비스와 service-discovery,
 SNS 알림 토픽과 선택적 이메일 구독, AgentCore Memory 리소스와 실행 역할, 그리고 IAM 역할들을 만든다.
 
 **RSSHub 서비스는 `aws.rsshub_desired_count`(기본 0)로 스케일된다.** 다이제스트는 이 서비스에 도달하지 않는다.
@@ -1707,8 +1712,12 @@ import를 실행하려면 네이티브여야 하기 때문이다. QEMU 아래에
 **의존성과 시크릿 스캔(`security` 잡).** `uv.lock`이 핀한 정확한 집합, 곧 이미지가 설치하는 그 버전들을
 `pip-audit --strict`로 감사한다. pyproject 범위를 재해석해 감사하면 배포되지 않는 버전을 검사하게 된다. 감사
 대상은 requirements 파일이 아니라 설치된 트리다. `uv sync --frozen --no-dev --no-install-project`로 잠긴 집합을
-디스크에 올린 뒤 `pip-audit --path .venv/lib/python3.12/site-packages`로 `dist-info`만 읽는다. 아무것도 빌드하지
-않고, 실제 배포되는 플랫폼으로 이미 좁혀진 집합이다.
+디스크에 올린 뒤 `pip-audit --path <purelib>`로 `dist-info`만 읽는다. 아무것도 빌드하지
+않고, 실제 배포되는 플랫폼으로 이미 좁혀진 집합이다. 이 `<purelib>`는 `.venv/bin/python`의 `sysconfig`에서
+뽑아내고 디렉터리가 비어 있지 않은지까지 확인한다. 존재하지 않는 경로를 넘기면 pip-audit는 "No known
+vulnerabilities found"를 찍고 0으로 끝난다. 경로에 박아둔 `python3.12`가 이 게이트를 살려두는 유일한 장치였고,
+인터프리터를 고정하는 것은 어디에도 없었다. 그래서 `.python-version`을 추적 파일로 두고 CI의 `uv python
+install`도 인수 없이 그 핀을 읽게 했다.
 
 ⚠️ **호출 형식 두 가지가 load-bearing이다.** 각각이 이 잡을 감사를 한 번도 수행하지 못한 채 실패시켰다. 첫째,
 `uvx pip-audit==2.9.0`은 핀된 uv 0.5.11에서 유효한 spec이 아니고 `--from`이 필요하다. 둘째, 그걸 고치면

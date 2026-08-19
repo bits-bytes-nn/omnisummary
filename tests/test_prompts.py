@@ -67,15 +67,17 @@ class TestDigestLeadSpec:
 
     def test_lead_must_name_the_story_concretely(self):
         rendered = _render(DigestPrompt)
-        assert "NAMING that story" in rendered
+        assert "name that story in ONE assertive sentence" in rendered
         # The generic "situate the reader in today's AI/ML landscape" opener is gone.
         assert "situates the reader" not in rendered
 
     def test_re_narration_ban_no_longer_forbids_naming(self):
         # The ban is narrowed to what actually duplicated the headline reply — replaying its
         # sequence of events and repeating its numbers — so the lead can still say WHO it is about.
+        # The five-clause paragraph that said this is now two sentences; shared/prose_lint.py checks
+        # the same thing in code, which is why the rule no longer has to be spelled out at length.
         rendered = _render(DigestPrompt)
-        assert "no replaying its sequence of events and no repeating its numbers" in rendered
+        assert "no replay of its sequence and no repeat of its numbers" in rendered
         assert "numbers, names, or its sequence of events" not in rendered
 
     def test_items_are_still_requested_before_the_lead(self):
@@ -133,3 +135,26 @@ class TestRankingCostShape:
         # keys are ever reordered so reasoning precedes score, shortening it becomes a quality risk.
         rendered = _render(RankingPrompt)
         assert rendered.index('"score"') < rendered.index('"reasoning"')
+
+
+class TestRankingPromptCarriesNoCodeOwnedOrDoubleCountedRules:
+    """Pure deletions. The medium-neutrality paragraph already says a substantive talk or interview
+    scores like an equivalent article, and output slots / platform diversity are decided by code
+    (_apply_source_slots, source_slots, max_per_origin) — a batch of three items cannot honour
+    either, and the request contradicted the absolute-scoring instruction above it."""
+
+    def test_no_standalone_interview_bonus(self):
+        rendered = _render(RankingPrompt)
+        assert "Interviews/podcasts with substance" not in rendered
+        # The neutrality paragraph it double-counted stays.
+        assert "Score the ideas, not the medium." in rendered
+
+    def test_no_output_slot_or_platform_diversity_instruction(self):
+        rendered = _render(RankingPrompt)
+        assert "output slots" not in rendered
+        assert "platform diversity" not in rendered
+        # Same-event clustering — the one diversity decision the model CAN make in a batch — stays.
+        assert "Cluster same-EVENT items" in rendered
+
+    def test_absolute_scoring_is_still_the_instruction(self):
+        assert "Score each item ABSOLUTELY" in _render(RankingPrompt)

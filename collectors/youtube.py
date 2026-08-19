@@ -7,6 +7,7 @@ from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
+import requests
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import YouTubeTranscriptApiException
 
@@ -21,6 +22,7 @@ from .base import (
     fetch_feed_with_retry,
     gather_collector_results,
     load_items_from_s3,
+    parked_items_in_window,
     parse_feed_entries,
 )
 
@@ -130,7 +132,14 @@ class YouTubeCollector(BaseCollector):
                 max_failed=self.config.max_failed_inputs,
                 what="channels",
             )
-            return parked.items
+            # Through the SAME window both live branches apply: a stale park file otherwise fed
+            # videos older than lookback into ranking, and a --date backfill ingested today's.
+            return parked_items_in_window(
+                parked.items,
+                lookback_hours=self.config.lookback_hours,
+                reference_time=self.config.reference_time,
+                description="YouTube park file",
+            )
 
         # One resolution for the whole run, before the fan-out, so no channel task blocks the loop.
         await self._resolve_api_key()
@@ -428,6 +437,10 @@ class YouTubeCollector(BaseCollector):
         return ""
 
     async def _fetch_transcript(self, video_id: str) -> str:
+        # The bound that actually holds is the SOCKET timeout inside _get_transcript: wait_for
+        # cannot cancel an asyncio.to_thread worker (see collectors/base.py's fetch_feed), so this
+        # wait_for only stops the CALLER waiting — the thread would keep its pool slot forever, and
+        # asyncio.run then blocks on the executor join at shutdown.
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(self._get_transcript, video_id),
@@ -440,17 +453,41 @@ class YouTubeCollector(BaseCollector):
     def _get_transcript(self, video_id: str) -> str:
         # Run by the local sync (residential IP); YouTube blocks transcript fetches from
         # datacenter IPs, so in AWS this fails and the item keeps its description as body.
-        return fetch_youtube_transcript(video_id, self.config.transcript_language)
+        return fetch_youtube_transcript(
+            video_id,
+            self.config.transcript_language,
+            timeout_sec=self.config.transcript_timeout,
+        )
 
 
-def fetch_youtube_transcript(video_id: str, language: str = "en") -> str:
+class _TimeoutSession(requests.Session):
+    """A requests Session that gives every request a default socket timeout.
+
+    youtube_transcript_api builds a bare Session and passes no timeout, so a hung host parked the
+    calling worker thread for the rest of the process's life. The outer asyncio.wait_for cannot
+    cancel an asyncio.to_thread worker, so the only place the bound can be real is the socket —
+    which is why the library accepts an `http_client` Session at all."""
+
+    def __init__(self, timeout_sec: float) -> None:
+        super().__init__()
+        self._timeout_sec = timeout_sec
+
+    def request(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        kwargs.setdefault("timeout", self._timeout_sec)
+        return super().request(*args, **kwargs)
+
+
+def fetch_youtube_transcript(video_id: str, language: str = "en", *, timeout_sec: float) -> str:
     """Fetch a video's transcript text (shared by the collector and the --pin-url path). Try the
     given language first, then fall back to ANY transcript the video has (non-English channels,
     auto-generated tracks) so a missing track isn't an empty body. Best-effort: any failure
     (incl. the IpBlocked YouTube throws from datacenter IPs) degrades to "" so the caller keeps
-    the video's description as body rather than failing the whole collect."""
+    the video's description as body rather than failing the whole collect.
+
+    `timeout_sec` bounds each underlying HTTP call at the socket, because nothing above this
+    function can: the fetch is synchronous and runs in a thread the caller cannot cancel."""
     try:
-        ytt_api = YouTubeTranscriptApi()
+        ytt_api = YouTubeTranscriptApi(http_client=_TimeoutSession(timeout_sec))
         try:
             fetched = ytt_api.fetch(video_id, languages=(language,))
         except YouTubeTranscriptApiException:
@@ -463,6 +500,8 @@ def fetch_youtube_transcript(video_id: str, language: str = "en") -> str:
     except (
         YouTubeTranscriptApiException,
         httpx.HTTPError,
+        # The socket timeout above surfaces as a requests exception, which the library does not wrap.
+        requests.RequestException,
         ValueError,
         KeyError,
         TypeError,

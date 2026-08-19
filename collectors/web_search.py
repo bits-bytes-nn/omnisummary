@@ -19,6 +19,7 @@ from shared import (
     RefineQueryPrompt,
     SourceType,
     generate_item_id,
+    get_config,
     logger,
     parse_json_from_llm_output,
     resolve_secret,
@@ -333,7 +334,10 @@ async def _fetch_youtube_pinned(url: str, video_id: str) -> CollectedItem | None
 
     title = (snippet.get("title") or "").strip() or _title_from_url(url)
     body = snippet.get("description", "")
-    transcript = await asyncio.to_thread(fetch_youtube_transcript, video_id)
+    # The socket timeout is the only real bound on this blocking fetch, so it comes from the YouTube
+    # collector's own knob rather than a second literal here.
+    transcript_timeout = get_config().collectors.youtube.transcript_timeout
+    transcript = await asyncio.to_thread(fetch_youtube_transcript, video_id, timeout_sec=transcript_timeout)
     if transcript:
         body = transcript
     logger.info("Fetched pinned YouTube URL: '%s' (%s)", url, title)

@@ -147,41 +147,47 @@ class TestCreateStateStore:
         assert isinstance(create_state_store(config), LocalStateStore)
 
     def test_state_bucket_env_selects_s3_outside_aws(self, monkeypatch):
-        # Regression: the store used to be gated on is_running_in_aws(), so any non-Lambda caller
-        # carrying STATE_BUCKET (agent runtime, container, local run against the real bucket)
+        # Regression: the store selection used to be gated on the platform sniff, so any non-Lambda
+        # caller carrying STATE_BUCKET (agent runtime, container, local run against the real bucket)
         # silently wrote trends.json to the local filesystem and lost every trend thread.
         monkeypatch.setenv("STATE_BUCKET", "prod-bucket")
         monkeypatch.setenv("S3_PREFIX", "omni/digest_state")
         config = Config()
         config.aws.profile = "research"
         config.aws.region = "ap-northeast-2"
-        with patch("shared.state_store.is_running_in_aws", return_value=False):
+        with patch("shared.utils.available_boto_profile", return_value="research"):
             with patch("boto3.Session") as session:
                 store = create_state_store(config)
         assert isinstance(store, S3StateStore)
         assert store.bucket == "prod-bucket"
         assert store.prefix == "omni/digest_state"
-        # Credentials must still come from the configured profile/region outside AWS.
+        # Credentials come from the configured profile wherever that profile actually resolves.
         assert session.call_args.kwargs == {"profile_name": "research", "region_name": "ap-northeast-2"}
 
-    def test_in_aws_uses_ambient_session(self, monkeypatch):
+    def test_an_unresolvable_profile_falls_back_to_ambient_credentials(self, monkeypatch):
+        # The AgentCore runtime sets none of the variables the platform sniff looks for and its
+        # container has no ~/.aws/config, so the old check took the profile_name="research" branch
+        # there and every trends.json read/write died on ProfileNotFound. Ambient is the default now;
+        # the profile is honoured only where it exists.
         monkeypatch.setenv("STATE_BUCKET", "prod-bucket")
         monkeypatch.delenv("S3_PREFIX", raising=False)
-        with patch("shared.state_store.is_running_in_aws", return_value=True):
+        config = Config()
+        config.aws.profile = "research"
+        config.aws.region = "ap-northeast-2"
+        with patch("shared.utils.available_boto_profile", return_value=None):
             with patch("boto3.Session") as session:
-                store = create_state_store(Config())
+                store = create_state_store(config)
         assert isinstance(store, S3StateStore)
         assert store.prefix == "digest_state"  # default when S3_PREFIX is unset
-        assert session.call_args.kwargs == {}  # execution role, no profile
+        assert session.call_args.kwargs == {"profile_name": None, "region_name": "ap-northeast-2"}
 
     def test_config_bucket_appends_digest_state_to_prefix(self, monkeypatch):
         monkeypatch.delenv("STATE_BUCKET", raising=False)
         config = Config()
         config.aws.state_bucket_name = "cfg-bucket"
         config.aws.s3_prefix = "omnisummary"
-        with patch("shared.state_store.is_running_in_aws", return_value=False):
-            with patch("boto3.Session"):
-                store = create_state_store(config)
+        with patch("boto3.Session"):
+            store = create_state_store(config)
         assert isinstance(store, S3StateStore)
         assert store.bucket == "cfg-bucket"
         assert store.prefix == "omnisummary/digest_state"
@@ -191,9 +197,8 @@ class TestCreateStateStore:
         config = Config()
         config.aws.state_bucket_name = "cfg-bucket"
         config.aws.s3_prefix = ""
-        with patch("shared.state_store.is_running_in_aws", return_value=False):
-            with patch("boto3.Session"):
-                store = create_state_store(config)
+        with patch("boto3.Session"):
+            store = create_state_store(config)
         assert store.prefix == "digest_state"
 
     def test_env_bucket_wins_over_config_bucket(self, monkeypatch):
@@ -201,15 +206,13 @@ class TestCreateStateStore:
         monkeypatch.setenv("S3_PREFIX", "root/digest_state")
         config = Config()
         config.aws.state_bucket_name = "cfg-bucket"
-        with patch("shared.state_store.is_running_in_aws", return_value=True):
-            with patch("boto3.Session"):
-                store = create_state_store(config)
+        with patch("boto3.Session"):
+            store = create_state_store(config)
         assert store.bucket == "env-bucket"
 
     def test_no_config_still_works_in_aws(self, monkeypatch):
         monkeypatch.setenv("STATE_BUCKET", "prod-bucket")
-        with patch("shared.state_store.is_running_in_aws", return_value=True):
-            with patch("boto3.Session") as session:
-                store = create_state_store()
+        with patch("boto3.Session") as session:
+            store = create_state_store()
         assert isinstance(store, S3StateStore)
         assert session.call_args.kwargs == {}

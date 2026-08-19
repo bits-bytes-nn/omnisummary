@@ -56,6 +56,13 @@ class DeliveryContext:
     dry_run: bool = False
     staged_images: list[ImageAsset] = field(default_factory=list)
     delivered_channels: set[str] = field(default_factory=set)
+    # Every URL a tool actually surfaced this invocation, in normalize_citation_url form. The only
+    # defence against a fabricated citation on a PUBLIC Threads account used to be prose emphatic
+    # enough to be evidence it does not hold; deliver_report now refuses a report citing a URL that
+    # appeared in no tool result. Recorded here because this context already threads through every
+    # search tool, and it is the deterministic ~10-line alternative to a verifier sub-agent (which
+    # would roughly double the bill of the system's most expensive component to do arithmetic worse).
+    seen_urls: set[str] = field(default_factory=set)
     # Content hashes of images already uploaded to Slack this invocation, so a retried
     # deliver_report (after a mid-delivery failure that left the channel un-recorded) doesn't
     # re-upload the same image bytes.

@@ -377,6 +377,58 @@ class TestChannelFanOut:
         assert cfg.channel_budget_sec == 15 + (30 + 5) * 3 * 2 + 15 * 3
 
 
+class TestTranscriptSocketTimeout:
+    """asyncio.wait_for cannot cancel an asyncio.to_thread worker, so the wait_for around the
+    transcript fetch only stopped the CALLER waiting — youtube_transcript_api's bare Session has no
+    socket timeout, so the thread kept its pool slot for the rest of the process's life and
+    asyncio.run blocked on the executor join at shutdown. The bound has to be at the socket."""
+
+    def test_the_transcript_api_gets_a_session_carrying_the_configured_timeout(self):
+        from collectors import youtube
+
+        with patch.object(youtube, "YouTubeTranscriptApi") as api:
+            api.return_value.fetch.return_value = MagicMock(snippets=[])
+            youtube.fetch_youtube_transcript("vid", "en", timeout_sec=7)
+        session = api.call_args.kwargs["http_client"]
+        assert isinstance(session, youtube._TimeoutSession)
+        assert session._timeout_sec == 7
+
+    def test_the_session_injects_the_timeout_into_every_request(self):
+        from collectors.youtube import _TimeoutSession
+
+        session = _TimeoutSession(3)
+        with patch("requests.Session.request", return_value="resp") as request:
+            session.request("GET", "https://example.com")
+        assert request.call_args.kwargs["timeout"] == 3
+
+    def test_an_explicit_timeout_is_not_overridden(self):
+        from collectors.youtube import _TimeoutSession
+
+        session = _TimeoutSession(3)
+        with patch("requests.Session.request", return_value="resp") as request:
+            session.request("GET", "https://example.com", timeout=1)
+        assert request.call_args.kwargs["timeout"] == 1
+
+    def test_a_socket_timeout_degrades_to_an_empty_transcript(self):
+        # The timeout surfaces as a requests exception the library does not wrap; the fetch is
+        # best-effort, so it must not fail the whole channel collect.
+        import requests
+
+        from collectors import youtube
+
+        with patch.object(youtube, "YouTubeTranscriptApi") as api:
+            api.return_value.fetch.side_effect = requests.exceptions.ReadTimeout("hung")
+            api.return_value.list.side_effect = requests.exceptions.ReadTimeout("hung")
+            assert youtube.fetch_youtube_transcript("vid", "en", timeout_sec=1) == ""
+
+    @pytest.mark.asyncio
+    async def test_the_collector_passes_its_transcript_timeout_through(self):
+        collector = YouTubeCollector(_config(transcript_timeout=9))
+        with patch("collectors.youtube.fetch_youtube_transcript", return_value="") as fetch:
+            collector._get_transcript("vid")
+        assert fetch.call_args.kwargs["timeout_sec"] == 9
+
+
 class TestS3Preload:
     @pytest.mark.asyncio
     async def test_prefers_s3_items_when_present(self, monkeypatch):
@@ -416,6 +468,54 @@ class TestS3Preload:
         assert [i.item_id for i in items] == ["vOld"]
         live.assert_not_called()
         assert collector.park_status is not None and collector.park_status.degraded is True
+
+    @pytest.mark.asyncio
+    async def test_parked_items_outside_the_lookback_window_are_dropped(self, monkeypatch):
+        # Both live branches drop entries published before the cutoff; the park branch returned the
+        # file's items verbatim, so a stale park file re-ingested days-old videos every run.
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config())
+        parked = [
+            CollectedItem(
+                item_id="vFresh",
+                source_type=SourceType.YOUTUBE,
+                title="fresh",
+                url="https://y/fresh",
+                published_at=datetime(2026, 6, 2, 12, tzinfo=UTC),
+            ),
+            CollectedItem(
+                item_id="vOld",
+                source_type=SourceType.YOUTUBE,
+                title="old",
+                url="https://y/old",
+                published_at=datetime(2026, 5, 20, tzinfo=UTC),
+            ),
+        ]
+        stale = ParkedItems(outcome=ParkOutcome.STALE, items=parked, age_hours=72.0, detail="72.0h old")
+        with patch("collectors.youtube.load_items_from_s3", return_value=stale):
+            items = await collector.collect()
+        assert [i.item_id for i in items] == ["vFresh"]
+
+    @pytest.mark.asyncio
+    async def test_a_backfill_run_does_not_ingest_todays_parked_items(self, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config())
+        parked = [
+            CollectedItem(
+                item_id="vLater",
+                source_type=SourceType.YOUTUBE,
+                title="later",
+                url="https://y/later",
+                published_at=datetime(2026, 6, 5, tzinfo=UTC),
+            )
+        ]
+        with patch(
+            "collectors.youtube.load_items_from_s3",
+            return_value=ParkedItems(outcome=ParkOutcome.FRESH, items=parked),
+        ):
+            with patch.object(collector, "_collect_channel", new=AsyncMock()) as live:
+                assert await collector.collect() == []
+        live.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_park_age_budget_comes_from_config(self, monkeypatch):

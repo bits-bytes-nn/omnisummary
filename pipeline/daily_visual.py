@@ -50,6 +50,7 @@ class DailyVisualMaker:
         self.config = config
         # Last Threads publish outcome (posted/expected posts), for the caller's metrics/alerts.
         self.threads_outcome: ThreadsDelivery | None = None
+        self.llm_factory = llm_factory
         self.llm = llm_factory.get_model(config.pipeline.digest_model, stage="visual-editor")
         # Format-variation history is best-effort: if the state store can't be created
         # (misconfigured bucket/profile), degrade to no history rather than crash the visual.
@@ -192,8 +193,16 @@ class DailyVisualMaker:
         marker_index, headline_title, source = self._headline_brief(content, ranked_items, headline_index)
         recent_formats = self.format_log.entries() if self.format_log else []
         preferred_orientation = self._least_recent_orientation(recent_formats)
+        take = self._editorial_take(content, post_date)
         try:
-            plan = await self._pick_story(ranked_items, marker_index, recent_formats, preferred_orientation)
+            plan = await self._pick_story(
+                ranked_items,
+                marker_index,
+                recent_formats,
+                preferred_orientation,
+                headline_source=source,
+                editorial_take=take,
+            )
         except Exception:
             # Best-effort: a visual failure must never block the digest, so catch broadly here.
             logger.warning("Daily visual editor failed; publishing the digest text-only", exc_info=True)
@@ -452,20 +461,50 @@ class DailyVisualMaker:
                 return i
         return 0
 
+    def _editor_items_text(
+        self,
+        ranked_items: list[RankedItem],
+        headline_index: int,
+        headline_source: str,
+        editorial_take: str,
+    ) -> str:
+        """What the visual editor is shown: the day's stories as title rows, plus the HEADLINE story
+        in full and the digest's own angle on it.
+
+        The editor writes the joke, the format and the 1-3 research queries, and it used to decide all
+        of that from `N. [source] title` rows — the headline's body, the lead and the implication only
+        reached the art director later, in _build_instruction. Handing the headline over explicitly
+        also closes the no-ranked-match case: with headline_index 0 NO row carried the marker the
+        prompt promises, so the editor's brief and the art director's source material described
+        different articles."""
+        rows = [
+            f"{i}. [{r.item.source_type.value}] {r.item.title}"
+            + (" ← TODAY'S HEADLINE — illustrate this one" if i == headline_index else "")
+            for i, r in enumerate(ranked_items, start=1)
+        ]
+        blocks = ["\n".join(rows)]
+        if headline_source.strip():
+            headline = self.llm_factory.truncate_to_tokens(
+                headline_source.strip(), self.config.pipeline.visual_editor_source_max_tokens
+            )
+            blocks.append(f"TODAY'S HEADLINE STORY IN FULL — this is the one to illustrate:\n{headline}")
+        if editorial_take:
+            blocks.append(f"THE DIGEST'S OWN ANGLE on it:\n{editorial_take}")
+        return "\n\n".join(blocks)
+
     async def _pick_story(
         self,
         ranked_items: list[RankedItem],
         headline_index: int = 0,
         recent_formats: list[dict] | None = None,
         preferred_orientation: str = "",
+        *,
+        headline_source: str = "",
+        editorial_take: str = "",
     ) -> dict:
-        # The editor briefs the marked HEADLINE (it doesn't choose the story); the visual must
+        # The editor briefs the HEADLINE handed to it (it doesn't choose the story); the visual must
         # match the lead, which is about this same headline.
-        items_text = "\n".join(
-            f"{i}. [{r.item.source_type.value}] {r.item.title}"
-            + (" ← TODAY'S HEADLINE — illustrate this one" if i == headline_index else "")
-            for i, r in enumerate(ranked_items, start=1)
-        )
+        items_text = self._editor_items_text(ranked_items, headline_index, headline_source, editorial_take)
         chain = VisualEditorPrompt.get_prompt() | self.llm | StrOutputParser()
         raw = await chain.ainvoke(
             {

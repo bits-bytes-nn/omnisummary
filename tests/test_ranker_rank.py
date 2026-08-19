@@ -33,8 +33,11 @@ def _ranker(raw_output: str, **overrides) -> ContentRanker:
 
 
 def _items(specs: list[tuple[str, SourceType]]) -> list[CollectedItem]:
+    # A DISTINCT host per item: resolve_origin_key falls back to the host when a source's own origin
+    # metadata is absent, so a shared host would put every fixture item in one origin and let
+    # max_per_origin (1 by default) decide these selection tests instead of the behaviour under test.
     return [
-        CollectedItem(item_id=item_id, source_type=src, title=f"t-{item_id}", url=f"http://e.com/{item_id}")
+        CollectedItem(item_id=item_id, source_type=src, title=f"t-{item_id}", url=f"http://{item_id}.example/x")
         for item_id, src in specs
     ]
 

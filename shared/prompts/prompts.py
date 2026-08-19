@@ -36,6 +36,20 @@ class BasePrompt(ABC):
                 raise ValueError(f"Input variable '{var}' not found in any prompt template.")
 
 
+# The *Engagement Signal* block. Injected by the ranker ONLY for a batch that actually carries
+# engagement data: `view_count` is set by the YouTube collector alone, so on every other batch this
+# block instructed the model about a field it would never see — and told it a bonus applies while
+# nothing could receive one. `{tiers}` is the configured engagement_tiers, rendered by the ranker;
+# it lives here so the prompt text stays in the prompt module.
+ENGAGEMENT_SIGNAL_BLOCK: str = """
+*Engagement Signal*
+High engagement is a STRONG quality signal. Apply this bonus based on the Engagement field:
+- {tiers}
+- Items with NO engagement data (most sources): judge purely on content quality.
+Engagement bonus stacks with content quality — a high-engagement AND substantive item should score very high.
+"""
+
+
 class RankingPrompt(BasePrompt):
     input_variables = [
         "items_text",
@@ -71,20 +85,14 @@ Product/service promotion, thin content, beginner questions, memes, self-promoti
 Score each item ABSOLUTELY against these criteria — do NOT grade on a curve or target a fixed
 count; identical items must get the same score regardless of what else is in this set.
 
-*Engagement Signal*
-High engagement is a STRONG quality signal. Apply this bonus based on the Engagement field when present:
-- {engagement_guidance}
-- Items with NO engagement data (most sources): judge purely on content quality.
-Engagement bonus stacks with content quality — a high-engagement AND substantive item should score very high.
-
+{engagement_guidance}
 *Other Bonuses*
-Interviews/podcasts with substance: +0.05-0.1. Expert paper summaries: score on paper significance. \
+Expert paper summaries: score on paper significance. \
 Major model releases (open or proprietary): score on significance.
 
 *Diversity*
 Cluster same-EVENT items (same company + same incident count as one) — score best source fully, \
-duplicates at {duplicate_score_penalty}; never let one news event occupy two output slots. \
-Balance topic AND platform diversity.
+duplicates at {duplicate_score_penalty}.
 
 *Output*
 Return JSON with ALL items.
@@ -142,7 +150,7 @@ because the lead is a comment on stories you have already written:
       "implication": "ONE sharp, provocative closing line in Korean that takes a real stance — but VARY THE SHAPE across items so the digest never reads as the same beat repeated: a pointed assertion (no question mark), an open question to the reader, a falsifiable prediction, a single damning detail/number, an invitation to disagree, or a quiet line that just lets a heavy fact land. Do NOT end every item with a question, and do NOT reuse the same shape used by another item today. Provocation is in the angle, never in invented facts."
     }}
   ],
-  "lead": "3-5 sentence opening, under {lead_budget} characters, that works as a standalone post (it leads the digest AND is the caption under today's image). It is about the headline story you already wrote as items[0] — the one the image depicts. Open by NAMING that story in ONE assertive sentence a stranger could follow — the actual company / model / event, no label like '오늘의 다이제스트' and NO emoji — then land ONE thesis on what it MEANS, connecting it to its ongoing trend arc (use the trend ammunition below) in the voice above. The reader sees items[0] directly beneath this lead, so do NOT re-tell it: no replaying its sequence of events and no repeating its numbers. State what they add up to instead."
+  "lead": "3-5 sentence standalone opening under {lead_budget} characters about items[0], the headline the image depicts: name that story in ONE assertive sentence a stranger could follow (the actual company / model / event — no label, no emoji), then land ONE thesis on what it MEANS, drawing on the trend ammunition below. The reader sees items[0] directly beneath, so ADD to it rather than re-telling it — no replay of its sequence and no repeat of its numbers."
 }}
 ```
 
@@ -252,9 +260,10 @@ class VisualEditorPrompt(BasePrompt):
     input_variables = ["items_text", "audience", "on_image_language", "format_guidance"]
 
     system_prompt_template = """\
-You are the visual editor for {audience}. Illustrate today's HEADLINE story (marked below). The \
-headline is also what the digest's lead is about, so the image and the lead stay about the same \
-story. Aim for a striking, on-point, shareable image with genuine wit.
+You are the visual editor for {audience}. Illustrate today's HEADLINE story, which is given below in \
+full along with the digest's angle on it. The headline is also what the digest's lead is about, so \
+the image and the lead stay about the same story. Aim for a striking, on-point, shareable image with \
+genuine wit.
 
 Produce ONLY a JSON object:
 ```json

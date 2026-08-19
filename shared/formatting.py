@@ -4,6 +4,7 @@ import re
 import unicodedata
 from collections.abc import Callable
 from datetime import UTC, date, datetime
+from typing import NamedTuple
 from urllib.parse import urlparse
 
 from .constants import THREADS_POST_SEPARATOR, SourceType
@@ -182,50 +183,118 @@ def clean_rss_feed_name(feed_title: str, feed_url: str) -> str:
     return ""
 
 
-def resolve_origin_key(item: CollectedItem) -> str | None:
-    """Per-origin diversity key (e.g. a single channel/subreddit/feed/account/site).
+def item_netloc(item: CollectedItem) -> str:
+    """The item's host, normalized the way clean_rss_feed_name does it (`netloc` minus a `www.`
+    prefix). Deliberately NOT a registrable-domain / public-suffix heuristic: no new dependency, and
+    subdomains stay distinct origins.
 
-    Web-search items carry no channel/feed metadata, so their host stands in as the origin —
-    without it they returned None and slipped past `max_per_origin` entirely, letting one outlet
-    take several of the digest's slots. The host is normalized the same way the RSS feed-name
-    helper does it (`netloc` minus a `www.` prefix), deliberately NOT a registrable-domain /
-    public-suffix heuristic: no new dependency, and subdomains stay distinct origins.
-    """
-    meta = item.metadata
-    if item.source_type == SourceType.YOUTUBE:
-        return meta.get("channel_url")
-    if item.source_type == SourceType.REDDIT:
-        return meta.get("subreddit")
-    if item.source_type == SourceType.RSS:
-        return meta.get("feed_url")
-    if item.source_type == SourceType.X:
-        return item.author
-    if item.source_type == SourceType.WEB:
-        return urlparse(item.url).netloc.removeprefix("www.") or None
-    return None
+    This is the LAST-RESORT identity for an item whose source-specific metadata is missing, and it is
+    live-fired: DOMAIN_TO_SOURCE relabels a web-search hit or a pinned x.com URL as SourceType.X,
+    whose origin is `item.author` — which those items never carry. They therefore had origin key
+    None, escaped max_per_origin entirely, were skipped by pin-origin seeding, and reached the
+    ranking prompt with no Origin line at all: exactly the gap the WEB branch was added to close."""
+    return urlparse(item.url).netloc.removeprefix("www.")
+
+
+class SourceDescriptor(NamedTuple):
+    """Everything the pipeline needs to know about ONE SourceType: the per-origin diversity key, the
+    plain-text origin label the ranking prompt reads, and the display tag + metrics the renderers
+    show.
+
+    ONE table instead of three if/elif chains over the same five SourceTypes (resolve_origin_key,
+    format_origin_label, the digest generator's _source_tag_and_metrics), each of which ended in its
+    own silent fall-through default."""
+
+    origin_key: Callable[[CollectedItem], str]
+    label: Callable[[CollectedItem], str]
+    tag: Callable[[CollectedItem], str]
+    metrics: Callable[[CollectedItem], str]
+
+
+def _no_metrics(item: CollectedItem) -> str:
+    """Most sources carry no engagement figures the renderers can show. Reddit is collected through
+    the public .rss feed, which drops score/num_comments, so only YouTube has any."""
+    return ""
+
+
+def _youtube_metrics(item: CollectedItem) -> str:
+    views = item.metadata.get("view_count")
+    return f"{YOUTUBE_VIEWS_EMOJI} {views:,}" if views else ""
+
+
+def _rss_name(item: CollectedItem) -> str:
+    return clean_rss_feed_name(item.metadata.get("feed_title", ""), item.metadata.get("feed_url", ""))
+
+
+SOURCE_DESCRIPTORS: dict[SourceType, SourceDescriptor] = {
+    SourceType.REDDIT: SourceDescriptor(
+        origin_key=lambda item: item.metadata.get("subreddit", ""),
+        label=lambda item: f"r/{item.metadata['subreddit']}" if item.metadata.get("subreddit") else "",
+        tag=lambda item: f"`r/{item.metadata['subreddit']}`" if item.metadata.get("subreddit") else "",
+        metrics=_no_metrics,
+    ),
+    SourceType.RSS: SourceDescriptor(
+        origin_key=lambda item: item.metadata.get("feed_url", ""),
+        label=lambda item: item.metadata.get("feed_title", "") or item.metadata.get("feed_url", ""),
+        tag=lambda item: f"`{name}`" if (name := _rss_name(item)) else "",
+        metrics=_no_metrics,
+    ),
+    SourceType.WEB: SourceDescriptor(
+        origin_key=item_netloc,
+        label=item_netloc,
+        tag=lambda item: f"`{host}`" if (host := item_netloc(item)) else "",
+        metrics=_no_metrics,
+    ),
+    SourceType.X: SourceDescriptor(
+        origin_key=lambda item: item.author or "",
+        label=lambda item: f"@{item.author}" if item.author else "",
+        tag=lambda item: f"`@{item.author}`" if item.author else "",
+        metrics=_no_metrics,
+    ),
+    SourceType.YOUTUBE: SourceDescriptor(
+        origin_key=lambda item: item.metadata.get("channel_url", ""),
+        label=lambda item: item.metadata.get("channel_url", ""),
+        tag=lambda item: "`YouTube`",
+        metrics=_youtube_metrics,
+    ),
+}
+
+# A SourceType with no descriptor would silently take every fall-through default at once: no origin
+# key (so no max_per_origin, no pin seeding), no Origin line in the ranking prompt, and no source tag
+# in the digest. Same shape as PipelineConfig's source_slots validator — fail at import, not at 19:00.
+assert set(SOURCE_DESCRIPTORS) == set(
+    SourceType
+), f"SOURCE_DESCRIPTORS is missing an entry for {sorted(s.value for s in SourceType if s not in SOURCE_DESCRIPTORS)}"
+
+
+def resolve_origin_key(item: CollectedItem) -> str | None:
+    """Per-origin diversity key (a single channel/subreddit/feed/account/site), falling back to the
+    item's host when the source's own metadata is absent.
+
+    The fallback is what makes the key TOTAL: an origin-less item slipped past `max_per_origin`
+    entirely, letting one outlet — or one author-less scrape relabelled as SourceType.X — take
+    several of the digest's slots."""
+    return SOURCE_DESCRIPTORS[item.source_type].origin_key(item) or item_netloc(item) or None
 
 
 def format_origin_label(item: CollectedItem) -> str:
-    """Plain-text origin label fed to the ranking prompt (no Slack markup).
+    """Plain-text origin label fed to the ranking prompt (no Slack markup), falling back to the host.
 
-    Web-search items carried NO origin line, so the ranking prompt was asked to judge "Source
-    Authority" for them with the outlet withheld — a press release on a content farm and a report
-    from a wire service looked identical. Their host stands in as the origin, derived exactly the
-    way resolve_origin_key does it (`netloc` minus a `www.` prefix): no domain/authority table, no
-    public-suffix logic, no new dependency.
-    """
-    meta = item.metadata
-    if item.source_type == SourceType.REDDIT:
-        return f"r/{meta.get('subreddit', '')}" if meta.get("subreddit") else ""
-    if item.source_type == SourceType.YOUTUBE:
-        return meta.get("channel_url", "")
-    if item.source_type == SourceType.X:
-        return f"@{item.author}" if item.author else ""
-    if item.source_type == SourceType.RSS:
-        return meta.get("feed_title", "") or meta.get("feed_url", "")
-    if item.source_type == SourceType.WEB:
-        return urlparse(item.url).netloc.removeprefix("www.")
-    return ""
+    An item with no origin line asked the prompt to judge "Source Authority" with the outlet
+    withheld — a press release on a content farm and a wire-service report looked identical."""
+    return SOURCE_DESCRIPTORS[item.source_type].label(item) or item_netloc(item)
+
+
+def source_tag_and_metrics(item: CollectedItem) -> tuple[str, str]:
+    """(source_tag, metrics) for an item: a backtick-wrapped source label and a ' · '-joined emoji
+    metric string. Code owns this — the LLM never writes source markup. The tag falls back to the
+    host for the same reason the origin key does: an item whose source metadata is missing still has
+    to tell the reader where it came from."""
+    descriptor = SOURCE_DESCRIPTORS[item.source_type]
+    tag = descriptor.tag(item)
+    if not tag and (host := item_netloc(item)):
+        tag = f"`{host}`"
+    return tag, descriptor.metrics(item)
 
 
 # Sentence-ending boundaries: Korean '다.' plus the usual terminators. Splitting AFTER a boundary
@@ -234,6 +303,22 @@ _SENTENCE_END = ("다.", "다!", "다?", ". ", "。", "! ", "? ", "…")
 # A bare http(s) URL run. Public so the renderers can protect/extract citation URLs with the same
 # pattern strip_slack_mrkdwn uses, instead of re-declaring it.
 URL_RE = re.compile(r"https?://\S+")
+
+
+def normalize_citation_url(url: str) -> str:
+    """Loose identity for comparing a URL a report CITES against one a tool actually returned.
+
+    Scheme and a `www.` prefix are dropped, trailing sentence punctuation and a trailing slash are
+    trimmed, and the fragment is discarded. Deliberately LENIENT: the comparison exists to refuse a
+    FABRICATED citation, so it must never reject a real one the model rewrote from http to https or
+    quoted inside parentheses. The query string is kept — it is what distinguishes one video or
+    search result from another."""
+    trimmed = url.strip().rstrip("').,;:\"]>")
+    parsed = urlparse(trimmed if "//" in trimmed else f"//{trimmed}")
+    host = parsed.netloc.removeprefix("www.").lower()
+    path = parsed.path.rstrip("/")
+    query = f"?{parsed.query}" if parsed.query else ""
+    return f"{host}{path}{query}"
 
 
 def split_sentences(text: str) -> list[str]:

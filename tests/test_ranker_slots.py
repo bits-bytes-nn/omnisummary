@@ -103,13 +103,12 @@ class TestOriginCap:
         assert len(selected) == 2
         assert {r.item.item_id for r in selected} == {"v1", "v2"}
 
-    def test_items_without_origin_not_capped(self):
-        # The no-origin guarantee still holds where an origin genuinely can't be resolved (here an
-        # RSS entry carrying no feed_url metadata): all three fill the guaranteed rss slots. Were
-        # they origin-bearing and sharing one origin, the cap would let only one through that pass
-        # and the lower-scored distinct-origin r4 would take the second slot instead.
+    def test_an_item_missing_its_source_metadata_is_capped_by_its_host(self):
+        # An origin-less item used to escape max_per_origin entirely. Here three RSS entries carry no
+        # feed_url but share one host, so exactly one of them takes a slot and the lower-scored,
+        # genuinely distinct-origin r4 gets the next — instead of one site filling the whole digest.
         ranker = _ranker(
-            top_n=3,
+            top_n=2,
             min_score=0.5,
             source_slots={"rss": 3},
             source_cap_multiplier=1,
@@ -122,7 +121,22 @@ class TestOriginCap:
             _ranked(0.60, SourceType.RSS, item_id="r4", feed="https://other.example/feed"),
         ]
         selected = ranker._apply_source_slots(items, ranker.config.top_n)
-        assert {r.item.item_id for r in selected} == {"r1", "r2", "r3"}
+        assert {r.item.item_id for r in selected} == {"r1", "r4"}
+
+    def test_an_author_less_x_item_is_capped_by_its_host(self):
+        # Observed live on 2026-08-18: DOMAIN_TO_SOURCE relabels a web-search hit or a pinned x.com
+        # URL as SourceType.X, whose origin is item.author — which those items never carry. RSSHub was
+        # unreachable that day, yet "Source x: 1 items" was filled by an author-less scrape that had no
+        # origin key, no Origin line in the ranking prompt, and no max_per_origin at all.
+        ranker = _ranker(top_n=2, min_score=0.5, source_slots={"x": 3}, source_cap_multiplier=1, max_per_origin=1)
+        items = [
+            _ranked(0.95, SourceType.X, item_id="s1", url="https://x.com/a/status/1"),
+            _ranked(0.94, SourceType.X, item_id="s2", url="https://x.com/b/status/2"),
+            _ranked(0.70, SourceType.X, item_id="s3", author="karpathy"),
+        ]
+        selected = ranker._apply_source_slots(items, ranker.config.top_n)
+        # s2 shares s1's host, so the lower-scored but genuinely distinct s3 takes the second slot.
+        assert {r.item.item_id for r in selected} == {"s1", "s3"}
 
     def test_one_web_site_cannot_take_two_slots(self):
         # Web items used to resolve to no origin at all, so a single outlet could occupy several
@@ -419,3 +433,36 @@ class TestLastResortSourceCapRelaxation:
         ]
         selected = ranker._apply_source_slots(items, ranker.config.top_n, grace_ids={"g1"})
         assert {r.item.item_id for r in selected} == {"r1"}
+
+
+class TestBackfillHonoursTheOriginCap:
+    """The backfill candidates used to ignore max_per_origin outright, and _audit_shipped_diversity is
+    detection-only by design — so a backfill item the editor used as an ADDITION rather than a
+    replacement shipped a second story from an origin already at its cap. digest_2026-07-12 carried
+    two r/LocalLLaMA GPU benchmarks against max_per_origin=1."""
+
+    def _ranker(self):
+        return _ranker(top_n=1, min_score=0.5, max_per_origin=1, source_slots={})
+
+    def test_a_candidate_whose_origin_is_already_at_cap_is_skipped(self):
+        ranker = self._ranker()
+        core = [_ranked(0.95, SourceType.REDDIT, item_id="a", sub="LocalLLaMA")]
+        candidates = [
+            core[0],
+            _ranked(0.94, SourceType.REDDIT, item_id="b", sub="LocalLLaMA"),
+            _ranked(0.70, SourceType.REDDIT, item_id="c", sub="MachineLearning"),
+        ]
+        extras = ranker._backfill_candidates(candidates, core, grace_ids=set(), room=2)
+        # The merge-topup purpose is intact: the freed slot is filled by the next DISTINCT origin.
+        assert [r.item.item_id for r in extras] == ["c"]
+        assert all(r.backfill for r in extras)
+
+    def test_the_cap_also_applies_among_the_backfill_items_themselves(self):
+        ranker = self._ranker()
+        core: list = []
+        candidates = [
+            _ranked(0.95, SourceType.REDDIT, item_id="a", sub="LocalLLaMA"),
+            _ranked(0.94, SourceType.REDDIT, item_id="b", sub="LocalLLaMA"),
+        ]
+        extras = ranker._backfill_candidates(candidates, core, grace_ids=set(), room=2)
+        assert [r.item.item_id for r in extras] == ["a"]

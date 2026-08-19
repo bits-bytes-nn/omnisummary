@@ -15,8 +15,13 @@ collectors:
     max_concurrency: 5
     # YouTube/X items are collected locally (residential IP) and parked in S3; beyond this age the
     # parked items are still used but the source is reported STALE, so a stopped local cron alerts
-    # instead of looking healthy. Every collector inherits this key.
-    park_max_age_hours: 36
+    # instead of looking healthy. Every collector inherits this key. Keep it INSIDE one sync cadence
+    # (the local cron runs daily): at the code default of 36 a completely skipped sync day still read
+    # FRESH/OK, which is the very thing this budget exists to catch.
+    park_max_age_hours: 24
+    # All channels answering with nothing is the shape of an IP block or a revoked key, not a quiet
+    # day — see rsshub.empty_rate_threshold below for why the code default cannot catch it.
+    empty_rate_threshold: 90.0
   reddit:
     enabled: true
     subreddits: []
@@ -74,11 +79,12 @@ collectors:
       #   platform: x
     lookback_hours: 72
     max_concurrency: 5
+    park_max_age_hours: 24
     # Expired X session cookies make every account feed answer 200 with NO entries: no failure rate
     # trips, and as long as one account still had a post the source reported a clean OK. Percent of
     # inputs that may come back empty before the source is DEGRADED. Set per source — many RSS blogs
     # legitimately publish nothing on a given day, whereas 40 X accounts going quiet is a broken
-    # session. 100 (the code default, i.e. every other source here) disables the check.
+    # session. 100 (the code default) makes the check UNREACHABLE, because the comparison is `>`.
     empty_rate_threshold: 90.0
   # Width of the ONE thread pool the whole run shares. Each collector's max_concurrency bounds only
   # its own fan-out; every asyncio.to_thread lands in this pool, whose stdlib default is 6 threads on
@@ -146,6 +152,10 @@ pipeline:
   # Lambda's 15-minute budget.
   visual_image_timeout_sec: 300
   visual_image_max_retries: 0
+  # Pin the gpt-image quality tier rather than leaving OpenAI's "auto": the published per-image
+  # prices differ ~4x between tiers, and it also decides how legible the image's short English labels
+  # come out. One of low/medium/high/auto; empty sends nothing (OpenAI decides).
+  visual_image_quality: "high"
   # Cap on the research steps the visual editor may request (each is a live search call); matches
   # the "1-3 steps" its prompt asks for.
   visual_research_max_steps: 3

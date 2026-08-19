@@ -16,6 +16,13 @@ from shared.metrics import metric_dimensions
 # back to bare code defaults).
 CONFIG_TEMPLATE = Path(__file__).resolve().parent.parent / "config" / "config-template.yaml"
 
+# CloudWatch rejects PutMetricAlarm when Period * EvaluationPeriods exceeds one day; the empty-digest
+# alarm sits right on that edge (a 24h period), which is why application_stack carries a note about it.
+_CLOUDWATCH_MAX_ALARM_WINDOW_SEC = 86400
+# The share of a function's configured Timeout its Duration alarm fires at (application_stack's 0.9):
+# a timeout does not count as an Error, so this is the only signal for "ran out of time mid-post".
+_TIMEOUT_ALARM_THRESHOLD_RATIO = 0.9
+
 
 @pytest.fixture(scope="module")
 def templates():
@@ -248,6 +255,17 @@ class TestFoundationStack:
                 assert memory_logical_id in rendered_resource
 
 
+class TestNoPrivilegedNoOpBuildProject:
+    def test_no_codebuild_project_is_created(self, templates):
+        # The stack used to create a privileged CodeBuild project (docker-in-docker) with ecr
+        # grant_push and NO source, so its `docker build .` ran in an empty directory. Nothing in the
+        # repo referenced it and the README's resource table omitted it, yet docs/design.md advertised
+        # it as a capability — a privileged no-op is strictly worse than no build project.
+        foundation, application = templates
+        for template in (foundation, application):
+            template.resource_count_is("AWS::CodeBuild::Project", 0)
+
+
 class TestApplicationStack:
     def test_waf_web_acl(self, templates):
         _, app = templates
@@ -280,6 +298,50 @@ class TestApplicationStack:
         app.has_resource_properties("AWS::CloudWatch::Alarm", {"MetricName": "DigestItemsPublished"})
         app.has_resource_properties("AWS::CloudWatch::Alarm", {"MetricName": "AgentErrors"})
         app.has_resource_properties("AWS::CloudWatch::Alarm", {"MetricName": "ApproximateNumberOfMessagesVisible"})
+
+    def test_every_alarm_notifies_the_alerts_topic(self, templates):
+        # The only alarm assertions were a resource COUNT and three MetricName checks — nothing said
+        # an alarm actually notifies anyone. An alarm with no AlarmActions is a dashboard widget:
+        # it goes red and no one is told, which is indistinguishable from having no alarm at all.
+        _, app = templates
+        alarms = app.find_resources("AWS::CloudWatch::Alarm")
+        assert alarms
+        for logical_id, alarm in alarms.items():
+            actions = alarm["Properties"].get("AlarmActions") or []
+            assert actions, f"{logical_id} has no AlarmActions"
+            assert all("Ref" in action or "Fn::ImportValue" in action for action in actions), logical_id
+
+    def test_no_alarm_exceeds_cloudwatchs_one_day_evaluation_window(self, templates):
+        # application_stack carries an explicit deploy-time hazard note: CloudWatch rejects
+        # PutMetricAlarm when Period * EvaluationPeriods exceeds 86400s. Nothing checked it, so the
+        # template synthesized clean and was rejected at deploy — the worst place to find out.
+        _, app = templates
+        for logical_id, alarm in app.find_resources("AWS::CloudWatch::Alarm").items():
+            props = alarm["Properties"]
+            window = int(props["Period"]) * int(props["EvaluationPeriods"])
+            assert window <= _CLOUDWATCH_MAX_ALARM_WINDOW_SEC, f"{logical_id} evaluates {window}s"
+
+    def test_each_timeout_alarm_tracks_its_own_functions_timeout(self, templates):
+        # A timeout alarm whose threshold drifts from the function's configured Timeout either fires
+        # on healthy runs or never fires at all. Read BOTH numbers out of the template so a Duration
+        # change on one Lambda cannot silently leave its alarm behind.
+        _, app = templates
+        functions = app.find_resources("AWS::Lambda::Function")
+        timeout_alarms = {
+            logical_id: alarm
+            for logical_id, alarm in app.find_resources("AWS::CloudWatch::Alarm").items()
+            if alarm["Properties"].get("MetricName") == "Duration"
+        }
+        assert timeout_alarms
+        for logical_id, alarm in timeout_alarms.items():
+            dimensions = {d["Name"]: d["Value"] for d in alarm["Properties"]["Dimensions"]}
+            # The dimension is a Ref to the function resource, so the alarm and the Timeout it must
+            # track are read out of the SAME template rather than from a literal repeated in the test.
+            function_ref = dimensions["FunctionName"]["Ref"]
+            timeout_sec = functions[function_ref]["Properties"]["Timeout"]
+            assert alarm["Properties"]["Threshold"] == pytest.approx(
+                timeout_sec * 1000 * _TIMEOUT_ALARM_THRESHOLD_RATIO
+            ), logical_id
 
     def test_emf_alarms_read_this_deployments_datapoints_only(self, templates):
         # The EMF records are dimensioned by project/stage (shared/metrics.py). An undimensioned

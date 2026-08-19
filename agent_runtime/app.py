@@ -114,13 +114,17 @@ def invoke(payload: dict[str, Any]) -> str:
     logger.info("AgentCore invoked: prompt='%s', channel='%s'", prompt[:100], channel_id)
 
     delivery = DeliveryContext(channel_id=channel_id, thread_ts=thread_ts)
-    agent = create_research_agent()
 
     # contextvar-scoped per-invocation delivery: a warm container handling concurrent
     # invocations can't leak one request's channel into another.
     notice = ""
     with request_context(delivery):
         try:
+            # CONSTRUCTED INSIDE the guard: it resolves credentials, an inference profile and the
+            # model registry, so it can raise. Built outside, that raise escaped the entrypoint —
+            # the user got the Slack ack and then permanent silence, with no AgentErrors metric and
+            # no fallback post, which is the one failure shape this whole block exists to prevent.
+            agent = create_research_agent()
             result = agent(prompt, limits=_run_limits())
             _log_agent_run(result)
             response = sanitize_slack_mrkdwn(str(result))

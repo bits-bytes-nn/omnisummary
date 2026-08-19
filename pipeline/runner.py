@@ -9,7 +9,7 @@ important consumer too."""
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -131,6 +131,25 @@ def _install_bounded_executor(config: Config) -> None:
     asyncio.get_running_loop().set_default_executor(executor)
 
 
+async def _collect_within_budget(
+    task: Awaitable[list[CollectedItem]], label: str, budget_sec: float
+) -> list[CollectedItem]:
+    """Run ONE collector under a wall-clock budget so a wedged source is reported FAILED instead of
+    taking the run with it. Only YouTube bounded itself, and only per channel; the per-input timeouts
+    leave the SOURCE unbounded, and a source whose worst case exceeds the Lambda's own budget kills
+    every other source's results along with it.
+
+    Raises rather than returning [] so the caller's existing exception branch records a FAILURE — a
+    silent empty result would read as a legitimately quiet day."""
+    if budget_sec <= 0:
+        return await task
+    try:
+        return await asyncio.wait_for(task, timeout=budget_sec)
+    except TimeoutError as e:
+        logger.warning("Collector '%s' exceeded its %ss budget", label, budget_sec)
+        raise RuntimeError(f"Collector '{label}' exceeded its {budget_sec}s wall-clock budget") from e
+
+
 async def run_collectors_with_health(
     config: Config,
     llm_factory: BedrockLanguageModelFactory,
@@ -142,7 +161,11 @@ async def run_collectors_with_health(
         logger.warning("No active collectors")
         return [], HealthReport()
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    budget_sec = config.collectors.collector_budget_sec
+    results = await asyncio.gather(
+        *(_collect_within_budget(task, label, budget_sec) for task, label in zip(tasks, labels, strict=True)),
+        return_exceptions=True,
+    )
     items: list[CollectedItem] = []
     health: list[SourceHealth] = []
     for label, collector, result in zip(labels, collectors, results, strict=True):
