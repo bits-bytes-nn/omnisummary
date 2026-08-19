@@ -89,6 +89,18 @@ class TestDigestLeadSpec:
     def test_lead_carries_a_character_budget(self):
         assert "under 470 characters" in _render(DigestPrompt)
 
+    def test_trend_rule_bans_the_tracker_not_the_connection(self):
+        # trends_context WAS injected and then ordered to be invisible ("not as something to
+        # narrate", "sharpen the take implicitly"), which banned the one move the items cannot
+        # make on their own: saying where today's story sits in a longer arc. The ban is narrowed
+        # to the tracker itself — the streak, the day count, the metric — so the substantive
+        # connection is asked for. Faithfulness already permits it: trend data counts as provided.
+        rendered = _render(DigestPrompt)
+        assert "place today's story in the arc it belongs to" in rendered
+        assert "no streak or day count" in rendered
+        assert "not as something to narrate" not in rendered
+        assert "sharpen the take implicitly" not in rendered
+
 
 class TestDeletedDuplicateRules:
     """Rules a code mechanism already enforces are deleted, not restated: every restatement is a

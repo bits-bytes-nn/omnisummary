@@ -174,11 +174,12 @@ don't merge it away into another item). If it's the most important story, make i
 otherwise place it by importance among the rest.
 
 *Trends*
-Treat the recurrence ammunition as evidence behind your judgment, not as something to narrate. \
-Don't describe the tracker or announce a theme's streak/count; the reader cares about the point, \
-not the metric. Let the history sharpen the take implicitly, and cite a specific figure only when \
-that number IS the point. Do not list trends separately. If no trend data is provided, surface \
-continuity only where a theme genuinely recurs across today's own items; never fabricate history.
+The recurrence ammunition is there so the lead can place today's story in the arc it belongs to: name \
+what the pattern IS and what follows from it, in the argument's own words. That connection is the one \
+thing today's items cannot supply on their own, so make it.
+Keep the TRACKER out, not the connection: no mention of tracking, no streak or day count, no metric \
+about a trend, and no separate list of trends — a figure earns its place only when that number IS the \
+point. With no trend data, draw continuity from today's items alone and never invent history.
 
 *Recent angles (avoid repeating)*
 These are the opening lines / theses from the last few days. Do NOT reuse the same framing, \
