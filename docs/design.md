@@ -144,7 +144,11 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 목록이 필요한 이유는 이렇다. 어두워진 소스는 예외도 남기지 않고 stale park 파일도 남기지 않고 실패율도
 남기지 않아서 다른 어떤 신호에도 걸리지 않는다. 그렇다고 빈 소스면 무조건 알리게 두면 reddit이나 X처럼
 조용한 날이 정상인 소스가 매일 페이징하고, 그러면 사람은 곧 알림을 무시한다. 그래서 명시적 opt-in 목록으로
-두었고, 비어 있으면 EMPTY로는 절대 알리지 않는다.
+두었고, 비어 있으면 EMPTY로는 절대 알리지 않는다. 이름은 `shared/constants.py`의 `COLLECTOR_NAMES`(=
+`pipeline/runner.py`의 수집기 레지스트리 키)로 검증한다. 오타 난 이름은 어떤 소스와도 매칭되지 않아서, 감시하려던
+어두운 소스가 그대로 어두운 채 남는다. 그래서 config 로드에서 실패시킨다. 같은 이유로 `pipeline.source_slots`의
+키는 `SourceType` 값이어야 한다. 랭커는 `item.source_type.value`로 매칭하니 오타 난 키는 보장 슬롯을 조용히
+무력화하고 fill 패스가 `DEFAULT_SOURCE_SLOT`으로 폴백한다.
 
 ### 3.2 `pipeline`
 
@@ -401,6 +405,20 @@ AWS에서는 `scripts/sync_youtube_to_s3.py`가 거주용 IP로 자막까지 수
 **실패 신호.** API 거부(쿼터 소진, 키 폐기 등 non-200), 깨진 JSON, 채널 ID 해석 실패는 빈 결과가 아니라
 예외다. 채널 하나의 실패는 허용하고, 모든 채널이 실패할 때만 FAILED로 승격한다.
 
+**RSS 폴백도 공용 피드 경로를 탄다.** `fetch_feed_with_retry(..., proxy_fallback=True)` +
+`parse_feed_entries(limit=_CHANNEL_FETCH_DEPTH)`다. 이 자리에 마지막까지 남아 있던 raw
+`feedparser.parse(url)`는 소켓 타임아웃이 없고(feedparser는 타임아웃 없는 urllib으로 받는다) 재시도가 없고
+bozo/빈 문서 검사도 없었다. 채널 하나가 먹히면 바깥 `wait_for(channel_budget_sec)`는 await만 취소하고 워커
+스레드는 계속 돌며, `asyncio.run`이 종료 시 기본 executor를 join하니 다이제스트가 이미 게시된 뒤에도 15분
+예산에서 수 분이 죽은 시간으로 빠졌다. 잘린 응답은 FAILED가 아니라 EMPTY(=조용한 날)로 읽혔고, 5xx나 DNS 한
+번이 그 채널의 하루를 날렸다. video id는 `yt_videoid`(없으면 watch 링크)에서 읽어 item id로 쓰고, 읽히지 않는
+항목은 버린다. 자막 조회와 canonical watch URL이 모두 그 id에서 나오므로 해시 폴백 id는 하류에서 쓸모없다.
+
+**헬스 노브는 전부 전달한다.** `record_run_health`/`flag_degraded_park`의 `empty_threshold`와 `max_failed`는
+기본값이 비활성(100.0 / 0)이라, `threshold=`만 넘기면 `collectors.youtube.empty_rate_threshold: 90`이 strict
+모델을 통과하고도 조용한 no-op이 된다(전부 해석되지만 전부 빈 채널 9개가 OK로 보고된다). 모든 수집기의 호출
+지점을 테스트가 고정한다.
+
 **다양성.** `max_videos_per_channel=1`로 고빈도 채널이 후보 풀을 독점하지 못하게 한다.
 
 ### 4.7 WebSearch (`web_search.py`)
@@ -540,6 +558,19 @@ origin은 `resolve_origin_key`로 해석한다. YouTube는 channel_url, Reddit�
 author, Web은 URL 호스트(`urlparse().netloc`에서 `www.` 제거)다. PSL이나 등록가능도메인 휴리스틱을 쓰지 않으니
 서브도메인은 별개 origin이다. 호스트 키가 없던 시절 web 항목은 origin 캡을 전부 우회해 한 매체가 여러 슬롯을
 차지할 수 있었다.
+
+**`source_slots: {}`도 origin 캡을 잃지 않는다.** 예전에는 슬롯이 비면 `above_threshold[:limit]`로 조기
+반환해서 `max_per_origin`이 슬롯과 함께 사라졌고, 한 피드가 그날 전부를 차지할 수 있었다. origin 캡이 존재하는
+이유가 바로 그 실패다. 지금은 보장 슬롯 패스만 (반복할 것이 없어서) 비고, fill 패스는 그대로 돈다.
+
+**grace 선택은 결정론적이다.** 동점일 때 `max()`는 배치 안에서 LLM이 답한 순서를 그대로 따랐고 실행마다
+흔들렸다. 이 파일의 다른 선택 경로와 같이 `(-score, item_id)`로 끊는다. grace가 `source_slots`에 묶여 있는 것은
+의도다. 보장 슬롯을 채울 수 있게 하는 장치이니 보장 슬롯이 없으면 구제할 대상도 없고, 그때 임계값 아래 항목을
+넣는 것은 전체 기준선을 낮추는 일이다.
+
+**매칭되지 않은 `origin_weights`는 WARNING이다.** 키는 `resolve_origin_key` 출력과 대소문자까지 일치해야 하니
+`Karpathy`와 `karpathy`, 또는 `collectors.rsshub.accounts`에서 주석 처리된 핸들은 아무 보정도 하지 않으면서
+아무 로그도 남기지 않았다. 소스가 어두운 날에는 정상이라 config 로드 실패가 아니라 실행 단위 경고다.
 
 **핀 항목도 캡에 계수한다.** 핀은 `rank()`가 앞에 붙이고 이 fill을 통과하지 않으니 origin과 source가
 계수되지 않았고, 그 결과 핀과 같은 origin의 항목이 나란히 실렸다. 지금은 카운터를 핀으로 먼저 채운 뒤
@@ -1116,7 +1147,16 @@ STALE과 DEGRADED는 실패가 아니니 `has_failures`를 켜지 않는다. FAI
 **랭킹 헬스 알림(`_maybe_alert_ranking`, 파이프라인 이후).** 위 수집기 알림은 파이프라인 이전 호출을 그대로
 두고, 랭킹 판정은 별도로 게시한다. 파이프라인 예외가 수집기 알림을 삼켜서는 안 된다. 재시도까지
 실패한 배치가 있거나(약 후보 40건 소실) 채점 커버리지가 `ranking_min_coverage_ratio` 아래면 겉보기 정상인
-다이제스트에도 알림이 간다.
+다이제스트에도 알림이 간다. **실제로 나간 다이제스트의 다양성 위반도 같은 알림에 실린다.** 랭커는
+`max_per_origin`과 보장 슬롯을 랭크 코어에서만 보장하는데, 병합 backfill 후보는 두 캡을 의도적으로 무시하고
+프롬프트는 그것을 교체로 쓰라고 부탁만 한다. `DigestGenerator`가 `_fill_source_metadata`가 돌려주는 '실제 게시된
+`CollectedItem`' 목록으로 origin과 source를 세어 위반을 ERROR로 남기고 `DigestResult.diversity_breaches`로
+넘긴다. 후보가 아예 없던 소스는 조용한 날이니 위반이 아니다. 탐지 전용이다. 스토리를 바꿔치기하지 않는다.
+
+**알림 경로는 한 곳이 소유한다(`shared/alerts.publish_alert`).** 두 Lambda 핸들러가 같은 루틴을
+각자 복사해 갖고 있었다. `ALERT_SNS_TOPIC_ARN` 조회와 `format_alarm` 조립, publish, 경고 로그, 예외 삼키기까지
+바이트 단위로 같았으니 알림 경로 수정이 한쪽에만 적용될 수 있었다. 지금 핸들러는 `fields` 조립만 갖는다. 계약은
+"절대 raise하지 않는다"다. 알림 실패가 자기가 보고하려던 실행을 실패시켜서는 안 된다.
 
 **알림은 귀속 가능해야 한다(`format_alarm`).** subject는 `[{project}/{stage}] {event} — {STATUS}`이고
 project와 stage를 각 함수의 env(`PROJECT_NAME`, `STAGE`)에서 읽는다. 하드코딩된 기본값만 쓰던 동안에는 dev
@@ -1131,6 +1171,14 @@ JSON 로그 줄로 건너갈 수 없었다.
 `retry_attempts=0`이니 재시도로 인한 이중 게시 위험은 없다.
 
 ### 게시량 메트릭과 날짜 전달 (다이제스트에서 비주얼 Lambda로)
+
+**EMF 봉투는 `shared/metrics.emit_emf`가 소유한다.** `_aws`/Timestamp 봉투를 다섯 곳이 손으로 만들고 있었고
+전부 `"Dimensions": [[]]`로 렌더됐다. 차원이 없으면 dev와 prod가 **같은 데이터포인트**에 쓴다. prod가 아무것도
+내지 못한 날 dev의 5건짜리 실행이 prod의 `Maximum<1` EmptyDigestAlarm을 초록으로 유지했고, dev 실패가 prod
+AgentErrors를 페이징했다. 지금은 `PROJECT_NAME`/`STAGE`에서 읽은 `Project`/`Stage` 차원을 붙이고(값이 비면 그
+차원은 생략한다. CloudWatch가 빈 차원 값을 가진 레코드를 거부하기 때문이다), CDK 알람도 같은 `metric_dimensions`
+맵으로 만든다. 네임스페이스는 `shared/constants.METRIC_NAMESPACE` 하나다. EMF는 로그 한 줄이니 새 AWS 리소스는
+필요 없다.
 
 **`DigestItemsPublished`(EMF)는 큐레이션된 스토리 수(`digest.content.items`)를 센다.** 랭커 후보 수를 세던
 탓에 2026-08-13과 08-17에 스토리 0건으로 게시된 날에도 만점처럼 보고되어 `EmptyDigestAlarm`이 울리지 않았다.
@@ -1314,6 +1362,13 @@ ingress 흐름은 이렇다.
 **서명 검증.** Slack 서명을 HMAC-SHA256으로 타이밍 안전하게 비교한다(`x-slack-signature`와
 `x-slack-request-timestamp`, `SIGNATURE_EXPIRATION_SEC` 윈도). 비숫자 timestamp가 `float()` ValueError로 502가
 되지 않게 try/except로 감싸서 깨끗하게 401을 반환한다. `url_verification` 챌린지는 즉시 echo한다.
+
+**서명 시크릿과 봇 토큰은 인프로세스 TTL 캐시로 읽는다(`_ssm_secret`, `SECRET_CACHE_TTL_SEC`≈300초).**
+서명 시크릿은 HMAC을 계산하기 **전에** 매 요청 SSM에서 가져왔다. 즉 WAF를 통과한 미인증 요청 하나하나가
+복호화를 포함한 `ssm:GetParameter` 한 번이었다. 설정된 WAF 레이트 리밋(IP당 5분 2000회)이면 IP 하나로
+GetParameter를 스로틀까지 밀 수 있고, 이 조회는 fail-closed(`except -> return False`)라서 값싼 홍수가 유일한
+대화형 경로의 401 장애로 바뀐다. 실패는 캐시하지 않는다. 일시적 SSM 오류가 컨테이너 수명 내내 핸들러를 닫아두면
+안 된다. 회전된 시크릿은 TTL 안에(그리고 다음 cold start에) 반영된다.
 
 **중복 제거.** `app_mention` 이벤트의 `event_id`, 그리고 비동기 단계에서는 `event_id:text` 해시를 DynamoDB
 조건부 쓰기(`attribute_not_exists`와 TTL)로 멱등 처리한다. dedup 마커는 디스패치 성공을 전제로 다루니,
@@ -1561,9 +1616,12 @@ CloudWatch 알람 12개가 모두 SNS 알림 토픽으로, 그리고 이메일�
 
 ### 테스트 (`tests/`, pytest, `asyncio_mode=auto`)
 
-1000개 이상의 테스트가 있고 커버리지 게이트는 80%다. 측정값은 약 90%다. `tests/conftest.py`의 autouse 픽스처가
+1000개 이상의 테스트가 있고 측정 커버리지는 약 94%, 게이트는 90%다. 게이트는 측정값과 함께 움직여야 한다.
+13포인트 낮게 방치된 게이트는 진짜 회귀를 오타만큼이나 편하게 통과시킨다. `tests/conftest.py`의 autouse 픽스처가
 앰비언트 시크릿과 인프라 env를 monkeypatch로 비우고 SSM 클라이언트를 막아 hermetic하게 만든다. 개발자의 `.env`나
-AWS 프로파일에 결과가 좌우되지 않고, 실 SSM 왕복으로 낭비하던 수십 초도 사라졌다.
+AWS 프로파일에 결과가 좌우되지 않고, 실 SSM 왕복으로 낭비하던 수십 초도 사라졌다. 같은 파일이
+`BedrockCrossRegionModelHelper._resolution_cache`(클래스 변수)도 매 테스트마다 비운다. 아무도 지우지 않으면 해석
+경로를 처음 건드린 테스트가 이후 모든 테스트의 해석 결과를 결정한다.
 
 커버하는 영역은 다음과 같다.
 
