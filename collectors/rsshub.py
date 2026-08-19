@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Iterable
 
 import feedparser
 
-from shared import CollectedItem, SourceType, generate_item_id, logger, parse_feed_published_date
+from shared import CollectedItem, SourceType, generate_item_id, logger, parse_feed_published_date, retry_async
 from shared.config import RSSHubCollectorConfig
 from shared.constants import TWITTER_PLATFORMS
 
@@ -14,7 +15,10 @@ from .base import (
     PARK_META_ACCOUNTS_FAILED,
     PARK_META_ACCOUNTS_TOTAL,
     BaseCollector,
+    TransientStatusError,
     cutoff_datetime,
+    feed_parse_failure,
+    feed_status_failure,
     load_items_from_s3,
 )
 
@@ -25,9 +29,17 @@ __all__ = [
     "RSSHubCollector",
 ]
 
-# What the source's inputs are called in the degraded/park reports, and why they usually fail.
+# What the source's inputs are called in the degraded/park reports.
 _INPUT_LABEL = "account feeds"
-_FAILURE_HINT = "Twitter cookies may have expired"
+
+
+def _failure_hint(platforms: Iterable[str]) -> str:
+    """The actionable hint for the platforms that actually failed. Expired Twitter cookies are the
+    usual cause of RSSHub failures HERE, but the collector also serves mastodon/other routes, and
+    asserting the Twitter cause unconditionally sent ops to the wrong container setting."""
+    if any(platform.lower() in TWITTER_PLATFORMS for platform in platforms):
+        return "Twitter cookies may have expired — update TWITTER_AUTH_TOKEN and TWITTER_CT0 in the RSSHub container"
+    return ""
 
 
 class RSSHubCollector(BaseCollector):
@@ -43,8 +55,13 @@ class RSSHubCollector(BaseCollector):
         parked = load_items_from_s3("rsshub_items.json", max_age_hours=self.config.park_max_age_hours)
         self.park_status = parked
         if parked.usable:
+            # The park file records HOW MANY inputs failed, never which ones, so the hint is derived
+            # from the platforms this deployment actually configures.
             self.flag_degraded_park(
-                parked, threshold=self.config.error_rate_threshold, what=_INPUT_LABEL, hint=_FAILURE_HINT
+                parked,
+                threshold=self.config.error_rate_threshold,
+                what=_INPUT_LABEL,
+                hint=_failure_hint(a.platform for a in self.config.accounts),
             )
             return parked.items
 
@@ -70,11 +87,13 @@ class RSSHubCollector(BaseCollector):
 
         items: list[CollectedItem] = []
         failed_accounts: list[str] = []
+        failed_platforms: list[str] = []
         empty_accounts: list[str] = []
-        for label, result in zip(labels, results, strict=True):
+        for account, label, result in zip(self.config.accounts, labels, results, strict=True):
             if isinstance(result, BaseException):
                 logger.warning("RSSHub task '%s' failed: %s", label, result)
                 failed_accounts.append(label)
+                failed_platforms.append(account.platform)
             elif result:
                 items.extend(result)
             else:
@@ -83,14 +102,15 @@ class RSSHubCollector(BaseCollector):
         total = len(self.config.accounts)
         active = total - len(failed_accounts) - len(empty_accounts)
         # Records run_meta (for the sync script to park) AND flags the source DEGRADED past the
-        # configured failure rate — the same helper every other collector uses.
+        # configured failure rate — the same helper every other collector uses. It owns the
+        # rate-vs-threshold verdict and its log line, so nothing here re-derives it.
         self.record_run_health(
             total=total,
             failed=len(failed_accounts),
             empty=len(empty_accounts),
             threshold=self.config.error_rate_threshold,
             what=_INPUT_LABEL,
-            hint=_FAILURE_HINT,
+            hint=_failure_hint(failed_platforms),
         )
         logger.info(
             "RSSHub collector gathered %d items from %d/%d accounts (%d failed, %d empty)",
@@ -101,20 +121,11 @@ class RSSHubCollector(BaseCollector):
             len(empty_accounts),
         )
         if failed_accounts:
-            fail_rate = len(failed_accounts) / total * 100
+            # WHICH accounts failed — the only part record_run_health cannot report.
             logger.warning(
-                "RSSHub failed feeds: %d/%d (%.0f%%) — %s",
-                len(failed_accounts),
-                total,
-                fail_rate,
+                "RSSHub failed feeds: %s",
                 ", ".join(failed_accounts[:10]) + ("..." if len(failed_accounts) > 10 else ""),
             )
-            if fail_rate > self.config.error_rate_threshold:
-                logger.warning(
-                    "RSSHub failure rate >%.0f%% — Twitter cookies may have expired. "
-                    "Update TWITTER_AUTH_TOKEN and TWITTER_CT0 in the RSSHub container.",
-                    self.config.error_rate_threshold,
-                )
         if empty_accounts:
             logger.debug(
                 "RSSHub empty feeds (no recent posts): %d/%d — '%s'",
@@ -156,15 +167,37 @@ class RSSHubCollector(BaseCollector):
         # feed host can't block its worker thread indefinitely and starve the digest's time budget.
         async with semaphore:
             logger.info("Collecting RSSHub feed: '%s'", feed_url)
-            try:
+
+            # The retry wraps the TIMEOUT, so every attempt gets its own full request_timeout.
+            # Without it a single transient blip on the largest source (~41 accounts) dropped that
+            # author for the whole day and could push RSSHub past error_rate_threshold.
+            # Worst case per account = max_retries * request_timeout + linear backoff, and accounts
+            # run max_concurrency at a time (see the bound in collect()).
+            async def _attempt() -> list[CollectedItem]:
                 return await asyncio.wait_for(
                     asyncio.to_thread(self._parse_feed, feed_url, username, platform),
                     timeout=self.config.request_timeout,
                 )
+
+            try:
+                return await retry_async(
+                    _attempt,
+                    max_retries=self.config.max_retries,
+                    backoff_sec=self.config.retry_backoff_sec,
+                    # A hung fetch and a 429/5xx are transient. An unparseable body or a permanent
+                    # 4xx raises a plain RuntimeError and is NOT retried — the verdict won't change.
+                    retry_on=(TimeoutError, TransientStatusError),
+                    description=f"RSSHub feed '{feed_url}'",
+                )
             except TimeoutError as e:
                 # Counted as a failure (not an empty feed) so an all-accounts-hung RSSHub reports
                 # FAILED; one hung feed among many is still only logged and skipped by collect().
-                logger.warning("RSSHub feed '%s' timed out after %ds, skipping", feed_url, self.config.request_timeout)
+                logger.warning(
+                    "RSSHub feed '%s' timed out after %d attempts of %ds, skipping",
+                    feed_url,
+                    self.config.max_retries,
+                    self.config.request_timeout,
+                )
                 raise RuntimeError(f"RSSHub feed '{feed_url}' timed out after {self.config.request_timeout}s") from e
 
     @staticmethod
@@ -181,9 +214,15 @@ class RSSHubCollector(BaseCollector):
 
     def _parse_feed(self, feed_url: str, username: str, platform: str) -> list[CollectedItem]:
         feed = feedparser.parse(feed_url)
+        description = f"RSSHub feed '{feed_url}'"
+        status = feed.get("status")
+        # RSSHub's OWN status was never inspected, so a 502 with an empty body surfaced as a generic
+        # unparseable-feed RuntimeError and was never retried. An unparseable feed is still a
+        # failure, not an empty one — see collect()'s all-failed check.
+        if status is not None and status >= 400:
+            raise feed_status_failure(description, status)
         if feed.bozo and not feed.entries:
-            # An unparseable feed is a failure, not an empty one — see collect()'s all-failed check.
-            raise RuntimeError(f"Failed to parse RSSHub feed '{feed_url}': {feed.bozo_exception}")
+            raise feed_parse_failure(description, feed.get("bozo_exception"))
 
         cutoff = cutoff_datetime(self.config.lookback_hours, self.config.reference_time)
         source_type = self._detect_source_type(platform)

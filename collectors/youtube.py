@@ -14,7 +14,14 @@ from shared import CollectedItem, SourceType, logger, parse_feed_published_date,
 from shared.config import YouTubeCollectorConfig
 from shared.proxy import get_proxied_url
 
-from .base import BaseCollector, cutoff_datetime, gather_collector_results, load_items_from_s3
+from .base import (
+    RETRIABLE_STATUS_CODES,
+    BaseCollector,
+    TransientStatusError,
+    cutoff_datetime,
+    gather_collector_results,
+    load_items_from_s3,
+)
 
 YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
 # Canonical YouTube channel ID: "UC" + 22 base64url chars. The uploads playlist is the
@@ -28,15 +35,6 @@ _HANDLE_PATTERN = re.compile(r"/@([A-Za-z0-9_.-]+)")
 # rows would drop a fresh video that ranks below a stale one — which is why low-cadence channels
 # like Dwarkesh kept getting missed. Over-fetch + sort-by-date fixes that.
 _CHANNEL_FETCH_DEPTH = 15
-# Statuses worth another attempt: rate limiting and server-side faults. Everything else — notably
-# 403 (quota exhausted / revoked key) and 404 (unknown channel or playlist) — is permanent and
-# still fails the channel on the first response instead of burning its time budget on retries.
-_RETRIABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
-
-
-class TransientStatusError(RuntimeError):
-    """A YouTube Data API response that should be retried (429 / 5xx). A RuntimeError like the
-    permanent rejections, so an exhausted retry chain still reads as a channel FAILURE upstream."""
 
 
 def _retry_after_delay(response: httpx.Response, cap_sec: float) -> float:
@@ -371,7 +369,7 @@ class YouTubeCollector(BaseCollector):
 
         async def _call() -> httpx.Response:
             resp = await client.get(f"{YOUTUBE_API_BASE}/{path}", params=params)
-            if resp.status_code in _RETRIABLE_STATUS_CODES:
+            if resp.status_code in RETRIABLE_STATUS_CODES:
                 delay = _retry_after_delay(resp, self.config.request_timeout)
                 if delay:
                     logger.warning(

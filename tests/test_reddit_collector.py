@@ -141,6 +141,18 @@ class TestRedditCollect:
         assert mock_parse.call_count == 2  # retried up to max_retries
 
     @pytest.mark.asyncio
+    async def test_transport_error_is_retried(self):
+        # feedparser reports a connection failure as a bozo feed with NO status, which used to be
+        # classified permanent — a DNS hiccup dropped the subreddit for the whole day.
+        from urllib.error import URLError
+
+        broken = _Feed(entries=[], bozo=True, bozo_exception=URLError("dns failure"))
+        collector = RedditCollector(_config(max_retries=3))
+        with patch("collectors.reddit.parse_feed_with_fallback", side_effect=[broken, _feed([_entry()])]):
+            items = await collector.collect()
+        assert len(items) == 1
+
+    @pytest.mark.asyncio
     async def test_404_is_not_retried(self):
         # A permanent 4xx (e.g. 404) must NOT be retried — fail fast.
         collector = RedditCollector(_config(max_retries=3))

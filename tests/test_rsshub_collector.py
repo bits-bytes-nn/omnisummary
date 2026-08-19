@@ -133,6 +133,110 @@ class TestReachability:
         assert [i.item_id for i in items] == ["t1"]
 
 
+class TestAccountRetries:
+    """An account feed used to get exactly ONE attempt: with ~41 accounts on the largest source, a
+    single transient blip dropped that author for the day and could push the source past
+    error_rate_threshold."""
+
+    @pytest.mark.asyncio
+    async def test_transient_status_is_retried_then_succeeds(self, monkeypatch):
+        from collectors.base import TransientStatusError
+
+        monkeypatch.delenv("STATE_BUCKET", raising=False)
+        c = RSSHubCollector(_config(max_retries=3))
+        outcomes: list = [TransientStatusError("returned HTTP 502"), [_item("t1")]]
+
+        def _parse(feed_url, username, platform):
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
+            with patch("httpx.get", return_value=MagicMock(status_code=200)):
+                with patch.object(c, "_parse_feed", side_effect=_parse):
+                    items = await c.collect()
+        assert [i.item_id for i in items] == ["t1"]
+        assert outcomes == []  # both the failed attempt and the retry ran
+
+    @pytest.mark.asyncio
+    async def test_permanent_failure_is_not_retried(self, monkeypatch):
+        monkeypatch.delenv("STATE_BUCKET", raising=False)
+        c = RSSHubCollector(_config(max_retries=3))
+        with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
+            with patch("httpx.get", return_value=MagicMock(status_code=200)):
+                with patch.object(c, "_parse_feed", side_effect=RuntimeError("bozo")) as parse:
+                    with pytest.raises(RuntimeError, match="All 1 RSSHub feeds failed"):
+                        await c.collect()
+        assert parse.call_count == 1  # a verdict, not a blip
+
+    @pytest.mark.asyncio
+    async def test_hung_feed_is_retried_with_a_full_timeout_each_attempt(self, monkeypatch):
+        monkeypatch.delenv("STATE_BUCKET", raising=False)
+        c = RSSHubCollector(_config(max_retries=3))
+        timeouts: list[int] = []
+        attempts = {"n": 0}
+
+        async def _timeout_then_pass(awaitable, timeout):
+            timeouts.append(timeout)
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                awaitable.close()
+                raise TimeoutError
+            return await awaitable
+
+        with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
+            with patch("httpx.get", return_value=MagicMock(status_code=200)):
+                with patch.object(c, "_parse_feed", return_value=[_item("t1")]):
+                    with patch("collectors.rsshub.asyncio.wait_for", side_effect=_timeout_then_pass):
+                        items = await c.collect()
+        assert [i.item_id for i in items] == ["t1"]
+        assert timeouts == [c.config.request_timeout, c.config.request_timeout]
+
+
+class TestFailureHint:
+    """The cookie hint used to be asserted unconditionally, sending ops to a Twitter container
+    setting even when the failing feeds were on another platform."""
+
+    @pytest.mark.asyncio
+    async def test_hint_names_twitter_cookies_when_x_feeds_fail(self, monkeypatch):
+        monkeypatch.delenv("STATE_BUCKET", raising=False)
+        accounts = [RSSHubAccount(username="a", platform="x"), RSSHubAccount(username="b", platform="x")]
+        c = RSSHubCollector(_config(accounts=accounts, error_rate_threshold=40.0))
+
+        def _parse(feed_url, username, platform):
+            if username == "a":
+                return [_item("a")]
+            raise RuntimeError("feed down")
+
+        with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
+            with patch("httpx.get", return_value=MagicMock(status_code=200)):
+                with patch.object(c, "_parse_feed", side_effect=_parse):
+                    await c.collect()
+        assert "TWITTER_AUTH_TOKEN" in c.degraded_detail
+
+    @pytest.mark.asyncio
+    async def test_no_twitter_hint_when_the_failing_feeds_are_another_platform(self, monkeypatch):
+        monkeypatch.delenv("STATE_BUCKET", raising=False)
+        accounts = [
+            RSSHubAccount(username="a", platform="mastodon"),
+            RSSHubAccount(username="b", platform="mastodon"),
+        ]
+        c = RSSHubCollector(_config(accounts=accounts, error_rate_threshold=40.0))
+
+        def _parse(feed_url, username, platform):
+            if username == "a":
+                return [_item("a")]
+            raise RuntimeError("feed down")
+
+        with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
+            with patch("httpx.get", return_value=MagicMock(status_code=200)):
+                with patch.object(c, "_parse_feed", side_effect=_parse):
+                    await c.collect()
+        assert "1/2 account feeds failed" in c.degraded_detail
+        assert "TWITTER" not in c.degraded_detail
+
+
 class TestFanOutBound:
     @pytest.mark.asyncio
     async def test_concurrency_is_bounded_by_config(self, monkeypatch):
@@ -233,6 +337,25 @@ class TestFeedParsing:
         with patch("collectors.rsshub.feedparser.parse", return_value=_feed([], bozo=True)):
             with pytest.raises(RuntimeError, match="Failed to parse RSSHub feed"):
                 c._parse_feed("u", "karpathy", "x")
+
+    def test_rsshub_own_error_status_is_classified(self):
+        # RSSHub's own status was never inspected, so a 502 with an empty body surfaced as a generic
+        # unparseable-feed error and was never retried.
+        from collectors.base import TransientStatusError
+
+        c = RSSHubCollector(_config())
+        with patch("collectors.rsshub.feedparser.parse", return_value=_Feed(entries=[], bozo=False, status=502)):
+            with pytest.raises(TransientStatusError, match="returned HTTP 502"):
+                c._parse_feed("u", "karpathy", "x")
+
+    def test_permanent_status_is_not_transient(self):
+        from collectors.base import TransientStatusError
+
+        c = RSSHubCollector(_config())
+        with patch("collectors.rsshub.feedparser.parse", return_value=_Feed(entries=[], bozo=False, status=404)):
+            with pytest.raises(RuntimeError, match="returned HTTP 404") as exc:
+                c._parse_feed("u", "karpathy", "x")
+        assert not isinstance(exc.value, TransientStatusError)
 
     def test_bozo_with_entries_is_still_parsed(self):
         # feedparser sets bozo on minor XML issues but still returns entries.

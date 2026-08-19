@@ -7,12 +7,14 @@ import feedparser
 from shared import CollectedItem, SourceType, generate_item_id, logger, parse_feed_published_date, retry_async
 from shared.config import RSSCollectorConfig
 
-from .base import BaseCollector, cutoff_datetime, gather_collector_results
-
-# Reuse the YouTube collector's transient-status classification verbatim rather than growing a
-# second list that could drift: 429 / 5xx are worth another attempt, and everything else (403, 404,
-# a malformed body) is a verdict that retrying cannot change.
-from .youtube import _RETRIABLE_STATUS_CODES, TransientStatusError
+from .base import (
+    BaseCollector,
+    TransientStatusError,
+    cutoff_datetime,
+    feed_parse_failure,
+    feed_status_failure,
+    gather_collector_results,
+)
 
 
 class RSSCollector(BaseCollector):
@@ -96,16 +98,16 @@ class RSSCollector(BaseCollector):
 
     def _parse_feed(self, feed_url: str) -> list[CollectedItem]:
         feed = feedparser.parse(feed_url)
+        description = f"RSS feed '{feed_url}'"
         status = feed.get("status")
-        if status in _RETRIABLE_STATUS_CODES:
-            # Rate limiting / a server-side fault, not a dead feed: the caller retries.
-            raise TransientStatusError(f"RSS feed '{feed_url}' returned {status}")
-        if (status is not None and status >= 400) or (feed.bozo and not feed.entries):
-            reason = f"HTTP {status}" if status and status >= 400 else feed.get("bozo_exception")
-            # A dead feed is a FAILURE, not an empty one: raising lets the all-failed check mark
-            # the whole source FAILED when every feed is dead, while a single dead feed among
-            # many is still tolerated (logged and skipped by gather_collector_results).
-            raise RuntimeError(f"Failed RSS feed '{feed_url}': {reason}")
+        # A dead feed is a FAILURE, not an empty one: raising lets the all-failed check mark the
+        # whole source FAILED when every feed is dead, while a single dead feed among many is still
+        # tolerated (logged and skipped by gather_collector_results). The helpers decide whether the
+        # failure is transient (429/5xx, or a transport error hidden in bozo_exception) and retried.
+        if status is not None and status >= 400:
+            raise feed_status_failure(description, status)
+        if feed.bozo and not feed.entries:
+            raise feed_parse_failure(description, feed.get("bozo_exception"))
         cutoff = cutoff_datetime(self.config.lookback_hours, self.config.reference_time)
 
         items: list[CollectedItem] = []

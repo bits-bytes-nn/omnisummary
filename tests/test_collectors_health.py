@@ -142,6 +142,63 @@ async def test_partially_collected_source_reports_degraded_not_ok():
 
 
 @pytest.mark.asyncio
+async def test_reddit_partial_subreddit_loss_reports_degraded():
+    # Reddit never called record_run_health, so 4 of 6 subreddits failing (proxy 429s) read as a
+    # perfectly healthy OK — the source could shrink to a third of its feeds and alert nothing.
+    from collectors.reddit import RedditCollector
+    from shared.config import RedditCollectorConfig
+
+    class _Feed(dict):
+        def __getattr__(self, name):
+            try:
+                return self[name]
+            except KeyError as e:
+                raise AttributeError(name) from e
+
+    entry = {
+        "title": "t",
+        "link": "https://www.reddit.com/r/LocalLLaMA/comments/abc123/t/",
+        "id": "t3_abc123",
+        "summary": "body",
+        "author": "alice",
+    }
+    good = _Feed(entries=[entry], bozo=False, bozo_exception=None, status=200)
+    dead = _Feed(entries=[], bozo=False, bozo_exception=None, status=404)
+
+    config = RedditCollectorConfig(
+        subreddits=["a", "b", "c", "d", "e", "f"], retry_backoff_sec=0, error_rate_threshold=50.0
+    )
+    collector = RedditCollector(config)
+    with patch("collectors.reddit.parse_feed_with_fallback", side_effect=[good, good, dead, dead, dead, dead]):
+        items = await collector.collect()
+
+    # Reporting only: the two healthy subreddits' items still reach the aggregator.
+    assert len(items) == 2
+    assert "4/6 subreddits failed" in collector.degraded_detail
+
+
+@pytest.mark.asyncio
+async def test_reddit_all_subreddits_answering_is_not_degraded():
+    from collectors.reddit import RedditCollector
+    from shared.config import RedditCollectorConfig
+
+    class _Feed(dict):
+        def __getattr__(self, name):
+            try:
+                return self[name]
+            except KeyError as e:
+                raise AttributeError(name) from e
+
+    empty_feed = _Feed(entries=[], bozo=False, bozo_exception=None, status=200)
+    collector = RedditCollector(RedditCollectorConfig(subreddits=["a", "b"], retry_backoff_sec=0))
+    with patch("collectors.reddit.parse_feed_with_fallback", return_value=empty_feed):
+        assert await collector.collect() == []
+
+    # A quiet day (every feed answered, nothing new) must NOT be reported as degraded.
+    assert collector.degraded_detail == ""
+
+
+@pytest.mark.asyncio
 async def test_stale_wins_over_degraded():
     # A stale park file is the more actionable finding (the sync itself has stopped), so it keeps
     # the report slot rather than being masked by the degradation flag.

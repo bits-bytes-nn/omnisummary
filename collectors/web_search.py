@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 import httpx
 from langchain_core.output_parsers import StrOutputParser
 from tavily import AsyncTavilyClient
+from tavily.errors import TimeoutError as TavilyTimeoutError
 
 from shared import (
     DOMAIN_TO_SOURCE,
@@ -27,6 +28,12 @@ from shared.config import WebSearchCollectorConfig
 
 from .base import BaseCollector, cutoff_datetime, gather_collector_results
 from .youtube import YOUTUBE_API_BASE, fetch_youtube_transcript
+
+# Failures another attempt can plausibly fix: a hung request (asyncio's TimeoutError and Tavily's
+# own), and any transport-level error. Every other tavily.errors type — a missing/invalid key, a
+# 400, a 403, an exhausted usage limit — is a VERDICT, and retrying it only delays the DEGRADED
+# report the health check owes the operator.
+_RETRIABLE_SEARCH_ERRORS: tuple[type[BaseException], ...] = (TimeoutError, TavilyTimeoutError, httpx.HTTPError)
 
 
 class WebSearchCollector(BaseCollector):
@@ -181,7 +188,11 @@ class WebSearchCollector(BaseCollector):
                 _search,
                 max_retries=self.config.max_retries,
                 backoff_sec=self.config.retry_backoff_sec,
-                retry_on=(Exception,),
+                # Retry only what another attempt can fix. Retrying EVERY exception burned three
+                # attempts and ~15s per query on a revoked key, a 401 or an exhausted Tavily quota —
+                # the verdict never changes, and health could not report DEGRADED until every query
+                # had paid that price.
+                retry_on=_RETRIABLE_SEARCH_ERRORS,
                 description=f"Tavily search for trend '{trend_name}' query '{query}'",
             )
 

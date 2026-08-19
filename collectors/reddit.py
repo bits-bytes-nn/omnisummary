@@ -8,13 +8,15 @@ from shared import CollectedItem, SourceType, generate_item_id, logger, parse_fe
 from shared.config import RedditCollectorConfig
 from shared.proxy import parse_feed_with_fallback
 
-from .base import BaseCollector, cutoff_datetime
+from .base import (
+    BaseCollector,
+    TransientStatusError,
+    cutoff_datetime,
+    feed_parse_failure,
+    feed_status_failure,
+)
 
 RSS_BASE = "https://www.reddit.com"
-
-
-class _RetriableFeedError(RuntimeError):
-    """A transient Reddit feed failure (HTTP 429 / 5xx) worth retrying with backoff."""
 
 
 def _jittered_backoff(base_sec: float, attempt: int, seed: str) -> float:
@@ -48,21 +50,44 @@ class RedditCollector(BaseCollector):
         # two or three subreddits don't need parallelism.
         items: list[CollectedItem] = []
         failures: list[BaseException] = []
+        empty = 0
         for idx, sub in enumerate(self.config.subreddits):
             if idx:
                 await asyncio.sleep(self.config.retry_backoff_sec)
             try:
-                items.extend(await self._collect_subreddit(sub))
+                collected = await self._collect_subreddit(sub)
             except Exception as e:
                 logger.warning("Reddit subreddit 'r/%s' failed: %s", sub, e)
                 failures.append(e)
+                continue
+            if collected:
+                items.extend(collected)
+            else:
+                empty += 1
 
         # All subreddits failed (proxy/network/upstream outage) -> surface as a failure
         # so the health check marks Reddit FAILED and alerts, rather than a silent empty day.
         if failures and len(failures) == len(self.config.subreddits):
             raise RuntimeError(f"All {len(failures)} Reddit subreddits failed: {failures[0]}")
 
-        logger.info("Reddit collector gathered %d items total", len(items))
+        total = len(self.config.subreddits)
+        logger.info(
+            "Reddit collector gathered %d items total from %d/%d subreddits (%d failed, %d empty)",
+            len(items),
+            total - len(failures) - empty,
+            total,
+            len(failures),
+            empty,
+        )
+        # A partial outage that still returns items is neither OK nor FAILED: without this, Reddit
+        # could shrink from 6 subreddits to 2 (proxy 429s) and still be reported healthy.
+        self.record_run_health(
+            total=total,
+            failed=len(failures),
+            empty=empty,
+            threshold=self.config.error_rate_threshold,
+            what="subreddits",
+        )
         return items
 
     async def _collect_subreddit(self, subreddit_name: str) -> list[CollectedItem]:
@@ -82,7 +107,7 @@ class RedditCollector(BaseCollector):
                     timeout=self.config.request_timeout,
                 )
             except TimeoutError:
-                last_error = _RetriableFeedError(
+                last_error = TransientStatusError(
                     f"Reddit 'r/{subreddit_name}' timed out after {self.config.request_timeout}s"
                 )
                 if attempt < self.config.max_retries:
@@ -95,7 +120,7 @@ class RedditCollector(BaseCollector):
                         delay,
                     )
                     await asyncio.sleep(delay)
-            except _RetriableFeedError as e:
+            except TransientStatusError as e:
                 last_error = e
                 if attempt < self.config.max_retries:
                     delay = _jittered_backoff(self.config.retry_backoff_sec, attempt, subreddit_name)
@@ -113,15 +138,15 @@ class RedditCollector(BaseCollector):
 
     def _parse_feed(self, feed_url: str, subreddit_name: str) -> list[CollectedItem]:
         feed = parse_feed_with_fallback(feed_url)
+        description = f"Reddit feed 'r/{subreddit_name}'"
         status = feed.get("status")
+        # 429 (rate limit) and 5xx are transient — signal a retry. 4xx (e.g. 404) is permanent, and
+        # so is a malformed body; a TRANSPORT failure (feedparser reports it in bozo_exception with
+        # no status at all) is transient, and used to lose the subreddit for the whole day.
         if status is not None and status >= 400:
-            # 429 (rate limit) and 5xx are transient — signal a retry. 4xx (e.g. 404) is permanent.
-            msg = f"Reddit feed 'r/{subreddit_name}' returned HTTP {status}"
-            if status == 429 or status >= 500:
-                raise _RetriableFeedError(msg)
-            raise RuntimeError(msg)
+            raise feed_status_failure(description, status)
         if feed.bozo and not feed.entries:
-            raise RuntimeError(f"Failed to parse Reddit feed 'r/{subreddit_name}': {feed.bozo_exception}")
+            raise feed_parse_failure(description, feed.get("bozo_exception"))
 
         cutoff = cutoff_datetime(self.config.lookback_hours, self.config.reference_time)
         items: list[CollectedItem] = []

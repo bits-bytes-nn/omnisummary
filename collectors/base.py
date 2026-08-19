@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Sequence
 from datetime import UTC, datetime, timedelta
 from enum import Enum
+from http.client import HTTPException
 from typing import Any
 
 import boto3
@@ -14,6 +15,42 @@ from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field, ValidationError
 
 from shared import CollectedItem, logger
+
+# HTTP statuses worth another attempt: rate limiting and server-side faults. Everything else —
+# notably 403 (quota exhausted / revoked key) and 404 (unknown resource) — is a verdict retrying
+# cannot change. Lives here so every collector classifies a status the same way.
+RETRIABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
+# Exception types feedparser reports for a TRANSPORT failure rather than a malformed document.
+# OSError covers urllib's URLError, socket.timeout/TimeoutError, ConnectionResetError and ssl.SSLError;
+# HTTPException covers a truncated/aborted response (IncompleteRead, RemoteDisconnected).
+_TRANSPORT_EXCEPTIONS = (OSError, HTTPException)
+
+
+class TransientStatusError(RuntimeError):
+    """A response that should be retried (429 / 5xx, or a transport-level fetch failure). A
+    RuntimeError like the permanent rejections, so an exhausted retry chain still reads as an
+    input FAILURE upstream."""
+
+
+def feed_status_failure(description: str, status: int) -> Exception:
+    """The exception for a feed that answered with an error status: transient for 429/5xx (the
+    caller retries), permanent for everything else."""
+    message = f"{description} returned HTTP {status}"
+    return TransientStatusError(message) if status in RETRIABLE_STATUS_CODES else RuntimeError(message)
+
+
+def feed_parse_failure(description: str, bozo_exception: object) -> Exception:
+    """The exception for a feed that yielded no entries.
+
+    feedparser does NOT raise on a connection error: it returns a feed with no `status` and the
+    transport exception in `bozo_exception`. Classifying that as a permanent parse error meant a DNS
+    hiccup lost the feed for the whole day while an HTTP 503 on the same feed got three attempts."""
+    message = f"Failed to parse {description}: {bozo_exception}"
+    if isinstance(bozo_exception, _TRANSPORT_EXCEPTIONS):
+        return TransientStatusError(message)
+    return RuntimeError(message)
+
 
 # ClientError codes that mean "the park file simply isn't there" — an expected state (first run,
 # local dev, a source that isn't synced) that must stay a quiet fall-through to live collection.

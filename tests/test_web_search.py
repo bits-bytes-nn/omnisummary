@@ -190,6 +190,41 @@ class TestCollect:
             await c.collect()
 
     @pytest.mark.asyncio
+    async def test_permanent_tavily_rejection_is_not_retried(self, monkeypatch):
+        # A revoked key / exhausted quota is a VERDICT: retrying it burned three attempts per query
+        # before health could report DEGRADED. One attempt each, then the source fails.
+        from tavily.errors import InvalidAPIKeyError
+
+        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        c = _search_collector(min_search_score=0.3, max_retries=3)
+        client = MagicMock()
+        client.search = AsyncMock(side_effect=InvalidAPIKeyError("revoked key"))
+        c._client_instance = client
+        with pytest.raises(Exception, match="revoked key"):
+            await c.collect()
+        assert client.search.await_count == 3  # 3 queries x 1 attempt, not 3 x 3
+
+    @pytest.mark.asyncio
+    async def test_transient_search_failure_is_still_retried(self, monkeypatch):
+        # The narrower predicate must not lose the retry that matters: a hung request still gets
+        # another attempt, and the query survives.
+        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        c = _search_collector(min_search_score=0.3, max_retries=2)
+        client = MagicMock()
+        client.search = AsyncMock(
+            side_effect=[
+                TimeoutError("hung"),
+                {"results": [_result(0.9, url="https://ok.example/1", title="OK")]},
+                {"results": []},
+                {"results": []},
+            ]
+        )
+        c._client_instance = client
+        items = await c.collect()
+        assert [i.url for i in items] == ["https://ok.example/1"]
+        assert client.search.await_count == 4  # the timed-out query was retried
+
+    @pytest.mark.asyncio
     async def test_partial_query_failure_keeps_the_rest(self, monkeypatch):
         monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
         c = _search_collector(min_search_score=0.3, max_retries=1)

@@ -87,14 +87,14 @@ class TestRSSCollect:
         # Total outage (every feed 4xx/5xx) must be FAILED, not a silently empty digest.
         c = RSSCollector(_config(feeds=["https://a.example/feed", "https://b.example/feed"]))
         with patch("collectors.rss.feedparser.parse", return_value=_feed([], status=404)):
-            with pytest.raises(RuntimeError, match="Failed RSS feed"):
+            with pytest.raises(RuntimeError, match="returned HTTP 404"):
                 await c.collect()
 
     @pytest.mark.asyncio
     async def test_all_feeds_unparseable_raises(self):
         c = RSSCollector(_config(feeds=["https://a.example/feed", "https://b.example/feed"]))
         with patch("collectors.rss.feedparser.parse", return_value=_feed([], bozo=True, status=200)):
-            with pytest.raises(RuntimeError, match="Failed RSS feed"):
+            with pytest.raises(RuntimeError, match="Failed to parse RSS feed"):
                 await c.collect()
 
     @pytest.mark.asyncio
@@ -135,8 +135,8 @@ class TestRSSCollect:
 
     @pytest.mark.asyncio
     async def test_transient_status_is_retried_then_succeeds(self):
-        # A single 503 used to lose that feed's whole day of items. It is retried instead;
-        # the retry list is the YouTube collector's, so 429/5xx retry and 403/404 do not.
+        # A single 503 used to lose that feed's whole day of items. It is retried instead, using
+        # the shared classification in collectors.base: 429/5xx retry and 403/404 do not.
         c = RSSCollector(_config(max_retries=3, retry_backoff_sec=0))
         responses = [_feed([], status=503), _feed([_entry()])]
 
@@ -156,15 +156,47 @@ class TestRSSCollect:
             _config(feeds=["https://a.example/feed", "https://b.example/feed"], max_retries=2, retry_backoff_sec=0)
         )
         with patch("collectors.rss.feedparser.parse", return_value=_feed([], status=503)) as parse:
-            with pytest.raises(RuntimeError, match="returned 503"):
+            with pytest.raises(RuntimeError, match="returned HTTP 503"):
                 await c.collect()
         assert parse.call_count == 4  # 2 feeds x 2 attempts
+
+    @pytest.mark.asyncio
+    async def test_transport_error_is_retried_not_treated_as_a_dead_feed(self):
+        # feedparser does not RAISE on a connection error: it returns a feed with no status and the
+        # URLError in bozo_exception. That used to become a plain RuntimeError, excluded from the
+        # retry list — so a DNS hiccup permanently lost the feed while an HTTP 503 got three tries.
+        from urllib.error import URLError
+
+        c = RSSCollector(_config(max_retries=3, retry_backoff_sec=0))
+        broken = _Feed(entries=[], bozo=True, bozo_exception=URLError("dns failure"), feed=_Feed(title=""))
+        responses = [broken, _feed([_entry()])]
+
+        def _parse(_url):
+            return responses.pop(0)
+
+        with patch("collectors.rss.feedparser.parse", side_effect=_parse):
+            items = await c.collect()
+        assert len(items) == 1
+        assert responses == []  # the transport failure was retried, not given up on
+
+    @pytest.mark.asyncio
+    async def test_malformed_body_is_still_permanent(self):
+        # Only TRANSPORT-level bozo exceptions are transient; a genuinely malformed document is a
+        # verdict and must not burn the feed's retry budget.
+        from xml.sax import SAXException
+
+        c = RSSCollector(_config(max_retries=3, retry_backoff_sec=0))
+        broken = _Feed(entries=[], bozo=True, bozo_exception=SAXException("not xml"), feed=_Feed(title=""))
+        with patch("collectors.rss.feedparser.parse", return_value=broken) as parse:
+            with pytest.raises(RuntimeError, match="Failed to parse RSS feed"):
+                await c.collect()
+        assert parse.call_count == 1
 
     @pytest.mark.asyncio
     async def test_permanent_status_is_not_retried(self):
         c = RSSCollector(_config(max_retries=3, retry_backoff_sec=0))
         with patch("collectors.rss.feedparser.parse", return_value=_feed([], status=403)) as parse:
-            with pytest.raises(RuntimeError, match="Failed RSS feed"):
+            with pytest.raises(RuntimeError, match="returned HTTP 403"):
                 await c.collect()
         assert parse.call_count == 1  # a verdict, not a blip
 
