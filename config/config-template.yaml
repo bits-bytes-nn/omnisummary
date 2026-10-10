@@ -114,6 +114,10 @@ pipeline:
   # every day, which is the point when the countdown IS the account's signature. "suffix" keeps the
   # gag verbatim but moves it to a closing sign-off, so the first line is the day's actual angle.
   agi_countdown_position: "prefix"
+  # Any *_model / model_id takes a LanguageModelId value (shared/constants.py), including
+  # "anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5-5", "anthropic.claude-haiku-5-5" and
+  # "anthropic.claude-fable-5-1". Opus 5.5 and Haiku 5.5 default to effort "medium", so re-measure
+  # quality before switching a stage to them.
   ranking_model: "anthropic.claude-opus-4-8"
   digest_model: "anthropic.claude-sonnet-5"
   item_text_max_tokens: 10000

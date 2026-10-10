@@ -32,7 +32,7 @@ AWS 위에서 동작한다. Bedrock AgentCore(Runtime + Memory)와 Amazon Bedroc
 ## 주요 기능
 
 - **멀티 소스 수집.** Reddit(공개 `.rss` 피드), YouTube, X/Twitter(RSSHub 경유), RSS/Substack, 웹 검색(Tavily)
-- **LLM 랭킹.** Claude Opus 4.8이 다축으로 점수를 매기고(Opus 5와 Sonnet 5도 선택 가능), 소스 슬롯과 출처별 다양성 캡으로 한 채널이 그날을 독점하지 못하게 한다
+- **LLM 랭킹.** Claude Opus 4.8이 다축으로 점수를 매기고(Opus 5, Sonnet 5, Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.1도 선택 가능), 소스 슬롯과 출처별 다양성 캡으로 한 채널이 그날을 독점하지 못하게 한다
 - **에디토리얼 다이제스트.** Claude Sonnet 5가 한국어 산문을 쓰고 일자 간 트렌드 연속성을 유지한다
 - **멀티 채널 전달.** 하나의 구조화된 다이제스트를 채널별로 렌더링한다. Slack은 Block Kit, Threads는 이미지 루트에 평면 답글 체인을 붙이며 각각 독립 토글이다
 - **딥 리서치 에이전트.** 단일 목적 도구 8개를 가진 자율 Strands 에이전트이고 출처 기사의 OG 이미지를 첨부한다

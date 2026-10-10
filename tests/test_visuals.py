@@ -116,6 +116,17 @@ class TestBrief:
         brief = await gen.brief("a 1-page slide", "source text", "context")
         assert brief == out
 
+    @pytest.mark.asyncio
+    async def test_a_reply_without_the_tool_call_is_a_named_failure(self):
+        # Models that reject forced tool_choice get the schema tool under "auto"; a text-only reply
+        # parses to None, which must not surface as an opaque pydantic error.
+        factory = MagicMock()
+        factory.get_model.return_value.with_structured_output.return_value = RunnableLambda(lambda _: None)
+        factory.truncate_to_tokens.side_effect = lambda text, _: text
+        gen = VisualGenerator(factory, LanguageModelId.CLAUDE_V5_5_SONNET, **_visual_kwargs())
+        with pytest.raises(ValueError, match="no VisualBrief tool call"):
+            await gen.brief("a 1-page slide", "source text", "context")
+
 
 class TestVisualGenerator:
     @pytest.mark.asyncio

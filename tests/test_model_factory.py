@@ -1,3 +1,4 @@
+import copy
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -125,6 +126,117 @@ class TestOpus5Registry:
             assert opus5.supports_temperature == LANGUAGE_MODEL_INFO[sibling].supports_temperature
 
 
+CLAUDE_5_5_FAMILY = [
+    LanguageModelId.CLAUDE_V5_5_OPUS,
+    LanguageModelId.CLAUDE_V5_5_SONNET,
+    LanguageModelId.CLAUDE_V5_5_HAIKU,
+    LanguageModelId.CLAUDE_V5_1_FABLE,
+]
+NO_FORCED_TOOL_CHOICE = [
+    LanguageModelId.CLAUDE_V5_5_OPUS,
+    LanguageModelId.CLAUDE_V5_5_SONNET,
+    LanguageModelId.CLAUDE_V5_1_FABLE,
+]
+PROFILE_ARN = "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc"
+
+
+class TestClaude55Registry:
+    """Opus 5.5 / Sonnet 5.5 / Haiku 5.5 / Fable 5.1 are selectable. All four 400 on non-default
+    sampling params; Opus 5.5, Sonnet 5.5 and Fable 5.1 also 400 on forced tool_choice."""
+
+    @pytest.mark.parametrize("model", CLAUDE_5_5_FAMILY, ids=lambda m: m.name)
+    def test_is_registered_with_1m_context_and_the_non_streaming_output_cap(self, model):
+        info = LANGUAGE_MODEL_INFO[model]
+        assert info.context_window_size == 1000000
+        assert info.max_output_tokens == 64000
+
+    def test_base_ids_carry_no_version_suffix(self):
+        assert [m.value for m in CLAUDE_5_5_FAMILY] == [
+            "anthropic.claude-opus-5-5",
+            "anthropic.claude-sonnet-5-5",
+            "anthropic.claude-haiku-5-5",
+            "anthropic.claude-fable-5-1",
+        ]
+
+    @pytest.mark.parametrize("model", CLAUDE_5_5_FAMILY, ids=lambda m: m.name)
+    def test_temperature_is_never_sent(self, model):
+        info = LANGUAGE_MODEL_INFO[model]
+        assert info.supports_temperature is False
+        cfg = _factory()._build_model_config(info, f"global.{model.value}", temperature=0.7)
+        assert "temperature" not in cfg
+
+    @pytest.mark.parametrize("model", CLAUDE_5_5_FAMILY, ids=lambda m: m.name)
+    def test_forced_tool_choice_flag(self, model):
+        assert LANGUAGE_MODEL_INFO[model].supports_forced_tool_choice is (model not in NO_FORCED_TOOL_CHOICE)
+
+    @pytest.mark.parametrize("resolved", ["global", "arn"])
+    @pytest.mark.parametrize("model", NO_FORCED_TOOL_CHOICE, ids=lambda m: m.name)
+    def test_tool_choice_is_limited_to_auto_for_any_resolved_id(self, model, resolved):
+        resolved_id = PROFILE_ARN if resolved == "arn" else f"global.{model.value}"
+        cfg = _factory()._build_model_config(LANGUAGE_MODEL_INFO[model], resolved_id)
+        assert cfg["supports_tool_choice_values"] == ("auto",)
+
+    def test_models_that_accept_forced_tool_choice_keep_langchains_inference(self):
+        for model in (LanguageModelId.CLAUDE_V5_SONNET, LanguageModelId.CLAUDE_V5_5_HAIKU):
+            cfg = _factory()._build_model_config(LANGUAGE_MODEL_INFO[model], f"global.{model.value}")
+            assert "supports_tool_choice_values" not in cfg
+
+
+class TestStructuredOutputRequest:
+    """agent/visuals.py builds the brief with with_structured_output, which forces the schema tool
+    whenever langchain-aws believes the model allows it. Drives the real ChatBedrockConverse against a
+    mocked Converse client and asserts on the request that would go over the wire."""
+
+    TOOL_USE_RESPONSE = {
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "toolUse": {
+                            "toolUseId": "t1",
+                            "name": "VisualBrief",
+                            "input": {"title": "T", "caption": "C", "prompt": "P", "orientation": "square"},
+                        }
+                    }
+                ],
+            }
+        },
+        "stopReason": "tool_use",
+        "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+        "metrics": {"latencyMs": 1},
+    }
+
+    def _converse_request(self, model: LanguageModelId, resolved: str) -> dict:
+        from shared.models import VisualBrief
+        from shared.utils import BedrockCrossRegionModelHelper as H
+
+        client = MagicMock()
+        # A fresh copy per call: the response parser pops keys off the dict it is given.
+        client.converse.side_effect = lambda **_: copy.deepcopy(self.TOOL_USE_RESPONSE)
+        f = _factory(client)
+        with patch.object(H, "get_cross_region_model_id", return_value=resolved):
+            with patch("boto3.client", return_value=MagicMock()):
+                llm = f.get_model(model, stage="visual-synopsis")
+        brief = llm.with_structured_output(VisualBrief).invoke("draw it")
+        assert isinstance(brief, VisualBrief)
+        return client.converse.call_args.kwargs
+
+    @pytest.mark.parametrize("resolved", ["global", "arn"])
+    @pytest.mark.parametrize("model", NO_FORCED_TOOL_CHOICE, ids=lambda m: m.name)
+    def test_no_forced_tool_choice_and_no_sampling_params(self, model, resolved):
+        request = self._converse_request(model, PROFILE_ARN if resolved == "arn" else f"global.{model.value}")
+        assert "toolChoice" not in request["toolConfig"]
+        assert [t["toolSpec"]["name"] for t in request["toolConfig"]["tools"]] == ["VisualBrief"]
+        assert "temperature" not in request["inferenceConfig"]
+        assert "additionalModelRequestFields" not in request
+
+    def test_a_model_that_accepts_forced_tool_choice_still_gets_it(self):
+        # Pins the unchanged path for the current default (Sonnet 5 on a global id).
+        request = self._converse_request(LanguageModelId.CLAUDE_V5_SONNET, "global.anthropic.claude-sonnet-5")
+        assert request["toolConfig"]["toolChoice"] == {"tool": {"name": "VisualBrief"}}
+
+
 class TestModelClassConstructorSurface:
     """Every other test here asserts on the config DICT, so a langchain-aws upgrade that renamed or
     dropped a kwarg still passed the whole suite — nothing ever fed the dict to the real class. Both
@@ -135,6 +247,7 @@ class TestModelClassConstructorSurface:
         (LanguageModelId.CLAUDE_V4_8_OPUS, {}),
         (LanguageModelId.CLAUDE_V5_SONNET, {}),
         (LanguageModelId.CLAUDE_V5_OPUS, {}),
+        *[(model, {}) for model in CLAUDE_5_5_FAMILY],
         (LanguageModelId.CLAUDE_V5_SONNET, {"enable_thinking": True}),
         (LanguageModelId.CLAUDE_V4_6_SONNET, {"enable_thinking": True}),  # legacy budget_tokens form
         (LanguageModelId.CLAUDE_V5_SONNET, {"supports_1m_context_window": True}),

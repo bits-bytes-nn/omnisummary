@@ -36,11 +36,17 @@ class LanguageModelInfo(BaseModel):
     real invocations: Sonnet 5 and Opus 4.7/4.8/5 reject a `temperature` param AND the legacy
     thinking.type="enabled" + budget_tokens form; they need thinking.type="adaptive" +
     output_config.effort. Only the temperature half is enforced below, because nothing asks for
-    thinking."""
+    thinking.
+
+    `supports_forced_tool_choice` is False for models that 400 on tool_choice "any"/"tool" (Opus 5.5,
+    Sonnet 5.5, Fable 5.1). It is stated here rather than left to langchain-aws, which infers
+    ("auto", "any", "tool") for any id containing "claude" and () for an application-inference-
+    profile ARN — so structured output would force the tool on the global id and not on the ARN."""
 
     context_window_size: int
     max_output_tokens: int
     supports_temperature: bool = True
+    supports_forced_tool_choice: bool = True
 
 
 LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
@@ -118,6 +124,33 @@ LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
         # thinking.type="adaptive" + output_config.effort succeeds — the same shape as Opus 4.7/4.8
         # and Sonnet 5.
         supports_temperature=False,
+    ),
+    # Claude 5.5 / Fable 5.1: per Anthropic's API reference, NOT yet hand-verified against Converse.
+    # All four reject non-default sampling params, budget_tokens thinking and assistant prefill, and
+    # run adaptive thinking when `thinking` is omitted (which the factory never sends). Opus 5.5 and
+    # Haiku 5.5 default to effort "medium" rather than "high".
+    LanguageModelId.CLAUDE_V5_5_HAIKU: LanguageModelInfo(
+        context_window_size=1000000,
+        max_output_tokens=64000,
+        supports_temperature=False,
+    ),
+    LanguageModelId.CLAUDE_V5_5_SONNET: LanguageModelInfo(
+        context_window_size=1000000,
+        max_output_tokens=64000,
+        supports_temperature=False,
+        supports_forced_tool_choice=False,
+    ),
+    LanguageModelId.CLAUDE_V5_5_OPUS: LanguageModelInfo(
+        context_window_size=1000000,
+        max_output_tokens=64000,
+        supports_temperature=False,
+        supports_forced_tool_choice=False,
+    ),
+    LanguageModelId.CLAUDE_V5_1_FABLE: LanguageModelInfo(
+        context_window_size=1000000,
+        max_output_tokens=64000,
+        supports_temperature=False,
+        supports_forced_tool_choice=False,
     ),
     # NOTE: add new models here
 }
@@ -411,10 +444,14 @@ class BedrockLanguageModelFactory(BaseBedrockModelFactory[LanguageModelId, Langu
             *(config.get("callbacks") or []),
             _TokenUsageLogger(str(kwargs.get("stage") or "unattributed"), resolved_model_id),
         ]
-        # Newer models (Sonnet 5, Opus 4.7/4.8/5) reject the `temperature` param entirely.
+        # Newer models (Sonnet 5, Opus 4.7/4.8/5, the 5.5 family, Fable 5.1) reject `temperature`.
         config["max_tokens"] = final_max_tokens
         if model_info.supports_temperature:
             config["temperature"] = kwargs.get("temperature", self.DEFAULT_TEMPERATURE)
+        # "auto" only: with_structured_output then binds the schema tool without a tool_choice
+        # instead of forcing it, whether the resolved id is a global profile or an opaque ARN.
+        if not model_info.supports_forced_tool_choice:
+            config["supports_tool_choice_values"] = ("auto",)
         return config
 
     def _build_base_config(self, resolved_model_id: str, **kwargs: Any) -> dict[str, Any]:

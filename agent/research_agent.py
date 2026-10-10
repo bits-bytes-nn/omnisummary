@@ -314,8 +314,11 @@ def create_research_agent(tools: list[Any] | None = None) -> Agent:
         # provider="anthropic" for ARN ids), so state it rather than letting a string sniff guess.
         "cache_config": CacheConfig(strategy="anthropic"),
     }
-    # Sonnet 5 / Opus 4.7/4.8 reject a non-default temperature with a 400. Send it only for
-    # models that accept sampling params (same gate the Bedrock factory uses).
+    # Sonnet 5 / Opus 4.7/4.8/5 and the 5.5 family / Fable 5.1 reject a non-default temperature with
+    # a 400. Send it only for models that accept sampling params (same gate the Bedrock factory uses).
+    # No tool_choice is set here: the Strands agent loop sends "auto", which every registered model
+    # accepts. Only Strands structured output (Agent.structured_output / structured_output_model)
+    # forces "any", which 400s on models with supports_forced_tool_choice=False; this agent uses neither.
     if model_info is None or model_info.supports_temperature:
         model_kwargs["temperature"] = 0.0
     bedrock_model = BedrockModel(**model_kwargs)
