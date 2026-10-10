@@ -1014,9 +1014,9 @@ addressable해지지 않았다"는 **0번**인 반면 reply 재시도는 25일�
 **모델 클래스는 하나다.** `use_converse` 같은 분기로 `ChatBedrock`과 갈리지 않고, thinking이나 1M 컨텍스트,
 성능 레이턴시를 구성하는 역량 레이어도 없다. 그런 레이어가 요구하는 `enable_thinking`과 `thinking_effort`,
 `latency_mode`를 넘기는 config 필드가 없고, 해석기가 항상 profile ARN이나 `global.*` id를 돌려주므로
-cross-region 판정이 늘 참이어서 다른 분기는 애초에 도달 불가다. 게다가 남은 유일한 역량 플래그
-`supports_temperature`는 **Converse에 대고** 검증한 값이라, 다른 클래스가 구성되는 순간 플래그의 의미가 성립하지
-않는다. 해석이 맨 모델 id로 폴백해도 Converse가 그것을 받으니 잃는 폴백도 없다.
+cross-region 판정이 늘 참이어서 다른 분기는 애초에 도달 불가다. 게다가 남은 역량 플래그
+`supports_temperature`와 `supports_forced_tool_choice`는 **Converse** 기준의 값이라, 다른 클래스가 구성되는 순간
+플래그의 의미가 성립하지 않는다. 해석이 맨 모델 id로 폴백해도 Converse가 그것을 받으니 잃는 폴백도 없다.
 
 **생성자 표면은 테스트로 고정한다.** `ChatBedrockConverse`가 pydantic `extra="forbid"`이니 프레임워크 메이저
 업그레이드가 kwarg 하나를 renaming하면 즉시 깨진다. 그런데 나머지 테스트는 전부 config 딕셔너리만 검증하니,
@@ -1024,14 +1024,24 @@ cross-region 판정이 늘 참이어서 다른 분기는 애초에 도달 불가
 `TestModelClassConstructorSurface`가 배포 환경에서만 도는 profile ARN 경로까지 포함해 실제 인스턴스를 생성한다.
 
 **모델 ID.** `shared/constants.py`의 `LanguageModelId`에 열거되어 있고 최신은 Opus 5와 Sonnet 5다(Opus 4.8도
-유지한다). Opus 5의 역량 플래그는 버전 번호로 추정하지 않고 Converse로 직접 검증했다. `temperature`와 레거시
+유지한다). Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.1(`anthropic.claude-opus-5-5`, `-sonnet-5-5`,
+`-haiku-5-5`, `-fable-5-1`)도 선택할 수 있지만 기본값으로 쓰는 단계는 없다. 이 네 모델의 플래그는 Anthropic API
+문서 기준이고 아직 Converse로 직접 호출해 확인하지 않았다. Opus 5.5와 Haiku 5.5는 effort 기본값이 `high`가 아니라
+`medium`이라, 단계 모델을 바꿀 때는 품질을 다시 측정해야 한다. Opus 5의 역량 플래그는 버전 번호로 추정하지 않고 Converse로 직접 검증했다. `temperature`와 레거시
 `thinking.type="enabled"`/`budget_tokens`는 둘 다 ValidationException이고, `adaptive`와
 `output_config.effort`만 통과한다. Opus 4.7과 4.8, Sonnet 5도 같다. 단가도 Opus 4.8과 같으니 비용 옵션이
 아니라 품질 옵션이다.
 
-**샘플링 파라미터 게이팅.** Sonnet 5와 Opus 4.7/4.8/5는 비기본 `temperature`를 400으로 거부한다. 그래서 해당
-모델은 `LanguageModelInfo.supports_temperature=False`로 표시하고 팩토리가 `temperature`를 생략한다. 레지스트리에
-남은 역량 플래그는 이것 하나다. Converse로 직접 검증한 사실(레거시 thinking 형태를 거부하고 adaptive와 effort가
+**샘플링 파라미터 게이팅.** Sonnet 5와 Opus 4.7/4.8/5, 5.5 계열과 Fable 5.1은 비기본 `temperature`를 400으로
+거부한다. 그래서 해당 모델은 `LanguageModelInfo.supports_temperature=False`로 표시하고 팩토리가 `temperature`를
+생략한다.
+
+**강제 tool choice 게이팅.** Opus 5.5와 Sonnet 5.5, Fable 5.1은 `tool_choice`의 `any`와 `tool`을 400으로 거부한다.
+langchain-aws는 id에 "claude"가 들어 있으면 강제 선택을 지원한다고 추론하고, application inference profile
+ARN이면 아무것도 지원하지 않는다고 추론한다. 그러면 비주얼 브리프의 `with_structured_output`이 global id에서는
+도구를 강제해 400이 나고 ARN에서는 강제하지 않는다. 그래서 `supports_forced_tool_choice=False`인 모델은 팩토리가
+`supports_tool_choice_values=("auto",)`를 명시해 두 경로 모두 강제 없이 스키마 도구만 붙인다. 모델이 도구를
+부르지 않고 답하면 `VisualGenerator.brief()`가 명시적인 오류를 낸다. Converse로 직접 검증한 사실(레거시 thinking 형태를 거부하고 adaptive와 effort가
 필요하다는 것)은 재확인에 실제 호출 비용이 드니 `LanguageModelInfo`의 docstring에 문장으로 남겨두었다.
 
 ### 단계 태깅과 사용량 로깅

@@ -1,5 +1,9 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from shared.constants import LanguageModelId
+
 
 class TestAgentPromptCaching:
     """Strands resolves strategy="auto" by substring-matching the model id for "claude"/"anthropic".
@@ -316,6 +320,59 @@ class TestAgentTemperatureGating:
                 ra.create_research_agent()
 
         assert captured.get("temperature") == 0.0
+
+
+class TestAgentClaude55Request:
+    """The 5.5 family / Fable 5.1 400 on a non-default temperature, and Opus 5.5 / Sonnet 5.5 /
+    Fable 5.1 also on forced tool_choice. Builds the real Strands BedrockModel from the kwargs the
+    agent passes and asserts on the Converse request it would send."""
+
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            LanguageModelId.CLAUDE_V5_5_OPUS,
+            LanguageModelId.CLAUDE_V5_5_SONNET,
+            LanguageModelId.CLAUDE_V5_5_HAIKU,
+            LanguageModelId.CLAUDE_V5_1_FABLE,
+        ],
+        ids=lambda m: m.name,
+    )
+    def test_request_has_no_temperature_and_auto_tool_choice(self, model_id):
+        from strands.models.bedrock import BedrockModel
+
+        from shared.config import Config
+
+        cfg = Config.load()
+        cfg.agent.model_id = model_id
+        captured = {}
+
+        def fake_bedrock_model(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with (
+            patch("agent.research_agent.Config.load", return_value=cfg),
+            patch("agent.research_agent.BedrockModel", side_effect=fake_bedrock_model),
+            patch("agent.research_agent.Agent", return_value=MagicMock(tool_names=["t"])),
+            patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
+            patch(
+                "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
+                return_value=f"global.{model_id.value}",
+            ),
+        ):
+            from agent.research_agent import create_research_agent
+
+            create_research_agent()
+
+        assert "temperature" not in captured
+        assert captured["max_tokens"] == 64000
+        tool_spec = {"name": "t", "description": "d", "inputSchema": {"json": {"type": "object", "properties": {}}}}
+        request = BedrockModel(**captured).format_request(
+            [{"role": "user", "content": [{"text": "hi"}]}], tool_specs=[tool_spec]
+        )
+        assert "temperature" not in request["inferenceConfig"]
+        assert request["toolConfig"]["toolChoice"] == {"auto": {}}
+        assert "additionalModelRequestFields" not in request
 
 
 class TestAgentMaxTokensFallback:

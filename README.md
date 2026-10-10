@@ -32,7 +32,7 @@ There are two independent paths.
 ## Features
 
 - **Multi-source collection** — Reddit (public `.rss` feed), YouTube, X/Twitter (via RSSHub), RSS/Substack, web search (Tavily)
-- **LLM ranking** — Claude Opus 4.8 (Opus 5 / Sonnet 5 also selectable) scoring on multiple axes, with source-slot and per-origin diversity caps so one channel can't take over the day
+- **LLM ranking** — Claude Opus 4.8 (Opus 5, Sonnet 5, Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 also selectable) scoring on multiple axes, with source-slot and per-origin diversity caps so one channel can't take over the day
 - **Editorial digest** — Claude Sonnet 5 writes Korean prose, with cross-day trend continuity
 - **Multi-channel delivery** — one structured digest, rendered per channel: Slack (Block Kit) and Threads (image root + flat reply chain). Each toggles independently
 - **Deep-research agent** — an autonomous Strands agent with eight single-purpose tools, attaching the source article's OG image

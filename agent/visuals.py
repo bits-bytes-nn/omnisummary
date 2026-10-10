@@ -99,6 +99,10 @@ class VisualGenerator:
                 "style_aesthetic": self.style_aesthetic,
             }
         )
+        # Models that reject forced tool_choice (Opus 5.5 / Sonnet 5.5 / Fable 5.1) get the schema
+        # tool under "auto", so a reply without the tool call parses to None; name that failure.
+        if result is None:
+            raise ValueError(f"Visual brief model returned no {VisualBrief.__name__} tool call")
         # with_structured_output is typed as returning dict | BaseModel; re-validate so the
         # type is concretely VisualBrief (and a dict-shaped return is coerced consistently).
         brief = VisualBrief.model_validate(result)
