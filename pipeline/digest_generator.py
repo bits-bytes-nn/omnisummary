@@ -104,7 +104,7 @@ class DigestGenerator:
             "voice_guidance": self.config.digest_voice_guidance,
             "target_count": target_count,
             "recent_leads": _format_recent_leads(recent_leads),
-            "recent_titles": _format_recent_titles(recent_titles),
+            "recent_titles": format_recent_titles(recent_titles),
             "prose_budget_rule": _PROSE_BUDGET_RULE,
             "lead_budget": self._lead_budget(intro),
         }
@@ -432,7 +432,7 @@ def _last_sentence(text: str) -> str:
     return last[:RECENT_LEAD_PREVIEW_CHARS].rstrip() + "…"
 
 
-def _format_recent_titles(recent_titles: list[str] | None) -> str:
+def format_recent_titles(recent_titles: list[str] | None) -> str:
     """The story titles recent digests carried, so today isn't a re-run of them. The URL ledger stays
     the mechanism that actually suppresses a repeat; this is information, not a filter."""
     titles = [t.strip() for t in (recent_titles or []) if t and t.strip()]

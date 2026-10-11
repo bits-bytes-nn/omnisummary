@@ -100,6 +100,7 @@ class DailyVisualMaker:
         return await self.publisher.publish(
             content,
             image_bytes=image_bytes,
+            image_alt=brief.alt_text if image_bytes and brief else "",
             today=post_date,
             force_republish=force_republish,
             deadline=deadline,
@@ -183,7 +184,7 @@ class DailyVisualMaker:
         A PURE extraction from _make_visual — no I/O, no state — so scripts/sample_visual_brief.py
         can grade the very string production sends, not the bare `plan["instruction"]` without the
         editorial angle, the guardrails or the character sheet."""
-        instruction = plan.get("instruction", "") or f"A vertical four-panel comic strip about: {headline_title}"
+        instruction = plan.get("instruction", "") or f"A 2x2 four-panel comic about: {headline_title}"
 
         # The art director only ever saw the raw article, so it illustrates surface facts: the
         # 2026-08-15 visual drew a four-way photo finish ("they all tied") for a story whose point
@@ -216,7 +217,7 @@ class DailyVisualMaker:
         return None if deadline is None else deadline - THREADS_INDEXING_BUDGET_SEC - THREADS_PUBLISH_RESERVE_SEC
 
     def _features_character(self, plan: dict) -> bool:
-        return self.config.pipeline.visual_character_enabled and coerce_bool(plan.get("use_character"))
+        return self.config.pipeline.visual_character_enabled and coerce_bool(plan.get("use_character"), default=True)
 
     @staticmethod
     def _load_character_reference(config: Config) -> bytes | None:

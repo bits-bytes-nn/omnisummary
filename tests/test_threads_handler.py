@@ -29,7 +29,9 @@ class TestPostToThreads:
         # thread, NOT nested reply-of-reply); an over-long reply is hard-capped, still one post.
         published: list[dict] = []
 
-        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
+        async def fake_publish(
+            client, user_id, token, *, text="", image_url="", image_alt="", topic_tag="", reply_to_id=""
+        ):
             pid = f"id{len(published)}"
             published.append({"text": text, "image_url": image_url, "reply_to_id": reply_to_id, "id": pid})
             return pid
@@ -45,6 +47,34 @@ class TestPostToThreads:
         assert published[1]["reply_to_id"] == "id0"
         assert published[2]["reply_to_id"] == "id0"
         assert len(published[2]["text"]) <= 500  # over-long reply hard-capped, not re-split
+
+    @pytest.mark.asyncio
+    async def test_the_topic_tag_and_alt_text_ride_on_the_root_only(self):
+        calls: list[dict] = []
+
+        async def fake_publish(client, user_id, token, **kwargs):
+            calls.append(kwargs)
+            return f"id{len(calls)}"
+
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_publish_post", side_effect=fake_publish):
+                await post_to_threads(root_text="ROOT", replies=["r1"], image_alt="1컷: ...", topic_tag="AI")
+        assert calls[0]["topic_tag"] == "AI" and calls[0]["image_alt"] == "1컷: ..."
+        assert "topic_tag" not in calls[1] and "image_alt" not in calls[1]
+
+    @pytest.mark.asyncio
+    async def test_publish_post_sends_alt_text_only_with_an_image(self):
+        create = AsyncMock(return_value="cid")
+        with patch.object(threads_handler, "_create_container", new=create):
+            with patch.object(threads_handler, "_publish_container", new=AsyncMock(return_value="pid")):
+                with patch.object(threads_handler.asyncio, "sleep", new=AsyncMock()):
+                    await threads_handler._publish_post(
+                        MagicMock(), "u", "t", text="x", image_url="https://i", image_alt="a" * 1200, topic_tag="AI"
+                    )
+                    await threads_handler._publish_post(MagicMock(), "u", "t", text="x", image_alt="ignored")
+        with_image, text_only = create.await_args_list
+        assert len(with_image.kwargs["alt_text"]) == 1000 and with_image.kwargs["topic_tag"] == "AI"
+        assert "alt_text" not in text_only.kwargs and "topic_tag" not in text_only.kwargs
 
     @pytest.mark.asyncio
     async def test_hosts_image_and_posts_with_url(self):
@@ -82,7 +112,9 @@ class TestPostToThreads:
 
         calls = {"n": 0}
 
-        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
+        async def fake_publish(
+            client, user_id, token, *, text="", image_url="", image_alt="", topic_tag="", reply_to_id=""
+        ):
             if reply_to_id:
                 calls["n"] += 1
                 if calls["n"] == 1:
@@ -115,7 +147,9 @@ class TestPostToThreads:
 
         seen: list[str] = []
 
-        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
+        async def fake_publish(
+            client, user_id, token, *, text="", image_url="", image_alt="", topic_tag="", reply_to_id=""
+        ):
             if reply_to_id:
                 seen.append(text)
                 if text == "second":  # second reply never indexes
@@ -151,7 +185,9 @@ class TestPostToThreads:
 
         calls = {"n": 0}
 
-        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
+        async def fake_publish(
+            client, user_id, token, *, text="", image_url="", image_alt="", topic_tag="", reply_to_id=""
+        ):
             if reply_to_id:
                 calls["n"] += 1
                 if calls["n"] <= 6:  # indexing lags well past the fixed 3-attempt cap
@@ -184,7 +220,9 @@ class TestPostToThreads:
 
         calls = {"n": 0}
 
-        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
+        async def fake_publish(
+            client, user_id, token, *, text="", image_url="", image_alt="", topic_tag="", reply_to_id=""
+        ):
             if reply_to_id:
                 calls["n"] += 1
                 raise transient  # never recovers
@@ -208,7 +246,9 @@ class TestPostToThreads:
 
         calls = {"n": 0}
 
-        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
+        async def fake_publish(
+            client, user_id, token, *, text="", image_url="", image_alt="", topic_tag="", reply_to_id=""
+        ):
             if reply_to_id:
                 calls["n"] += 1
                 if calls["n"] == 1:
@@ -232,7 +272,9 @@ class TestPostToThreads:
 
         calls = {"n": 0}
 
-        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
+        async def fake_publish(
+            client, user_id, token, *, text="", image_url="", image_alt="", topic_tag="", reply_to_id=""
+        ):
             if reply_to_id:
                 calls["n"] += 1
                 raise auth_err
@@ -254,7 +296,9 @@ class TestPostToThreads:
         resp = httpx.Response(401, request=req, json={"error": {"code": 190}})
         auth_err = httpx.HTTPStatusError("unauthorized", request=req, response=resp)
 
-        async def fake_publish(client, user_id, token, *, text="", image_url="", reply_to_id=""):
+        async def fake_publish(
+            client, user_id, token, *, text="", image_url="", image_alt="", topic_tag="", reply_to_id=""
+        ):
             if text == "second":
                 raise auth_err
             return "id"

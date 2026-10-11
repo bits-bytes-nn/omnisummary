@@ -203,8 +203,8 @@ class VisualGenerator:
         return self._call_images(prompt, self._resolve_size(brief), [image], "Corrected")
 
     async def review(self, image: bytes, brief: VisualBrief) -> list[str]:
-        """The defects a reader would notice, at most three; [] when clean OR when the review itself
-        failed. Best-effort: a QA outage must never cost the day's visual."""
+        """The defects a reader would notice, most noticeable first; [] when clean OR when the review
+        itself failed. Best-effort: a QA outage must never cost the day's visual."""
         try:
             message = HumanMessage(
                 content=[
@@ -214,7 +214,7 @@ class VisualGenerator:
                         "mime_type": "image/jpeg",
                         "data": base64.b64encode(_review_copy(image)).decode(),
                     },
-                    {"type": "text", "text": f"BRIEF:\n{brief.prompt}"},
+                    {"type": "text", "text": VisualReviewPrompt.human_prompt_template.format(brief=brief.prompt)},
                 ]
             )
             result = await self.reviewer.ainvoke(
@@ -223,12 +223,13 @@ class VisualGenerator:
         except Exception:
             logger.warning("Visual review failed; keeping the image unreviewed", exc_info=True)
             return []
-        return VisualReview.model_validate(result).issues[:3] if result else []
+        return VisualReview.model_validate(result).issues if result else []
 
     async def _reviewed(self, image: bytes, brief: VisualBrief, deadline: float | None) -> bytes:
-        """Review the render and, when it has defects, apply ONE targeted edit and keep whichever
-        version the review finds fewer defects in. The edit carries what was wrong, so this is not a
-        re-roll of the same prompt."""
+        """Review the render and, when it has defects, apply ONE targeted edit for the three most
+        noticeable and keep whichever version the review finds fewer defects in. The edit carries what was
+        wrong, so this is not a re-roll of the same prompt. The full defect lists are compared: a capped
+        list read "3 -> 3" whether or not the edit fixed what it was asked to."""
         if deadline is not None and deadline - time.monotonic() < REVIEW_BUDGET_SEC:
             logger.warning("No time left to review the visual; publishing it as rendered")
             return image
@@ -241,16 +242,16 @@ class VisualGenerator:
             logger.warning("No time left to correct the visual; publishing it as rendered")
             return image
         try:
-            fixed = await asyncio.to_thread(self.fix, image, brief, issues)
+            fixed = await asyncio.to_thread(self.fix, image, brief, issues[:3])
         except Exception:
             logger.warning("Visual correction failed; publishing the image as rendered", exc_info=True)
             return image
         remaining = await self.review(fixed, brief)
-        if len(remaining) < len(issues):
-            logger.info("Kept the corrected visual (%d -> %d defect(s))", len(issues), len(remaining))
-            return fixed
-        logger.info("Kept the original visual: the correction left %d defect(s)", len(remaining))
-        return image
+        kept = "corrected" if len(remaining) < len(issues) else "original"
+        logger.info(
+            "Kept the %s visual (%d -> %d defect(s)): %s", kept, len(issues), len(remaining), " | ".join(remaining)
+        )
+        return fixed if kept == "corrected" else image
 
     @staticmethod
     def _is_moderation_error(exc: Exception) -> bool:

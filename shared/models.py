@@ -48,7 +48,7 @@ class DigestItem(BaseModel):
     title: str  # Korean display title
     url: str
     source_tag: str = ""  # e.g. "r/LocalLLaMA", "@karpathy", "arxiv.org" — set by code
-    metrics: str = ""  # e.g. "👍 +44", "▶️ 12,000" — set by code
+    metrics: str = ""  # e.g. "조회 12,000" — set by code
     body: str  # 2-4 sentences: what it is and why it matters
     implication: str = ""  # one sharp closing line (Gruber voice)
 
@@ -121,6 +121,11 @@ class VisualBrief(BaseModel):
     # Required, no default: a default let a brief that left the field out silently become portrait,
     # and the visual pipeline then recorded that fallback as if it had been chosen.
     orientation: VisualOrientation
+    # Posted as the image's alt text: the strip's Korean dialogue otherwise exists only as pixels.
+    alt_text: str = Field(
+        default="",
+        description="The comic for a screen reader, in Korean: one sentence per panel, with its line of dialogue.",
+    )
 
 
 class VisualReview(BaseModel):
@@ -181,25 +186,6 @@ class TrendMemory(BaseModel):
 
     def by_id(self, trend_id: str) -> Trend | None:
         return next((t for t in self.trends if t.id == trend_id), None)
-
-    def search(self, query: str, *, today: date, half_life_days: float, top_k: int) -> list[Trend]:
-        """Return up to top_k active/cooling trends most relevant to the query, ranked by
-        (distinct query-term hits, then momentum). Empty query → top trends by momentum.
-        Deterministic term matching — no embeddings."""
-        terms = {t for t in query.lower().split() if t}
-        candidates = self.trends
-
-        def hits(trend: Trend) -> int:
-            if not terms:
-                return 0
-            hay = (trend.title + " " + " ".join(ev.summary for ev in trend.evidence)).lower()
-            return sum(1 for term in terms if term in hay)
-
-        scored = [(trend, hits(trend)) for trend in candidates]
-        if terms:
-            scored = [(trend, h) for trend, h in scored if h > 0]
-        scored.sort(key=lambda pair: (pair[1], pair[0].momentum(today, half_life_days)), reverse=True)
-        return [trend for trend, _ in scored[:top_k]]
 
 
 class SourceStatus(str, Enum):

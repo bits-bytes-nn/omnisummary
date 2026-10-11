@@ -5,7 +5,7 @@ from tavily import AsyncTavilyClient
 
 from shared import get_config, logger, resolve_secret, retry_async
 
-SEMANTIC_SCHOLAR_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
+OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 
 
 def _get_tavily_client() -> AsyncTavilyClient | None:
@@ -21,13 +21,23 @@ def _format_search_results(results: list[dict], preview_chars: int) -> str:
     # `... or ''` (not just a .get default): Tavily returns an explicit null content/title for some
     # pages, and `None[:n]` would raise — failing the ENTIRE query and pushing the agent toward its
     # hallucination fallback. Coerce null to empty so one thin result doesn't sink the whole search.
+    # The published date is kept when Tavily has one (news results carry it): "latest" questions are
+    # the agent's main use, and without it every result read as undated.
     return "\n\n".join(
-        f"- {r.get('title') or 'N/A'}\n  URL: {r.get('url') or ''}\n  Content: {(r.get('content') or '')[:preview_chars]}"
+        f"- {r.get('title') or 'N/A'}\n  URL: {r.get('url') or ''}\n"
+        + (f"  Published: {r['published_date']}\n" if r.get("published_date") else "")
+        + f"  Content: {(r.get('content') or '')[:preview_chars]}"
         for r in results
     )
 
 
-async def tavily_search(query: str, *, topic: str | None = None, include_domains: list[str] | None = None) -> str:
+async def tavily_search(
+    query: str,
+    *,
+    topic: str | None = None,
+    time_range: str | None = None,
+    include_domains: list[str] | None = None,
+) -> str:
     client = _get_tavily_client()
     if not client:
         return "TAVILY_API_KEY not configured."
@@ -36,6 +46,8 @@ async def tavily_search(query: str, *, topic: str | None = None, include_domains
     kwargs: dict = {"query": query, "max_results": agent_config.search_result_limit}
     if topic:
         kwargs["topic"] = topic
+    if time_range:
+        kwargs["time_range"] = time_range
     if include_domains:
         kwargs["include_domains"] = include_domains
 
@@ -79,21 +91,31 @@ async def extract_url(url: str) -> str:
     return content[:cap]
 
 
-async def semantic_scholar_search(query: str) -> str:
+def _openalex_abstract(inverted: dict[str, list[int]] | None) -> str:
+    """OpenAlex ships abstracts as an inverted index (word -> positions); rebuild the text."""
+    if not inverted:
+        return ""
+    words = sorted((pos, word) for word, positions in inverted.items() for pos in positions)
+    return " ".join(word for _, word in words)
+
+
+async def paper_search(query: str) -> str:
+    """Scholarly works from OpenAlex (keyless, natural-language search). It replaced Semantic Scholar,
+    whose keyless API answered 429 to every call from this machine, so papers never reached a report."""
     agent_config = get_config().agent
+    params: dict[str, str | int] = {
+        "search": query,
+        # A work without an abstract gives the agent a title and nothing to judge it by.
+        "filter": "has_abstract:true",
+        "per-page": agent_config.search_result_limit,
+        "select": "id,doi,title,publication_date,authorships,cited_by_count,primary_location,abstract_inverted_index",
+    }
     async with httpx.AsyncClient(timeout=agent_config.search_request_timeout) as client:
 
         async def _fetch() -> httpx.Response:
-            resp = await client.get(
-                SEMANTIC_SCHOLAR_URL,
-                params={
-                    "query": query,
-                    "limit": agent_config.search_result_limit,
-                    "fields": "title,year,authors,url,abstract",
-                },
-            )
-            if resp.status_code == 429:
-                raise httpx.HTTPStatusError("Rate limited by Semantic Scholar API", request=resp.request, response=resp)
+            resp = await client.get(OPENALEX_WORKS_URL, params=params)
+            if resp.status_code == 429 or resp.status_code >= 500:
+                resp.raise_for_status()
             return resp
 
         try:
@@ -102,39 +124,38 @@ async def semantic_scholar_search(query: str) -> str:
                 max_retries=agent_config.search_max_retries,
                 backoff_sec=agent_config.search_retry_backoff_sec,
                 retry_on=(httpx.HTTPStatusError,),
-                description="Semantic Scholar paper search",
+                description="OpenAlex paper search",
             )
-        except httpx.HTTPStatusError:
-            return "SEARCH_FAILED: Rate limited by Semantic Scholar API. Could not retrieve papers."
         except httpx.HTTPError as e:
-            logger.warning("Semantic Scholar API request failed: %s", e)
-            return f"Search request failed: {e}"
+            logger.warning("OpenAlex paper search failed: %s", e)
+            return f"SEARCH_FAILED: paper search unavailable ({e}). Could not retrieve papers."
 
         if response.status_code != 200:
-            logger.warning("Semantic Scholar API returned status %d", response.status_code)
-            return f"Search failed (status {response.status_code})"
-
+            logger.warning("OpenAlex returned status %d", response.status_code)
+            return f"SEARCH_FAILED: paper search returned status {response.status_code}."
         try:
-            data = response.json()
-        except Exception:
-            return "SEARCH_FAILED: Invalid response from Semantic Scholar API."
-        papers = data.get("data", [])
-        if not papers:
+            works = response.json().get("results", [])
+        except ValueError:
+            return "SEARCH_FAILED: invalid response from the paper search."
+        if not works:
             return "No related papers found."
 
         results: list[str] = []
-        for p in papers:
+        for w in works:
             authors = ", ".join(
                 name
-                for a in (p.get("authors") or [])[: agent_config.search_paper_max_authors]
-                if (name := a.get("name"))
+                for a in (w.get("authorships") or [])[: agent_config.search_paper_max_authors]
+                if (name := (a.get("author") or {}).get("display_name"))
             )
-            abstract = (p.get("abstract") or "")[: agent_config.search_paper_abstract_max_chars]
+            url = (w.get("primary_location") or {}).get("landing_page_url") or w.get("doi") or w.get("id") or ""
+            abstract = _openalex_abstract(w.get("abstract_inverted_index"))[
+                : agent_config.search_paper_abstract_max_chars
+            ]
             results.append(
-                f"- {p.get('title', 'N/A')} ({p.get('year', 'N/A')}) by {authors}\n"
-                f"  URL: {p.get('url', '')}\n"
+                f"- {w.get('title') or 'N/A'} ({w.get('publication_date') or 'n.d.'}; cited by "
+                f"{w.get('cited_by_count', 0)}) by {authors or 'unknown'}\n"
+                f"  URL: {url}\n"
                 f"  Abstract: {abstract}"
             )
-
-        logger.info("Found %d papers for query '%s'", len(papers), query)
+        logger.info("Found %d papers for query '%s'", len(works), query)
         return "\n\n".join(results)

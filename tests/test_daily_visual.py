@@ -156,8 +156,10 @@ class TestThePublishPathStandsOnItsOwn:
         publisher = self._publisher(enable_threads_post=True)
         publisher.config.aws.s3_prefix = "omni"
         with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))) as th:
-            await publisher.publish(self._content(), image_bytes=b"PNG", today=date(2026, 6, 10))
+            await publisher.publish(self._content(), image_bytes=b"PNG", image_alt="1컷", today=date(2026, 6, 10))
         assert th.await_args.kwargs["image_key"].startswith("omni/threads/")
+        assert th.await_args.kwargs["image_alt"] == "1컷"
+        assert th.await_args.kwargs["topic_tag"] == publisher.config.pipeline.threads_topic_tag
 
     def test_an_already_published_day_has_no_destination_left(self):
         publisher = self._publisher(enable_threads_post=True)
@@ -1012,6 +1014,11 @@ class TestCharacterReference:
                 with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
                     await maker._make_visual(_items(), None, date(2026, 6, 10))
             assert gen.await_args.kwargs["references"] == expected
+
+    def test_the_narrator_is_the_default_when_the_plan_does_not_say(self):
+        maker = _maker()
+        assert maker._features_character({"instruction": "x"}) is True
+        assert maker._features_character({"instruction": "x", "use_character": False}) is False
 
     def test_a_missing_reference_file_degrades_to_none(self, tmp_path):
         maker = _maker()

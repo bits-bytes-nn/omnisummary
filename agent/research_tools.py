@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Literal
 
 from strands import tool
 
@@ -9,7 +10,7 @@ from strands import tool
 from output.delivery import DeliveryContext, current_delivery_context, request_context
 from shared import extract_urls, get_config, logger, normalize_citation_url
 from shared.media import fetch_og_image
-from shared.research import extract_url, semantic_scholar_search, tavily_search
+from shared.research import extract_url, paper_search, tavily_search
 
 __all__ = [
     "DeliveryContext",
@@ -55,16 +56,17 @@ def _uncited_urls(report: str) -> list[str]:
 
 
 @tool
-async def web_search(query: str, recency: str = "general") -> str:
-    """Search the open web for a query. Use recency="news" for recent industry/company/policy
-    news, "general" otherwise.
+async def web_search(
+    query: str, news: bool = False, time_range: Literal["day", "week", "month", "year"] | None = None
+) -> str:
+    """Search the open web for a query. Results carry a Published date when the source has one.
 
     Args:
         query: The search query.
-        recency: "general" (default) or "news" for recent news framing.
+        news: True for industry/company/policy news coverage.
+        time_range: Only results from the last day, week, month or year; omit for any time.
     """
-    topic = "news" if recency.lower().strip() == "news" else None
-    return _record_seen_urls(await tavily_search(query, topic=topic))
+    return _record_seen_urls(await tavily_search(query, topic="news" if news else None, time_range=time_range))
 
 
 @tool
@@ -81,12 +83,13 @@ async def community_search(query: str) -> str:
 
 @tool
 async def search_papers(query: str) -> str:
-    """Search academic papers on Semantic Scholar for a research/technical claim.
+    """Search scholarly papers (OpenAlex, incl. arXiv preprints) for a research/technical claim.
+    Results carry the publication date and citation count.
 
     Args:
-        query: The search query.
+        query: The search query, in natural language.
     """
-    return _record_seen_urls(await semantic_scholar_search(query))
+    return _record_seen_urls(await paper_search(query))
 
 
 @tool
@@ -102,27 +105,22 @@ async def read_url(url: str) -> str:
 
 
 @tool
-async def recall_trends(query: str) -> str:
-    """Recall related AI/ML trends tracked across earlier daily digests (cross-day memory).
-    Use this for the "how has this evolved / what came before" angle.
-
-    Args:
-        query: What to recall (e.g. "open-weight model releases", "agent frameworks").
-    """
-    from datetime import date
+async def recall_trends() -> str:
+    """Every AI/ML trend tracked across earlier daily digests (cross-day memory), strongest first,
+    with when it was seen and its latest evidence. Judge yourself which ones bear on the topic; the
+    trends are written in English. Use this for the "how has this evolved / what came before" angle."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
 
     from shared import TRENDS_KEY, TrendMemory, create_state_store
 
     config = get_config()
-    top_k = config.agent.recall_memory_top_k
     half_life = config.pipeline.trend_momentum_half_life_days
+    gist_chars = config.agent.search_content_preview_chars
 
     def _load() -> TrendMemory:
-        store = create_state_store(config)
-        raw = store.read(TRENDS_KEY)
-        if not raw:
-            return TrendMemory()
-        return TrendMemory.model_validate_json(raw)
+        raw = create_state_store(config).read(TRENDS_KEY)
+        return TrendMemory.model_validate_json(raw) if raw else TrendMemory()
 
     try:
         memory = await asyncio.to_thread(_load)
@@ -137,12 +135,17 @@ async def recall_trends(query: str) -> str:
             "history — do not claim anything about what previous digests tracked."
         )
 
-    matched = memory.search(query, today=date.today(), half_life_days=half_life, top_k=top_k)
-    if not matched:
-        return "No earlier trends recalled for that query."
+    # Keyword matching was replaced by the whole list: substring hits ranked "AI Doom Discourse" first
+    # for "diffusion LLM", and a Korean query never matched the English trends at all.
+    trends = [t for t in memory.trends if t.evidence]
+    if not trends:
+        return "No earlier trends recalled."
+    today = datetime.now(ZoneInfo(config.aws.timezone)).date()
+    trends.sort(key=lambda t: t.momentum(today, half_life), reverse=True)
     lines = [
-        f"- *{t.title}* ({t.status.value}): " + "; ".join(f"[{ev.date}] {ev.summary}" for ev in t.evidence[-3:])
-        for t in matched
+        f"- {t.title} ({t.status.value}; {t.first_seen or t.evidence[0].date} to {t.last_seen or t.evidence[-1].date}, "
+        f"{len({ev.date for ev in t.evidence})} day(s)): {t.evidence[-1].summary[:gist_chars]}"
+        for t in trends
     ]
     return "Earlier trends:\n\n" + "\n".join(lines)
 
@@ -219,7 +222,7 @@ async def attach_image(source_url: str) -> str:
 
 
 @tool
-async def deliver_report(report: str, channel: str = "markdown") -> str:
+async def deliver_report(report: str, channel: Literal["markdown", "threads"] = "markdown") -> str:
     """Hand over the finished research report. Call it with channel "markdown" once the report is
     complete; call it with channel "threads" only when this run is allowed to publish to Threads.
 

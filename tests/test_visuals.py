@@ -426,6 +426,14 @@ class TestReviewedRender:
         assert fix.call_args.args[2] == ["Panel 2: a sign floats"]
 
     @pytest.mark.asyncio
+    async def test_the_edit_targets_the_top_three_but_full_lists_decide(self):
+        many = [f"Panel {i}: tag garbled" for i in range(1, 6)]
+        gen = self._gen([many, many[:4]])
+        with patch.object(gen, "fix", return_value=b"FIXED") as fix:
+            assert await gen._reviewed(b"ORIG", self.BRIEF, None) == b"FIXED"
+        assert fix.call_args.args[2] == many[:3]
+
+    @pytest.mark.asyncio
     async def test_the_original_is_kept_when_the_correction_is_no_better(self):
         gen = self._gen([["Panel 1: x"], ["Panel 3: y"]])
         with patch.object(gen, "fix", return_value=b"FIXED"):

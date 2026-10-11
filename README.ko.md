@@ -34,7 +34,7 @@ AWS 위에서 동작한다. Amazon Bedrock(Claude)과 Bedrock AgentCore Memory�
 - **멀티 소스 수집.** Reddit(공개 `.rss` 피드를 다중 서브레딧 요청 한 번으로), YouTube, X/Twitter(RSSHub 경유), RSS/Substack, 웹 검색(Tavily). 피드 본문의 HTML은 수집 시점에 벗긴다
 - **후보 풀을 만드는 LLM 랭킹.** Claude Opus 5.5가 다축으로 채점하고, 소스 슬롯과 출처별 상한이 모든 소스의 최선 항목을 에디터 앞에 놓는다. 무엇을 내보낼지는 에디터가 고른다
 - **에디토리얼 다이제스트.** Claude Sonnet 5.5가 일자 간 트렌드 연속성을 살려 한국어 산문을 쓰고, 그라운딩 패스가 구체적 주장을 원문과 대조한다
-- **데일리 만화.** 오너 페르소나 캐릭터(기준 시트 이미지로 모습을 고정)가 화자인 세로 4컷 만화를 `gpt-image-2.5-sunburst`가 한국어 대사로 그리고, 비전 검수가 찾은 결함을 한 번 고친다
+- **데일리 만화.** 오너 페르소나 캐릭터(기준 시트 이미지로 모습을 고정)가 화자인 2x2 4컷 만화를 `gpt-image-2.5-sunburst`가 한국어 대사로 그리고, 비전 검수가 찾은 결함을 한 번 고친다
 - **Threads 전달.** 이미지 루트에 평면 답글 체인을 붙이고, 하루 한 번만 게시한다
 - **딥 리서치 CLI와 OpenClaw 스킬.** 단일 목적 도구 8개를 가진 자율 Strands 에이전트다. stdout에 JSON 계약, 디스크에 Markdown 리포트를 남긴다
 - **운영 안정성.** 소스별 헬스 보고(`OK`, `EMPTY`, `FAILED`, `STALE`, `DEGRADED`)를 SNS 이메일로 알리고, 상관 ID가 붙는 구조화된 JSON 로그와 CloudWatch 알람 8개를 둔다
@@ -166,6 +166,10 @@ uv run python main.py
 uv run python research_cli.py "<주제>"
 uv run python research_cli.py "<주제>" --publish threads   # Threads 스레드로도 게시
 
+# 다이제스트가 이미 게시한 것. 무료 읽기 전용이고 stdout에 JSON 한 개
+uv run python recall_cli.py digest 2026-10-11   # 그날 lead와 스토리(기본값은 오늘)
+uv run python recall_cli.py trends              # 추적 중인 일자 간 트렌드, 강한 순
+
 # 데이터센터 IP에서 차단되는 소스의 로컬 → S3 sync (X/RSSHub와 YouTube 자막)
 ./scripts/sync_all_to_s3.sh                  # 둘 다. 한쪽이 실패해도 다른 쪽은 막지 않는다
 uv run python scripts/sync_to_s3.py rsshub   # X만
@@ -197,7 +201,7 @@ uv run python scripts/sync_to_s3.py youtube  # YouTube만
 
 **2. 집계.** `ContentAggregator`가 URL과 정규화된 제목으로 중복을 제거한다(앞머리의 `RT 이름:`을 떼어 셀프 리트윗이 원문과 겹치게 한다). 중복이 걸리면 먼저 도착한 쪽이 아니라 더 좋은 쪽을 남긴다. 핀이 먼저고, 그다음 본문이 더 긴 쪽, 그다음 먼저 온 쪽 순이다.
 
-**3. 랭킹.** `ContentRanker`가 Claude Opus 5.5로 기술적 실속과 실무자 가치, 신규성, 산업 영향, 연구 의의, 소스 권위를 채점하고 홍보성이나 빈약한 콘텐츠는 하드 필터로 걸러낸다. 그다음 `top_n + digest_candidate_buffer`(5 + 3)개의 후보 풀을 만든다. `source_slots`가 소스마다 `min_score` 이상 최선 항목의 자리를 주고, `max_per_origin`이 특정 채널이나 작성자, 피드, 호스트를 상한으로 묶으며, 풀이 미달일 때만 하나의 fill 루프가 정해진 순서로 캡을 완화한다.
+**3. 랭킹.** `ContentRanker`가 Claude Opus 5.5로 기술적 실속과 실무자 가치, 신규성, 산업 영향, 연구 의의, 소스 권위를 채점하고 홍보성이나 빈약한 콘텐츠는 하드 필터로 걸러낸다. 랭커는 최근 다이제스트가 실은 스토리 제목도 받는다. 그래서 새 URL로 돌아온 이야기는 실질적 새 진전이 없으면 재탕으로 채점된다. 그다음 `top_n + digest_candidate_buffer`(5 + 3)개의 후보 풀을 만든다. `source_slots`가 소스마다 `min_score` 이상 최선 항목의 자리를 주고, 나머지 풀은 점수 순으로 채우되 `max_per_origin`이 특정 채널이나 작성자, 피드, 호스트를 상한으로 묶는다. 조용한 날 풀이 미달일 때만 그 상한을 푼다.
 
 **4. 트렌드 추적.** `TrendTracker`가 구조화된 트렌드를 `trends.json`에 유지한다. LLM은 오늘 항목이 기존 트렌드의 연장인지 신규인지 분류만 하고, 장부 관리는 전부 결정론적 Python이 한다. 날짜 스탬프와 active/cooling 생명주기, 보존 기간 지난 트렌드 삭제, 최신성 감쇠 모멘텀, 증거 캡이 그렇다. active와 cooling 트렌드는 다음 날 다이제스트에 투입되며 이것이 일자 간 연속성의 근원이다. 다이제스트 날짜 이전 증거만 쓰므로 같은 날 재실행이 첫 실행을 과거로 다시 읽지 않는다. 기억은 요약을 다시 쓰는 방식이 아니라 상한으로 압축한다. 트렌드당 날짜가 붙은 증거 최대 5줄, 프롬프트에는 모멘텀 상위 10개, 30일 동안 보이지 않은 트렌드는 삭제한다.
 
@@ -205,19 +209,19 @@ uv run python scripts/sync_to_s3.py youtube  # YouTube만
 
 > ⚠️ **프롬프트의 JSON 키 순서는 load-bearing이다.** `items`를 먼저, `lead`를 마지막에 요청해서 lead가 이미 쓰인 스토리에 대한 논평이 되게 한다. 헤드라인 답글과의 단어 겹침이 0.21–0.41에서 0.03–0.21로 떨어졌다. `DigestContent`의 필드 순서에 맞춘다고 요청 키를 재배열하지 **말 것.** 그 정리는 회귀다.
 
-**6. Threads 렌더링.** `output/renderers.py`가 하나의 `DigestContent`를 Threads 루트에 평면 답글 체인을 붙인 형태로 바꾼다. 포매팅은 프롬프트 규칙이 아니라 코드에 있다.
+**6. Threads 렌더링.** `output/renderers.py`가 하나의 `DigestContent`를 Threads 루트에 평면 답글 체인을 붙인 형태로 바꾼다. 포매팅은 프롬프트 규칙이 아니라 코드에 있다. 루트는 토픽 태그 하나(`pipeline.threads_topic_tag`, 기본 `AI`)를 달아 그 토픽 피드와 태그 검색에 나오고, 만화에는 컷마다 장면과 대사를 적은 한국어 대체 텍스트가 붙는다.
 
-**7. 데일리 만화.** `DailyVisualMaker`는 헤드라인 스토리를 그린다. 이미지와 lead와 텍스트가 같은 것을 가리키게 하려는 것이다. 에디터가 오너 페르소나 캐릭터가 이끄는 세로 기승전결 4컷과 컷마다 짧은 한국어 대사 한 줄을 쓰고, `VisualGenerator`가 이를 이미지 브리프로 바꿔 `gpt-image-2.5-sunburst`(xhigh)로 848x2544 세로 스트립을 렌더한다. 화자가 등장하는 날(기본)에는 페르소나 기준 시트를 입력 이미지로 함께 보내 모습을 고정하고, 렌더 뒤에는 브리프 모델이 물리·해부·문구 결함을 검수해 찾은 결함을 한 번 고친다. Threads 게시도 이 Lambda가 담당하고, 렌더 실패가 다이제스트를 삼키지 않는다. 텍스트는 그대로 나간다.
+**7. 데일리 만화.** `DailyVisualMaker`는 헤드라인 스토리를 그린다. 이미지와 lead와 텍스트가 같은 것을 가리키게 하려는 것이다. 에디터가 오너 페르소나 캐릭터가 이끄는 2x2 기승전결 4컷과 컷마다 짧은 한국어 대사 한 줄을 쓰고, `VisualGenerator`가 이를 이미지 브리프로 바꿔 `gpt-image-2.5-sunburst`(xhigh)로 렌더한다(2x2는 1024x1536. 이야기에 맞으면 에디터가 848x2544 세로 스트립이나 다른 구도를 고른다). 화자가 등장하는 날(기본)에는 페르소나 기준 시트를 입력 이미지로 함께 보내 모습을 고정하고, 렌더 뒤에는 브리프 모델이 물리·해부·문구 결함을 검수해 찾은 결함을 한 번 고친다. Threads 게시도 이 Lambda가 담당하고, 렌더 실패가 다이제스트를 삼키지 않는다. 텍스트는 그대로 나간다.
 
 **8. 딥 리서치.** `research_cli.py`가 실행하는 자율 Strands 에이전트다. 아래 도구 8개를 자유롭게 조합한다. 예컨대 "diffusion LLM 최신 동향"이면 `web_search`나 `search_papers`, `community_search`를 거쳐 `read_url`, `attach_image`, `deliver_report`로 간다.
 
 | 도구 | 기능 |
 |------|----------|
-| `web_search(query, recency)` | Tavily 열린 웹 검색. 최근 뉴스면 `recency="news"` |
+| `web_search(query, news, time_range)` | Tavily 열린 웹 검색. 뉴스면 `news=True`, 기간은 `time_range`(day/week/month/year). 결과에 게시일을 보여준다 |
 | `community_search(query)` | Reddit, X, HN, Substack 대상 Tavily 검색 |
-| `search_papers(query)` | Semantic Scholar |
+| `search_papers(query)` | OpenAlex 논문 검색(키 없음). 게시일, 피인용 수, 초록 |
 | `read_url(url)` | 1차 출처의 전문을 가져와 추출 |
-| `recall_trends(query)` | `trends.json` 키워드 매칭, 모멘텀 순 |
+| `recall_trends()` | `trends.json`의 추적 트렌드 전부를 모멘텀 순으로. 관련성은 에이전트가 판단한다 |
 | `recall_digest(digest_date)` | 특정 날짜 다이제스트가 실었던 것. 다른 날짜로 폴백하지 않는다 |
 | `attach_image(source_url)` | 출처의 OG 이미지를 내려받아 전달용으로 stage |
 | `deliver_report(report, channel)` | Markdown 리포트를 넘기거나(`markdown`) Threads에 게시(`threads`, `--publish threads`일 때만) |
@@ -250,7 +254,7 @@ uv --directory ~/Projects/omnisummary run python research_cli.py "Mixture-of-Exp
 }
 ```
 
-종료 코드는 `0` 성공, `1` 실패(리포트 없음, 실행 오류, 요청한 Threads 게시 미완료), `2` 입력 거부다. 로그는 stderr로 가고, `LOG_LEVEL`과 무관하게 서드파티 로거는 `WARNING`으로 고정한다. botocore DEBUG는 세션 토큰이 담긴 요청 헤더를 남기기 때문이다.
+종료 코드는 `0` 성공, `1` 실패(리포트 없음, 실행 오류, 요청한 Threads 게시 미완료), `2` 입력 거부다. 같은 스킬이 `recall_cli.py`(`digest [DATE]`, `trends`)로 지난 다이제스트를 비용 없이 되읽는다. `found: false`는 그 날짜에 저장된 것이 없다는 뜻이고, `status: failed`는 저장소를 읽지 못했다는 뜻이다. 로그는 stderr로 가고, `LOG_LEVEL`과 무관하게 서드파티 로거는 `WARNING`으로 고정한다. botocore DEBUG는 세션 토큰이 담긴 요청 헤더를 남기기 때문이다.
 
 ## AWS 배포
 
@@ -374,7 +378,7 @@ crontab -e
 | AWS Bedrock | LLM (Claude Opus/Sonnet) | 사용량 기반 |
 | OpenAI | `gpt-image-2.5-sunburst` 데일리 만화(xhigh, 하루 렌더 1회와 수정 편집 최대 1회) | 사용량 기반 |
 | Tavily | 웹 검색 | 무료 티어 |
-| Semantic Scholar | 논문 검색 | 무료 |
+| OpenAlex | 논문 검색 | 무료(키 없음, 하루 약 100회) |
 | YouTube Data API v3 | 영상 메타데이터 | 무료 (10K units/day) |
 | Threads (Meta) | 전달 | 무료 |
 
@@ -384,6 +388,7 @@ crontab -e
 omnisummary/
 ├── main.py                  # CLI 진입점(다이제스트 파이프라인)
 ├── research_cli.py          # 딥 리서치 CLI(stdout에 JSON). OpenClaw 스킬이 쓴다
+├── recall_cli.py            # 지난 다이제스트와 트렌드 조회 CLI(stdout에 JSON). OpenClaw 스킬이 쓴다
 ├── Dockerfile               # Lambda 이미지(amd64)
 ├── collectors/              # RSS, Reddit, RSSHub(X), YouTube, WebSearch와 S3 park 로더
 ├── pipeline/                # Aggregator, Ranker, DigestGenerator, TrendTracker, DailyVisualMaker, runner(오케스트레이션)

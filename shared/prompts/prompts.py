@@ -41,6 +41,7 @@ class RankingPrompt(BasePrompt):
         "items_text",
         "scoring_rubric",
         "audience",
+        "recent_titles",
     ]
 
     system_prompt_template = """\
@@ -50,7 +51,8 @@ You are a content curator. Evaluate each item for {audience}.
 Use these as lenses, not a formula. Apply holistic judgment.
 1. Technical Substance — real depth in content body, not headline. Thin content scores low.
 2. Practitioner Value — would this change how an engineer works?
-3. Novelty — first reports, original analysis, new releases over rehashes.
+3. Novelty — first reports, original analysis, new releases over rehashes. A story already in a recent \
+digest (listed below) is a rehash unless the item reports a real new development on it.
 4. Industry Impact — competitive landscape shifts, funding, policy.
 5. Research Significance — notable papers with novel contributions.
 6. Source Authority — recognized researchers/institutions get a small bonus.
@@ -68,9 +70,8 @@ Product/service promotion, thin content, beginner questions, memes, self-promoti
 Score each item ABSOLUTELY against these criteria — do NOT grade on a curve or target a fixed
 count; identical items must get the same score regardless of what else is in this set.
 
-*Other Bonuses*
-Expert paper summaries: score on paper significance. \
-Major model releases (open or proprietary): score on significance.
+*Already in recent digests*
+{recent_titles}
 
 *Output*
 Return JSON with ALL items.
@@ -123,10 +124,10 @@ because the lead is a comment on stories you have already written:
       "title": "the Korean display title for this story",
       "url": "the item's URL exactly as provided",
       "body": "As few tight Korean sentences as the story needs (often two): what this is, why it matters, the key detail. Keep it compact and self-contained so the whole item reads as ONE short social post.{prose_budget_rule} Every sentence must end completely (no trailing fragments).",
-      "implication": "ONE Korean sentence that ASSERTS something a reader could disagree with. No conditional frame, no ~수 있다. Provocation is in the angle, never in invented facts."
+      "implication": "ONE Korean sentence that takes a stance on THIS story a reader could disagree with, not a general truth about the industry. No conditional frame, no ~수 있다. Provocation is in the angle, never in invented facts."
     }}
   ],
-  "lead": "3-4 concrete sentences, a standalone opening under {lead_budget} characters about items[0], the headline the image depicts: name that story in ONE assertive sentence a stranger could follow (the actual company / model / event — no label, no emoji), then land ONE thesis on what it MEANS, drawing on the trend ammunition below. The reader sees items[0] directly beneath, so ADD to it rather than re-telling it — no replay of its sequence and no repeat of its numbers."
+  "lead": "3-4 concrete sentences, a standalone opening under {lead_budget} characters about items[0], the headline the image depicts: name that story in ONE assertive sentence a stranger could follow (the actual company / model / event — no label, no emoji), then land ONE thesis that items[0]'s implication does not already make: the wider arc it belongs to, drawn from the trend ammunition below. The reader sees items[0] directly beneath, so ADD to it rather than re-telling it — no replay of its sequence and no repeat of its numbers."
 }}
 ```
 
@@ -150,7 +151,7 @@ These are the opening lines / theses from the last few days. Do NOT reuse the sa
 opening move, or thesis; pick a genuinely different angle on today's stories:
 {recent_leads}
 
-*Already in recent digests* — a real development ON one of these is welcome; the same story told again is not:
+*Already in recent digests* — run one of these again only for a real new development, and then say in the body what is new since it last ran; the same story told again is not welcome:
 {recent_titles}
 
 *Faithfulness*
@@ -199,13 +200,13 @@ create a new trend when no existing one fits.
 
 
 class RefineQueryPrompt(BasePrompt):
-    input_variables = ["titles", "max_queries"]
+    input_variables = ["titles", "max_queries", "today"]
 
     system_prompt_template = """\
-Generate {max_queries} focused search queries to complement articles already found.
+Today is {today}. Generate {max_queries} search queries for notable AI/ML developments from the last \
+day that the titles below do NOT already cover.
 
 Rules:
-- Use specific proper nouns: model names, companies, techniques, projects
 - Prefer: technical blog posts, paper analyses, benchmarks, tool releases, practitioner discussions
 - No generic terms ("AI news", "machine learning update")
 - Output ONLY a JSON array of strings"""
@@ -237,8 +238,8 @@ Produce ONLY a JSON object:
 ```
 
 Rules:
-- Default composition: a vertical four-panel strip read top to bottom (setup, development, turn, \
-and a punchline that panel 4 SHOWS, not just says). Choose another one (a 2x2 grid, a single frame, a wide panorama) only when \
+- Default composition: a 2x2 four-panel grid read left to right, top to bottom (setup, development, \
+turn, and a punchline that panel 4 SHOWS, not just says). Choose another one (a vertical strip, a single frame, a wide panorama) only when \
 the story is clearly better told that way, and name it in the instruction.
 - Keep every panel drawable: at most three characters acting in the foreground (a background crowd \
 is fine) and one clear action, on a plausible set.
@@ -271,8 +272,8 @@ model can render in one image, honoring the requested format.
 
 Fill these fields:
 - title: a short working title
-- orientation: one of {orientations} — the frame the composition needs. A vertical four-panel strip \
-is `tall` (four equal 4:3 panels stacked top to bottom in one column); a 2x2 grid is `portrait`; a \
+- orientation: one of {orientations} — the frame the composition needs. A 2x2 four-panel grid is \
+`portrait`; a vertical four-panel strip is `tall` (four equal 4:3 panels stacked top to bottom in one column); a \
 single frame takes whichever shape fits it.
 - prompt: a single rich English prompt for the image model: the full composition, each panel in \
 order, the characters, the exact on-image text, and the style — {style_aesthetic}
@@ -290,9 +291,10 @@ borders and gutters are clean and every panel has a clear focal point.
 Rules:
 - Be faithful to the actual facts; the humor is in framing, never in fabrication.
 - ALL text inside the image — speech bubbles, narration boxes, signs — is {on_image_language}, \
-quoted EXACTLY in the prompt (e.g. the bubble reads "이게 다 혼자 한 거라고?"); no invented posters, \
-slogans or captions. At most one short line per panel, \
-said once.
+quoted EXACTLY in the prompt (e.g. the bubble reads "이게 다 혼자 한 거라고?"). Invent no posters, \
+slogans or captions, and say so in the prompt: walls and props carry no other words, since the image \
+model otherwise fills an empty wall with English slogans. At most one short line per panel, said once; any other text (a screen, a sign, \
+a label) is a few large words written once, never repeated on copies of an object.
 - {style_guidance}"""
 
     human_prompt_template = "Visualization request:\n{instruction}\n\nSource material:\n{source}"
@@ -306,9 +308,10 @@ class VisualReviewPrompt(BasePrompt):
     input_variables = ["brief"]
 
     system_prompt_template = """\
-You are a comic art QA reviewer. Look at the attached image as a reader would (the brief only gives \
-the intended panels and their exact lines) and report the defects a reader would notice on a phone \
-screen, most noticeable first, at most three:
+You are a comic art QA reviewer. Look at the attached image as a reader would and report the defects \
+a reader would notice on a phone screen, most noticeable first. The brief is context for what each \
+panel means and its exact lines; staging that differs from it (a pose, a gesture, where a prop sits) is \
+not a defect unless it breaks the panel's meaning:
 1. Physics and space: a person or object floating with no support, furniture stacked or placed \
 impossibly, someone sitting on something that cannot hold them, objects passing through each other.
 2. Scale and perspective: a person or object the wrong size for its distance or its neighbours.

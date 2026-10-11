@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 from collections import Counter, defaultdict
+from collections.abc import Sequence
 
 from langchain_core.output_parsers import StrOutputParser
 
@@ -25,8 +26,7 @@ from shared import (
 from shared.config import PipelineConfig
 
 from .aggregator import normalize_url
-
-DEFAULT_SOURCE_SLOT = 1
+from .digest_generator import format_recent_titles
 
 
 class ContentRanker:
@@ -42,8 +42,11 @@ class ContentRanker:
     def _truncate(self, text: str, max_tokens: int) -> str:
         return self.llm_factory.truncate_to_tokens(text, max_tokens)
 
-    async def rank(self, items: list[CollectedItem], select_count: int | None = None) -> list[RankedItem]:
+    async def rank(
+        self, items: list[CollectedItem], select_count: int | None = None, recent_titles: Sequence[str] = ()
+    ) -> list[RankedItem]:
         """Select the candidate pool the digest editor picks from (`select_count`, top_n + buffer).
+        `recent_titles` are the stories recent digests ran, so Novelty can be judged against them.
 
         The source slots and max_per_origin shape the POOL, so every source's best item is
         considered; the editor then picks the strongest top_n distinct stories from it. Quality wins
@@ -64,14 +67,17 @@ class ContentRanker:
         # video id elsewhere), and sorting on it put 33 GeekNews items in one batch and all of X in
         # another.
         ordered = sorted(items, key=lambda it: hashlib.sha256(it.item_id.encode()).hexdigest())
-        batches = await self._make_batches(ordered)
+        batches = self._make_batches(ordered)
         if len(batches) > 1:
             logger.info(
                 "Ranking in %d parallel batches (<=%d items each)", len(batches), self.config.ranking_batch_size
             )
         # Bound the Bedrock fan-out: created HERE (on the running loop, never at import/__init__).
         semaphore = asyncio.Semaphore(self.config.ranking_max_concurrency)
-        results = await asyncio.gather(*(self._rank_batch(b, semaphore) for b in batches), return_exceptions=True)
+        recent = format_recent_titles(list(recent_titles))
+        results = await asyncio.gather(
+            *(self._rank_batch(b, semaphore, recent) for b in batches), return_exceptions=True
+        )
 
         # A batch that failed every retry is a permanent failure. One among many is tolerated (the
         # rest of the day's candidates still rank), but if EVERY batch failed there is nothing to
@@ -166,12 +172,14 @@ class ContentRanker:
             )
         return selected
 
-    async def _rank_batch(self, items: list[CollectedItem], semaphore: asyncio.Semaphore) -> list[RankedItem]:
+    async def _rank_batch(
+        self, items: list[CollectedItem], semaphore: asyncio.Semaphore, recent_titles: str
+    ) -> list[RankedItem]:
         """Score one batch and reconcile its COVERAGE: an LLM that quietly omits item ids returns a
         perfectly valid response, so those candidates used to vanish from the day's pool without a
         trace. Any omitted items get ONE extra re-ask covering exactly them (never more). A failed or
         still-short re-ask leaves the original outcome untouched — it can never fail the batch."""
-        ranked = await self._score_batch(items, semaphore)
+        ranked = await self._score_batch(items, semaphore, recent_titles)
         scored_ids = {r.item.item_id for r in ranked}
         missing = [it for it in items if it.item_id not in scored_ids]
         if not missing:
@@ -187,7 +195,7 @@ class ContentRanker:
         logger.info("Re-asking the ranker once for %d omitted item(s)", len(missing))
         recovered: list[RankedItem] = []
         try:
-            recovered = await self._score_batch(missing, semaphore)
+            recovered = await self._score_batch(missing, semaphore, recent_titles)
         except Exception:
             # The re-ask is a best-effort top-up: its failure must not turn a partially-scored
             # batch into a failed one (rank() would then count it toward the all-batches-failed
@@ -205,7 +213,9 @@ class ContentRanker:
             raise RuntimeError(f"Ranking batch of {len(items)} items produced no parsed rankings")
         return scored
 
-    async def _score_batch(self, items: list[CollectedItem], semaphore: asyncio.Semaphore) -> list[RankedItem]:
+    async def _score_batch(
+        self, items: list[CollectedItem], semaphore: asyncio.Semaphore, recent_titles: str
+    ) -> list[RankedItem]:
         """Score one batch, retrying the Converse call before giving up. The failure used to be
         swallowed into [] — a single throttle or transient 5xx silently deleted a whole batch of
         candidates from the day's pool. Now it retries, and a permanent failure PROPAGATES so
@@ -219,6 +229,7 @@ class ContentRanker:
                     "items_text": items_text,
                     "scoring_rubric": self.config.ranking_scoring_rubric,
                     "audience": self.config.ranking_audience_description,
+                    "recent_titles": recent_titles,
                 }
             )
 
@@ -273,7 +284,7 @@ class ContentRanker:
             if origin_key:
                 origin_counts[origin_key] += 1
 
-        for source_key, slot_count in self._slot_order(above_threshold, source_slots):
+        for source_key, slot_count in source_slots.items():
             # Start from what the pins already consumed of THIS source's slots. Starting at 0
             # ignored the seed above, so a pinned `web` item plus web's guaranteed slot produced two
             # web stories and pushed the lowest-scoring source out of the core entirely — breaking
@@ -289,109 +300,32 @@ class ContentRanker:
                 record(item, source_key)
                 taken += 1
 
-        def fill(*, respect_origin: bool, respect_source: bool) -> int:
-            """Walk the remaining candidates in score order and take what the given caps allow.
-            One loop for every fill pass — the three passes differ ONLY in which caps they honour.
-            Returns how many items this pass added."""
-            added = 0
+        def fill(*, respect_origin: bool) -> None:
+            """Walk the remaining candidates in score order and take what the origin cap allows."""
             for item in above_threshold:
                 if len(selected) >= limit:
                     break
-                if item.item.item_id in selected_ids:
+                if item.item.item_id in selected_ids or (respect_origin and origin_at_cap(item)):
                     continue
-                src = item.item.source_type.value
-                cap = source_slots.get(src, DEFAULT_SOURCE_SLOT) * self.config.source_cap_multiplier
-                if respect_source and source_counts[src] >= cap:
-                    continue
-                if respect_origin and origin_at_cap(item):
-                    continue
-                record(item, src)
-                added += 1
-            return added
+                record(item, item.item.source_type.value)
 
-        if len(selected) < limit:
-            fill(respect_origin=True, respect_source=True)
-
-        # If diversity caps left the digest below the limit while valid candidates remain, relax
-        # the per-origin cap (keep the source cap) so a quiet day with few distinct origins still
-        # fills the digest.
-        if len(selected) < limit:
-            fill(respect_origin=False, respect_source=True)
-
-        # Last resort: relax the SOURCE cap too. A collector outage (rsshub/reddit empty) leaves
-        # every remaining candidate on one source, so the source cap alone could hold the digest
-        # short — fewer stories to read, for a diversity that has no candidates to spend on.
-        # Ordered last and entered only while short, so it can never change a day that filled
-        # normally; candidates that still satisfy max_per_origin go first.
-        if len(selected) < limit:
-            relaxed = fill(respect_origin=True, respect_source=False)
-            relaxed += fill(respect_origin=False, respect_source=False)
-            if relaxed:
-                logger.info(
-                    "Source caps relaxed to fill the digest: %d extra item(s) taken (%d/%d selected) — "
-                    "likely a partial collector outage",
-                    relaxed,
-                    len(selected),
-                    limit,
-                )
+        # The rest of the pool goes by score; max_per_origin keeps one publisher from taking it, and
+        # is relaxed only when a quiet day has too few distinct origins to fill the pool.
+        fill(respect_origin=True)
+        fill(respect_origin=False)
 
         selected.sort(key=lambda r: (-r.score, r.item.item_id))
         return selected[:limit]
 
-    @staticmethod
-    def _slot_order(above_threshold: list[RankedItem], source_slots: dict[str, int]) -> list[tuple[str, int]]:
-        """Order the guaranteed-slot pass by each source's BEST candidate score (descending), with
-        the source key as a deterministic tie-break — not by config key order, which is arbitrary.
-
-        It only changes anything when the limit cannot cover every slot (a short digest via
-        --select-count, or slots reserved by pinned items): the last-listed sources then went home
-        empty regardless of how strong their candidates were, purely because of where they sat in
-        the YAML. With limit >= sum(source_slots) — the live config — every source still fills its
-        own slots and the selection is identical."""
-        best: dict[str, float] = {}
-        for r in above_threshold:
-            src = r.item.source_type.value
-            if src in source_slots:
-                best[src] = max(best.get(src, 0.0), r.score)
-        return sorted(source_slots.items(), key=lambda kv: (-best.get(kv[0], 0.0), kv[0]))
-
-    async def _make_batches(self, ordered: list[CollectedItem]) -> list[list[CollectedItem]]:
-        """Split ranking input into batches capped by BOTH item count and a cumulative input-token
-        budget. The count is spread EVENLY (ceil(n / ceil(n / ranking_batch_size))): filling each batch
-        to the cap left 1-item tail batches, scored with nothing beside them to calibrate against. A
-        fixed count alone can overflow the context window (ranking_batch_size × item_text_max_tokens),
-        and an overflowing batch fails the Converse call. So the batch is also bounded by
-        ranking_batch_token_budget_ratio of the window, leaving room for the system prompt and JSON. Each item's truncated-text count is cached (truncate runs anyway), so
-        this adds no API cost.
-
-        The counts are measured CONCURRENTLY in threads: truncate_to_tokens and count_tokens are
-        sync boto3 CountTokens calls, so measuring the day's ~90 candidates one at a time from this
-        async caller blocked the event loop for 90+ serialized round-trips before the first Converse
-        request even left the process."""
-        window = self.llm_factory.get_model_info(self.config.ranking_model).context_window_size
-        token_budget = int(window * self.config.ranking_batch_token_budget_ratio)
-        count_cap = math.ceil(len(ordered) / math.ceil(len(ordered) / self.config.ranking_batch_size))
-        token_counts = await asyncio.gather(*(asyncio.to_thread(self._count_item_tokens, item) for item in ordered))
-        batches: list[list[CollectedItem]] = []
-        current: list[CollectedItem] = []
-        current_tokens = 0
-        for item, item_tokens in zip(ordered, token_counts, strict=True):
-            # Start a new batch when adding this item would exceed either cap (but never emit an
-            # empty batch — a single item over budget still goes in its own batch).
-            if current and (len(current) >= count_cap or current_tokens + item_tokens > token_budget):
-                batches.append(current)
-                current, current_tokens = [], 0
-            current.append(item)
-            current_tokens += item_tokens
-        if current:
-            batches.append(current)
-        return batches
-
-    def _count_item_tokens(self, item: CollectedItem) -> int:
-        """Input tokens one item contributes, as the prompt will actually carry it (truncated).
-        Sync on purpose — the caller runs it in a thread."""
-        truncated = self._truncate(item.text or "", self.config.item_text_max_tokens)
-        return self.llm_factory.count_tokens(truncated) if truncated else 0
+    def _make_batches(self, ordered: list[CollectedItem]) -> list[list[CollectedItem]]:
+        """Split ranking input into batches of at most ranking_batch_size, spread EVENLY
+        (ceil(n / ceil(n / size))): filling each batch to the cap left 1-item tail batches, scored with
+        nothing beside them to calibrate against. A batch cannot overflow the window: ranking_batch_size
+        x item_text_max_tokens is far below it."""
+        if not ordered:
+            return []
+        size = math.ceil(len(ordered) / math.ceil(len(ordered) / self.config.ranking_batch_size))
+        return [ordered[i : i + size] for i in range(0, len(ordered), size)]
 
     def _format_items(self, items: list[CollectedItem]) -> str:
         parts: list[str] = []

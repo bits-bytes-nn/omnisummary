@@ -17,6 +17,7 @@ _INPUTS = {
         "items_text": "x",
         "scoring_rubric": "s",
         "audience": "a",
+        "recent_titles": "r",
     },
     DigestPrompt: {
         "items_text": "x",

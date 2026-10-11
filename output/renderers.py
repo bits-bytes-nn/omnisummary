@@ -29,7 +29,7 @@ def _fit_one_post(
     are dropped from the end first, and the implication only goes if the fixed parts still overflow.
     Nothing is cut mid-sentence and the link is never split. Each item maps to exactly one reply.
 
-    `meta` is the "r/LocalLLaMA · ▶️ 775" provenance line the pipeline already computes. Without
+    `meta` is the "r/LocalLLaMA · 조회 775" provenance line the pipeline already computes. Without
     it a reader could not tell a Reddit thread from an arXiv paper without opening the link, so it
     is treated as fixed: knowing the source is worth more than one more clause of body.
 

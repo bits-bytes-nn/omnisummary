@@ -140,6 +140,7 @@ async def _deliver_threads(report: str, delivery: DeliveryContext) -> bool:
         image_bucket=image_bucket,
         image_key=image_key,
         image_content_type=image_content_type,
+        topic_tag=get_config().pipeline.threads_topic_tag,
     )
     # Explicitly read the counts: the outcome is a NamedTuple and therefore always truthy, so
     # `return outcome` would report a 0-of-8 post as a success.

@@ -60,7 +60,7 @@ class _Pipeline:
         ranked = self.ranked
         digest = self.digest
 
-        async def rank(items, select_count=None):
+        async def rank(items, select_count=None, recent_titles=()):
             return ranked if ranked is not None else _ranked(items)
 
         async def generate(ranked_items, items, **kwargs):
@@ -170,7 +170,7 @@ class TestRunPipelineHappyPath:
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
                 await _run(p, config, [_item("https://a.example/1")])
-        assert p.ranker.rank.await_args.kwargs == {"select_count": 8}
+        assert p.ranker.rank.await_args.kwargs == {"select_count": 8, "recent_titles": []}
 
 
 class TestRunPipelineDedup:

@@ -11,7 +11,7 @@ import boto3
 
 from .config import Config, get_config
 from .logger import logger
-from .utils import aws_region
+from .utils import available_boto_profile, aws_region
 
 DEFAULT_ACTOR_ID = "omnisummary"
 
@@ -111,10 +111,11 @@ class AgentCoreMemoryStore(MemoryStore):
         *,
         actor_id: str = DEFAULT_ACTOR_ID,
         region_name: str | None = None,
+        session: boto3.Session | None = None,
     ) -> None:
         self.memory_id = memory_id
         self.actor_id = actor_id
-        self._client = boto3.client("bedrock-agentcore", region_name=region_name or aws_region())
+        self._client = (session or boto3).client("bedrock-agentcore", region_name=region_name or aws_region())
 
     MAX_EVENT_TEXT = 100_000
     # Events read per digest session. A session only ever holds more than one event when the same
@@ -268,13 +269,12 @@ def digest_memory_name(project_name: str, stage: str) -> str:
     return f"{project_name}_{stage}_digest_state".replace("-", "_")
 
 
-def _deployed_memory_id(config: Config) -> str:
+def _deployed_memory_id(config: Config, session: boto3.Session) -> str:
     """The stack's memory id, found by name. CDK sets MEMORY_ID only on the Lambdas, so a local run
     (main.py, research_cli.py) used to fall back to the local store and read none of the snapshots
     production writes: cross-day dedup saw no yesterday and recall_digest found nothing."""
     prefix = digest_memory_name(config.aws.project_name, config.aws.stage) + "-"
     try:
-        session = boto3.Session(profile_name=config.aws.profile or None, region_name=config.aws.region)
         pages = session.client("bedrock-agentcore-control").get_paginator("list_memories").paginate()
         return next((m["id"] for page in pages for m in page.get("memories", []) if m["id"].startswith(prefix)), "")
     except Exception as e:
@@ -284,12 +284,15 @@ def _deployed_memory_id(config: Config) -> str:
 
 def create_memory_store(base_dir: Path | None = None) -> MemoryStore:
     """The AgentCore-backed store when the stack's memory exists (MEMORY_ID, or looked up by name for
-    a local run), else the local store. The client uses config.aws.region, where the stack lives: a
-    shell's AWS_REGION may point at the Bedrock region instead."""
+    a local run), else the local store. The lookup and the reads share ONE session on the configured
+    profile and config.aws.region, where the stack lives: a shell's AWS_PROFILE / AWS_REGION may point
+    at another account or the Bedrock region, and a read client on them found the memory by name and
+    then answered "Memory not found" for it."""
     config = get_config()
-    memory_id = os.environ.get("MEMORY_ID", "") or _deployed_memory_id(config)
+    session = boto3.Session(profile_name=available_boto_profile(config.aws.profile), region_name=config.aws.region)
+    memory_id = os.environ.get("MEMORY_ID", "") or _deployed_memory_id(config, session)
     if memory_id:
-        return AgentCoreMemoryStore(memory_id, region_name=config.aws.region)
+        return AgentCoreMemoryStore(memory_id, region_name=config.aws.region, session=session)
     fallback = base_dir or Path("digest_state")
     logger.info("No AgentCore memory found — using LocalMemoryStore at '%s'", fallback)
     return LocalMemoryStore(fallback)
