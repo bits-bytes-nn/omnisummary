@@ -34,7 +34,7 @@ There are two independent paths.
 - **Multi-source collection** — Reddit (one multi-subreddit public `.rss` request), YouTube, X/Twitter (via RSSHub), RSS/Substack, web search (Tavily). Feed bodies are HTML-stripped at collection
 - **LLM ranking into a candidate pool** — Claude Opus 5.5 scores on multiple axes; source slots and per-origin caps make sure every source's best item reaches the editor, and the editor picks what ships
 - **Editorial digest** — Claude Sonnet 5.5 writes Korean prose with cross-day trend continuity, then a grounding pass checks every specific claim against the sources
-- **Daily comic** — a 2x2 four-panel comic narrated by the owner-persona character (kept on-model by a reference sheet), with Korean dialogue, rendered by `gpt-image-2.5-sunburst` and checked by a vision review that fixes what it finds once
+- **Daily comic** — a 2x2 four-panel comic narrated by the owner-persona character (kept on-model by a reference sheet), with Korean dialogue, rendered by `gpt-image-2.5-sunburst` and checked by a vision review whose findings are logged
 - **Threads delivery** — image root + flat reply chain, idempotent per day
 - **Deep-research CLI + OpenClaw skill** — an autonomous Strands agent with eight single-purpose tools; JSON contract on stdout, Markdown report on disk
 - **Operational excellence** — per-source health reporting (`OK` / `EMPTY` / `FAILED` / `STALE` / `DEGRADED`) into SNS email alerts, structured JSON logs with correlation IDs, 8 CloudWatch alarms
@@ -212,7 +212,7 @@ A summary of each stage. [design.md](docs/design.md) is the line-by-line referen
 
 **6. Threads rendering.** `output/renderers.py` turns one `DigestContent` into a Threads root + flat reply chain. Formatting lives in code, not in prompt rules. The root carries one topic tag (`pipeline.threads_topic_tag`, default `AI`) so it shows up in that topic's feed and tag search, and the comic carries Korean alt text describing each panel and its line.
 
-**7. Daily comic.** `DailyVisualMaker` illustrates the **headline** story, so the image, the lead, and the text all point at the same thing. The editor writes a 2x2 four-panel comic (setup, development, turn, punchline) narrated by the owner-persona character, with one short Korean line per panel; `VisualGenerator` turns it into an image brief, renders it with `gpt-image-2.5-sunburst` at xhigh (1024x1536 for the 2x2 grid; the editor may pick a tall 848x2544 strip or another frame when the story needs it) (passing the persona reference sheet as an input image whenever the narrator appears, which is the default), then has the brief model review the image for physical, anatomy and text defects and applies one targeted fix when it finds any. This Lambda also owns the Threads post, and a failed render never swallows the digest. The text still goes out.
+**7. Daily comic.** `DailyVisualMaker` illustrates the **headline** story, so the image, the lead, and the text all point at the same thing. The editor writes a 2x2 four-panel comic (setup, development, turn, punchline) narrated by the owner-persona character, with one short Korean line per panel; `VisualGenerator` turns it into an image brief, renders it with `gpt-image-2.5-sunburst` at xhigh (1024x1536 for the 2x2 grid; the editor may pick a tall 848x2544 strip or another frame when the story needs it) (passing the persona reference sheet as an input image whenever the narrator appears, which is the default), then has the brief model review the image for physical, anatomy and text defects and logs what it finds (a correction edit lowered the defect count in only 4 of 12 runs, so it was dropped). This Lambda also owns the Threads post, and a failed render never swallows the digest. The text still goes out.
 
 **8. Deep research.** An autonomous Strands agent run by `research_cli.py`. It composes these eight tools freely. For example, "diffusion LLM 최신 동향" goes `web_search`/`search_papers`/`community_search` → `read_url` → `attach_image` → `deliver_report`:
 
@@ -377,7 +377,7 @@ crontab -e
 | Service | Purpose | Cost |
 |---------|---------|------|
 | AWS Bedrock | LLM (Claude Opus/Sonnet) | Usage-based |
-| OpenAI | `gpt-image-2.5-sunburst` daily comic at xhigh: one render plus at most one correction edit a day | Usage-based |
+| OpenAI | `gpt-image-2.5-sunburst` daily comic at xhigh: one render a day | Usage-based |
 | Tavily | Web search | Free tier |
 | OpenAlex | Paper search | Free (keyless, about 100 searches a day) |
 | YouTube Data API v3 | Video metadata | Free (10K units/day) |

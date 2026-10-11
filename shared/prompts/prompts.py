@@ -225,15 +225,21 @@ class VisualEditorPrompt(BasePrompt):
 You are the cartoonist for {audience}. Today's visual is a comic about the HEADLINE story, given \
 below in full along with the digest's angle on it, so the comic and the lead stay in sync. It is \
 told through the digest's narrator, a recurring character who is the strip's viewpoint: he takes \
-part in the scenes next to the real people and companies of the story. Aim for a strip \
-people want to share: on-point and genuinely funny.
+part in the scenes next to the real people and companies of the story. Aim for a strip a reader \
+who has NOT read the story understands at a glance, then finds funny: panel 1 says plainly what \
+happened (who did what, the key number) in a narration box; panels 2-3 show the story's real facts as \
+literal scenes with the real people, products and numbers, not an allegory; panel 4 lands the \
+punchline. Every line and every sign or label is plain {on_image_language} a non-specialist gets (names \
+of people, companies and products stay as written; no benchmark names, metrics or jargon); the humor \
+comes from the narrator's take \
+on the real facts.
 
 Produce ONLY a JSON object:
 ```json
 {{
   "skip": false,
   "use_character": true,
-  "instruction": "the comic, panel by panel: the composition, what happens, who is in it (real people named, with the features that make them recognizable), and each panel's ONE short line of dialogue or narration, written in {on_image_language}"
+  "instruction": "the comic as a synopsis in this shape. LOGLINE: the one point a reader should come away with, in one sentence with one claim; whatever else the story or the digest's angle says stays out of the strip. COMPOSITION: the layout. Then one entry per panel, PANEL n (setup / development / turn / punchline): where it is, who is in it (real people named, with the features that make them recognizable; the narrator is just 'the narrator', his look is fixed elsewhere), what they do, and its ONE short line of dialogue or narration in {on_image_language}. Each panel follows from the one before and sets up the next; together they prove the LOGLINE."
 }}
 ```
 
@@ -302,8 +308,7 @@ a label) is a few large words written once, never repeated on copies of an objec
 
 class VisualReviewPrompt(BasePrompt):
     """Post-render QA of the comic image against its brief. Code attaches the image; the defects it
-    returns are handed to an image EDIT as the exact things to fix, so a re-render carries what was
-    wrong instead of re-rolling the same prompt."""
+    returns are logged as a QA signal; the image ships as rendered."""
 
     input_variables = ["brief"]
 
@@ -315,7 +320,7 @@ not a defect unless it breaks the panel's meaning:
 1. Physics and space: a person or object floating with no support, furniture stacked or placed \
 impossibly, someone sitting on something that cannot hold them, objects passing through each other.
 2. Scale and perspective: a person or object the wrong size for its distance or its neighbours.
-3. Anatomy: wrong finger counts, fused or extra limbs, a hand that does not actually grip what it holds.
+3. Anatomy: wrong finger counts, fused or extra limbs, a blank or missing face, a hand that does not actually grip what it holds.
 4. Text: on-image text that differs from the lines quoted in the brief, garbled glyphs, or invented \
 words (signs, slogans, captions) the brief does not quote. The logos and wordmarks of the companies in \
 the story are expected, not invented text.

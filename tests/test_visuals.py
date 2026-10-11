@@ -410,34 +410,13 @@ class TestReviewedRender:
         return gen
 
     @pytest.mark.asyncio
-    async def test_a_clean_render_is_kept_without_an_edit(self):
-        gen = self._gen([[]])
-        with patch.object(gen, "fix") as fix:
+    async def test_the_review_is_logged_and_the_render_ships_unchanged(self):
+        gen = self._gen([["Panel 2: a sign floats"]])
+        with patch("agent.visuals.logger.info") as info:
             assert await gen._reviewed(b"ORIG", self.BRIEF, None) == b"ORIG"
-        fix.assert_not_called()
+        assert any("Panel 2: a sign floats" in str(c.args) for c in info.call_args_list)
         image_block = gen.reviewer.ainvoke.call_args.args[0][1].content[0]
         assert image_block["mime_type"] == "image/jpeg"
-
-    @pytest.mark.asyncio
-    async def test_the_correction_is_kept_when_it_leaves_fewer_defects(self):
-        gen = self._gen([["Panel 2: a sign floats"], []])
-        with patch.object(gen, "fix", return_value=b"FIXED") as fix:
-            assert await gen._reviewed(b"ORIG", self.BRIEF, None) == b"FIXED"
-        assert fix.call_args.args[2] == ["Panel 2: a sign floats"]
-
-    @pytest.mark.asyncio
-    async def test_the_edit_targets_the_top_three_but_full_lists_decide(self):
-        many = [f"Panel {i}: tag garbled" for i in range(1, 6)]
-        gen = self._gen([many, many[:4]])
-        with patch.object(gen, "fix", return_value=b"FIXED") as fix:
-            assert await gen._reviewed(b"ORIG", self.BRIEF, None) == b"FIXED"
-        assert fix.call_args.args[2] == many[:3]
-
-    @pytest.mark.asyncio
-    async def test_the_original_is_kept_when_the_correction_is_no_better(self):
-        gen = self._gen([["Panel 1: x"], ["Panel 3: y"]])
-        with patch.object(gen, "fix", return_value=b"FIXED"):
-            assert await gen._reviewed(b"ORIG", self.BRIEF, None) == b"ORIG"
 
     @pytest.mark.asyncio
     async def test_a_failed_review_never_costs_the_visual(self):
@@ -446,15 +425,12 @@ class TestReviewedRender:
         gen = _generator()
         gen.reviewer = MagicMock()
         gen.reviewer.ainvoke = AsyncMock(side_effect=RuntimeError("bedrock down"))
-        with patch.object(gen, "fix") as fix:
-            assert await gen._reviewed(b"ORIG", self.BRIEF, None) == b"ORIG"
-        fix.assert_not_called()
+        assert await gen._reviewed(b"ORIG", self.BRIEF, None) == b"ORIG"
 
     @pytest.mark.asyncio
-    async def test_no_correction_when_the_deadline_cannot_fit_another_render(self):
+    async def test_no_review_when_the_deadline_is_near(self):
         import time
 
         gen = self._gen([["Panel 1: x"]])
-        with patch.object(gen, "fix") as fix:
-            assert await gen._reviewed(b"ORIG", self.BRIEF, time.monotonic() + 1) == b"ORIG"
-        fix.assert_not_called()
+        assert await gen._reviewed(b"ORIG", self.BRIEF, time.monotonic() + 1) == b"ORIG"
+        gen.reviewer.ainvoke.assert_not_called()

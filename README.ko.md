@@ -34,7 +34,7 @@ AWS 위에서 동작한다. Amazon Bedrock(Claude)과 Bedrock AgentCore Memory�
 - **멀티 소스 수집.** Reddit(공개 `.rss` 피드를 다중 서브레딧 요청 한 번으로), YouTube, X/Twitter(RSSHub 경유), RSS/Substack, 웹 검색(Tavily). 피드 본문의 HTML은 수집 시점에 벗긴다
 - **후보 풀을 만드는 LLM 랭킹.** Claude Opus 5.5가 다축으로 채점하고, 소스 슬롯과 출처별 상한이 모든 소스의 최선 항목을 에디터 앞에 놓는다. 무엇을 내보낼지는 에디터가 고른다
 - **에디토리얼 다이제스트.** Claude Sonnet 5.5가 일자 간 트렌드 연속성을 살려 한국어 산문을 쓰고, 그라운딩 패스가 구체적 주장을 원문과 대조한다
-- **데일리 만화.** 오너 페르소나 캐릭터(기준 시트 이미지로 모습을 고정)가 화자인 2x2 4컷 만화를 `gpt-image-2.5-sunburst`가 한국어 대사로 그리고, 비전 검수가 찾은 결함을 한 번 고친다
+- **데일리 만화.** 오너 페르소나 캐릭터(기준 시트 이미지로 모습을 고정)가 화자인 2x2 4컷 만화를 `gpt-image-2.5-sunburst`가 한국어 대사로 그리고, 비전 검수가 찾은 결함을 로그로 남긴다
 - **Threads 전달.** 이미지 루트에 평면 답글 체인을 붙이고, 하루 한 번만 게시한다
 - **딥 리서치 CLI와 OpenClaw 스킬.** 단일 목적 도구 8개를 가진 자율 Strands 에이전트다. stdout에 JSON 계약, 디스크에 Markdown 리포트를 남긴다
 - **운영 안정성.** 소스별 헬스 보고(`OK`, `EMPTY`, `FAILED`, `STALE`, `DEGRADED`)를 SNS 이메일로 알리고, 상관 ID가 붙는 구조화된 JSON 로그와 CloudWatch 알람 8개를 둔다
@@ -211,7 +211,7 @@ uv run python scripts/sync_to_s3.py youtube  # YouTube만
 
 **6. Threads 렌더링.** `output/renderers.py`가 하나의 `DigestContent`를 Threads 루트에 평면 답글 체인을 붙인 형태로 바꾼다. 포매팅은 프롬프트 규칙이 아니라 코드에 있다. 루트는 토픽 태그 하나(`pipeline.threads_topic_tag`, 기본 `AI`)를 달아 그 토픽 피드와 태그 검색에 나오고, 만화에는 컷마다 장면과 대사를 적은 한국어 대체 텍스트가 붙는다.
 
-**7. 데일리 만화.** `DailyVisualMaker`는 헤드라인 스토리를 그린다. 이미지와 lead와 텍스트가 같은 것을 가리키게 하려는 것이다. 에디터가 오너 페르소나 캐릭터가 이끄는 2x2 기승전결 4컷과 컷마다 짧은 한국어 대사 한 줄을 쓰고, `VisualGenerator`가 이를 이미지 브리프로 바꿔 `gpt-image-2.5-sunburst`(xhigh)로 렌더한다(2x2는 1024x1536. 이야기에 맞으면 에디터가 848x2544 세로 스트립이나 다른 구도를 고른다). 화자가 등장하는 날(기본)에는 페르소나 기준 시트를 입력 이미지로 함께 보내 모습을 고정하고, 렌더 뒤에는 브리프 모델이 물리·해부·문구 결함을 검수해 찾은 결함을 한 번 고친다. Threads 게시도 이 Lambda가 담당하고, 렌더 실패가 다이제스트를 삼키지 않는다. 텍스트는 그대로 나간다.
+**7. 데일리 만화.** `DailyVisualMaker`는 헤드라인 스토리를 그린다. 이미지와 lead와 텍스트가 같은 것을 가리키게 하려는 것이다. 에디터가 오너 페르소나 캐릭터가 이끄는 2x2 기승전결 4컷과 컷마다 짧은 한국어 대사 한 줄을 쓰고, `VisualGenerator`가 이를 이미지 브리프로 바꿔 `gpt-image-2.5-sunburst`(xhigh)로 렌더한다(2x2는 1024x1536. 이야기에 맞으면 에디터가 848x2544 세로 스트립이나 다른 구도를 고른다). 화자가 등장하는 날(기본)에는 페르소나 기준 시트를 입력 이미지로 함께 보내 모습을 고정하고, 렌더 뒤에는 브리프 모델이 물리·해부·문구 결함을 검수해 로그로 남긴다(수정 편집은 12번 중 4번만 결함을 줄여 뺐다). Threads 게시도 이 Lambda가 담당하고, 렌더 실패가 다이제스트를 삼키지 않는다. 텍스트는 그대로 나간다.
 
 **8. 딥 리서치.** `research_cli.py`가 실행하는 자율 Strands 에이전트다. 아래 도구 8개를 자유롭게 조합한다. 예컨대 "diffusion LLM 최신 동향"이면 `web_search`나 `search_papers`, `community_search`를 거쳐 `read_url`, `attach_image`, `deliver_report`로 간다.
 
@@ -376,7 +376,7 @@ crontab -e
 | 서비스 | 용도 | 비용 |
 |--------|------|------|
 | AWS Bedrock | LLM (Claude Opus/Sonnet) | 사용량 기반 |
-| OpenAI | `gpt-image-2.5-sunburst` 데일리 만화(xhigh, 하루 렌더 1회와 수정 편집 최대 1회) | 사용량 기반 |
+| OpenAI | `gpt-image-2.5-sunburst` 데일리 만화(xhigh, 하루 렌더 1회) | 사용량 기반 |
 | Tavily | 웹 검색 | 무료 티어 |
 | OpenAlex | 논문 검색 | 무료(키 없음, 하루 약 100회) |
 | YouTube Data API v3 | 영상 메타데이터 | 무료 (10K units/day) |
