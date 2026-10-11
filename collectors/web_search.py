@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from email.utils import parsedate_to_datetime
 from typing import Literal
 from urllib.parse import urlparse
@@ -38,6 +38,8 @@ _RETRIABLE_SEARCH_ERRORS: tuple[type[BaseException], ...] = (TimeoutError, Tavil
 
 
 class WebSearchCollector(BaseCollector):
+    config: WebSearchCollectorConfig
+
     def __init__(self, config: WebSearchCollectorConfig, llm_factory: BedrockLanguageModelFactory | None = None):
         self.config = config
         self._api_key = ""
@@ -104,8 +106,6 @@ class WebSearchCollector(BaseCollector):
             total=broad.total,
             failed=broad.failed,
             empty=broad.empty,
-            threshold=self.config.error_rate_threshold,
-            empty_threshold=self.config.empty_rate_threshold,
             what="search queries",
         )
 
@@ -182,6 +182,7 @@ class WebSearchCollector(BaseCollector):
                     query=query,
                     max_results=self.config.max_results_per_query,
                     include_domains=domains if domains else None,
+                    exclude_domains=self.config.exclude_domains or None,
                     topic=topic,
                     start_date=start_date,
                     end_date=end_date,
@@ -209,6 +210,10 @@ class WebSearchCollector(BaseCollector):
                 response = await _search_with_retries()
         return self._parse_results(response, trend_name=trend_name)
 
+    def _date_only_tz(self) -> tzinfo:
+        reference = self.config.reference_time
+        return reference.tzinfo if reference is not None and reference.tzinfo is not None else UTC
+
     def _parse_results(
         self,
         response: dict,
@@ -227,7 +232,7 @@ class WebSearchCollector(BaseCollector):
                     logger.debug("Skipping item without published_date: '%s'", title[:60])
                     continue
 
-                published_at = _parse_date(published_date_str)
+                published_at = _parse_date(published_date_str, self._date_only_tz())
                 if not published_at:
                     logger.debug("Unparseable date for: '%s'", title[:60])
                     continue
@@ -423,17 +428,23 @@ async def fetch_pinned_items(urls: list[str]) -> list[CollectedItem]:
     return items
 
 
-def _parse_date(date_str: str) -> datetime | None:
+def _parse_date(date_str: str, date_only_tz: tzinfo = UTC) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-        # Tavily often returns date-only ('2026-07-10') or tz-less ISO strings → a naive datetime.
-        # Comparing naive vs the tz-aware cutoff raises TypeError, which silently drops every such
-        # result. Assume UTC when no offset is present so date-only results still pass the window.
+        # A DATE-ONLY value ('2026-07-10') is read as the last second of that day in the digest's
+        # timezone: that instant lies inside both that day's window and the next one, so an item
+        # published after a day's run is still collected, and the published-URL ledger stops a repeat.
+        # Midnight fell before the next window; end of day in UTC fell after that day's window.
+        if len(date_str.strip()) == len("YYYY-MM-DD"):
+            return parsed.replace(hour=23, minute=59, second=59, tzinfo=date_only_tz)
+        # Tavily often returns tz-less ISO timestamps: assume UTC.
         return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
     except (ValueError, TypeError) as e:
         logger.debug("ISO date parse failed for '%s' (%s); trying RFC2822", date_str, e)
     try:
-        return parsedate_to_datetime(date_str).astimezone(UTC)
+        # A "-0000" zone parses naive; astimezone() would then read it as the HOST's local time.
+        rfc = parsedate_to_datetime(date_str)
+        return rfc.astimezone(UTC) if rfc.tzinfo is not None else rfc.replace(tzinfo=UTC)
     except (ValueError, TypeError) as e:
         logger.debug("RFC2822 date parse failed for '%s' (%s); giving up", date_str, e)
     return None

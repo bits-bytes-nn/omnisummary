@@ -56,24 +56,4 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     except Exception as e:
         logger.error("Failed to write refreshed Threads token to SSM: %s", e)
         raise
-    _warn_if_unencrypted(ssm, name)
     return {"statusCode": 200, "body": "refreshed"}
-
-
-def _warn_if_unencrypted(ssm: Any, name: str) -> None:
-    """Say so when the refreshed token is sitting in a plain String parameter. The write above
-    deliberately omits Type, so it silently PRESERVES an unencrypted parameter — which is exactly
-    the state scripts/put_secrets.py exists to remove. Best-effort: a failed check must never turn a
-    successful refresh into an error."""
-    try:
-        param_type = ssm.get_parameter(Name=name)["Parameter"]["Type"]
-    except Exception as e:
-        logger.warning("Could not verify the type of '%s': %s", name, e)
-        return
-    if param_type != "SecureString":
-        logger.error(
-            "Threads access token is stored as a plain %s (unencrypted at rest) in '%s' — "
-            "run scripts/put_secrets.py to migrate it to a SecureString",
-            param_type,
-            name,
-        )

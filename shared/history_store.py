@@ -23,7 +23,6 @@ def published_urls_from_snapshots(snapshots: list[dict[str, Any]]) -> set[str]:
 
 PUBLISHED_URLS_KEY = "published_urls.json"
 RECENT_LEADS_KEY = "recent_leads.json"
-VISUAL_FORMATS_KEY = "visual_formats.json"
 THREADS_POSTED_KEY = "threads_posted.json"
 
 
@@ -172,8 +171,8 @@ class PublishedUrlLedger:
 
 
 class RollingLog:
-    """A capped, FIFO list of small records persisted as one JSON blob. Used for recent
-    digest leads (anti-repetition) and recent visual formats (variation)."""
+    """A capped, FIFO list of small records persisted as one JSON blob (the recent digest leads the
+    prompt is told not to reuse)."""
 
     def __init__(self, store: StateStore, key: str, max_entries: int) -> None:
         self.store = store
@@ -190,8 +189,7 @@ class RollingLog:
         return data if isinstance(data, list) else []
 
     def entries(self) -> list[dict]:
-        """The stored records; [] when unreadable. Called from the publish path (the visual reads
-        its format window before posting), so it must never raise."""
+        """The stored records; [] when unreadable. Never raises: a lost history must not stop a run."""
         return self._log() or []
 
     def append(self, record: dict, dedup_key: str | None = None) -> None:

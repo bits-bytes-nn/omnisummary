@@ -127,7 +127,9 @@ class TestImageSizes:
         assert all(re.fullmatch(r"\d+x\d+", size) for size in PipelineConfig().image_sizes.values())
 
     def test_sizes_are_overridable(self):
-        cfg = PipelineConfig(image_sizes={"square": "512x512", "landscape": "768x512", "portrait": "512x768"})
+        cfg = PipelineConfig(
+            image_sizes={"tall": "512x1536", "square": "512x512", "landscape": "768x512", "portrait": "512x768"}
+        )
         assert cfg.image_sizes["portrait"] == "512x768"
 
     def test_a_renamed_or_missing_orientation_key_fails_load(self):
@@ -221,7 +223,6 @@ class TestCodeDefaultsMatchTheDeployedConfig:
 
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))["pipeline"]
         assert "enable_threads_post" in raw
-        assert "enable_slack_post" in raw
 
 
 class TestParkedSourceTripwires:

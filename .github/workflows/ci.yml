@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Weekly, so a new advisory against an unchanged uv.lock still fails pip-audit.
+  schedule:
+    - cron: "0 0 * * 1"
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -14,7 +17,7 @@ permissions:
   contents: read
 
 env:
-  UV_VERSION: "0.5.11"
+  UV_VERSION: "0.6.14"
 
 jobs:
   lint:
@@ -24,9 +27,11 @@ jobs:
     # before anyone notices the build is stuck rather than slow.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
           version: ${{ env.UV_VERSION }}
           # Cache the resolved wheels, keyed on the lockfile — a dependency change still
@@ -58,9 +63,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -76,35 +83,18 @@ jobs:
       - name: Run tests with coverage
         run: >
           uv run python -m pytest tests/
-          --cov --cov-report=term-missing --cov-report=xml
-      - name: Upload coverage
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-xml
-          path: coverage.xml
-      # The Cloudflare worker is the only internet-reachable component in the repo, and Python can
-      # only grep its source. Its real branches (token, URL parse, scheme, suffix host match, fixed
-      # outbound headers) are asserted by node:test — stdlib only, so there is nothing to install.
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      # `ls` first: `node --test` on a pattern that matches nothing exits 0, so a deleted or
-      # renamed suite would otherwise pass green.
-      - name: Test the Cloudflare worker
-        run: |
-          ls cloudflare-proxy/test/*.test.js
-          node --test cloudflare-proxy/test/*.test.js
+          --cov --cov-report=term-missing
 
   synth:
     name: CDK synth
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -116,7 +106,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --extra dev
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: npm
@@ -138,14 +128,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       # load: true (single platform, native amd64) so the built image is in the local daemon and
       # can actually be RUN — a build alone never executes an import, so a missing COPY or a
       # module that only resolves on the developer's machine still shipped green.
       - name: Build digest image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: Dockerfile
@@ -162,9 +154,9 @@ jobs:
         run: >
           docker run --rm --network none --entrypoint python omnisummary-digest:ci -c
           "import lambda_handlers.digest_handler, lambda_handlers.visual_handler,
-          lambda_handlers.threads_refresh_handler, main; print('digest image imports OK')"
+          lambda_handlers.threads_refresh_handler; print('digest image imports OK')"
       # Importing the handlers never loads a config, so green CI did not imply a DEPLOYABLE image:
-      # config/config.yaml is gitignored and both Dockerfiles COPY config/, so the image CI validates
+      # config/config.yaml is gitignored and the Dockerfile COPYs config/, so the image CI validates
       # resolved to bare code defaults — empty source lists, region us-east-1 — and started up
       # happily. Loading the config here fails the BUILD instead, on a missing COPY, a config the
       # image cannot validate, or a Config.load() that has nothing to fall back to.
@@ -180,25 +172,6 @@ jobs:
           "from shared import Config; c = Config.load();
           assert c.collectors.web_search.trend_searches, 'the image resolved to bare code defaults';
           print('digest image config loads OK:', c.aws.region, c.pipeline.digest_model.value)"
-      # The agentcore image is deployed as arm64, but CI builds it amd64: the base image and every
-      # dependency are multi-arch, and a native build keeps the import check runnable without QEMU
-      # emulation (a QEMU pip install blows the job budget). What this catches is arch-independent
-      # — a missing COPY or an unresolved dep in the deep-research runtime.
-      - name: Build agentcore image (deep-research runtime)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.agentcore
-          platforms: linux/amd64
-          provenance: false
-          load: true
-          tags: omnisummary-agentcore:ci
-          cache-from: type=gha,scope=agentcore
-          cache-to: type=gha,mode=max,scope=agentcore
-      - name: Import-check agentcore image
-        run: >
-          docker run --rm --network none --entrypoint python omnisummary-agentcore:ci -c
-          "import agent_runtime.app; print('agentcore image imports OK')"
 
   security:
     name: Dependency & secret scan
@@ -207,11 +180,12 @@ jobs:
     steps:
       # Full history: gitleaks scans commits, and a shallow clone would only ever look at the tip,
       # so a key committed earlier and removed later would never be found.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -226,17 +200,9 @@ jobs:
       # editable distribution as unauditable, and --strict turns that into a failure.
       - name: Install the locked dependency set
         run: uv sync --frozen --no-dev --no-install-project
-      # Audit the INSTALLED venv by path rather than an exported requirements file. Two things made
-      # this step fail before it had ever audited anything: `uvx pip-audit==2.9.0` is not a valid
-      # spec for the pinned uv 0.5.11 (it needs `--from`), and pip-audit's `-r` mode builds its own
-      # venv via `ensurepip`, which uv-managed standalone Pythons do not ship (exit 127).
-      # Verified in both directions against uv 0.5.11: clean on this lockfile, and failing on the
-      # previous one (19 packages with advisories) — a gate that cannot fail is not a gate.
-      #
-      # The path is DERIVED, and asserted non-empty: pip-audit against a nonexistent --path prints
-      # "No known vulnerabilities found" and exits 0, so the hardcoded `python3.12` was the only thing
-      # keeping this gate real — and until .python-version was tracked, nothing pinned that minor
-      # version. A silent interpreter bump would have turned the whole step into a no-op.
+      # Audit the INSTALLED venv by path: pip-audit's `-r` mode builds its own venv via `ensurepip`,
+      # which uv-managed Pythons do not ship. The path is derived and asserted non-empty, because
+      # pip-audit against a nonexistent --path reports "No known vulnerabilities found" and exits 0.
       - name: Locate the installed dependency set
         id: sitepackages
         run: |
@@ -251,6 +217,7 @@ jobs:
       # Secrets: the CloudFormation template used to carry live API tokens in plaintext, and
       # config/config.yaml (gitignored) holds real values — a mis-added file is a live leak.
       - name: Secret scan
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"

@@ -9,8 +9,8 @@ SEMANTIC_SCHOLAR_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 
 
 def _get_tavily_client() -> AsyncTavilyClient | None:
-    # env first, then SSM SecureString — so search works in the AgentCore runtime and the
-    # visual Lambda, which carry the key in SSM rather than the environment.
+    # env first, then SSM SecureString — so search works in the Lambdas, which carry the key in SSM
+    # rather than the environment.
     api_key = resolve_secret("TAVILY_API_KEY", "tavily-api-key")
     if not api_key:
         return None

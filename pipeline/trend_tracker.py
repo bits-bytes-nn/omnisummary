@@ -47,7 +47,7 @@ class TrendTracker:
             return self._memory
 
         try:
-            raw = self.state_store.read(TRENDS_KEY) if self.state_store.exists(TRENDS_KEY) else None
+            raw = self.state_store.read(TRENDS_KEY)
         except StateReadError as e:
             logger.error("Trend memory unreadable (%s); running without trend history", e)
             self._degraded = True
@@ -90,23 +90,23 @@ class TrendTracker:
         """The DIGEST-facing trend ammunition: the highest-momentum visible trends, with the
         recurrence facts the lead reasons from.
 
-        Capped at trend_max_active_trends: `visible` also holds cooling ones, so the block could
-        hand the editor 20+ lines, most of them stale threads it will never use. This is now the
-        knob's ONLY use — a lifecycle loop also archived ACTIVE trends over the same number until
-        2026-08-19, which violated the rule stated next.
+        Capped at trend_max_active_trends (cooling trends are visible too). The CLASSIFIER's view
+        (_render_existing) is deliberately NOT capped: hiding a trend there would make the model coin
+        a duplicate id for the same thread.
 
-        The CLASSIFIER's view (_render_existing) is deliberately NOT capped — hiding a cooling trend
-        there would orphan it and make the model coin a duplicate id for the same thread. That is
-        exactly what the removed loop did, since _render_existing skips ARCHIVED: it hid a different
-        10 trends every run, so the ones it hid could not be extended and came back as new ids."""
-        memory = self._load_memory()
-        visible = [t for t in memory.trends if t.status != TrendStatus.ARCHIVED]
+        Only evidence dated BEFORE today counts: on a same-day re-run the first run's stories are
+        already in trends.json, and showing them as "recent days" fed today's news back in as history."""
+        # The run's digest date (KST) is the single clock, so the recurrence facts agree with the
+        # KST-stamped evidence; date.today() would be UTC and off by a day at the 19:00-KST boundary.
+        today = today or date.today()
+        cutoff = today.isoformat()
+        visible = []
+        for t in self._load_memory().trends:
+            past = [ev for ev in t.evidence if ev.date < cutoff]
+            if past:
+                visible.append(t.model_copy(update={"evidence": past}))
         if not visible:
             return ""
-        # Use the run's digest date (KST) as the single clock so the recurrence facts agree with
-        # the evidence dates (also KST-stamped); date.today() would be UTC and off by a day at the
-        # 19:00-KST run boundary.
-        today = today or date.today()
         visible.sort(key=lambda t: t.momentum(today, self.config.trend_momentum_half_life_days), reverse=True)
         capped = visible[: self.config.trend_max_active_trends]
         if len(capped) < len(visible):
@@ -134,9 +134,6 @@ class TrendTracker:
                 facts.append(f"{(today - first).days + 1}일째 추적 중")
             if len(dates) > 1:
                 facts.append(f"최근 {len(dates)}개 다른 날 재등장")
-            month_hits = sum(1 for d in dates if d[:7] == today.isoformat()[:7])
-            if month_hits > 1:
-                facts.append(f"이번 달 {month_hits}회")
             gist = t.evidence[-1].summary if t.evidence else ""
             fact_str = f" [{', '.join(facts)}]" if facts else ""
             lines.append(f"- {t.title}{fact_str}: {gist}" if gist else f"- {t.title}{fact_str}")
@@ -144,6 +141,12 @@ class TrendTracker:
 
     async def update_trends(self, digest_text: str, today_date: str) -> None:
         memory = self._load_memory()
+        # Idempotency: drop any evidence already stamped with today's date so a re-run (Lambda retry,
+        # manual re-run) replaces the day's contribution instead of appending reworded duplicates —
+        # and BEFORE rendering, so the classifier never sees the first run's stories as existing
+        # trends. Dates are code-stamped, never from the LLM.
+        for trend in memory.trends:
+            trend.evidence = [ev for ev in trend.evidence if ev.date != today_date]
 
         existing_summary = self._render_existing(memory)
         chain = TrendClassifyPrompt.get_prompt() | self.llm | StrOutputParser()
@@ -153,12 +156,6 @@ class TrendTracker:
                 "todays_digest": digest_text,
             }
         )
-
-        # Idempotency: drop any evidence already stamped with today's date so a re-run
-        # (Lambda retry, manual re-run) replaces the day's contribution instead of
-        # appending reworded duplicates. Dates are code-stamped, never from the LLM.
-        for trend in memory.trends:
-            trend.evidence = [ev for ev in trend.evidence if ev.date != today_date]
 
         observations = self._parse_observations(raw)
         logger.info("Trend classifier returned %d observations", len(observations))
@@ -185,7 +182,7 @@ class TrendTracker:
     def _render_existing(memory: TrendMemory) -> str:
         lines: list[str] = []
         for t in memory.trends:
-            if t.status == TrendStatus.ARCHIVED:
+            if not t.evidence:
                 continue
             gist = t.evidence[-1].summary if t.evidence else ""
             lines.append(f"- {t.id}: {t.title}" + (f" — {gist}" if gist else ""))
@@ -230,67 +227,42 @@ class TrendTracker:
             return
 
         trend.evidence.append(TrendEvidence(date=today_date, summary=obs["summary"]))
-        trend.last_seen = today_date
-        if not trend.first_seen:
-            trend.first_seen = today_date
 
     def _run_lifecycle(self, memory: TrendMemory, today_date: str) -> None:
-        try:
-            today: date | None = date.fromisoformat(today_date)
-        except ValueError:
-            logger.warning("Invalid today_date '%s'; skipping date-based lifecycle", today_date)
-            today = None
-
+        """Cap evidence, derive last_seen FROM the evidence, then drop trends past retention and
+        mark the rest active/cooling. last_seen is derived rather than stamped on append: a same-day
+        re-run strips today's evidence first, and a stamped value kept a trend the second pass did
+        not re-emit at today's date — ACTIVE, with its retention clock restarted. A trend past
+        retention is dropped outright."""
+        today = date.fromisoformat(today_date)
         for trend in memory.trends:
             if len(trend.evidence) > self.config.trend_max_evidence:
                 trend.evidence = trend.evidence[-self.config.trend_max_evidence :]
-            if today is not None:
-                trend.status = self._compute_status(trend, today)
+            if trend.evidence:
+                trend.last_seen = max(ev.date for ev in trend.evidence)
 
-        # An over-cap archival loop sat here, sorting the ACTIVE list by momentum and archiving the
-        # excess above trend_max_active_trends. Removed 2026-08-19: it could not stick. The loop
-        # above re-derives status from last_seen alone on every run, so a trend archived for being
-        # over the cap comes back ACTIVE the next time it is still recent — "Archived low-momentum
-        # trend over active cap" fired 365 times in 30 days (12 per run) across 59 distinct ids, one
-        # of them 13 times. The harm was not just the churn: _render_existing hides ARCHIVED trends
-        # from the classifier, so the set it could not see changed every run, and a trend it cannot
-        # see cannot be EXTENDED — it gets created again as a new one. trend_cooling_days already
-        # bounds the active list on a stable, derivable rule (20 of 74 trends were seen inside it).
-
-        # Purge trends archived long ago. Archiving only sets status; it never removes the trend,
-        # and archived trends keep their (capped) evidence so the "drop trends with no evidence"
-        # rule above never reaches them. Without this they accumulate forever, inflating every
-        # read-modify-write of trends.json. Keep archived trends for one extra retention window
-        # (grace so a briefly-archived trend can revive), then drop.
-        if today is not None:
-            purge_age = self.config.trend_retention_days * 2
-            before = len(memory.trends)
-            memory.trends = [t for t in memory.trends if not self._is_stale_archived(t, today, purge_age)]
-            purged = before - len(memory.trends)
-            if purged:
-                logger.info("Purged %d archived trend(s) older than %d days", purged, purge_age)
+        kept: list[Trend] = []
+        for trend in memory.trends:
+            age = self._age_days(trend, today)
+            if age is not None and age >= self.config.trend_retention_days:
+                continue
+            if age is not None:
+                trend.status = TrendStatus.COOLING if age >= self.config.trend_cooling_days else TrendStatus.ACTIVE
+            kept.append(trend)
+        if len(kept) < len(memory.trends):
+            logger.info(
+                "Dropped %d trend(s) unseen for %d+ days",
+                len(memory.trends) - len(kept),
+                self.config.trend_retention_days,
+            )
+        memory.trends = kept
 
     @staticmethod
-    def _is_stale_archived(trend: Trend, today: date, purge_age_days: int) -> bool:
-        if trend.status != TrendStatus.ARCHIVED:
-            return False
+    def _age_days(trend: Trend, today: date) -> int | None:
         try:
-            last_seen = date.fromisoformat(trend.last_seen)
+            return (today - date.fromisoformat(trend.last_seen)).days
         except ValueError:
-            return False
-        return (today - last_seen).days >= purge_age_days
-
-    def _compute_status(self, trend: Trend, today: date) -> TrendStatus:
-        try:
-            last_seen = date.fromisoformat(trend.last_seen)
-        except ValueError:
-            return trend.status
-        age = (today - last_seen).days
-        if age >= self.config.trend_retention_days:
-            return TrendStatus.ARCHIVED
-        if age >= self.config.trend_cooling_days:
-            return TrendStatus.COOLING
-        return TrendStatus.ACTIVE
+            return None
 
     @staticmethod
     def _make_slug(title: str, existing: set[str]) -> str:

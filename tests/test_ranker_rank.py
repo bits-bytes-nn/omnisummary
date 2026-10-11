@@ -127,24 +127,19 @@ class TestRankEndToEnd:
         assert "i4" in {r.item.item_id for r in result}
 
     @pytest.mark.asyncio
-    async def test_pinned_item_not_duplicated_via_grace(self):
-        # Regression: a pinned item that is its source's ONLY above-threshold entry is stripped
-        # from above_threshold, so the source looks empty to the grace path. Grace must NOT
-        # re-admit the pin (it's already guaranteed) — otherwise it appears twice AND a below-
-        # threshold filler from that source could sneak in.
+    async def test_pinned_item_appears_once_and_sub_threshold_items_stay_out(self):
         items = _items([("a", SourceType.RSS), ("y_pin", SourceType.YOUTUBE), ("y_weak", SourceType.YOUTUBE)])
-        items[1].metadata = {"pinned": True}  # the sole strong YouTube item, pinned
+        items[1].metadata = {"pinned": True}
         ranker = _ranker(
-            _rankings({"a": 0.9, "y_pin": 0.85, "y_weak": 0.55}),  # y_weak in the grace band (0.5..0.6)
+            _rankings({"a": 0.9, "y_pin": 0.85, "y_weak": 0.55}),
             top_n=5,
             min_score=0.6,
-            source_slot_score_grace=0.1,
             source_slots={"web": 1, "x": 1, "rss": 1, "reddit": 1, "youtube": 1},
         )
         result = await ranker.rank(items)
         ids = [r.item.item_id for r in result]
-        assert ids.count("y_pin") == 1  # pinned appears exactly once, not duplicated
-        assert "y_weak" not in ids  # source already covered by the pin → no grace filler
+        assert ids.count("y_pin") == 1
+        assert "y_weak" not in ids
 
     @pytest.mark.asyncio
     async def test_pinned_web_item_still_fills_to_top_n_via_relaxed_pass(self):
@@ -202,41 +197,6 @@ class TestRankEndToEnd:
         result = await ranker.rank(items)
         scores = [r.score for r in result]
         assert scores == sorted(scores, reverse=True)
-
-    @pytest.mark.asyncio
-    async def test_ranking_categories_reach_prompt(self):
-        items = _items([("a", SourceType.RSS)])
-        captured: dict[str, str] = {}
-
-        def capture(prompt_value):
-            captured["text"] = str(prompt_value)
-            return AIMessage(content=_rankings({"a": 0.9}))
-
-        config = PipelineConfig(top_n=5, min_score=0.6, ranking_categories=["alpha", "beta", "gamma"])
-        factory = _mock_factory()
-        factory.get_model.return_value = RunnableLambda(capture)
-        ranker = ContentRanker(config, factory)
-        await ranker.rank(items)
-
-        assert "alpha, beta, gamma" in captured["text"]
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("penalty", [0.0, 0.25, 0.5])
-    async def test_duplicate_score_penalty_reaches_prompt(self, penalty):
-        items = _items([("a", SourceType.RSS)])
-        captured: dict[str, str] = {}
-
-        def capture(prompt_value):
-            captured["text"] = str(prompt_value)
-            return AIMessage(content=_rankings({"a": 0.9}))
-
-        config = PipelineConfig(top_n=5, min_score=0.6, ranking_duplicate_score_penalty=penalty)
-        factory = _mock_factory()
-        factory.get_model.return_value = RunnableLambda(capture)
-        ranker = ContentRanker(config, factory)
-        await ranker.rank(items)
-
-        assert str(penalty) in captured["text"]
 
     @pytest.mark.asyncio
     async def test_parallel_batches_merge_all_items(self):
@@ -314,8 +274,9 @@ class TestRankEndToEnd:
             top_n=5, min_score=0.6, source_slots={}, ranking_batch_size=2, ranking_retry_backoff_sec=0
         )
         result = await ContentRanker(config, factory).rank(items)
-        # The surviving batch still ranks; only the dead batch's items are missing.
-        assert {r.item.item_id for r in result} == {"i2", "i3"}
+        # The surviving batch still ranks; only the dead batch's two items (i0 and its partner) are missing.
+        ids = {r.item.item_id for r in result}
+        assert len(ids) == 2 and "i0" not in ids
 
     @pytest.mark.asyncio
     async def test_bedrock_fan_out_is_bounded_by_config(self):
@@ -362,75 +323,31 @@ class TestRankEndToEnd:
         assert sum(len(b) for b in batches) == 6  # no item lost
         assert len(batches) >= 3  # count-40 cap alone would have made 1 batch
 
-
-class TestGraceIntegration:
     @pytest.mark.asyncio
-    async def test_grace_item_reaches_final_selection(self):
-        # A source with a guaranteed slot but only a sub-threshold best item (within grace)
-        # still lands in the digest via its own slot, end-to-end through rank().
+    async def test_the_count_cap_is_spread_evenly_instead_of_leaving_a_tiny_tail(self):
+        config = PipelineConfig(ranking_batch_size=40)
+        items = [
+            CollectedItem(item_id=f"i{n:02d}", source_type=SourceType.RSS, title=f"t{n}", url=f"http://e.com/{n}")
+            for n in range(41)
+        ]
+        batches = await ContentRanker(config, _mock_factory())._make_batches(items)
+        assert sorted(len(b) for b in batches) == [20, 21]
+
+
+class TestSubThresholdItems:
+    @pytest.mark.asyncio
+    async def test_a_guaranteed_slot_never_admits_an_item_below_min_score(self):
+        # A source with a slot but nothing above the bar goes unrepresented; the slot does not lower
+        # the bar for it.
         items = _items([("r1", SourceType.RSS), ("y1", SourceType.YOUTUBE)])
         ranker = _ranker(
-            _rankings({"r1": 0.80, "y1": 0.55}),
+            _rankings({"r1": 0.80, "y1": 0.59}),
             top_n=5,
             min_score=0.6,
-            source_slot_score_grace=0.1,
             source_slots={"rss": 1, "youtube": 1},
         )
         result = await ranker.rank(items)
-        assert {r.item.item_id for r in result} == {"r1", "y1"}
-
-    @pytest.mark.asyncio
-    async def test_a_grace_item_is_marked_grace_and_nothing_else_is(self):
-        # Tracked as a local id set inside the ranker, the intent to keep that source represented did
-        # not survive the handoff: the editor saw only a low Score, and the diversity audit read the
-        # source as available-but-declined and alerted. The flag mirrors `backfill`.
-        items = _items([("r1", SourceType.RSS), ("y1", SourceType.YOUTUBE)])
-        ranker = _ranker(
-            _rankings({"r1": 0.80, "y1": 0.55}),
-            top_n=5,
-            min_score=0.6,
-            source_slot_score_grace=0.1,
-            source_slots={"rss": 1, "youtube": 1},
-        )
-        result = await ranker.rank(items)
-        assert {r.item.item_id for r in result if r.grace} == {"y1"}
-        assert not any(r.grace and r.backfill for r in result)
-
-    @pytest.mark.asyncio
-    async def test_grace_item_does_not_fill_fallback_slots(self):
-        # Quiet day: one strong RSS item + sub-threshold grace items in two slotted sources.
-        # Grace items take ONLY their own guaranteed slot — they must NOT be pulled into the
-        # relaxed fallback fill to pad the digest toward top_n.
-        items = _items([("r1", SourceType.RSS), ("y1", SourceType.YOUTUBE), ("x1", SourceType.X)])
-        ranker = _ranker(
-            _rankings({"r1": 0.90, "y1": 0.55, "x1": 0.55}),
-            top_n=5,
-            min_score=0.6,
-            source_slot_score_grace=0.1,
-            source_slots={"rss": 1, "youtube": 1, "x": 1},
-            source_cap_multiplier=3,  # fallback could otherwise pull extra items per source
-            source_slot_grace_max_admissions=2,  # both quiet sources may be rescued here
-        )
-        result = await ranker.rank(items)
-        # Each appears exactly once via its own slot; no duplication / fallback padding.
-        ids = sorted(r.item.item_id for r in result)
-        assert ids == ["r1", "x1", "y1"]
-
-    @pytest.mark.asyncio
-    async def test_the_grace_rescue_is_budgeted(self):
-        # Unbudgeted, grace spent as many of the reader's slots as there were quiet sources: two of
-        # five on 2026-07-12, at 0.56 and 0.50, while ten candidates above the bar were dropped.
-        items = _items([("r1", SourceType.RSS), ("y1", SourceType.YOUTUBE), ("x1", SourceType.X)])
-        ranker = _ranker(
-            _rankings({"r1": 0.90, "y1": 0.52, "x1": 0.58}),
-            top_n=5,
-            min_score=0.6,
-            source_slot_score_grace=0.1,
-            source_slots={"rss": 1, "youtube": 1, "x": 1},
-        )
-        result = await ranker.rank(items)
-        # One rescue, and it goes to the candidate closest to the bar.
-        assert sorted(r.item.item_id for r in result) == ["r1", "x1"]
+        assert {r.item.item_id for r in result} == {"r1"}
 
 
 def _ranker_with_outputs(outputs: list[str], **overrides) -> tuple[ContentRanker, list[str]]:
@@ -472,6 +389,23 @@ class TestRankingCoverage:
         result = await ranker.rank(items)
         assert {r.item.item_id for r in result} == {"a", "b"}
         assert len(seen) == 2  # one score pass + exactly one re-ask
+
+    @pytest.mark.asyncio
+    async def test_a_single_omission_in_a_large_batch_is_still_re_asked(self):
+        # Prod omitted 1 of 40 on five runs; a coverage-ratio gate (0.975 >= 0.9) lost each one.
+        ids = [f"i{n:02d}" for n in range(10)]
+        items = _items([(i, SourceType.RSS) for i in ids])
+        ranker, seen = _ranker_with_outputs(
+            [_rankings(dict.fromkeys(ids[:-1], 0.7)), _rankings({ids[-1]: 0.9})],
+            top_n=20,
+            min_score=0.6,
+            source_slots={},
+            max_per_origin=20,
+        )
+        result = await ranker.rank(items)
+        assert ids[-1] in {r.item.item_id for r in result}
+        assert len(seen) == 2
+        assert f"ID: {ids[-1]}" in seen[1] and f"ID: {ids[0]}" not in seen[1]
 
     @pytest.mark.asyncio
     async def test_failed_reask_keeps_the_partially_scored_batch(self):
@@ -525,40 +459,6 @@ class TestRankingPromptOrigin:
         assert "Origin:" not in ranker._format_items([item])
 
 
-class TestCoreVsBackfill:
-    """The source-slot guarantees must hold for the top_n the READER gets. Applied to the padded
-    candidate list (top_n + buffer) instead, a source's guaranteed slot could be satisfied by an
-    item the editor never used, so the published digest carried no such guarantee."""
-
-    @pytest.mark.asyncio
-    async def test_slots_are_enforced_on_the_core_not_the_padded_list(self):
-        # 4 strong web items and one weaker youtube item, core of 3: youtube's guaranteed slot must
-        # come out of the CORE, so the reader's three stories are not all web.
-        items = _items(
-            [("w1", SourceType.WEB), ("w2", SourceType.WEB), ("w3", SourceType.WEB), ("y1", SourceType.YOUTUBE)]
-        )
-        ranker = _ranker(
-            _rankings({"w1": 0.95, "w2": 0.93, "w3": 0.91, "y1": 0.7}),
-            min_score=0.6,
-            source_slots={"web": 2, "youtube": 1},
-            max_per_origin=3,
-        )
-        selected = await ranker.rank(items, select_count=4, core_count=3)
-        core = [r for r in selected if not r.backfill]
-        extras = [r for r in selected if r.backfill]
-        assert len(core) == 3
-        assert "y1" in {r.item.item_id for r in core}
-        # The buffer is still handed over in full — it is backfill, not a discard.
-        assert [r.item.item_id for r in extras] == ["w3"]
-
-    @pytest.mark.asyncio
-    async def test_without_a_core_count_every_selected_item_is_core(self):
-        items = _items([("w1", SourceType.WEB), ("w2", SourceType.WEB)])
-        ranker = _ranker(_rankings({"w1": 0.9, "w2": 0.8}), min_score=0.6, source_slots={"web": 2})
-        selected = await ranker.rank(items, select_count=2)
-        assert selected and not any(r.backfill for r in selected)
-
-
 class TestRankingHealthVerdict:
     """A batch that fails every retry silently deletes ~40 candidates from the day, and the digest
     that follows looks entirely normal — so the verdict has to travel out of rank()."""
@@ -567,13 +467,10 @@ class TestRankingHealthVerdict:
     async def test_a_permanently_failed_batch_is_recorded_and_logged_as_an_error(self):
         items = _items([("a", SourceType.WEB), ("b", SourceType.WEB), ("c", SourceType.WEB)])
         ranker = _ranker(_rankings({"a": 0.9}), min_score=0.6, ranking_batch_size=1, ranking_max_retries=1)
-        calls = {"n": 0}
-
         original = ranker._score_batch
 
         async def flaky(batch, semaphore):
-            calls["n"] += 1
-            if calls["n"] > 1:
+            if batch[0].item_id != "a":
                 raise RuntimeError("throttled")
             return await original(batch, semaphore)
 

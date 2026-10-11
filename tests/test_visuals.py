@@ -12,65 +12,23 @@ from shared.models import VisualBrief
 
 
 class TestVisualBriefValidation:
-    # The brief is now returned via Bedrock structured output (with_structured_output),
+    # The brief is returned via Bedrock structured output (with_structured_output),
     # so schema enforcement lives in the VisualBrief model rather than a hand JSON parser.
     def test_rejects_empty_field(self):
         with pytest.raises(ValidationError):
-            VisualBrief(title="", caption="c", prompt="p")
+            VisualBrief(title="", prompt="p", orientation="portrait")
 
-    def test_rejects_overlong_prompt(self):
+    def test_a_long_four_panel_brief_is_accepted(self):
+        # A 2026-10-11 four-panel brief ran past the old 4000-char cap (dall-e-3's) and the day
+        # published text-only. The bound is the Images API limit for the GPT image models.
+        assert VisualBrief(title="t", prompt="x" * 5000, orientation="portrait")
         with pytest.raises(ValidationError):
-            VisualBrief(title="t", caption="c", prompt="x" * 5000)
+            VisualBrief(title="t", prompt="x" * 32001, orientation="portrait")
 
-    def test_strips_leaked_markup_from_human_facing_fields(self):
-        # Regression (2026-08-17): the structured-output slip trailed the model's own scaffolding
-        # into the caption, and `</caption>\n<parameter name="orientation">landscape` was published
-        # verbatim on Threads. Tag-like markup must never survive into title/caption.
-        brief = VisualBrief(
-            title="제목<br>",
-            caption='본문 끝.</caption>\n<parameter name="orientation">landscape',
-            prompt="draw",
-        )
-        assert brief.title == "제목"
-        # The bled value itself must go too. It used to survive because the bleed check compared
-        # against the PARSED orientation (defaulted to 'portrait' here) rather than the field's
-        # allowed values, so '본문 끝.\nlandscape' was published verbatim.
-        assert brief.caption == "본문 끝."
-
-    def test_strips_a_trailing_bled_orientation_value(self):
-        # Observed on a 2026-08-18 local end-to-end run: the caption ended with a bare "\nportrait",
-        # the tag-less form of the same structured-output slip that produced 08-17's
-        # `</caption><parameter name="orientation">landscape`. The markup strip cannot see it.
-        brief = VisualBrief(title="제목", caption="본문 끝이다.\nportrait", prompt="draw", orientation="portrait")
-        assert brief.caption == "본문 끝이다."
-
-    def test_drops_a_bled_value_that_is_not_the_chosen_orientation(self):
-        # The 08-17 shape: the bleed names a DIFFERENT orientation than the parsed field. Candidates
-        # come from the Literal itself (typing.get_args), so no hand-written word list can drift.
-        brief = VisualBrief(title="제목", caption="본문 끝이다.\nsquare", prompt="draw", orientation="portrait")
-        assert brief.caption == "본문 끝이다."
-
-    def test_warns_only_when_a_value_was_actually_dropped(self):
-        with patch("shared.models.logger") as log:
-            VisualBrief(title="제목", caption="본문 끝이다.", prompt="draw", orientation="portrait")
-        log.warning.assert_not_called()
-        with patch("shared.models.logger") as log:
-            VisualBrief(title="제목", caption="본문 끝이다.\nlandscape", prompt="draw", orientation="portrait")
-        assert log.warning.called
-
-    def test_keeps_the_word_when_it_is_part_of_the_prose(self):
-        # Only a standalone FINAL line counts — prose that merely contains the word is untouched.
-        brief = VisualBrief(
-            title="portrait 모드 비교", caption="세로형 portrait 구도가 더 낫다.", prompt="draw", orientation="portrait"
-        )
-        assert brief.title == "portrait 모드 비교"
-        assert brief.caption == "세로형 portrait 구도가 더 낫다."
-
-    def test_keeps_prose_that_merely_contains_an_angle_bracket(self):
-        # The strip must not eat comparisons/inequalities in ordinary prose.
-        brief = VisualBrief(title="지연 <2ms", caption="a < b 인 경우", prompt="draw")
-        assert brief.title == "지연 <2ms"
-        assert brief.caption == "a < b 인 경우"
+    def test_orientation_is_required(self):
+        # A default let a brief that omitted the field silently become portrait.
+        with pytest.raises(ValidationError):
+            VisualBrief(title="t", prompt="p")
 
 
 def _visual_kwargs(**overrides) -> dict:
@@ -82,12 +40,9 @@ def _visual_kwargs(**overrides) -> dict:
         "image_model": cfg.image_model,
         "image_sizes": cfg.image_sizes,
         "source_max_tokens": cfg.visual_synopsis_source_max_tokens,
-        "context_max_tokens": cfg.visual_synopsis_context_max_tokens,
-        "caption_language": cfg.visual_caption_language,
         "on_image_language": cfg.visual_on_image_language,
         "moderation_softening_instruction": cfg.visual_moderation_softening_instruction,
         "style_guidance": cfg.visual_synopsis_style_guidance,
-        "humor_guidance": cfg.visual_synopsis_humor_guidance,
         "style_aesthetic": cfg.visual_synopsis_style_aesthetic,
         "image_timeout_sec": cfg.visual_image_timeout_sec,
         "image_max_retries": cfg.visual_image_max_retries,
@@ -109,11 +64,11 @@ class TestBrief:
         # with_structured_output yields a validated VisualBrief; brief() returns it as-is,
         # with no text-JSON parsing in between.
         factory = MagicMock()
-        out = VisualBrief(title="T", caption="C", prompt="draw X", orientation="landscape")
+        out = VisualBrief(title="T", prompt="draw X", orientation="landscape")
         factory.get_model.return_value.with_structured_output.return_value = RunnableLambda(lambda _: out)
         factory.truncate_to_tokens.side_effect = lambda text, _: text
         gen = VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET, **_visual_kwargs())
-        brief = await gen.brief("a 1-page slide", "source text", "context")
+        brief = await gen.brief("a 1-page slide", "source text")
         assert brief == out
 
     @pytest.mark.asyncio
@@ -125,7 +80,7 @@ class TestBrief:
         factory.truncate_to_tokens.side_effect = lambda text, _: text
         gen = VisualGenerator(factory, LanguageModelId.CLAUDE_V5_5_SONNET, **_visual_kwargs())
         with pytest.raises(ValueError, match="no VisualBrief tool call"):
-            await gen.brief("a 1-page slide", "source text", "context")
+            await gen.brief("a 1-page slide", "source text")
 
 
 class TestVisualGenerator:
@@ -133,9 +88,9 @@ class TestVisualGenerator:
     async def test_generate_pipeline(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "key")
         gen = _generator()
-        brief = VisualBrief(title="테스트", caption="요약", prompt="a one-page slide explaining X")
+        brief = VisualBrief(title="테스트", prompt="a one-page slide explaining X", orientation="portrait")
 
-        async def fake_brief(instruction, source, context=""):
+        async def fake_brief(instruction, source):
             return brief
 
         fake_img = base64.b64encode(b"PNGDATA").decode()
@@ -146,7 +101,7 @@ class TestVisualGenerator:
 
         with patch.object(gen, "brief", side_effect=fake_brief):
             with patch("openai.OpenAI", return_value=fake_client):
-                image_bytes, out_brief = await gen.generate("a 1-page slide", "source text", "context")
+                image_bytes, out_brief = await gen.generate("a 1-page slide", "source text")
 
         assert image_bytes == b"PNGDATA"
         assert out_brief.title == "테스트"
@@ -159,7 +114,7 @@ class TestVisualGenerator:
         # differ ~4x. The default must stay omitted (no silent cost/quality change), and a configured
         # value must actually reach the API so the bill becomes deterministic.
         monkeypatch.setenv("OPENAI_API_KEY", "key")
-        brief = VisualBrief(title="T", caption="C", prompt="draw", orientation="landscape")
+        brief = VisualBrief(title="T", prompt="draw", orientation="landscape")
         resp = MagicMock()
         resp.data = [MagicMock(b64_json=base64.b64encode(b"P").decode())]
         resp.usage = MagicMock(input_tokens=11, output_tokens=2222, total_tokens=2233)
@@ -178,7 +133,7 @@ class TestVisualGenerator:
         # call rather than captured output: the project logger sets propagate=False and binds its
         # StreamHandler to the real stderr at import, so neither caplog nor capsys/capfd see it.
         monkeypatch.setenv("OPENAI_API_KEY", "key")
-        brief = VisualBrief(title="T", caption="C", prompt="draw", orientation="landscape")
+        brief = VisualBrief(title="T", prompt="draw", orientation="landscape")
         resp = MagicMock()
         resp.data = [MagicMock(b64_json=base64.b64encode(b"P").decode())]
         resp.usage = MagicMock(input_tokens=11, output_tokens=2222, total_tokens=2233)
@@ -189,7 +144,7 @@ class TestVisualGenerator:
         with patch("agent.visuals.logger") as log:
             with patch("openai.OpenAI", return_value=client):
                 _generator(image_quality="").render(brief)
-        rendered = [c.args[0] % c.args[1:] for c in log.info.call_args_list if "Rendered" in str(c.args[0])]
+        rendered = [m for c in log.info.call_args_list if "Rendered" in (m := c.args[0] % c.args[1:])]
         assert rendered, "no render log line"
         assert "output=2222" in rendered[0]
         # Requested -> resolved. With the tier left EMPTY we send no `quality` and OpenAI picks one
@@ -201,7 +156,7 @@ class TestVisualGenerator:
         # Older/other SDK builds return no `quality`; the render must still succeed and the log must
         # say so plainly rather than printing a mock repr as if it were a tier.
         monkeypatch.setenv("OPENAI_API_KEY", "key")
-        brief = VisualBrief(title="T", caption="C", prompt="draw", orientation="landscape")
+        brief = VisualBrief(title="T", prompt="draw", orientation="landscape")
         resp = MagicMock(spec=["data", "usage"])
         resp.data = [MagicMock(b64_json=base64.b64encode(b"P").decode())]
         resp.usage = MagicMock(input_tokens=1, output_tokens=2, total_tokens=3)
@@ -211,7 +166,7 @@ class TestVisualGenerator:
         with patch("agent.visuals.logger") as log:
             with patch("openai.OpenAI", return_value=client):
                 assert _generator(image_quality="").render(brief) == b"P"
-        rendered = [c.args[0] % c.args[1:] for c in log.info.call_args_list if "Rendered" in str(c.args[0])]
+        rendered = [m for c in log.info.call_args_list if "Rendered" in (m := c.args[0] % c.args[1:])]
         assert "quality=auto->unreported" in rendered[0]
 
     def test_a_pinned_tier_is_sent_and_logged(self, monkeypatch):
@@ -219,7 +174,7 @@ class TestVisualGenerator:
         # nothing could say which of the ~4x-apart prices was bought — or how legible the on-image
         # labels would be.
         monkeypatch.setenv("OPENAI_API_KEY", "key")
-        brief = VisualBrief(title="T", caption="C", prompt="draw", orientation="landscape")
+        brief = VisualBrief(title="T", prompt="draw", orientation="landscape")
         resp = MagicMock(spec=["data", "usage"])
         resp.data = [MagicMock(b64_json=base64.b64encode(b"P").decode())]
         resp.usage = MagicMock(input_tokens=1, output_tokens=2, total_tokens=3)
@@ -230,7 +185,7 @@ class TestVisualGenerator:
             with patch("openai.OpenAI", return_value=client):
                 assert _generator(image_quality="high").render(brief) == b"P"
         assert client.images.generate.call_args.kwargs["quality"] == "high"
-        rendered = [c.args[0] % c.args[1:] for c in log.info.call_args_list if "Rendered" in str(c.args[0])]
+        rendered = [m for c in log.info.call_args_list if "Rendered" in (m := c.args[0] % c.args[1:])]
         assert "quality=high->" in rendered[0]
 
     def test_usage_summary_tolerates_a_missing_or_reshaped_usage(self):
@@ -243,7 +198,7 @@ class TestVisualGenerator:
     def test_missing_usage_does_not_break_a_render(self, monkeypatch):
         # A usage-shape change in the SDK must never cost the day's image.
         monkeypatch.setenv("OPENAI_API_KEY", "key")
-        brief = VisualBrief(title="T", caption="C", prompt="draw")
+        brief = VisualBrief(title="T", prompt="draw", orientation="portrait")
         resp = MagicMock(spec=["data"])
         resp.data = [MagicMock(b64_json=base64.b64encode(b"P").decode())]
         client = MagicMock()
@@ -256,12 +211,12 @@ class TestVisualGenerator:
         monkeypatch.setenv("OPENAI_API_KEY", "key")
         gen = _generator()
         briefs = [
-            VisualBrief(title="t1", caption="c1", prompt="edgy prompt"),
-            VisualBrief(title="t2", caption="c2", prompt="softened prompt"),
+            VisualBrief(title="t1", prompt="edgy prompt", orientation="portrait"),
+            VisualBrief(title="t2", prompt="softened prompt", orientation="portrait"),
         ]
         instructions: list[str] = []
 
-        async def fake_brief(instruction, source, context=""):
+        async def fake_brief(instruction, source):
             instructions.append(instruction)
             return briefs[len(instructions) - 1]
 
@@ -277,7 +232,7 @@ class TestVisualGenerator:
 
         with patch.object(gen, "brief", side_effect=fake_brief):
             with patch("openai.OpenAI", return_value=client):
-                image_bytes, out_brief = await gen.generate("draw it", "src", "")
+                image_bytes, out_brief = await gen.generate("draw it", "src")
 
         assert image_bytes == b"OK"
         assert out_brief.title == "t2"  # the softened-retry brief was used
@@ -289,27 +244,27 @@ class TestVisualGenerator:
         monkeypatch.setenv("OPENAI_API_KEY", "key")
         gen = _generator()
 
-        async def fake_brief(instruction, source, context=""):
-            return VisualBrief(title="t", caption="c", prompt="p")
+        async def fake_brief(instruction, source):
+            return VisualBrief(title="t", prompt="p", orientation="portrait")
 
         client = MagicMock()
         client.images.generate.side_effect = RuntimeError("network down")
         with patch.object(gen, "brief", side_effect=fake_brief):
             with patch("openai.OpenAI", return_value=client):
                 with pytest.raises(RuntimeError, match="network down"):
-                    await gen.generate("draw", "src", "")
+                    await gen.generate("draw", "src")
 
     def test_render_requires_api_key(self):
         gen = _generator()
         with patch("agent.visuals.resolve_secret", return_value=""):
             with pytest.raises(RuntimeError):
-                gen.render(VisualBrief(title="t", caption="c", prompt="anything"))
+                gen.render(VisualBrief(title="t", prompt="anything", orientation="portrait"))
 
     def test_render_requires_prompt(self):
         gen = _generator()
         with patch("agent.visuals.resolve_secret", return_value="key"):
             with pytest.raises(ValueError):
-                gen.render(VisualBrief(title="t", caption="c", prompt="x").model_copy(update={"prompt": ""}))
+                gen.render(VisualBrief(title="t", prompt="x", orientation="portrait").model_copy(update={"prompt": ""}))
 
     def test_render_raises_on_empty_image_data(self):
         gen = _generator()
@@ -320,7 +275,7 @@ class TestVisualGenerator:
             client.images.generate.return_value = resp
             with patch("openai.OpenAI", return_value=client):
                 with pytest.raises(RuntimeError):
-                    gen.render(VisualBrief(title="t", caption="c", prompt="draw"))
+                    gen.render(VisualBrief(title="t", prompt="draw", orientation="portrait"))
 
     def test_is_moderation_error_string_fallback(self):
         assert VisualGenerator._is_moderation_error(Exception("... moderation_blocked ..."))
@@ -350,7 +305,7 @@ class TestVisualGenerator:
         client.images.generate.return_value = resp
         with patch("agent.visuals.resolve_secret", return_value="key"):
             with patch("openai.OpenAI", return_value=client) as openai_cls:
-                gen.render(VisualBrief(title="t", caption="c", prompt="draw", orientation="landscape"))
+                gen.render(VisualBrief(title="t", prompt="draw", orientation="landscape"))
         kwargs = client.images.generate.call_args.kwargs
         assert kwargs["model"] == "custom-model"
         assert kwargs["size"] == "1536x1024"  # orientation -> mapped size
@@ -366,7 +321,7 @@ class TestVisualGenerator:
         # configured size and rewrite the brief to match, so the format history learned a shape that
         # was never asked for.
         gen = _generator(image_sizes={"square": "1024x1024"})
-        brief = VisualBrief(title="t", caption="c", prompt="p", orientation="portrait")
+        brief = VisualBrief(title="t", prompt="p", orientation="portrait")
         with pytest.raises(RuntimeError, match="No image size configured"):
             gen._resolve_size(brief)
 
@@ -374,7 +329,7 @@ class TestVisualGenerator:
         gen = _generator(image_sizes={})
         with patch("agent.visuals.resolve_secret", return_value="key"):
             with pytest.raises(RuntimeError, match="No image size configured"):
-                gen.render(VisualBrief(title="t", caption="c", prompt="draw"))
+                gen.render(VisualBrief(title="t", prompt="draw", orientation="portrait"))
 
     def test_generator_requires_every_visual_knob(self):
         # No duplicated defaults: a caller that forgets a knob fails loudly instead of silently
@@ -382,3 +337,116 @@ class TestVisualGenerator:
         factory = MagicMock()
         with pytest.raises(TypeError):
             VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET, image_model="gpt-image-2")
+
+
+def _image_response(data: bytes = b"IMG") -> MagicMock:
+    resp = MagicMock()
+    resp.data = [MagicMock(b64_json=base64.b64encode(data).decode())]
+    return resp
+
+
+class TestReferenceRender:
+    def test_a_reference_sheet_turns_the_render_into_an_edit_with_the_note(self):
+        from agent.visuals import REFERENCE_NOTE
+
+        gen = _generator(image_quality="xhigh")
+        client = MagicMock()
+        client.images.edit.return_value = _image_response(b"COMIC")
+        brief = VisualBrief(title="t", prompt="draw the strip", orientation="tall")
+        with patch.object(gen, "_images_client", return_value=client):
+            assert gen.render(brief, [b"SHEET"]) == b"COMIC"
+        kwargs = client.images.edit.call_args.kwargs
+        assert kwargs["prompt"] == REFERENCE_NOTE + "draw the strip"
+        assert kwargs["image"][0][1] == b"SHEET"
+        assert kwargs["size"] == PipelineConfig().image_sizes["tall"]
+        client.images.generate.assert_not_called()
+
+    def test_without_a_reference_it_is_a_plain_generate(self):
+        gen = _generator()
+        client = MagicMock()
+        client.images.generate.return_value = _image_response()
+        with patch.object(gen, "_images_client", return_value=client):
+            gen.render(VisualBrief(title="t", prompt="p", orientation="square"))
+        client.images.edit.assert_not_called()
+
+
+class TestReviewCopy:
+    def test_the_review_sees_a_full_resolution_jpeg_under_the_bedrock_image_cap(self):
+        import io
+        import os
+
+        from PIL import Image
+
+        from agent.visuals import _review_copy
+
+        buffer = io.BytesIO()
+        Image.frombytes("RGB", (848, 2544), os.urandom(848 * 2544 * 3)).save(buffer, format="PNG")
+        png = buffer.getvalue()
+        assert len(png) > 3_750_000
+        copy = _review_copy(png)
+        assert copy[:2] == b"\xff\xd8"
+        assert len(copy) < 3_750_000
+        with Image.open(io.BytesIO(copy)) as img:
+            assert img.size == (848, 2544)
+
+
+class TestReviewedRender:
+    BRIEF = VisualBrief(title="t", prompt="p", orientation="tall")
+
+    @pytest.fixture(autouse=True)
+    def _raw_review_copy(self):
+        with patch("agent.visuals._review_copy", side_effect=lambda image: image):
+            yield
+
+    @staticmethod
+    def _gen(reviews: list) -> VisualGenerator:
+        from unittest.mock import AsyncMock
+
+        from shared.models import VisualReview
+
+        gen = _generator()
+        gen.reviewer = MagicMock()
+        gen.reviewer.ainvoke = AsyncMock(side_effect=[VisualReview(issues=r) for r in reviews])
+        return gen
+
+    @pytest.mark.asyncio
+    async def test_a_clean_render_is_kept_without_an_edit(self):
+        gen = self._gen([[]])
+        with patch.object(gen, "fix") as fix:
+            assert await gen._reviewed(b"ORIG", self.BRIEF, None) == b"ORIG"
+        fix.assert_not_called()
+        image_block = gen.reviewer.ainvoke.call_args.args[0][1].content[0]
+        assert image_block["mime_type"] == "image/jpeg"
+
+    @pytest.mark.asyncio
+    async def test_the_correction_is_kept_when_it_leaves_fewer_defects(self):
+        gen = self._gen([["Panel 2: a sign floats"], []])
+        with patch.object(gen, "fix", return_value=b"FIXED") as fix:
+            assert await gen._reviewed(b"ORIG", self.BRIEF, None) == b"FIXED"
+        assert fix.call_args.args[2] == ["Panel 2: a sign floats"]
+
+    @pytest.mark.asyncio
+    async def test_the_original_is_kept_when_the_correction_is_no_better(self):
+        gen = self._gen([["Panel 1: x"], ["Panel 3: y"]])
+        with patch.object(gen, "fix", return_value=b"FIXED"):
+            assert await gen._reviewed(b"ORIG", self.BRIEF, None) == b"ORIG"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_review_never_costs_the_visual(self):
+        from unittest.mock import AsyncMock
+
+        gen = _generator()
+        gen.reviewer = MagicMock()
+        gen.reviewer.ainvoke = AsyncMock(side_effect=RuntimeError("bedrock down"))
+        with patch.object(gen, "fix") as fix:
+            assert await gen._reviewed(b"ORIG", self.BRIEF, None) == b"ORIG"
+        fix.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_correction_when_the_deadline_cannot_fit_another_render(self):
+        import time
+
+        gen = self._gen([["Panel 1: x"]])
+        with patch.object(gen, "fix") as fix:
+            assert await gen._reviewed(b"ORIG", self.BRIEF, time.monotonic() + 1) == b"ORIG"
+        fix.assert_not_called()

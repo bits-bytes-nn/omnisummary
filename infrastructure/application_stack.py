@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack, Tags
-from aws_cdk import aws_apigateway as apigw
 from aws_cdk import aws_cloudwatch as cloudwatch
 from aws_cdk import aws_cloudwatch_actions as cw_actions
 from aws_cdk import aws_ec2 as ec2
@@ -14,23 +11,16 @@ from aws_cdk import aws_lambda_destinations as destinations
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_sqs as sqs
 from aws_cdk import aws_ssm as ssm
-from aws_cdk import aws_wafv2 as wafv2
-from aws_cdk.aws_bedrockagentcore import CfnRuntime
 from constructs import Construct
 
 from shared import Config
-from shared.constants import METRIC_NAMESPACE, RSSHUB_PORT, SSM_PLACEHOLDER, SSM_SECRET_ENV_VARS
+from shared.constants import DIGEST_ITEMS_METRIC, METRIC_NAMESPACE, RSSHUB_PORT, SSM_PLACEHOLDER, SSM_SECRET_ENV_VARS
 from shared.metrics import metric_dimensions
 
 from .foundation_stack import OmniSummaryFoundationStack
 
 
 class OmniSummaryApplicationStack(Stack):
-    # Service-discovery DNS name for the Fargate RSSHub service injected into the digest
-    # Lambda. Overridable at synth via the `rsshub_base_url` CDK context value so
-    # dev/staging/prod can target different endpoints without editing this stack.
-    DEFAULT_RSSHUB_BASE_URL = f"http://rsshub.omnisummary.local:{RSSHUB_PORT}"
-
     def __init__(
         self,
         scope: Construct,
@@ -38,7 +28,6 @@ class OmniSummaryApplicationStack(Stack):
         *,
         config: Config,
         foundation: OmniSummaryFoundationStack,
-        agentcore_image_ref: str = "",
         digest_image_ref: str = "",
         **kwargs,
     ) -> None:
@@ -47,18 +36,16 @@ class OmniSummaryApplicationStack(Stack):
         project_name = config.aws.project_name
         stage = config.aws.stage
         bedrock_region = config.aws.bedrock_region
-        rsshub_base_url = self.node.try_get_context("rsshub_base_url") or self.DEFAULT_RSSHUB_BASE_URL
+        state_prefix = f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state"
 
         Tags.of(self).add("Project", project_name)
         Tags.of(self).add("Stage", stage)
 
-        project_root = Path(__file__).parent.parent
-
         # The parameter PATHS are stack-managed (so the scoped ssm:GetParameter* policy and the
         # names stay in one place) but the VALUES never are. CloudFormation cannot create
         # SecureString parameters, so this stack used to pass the real tokens in as `string_value`
-        # — which wrote the live Slack bot token, Tavily/OpenAI/YouTube keys and the Threads access
-        # token in PLAINTEXT into the template, and therefore into cdk.out/*.template.json, the CDK
+        # — which wrote the live Tavily/OpenAI/YouTube keys and the Threads access token in
+        # PLAINTEXT into the template, and therefore into cdk.out/*.template.json, the CDK
         # staging bucket and every cloudformation:GetTemplate response.
         #
         # Each parameter is created holding SSM_PLACEHOLDER instead, and `scripts/put_secrets.py`
@@ -80,33 +67,6 @@ class OmniSummaryApplicationStack(Stack):
                 parameter_name=f"/{project_name}/{stage}/{name}",
                 string_value=SSM_PLACEHOLDER,
             )
-
-        image_ref = (agentcore_image_ref or "arm64").lstrip("@")
-        if image_ref.startswith("sha256:"):
-            container_uri = f"{foundation.ecr_repo.repository_uri}@{image_ref}"
-        else:
-            container_uri = f"{foundation.ecr_repo.repository_uri}:{image_ref}"
-
-        agentcore_runtime = CfnRuntime(
-            self,
-            "AgentCoreRuntime",
-            agent_runtime_name=f"{project_name}_{stage}_followup",
-            agent_runtime_artifact={"containerConfiguration": {"containerUri": container_uri}},
-            network_configuration={"networkMode": "PUBLIC"},
-            protocol_configuration="HTTP",
-            role_arn=foundation.agentcore_role.role_arn,
-            environment_variables={
-                "AWS_BEDROCK_REGION": bedrock_region,
-                "PROJECT_NAME": project_name,
-                "STAGE": stage,
-                "MEMORY_ID": foundation.memory_id,
-                # recall_trends reads trends.json from the same S3 location the digest
-                # pipeline writes; without these the agent falls back to a local store
-                # that has no trends in the container and recall silently returns nothing.
-                "STATE_BUCKET": foundation.state_bucket.bucket_name,
-                "S3_PREFIX": f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state",
-            },
-        )
 
         # Pin to the pushed image digest when provided (DIGEST_IMAGE_REF). A bare
         # ":latest" tag string never changes in the template, so CloudFormation would
@@ -132,14 +92,15 @@ class OmniSummaryApplicationStack(Stack):
                 tag_or_digest=digest_tag_or_digest,
                 cmd=["lambda_handlers.visual_handler.handler"],
             ),
-            # gpt-image render (~4 min) + Threads root post + reply-indexing retries (an IMAGE
+            # gpt-image render, review and one correction + Threads root post + reply-indexing retries (an IMAGE
             # root isn't addressable as a reply target for several MINUTES) can exceed 10 min; 15
             # (the Lambda max) gives the flat reply chain room to finish so comments aren't cut off.
             timeout=Duration.minutes(15),
             memory_size=512,
             role=foundation.lambda_role,
-            vpc=foundation.vpc,
-            vpc_subnets=foundation.vpc_subnets,
+            # Outside the VPC: everything it calls (Bedrock, S3, AgentCore Memory, SNS, OpenAI, Threads)
+            # is a public endpoint, so the VPC only added an ENI and a NAT dependency to the digest's
+            # only Threads delivery path. The digest Lambda stays inside for the RSSHub service.
             # No auto-retry: the ThreadsPostLedger idempotency marker already blocks a re-post,
             # and retry_attempts=0 avoids re-running the costly gpt-image render on failure.
             # Failures go to the DLQ for manual replay instead.
@@ -155,11 +116,11 @@ class OmniSummaryApplicationStack(Stack):
                 # is what knows whether the post actually landed. It notifies on a partial reply
                 # chain / failed delivery; without this the notice is a silent no-op.
                 "ALERT_SNS_TOPIC_ARN": foundation.alerts_topic.topic_arn,
-                # The visual maker reads/writes visual_formats.json (format-variation history)
-                # via the StateStore; without these it falls through to the config-profile
-                # branch and crashes on the 'research' profile, which doesn't exist in Lambda.
+                # The visual maker keeps the Threads post ledger and hosts the image in the state
+                # bucket; without these it falls through to the config-profile branch and crashes on
+                # the 'research' profile, which doesn't exist in Lambda.
                 "STATE_BUCKET": foundation.state_bucket.bucket_name,
-                "S3_PREFIX": f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state",
+                "S3_PREFIX": state_prefix,
             },
         )
 
@@ -184,8 +145,8 @@ class OmniSummaryApplicationStack(Stack):
             log_group=self._log_group("DigestPipelineLambdaLogGroup", f"{project_name}-{stage}-digest"),
             environment={
                 "STATE_BUCKET": foundation.state_bucket.bucket_name,
-                "S3_PREFIX": f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state",
-                "RSSHUB_BASE_URL": rsshub_base_url,
+                "S3_PREFIX": state_prefix,
+                "RSSHUB_BASE_URL": foundation.rsshub_base_url,
                 "AWS_BEDROCK_REGION": bedrock_region,
                 "PROJECT_NAME": project_name,
                 "STAGE": stage,
@@ -214,47 +175,6 @@ class OmniSummaryApplicationStack(Stack):
             to_port=RSSHUB_PORT,
             description="Digest Lambda to RSSHub",
         )
-
-        slack_lambda = lambda_.Function(
-            self,
-            "SlackEventLambda",
-            function_name=f"{project_name}-{stage}-slack-events",
-            runtime=lambda_.Runtime.PYTHON_3_12,
-            handler="slack_event_handler.handler",
-            code=lambda_.Code.from_asset(str(project_root / "lambda_handlers")),
-            timeout=Duration.seconds(60),
-            memory_size=128,
-            role=foundation.slack_role,
-            log_group=self._log_group("SlackEventLambdaLogGroup", f"{project_name}-{stage}-slack-events"),
-            # The handler fires the (minutes-long) AgentCore runtime without awaiting its result,
-            # so a self-invoke that errored should NOT auto-retry — a retry re-runs the whole deep
-            # research, double-posting to Slack/Threads. retry_attempts=0 + DLQ matches the digest/
-            # visual Lambdas; failures land in the DLQ for inspection instead of silent re-runs.
-            retry_attempts=0,
-            on_failure=destinations.SqsDestination(async_dlq),
-            environment={
-                "AGENTCORE_RUNTIME_ARN": agentcore_runtime.attr_agent_runtime_arn,
-                "DDB_TABLE_NAME": foundation.dedup_table.table_name,
-                "PROJECT_NAME": project_name,
-                "STAGE": stage,
-            },
-        )
-
-        api = apigw.RestApi(
-            self,
-            "SlackApi",
-            rest_api_name=f"{project_name}-{stage}-slack",
-            deploy_options=apigw.StageOptions(
-                stage_name=stage,
-                throttling_rate_limit=config.aws.api_throttle_rate_limit,
-                throttling_burst_limit=config.aws.api_throttle_burst_limit,
-                metrics_enabled=True,
-            ),
-        )
-        slack_resource = api.root.add_resource("slack").add_resource("events")
-        slack_resource.add_method("POST", apigw.LambdaIntegration(slack_lambda))
-
-        self._attach_waf(api, project_name, stage, config.aws.waf_rate_limit)
 
         events.Rule(
             self,
@@ -298,29 +218,24 @@ class OmniSummaryApplicationStack(Stack):
         )
 
         # Alarm on ALL Lambdas (incl. visual + threads-refresh, which run best-effort and would
-        # otherwise fail silently) and the API. Created here so every Lambda already exists.
+        # otherwise fail silently). Created here so every Lambda already exists.
         self._add_alarms(
             {
                 "Digest": digest_lambda,
-                "SlackEvent": slack_lambda,
                 "Visual": visual_lambda,
                 "ThreadsRefresh": threads_refresh_lambda,
             },
-            api,
             foundation,
             async_dlq,
             project_name=project_name,
             stage=stage,
         )
 
-        CfnOutput(self, "SlackWebhookUrl", value=f"{api.url}slack/events")
-        CfnOutput(self, "AgentCoreArn", value=agentcore_runtime.attr_agent_runtime_arn)
         CfnOutput(self, "StateBucket", value=foundation.state_bucket.bucket_name)
 
     def _add_alarms(
         self,
         lambdas: dict[str, lambda_.Function],
-        api: apigw.RestApi,
         foundation: OmniSummaryFoundationStack,
         async_dlq: sqs.Queue,
         *,
@@ -356,16 +271,6 @@ class OmniSummaryApplicationStack(Stack):
                 )
                 duration.add_alarm_action(alarm_action)
 
-        api_5xx = api.metric_server_error(period=Duration.minutes(5))
-        api_alarm = api_5xx.create_alarm(
-            self,
-            "ApiServerErrorAlarm",
-            threshold=1,
-            evaluation_periods=1,
-            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
-        )
-        api_alarm.add_alarm_action(alarm_action)
-
         # Symptomless failure: the digest ran with no error/timeout but published an empty digest,
         # OR didn't run at all that day. The EMF metric appears once per daily run; a 24h window with
         # missing-data=BREACHING catches both a 0 count and a skipped run. NOTE: CloudWatch caps an
@@ -374,7 +279,7 @@ class OmniSummaryApplicationStack(Stack):
         # case without needing extra slack.
         empty_digest = cloudwatch.Metric(
             namespace=METRIC_NAMESPACE,
-            metric_name="DigestItemsPublished",
+            metric_name=DIGEST_ITEMS_METRIC,
             dimensions_map=emf_dimensions,
             period=Duration.hours(24),
             statistic="Maximum",
@@ -400,24 +305,6 @@ class OmniSummaryApplicationStack(Stack):
         )
         dlq_alarm.add_alarm_action(alarm_action)
 
-        # The AgentCore runtime (CfnRuntime, not a Lambda) catches its own exceptions and replies
-        # with an error message, so a systemic agent break is otherwise invisible. It emits an
-        # AgentErrors EMF metric on failure; alarm on it.
-        agent_errors = cloudwatch.Metric(
-            namespace=METRIC_NAMESPACE,
-            metric_name="AgentErrors",
-            dimensions_map=emf_dimensions,
-            period=Duration.minutes(5),
-            statistic="Sum",
-        ).create_alarm(
-            self,
-            "AgentErrorsAlarm",
-            threshold=1,
-            evaluation_periods=1,
-            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
-        )
-        agent_errors.add_alarm_action(alarm_action)
-
     def _log_group(self, construct_id: str, function_name: str) -> logs.LogGroup:
         """A function's log group, DECLARED, instead of the deprecated `log_retention=` prop.
 
@@ -428,9 +315,8 @@ class OmniSummaryApplicationStack(Stack):
         shared account, all to set one property CloudWatch exposes on the group itself. Declaring the
         group also brings it inside the template-wide wildcard-resource and retention assertions.
 
-        NOTE for the first deploy after this change: Lambda has already implicitly created
-        `/aws/lambda/<function_name>` for every existing function, and CloudFormation will not adopt
-        an existing log group. Delete the four groups (or import them) before deploying.
+        CloudFormation will not adopt a log group Lambda already created implicitly for an existing
+        function; such a group has to be deleted (or imported) before the deploy that declares it.
         """
         return logs.LogGroup(
             self,
@@ -438,64 +324,4 @@ class OmniSummaryApplicationStack(Stack):
             log_group_name=f"/aws/lambda/{function_name}",
             retention=logs.RetentionDays.ONE_MONTH,
             removal_policy=RemovalPolicy.DESTROY,
-        )
-
-    def _attach_waf(self, api: apigw.RestApi, project_name: str, stage: str, rate_limit: int) -> None:
-        managed_groups = [
-            ("AWSManagedRulesCommonRuleSet", 1),
-            ("AWSManagedRulesKnownBadInputsRuleSet", 2),
-            ("AWSManagedRulesAmazonIpReputationList", 3),
-        ]
-        managed_rules = [
-            wafv2.CfnWebACL.RuleProperty(
-                name=group_name,
-                priority=priority,
-                override_action=wafv2.CfnWebACL.OverrideActionProperty(none={}),
-                statement=wafv2.CfnWebACL.StatementProperty(
-                    managed_rule_group_statement=wafv2.CfnWebACL.ManagedRuleGroupStatementProperty(
-                        vendor_name="AWS",
-                        name=group_name,
-                    )
-                ),
-                visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
-                    sampled_requests_enabled=True,
-                    cloud_watch_metrics_enabled=True,
-                    metric_name=group_name,
-                ),
-            )
-            for group_name, priority in managed_groups
-        ]
-        rate_rule = wafv2.CfnWebACL.RuleProperty(
-            name="RateLimit",
-            priority=0,
-            action=wafv2.CfnWebACL.RuleActionProperty(block={}),
-            statement=wafv2.CfnWebACL.StatementProperty(
-                rate_based_statement=wafv2.CfnWebACL.RateBasedStatementProperty(
-                    limit=rate_limit,
-                    aggregate_key_type="IP",
-                )
-            ),
-            visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
-                sampled_requests_enabled=True,
-                cloud_watch_metrics_enabled=True,
-                metric_name="RateLimit",
-            ),
-        )
-        web_acl = wafv2.CfnWebACL(
-            self,
-            "SlackApiWebAcl",
-            scope="REGIONAL",
-            default_action=wafv2.CfnWebACL.DefaultActionProperty(allow={}),
-            visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
-                sampled_requests_enabled=True,
-                cloud_watch_metrics_enabled=True,
-                metric_name=f"{project_name}-{stage}-waf",
-            ),
-            rules=[rate_rule, *managed_rules],
-        )
-        wafv2.CfnWebACLAssociation(
-            self,
-            "SlackApiWebAclAssociation",
-            resource_arn=api.deployment_stage.stage_arn,
-            web_acl_arn=web_acl.attr_arn,
         )

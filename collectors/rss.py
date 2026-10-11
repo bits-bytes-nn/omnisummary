@@ -14,6 +14,8 @@ from .base import (
 
 
 class RSSCollector(BaseCollector):
+    config: RSSCollectorConfig
+
     def __init__(self, config: RSSCollectorConfig):
         self.config = config
 
@@ -43,8 +45,6 @@ class RSSCollector(BaseCollector):
             total=result.total,
             failed=result.failed,
             empty=result.empty,
-            threshold=self.config.error_rate_threshold,
-            empty_threshold=self.config.empty_rate_threshold,
             what="feeds",
         )
         return result.items

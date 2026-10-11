@@ -15,9 +15,6 @@ from shared.utils import parse_json_from_llm_output
 _INPUTS = {
     RankingPrompt: {
         "items_text": "x",
-        "engagement_guidance": "e",
-        "ranking_categories": "c",
-        "duplicate_score_penalty": 0.1,
         "scoring_rubric": "s",
         "audience": "a",
     },
@@ -35,7 +32,7 @@ _INPUTS = {
     },
     TrendClassifyPrompt: {"existing_trends": "e", "todays_digest": "d"},
     GroundingCheckPrompt: {"digest_text": "d", "sources": "s"},
-    VisualEditorPrompt: {"audience": "a", "format_guidance": "f", "items_text": "x", "on_image_language": "ko"},
+    VisualEditorPrompt: {"audience": "a", "items_text": "x", "on_image_language": "ko"},
 }
 
 
@@ -64,12 +61,6 @@ class TestDigestLeadSpec:
     """The lead IS the Threads root — the one line most feed readers ever see. 40 consecutive roots
     opened with the same fixed countdown sentence, and the top-viewed posts were the ones naming a
     concrete event, so the lead's first sentence must name the day's story."""
-
-    def test_lead_must_name_the_story_concretely(self):
-        rendered = _render(DigestPrompt)
-        assert "name that story in ONE assertive sentence" in rendered
-        # The generic "situate the reader in today's AI/ML landscape" opener is gone.
-        assert "situates the reader" not in rendered
 
     def test_items_are_still_requested_before_the_lead(self):
         # Load-bearing key ORDER: asking for the stories first is what stopped the lead from

@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,7 +15,7 @@ def _store() -> AgentCoreMemoryStore:
 class TestFitToLimit:
     def test_small_state_unchanged_and_valid(self):
         store = _store()
-        state = {"ranked_items": [{"item": {"text": "hi"}, "score": 0.5}], "collected_items": {}, "digest_result": None}
+        state = {"ranked_items": [{"item": {"text": "hi"}, "score": 0.5}], "digest_result": None}
         out = store._fit_to_limit(state)
         assert json.loads(out) == state  # valid JSON, unchanged
 
@@ -24,7 +24,6 @@ class TestFitToLimit:
         big = "x" * 200_000
         state = {
             "ranked_items": [{"item": {"item_id": f"i{n}", "text": big}, "score": 0.5} for n in range(20)],
-            "collected_items": {f"i{n}": {"text": big} for n in range(20)},
             "digest_result": {"digest_text": big, "content": {"lead": big, "headline_index": 1, "items": []}},
         }
         out = store._fit_to_limit(state)
@@ -40,7 +39,6 @@ class TestFitToLimit:
         body = "x" * 30_000
         state = {
             "ranked_items": [{"item": {"item_id": f"i{n}", "text": body}, "score": 0.8} for n in range(4)],
-            "collected_items": {f"i{n}": {"text": body} for n in range(4)},
             "digest_result": {
                 "digest_text": "d",
                 "content": {
@@ -57,17 +55,6 @@ class TestFitToLimit:
 
 
 class TestLocalMemoryStore:
-    def test_put_and_get_latest(self, tmp_path):
-        store = LocalMemoryStore(tmp_path)
-        store.put_digest("2026-06-01", {"a": 1})
-        store.put_digest("2026-06-02", {"a": 2})
-        latest = store.get_latest_digest()
-        assert latest == {"a": 2}
-
-    def test_get_latest_empty(self, tmp_path):
-        store = LocalMemoryStore(tmp_path)
-        assert store.get_latest_digest() is None
-
     def test_get_digest_by_date(self, tmp_path):
         # The visual Lambda must publish the date it was fired for, not whatever is newest:
         # 'load latest' published yesterday's stories when today's snapshot was missing.
@@ -77,36 +64,41 @@ class TestLocalMemoryStore:
         assert store.get_digest("2026-06-01") == {"a": 1}
         assert store.get_digest("2026-06-03") is None
 
-    def test_get_recent_digests_newest_first_and_capped(self, tmp_path):
+    def test_get_recent_digests_reads_the_window_before_the_date_newest_first(self, tmp_path):
+        # Today's own snapshot is excluded (a same-day re-run keeps its stories), and anything older
+        # than the window can't suppress a legitimately-recurring story.
         store = LocalMemoryStore(tmp_path)
-        for d in ("2026-06-05", "2026-06-06", "2026-06-07"):
+        for d in ("2026-06-01", "2026-06-06", "2026-06-08", "2026-06-09"):
             store.put_digest(d, {"d": d})
-        recent = store.get_recent_digests(2)
-        assert [r["d"] for r in recent] == ["2026-06-07", "2026-06-06"]
+        recent = store.get_recent_digests(date(2026, 6, 9), 4)
+        assert [r["d"] for r in recent] == ["2026-06-08", "2026-06-06"]
 
-    def test_get_recent_digests_excludes_given_date(self, tmp_path):
-        # A same-day re-run must not seed dedup with today's own snapshot.
+    def test_an_unreadable_day_is_skipped_not_fatal(self, tmp_path):
         store = LocalMemoryStore(tmp_path)
-        for d in ("2026-06-07", "2026-06-08", "2026-06-09"):
-            store.put_digest(d, {"d": d})
-        recent = store.get_recent_digests(6, exclude_date="2026-06-09")
-        assert [r["d"] for r in recent] == ["2026-06-08", "2026-06-07"]
-
-    def test_get_recent_digests_after_date_bounds_window(self, tmp_path):
-        # after_date floors the seed to the TTL window so a stale snapshot outside it (here the
-        # 06-01 one, before the 06-05 floor) can't suppress a legitimately-recurring story.
-        store = LocalMemoryStore(tmp_path)
-        for d in ("2026-06-01", "2026-06-06", "2026-06-08"):
-            store.put_digest(d, {"d": d})
-        recent = store.get_recent_digests(10, after_date="2026-06-05")
-        assert [r["d"] for r in recent] == ["2026-06-08", "2026-06-06"]  # 06-01 excluded
+        store.put_digest("2026-06-08", {"d": "2026-06-08"})
+        (tmp_path / "digest_2026-06-07.json").write_text("{not json", encoding="utf-8")
+        assert [r["d"] for r in store.get_recent_digests(date(2026, 6, 9), 3)] == ["2026-06-08"]
 
 
 class TestCreateMemoryStore:
-    def test_local_when_no_memory_id(self, monkeypatch, tmp_path):
+    def test_local_when_no_memory_is_deployed(self, monkeypatch, tmp_path):
         monkeypatch.delenv("MEMORY_ID", raising=False)
-        store = create_memory_store(tmp_path)
+        with patch("shared.memory._deployed_memory_id", return_value=""):
+            store = create_memory_store(tmp_path)
         assert isinstance(store, LocalMemoryStore)
+
+    def test_a_local_run_finds_the_stacks_memory_by_name(self, monkeypatch):
+        # Without MEMORY_ID (set only on the Lambdas) a local run read none of production's
+        # snapshots: cross-day dedup saw no yesterday and recall_digest found nothing.
+        monkeypatch.delenv("MEMORY_ID", raising=False)
+        session = MagicMock()
+        session.client.return_value.get_paginator.return_value.paginate.return_value = [
+            {"memories": [{"id": "other_dev_digest_state-AAA"}, {"id": "omnisummary_dev_digest_state-9GEp6f8MtL"}]}
+        ]
+        with patch("shared.memory.boto3.Session", return_value=session), patch("shared.memory.boto3.client"):
+            store = create_memory_store()
+        assert isinstance(store, AgentCoreMemoryStore)
+        assert store.memory_id == "omnisummary_dev_digest_state-9GEp6f8MtL"
 
     def test_agentcore_when_memory_id_set(self, monkeypatch):
         monkeypatch.setenv("MEMORY_ID", "mem-123")
@@ -136,24 +128,11 @@ class TestAgentCoreMemoryStore:
         assert payload["role"] == "ASSISTANT"
         assert "ranked_items" in payload["content"]["text"]
 
-    def test_put_digest_trims_when_over_limit(self):
-        store, client = self._store()
-        big = {
-            "collected_items": {"a": {"text": "x" * 200_000}},
-            "ranked_items": [{"item": {"item_id": "a"}}],
-            "digest_result": {"digest_text": "ok"},
-        }
-        store.put_digest("2026-06-02", big)
-        text = client.create_event.call_args.kwargs["payload"][0]["conversational"]["content"]["text"]
-        assert len(text) <= AgentCoreMemoryStore.MAX_EVENT_TEXT
-        assert '"collected_items": {}' in text
-
     def test_put_digest_truncates_oversized_ranked_text(self):
-        # Even after dropping collected_items, the ranked-item bodies alone exceed the
-        # limit (this is what aborted the pipeline on 2026-06-04). Must still fit + store.
+        # The ranked-item bodies alone can exceed the limit (this is what aborted the pipeline on
+        # 2026-06-04). Must still fit + store.
         store, client = self._store()
         big = {
-            "collected_items": {},
             "ranked_items": [{"item": {"item_id": f"i{n}", "text": "y" * 30_000}, "score": 0.8} for n in range(5)],
             "digest_result": {"digest_text": "ok"},
         }
@@ -167,7 +146,6 @@ class TestAgentCoreMemoryStore:
         # Pathological: many ranked items with huge text — falls back to metadata only.
         store, client = self._store()
         big = {
-            "collected_items": {},
             "ranked_items": [{"item": {"item_id": f"i{n}", "text": "z" * 50_000}, "score": 0.8} for n in range(20)],
             "digest_result": {"digest_text": "ok"},
         }
@@ -175,60 +153,6 @@ class TestAgentCoreMemoryStore:
         text = client.create_event.call_args.kwargs["payload"][0]["conversational"]["content"]["text"]
         assert len(text) <= AgentCoreMemoryStore.MAX_EVENT_TEXT
         assert "ranked_items" in text
-
-    def test_get_latest_digest_picks_newest_session(self):
-        store, client = self._store()
-        client.list_sessions.return_value = {
-            "sessionSummaries": [
-                {"sessionId": "digest-2026-06-01"},
-                {"sessionId": "digest-2026-06-02"},
-                {"sessionId": "trend-2026-06-02"},
-            ]
-        }
-        client.list_events.return_value = {
-            "events": [{"payload": [{"conversational": {"content": {"text": '{"x": 9}'}}}]}]
-        }
-        result = store.get_latest_digest()
-        assert result == {"x": 9}
-        assert client.list_events.call_args.kwargs["sessionId"] == "digest-2026-06-02"
-
-    def test_get_latest_digest_none_when_no_sessions(self):
-        store, client = self._store()
-        client.list_sessions.return_value = {"sessionSummaries": []}
-        assert store.get_latest_digest() is None
-
-    def test_get_latest_digest_follows_pagination(self):
-        # The true latest session is on the SECOND page. A single-page (maxResults=100) lookup
-        # would miss it and serve a stale snapshot; pagination must collect all pages first.
-        store, client = self._store()
-        page1 = {"sessionSummaries": [{"sessionId": "digest-2026-06-01"}], "nextToken": "tok"}
-        page2 = {"sessionSummaries": [{"sessionId": "digest-2026-06-30"}]}
-        client.list_sessions.side_effect = [page1, page2]
-        client.list_events.return_value = {
-            "events": [{"payload": [{"conversational": {"content": {"text": '{"x": 1}'}}}]}]
-        }
-        result = store.get_latest_digest()
-        assert result == {"x": 1}
-        assert client.list_events.call_args.kwargs["sessionId"] == "digest-2026-06-30"  # newest across pages
-        assert client.list_sessions.call_count == 2
-
-    def test_get_recent_digests_excludes_and_date_bounds(self):
-        # Production path: newest-first, drops exclude_date (today) and anything before after_date.
-        store, client = self._store()
-        client.list_sessions.return_value = {
-            "sessionSummaries": [
-                {"sessionId": "digest-2026-06-02"},  # before floor → dropped
-                {"sessionId": "digest-2026-06-07"},
-                {"sessionId": "digest-2026-06-08"},
-                {"sessionId": "digest-2026-06-09"},  # exclude_date → dropped
-                {"sessionId": "trend-2026-06-08"},  # non-digest → ignored
-            ]
-        }
-        client.list_events.side_effect = lambda **kw: {
-            "events": [{"payload": [{"conversational": {"content": {"text": json.dumps({"sid": kw["sessionId"]})}}}]}]
-        }
-        recent = store.get_recent_digests(10, exclude_date="2026-06-09", after_date="2026-06-05")
-        assert [r["sid"] for r in recent] == ["digest-2026-06-08", "digest-2026-06-07"]
 
 
 class TestAgentCoreGetDigestByDate:
@@ -248,7 +172,6 @@ class TestAgentCoreGetDigestByDate:
         # Addressed directly by session id — never a list-then-compare-generated_at (that field is
         # UTC and disagrees with the KST digest date on every pre-09:00 KST run).
         assert client.list_events.call_args.kwargs["sessionId"] == "digest-2026-08-17"
-        client.list_sessions.assert_not_called()
 
     def test_missing_session_is_none_not_a_stale_fallback(self):
         store, client = self._store()
@@ -296,7 +219,7 @@ class TestNewestEventWithinASession:
         }
         assert store.get_digest("2026-08-17") == {"attempt": 2}
         # More than one event per session is read, but only a few — get_recent_digests pays this
-        # per session, so the page size must not grow with history.
+        # per date, so the page size stays small.
         assert client.list_events.call_args.kwargs["maxResults"] == AgentCoreMemoryStore.EVENTS_PER_SESSION
         assert AgentCoreMemoryStore.EVENTS_PER_SESSION <= 10
 

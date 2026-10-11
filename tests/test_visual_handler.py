@@ -1,4 +1,3 @@
-import json
 import time
 from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -88,19 +87,10 @@ class TestRequestedDate:
 
 
 class TestVisualRun:
-    async def test_skips_when_disabled(self):
-        config = MagicMock()
-        config.pipeline.enable_daily_visual = False
-        with patch("lambda_handlers.visual_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.visual_handler.create_memory_store") as store:
-                await visual_handler._run()
-        store.assert_not_called()
-
     async def test_missing_snapshot_for_a_named_date_raises(self):
         # The digest Lambda names the date it just persisted, so a miss means this — the only
         # Threads delivery path — published nothing. Returning 200 hid that on 2026-08-13/08-17.
         config = MagicMock()
-        config.pipeline.enable_daily_visual = True
         config.aws.timezone = "Asia/Seoul"
         store = MagicMock()
         store.get_digest.return_value = None
@@ -111,14 +101,12 @@ class TestVisualRun:
                         await visual_handler._run({"digest_date": "2026-08-17"})
         # Loaded BY date, and no stale fallback to whatever snapshot is newest.
         store.get_digest.assert_called_once_with("2026-08-17")
-        store.get_latest_digest.assert_not_called()
         maker.assert_not_called()
 
     async def test_missing_snapshot_without_a_named_date_stays_quiet(self):
         # A today-fallback invoke (local/manual) may legitimately run before any digest exists;
         # that must not raise, or every such run would fail loudly for nothing.
         config = MagicMock()
-        config.pipeline.enable_daily_visual = True
         config.aws.timezone = "Asia/Seoul"
         store = MagicMock()
         store.get_digest.return_value = None
@@ -130,7 +118,6 @@ class TestVisualRun:
 
     async def test_read_failure_propagates_instead_of_reading_as_an_empty_day(self):
         config = MagicMock()
-        config.pipeline.enable_daily_visual = True
         config.aws.timezone = "Asia/Seoul"
         store = MagicMock()
         store.get_digest.side_effect = MemoryReadError("throttled")
@@ -141,7 +128,6 @@ class TestVisualRun:
 
     async def test_runs_maker_for_the_requested_date(self):
         config = MagicMock()
-        config.pipeline.enable_daily_visual = True
         config.aws.timezone = "Asia/Seoul"
         store = MagicMock()
         store.get_digest.return_value = {"some": "state"}
@@ -166,29 +152,6 @@ class TestVisualRun:
         assert kwargs["today"] == date(2026, 8, 18)
         # No caller deadline → None, so the publish path behaves exactly as it did before.
         assert kwargs["deadline"] is None
-
-    async def test_publish_outcome_is_emitted_as_a_metric(self, capsys):
-        config = MagicMock()
-        config.pipeline.enable_daily_visual = True
-        config.aws.timezone = "Asia/Seoul"
-        store = MagicMock()
-        store.get_digest.return_value = {"some": "state"}
-        maker_instance = MagicMock()
-        maker_instance.run = AsyncMock(return_value=False)
-        maker_instance.threads_outcome = ThreadsDelivery(0, 6)
-        with patch("lambda_handlers.visual_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.visual_handler.create_memory_store", return_value=store):
-                with patch("lambda_handlers.visual_handler.DigestStateManager.load_from_dict"):
-                    with patch("lambda_handlers.visual_handler.boto3.Session"):
-                        with patch("lambda_handlers.visual_handler.BedrockLanguageModelFactory"):
-                            with patch("lambda_handlers.visual_handler.DailyVisualMaker", return_value=maker_instance):
-                                await visual_handler._run({"digest_date": "2026-08-18"})
-        emitted = [
-            json.loads(line)
-            for line in capsys.readouterr().out.splitlines()
-            if line.startswith("{") and visual_handler.THREADS_POSTS_METRIC in line
-        ]
-        assert emitted and emitted[-1][visual_handler.THREADS_POSTS_METRIC] == 0
 
 
 class TestRemainingDeadline:
@@ -264,50 +227,3 @@ class TestThreadsOutcomeAlert:
         with patch("lambda_handlers.visual_handler.boto3.client") as client:
             visual_handler._maybe_alert_threads_outcome(None, date(2026, 8, 18))
         client.assert_not_called()
-
-
-class TestThreadsMetrics:
-    """The only delivery path must leave a numeric trace of what it produced. A missing datapoint
-    reads as "no data" in CloudWatch, not as a zero — so the record is emitted unconditionally."""
-
-    @staticmethod
-    def _records(capsys) -> list[dict]:
-        return [
-            json.loads(line)
-            for line in capsys.readouterr().out.splitlines()
-            if line.startswith("{") and visual_handler.THREADS_POSTS_METRIC in line
-        ]
-
-    def test_both_metrics_ride_one_record_with_a_utc_timestamp(self, capsys):
-        from datetime import UTC, datetime
-
-        visual_handler._emit_threads_metrics(ThreadsDelivery(6, 6, with_image=True))
-        record = self._records(capsys)[-1]
-        assert record[visual_handler.THREADS_POSTS_METRIC] == 6
-        assert record[visual_handler.THREADS_IMAGE_METRIC] == 1
-        names = {m["Name"] for m in record["_aws"]["CloudWatchMetrics"][0]["Metrics"]}
-        assert names == {visual_handler.THREADS_POSTS_METRIC, visual_handler.THREADS_IMAGE_METRIC}
-        # UTC epoch ms, never the naive local clock (which files every datapoint at the wrong time).
-        drift = abs(record["_aws"]["Timestamp"] / 1000 - datetime.now(UTC).timestamp())
-        assert drift < 60
-
-    def test_a_text_only_post_reports_no_image(self, capsys):
-        visual_handler._emit_threads_metrics(ThreadsDelivery(6, 6))
-        record = self._records(capsys)[-1]
-        assert record[visual_handler.THREADS_POSTS_METRIC] == 6
-        assert record[visual_handler.THREADS_IMAGE_METRIC] == 0
-
-    def test_a_run_with_no_outcome_still_emits_zeroes(self, capsys):
-        visual_handler._emit_threads_metrics(None)
-        record = self._records(capsys)[-1]
-        assert record[visual_handler.THREADS_POSTS_METRIC] == 0
-        assert record[visual_handler.THREADS_IMAGE_METRIC] == 0
-
-    def test_the_record_is_dimensioned_by_project_and_stage(self, capsys, monkeypatch):
-        # Every deployment publishing into one datapoint means a dev run masks a prod outage.
-        monkeypatch.setenv("PROJECT_NAME", "omnisummary")
-        monkeypatch.setenv("STAGE", "dev")
-        visual_handler._emit_threads_metrics(ThreadsDelivery(6, 6))
-        record = self._records(capsys)[-1]
-        assert record["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [["Project", "Stage"]]
-        assert record["Project"] == "omnisummary" and record["Stage"] == "dev"

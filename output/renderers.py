@@ -10,227 +10,15 @@ from shared import (
     DigestContent,
     logger,
     split_sentences,
-    strip_slack_mrkdwn,
+    strip_markup,
     threads_meta_line,
     truncate_at_word,
 )
 
 __all__ = [
-    "SLACK_MAX_BLOCKS_PER_MESSAGE",
-    "SLACK_MAX_SECTION_CHARS",
-    "render_agent_blocks",
-    "render_research_blocks",
-    "render_slack_blocks",
     "render_threads_posts",
     "render_threads_research",
 ]
-
-# Slack caps a single message at 50 blocks; chunk item blocks across messages under it.
-SLACK_MAX_BLOCKS_PER_MESSAGE = 45
-# A single Slack section's text field is capped at 3000 chars.
-SLACK_MAX_SECTION_CHARS = 2900
-
-
-def _split_long_paragraph(para: str, max_len: int) -> list[str]:
-    """Break an over-length paragraph into <=max_len pieces at sentence then word boundaries,
-    never inside a Slack `<url|text>` link span (a raw stride-split would cleave a link across
-    two messages, leaving both halves as dead raw text)."""
-    pieces: list[str] = []
-    current = ""
-    for sentence in split_sentences(para) or [para]:
-        # A sentence that overflows on its own gets a link-safe hard split; there is nothing to
-        # word-trim it down to, because the next unit has to carry the remainder either way. A
-        # `truncate_at_word(sentence, max_len)` sat on the fitting side of this guard and was
-        # discarded exactly when it was produced, since this same comparison decides both.
-        units = [sentence] if len(sentence) <= max_len else _hard_split_link_safe(sentence, max_len)
-        for u in units:
-            candidate = f"{current} {u}".strip() if current else u
-            if len(candidate) > max_len and current:
-                pieces.append(current)
-                current = u
-            else:
-                current = candidate
-    if current:
-        pieces.append(current)
-    return pieces
-
-
-def _hard_split_link_safe(text: str, max_len: int) -> list[str]:
-    """Last-resort hard split that never cuts INSIDE a `<...>` link span. When a cut would land
-    inside a span, emit the text BEFORE the link as its own (<=max_len) piece and put the whole
-    link span on the next piece. A link span longer than max_len can't be split without breaking
-    the link, so it becomes one over-cap piece on its own — the least-bad option, and far better
-    than merging it with preceding text (which the old 'extend end to the closing >' did, blowing
-    the cap by the length of the preceding run too)."""
-    out: list[str] = []
-    i = 0
-    n = len(text)
-    while i < n:
-        end = min(i + max_len, n)
-        if end < n:  # a real cut point (not the tail)
-            open_idx = text.rfind("<", i, end)
-            close_idx = text.rfind(">", i, end)
-            if open_idx > close_idx:  # cut lands inside a link span
-                if open_idx > i:
-                    # Emit the text before the link first (guaranteed <=max_len), then restart at
-                    # the link so it lands on its own piece.
-                    out.append(text[i:open_idx])
-                    i = open_idx
-                    continue
-                # The link starts at i and overflows the window — keep the whole span intact on one
-                # piece (can't split a link); this single piece may exceed max_len by necessity.
-                next_close = text.find(">", end)
-                end = next_close + 1 if next_close != -1 else n
-        out.append(text[i:end])
-        i = end
-    return out
-
-
-def render_agent_blocks(text: str) -> list[list[dict]]:
-    """Wrap a free-form agent mrkdwn reply in Block Kit section blocks. The agent's output
-    has no fixed structure, so this just paragraph-packs the text into <=3000-char sections
-    (keeping the agent's own *bold*/`code`/<links>) and chunks under the per-message block
-    cap. A generic wrapper — it does not parse or restructure the content."""
-    paragraphs = [p for p in text.split("\n\n") if p.strip()]
-    sections: list[str] = []
-    current = ""
-    for para in paragraphs:
-        if len(para) > SLACK_MAX_SECTION_CHARS:
-            if current:
-                sections.append(current)
-                current = ""
-            sections.extend(_split_long_paragraph(para, SLACK_MAX_SECTION_CHARS))
-        elif len(current) + len(para) + 2 > SLACK_MAX_SECTION_CHARS:
-            sections.append(current)
-            current = para
-        else:
-            current = f"{current}\n\n{para}" if current else para
-    if current:
-        sections.append(current)
-
-    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": s}} for s in sections]
-    # Empty/whitespace input → no chunks (callers post nothing); never [[]], which would send an
-    # invalid empty blocks=[] to Slack.
-    return _chunk_blocks(blocks) if blocks else []
-
-
-# A numbered section heading the agent emits on its own line, e.g. "*1. 벤치마크 성적표*".
-_NUMBERED_HEADING = re.compile(r"^\*\d+\.\s")
-
-
-def render_research_blocks(report: str, *, header: str) -> list[list[dict]]:
-    """Render a deep-research report as Block Kit with the daily-digest look: a header block,
-    then the report's prose with a divider before each numbered section heading ("*N. ...*") so
-    it reads as cleanly sectioned rather than one wall of text. Paragraph-packs prose into
-    <=SLACK_MAX_SECTION_CHARS sections and chunks under the per-message block cap."""
-    # Empty/whitespace report → nothing to post (never a lone header band). Mirrors
-    # render_agent_blocks / render_threads_research, which also no-op on empty input.
-    if not report.strip():
-        return []
-
-    header_block = {"type": "header", "text": {"type": "plain_text", "text": header, "emoji": True}}
-    blocks: list[dict] = [header_block]
-
-    paragraphs = [p for p in report.split("\n\n") if p.strip()]
-    current = ""
-
-    def flush() -> None:
-        nonlocal current
-        if current.strip():
-            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": current}})
-        current = ""
-
-    for para in paragraphs:
-        is_heading = bool(_NUMBERED_HEADING.match(para.strip()))
-        if is_heading:
-            flush()
-            # Suppress a divider directly under the header (when the report opens with a numbered
-            # heading) — header → divider → section reads as an empty band.
-            if blocks[-1]["type"] != "header":
-                blocks.append({"type": "divider"})
-        if len(para) > SLACK_MAX_SECTION_CHARS:
-            flush()
-            for piece in _split_long_paragraph(para, SLACK_MAX_SECTION_CHARS):
-                blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": piece}})
-        elif is_heading:
-            current = para
-        elif len(current) + len(para) + 2 > SLACK_MAX_SECTION_CHARS:
-            flush()
-            current = para
-        else:
-            current = f"{current}\n\n{para}" if current else para
-    flush()
-
-    return _chunk_blocks(blocks)
-
-
-def _mrkdwn_sections(text: str, *, wrap: str = "{}") -> list[dict]:
-    """One or more Slack `section` blocks for a mrkdwn string, splitting on the 3000-char section
-    cap so an unusually long lead/implication can't get the whole message rejected as
-    invalid_blocks. `wrap` applies emphasis to EACH piece (e.g. "_{}_" for the italic implication).
-    The split budget accounts for the wrapper so a wrapped piece still fits."""
-    body = text.strip()
-    if not body:
-        return []
-    budget = SLACK_MAX_SECTION_CHARS - (len(wrap) - 2)
-    pieces = [body] if len(body) <= budget else _split_long_paragraph(body, budget)
-    return [{"type": "section", "text": {"type": "mrkdwn", "text": wrap.format(p)}} for p in pieces]
-
-
-def _item_blocks(item, *, with_divider: bool) -> list[dict]:
-    """Block Kit blocks for one DigestItem: title link, source/metrics context,
-    body as a rich_text quote (the gray vertical bar), then the implication."""
-    blocks: list[dict] = []
-    if with_divider:
-        blocks.append({"type": "divider"})
-
-    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*<{item.url}|{item.title}>*"}})
-
-    meta = " · ".join(p for p in (item.source_tag, item.metrics) if p)
-    if meta:
-        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": meta}]})
-
-    if item.body:
-        # Split an over-length body so no single rich_text_quote text element exceeds the section
-        # cap (which would make Slack reject the whole message as invalid_blocks).
-        body = item.body.strip()
-        pieces = (
-            [body] if len(body) <= SLACK_MAX_SECTION_CHARS else _split_long_paragraph(body, SLACK_MAX_SECTION_CHARS)
-        )
-        # rich_text_quote text elements render inline (no implicit separator), so join split pieces
-        # with an explicit newline element to avoid merging words across a boundary.
-        quote_elements: list[dict] = []
-        for idx, p in enumerate(pieces):
-            if idx:
-                quote_elements.append({"type": "text", "text": "\n"})
-            quote_elements.append({"type": "text", "text": p})
-        blocks.append({"type": "rich_text", "elements": [{"type": "rich_text_quote", "elements": quote_elements}]})
-
-    blocks.extend(_mrkdwn_sections(item.implication, wrap="_{}_"))
-    return blocks
-
-
-def render_slack_blocks(
-    content: DigestContent, *, header: str, image_url: str = "", image_alt: str = ""
-) -> list[list[dict]]:
-    """Render DigestContent as Slack Block Kit, split into <=SLACK_MAX_BLOCKS_PER_MESSAGE
-    chunks. Returns a list of block-lists, one per chat_postMessage call."""
-    blocks: list[dict] = [{"type": "header", "text": {"type": "plain_text", "text": header, "emoji": True}}]
-    blocks.extend(_mrkdwn_sections(content.lead))
-    if image_url:
-        blocks.append({"type": "image", "image_url": image_url, "alt_text": image_alt or "daily visual"})
-
-    for item in content.items:
-        blocks.extend(_item_blocks(item, with_divider=True))
-
-    return _chunk_blocks(blocks)
-
-
-def _chunk_blocks(blocks: list[dict]) -> list[list[dict]]:
-    chunks: list[list[dict]] = []
-    for i in range(0, len(blocks), SLACK_MAX_BLOCKS_PER_MESSAGE):
-        chunks.append(blocks[i : i + SLACK_MAX_BLOCKS_PER_MESSAGE])
-    return chunks or [[]]
 
 
 def _fit_one_post(
@@ -241,18 +29,14 @@ def _fit_one_post(
     are dropped from the end first, and the implication only goes if the fixed parts still overflow.
     Nothing is cut mid-sentence and the link is never split. Each item maps to exactly one reply.
 
-    `meta` is the "r/LocalLLaMA · ▶️ 775" provenance line the pipeline already computes and Slack
-    already shows. Threads used to discard it, so a reader could not tell a Reddit thread from an
-    arXiv paper without opening the link. It is treated as fixed: knowing the source is worth more
-    than one more clause of body.
+    `meta` is the "r/LocalLLaMA · ▶️ 775" provenance line the pipeline already computes. Without
+    it a reader could not tell a Reddit thread from an arXiv paper without opening the link, so it
+    is treated as fixed: knowing the source is worth more than one more clause of body.
 
-    It rides in PARENTHESES on the title line rather than as a block of its own. Slack renders the
-    tag as inline code, which marks it as metadata; Threads renders no markup, so the backticks are
-    stripped and a publication name ("Simon Willison's Weblog") was left as a bare noun phrase
-    sitting on its own line, reading like a stray fragment. Parentheses are a self-evident
-    attribution marker in Korean and survive markup-stripping, they work for all five source shapes
-    without a label word, and merging the two blocks saves a separator — net +1 character against
-    the old form. Slack keeps its context block: it was never the channel that read wrong."""
+    It rides in PARENTHESES on the title line rather than as a block of its own: on its own line a
+    publication name ("Simon Willison's Weblog") read like a stray fragment. Parentheses are a
+    self-evident attribution marker in Korean, they work for all five source shapes without a label
+    word, and merging the two blocks saves a separator."""
     titled = f"{title.strip()} ({meta.strip()})" if title.strip() and meta.strip() else (title.strip() or meta.strip())
     fixed = [titled] if titled else []
     tail = [url.strip()] if url.strip() else []
@@ -338,7 +122,7 @@ def render_threads_posts(content: DigestContent, countdown: str = "") -> tuple[s
     """Render DigestContent for Threads: a root text (the lead) and a reply chain with EXACTLY ONE
     reply per item (title + source line + body + implication + URL). Each reply is trimmed to fit
     Threads' 500-char cap at a clean sentence boundary — never mid-word — keeping the title, the
-    source line and the URL. No Slack markup (Threads renders none).
+    source line and the URL. No markup (Threads renders none).
 
     `countdown` is the code-owned AGI-countdown gag as the pipeline computed it, so an over-long
     lead can drop THAT rather than the day's argument. Empty (the default) simply trims prose."""
@@ -505,7 +289,7 @@ class ThreadsResearchRender(NamedTuple):
 
 def render_threads_research(report: str, *, max_posts: int = 0) -> ThreadsResearchRender:
     """Render a Threads research report into a root post + flat reply chain, each <=500 chars.
-    Slack mrkdwn is stripped (Threads renders none). The agent marks its own post boundaries with
+    Markup is stripped (Threads renders none). The agent marks its own post boundaries with
     a line containing only '---', so a post's number + heading + body stay together; the renderer
     honors those boundaries and only re-splits a post that overflows 500 chars. If no delimiters
     are present (older output), it falls back to sentence packing.
@@ -513,7 +297,7 @@ def render_threads_research(report: str, *, max_posts: int = 0) -> ThreadsResear
     `max_posts` (>0) hard-caps the total post count (root + replies) so a too-long report can't
     fan out into dozens of public posts; excess posts are dropped. Returns the render plus the
     dropped/trimmed counts, so the caller can report an incomplete report as incomplete."""
-    plain = strip_slack_mrkdwn(report).strip()
+    plain = strip_markup(report).strip()
     # A leading "---" (delimiter as the report's first line) isn't matched by the split regex,
     # which requires a preceding newline; drop it so it can't ride into the first post as text.
     plain = _THREADS_LEADING_DELIMITER.sub("", plain).strip()

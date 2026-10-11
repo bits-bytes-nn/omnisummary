@@ -55,7 +55,7 @@ class ContentAggregator:
             logger.warning("Dropped %d item(s) missing a url or title before dedup", malformed)
 
         for item in usable:
-            key = self._normalize_url(item.url)
+            key = normalize_url(item.url)
             # Pinned items (user-specified via --pin-url) bypass cross-day dedup: the user
             # asked for this exact URL today, even if it was published in a recent digest.
             if key in exclude and not item.metadata.get("pinned"):
@@ -128,7 +128,7 @@ class ContentAggregator:
         The ranker and digest read the survivor's `text`, so keep whichever body is richer rather
         than blindly keeping the first-seen item (a thin Reddit .rss link-post would otherwise beat
         the same article's full-text RSS/web entry just because its collector ran first). A pinned
-        item always wins; otherwise the meaningfully-longer body wins; ties keep the incumbent so
+        item always wins; otherwise the longer body wins; ties keep the incumbent so
         collector order still breaks ties deterministically."""
         if dupe.metadata.get("pinned") and not incumbent.metadata.get("pinned"):
             winner, loser = dupe, incumbent
@@ -147,5 +147,3 @@ class ContentAggregator:
         # metadata (feed_url, subreddit, channel_url, view_count) with a lower-priority dupe's.
         for k, v in dupe.metadata.items():
             kept.metadata.setdefault(k, v)
-
-    _normalize_url = staticmethod(normalize_url)

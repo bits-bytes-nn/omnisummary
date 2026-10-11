@@ -45,9 +45,6 @@ class StateStore(ABC):
     @abstractmethod
     def write(self, key: str, content: str) -> None: ...
 
-    @abstractmethod
-    def exists(self, key: str) -> bool: ...
-
     def read_json(self, key: str, default: Any = None) -> Any:
         """Read and parse a JSON blob; return default on missing/corrupt content.
 
@@ -88,9 +85,6 @@ class LocalStateStore(StateStore):
         path.write_text(content, encoding="utf-8")
         logger.debug("Wrote state to '%s' (%d chars)", path, len(content))
 
-    def exists(self, key: str) -> bool:
-        return (self.base_dir / key).exists()
-
 
 # S3 answers "no such object" as NoSuchKey on GET but as a bare 404 on HEAD (head_object has no
 # response body to carry the code), so both spellings mean the same thing: genuinely absent.
@@ -127,25 +121,14 @@ class S3StateStore(StateStore):
         self.s3.put_object(Bucket=self.bucket, Key=s3_key, Body=content.encode("utf-8"))
         logger.debug("Wrote state to 's3://%s/%s' (%d chars)", self.bucket, s3_key, len(content))
 
-    def exists(self, key: str) -> bool:
-        s3_key = self._key(key)
-        try:
-            self.s3.head_object(Bucket=self.bucket, Key=s3_key)
-            return True
-        except ClientError as e:
-            if e.response["Error"].get("Code", "") in _MISSING_KEY_CODES:
-                return False
-            logger.error("Failed to stat 's3://%s/%s': %s", self.bucket, s3_key, e)
-            raise StateReadError(f"Failed to stat 's3://{self.bucket}/{s3_key}': {e}") from e
-
 
 def _boto_session(config: Config | None):
     """A session for the S3 store: ambient credentials, with the configured profile honoured only
     where it actually resolves.
 
-    Gated on is_running_in_aws() this took the named-profile branch inside the AgentCore runtime —
-    the sniff looks for Lambda/Batch/ECS variables that runtime does not set — and the container has
-    no ~/.aws/config, so every trends.json read and write there failed on ProfileNotFound."""
+    Gated on is_running_in_aws() this took the named-profile branch in any runtime that sets none of
+    the Lambda/Batch/ECS variables the sniff looks for, where there is no ~/.aws/config, so every
+    trends.json read and write failed on ProfileNotFound."""
     import boto3
 
     from .utils import available_boto_profile

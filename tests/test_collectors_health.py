@@ -71,7 +71,7 @@ async def test_stale_park_file_reports_stale_not_ok():
     async def parked_items():
         return [_item("http://a.com")]
 
-    park = ParkedItems(outcome=ParkOutcome.STALE, age_hours=72.0, detail="park file is 72.0h old (>36h)")
+    park = ParkedItems(outcome=ParkOutcome.STALE, detail="park file is 72.0h old (>36h)")
     with patch.object(
         runner, "_build_collector_tasks", return_value=([parked_items()], ["youtube"], [_Collector(park)])
     ):
@@ -111,7 +111,7 @@ async def test_fresh_park_file_is_ok():
     async def parked_items():
         return [_item("http://a.com")]
 
-    park = ParkedItems(outcome=ParkOutcome.FRESH, age_hours=1.0)
+    park = ParkedItems(outcome=ParkOutcome.FRESH)
     with patch.object(
         runner, "_build_collector_tasks", return_value=([parked_items()], ["youtube"], [_Collector(park)])
     ):
@@ -146,9 +146,9 @@ async def test_partially_collected_source_reports_degraded_not_ok():
 
 
 @pytest.mark.asyncio
-async def test_reddit_partial_subreddit_loss_reports_degraded():
-    # Reddit never called record_run_health, so 4 of 6 subreddits failing (proxy 429s) read as a
-    # perfectly healthy OK — the source could shrink to a third of its feeds and alert nothing.
+async def test_reddit_subreddits_missing_from_the_feed_report_degraded_when_armed():
+    # All subreddits share ONE request, so a subreddit that vanished (banned, renamed) shows up as
+    # an input with no entries — judged by the configured empty-rate verdict.
     from collectors.reddit import RedditCollector
     from shared.config import RedditCollectorConfig
 
@@ -159,31 +159,21 @@ async def test_reddit_partial_subreddit_loss_reports_degraded():
             except KeyError as e:
                 raise AttributeError(name) from e
 
-    entry = {
-        "title": "t",
-        "link": "https://www.reddit.com/r/LocalLLaMA/comments/abc123/t/",
-        "id": "t3_abc123",
-        "summary": "body",
-        "author": "alice",
-    }
-    good = _Feed(entries=[entry], bozo=False)
-
+    entries = [
+        {"title": sub, "link": f"https://www.reddit.com/r/{sub}/comments/{sub}1/t/", "id": f"t3_{sub}1"}
+        for sub in ("a", "b")
+    ]
     config = RedditCollectorConfig(
-        subreddits=["a", "b", "c", "d", "e", "f"], retry_backoff_sec=0, error_rate_threshold=50.0
+        subreddits=["a", "b", "c", "d", "e", "f"], retry_backoff_sec=0, empty_rate_threshold=50.0
     )
     collector = RedditCollector(config)
 
-    async def _fetch(url, **kwargs):
-        if "/r/a/" in url or "/r/b/" in url:
-            return good
-        raise RuntimeError("Reddit feed returned HTTP 404")
-
-    with patch("collectors.base.fetch_feed", side_effect=_fetch):
+    with patch("collectors.base.fetch_feed", return_value=_Feed(entries=entries, bozo=False)):
         items = await collector.collect()
 
     # Reporting only: the two healthy subreddits' items still reach the aggregator.
     assert len(items) == 2
-    assert "4/6 subreddits failed" in collector.degraded_detail
+    assert "4/6 subreddits returned nothing" in collector.degraded_detail
 
 
 @pytest.mark.asyncio
@@ -215,7 +205,7 @@ async def test_stale_wins_over_degraded():
     async def parked_items():
         return [_item("http://a.com")]
 
-    park = ParkedItems(outcome=ParkOutcome.STALE, age_hours=72.0, detail="park file is 72.0h old (>36h)")
+    park = ParkedItems(outcome=ParkOutcome.STALE, detail="park file is 72.0h old (>36h)")
     collector = _Collector(park, degraded_detail="30/40 account feeds failed")
     with patch.object(runner, "_build_collector_tasks", return_value=([parked_items()], ["rsshub"], [collector])):
         _items, report = await runner.run_collectors_with_health(config=Config(), llm_factory=None)

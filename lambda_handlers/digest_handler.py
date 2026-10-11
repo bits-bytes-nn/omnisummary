@@ -21,8 +21,7 @@ from shared import (
     publish_alert,
     set_correlation_id,
 )
-
-DIGEST_ITEMS_METRIC = "DigestItemsPublished"
+from shared.constants import DIGEST_ITEMS_METRIC
 
 
 def _emit_digest_items_metric(count: int) -> None:
@@ -62,19 +61,12 @@ def _maybe_alert(health: HealthReport, alert_on_empty: list[str] | None = None) 
 
 def _maybe_alert_ranking(digest: DigestResult | None, digest_date: date) -> None:
     """Notice when the digest was built on an INCOMPLETE candidate pool (a ranking batch that failed
-    every retry deletes ~40 candidates from the day), or when the digest AS SHIPPED broke a diversity
-    cap the ranker guarantees only on the ranked core. Either way the digest itself reads perfectly
-    normally, which is why it needs saying. Silent when nothing was lost and nothing was breached."""
+    every retry deletes ~40 candidates from the day). The digest itself reads perfectly normally,
+    which is why it needs saying. Silent when nothing was lost."""
     health = digest.ranking_health if digest else None
-    breaches = digest.diversity_breaches if digest else []
-    if not breaches and (health is None or not health.degraded):
+    if health is None or not health.degraded:
         return
-    fields = {"Digest date": digest_date.isoformat()}
-    if health is not None and health.degraded:
-        fields["Detail"] = health.summary()
-    if breaches:
-        fields["Diversity"] = "; ".join(breaches)
-    publish_alert("Ranking Health", "ALERT", fields)
+    publish_alert("Ranking Health", "ALERT", {"Digest date": digest_date.isoformat(), "Detail": health.summary()})
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -136,7 +128,7 @@ async def _run() -> None:
     if items and ranked_items and digest:
         try:
             # base_dir=None → AgentCore-backed memory store in AWS.
-            persist_digest(items, ranked_items, digest, digest_date, base_dir=None)
+            persist_digest(ranked_items, digest, digest_date, base_dir=None)
         except Exception as e:
             # The visual Lambda publishes off this snapshot and is the only Threads delivery path,
             # so a failed persist means the day produces NOTHING. Don't trigger the visual (it

@@ -24,7 +24,6 @@ from collectors import (
     WebSearchCollector,
     YouTubeCollector,
 )
-from output import send_digest_to_slack
 from shared import (
     BedrockLanguageModelFactory,
     CollectedItem,
@@ -228,15 +227,10 @@ async def run_pipeline(
     exclude_urls = ledger.recent_urls(digest_date)
     snapshots: list[dict] = []
     try:
-        # Seed the same TTL window the ledger uses: skip today's own snapshot (exclude_date) so a
-        # same-day re-run keeps its stories, and floor at digest_date - ttl (after_date) so a story
-        # that legitimately recurs past the window isn't suppressed by a stale snapshot.
-        ttl = config.pipeline.published_url_ttl_days
-        snapshots = create_memory_store().get_recent_digests(
-            ttl,
-            exclude_date=digest_date.isoformat(),
-            after_date=(digest_date - timedelta(days=ttl)).isoformat(),
-        )
+        # Seed the same TTL window the ledger uses: the ttl days BEFORE today (today's own snapshot
+        # is excluded so a same-day re-run keeps its stories, and a story that legitimately recurs
+        # past the window isn't suppressed by a stale snapshot).
+        snapshots = create_memory_store().get_recent_digests(digest_date, config.pipeline.published_url_ttl_days)
         exclude_urls |= {normalize_url(u) for u in published_urls_from_snapshots(snapshots)}
     except Exception:
         logger.warning("Could not seed cross-day dedup from memory snapshots (non-fatal)", exc_info=True)
@@ -249,12 +243,10 @@ async def run_pipeline(
         logger.warning("No items to process after aggregation")
         return None, None, None
 
-    # Over-select (top_n + buffer) so the digest editor can backfill after merging same-event
-    # items and still land on exactly top_n distinct stories. The source-slot guarantees are
-    # enforced on the top_n CORE (what the reader gets), not on the padded candidate list.
+    # Over-select (top_n + buffer): the editor picks the strongest top_n distinct stories from it.
     select_count = config.pipeline.top_n + config.pipeline.digest_candidate_buffer
     ranker = ContentRanker(config.pipeline, llm_factory)
-    ranked_items = await ranker.rank(items, select_count=select_count, core_count=config.pipeline.top_n)
+    ranked_items = await ranker.rank(items, select_count=select_count)
     logger.info("Ranked %d items (from %d)", len(ranked_items), len(items))
 
     if not ranked_items:
@@ -313,17 +305,10 @@ async def run_pipeline(
     except Exception:
         logger.warning("Failed to update published-URL / leads history (non-fatal)", exc_info=True)
 
-    if config.pipeline.enable_slack_post:
-        success = await send_digest_to_slack(digest, config.slack, digest_date)
-        if success:
-            logger.info("Digest sent to Slack successfully")
-        else:
-            logger.error("Failed to send digest to Slack")
-
     # In AWS the digest Lambda fires a separate visual Lambda (off the critical path);
     # locally we run it inline so `uv run python main.py` still produces the visual.
     # The visual step also fans out to Threads (when enabled), so it carries the digest text.
-    if config.pipeline.enable_daily_visual and not is_running_in_aws():
+    if not is_running_in_aws():
         try:
             from .daily_visual import DailyVisualMaker
 
@@ -335,21 +320,20 @@ async def run_pipeline(
             logger.warning("Daily visual step failed (non-fatal)", exc_info=True)
 
     if not is_running_in_aws():
-        persist_digest(items, ranked_items, digest, digest_date, base_dir=Path(LocalPaths.DIGEST_STATE_DIR.value))
+        persist_digest(ranked_items, digest, digest_date, base_dir=Path(LocalPaths.DIGEST_STATE_DIR.value))
     return items, ranked_items, digest
 
 
 def _recent_story_titles(snapshots: list[dict]) -> list[str]:
-    """Story titles from the most recent stored digest, so the editor can see what the LAST digest
-    already ran. Read off the snapshots the cross-day dedup seed already fetched (no extra call), and
-    purely informational — the URL ledger remains the thing that actually suppresses a repeat."""
+    """Story titles from every snapshot the cross-day dedup seed already fetched (the
+    published_url_ttl_days window, newest first), so the editor sees what recent digests ran. One
+    day was not enough: a weekly roundup brings a story back under a NEW URL the ledger cannot
+    match, and on 2026-10-11 three of five stories had run 1-4 days earlier. Information only."""
+    titles: list[str] = []
     for snap in snapshots or []:
         content = ((snap or {}).get("digest_result") or {}).get("content") or {}
-        titles = [it.get("title", "") for it in (content.get("items") or []) if isinstance(it, dict)]
-        titles = [t for t in titles if t]
-        if titles:
-            return titles
-    return []
+        titles += [t for it in (content.get("items") or []) if isinstance(it, dict) and (t := it.get("title", ""))]
+    return list(dict.fromkeys(titles))
 
 
 def _editorial_lead(config: Config, digest: DigestResult, digest_date: date) -> str:
@@ -365,7 +349,6 @@ def _editorial_lead(config: Config, digest: DigestResult, digest_date: date) -> 
 
 
 def persist_digest(
-    items: list[CollectedItem],
     ranked_items: list[RankedItem],
     digest: DigestResult,
     digest_date: date,
@@ -373,8 +356,8 @@ def persist_digest(
     base_dir: Path | None = None,
 ) -> None:
     """Persist the digest snapshot to the memory store (single path used by both the
-    local CLI and the Lambda handler). base_dir selects the local fallback; pass None
-    in AWS so create_memory_store picks the AgentCore-backed store.
+    local CLI and the Lambda handler). create_memory_store picks the deployed AgentCore memory when
+    it exists (MEMORY_ID, or looked up by name for a local run); base_dir is only the fallback.
 
     DigestStateManager is imported here rather than at module scope: it lives in the agent package,
     and importing it eagerly would make every consumer of `pipeline` load the agent (and Strands)
@@ -382,6 +365,6 @@ def persist_digest(
     from agent.tool_state import DigestStateManager
 
     mgr = DigestStateManager()
-    mgr.store_digest(items, ranked_items, digest)
+    mgr.store_digest(ranked_items, digest)
     memory = create_memory_store(base_dir)
     memory.put_digest(digest_date.isoformat(), mgr.export_state())

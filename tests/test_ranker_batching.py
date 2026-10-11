@@ -9,7 +9,7 @@ from shared.constants import SourceType
 from shared.models import CollectedItem
 
 
-def _factory(*, context_window: int | None = 200_000, on_count=None) -> MagicMock:
+def _factory(*, context_window: int = 200_000, on_count=None) -> MagicMock:
     """A factory whose token helpers behave like the real (SYNC, boto3-backed) ones: count_tokens
     ~= chars/4, truncate is a no-op. `on_count` observes each call, e.g. to prove concurrency."""
     factory = MagicMock()
@@ -21,7 +21,7 @@ def _factory(*, context_window: int | None = 200_000, on_count=None) -> MagicMoc
 
     factory.count_tokens.side_effect = _count
     factory.truncate_to_tokens.side_effect = lambda text, max_tokens: text
-    factory.get_model_info.return_value = MagicMock(context_window_size=context_window) if context_window else None
+    factory.get_model_info.return_value = MagicMock(context_window_size=context_window)
     return factory
 
 
@@ -58,18 +58,6 @@ class TestBatchCaps:
         )
         batches = await ranker._make_batches(_items(11, text="x" * 400))
         assert [len(b) for b in batches] == [5, 5, 1]
-
-    @pytest.mark.asyncio
-    async def test_the_budget_ratio_and_window_fallback_come_from_config(self):
-        # No registry entry for the model: the configured fallback window still bounds the batch.
-        ranker = ContentRanker(
-            PipelineConfig(
-                ranking_batch_size=40, ranking_context_window_fallback=800, ranking_batch_token_budget_ratio=0.5
-            ),
-            _factory(context_window=None),
-        )
-        batches = await ranker._make_batches(_items(9, text="x" * 400))
-        assert [len(b) for b in batches] == [4, 4, 1]
 
     @pytest.mark.asyncio
     async def test_a_single_oversized_item_still_gets_its_own_batch(self):
@@ -118,3 +106,31 @@ class TestBatchingDoesNotBlockTheLoop:
         # The loop kept running while the counting happened; the old fully-synchronous version
         # never yielded at all, so the ticker could not advance even once.
         assert loop_ticks > 10
+
+
+@pytest.mark.asyncio
+async def test_batches_mix_sources_even_when_ids_cluster_by_source():
+    # item_id is the feed GUID, so ids group by source ("https://news.hada.io/…", "https://x.com/…");
+    # sorting on the raw id put one source per batch. Each batch must see several sources.
+    items = [
+        CollectedItem(
+            item_id=f"https://{host}/{i:03d}",
+            source_type=src,
+            title=f"{src.value} {i}",
+            url=f"https://{host}/{i:03d}",
+            text="body",
+        )
+        for host, src in (("news.hada.io", SourceType.RSS), ("x.com", SourceType.X))
+        for i in range(40)
+    ]
+    ranker = ContentRanker(PipelineConfig(ranking_batch_size=40), _factory())
+    captured: list[list[CollectedItem]] = []
+
+    async def _capture(batch, semaphore):
+        captured.append(batch)
+        return []
+
+    ranker._rank_batch = _capture  # type: ignore[method-assign]
+    await ranker.rank(items, select_count=8)
+    assert len(captured) == 2
+    assert all({it.source_type for it in batch} == {SourceType.RSS, SourceType.X} for batch in captured)

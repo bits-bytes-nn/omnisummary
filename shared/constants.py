@@ -11,28 +11,13 @@ class SourceType(str, Enum):
 
 
 class LanguageModelId(str, Enum):
-    CLAUDE_V3_HAIKU = "anthropic.claude-3-haiku-20240307-v1:0"
-    CLAUDE_V3_5_HAIKU = "anthropic.claude-3-5-haiku-20241022-v1:0"
-    CLAUDE_V4_5_HAIKU = "anthropic.claude-haiku-4-5-20251001-v1:0"
-    CLAUDE_V3_5_SONNET = "anthropic.claude-3-5-sonnet-20240620-v1:0"
-    CLAUDE_V3_5_SONNET_V2 = "anthropic.claude-3-5-sonnet-20241022-v2:0"
-    CLAUDE_V3_7_SONNET = "anthropic.claude-3-7-sonnet-20250219-v1:0"
-    CLAUDE_V4_SONNET = "anthropic.claude-sonnet-4-20250514-v1:0"
-    CLAUDE_V4_5_SONNET = "anthropic.claude-sonnet-4-5-20250929-v1:0"
-    CLAUDE_V4_OPUS = "anthropic.claude-opus-4-20250514-v1:0"
-    CLAUDE_V4_1_OPUS = "anthropic.claude-opus-4-1-20250805-v1:0"
-    CLAUDE_V4_5_OPUS = "anthropic.claude-opus-4-5-20251101-v1:0"
     CLAUDE_V4_6_SONNET = "anthropic.claude-sonnet-4-6"
     CLAUDE_V5_SONNET = "anthropic.claude-sonnet-5"
-    CLAUDE_V4_6_OPUS = "anthropic.claude-opus-4-6-v1"
-    CLAUDE_V4_7_OPUS = "anthropic.claude-opus-4-7"
     CLAUDE_V4_8_OPUS = "anthropic.claude-opus-4-8"
     CLAUDE_V5_OPUS = "anthropic.claude-opus-5"
     CLAUDE_V5_5_HAIKU = "anthropic.claude-haiku-5-5"
     CLAUDE_V5_5_SONNET = "anthropic.claude-sonnet-5-5"
     CLAUDE_V5_5_OPUS = "anthropic.claude-opus-5-5"
-    CLAUDE_V5_1_FABLE = "anthropic.claude-fable-5-1"
-    # NOTE: add new models here
 
 
 class LocalPaths(str, Enum):
@@ -70,9 +55,6 @@ TRENDS_KEY: str = "trends.json"
 # enters a CloudFormation template; scripts/put_secrets.py writes the real values as SecureStrings.
 # One mapping, used by both, so a renamed parameter can't drift between them.
 SSM_SECRET_ENV_VARS: dict[str, str] = {
-    "slack-signing-secret": "SLACK_SIGNING_SECRET",
-    "slack-bot-token": "SLACK_BOT_TOKEN",
-    "slack-channel-id": "SLACK_CHANNEL_ID",
     "tavily-api-key": "TAVILY_API_KEY",
     "openai-api-key": "OPENAI_API_KEY",
     "youtube-api-key": "YOUTUBE_API_KEY",
@@ -115,6 +97,8 @@ EMPTY_RATE_CHECK_DISABLED: float = 100.0
 # emitting code and the CDK alarm must agree, and a drifting literal makes an alarm watch a
 # namespace nothing writes to (which reads as "no data", i.e. permanently green).
 METRIC_NAMESPACE: str = "OmniSummary"
+# The digest Lambda's daily story-count metric; the stack's zero-stories alarm reads the same name.
+DIGEST_ITEMS_METRIC = "DigestItemsPublished"
 
 # Project name assumed when PROJECT_NAME is unset (local runs, un-wired stages). Alerts and metrics
 # are both attributed per project/stage, so both need the same fallback.
@@ -131,5 +115,5 @@ THREADS_POST_SEPARATOR: str = "\n\n"
 # Aspect ratios a visual brief may choose. ONE definition: VisualBrief.orientation is typed with it
 # and pipeline.image_sizes is validated to map exactly these keys, so renaming an image_sizes key
 # now fails config load instead of silently making every brief coerce to the default orientation.
-VisualOrientation = Literal["square", "landscape", "portrait"]
+VisualOrientation = Literal["tall", "portrait", "square", "landscape"]
 VISUAL_ORIENTATIONS: tuple[str, ...] = get_args(VisualOrientation)

@@ -29,6 +29,7 @@ def _resp(status: int, payload: dict) -> MagicMock:
     r = MagicMock()
     r.status_code = status
     r.json.return_value = payload
+    r.headers = {}
     return r
 
 
@@ -79,6 +80,28 @@ class TestApiPath:
         assert item.item_id == "vid00000001"
         assert item.text == "full transcript"
         assert item.metadata["view_count"] == 1234
+
+    @pytest.mark.asyncio
+    async def test_long_form_uploads_first_then_all_uploads_on_404(self, monkeypatch):
+        # UULF excludes Shorts, which otherwise displace the episode at max_videos_per_channel=1.
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config())
+        client = AsyncMock()
+        client.get.side_effect = [
+            _resp(404, {"error": {"errors": [{"reason": "playlistNotFound"}]}}),
+            _resp(200, _playlist_payload("vid00000001")),
+            _resp(200, _videos_payload("vid00000001")),
+        ]
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=client)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
+            with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
+                with patch.object(collector, "_get_transcript", return_value="t"):
+                    items = await collector.collect()
+        playlists = [c.kwargs["params"]["playlistId"] for c in client.get.await_args_list[:2]]
+        assert playlists == ["UULFabcdef", "UUabcdef"]
+        assert [i.item_id for i in items] == ["vid00000001"]
 
     @pytest.mark.asyncio
     async def test_keeps_fresh_video_listed_below_a_stale_one(self, monkeypatch):
@@ -461,7 +484,7 @@ class TestS3Preload:
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
         collector = YouTubeCollector(_config())
         parked = [CollectedItem(item_id="vOld", source_type=SourceType.YOUTUBE, title="t", url="https://y/v")]
-        stale = ParkedItems(outcome=ParkOutcome.STALE, items=parked, age_hours=72.0, detail="72.0h old")
+        stale = ParkedItems(outcome=ParkOutcome.STALE, items=parked, detail="72.0h old")
         with patch("collectors.youtube.load_items_from_s3", return_value=stale):
             with patch.object(collector, "_collect_channel", new=AsyncMock()) as live:
                 items = await collector.collect()
@@ -491,7 +514,7 @@ class TestS3Preload:
                 published_at=datetime(2026, 5, 20, tzinfo=UTC),
             ),
         ]
-        stale = ParkedItems(outcome=ParkOutcome.STALE, items=parked, age_hours=72.0, detail="72.0h old")
+        stale = ParkedItems(outcome=ParkOutcome.STALE, items=parked, detail="72.0h old")
         with patch("collectors.youtube.load_items_from_s3", return_value=stale):
             items = await collector.collect()
         assert [i.item_id for i in items] == ["vFresh"]
@@ -514,7 +537,7 @@ class TestS3Preload:
                 published_at=datetime(2026, 6, 1, 20, tzinfo=UTC),
             )
         ]
-        stale = ParkedItems(outcome=ParkOutcome.STALE, items=parked, age_hours=25.0, detail="25.0h old")
+        stale = ParkedItems(outcome=ParkOutcome.STALE, items=parked, detail="25.0h old")
         with patch("collectors.youtube.load_items_from_s3", return_value=stale):
             items = await collector.collect()
         assert [i.item_id for i in items] == ["vEvening"]
@@ -692,7 +715,6 @@ class TestRssFallback:
         assert kwargs["timeout"] == config.request_timeout
         assert kwargs["max_retries"] == config.max_retries
         assert kwargs["backoff_sec"] == config.retry_backoff_sec
-        assert kwargs["proxy_fallback"] is True
 
     @pytest.mark.asyncio
     async def test_an_entry_with_no_readable_video_id_is_dropped(self, monkeypatch):

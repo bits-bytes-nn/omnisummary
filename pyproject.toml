@@ -1,7 +1,7 @@
 [project]
 name = "omnisummary"
 version = "0.1.0"
-description = "Proactive AI digest tool - daily content collection, ranking, and delivery via Slack"
+description = "Proactive AI digest tool - daily content collection, ranking, and delivery via Threads"
 requires-python = ">=3.12"
 dependencies = [
     "boto3>=1.40.58",
@@ -24,13 +24,10 @@ dependencies = [
     # waiting for that library to swap HTTP clients.
     "requests>=2.32.0",
     "pyyaml>=6.0.3",
-    "slack-sdk>=3.26.0",
     "strands-agents>=1.12.0",
-    "strands-agents-tools>0.2.9",
     "tavily-python>=0.5.0",
     "youtube-transcript-api>=1.2.2",
-    "yt-dlp>=2025.10.22",
-    "boto3-stubs~=1.42.63",
+    "pillow>=11.0.0",
 ]
 
 [project.optional-dependencies]
@@ -44,6 +41,8 @@ dev = [
     "mypy>=1.7.0",
     "ruff>=0.1.9",
     "types-PyYAML>=6.0",
+    "pre-commit>=4.0",
+    "boto3-stubs~=1.42.63",
 ]
 
 [build-system]
@@ -52,7 +51,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["shared*", "collectors*", "pipeline*", "agent*", "agent_runtime*", "output*"]
+include = ["shared*", "collectors*", "pipeline*", "agent*", "output*"]
 exclude = ["tests*", "references*", "config*"]
 
 [tool.black]
@@ -125,13 +124,12 @@ omit = [
     # modules, and they are exercised by RUNNING them (CI runs scripts/ci_synth.py through the
     # pinned CDK CLI). Listing them keeps the gate honest: uncovered LOC can't silently sit in TOTAL.
     #
-    # The two S3 syncs and put_secrets are NOT in this list, because they have tests. The syncs are
-    # the only supply of X posts and of transcript-carrying YouTube items, and they encode fixes for
-    # documented stale-data incidents (the STATE_BUCKET pop, the empty-envelope stamp) that only
-    # their own tests can hold in place.
+    # scripts/sync_to_s3.py and put_secrets are NOT in this list, because they have tests. The sync is
+    # the only supply of X posts and of transcript-carrying YouTube items, and it encodes fixes for
+    # documented stale-data incidents (the STATE_BUCKET pop, the empty-envelope stamp) that only its
+    # own tests can hold in place.
     "scripts/ci_synth.py",
     "scripts/deploy.py",
-    "scripts/gen_diagrams.py",
     "scripts/put_inference_profiles.py",
     "scripts/sample_digest.py",
     "scripts/sample_visual_brief.py",

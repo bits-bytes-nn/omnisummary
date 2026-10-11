@@ -15,7 +15,6 @@ from shared.utils import (
     parse_json_from_llm_output,
     resolve_secret,
     retry_async,
-    sanitize_slack_mrkdwn,
 )
 
 
@@ -305,57 +304,6 @@ class TestCoerceBool:
     def test_missing_falls_back_to_the_default(self):
         assert coerce_bool(None) is False
         assert coerce_bool(None, default=True) is True
-
-
-class TestSanitizeSlackMrkdwn:
-    def test_bold_conversion(self):
-        assert sanitize_slack_mrkdwn("**bold**") == "*bold*"
-
-    def test_header_removal(self):
-        assert sanitize_slack_mrkdwn("## Header") == "Header"
-
-    def test_horizontal_rule_removal(self):
-        result = sanitize_slack_mrkdwn("above\n---\nbelow")
-        assert "---" not in result
-
-    def test_korean_bold_not_broken_by_space_padding(self):
-        # Korean particles attach directly to bold (*규모*가); the space-padding rule
-        # must NOT insert a space inside the markers (which breaks Slack rendering).
-        result = sanitize_slack_mrkdwn("*규모*가 아니라 *설계*가 이기고 있다")
-        assert "*규모*" in result and "*규모 *" not in result
-        assert "*설계*" in result and "*설계 *" not in result
-
-    def test_english_bold_still_padded(self):
-        # English words touching a bold marker should still get a separating space.
-        assert sanitize_slack_mrkdwn("word*bold*word") == "word *bold* word"
-
-    def test_bold_before_paren_not_broken(self):
-        # Real regression: *Name* (note) must not become *Name * (note) or merge spans.
-        out = sanitize_slack_mrkdwn("추론 특화 *MAI-Thinking-1* (35B)과 코드 특화 *MAI-Code-1-Flash* (5B)")
-        assert "*MAI-Thinking-1*" in out and "*MAI-Thinking-1 *" not in out
-        assert "*MAI-Code-1-Flash*" in out and "특화*MAI-Code" not in out
-
-    def test_english_italic_padded(self):
-        # Multi-word english italic touching neighbours gets boundary spaces.
-        assert sanitize_slack_mrkdwn("a_italic phrase_b") == "a _italic phrase_ b"
-
-    def test_snake_case_not_treated_as_italic(self):
-        # A single ASCII token with underscores is an identifier, not emphasis.
-        assert sanitize_slack_mrkdwn("see config_value_here today") == "see config_value_here today"
-
-    def test_italic_no_space_inside_markers(self):
-        out = sanitize_slack_mrkdwn("text _ padded phrase _ end")
-        assert "_ padded" not in out and "phrase _" not in out
-
-    def test_markdown_link_with_parens_in_url_preserved(self):
-        # A citation URL containing balanced parens (Wikipedia, arXiv, DOIs) must survive the
-        # [text](url) → <url|text> conversion intact, not truncate at the first ')'.
-        out = sanitize_slack_mrkdwn("see [Foo](https://en.wikipedia.org/wiki/Foo_(bar))")
-        assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in out
-
-    def test_markdown_link_simple_url(self):
-        out = sanitize_slack_mrkdwn("[label](https://example.com/x)")
-        assert out == "<https://example.com/x|label>"
 
 
 class TestAvailableBotoProfile:

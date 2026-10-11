@@ -24,6 +24,17 @@ class TestContentAggregator:
         urls = {item.url for item in result}
         assert urls == {"http://a.com", "http://b.com"}
 
+    def test_a_retweet_collapses_into_the_post_it_retweets(self):
+        # 2026-10-11: omarsar0's "RT elvis: Pay close attention…" survived next to the original.
+        items = [
+            _item(
+                item_id="rt", url="https://x.com/omarsar0/status/2", title="RT elvis: Pay close attention to harnesses"
+            ),
+            _item(item_id="og", url="https://x.com/omarsar0/status/1", title="Pay close attention to harnesses"),
+            _item(item_id="rtx", url="https://r.example/3", title="RTX 5090 discontinued"),
+        ]
+        assert len(ContentAggregator().aggregate(items)) == 2
+
     def test_excludes_recently_published_urls(self):
         # Cross-day dedup: an article already published on a recent day is dropped, even
         # across http/https + trailing-slash variants (exclude set holds normalized URLs).

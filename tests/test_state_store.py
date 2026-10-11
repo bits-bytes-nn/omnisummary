@@ -27,13 +27,6 @@ class TestLocalStateStore:
             store.write("test.txt", "hello world")
             assert store.read("test.txt") == "hello world"
 
-    def test_exists(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            store = LocalStateStore(tmpdir)
-            assert not store.exists("missing.txt")
-            store.write("exists.txt", "data")
-            assert store.exists("exists.txt")
-
     def test_read_missing_returns_none(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             store = LocalStateStore(tmpdir)
@@ -116,22 +109,6 @@ class TestS3StateStore:
         with pytest.raises(StateReadError):
             store.read_json("trends.json", default={})
 
-    def test_exists_true_and_false(self):
-        client = MagicMock()
-        store = S3StateStore(_s3_session(client), "bkt", prefix="p")
-        assert store.exists("trends.json") is True
-        client.head_object.side_effect = ClientError({"Error": {"Code": "404"}}, "HeadObject")
-        assert store.exists("trends.json") is False
-
-    def test_exists_raises_on_a_real_failure(self):
-        # A denied HEAD used to read as "no such key", so the caller started a fresh trend memory
-        # and then overwrote the real one.
-        client = MagicMock()
-        client.head_object.side_effect = ClientError({"Error": {"Code": "AccessDenied"}}, "HeadObject")
-        store = S3StateStore(_s3_session(client), "bkt")
-        with pytest.raises(StateReadError):
-            store.exists("trends.json")
-
     def test_read_json_parses_stored_json(self):
         client = MagicMock()
         client.get_object.return_value = _body(b'{"trends": []}')
@@ -165,10 +142,9 @@ class TestCreateStateStore:
         assert session.call_args.kwargs == {"profile_name": "research", "region_name": "ap-northeast-2"}
 
     def test_an_unresolvable_profile_falls_back_to_ambient_credentials(self, monkeypatch):
-        # The AgentCore runtime sets none of the variables the platform sniff looks for and its
-        # container has no ~/.aws/config, so the old check took the profile_name="research" branch
-        # there and every trends.json read/write died on ProfileNotFound. Ambient is the default now;
-        # the profile is honoured only where it exists.
+        # A runtime with no ~/.aws/config must not take the profile_name="research" branch (every
+        # trends.json read/write would die on ProfileNotFound): ambient credentials are the default
+        # and the profile is honoured only where it exists.
         monkeypatch.setenv("STATE_BUCKET", "prod-bucket")
         monkeypatch.delenv("S3_PREFIX", raising=False)
         config = Config()

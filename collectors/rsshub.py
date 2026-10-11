@@ -42,6 +42,8 @@ def _failure_hint(platforms: Iterable[str]) -> str:
 
 
 class RSSHubCollector(BaseCollector):
+    config: RSSHubCollectorConfig
+
     def __init__(self, config: RSSHubCollectorConfig):
         self.config = config
         self.run_meta: dict[str, int] = {}
@@ -58,8 +60,6 @@ class RSSHubCollector(BaseCollector):
             # from the platforms this deployment actually configures.
             self.flag_degraded_park(
                 parked,
-                threshold=self.config.error_rate_threshold,
-                empty_threshold=self.config.empty_rate_threshold,
                 what=_INPUT_LABEL,
                 hint=_failure_hint(a.platform for a in self.config.accounts),
             )
@@ -78,13 +78,8 @@ class RSSHubCollector(BaseCollector):
 
         await self._check_reachable()
 
-        # Bound the fan-out. Every account's feedparser.parse occupies a worker thread, and with
-        # 40+ accounts the default executor is oversubscribed: a feed's wait_for could expire
-        # while its parse had not even started, so healthy accounts looked like timeouts. The
-        # semaphore is created HERE (on the running loop, never at import/__init__) and is
-        # acquired BEFORE the per-account timeout, so the timeout measures the fetch itself
-        # rather than the queue wait. Worst case wall time is
-        # ceil(accounts / max_concurrency) * request_timeout, which stays inside the Lambda budget.
+        # Bounded fan-out against one local RSSHub instance. Created on the running loop, never at
+        # import/__init__.
         semaphore = asyncio.Semaphore(self.config.max_concurrency)
         coros = [
             self._collect_account(account.username, account.platform, semaphore) for account in self.config.accounts
@@ -115,8 +110,6 @@ class RSSHubCollector(BaseCollector):
             total=total,
             failed=len(failed_accounts),
             empty=len(empty_accounts),
-            threshold=self.config.error_rate_threshold,
-            empty_threshold=self.config.empty_rate_threshold,
             what=_INPUT_LABEL,
             hint=_failure_hint(failed_platforms if failed_accounts else [a.platform for a in self.config.accounts]),
         )

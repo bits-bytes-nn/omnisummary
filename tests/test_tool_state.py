@@ -9,26 +9,24 @@ def _item(item_id: str) -> CollectedItem:
     )
 
 
-def test_export_state_keeps_only_ranked_collected_items():
+def test_export_state_carries_only_the_ranked_items_and_the_digest():
+    # Each RankedItem embeds its CollectedItem, so a separate collected-items map stored every
+    # ranked item twice — and was what overflowed the AgentCore 100k-char event limit.
     mgr = DigestStateManager()
-    collected = [_item(f"i{n}") for n in range(10)]
-    ranked = [RankedItem(item=collected[0], score=0.9), RankedItem(item=collected[1], score=0.8)]
-    digest = DigestResult(digest_text="hi", ranked_items=ranked)
-    mgr.store_digest(collected, ranked, digest)
+    ranked = [RankedItem(item=_item("i0"), score=0.9), RankedItem(item=_item("i1"), score=0.8)]
+    mgr.store_digest(ranked, DigestResult(digest_text="hi", ranked_items=ranked))
 
     state = mgr.export_state()
 
-    # all 10 collected, but only the 2 ranked-referenced ones are exported
-    assert set(state["collected_items"].keys()) == {"i0", "i1"}
+    assert set(state) == {"ranked_items", "digest_result"}
     assert len(state["ranked_items"]) == 2
     assert state["digest_result"]["digest_text"] == "hi"
 
 
 def test_export_state_roundtrips_through_load():
     mgr = DigestStateManager()
-    collected = [_item("a"), _item("b"), _item("c")]
-    ranked = [RankedItem(item=collected[0], score=0.7)]
-    mgr.store_digest(collected, ranked, DigestResult(digest_text="d", ranked_items=ranked))
+    ranked = [RankedItem(item=_item("a"), score=0.7)]
+    mgr.store_digest(ranked, DigestResult(digest_text="d", ranked_items=ranked))
 
     restored = DigestStateManager.load_from_dict(mgr.export_state())
 
@@ -38,16 +36,25 @@ def test_export_state_roundtrips_through_load():
     assert ranked_back[0].item.title == "t-a"
 
 
+def test_a_snapshot_stored_with_collected_items_still_loads():
+    # Snapshots written before the duplicate map was dropped stay readable (90-day memory expiry).
+    mgr = DigestStateManager()
+    ranked = [RankedItem(item=_item("a"), score=0.7)]
+    mgr.store_digest(ranked, DigestResult(digest_text="d", ranked_items=ranked))
+    legacy = {**mgr.export_state(), "collected_items": {"a": _item("a").model_dump(mode="json")}}
+
+    assert [ri.item.item_id for ri in DigestStateManager.load_from_dict(legacy).get_ranked_items()] == ["a"]
+
+
 def test_export_state_does_not_double_store_ranked_items():
     # The embedded digest_result must NOT re-embed the ranked list (it's stored at the top
     # level) — re-embedding doubled the snapshot and tripped the AgentCore 100k cap.
     mgr = DigestStateManager()
-    collected = [_item("a")]
-    ranked = [RankedItem(item=collected[0], score=0.7)]
+    ranked = [RankedItem(item=_item("a"), score=0.7)]
     content = DigestContent(
         lead="lead", headline_index=1, items=[DigestItem(title="t", url="http://e.com/a", body="b")]
     )
-    mgr.store_digest(collected, ranked, DigestResult(digest_text="d", ranked_items=ranked, content=content))
+    mgr.store_digest(ranked, DigestResult(digest_text="d", ranked_items=ranked, content=content))
 
     state = mgr.export_state()
     assert state["digest_result"].get("ranked_items") in (None, [])  # excluded from the embed

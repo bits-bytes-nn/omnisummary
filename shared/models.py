@@ -1,18 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from datetime import UTC, date, datetime
 from enum import Enum
-from typing import Any, get_args
+from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from .constants import SourceType, VisualOrientation
-from .logger import logger
-
-# An XML/HTML-style tag: needs a letter after '<' and a closing '>', so prose like "<2%" survives.
-_MARKUP_TAG_RE = re.compile(r"</?[A-Za-z][\w:-]*(?:\s[^<>]*?)?/?>")
 
 
 class CollectedItem(BaseModel):
@@ -44,25 +39,11 @@ class RankedItem(BaseModel):
     item: CollectedItem
     score: float = Field(ge=0.0, le=1.0)
     reasoning: str = ""
-    categories: list[str] = Field(default_factory=list)
-    # True for a candidate handed over ONLY as merge backfill: the source-slot guarantees are
-    # enforced on the first top_n items (the ones the reader actually gets), and these extras exist
-    # so the editor can still reach top_n distinct stories after merging same-event items. Fully
-    # usable — just not part of the diversified core. Defaults to False, so a snapshot stored before
-    # this field existed still loads.
-    backfill: bool = False
-    # True for a candidate admitted by the source-slot score GRACE: its score is below min_score, and
-    # it is here only because its source has a guaranteed slot and landed nothing above the bar. It
-    # was tracked as a local `grace_ids` set inside the ranker alone, so by the time the editor saw
-    # it, a 0.50 grace item looked identical to a 0.70 one and predictably lost — the ranker's intent
-    # to keep that source represented was invisible to the stage that decides what ships. Mirrors
-    # `backfill`, including the default that lets a pre-existing snapshot load.
-    grace: bool = False
 
 
 class DigestItem(BaseModel):
-    """One story in the digest, as plain prose. Renderers add channel-specific markup
-    (Slack Block Kit, Threads plain text); the LLM never writes Slack mrkdwn itself."""
+    """One story in the digest, as plain prose. The Threads renderer lays it out; the LLM never
+    writes markup itself."""
 
     title: str  # Korean display title
     url: str
@@ -130,62 +111,27 @@ class DigestResult(BaseModel):
     # Set by the pipeline after ranking, so the delivery/alerting layer can report a digest built on
     # an incomplete candidate pool. None means "not recorded" (older snapshots, direct construction).
     ranking_health: RankingHealth | None = None
-    # Diversity caps broken by the digest as SHIPPED, one human-readable line each. The ranker
-    # guarantees them on the ranked core, but the editor's merge-backfill candidates deliberately
-    # ignore both caps and nothing verified the editor used one as a REPLACEMENT rather than an
-    # addition. Empty = the shipped digest respects the caps. Detection only: carried so the
-    # alerting layer can report it, never acted on by reselecting stories.
-    diversity_breaches: list[str] = Field(default_factory=list)
 
 
 class VisualBrief(BaseModel):
-    title: str = Field(min_length=1, max_length=100)
-    caption: str = Field(min_length=1, max_length=600)
-    prompt: str = Field(min_length=1, max_length=4000)
+    # No max_length: the title only feeds a log line, so a cap could only cost the day's visual.
+    title: str = Field(min_length=1)
+    # The Images API limit for the GPT image models (4000 is dall-e-3's): a four-panel brief overran it.
+    prompt: str = Field(min_length=1, max_length=32000)
+    # Required, no default: a default let a brief that left the field out silently become portrait,
+    # and the visual pipeline then recorded that fallback as if it had been chosen.
+    orientation: VisualOrientation
 
-    # The synopsis chooses the aspect ratio that fits the visual (a wide 4-panel strip,
-    # a square meme, a tall infographic); the generator maps it to a supported size. The vocabulary
-    # lives in shared/constants (VisualOrientation) because pipeline.image_sizes must offer exactly
-    # these keys — a hardcoded Literal here let the two drift silently.
-    orientation: VisualOrientation = "portrait"
 
-    @field_validator("title", "caption", mode="after")
-    @classmethod
-    def _drop_markup(cls, value: str) -> str:
-        """Strip tag-like markup from the human-facing fields. These are plain prose bound for a
-        post caption, but a structured-output slip can trail the model's own scaffolding into the
-        string: the 2026-08-17 caption ended with `</caption>\\n<parameter name="orientation">`
-        and that markup was published verbatim. The pattern requires a letter after `<` and a
-        closing `>`, so ordinary prose like "<2%" or "a < b" is left alone."""
-        return _MARKUP_TAG_RE.sub("", value).strip()
+class VisualReview(BaseModel):
+    """What the post-render QA found: each defect as one sentence naming its panel, empty when clean."""
 
-    @model_validator(mode="after")
-    def _drop_bled_field_value(self) -> VisualBrief:
-        """Drop a trailing line that is just ANOTHER field's value.
-
-        The 2026-08-17 leak (`</caption>\\n<parameter name="orientation">landscape`) was the tagged
-        form of a recurring structured-output slip: the model runs the next field into the previous
-        string. A 2026-08-18 local run produced the TAG-LESS form — a caption ending in a bare
-        `\\nportrait` — which the markup strip above cannot see. The rule is derived, not a word
-        list: a prose field must not END with a standalone line that is one of the orientation
-        field's ALLOWED values, so prose that merely contains the word survives.
-
-        Compared against every value of the Literal, not just the parsed `orientation`: on 08-17 the
-        bled word was 'landscape' while orientation had fallen back to the default 'portrait', so a
-        self-comparison did not match and the leak was published."""
-        candidates = {v.casefold() for v in get_args(type(self).model_fields["orientation"].annotation)}
-        for name in ("title", "caption"):
-            value = getattr(self, name)
-            head, sep, last = value.rpartition("\n")
-            if sep and last.strip().casefold() in candidates:
-                setattr(self, name, head.strip())
-                logger.warning("Dropped a bled '%s' value from VisualBrief.%s", last.strip(), name)
-        return self
+    issues: list[str] = Field(default_factory=list)
 
 
 class ImageAsset(BaseModel):
     """A representative image downloaded from a source page (its og:image / twitter:image),
-    carried through to Slack/Threads delivery. `source_url` is the article the image belongs
+    carried through to Threads delivery. `source_url` is the article the image belongs
     to (shown for attribution); `image_url` is where the image bytes came from."""
 
     data: bytes
@@ -198,14 +144,11 @@ class ImageAsset(BaseModel):
 class TrendEvidence(BaseModel):
     date: str  # YYYY-MM-DD, stamped by code from the digest date (never the LLM)
     summary: str
-    item_id: str = ""
-    url: str = ""
 
 
 class TrendStatus(str, Enum):
     ACTIVE = "active"
     COOLING = "cooling"
-    ARCHIVED = "archived"
 
 
 class Trend(BaseModel):
@@ -244,7 +187,7 @@ class TrendMemory(BaseModel):
         (distinct query-term hits, then momentum). Empty query → top trends by momentum.
         Deterministic term matching — no embeddings."""
         terms = {t for t in query.lower().split() if t}
-        candidates = [t for t in self.trends if t.status != TrendStatus.ARCHIVED]
+        candidates = self.trends
 
         def hits(trend: Trend) -> int:
             if not terms:

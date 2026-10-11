@@ -10,8 +10,7 @@ from shared.constants import SourceType
 
 
 def _config(**kwargs) -> RedditCollectorConfig:
-    # retry_backoff_sec=0 keeps retries and inter-subreddit spacing instant in tests (jitter and
-    # spacing both scale by it), so a retriable-status test doesn't sleep for real.
+    # retry_backoff_sec=0 keeps retries instant in tests, so a retriable-status test doesn't sleep.
     base = {"subreddits": ["LocalLLaMA"], "sort": "hot", "limit": 5, "retry_backoff_sec": 0, "lookback_hours": 24}
     base.update(kwargs)
     cfg = RedditCollectorConfig(**base)
@@ -103,7 +102,7 @@ class TestRedditCollect:
 
     @pytest.mark.asyncio
     async def test_total_outage_raises_for_health_alert(self):
-        # All subreddits failing (e.g. proxy/upstream error) must surface as a failure
+        # All subreddits failing (an upstream error) must surface as a failure
         # so the health check marks Reddit FAILED rather than a silent empty day.
         collector = RedditCollector(_config())
         fetch, _ = _fetch(RuntimeError("Failed to parse Reddit feed"))
@@ -112,17 +111,24 @@ class TestRedditCollect:
                 await collector.collect()
 
     @pytest.mark.asyncio
-    async def test_partial_failure_keeps_succeeding_subreddits(self):
-        collector = RedditCollector(_config(subreddits=["LocalLLaMA", "MachineLearning"]))
-
-        async def _do(url, **kwargs):
-            if "MachineLearning" in url:
-                raise RuntimeError("boom")
-            return _feed([_entry()])
-
-        with patch("collectors.base.fetch_feed", side_effect=_do):
+    async def test_one_request_serves_every_subreddit_with_its_own_attribution_and_cap(self):
+        # A second request seconds after the first is what Reddit 429s, so every subreddit rides on
+        # ONE multi-subreddit request; each keeps at most `limit` posts so a busy one can't crowd out
+        # a quiet one.
+        collector = RedditCollector(_config(subreddits=["LocalLLaMA", "MachineLearning"], limit=2))
+        entries = [
+            _entry(title=f"llama {i}", link=f"https://www.reddit.com/r/LocalLLaMA/comments/l{i}/x/") for i in range(4)
+        ] + [_entry(title="ml", link="https://www.reddit.com/r/MachineLearning/comments/m1/x/")]
+        fetch, calls = _fetch(_feed(entries))
+        with patch("collectors.base.fetch_feed", side_effect=fetch):
             items = await collector.collect()
-        assert len(items) == 1  # one subreddit failed, the other survived
+        assert len(calls) == 1
+        assert "/r/LocalLLaMA+MachineLearning/" in calls[0]
+        assert [(i.title, i.metadata["subreddit"]) for i in items] == [
+            ("llama 0", "LocalLLaMA"),
+            ("llama 1", "LocalLLaMA"),
+            ("ml", "MachineLearning"),
+        ]
 
     @pytest.mark.asyncio
     async def test_retries_429_then_succeeds(self):
@@ -164,39 +170,17 @@ class TestRedditCollect:
             await collector.collect()
         assert "/r/LocalLLaMA/top/.rss" in calls[0]
         assert "limit=5" in calls[0]
-        assert "t=day" in calls[0]  # a 24h lookback is covered by the daily window
+        assert "t=day" in calls[0]
 
     @pytest.mark.asyncio
-    async def test_the_requested_window_widens_with_the_configured_lookback(self):
-        # `top` ranks WITHIN the requested window, so a pinned t=day asked Reddit for less than the
-        # shipped 30-hour lookback and widening lookback_hours changed nothing upstream.
+    async def test_top_asks_for_the_day_whatever_the_lookback(self):
+        # Reddit's window is relative to the fetch and runs are a day apart; t=week is a different
+        # ranking whose older viral posts pushed today's out of the capped list.
         collector = RedditCollector(_config(sort="top", lookback_hours=30))
         fetch, calls = _fetch(_feed([]))
         with patch("collectors.base.fetch_feed", side_effect=fetch):
             await collector.collect()
-        assert "t=week" in calls[0]
-
-    @pytest.mark.asyncio
-    async def test_a_quiet_direct_feed_is_not_turned_into_a_failure_by_the_proxy(self, monkeypatch):
-        # THE REGRESSION: the direct fetch answers 200 with no entries (a quiet subreddit) and the
-        # proxy attempt then 429s. Returning the LAST attempt made that 429 the outcome, so every
-        # retry burned and both configured subreddits reported FAILED on a clean empty day.
-        monkeypatch.setenv("CLOUDFLARE_PROXY_URL", "https://proxy.example.com")
-        monkeypatch.setenv("CLOUDFLARE_PROXY_TOKEN", "tok")
-        collector = RedditCollector(_config(subreddits=["LocalLLaMA", "MachineLearning"], max_retries=3))
-        calls: list[str] = []
-
-        async def _do(url, **kwargs):
-            calls.append(url)
-            if "proxy.example.com" in url:
-                raise TransientStatusError("returned HTTP 429")
-            return _feed([])
-
-        with patch("collectors.base.fetch_feed", side_effect=_do):
-            items = await collector.collect()
-        assert items == []  # a quiet day, not a failure
-        assert collector.run_meta == {"accounts_total": 2, "accounts_failed": 0, "accounts_empty": 2}
-        assert len(calls) == 4  # one direct + one proxy attempt per subreddit, no retry storm
+        assert "t=day" in calls[0]
 
 
 class TestExtractPostId:

@@ -1,7 +1,7 @@
 # OmniSummary — 설계 문서
 
-> OmniSummary의 설계와 구현을 줄 단위까지 설명하는 단일 레퍼런스다. 상위 수준 개요는 `README.md`,
-> 개발 규칙은 `.claude/CLAUDE.md`에 있고, "왜 이런 모양인가"에 대한 답은 여기에 있다.
+> OmniSummary의 설계와 구현을 줄 단위까지 설명하는 단일 레퍼런스다. 상위 수준 개요는 `README.md`에 있고,
+> "왜 이런 모양인가"에 대한 답은 여기에 있다.
 >
 > 읽는 방식에 대한 안내가 하나 필요하다. 단순한 코드가 기본값인 곳에서 복잡한 쪽을 골랐다면 그 이유를 함께
 > 적었고, 근거로 쓴 수치는 실제 출력에서 재본 값이다. 배경 없이 코드만 보면 과한 장치로 읽히고, 그러면 다음
@@ -19,7 +19,7 @@
 | [6. LLM 팩토리](#6-llm-팩토리-sharedutilspy) | 모델 구성, 비용 귀속, 토큰 카운트, 프롬프트 캐싱 |
 | [7. 메모리](#7-메모리-세-개의-분리된-저장소) | 트렌드, 다이제스트 스냅샷, cross-day dedup |
 | [8. 헬스 체크와 알림](#8-헬스-체크와-알림) | 소스 분류, SNS 알림, 메트릭 |
-| [9. 딥 리서치 에이전트](#9-딥-리서치-에이전트) | Strands 에이전트, 도구 8개, 채널 인지 전달 |
+| [9. 딥 리서치 에이전트](#9-딥-리서치-에이전트) | Strands 에이전트, 도구 8개, 로컬 CLI와 OpenClaw 스킬 |
 | [10. 시각화 생성기](#10-시각화-생성기) | 자유형 시놉시스에서 이미지까지 |
 | [11. 인프라](#11-인프라cdk) | CDK 두 스택 |
 | [12. 관측성](#12-관측성) | 로깅과 알람 |
@@ -35,45 +35,40 @@ OmniSummary는 능동형(proactive) AI/ML 일일 다이제스트 시스템이다
 시스템에는 서로 독립적인 두 개의 실행 경로가 있다.
 
 **첫째는 스케줄 다이제스트다.** EventBridge 크론이 다이제스트 Lambda를 깨우면 다섯 계열의 소스에서 콘텐츠를
-수집해 중복을 제거하고, LLM으로 순위를 매긴 다음 한국어 에디토리얼 다이제스트를 구조화된 `DigestContent`로
-생성한다. 그 콘텐츠를 채널별 렌더러가 각 채널의 포맷으로 바꿔 전달한다. 상태는 Bedrock AgentCore Memory에
-저장하고, 소스별 헬스는 SNS 이메일로 보고한다.
+수집해 중복을 제거하고, LLM으로 후보 풀을 고른 다음 한국어 에디토리얼 다이제스트를 구조화된 `DigestContent`로
+생성한다. 상태는 Bedrock AgentCore Memory에 저장하고, 소스별 헬스는 SNS 이메일로 보고한다. 게시는 **데일리
+비주얼 Lambda**가 한다. Threads 게시물은 4컷 만화 이미지 루트와 스토리 답글 체인이 한 세트로 나가야 하니,
+이미지를 만든 쪽이 텍스트까지 함께 보낸다.
 
-여기서 비직관적인 지점이 하나 있다. Slack은 다이제스트 Lambda가 게시하지만 **Threads는 데일리 비주얼
-Lambda가** 게시한다. Threads 게시물은 이미지 루트와 답글 체인이 한 세트로 나가야 하니, 이미지를 만든 쪽이
-텍스트까지 함께 보내는 것 말고는 온전한 방법이 없다.
-
-**둘째는 Slack 트리거 딥 리서치다.** Slack 멘션이 API Gateway로 들어오면 서명을 검증하고 중복을 걸러낸 뒤
-AgentCore Runtime 위의 Strands 에이전트를 호출한다. 에이전트는 자유형 토픽을 받아 웹과 논문과 커뮤니티를
-스스로 조사하고, 한국어로 합성한 출처 표기 리포트를 채널에 전달한다. 다이제스트와 완전히 분리된 독립 웹
-리서치라서, 다이제스트가 다룬 항목에 묶이지 않는다.
+**둘째는 로컬 딥 리서치다.** `research_cli.py`가 Strands 에이전트를 로컬에서 실행한다. 에이전트는 자유형 토픽을
+받아 웹과 논문과 커뮤니티를 스스로 조사하고, 한국어로 합성한 출처 표기 리포트를 JSON으로 stdout에 돌려준다.
+OpenClaw 스킬(`~/.openclaw/workspace/skills/omnisummary-research/SKILL.md`)이 이 CLI를 호출하고, Threads 게시는
+`--publish threads`를 줄 때만 한다. 다이제스트와 분리된 독립 리서치라서 다이제스트가 다룬 항목에 묶이지 않는다.
 
 ```
 [EventBridge 크론] → [다이제스트 Lambda (Docker)]
    → 수집기 (RSS, Reddit, YouTube, WebSearch, X via RSSHub/S3)
    → 집계기 (URL + 제목 중복 제거)
-   → 랭커 (Bedrock Claude Opus 4.8, 소스 슬롯 + origin 다양성)
+   → 랭커 (Claude Opus 5.5, 소스 슬롯과 origin 상한으로 후보 풀 구성)
    → 트렌드 트래커 (구조화 trends.json, StateStore)
-   → 다이제스트 생성기 (Bedrock Claude Sonnet 5, 한국어 구조화 DigestContent)
-   → 채널별 렌더링 → Slack(Block Kit) 전달 (enable_slack_post)
+   → 다이제스트 생성기 (Claude Sonnet 5.5, 후보 풀에서 가장 강한 5개를 골라 한국어 DigestContent 작성)
    → AgentCore Memory (다이제스트 스냅샷)
-   → 데일리 비주얼 Lambda 비동기 트리거 (gpt-image-2)
-        └→ 이 Lambda가 이미지와 함께 Threads(root + reply chain)를 게시 (enable_threads_post)
-   → FAILED 또는 STALE 소스가 있으면 SNS 알림
+   → 데일리 비주얼 Lambda 비동기 트리거
+        └→ 4컷 한글 만화 (gpt-image-2.5-sunburst) + Threads root/reply 체인 게시 (enable_threads_post)
+   → FAILED, STALE, DEGRADED 소스(그리고 `alert_on_empty` 소스의 EMPTY)가 있으면 SNS 알림
 
-[Slack 멘션] → [API Gateway + WAF] → [Slack 이벤트 Lambda]
-   → 서명 검증 → DynamoDB 중복 제거 → 즉시 ack 게시 → 비동기 self-invoke
-   → [Bedrock AgentCore Runtime: Strands 딥 리서치 에이전트]
+[OpenClaw 스킬 / 터미널] → research_cli.py (로컬)
+   → Strands 딥 리서치 에이전트 (Claude Opus 5.5)
    → 도구: web_search, community_search, search_papers, read_url, recall_trends, recall_digest,
      attach_image, deliver_report
-   → 다중 소스 리서치 후 채널별(Slack Block Kit / Threads) 리포트를 deliver_report로 게시
+   → Markdown 리포트를 JSON으로 stdout에 반환, --publish threads일 때만 Threads 게시
 ```
 
 파이프라인 개념도(수집에서 랭킹, 다이제스트, 전달까지):
 
 ![How the digest works](diagrams/concept-pipeline.png)
 
-AWS 아키텍처(스케줄 다이제스트와 Slack 트리거 딥 리서치, 두 경로):
+아키텍처(스케줄 다이제스트와 로컬 딥 리서치, 두 경로):
 
 ![AWS architecture](diagrams/architecture.png)
 
@@ -83,30 +78,31 @@ AWS 아키텍처(스케줄 다이제스트와 Slack 트리거 딥 리서치, 두
 |------|------|
 | `collectors/` | `BaseCollector` ABC와 공유 `load_items_from_s3`(로컬에서 S3로 올린 park 파일 로더), 그리고 RSS, Reddit(`.rss` 피드), RSSHub(X/Twitter), YouTube, WebSearch(Tavily) 구현 |
 | `pipeline/` | `ContentAggregator`, `ContentRanker`, `DigestGenerator`, `TrendTracker`, `DailyVisualMaker`, 그리고 오케스트레이션(`runner.py`: `run_collectors_with_health`, `run_pipeline`, `persist_digest`, `resolve_digest_window`) — CLI와 다이제스트 Lambda가 함께 타는 단일 경로 |
-| `agent/` | 딥 리서치 Strands 에이전트(`research_agent.py`)와 도구 8개(`research_tools.py`), 다이제스트·비주얼 파이프라인용 인메모리 상태 `DigestStateManager`(`tool_state.py`), 데일리 비주얼이 쓰는 자유형 이미지 생성기 `VisualGenerator`(`visuals.py`) |
-| `agent_runtime/` | Bedrock AgentCore HTTP 서버(`BedrockAgentCoreApp`). 딥 리서치 에이전트의 invoke 엔트리포인트 |
-| `shared/` | config(공유 `KOREAN_STYLE_RULES` 포함), models, constants(`TRENDS_KEY` 포함), utils(Bedrock 팩토리), logger, prompts, state_store, memory, history_store(cross-day dedup 원장과 롤링 로그), research(`research_backends.py`, Tavily와 Semantic Scholar), media(`og_image.py`, OG 이미지 fetch), proxy |
-| `output/` | 채널별 렌더러(`renderers.py`), 다이제스트 게시(`digest_delivery.py`: Slack 이미지 업로드와 Threads 체인, 멱등 원장, 이미지 S3 호스팅), 리서치 전달 오케스트레이션(`delivery.py`), Slack 전달(`slack_handler.py`), Threads 전달(`threads_handler.py`) |
-| `lambda_handlers/` | 다이제스트 핸들러, Slack 이벤트 핸들러, 데일리 비주얼 핸들러(`visual_handler`, 다이제스트 Lambda가 비동기로 호출한다), Threads 토큰 갱신 핸들러(`threads_refresh_handler`) |
+| `agent/` | 딥 리서치 Strands 에이전트(`research_agent.py`)와 도구 8개(`research_tools.py`), 실행별 인메모리 상태 `DigestStateManager`(`tool_state.py`), 데일리 비주얼이 쓰는 이미지 생성기 `VisualGenerator`(`visuals.py`) |
+| `research_cli.py` | 딥 리서치 로컬 CLI. JSON 한 개를 stdout에 쓰고 로그는 stderr로 보낸다 |
+| `shared/` | config(공유 `KOREAN_STYLE_RULES` 포함), models, constants, utils(Bedrock 팩토리와 모델 레지스트리), logger, prompts, state_store, memory, history_store(cross-day dedup 원장과 롤링 로그), formatting, alerts, metrics, research(Tavily와 Semantic Scholar), media(OG 이미지 fetch) |
+| `output/` | 채널별 렌더러(`renderers.py`), 다이제스트 게시(`digest_delivery.py`: Threads 체인, 멱등 원장, 이미지 S3 호스팅), 리서치 리포트 전달(`delivery.py`), Threads API(`threads_handler.py`) |
+| `lambda_handlers/` | 다이제스트 핸들러, 데일리 비주얼 핸들러(`visual_handler`, 다이제스트 Lambda가 비동기로 호출한다), Threads 토큰 갱신 핸들러(`threads_refresh_handler`) |
 | `infrastructure/` | CDK `foundation_stack`과 `application_stack` |
-| `scripts/` | `deploy.py`, `put_secrets.py`, `put_inference_profiles.py`, `ci_synth.py`, `sync_rsshub_to_s3.py`, `sync_youtube_to_s3.py`, `sync_all_to_s3.sh`(두 sync를 함께 실행한다) |
+| `scripts/` | `deploy.py`, `put_secrets.py`, `put_inference_profiles.py`, `ci_synth.py`, `sync_to_s3.py <rsshub\|youtube>`, `sync_all_to_s3.sh`(두 소스를 차례로 sync한다), `sample_digest.py`, `sample_visual_brief.py`, `render_excalidraw.mjs` |
 
 ## 3. 설정
 
-설정은 `config/config.yaml`에서 출발해 `shared/config.py`의 Pydantic 모델로 `Config.load()`를 통해 로드된다.
+`Config.load()`가 `config/config.yaml`을 읽어 `shared/config.py`의 Pydantic 모델로 만든다.
 시크릿은 로컬에서는 `.env`, AWS에서는 SSM Parameter Store의 `/{project}/{stage}/{name}` 경로에서 온다.
 
 `config/config.yaml`은 gitignore 대상이고 **`config/config-template.yaml`만 추적된다.** 그래서 CI synth와
-인프라 테스트는 `Config.load()`가 아니라 이 템플릿을 명시적으로 로드한다. CI에는 `config.yaml`이 없으니
-`Config.load()`는 조용히 코드 기본값으로 떨어지고, 그러면 아무도 배포하지 않는 스택을 synth하면서 아무것도
-증명하지 못한다. 같은 이유로 config 불변식 테스트(모델 레지스트리 동기화, 코드 기본값과 배포 설정의 일치,
+인프라 테스트는 `Config.load()`에 기대지 않고 이 템플릿을 명시적으로 로드한다. CI에는 `config.yaml`이 없어서
+`Config.load()`는 경고와 함께 템플릿으로 폴백하고(둘 다 없을 때만 실패한다), 그 폴백으로 synth해서는 운영자가
+실제로 배포하는 설정을 증명하지 못한다. 같은 이유로 config 불변식 테스트(모델 레지스트리 동기화, 코드 기본값과 배포 설정의 일치,
 orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를 parametrize한다. 추적되는 파일만이 모든
 체크아웃에 존재하므로, 한 파일에만 걸린 검사는 노트북 한 대에서만 도는 검사다.
 
-값의 우선순위는 `config.yaml`이 Pydantic 필드 기본값을 재정의하는 쪽이다. 모델 ID는 코드에 하드코딩되어 있지
-않다. 예컨대 `PipelineConfig`는 `ranking_model`과 `digest_model` 둘 다 Sonnet 5를 기본값으로 두지만
-`config.yaml`이 `ranking_model`을 Opus 4.8로 올려 잡고 있어서, 실제 배포에서 랭킹은 Opus 4.8로 돈다. 아래
-표기는 모두 `config.yaml` 기준 실효값이다.
+값의 우선순위는 `config.yaml`이 Pydantic 필드 기본값을 재정의하는 쪽이다. 단계별 모델의 코드 기본값은
+템플릿과 같게 맞춘다([§6](#모델-팩토리) 표). 그 밖의 필드는 아래 표기가 코드 기본값이며, 운영 config가 다르게
+두는 값(`park_max_age_hours`, `item_text_max_tokens`, `lookback_hours` 등)은 따로 적는다. 모든 설정 모델은
+`extra="forbid"`라서, 코드에서 지운 키가 gitignore된 `config.yaml`에 남아 있으면 `Config.load()`가 실패한다.
+필드를 지우는 변경은 운영자의 `config.yaml`도 함께 고쳐야 한다.
 
 `Config.load()`는 호출마다 YAML을 다시 읽고 전체를 재검증한다. 리서치 한 번이면 도구 호출마다 그 작업이
 반복되므로, 값을 읽기만 하는 리프 호출자는 `lru_cache(maxsize=1)`로 감싼 `get_config()`를 쓴다
@@ -125,8 +121,8 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 | 공통(상속) | `enabled`, `lookback_hours`, `reference_time`, `request_timeout`, `max_retries`, `retry_backoff_sec`, `park_max_age_hours`(기본 36), `error_rate_threshold`(기본 50.0), `empty_rate_threshold`(기본 100.0=비활성) | 활성화 여부, 조회 윈도, 타임아웃, 재시도, S3 park 파일의 나이 예산(초과하면 항목은 쓰되 헬스를 STALE로 보고한다), 그리고 DEGRADED 판정 두 갈래: 입력(피드·계정·채널·쿼리) 실패율과 입력 빈 응답률. 어느 하나만 걸려도 DEGRADED이고 보고만 할 뿐 항목은 그대로 전달한다 |
 | `rss` | `feeds`, `max_concurrency`(기본 5) | RSS 피드 URL 목록과 동시 fetch 상한 |
 | `reddit` | `subreddits`, `sort`, `limit` | 서브레딧, 정렬, 개수 |
-| `youtube` | `channels`, `max_videos_per_channel`, `resolve_timeout`, `transcript_timeout`, `transcript_language` | 채널, 영상 수, 자막 관련 설정 |
-| `web_search` | `trend_searches`, `max_results_per_query`, `max_refine_queries`, `min_search_score`, `refine_model` | Tavily 검색과 관련도 필터 |
+| `youtube` | `channels`, `max_videos_per_channel`, `resolve_timeout`, `transcript_timeout`, `transcript_language`, `max_concurrency`, `park_required` | 채널, 영상 수, 자막 관련 설정, 동시 채널 상한, AWS에서 park 파일 부재를 DEGRADED로 볼지([§4.2](#42-s3-park-파일-로더)) |
+| `web_search` | `trend_searches`, `max_results_per_query`, `max_refine_queries`, `min_search_score`, `refine_model`(Sonnet 5.5), `max_concurrency` | Tavily 검색과 관련도 필터, 쿼리 정제 모델 |
 | `rsshub` | `base_url`, `accounts`, `max_concurrency` | X 계정(로컬 컨테이너 또는 S3)과 동시 fetch 상한 |
 
 `lookback_hours`는 하루가 아니라 **직전 실행까지** 닿아야 한다. cutoff는 다이제스트 날짜의 **끝** 자정에
@@ -153,13 +149,9 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 블로그는 하루 글이 없는 게 정상이고, X 계정 40개가 모두 조용한 건 세션이 깨진 것이다) 기본값은 비활성인
 100.0이고 config.yaml에서 소스별로 켠다.
 
-**절대 개수로 판정하는 노브는 두지 않는다.** 비율은 입력이 적은 소스에서 판정을 표현하지 못한다. 서브레딧
-2개면 1개 실패가 정확히 기본 임계값 50%(=깨끗함)이고 2개 실패는 이미 FAILED라, DEGRADED에 닿을 수 없다.
-그래도 그 자리를 비워둔 이유는 유일한 해당 소스가 reddit인데 거기서 그 판정이 조치로 이어지지 않기
-때문이다. 30회 실행에서 r/MachineLearning은 29회 429를 받고 그중 4회 재시도를 소진한다. 1로 무장하면 97%의
-실행에 존재하는 조건으로 월 4회 페이징하면서 할 수 있는 일이 없다. Reddit이 데이터센터 IP를 레이트리밋하는
-것이고 재시도 후 프록시 폴백이 곧 완화 수단이며, 나머지 26일에는 그것이 동작한다. 소진한 4일에도 reddit은 자기
-슬롯에 스토리를 실었다.
+**절대 개수로 판정하는 노브는 두지 않는다.** 비율은 입력이 적은 소스에서 판정을 표현하지 못하지만, 입력이 적은
+유일한 소스인 reddit은 서브레딧 전체를 요청 한 번으로 받으니([§4.4](#44-reddit-redditpy)) 실패가 소스
+단위로만 일어나고 FAILED로 충분하다.
 
 `collectors.alert_on_empty`(기본 `[]`)는 EMPTY가 사건인 소스의 이름 목록이다(예: `["rss", "web_search"]`).
 목록이 필요한 이유는 이렇다. 어두워진 소스는 예외도 남기지 않고 stale park 파일도 남기지 않고 실패율도
@@ -175,33 +167,36 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 
 | 영역 | 필드 | 설명 |
 |------|------|------|
-| 모델 | `ranking_model`(실효 Opus 4.8), `digest_model`(Sonnet 5), `trend_model` | 단계별 모델 |
-| 랭킹 | `ranking_batch_size`, `ranking_batch_token_budget_ratio`(기본 0.7), `ranking_context_window_fallback`(기본 200000), `ranking_max_concurrency`(기본 4), `ranking_max_retries`(기본 3), `ranking_retry_backoff_sec`(기본 5), `ranking_min_coverage_ratio`(기본 0.9), `ranking_categories`, `ranking_duplicate_score_penalty`, `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치, 배치가 채울 수 있는 컨텍스트 창 비율과 미등록 모델의 대체 창 크기, Bedrock fan-out 상한, 배치 재시도, 커버리지 재질의 기준, 카테고리, 점수 루브릭 |
-| 선정과 다양성 | `top_n`, `min_score`, `source_slot_score_grace`(기본 0.1), `source_slot_grace_max_admissions`(기본 1), `source_slots`, `source_cap_multiplier`, `max_per_origin` | 상위 N, 소스 슬롯, grace 밴드(슬롯 보유 소스가 `min_score` 위 항목이 전무하면 grace 밴드 안의 최선 1건을 구제하고, 구제된 항목은 `RankedItem.grace`로 표시되어 에디터와 다양성 감사에 보인다), 한 실행에서 허용하는 구제 건수, origin 상한 |
-| 다이제스트 버퍼와 중복 | `digest_candidate_buffer`(기본 3), `published_url_ttl_days`(기본 6), `recent_leads_window`(기본 5) | 랭커 오버선정 버퍼(소스 슬롯은 `top_n` 코어에만 적용하고 버퍼분은 `backfill` 플래그로 넘겨 병합 보충용임을 항목별로 알린다), cross-day dedup 원장 TTL, 반복 방지용 최근 lead 윈도 |
+| 모델 | `ranking_model`(Opus 5.5), `digest_model`(Sonnet 5.5, 그라운딩과 비주얼 편집기·아트 디렉터도 이 모델을 쓴다), `trend_model`(Sonnet 5.5) | 단계별 모델([§6](#모델-팩토리)) |
+| 랭킹 | `ranking_batch_size`(기본 40), `ranking_batch_token_budget_ratio`(기본 0.7), `ranking_max_concurrency`(기본 4), `ranking_max_retries`(기본 3), `ranking_retry_backoff_sec`(기본 5), `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치, 배치가 채울 수 있는 컨텍스트 창 비율, Bedrock fan-out 상한, 배치 재시도, 점수 루브릭 |
+| 후보 풀 | `top_n`(기본 5), `min_score`(기본 0.6), `digest_candidate_buffer`(기본 3), `source_slots`(소스마다 1), `source_cap_multiplier`, `max_per_origin`(기본 1) | 에디터에게 넘기는 후보는 `top_n + digest_candidate_buffer`개이고, 소스 슬롯과 origin 상한은 이 풀을 채우는 데만 쓴다. 실제로 나가는 `top_n`개는 에디터가 고른다([§5.2](#52-랭커-rankerpy)) |
+| 중복 | `published_url_ttl_days`(기본 6, 최소 2), `recent_leads_window`(기본 5) | cross-day dedup 원장 TTL과 최근 다이제스트 제목을 읽는 창, 반복 방지용 최근 lead 윈도. TTL이 최소 2인 것은 날짜만 있는 웹 결과가 이틀 연속 윈도에 들어가고([§4.7](#47-websearch-web_searchpy)) 두 번째 게시를 원장이 막기 때문이다 |
 | 트렌드 | `trend_retention_days`, `trend_cooling_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존과 냉각 기간, 증거와 active 캡, momentum 반감기 |
-| 전달 | `enable_slack_post`, `enable_threads_post` | 채널별 전달 on/off. 각각 독립 토글이고 코드 기본값은 Slack on / Threads off이며, 실제 상태는 배포 환경 설정을 따른다. Slack은 다이제스트 Lambda가, Threads는 데일리 비주얼 Lambda가 게시한다 |
+| 전달 | `enable_threads_post` | Threads 게시 on/off. 코드 기본값은 off이고 배포 설정은 on이다. 데일리 비주얼 Lambda가 게시한다 |
 | AGI 카운트다운 | `agi_countdown_date`(기본 `2029-01-01`), `agi_countdown_template`, `agi_countdown_after`, `agi_countdown_position`(`prefix`\|`suffix`, 코드 기본값과 배포 설정 모두 `prefix`) | 다이제스트 lead에 코드가 붙이는 "AGI N일 전" 인트로와, lead의 어느 쪽 끝에 붙일지([§5.7](#57-agi-카운트다운-인트로-sharedformattingpy-agi_countdown_intro) 참조) |
-| 시각화 | `enable_daily_visual`, `image_model`, `image_sizes`, `visual_format_window`(기본 6), `visual_synopsis_source_max_tokens`, `visual_synopsis_context_max_tokens`, `visual_caption_emoji`, `visual_image_timeout_sec`(기본 300)과 `visual_image_max_retries`(기본 0), `visual_multi_panel_target_ratio`(기본 0.34), `visual_character_enabled`, `visual_character_sheet`, `visual_character_target_ratio` | 데일리 비주얼 on/off, gpt-image 모델, orientation에서 size로 가는 딕셔너리(키는 `VisualOrientation` 어휘로 고정이고 값만 튜닝한다), 포맷 변주 추적 윈도(orientation과 style), 입력 상한, 캡션 이모지, gpt-image HTTP 호출 상한. SDK 기본값 600초씩 2회는 비주얼 Lambda의 15분 예산을 넘길 수 있어서 config로 고정했다 |
-| 프롬프트 주입 | `digest_language_rules`, `digest_voice_guidance`, `ranking_audience_description`, `digest_audience_description`, `visual_audience_description`, `visual_caption_language`, `visual_on_image_language`, `visual_synopsis_style_guidance`, `visual_synopsis_humor_guidance`, `visual_synopsis_style_aesthetic`, `visual_moderation_softening_instruction` | 언어 규칙과 대상 독자, 톤과 유머, 미감, 모더레이션 완화 문구. 하드코딩 대신 템플릿 변수로 주입한다. `digest_language_rules`는 한국어 규칙과 번역 용어집을 튜닝하는 자리이고 언어 스위치가 아니다. 프롬프트 자체가 한국어를 요구하고 트렌드 트래커도 한국어 재등장 문구를 주입하니, 이 값만 바꿔서 다른 언어로 갈 수는 없다. 한국어 전용이 의도한 제품이다. `digest_voice_guidance`는 Gruber 톤이며, 단일 냉소 프레임으로 기본 고정하지 말고 그날 사실이 정당화할 때만 각을 세우도록 쓰여 있다 |
+| 시각화 | `image_model`(`gpt-image-2.5-sunburst`), `image_sizes`, `visual_image_quality`(`xhigh`), `visual_editor_source_max_tokens`, `visual_synopsis_source_max_tokens`, `visual_image_timeout_sec`(기본 300)과 `visual_image_max_retries`(기본 0), `visual_character_enabled`, `visual_character_sheet`, `visual_character_reference`(`assets/persona.jpg`) | 이미지 모델과 품질 등급, orientation에서 size로 가는 딕셔너리(키는 `VisualOrientation` 어휘로 고정이고 값만 튜닝한다), 입력 상한, 이미지 HTTP 호출 상한. SDK 기본값 600초씩 2회는 비주얼 Lambda의 15분 예산을 넘길 수 있어서 config로 고정했다 |
+| 프롬프트 주입 | `digest_language_rules`, `digest_voice_guidance`, `ranking_audience_description`, `digest_audience_description`, `visual_audience_description`, `visual_on_image_language`, `visual_synopsis_style_guidance`, `visual_synopsis_style_aesthetic`, `visual_guardrails`, `visual_moderation_softening_instruction` | 언어 규칙과 대상 독자, 톤, 미감, 가드레일, 모더레이션 완화 문구. 하드코딩 대신 템플릿 변수로 주입한다. `digest_language_rules`는 한국어 규칙과 번역 용어집을 튜닝하는 자리이고 언어 스위치가 아니다. 한국어 전용이 의도한 제품이다. `digest_voice_guidance`는 Gruber 톤이며, 단일 냉소 프레임으로 기본 고정하지 말고 그날 사실이 정당화할 때만 각을 세우도록 쓰여 있다 |
 
-캡션 언어와 이미지 내부 텍스트 언어를 `visual_caption_language`와 `visual_on_image_language`로 나눈 이유는
-이미지 모델이 비라틴 글리프를 깨뜨리기 때문이다. 캡션은 한국어, 이미지 안에 들어가는 글자는 영어다.
+`visual_on_image_language`는 "short, natural Korean"이다. 이미지 안의 말풍선과 라벨을 짧은 한국어로 쓴다.
+`gpt-image-2`, `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst` 세 모델 모두 같은 브리프의 한국어 문자열을
+정확히 렌더했다([§5.6](#56-데일리-비주얼-daily_visualpy)).
 
 ### 3.3 `agent`
 
-딥 리서치 에이전트 설정이다. 이 절의 값은 두 종류로 나뉘고 그 구분이 중요하다. `research_*`와 `og_image_*`의
-소프트 노브는 강제되는 루프 한계가 아니라 에이전트가 가이던스로 따르도록 시스템 프롬프트에 보간되는 값이다
-(그래도 이 값을 바꾸면 실제 동작은 바뀐다). 반면 `research_max_threads_posts`, `research_content_cap_chars`,
-`research_max_staged_images`는 코드가 강제하는 하드 캡이다.
+딥 리서치 에이전트 설정이다. 이 절의 값은 두 종류로 나뉘고 그 구분이 중요하다. `research_breadth`,
+`research_max_iterations`, `research_target_words`는 시스템 프롬프트에 보간되어 에이전트가 가이던스로 따르는 값이다
+(그래도 바꾸면 실제 동작이 바뀐다). 나머지는 코드가 강제한다. `research_max_turns`, `research_max_total_tokens`,
+`research_max_output_tokens`는 실행을 멈추는 Strands `Limits`이고, `research_content_cap_chars`,
+`research_max_staged_images`, `og_image_timeout_sec`, `og_image_max_bytes`는 도구가 적용하는 하드 캡이다.
+`research_max_threads_posts`는 둘 다다. 프롬프트가 그 게시물 수 안에서 서사를 짜라고 알리고, 렌더러가 넘치는 게시물을 잘라낸다.
 
 | 필드 | 설명 |
 |------|------|
-| `model_id` | 에이전트 모델(기본 Sonnet 5) |
+| `model_id` | 에이전트 모델(기본 Opus 5.5) |
 | `research_breadth`, `research_max_iterations` | 프롬프트에 주입되는 검색 폭(쿼리 수)과 깊이(라운드 수) 가이던스. 루프 상한이 아니다 |
-| `research_max_turns`, `research_max_total_tokens`, `research_max_output_tokens` | 툴 루프의 하드 상한(`strands.types.agent.Limits`로 invoke마다 전달한다). SDK가 매 턴 경계에서 검사하고 `stop_reason="limit_*"`으로 멈춘다. 인터넷에서 촉발되는 유일한 경로이고 사이클마다 대화 전체를 다시 보내므로, 이 값들이 없으면 비용과 벽시계 시간에 상한이 없다 |
-| `research_slack_target_words` | Slack 리포트의 목표 분량(단어) 가이던스 |
-| `research_max_threads_posts` | Threads 게시물(root와 reply) 총수 하드 캡(기본 10). 너무 긴 리포트가 공개 게시물 수십 개로 퍼지지 않게 코드가 트림한다. 이 값이 Threads 리포트의 산문 예산을 정하므로 Slack 대비 분량비를 함께 봐야 한다([§9의 `<delivery>`](#system_prompt_template) 참조) |
+| `research_max_turns`, `research_max_total_tokens`, `research_max_output_tokens` | 툴 루프의 하드 상한(`strands.types.agent.Limits`로 실행마다 전달한다). SDK가 매 턴 경계에서 검사하고 `stop_reason="limit_*"`으로 멈춘다. 사이클마다 대화 전체를 다시 보내므로, 이 값들이 없으면 비용과 벽시계 시간에 상한이 없다 |
+| `research_target_words` | Markdown 리포트의 목표 분량(단어) 가이던스(기본 1500) |
+| `research_max_threads_posts` | Threads 게시물(root와 reply) 총수 하드 캡(기본 10). 너무 긴 리포트가 공개 게시물 수십 개로 퍼지지 않게 코드가 트림한다. 이 값이 Threads 리포트의 산문 예산을 정한다([§9의 `<delivery>`](#system_prompt_template) 참조) |
 | `research_content_cap_chars` | `read_url` 한 페이지의 추출 텍스트 상한(기본 50000) |
 | `research_max_staged_images` | 한 리서치 실행이 stage할 수 있는 OG 이미지 수 캡(기본 4, invoke당 메모리 bound) |
 | `og_image_timeout_sec`, `og_image_max_bytes` | OG 이미지 fetch 타임아웃과 최대 바이트(스트리밍 중 초과하면 중단한다) |
@@ -209,7 +204,7 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | `search_result_limit`, `search_content_preview_chars`, `search_request_timeout`, `search_max_retries`, `search_retry_backoff_sec` | 검색 결과 수, 미리보기, 타임아웃, 재시도 |
 | `search_paper_max_authors`, `search_paper_abstract_max_chars` | Semantic Scholar 결과 포맷 |
 | `recall_memory_top_k` | `recall_trends`가 반환할 상위 K 트렌드 |
-| `boto_read_timeout`, `boto_connect_timeout`, `boto_max_attempts` | AgentCore Bedrock 클라이언트의 boto 설정 |
+| `boto_read_timeout`, `boto_connect_timeout`, `boto_max_attempts` | 에이전트 Bedrock 클라이언트의 boto 설정 |
 
 ### 3.4 `aws`
 
@@ -221,22 +216,17 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | `threads_token_refresh_days` | Threads 장기 토큰(60일 만료)의 갱신 주기(기본 50일, 59 이하) |
 | `rsshub_desired_count` | RSSHub Fargate 서비스의 태스크 수(기본 0, [§11](#foundation_stack) 참조) |
 | `vpc_id`, `subnet_ids`, `state_bucket_name`, `s3_prefix` | 네트워킹과 상태 버킷 |
-| `api_throttle_rate_limit` / `api_throttle_burst_limit`, `waf_rate_limit` | API Gateway 스로틀과 WAF 레이트리밋 |
 
 ### 3.5 시크릿과 환경 변수
 
 | 변수 | 출처 | 용도 |
 |------|------|------|
-| `SLACK_BOT_TOKEN` | `.env` → SSM | Slack 메시지와 이미지 전송 |
-| `SLACK_SIGNING_SECRET` | `.env` → SSM | Slack 이벤트 서명 검증 |
-| `SLACK_CHANNEL_ID` | `.env` → SSM | 다이제스트와 비주얼의 대상 채널 |
 | `TAVILY_API_KEY` | `.env` → SSM | 웹, 커뮤니티, 뉴스 검색 (아래 단서 참고) |
 | `OPENAI_API_KEY` | `.env` → SSM | gpt-image 이미지 생성 |
 | `THREADS_ACCESS_TOKEN` | `.env` → SSM | Threads 게시. 장기 토큰이며 50일 주기로 자동 갱신한 뒤 SSM에 재기록한다 |
 | `THREADS_USER_ID` | `.env` → SSM | Threads 게시 대상 사용자 ID |
 | `YOUTUBE_API_KEY` | `.env` → SSM | YouTube Data API |
 | `ALERT_EMAIL` | `.env` → 배포 시 SNS 구독 | 소스 실패 알림 |
-| `CLOUDFLARE_PROXY_URL` / `CLOUDFLARE_PROXY_TOKEN` | `.env` | Reddit과 YouTube 프록시(데이터센터 IP 우회) |
 | `MEMORY_ID`, `STATE_BUCKET`, `S3_PREFIX`, `ALERT_SNS_TOPIC_ARN`, `RSSHUB_BASE_URL`, `PROJECT_NAME`, `STAGE` | CDK 주입(AWS) | 런타임 리소스 식별자 |
 
 `TAVILY_API_KEY`에는 단서가 하나 붙는다. web_search 수집기만 이 키를 `resolve_secret(strict=True)`로
@@ -246,13 +236,10 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 계약을 그대로 쓴다. 그쪽은 기능 하나가 비활성인 것이고, 수집기 쪽은 그날 다이제스트의 소스 하나가 빠지는
 것이다.
 
-Cloudflare 워커 쪽 토큰은 `wrangler secret put PROXY_TOKEN`으로 넣는다. `wrangler.toml`의 `[vars]`는 평문으로
-버전 관리에 들어가니 거기에 토큰을 두지 않는다.
-
 **`.env`의 시크릿은 CDK 스택을 통과하지 않는다.** CloudFormation 템플릿은 SecureString을 담을 수 없어서, 값을
 스택에 넘기면 `cdk.out/*.template.json`과 CDK 스테이징 버킷, `cloudformation:GetTemplate` 응답에 평문으로
-남는다. 그 경로에 노출되는 것은 Slack 봇 토큰과 Tavily·OpenAI·YouTube 키, Threads 토큰, X 세션 쿠키, 곧 이
-프로젝트의 모든 자격증명이다.
+남는다. 그 경로에 노출되는 것은 Tavily·OpenAI·YouTube 키, Threads 토큰, X 세션 쿠키, 곧 이 프로젝트의 모든
+자격증명이다.
 
 그래서 스택은 파라미터 경로만 `SSM_PLACEHOLDER` 값으로 만들고, 실제 값은 `scripts/put_secrets.py`가
 SecureString으로 기록한다. 재배포가 값을 되돌리지 않는데, CloudFormation은 템플릿 속성이 바뀐 리소스만
@@ -262,7 +249,7 @@ SecureString으로 기록한다. 재배포가 값을 되돌리지 않는데, Clo
 Lambda가 제자리에서 회전시키니, 로컬 `.env` 사본을 다시 쓰면 만료된 토큰으로 되돌아간다(`--force`로만
 덮어쓴다). 둘째, 비어 있는 환경 변수로 기존 값을 지우지 않는다. 여기에 `resolve_secret`이 플레이스홀더를
 미설정으로 취급하니, put_secrets를 건너뛴 배포는 플레이스홀더를 API 토큰으로 보내는 대신 정상적인 '자격증명
-없음' 경로로 degrade한다. Lambda와 AgentCore는 env를 먼저 보고 그다음 SSM을 본다.
+없음' 경로로 degrade한다. Lambda와 로컬 CLI는 env를 먼저 보고 그다음 SSM을 본다.
 
 X 세션 쿠키만 경로가 다르다. Fargate 태스크 정의의 `secrets` 블록으로 주입되며, 템플릿에는 ARN만 들어가고 값은
 태스크 시작 시 ECS 에이전트가 가져온다. `RSSHUB_BASE_URL`은 `rsshub_base_url` CDK context로 재정의할 수 있고,
@@ -274,10 +261,9 @@ X 세션 쿠키만 경로가 다르다. Fargate 태스크 정의의 `secrets` �
 
 모든 수집기는 `BaseCollector.collect() -> list[CollectedItem]`을 구현하고
 `in_collection_window(published_at, lookback_hours, reference_time)`(`collectors/base.py`)으로 시간 범위를
-필터링한다. 윈도는 `[reference_time - lookback_hours, reference_time]`이고 **양끝이 닫혀 있다**. 정의가 하나뿐인
-이유는 그렇지 않았을 때 생긴 일 때문이다. 라이브 경로들은 각자 `cutoff_datetime`만 비교했고 상단을 닫은 것은
-park 경로뿐이어서, `--date`로 과거 날짜를 backfill하면 피드·검색·YouTube API가 그날 항목과 함께 **오늘**
-항목을 실어 왔다. `published_at`이 없는 항목은 윈도 **안**으로 본다. 날짜가 없다는 것이 범위 밖이라는 증거는
+필터링한다. 윈도는 `[reference_time - lookback_hours, reference_time]`이고 **양끝이 닫혀 있다**. 라이브 경로와
+park 경로가 이 한 정의를 쓰므로, `--date`로 과거 날짜를 다시 돌려도 어느 소스도 **오늘** 항목을 싣지 않는다.
+`published_at`이 없는 항목은 윈도 **안**으로 본다. 날짜가 없다는 것이 범위 밖이라는 증거는
 아니고, 그것으로 떨어뜨리면 메타데이터 결손 때문에 소스가 조용히 줄어든다.
 
 수집기 하나의 `collect()` 전체는 `collectors.collector_budget_sec`(기본 600초)로 묶인다. 입력별 타임아웃은
@@ -294,7 +280,7 @@ raise되어 러너의 예외 분기로 들어가고, 그 소스는 **부분 결�
 수집기가 라이브 fetch 대신 이 파일을 읽는다. S3 키 규칙은 trends.json과 같다(`S3_PREFIX`의 부모 디렉터리에
 파일명을 붙인다). 두 수집기가 같은 로더를 공유하니 park 계약이 소스마다 갈라지지 않는다.
 
-로더는 `ParkedItems(outcome, items, age_hours, detail, meta)`를 돌려준다. park 파일의 나이가 데이터와 함께
+로더는 `ParkedItems(outcome, items, detail, meta)`를 돌려준다. park 파일의 나이가 데이터와 함께
 흐르게 하려고 명시적 모델로 만든 것이고, 그래서 모듈 전역이나 threadlocal에 staleness 플래그를 두지 않는다.
 `outcome`은 네 값 중 하나다. `absent`는 버킷이 설정되지 않았거나 객체가 없는 경우, `fresh`와 `stale`은 이름
 그대로이고, `error`는 읽지 못한 경우다. 호출자는 파생 프로퍼티로 분기한다. `usable`이면 park 항목을 쓰고
@@ -320,8 +306,8 @@ cutoff 사이의 슬라이스가 어느 park 파일에도 없으면서 다음 �
 
 **신선도 봉투.** sync 스크립트는 `{generated_at, items, meta?}` 봉투(`dump_items_envelope`)로 적재한다.
 `meta`는 비어 있으면 아예 쓰지 않아서 구버전 리더와 바이트 호환이다. 로더는 봉투와 레거시 bare-list를 모두
-읽되, `generated_at`이 `park_max_age_hours`(수집기별 config, 기본 36시간이고 모듈 기본은
-`S3_ITEMS_MAX_AGE_HOURS`)보다 오래되면 항목은 그대로 반환하면서 `stale`로 표시한다. 오래된 게 빈 것보다
+읽되, `generated_at`이 `park_max_age_hours`(수집기별 config, 기본 36시간이고 호출자가 항상 넘긴다)보다
+오래되면 항목은 그대로 반환하면서 `stale`로 표시한다. 오래된 게 빈 것보다
 낫다는 판단이다. 대신 이렇게 해두면 로컬 cron이 조용히 멈춰 며칠 지난 항목을 오늘 것으로 재수집하는 사고가
 정상 실행처럼 보이지 않고 헬스 STALE과 SNS 알림으로 표면화된다.
 
@@ -345,9 +331,16 @@ STALE로 올린다. 조용한 `absent`는 `NoSuchKey`와 `NoSuchBucket`, 404뿐�
 `NoCredentialsError`와 `ReadTimeoutError`가 수집기를 뚫고 나가 소스 전체를 실패시켜, 이 함수가 문서로 약속한
 계약을 정면으로 어긴다. 권한 오류를 파일 없음과 같은 info 로그로 묻는 것도 같은 종류의 실수다.
 
-**sync 스크립트는 빈 봉투도 올린다.** `sync_*_to_s3.py`는 항목이 0건이어도 봉투를 항상 업로드한다.
+**sync 스크립트는 빈 봉투도 올린다.** `scripts/sync_to_s3.py <rsshub|youtube>`는 항목이 0건이어도 봉투를 항상
+업로드한다.
 `generated_at` 스탬프가 sync가 돌았다는 사실의 유일한 증거이기 때문이다. 단 이는 `collect()`가 정상 반환한
 경우뿐이고, 수집기 예외는 그대로 전파되어 직전의 좋은 park 파일을 덮어쓰지 않는다.
+
+**sync는 로컬 크론이 돌린다.** `scripts/sync_all_to_s3.sh`가 두 소스를 차례로 sync하고, 한쪽 실패가 다른 쪽을
+멈추지 않는다. X는 로컬 RSSHub 컨테이너(`rsshub`)가 떠 있어야 수집되는데, 명시적으로 멈춘 컨테이너는
+`--restart unless-stopped`로도 다시 뜨지 않는다. 그래서 스크립트가 `localhost:1200` 응답이 없으면
+`docker start rsshub`을 실행하고 2초 간격으로 30번까지 응답을 기다린다. 컨테이너가 멈춘 채로 크론만 돌면 X park 파일은 계속
+STALE이 되고, park 항목은 수집 윈도 밖이라 소스가 0건을 낸다(2026-08-17부터 54일간 그랬다).
 
 ### 4.3 RSS (`rss.py`)
 
@@ -356,10 +349,18 @@ STALE로 올린다. 조용한 `absent`는 `NoSuchKey`와 `NoSuchBucket`, 404뿐�
 `parse_feed_entries`). RSS와 Reddit, RSSHub의 엔트리 루프는 글자 그대로 같으므로, 사본을 셋 두면 한쪽을 고칠 때
 나머지 둘이 조용히 뒤처진다.
 
-**본문은 httpx로 받아서 feedparser에 넘긴다.** `feedparser.parse(url)`은 urllib으로 직접 가져오고 소켓
-타임아웃이 없다. 게다가 `asyncio.wait_for`는 `asyncio.to_thread` 워커를 취소할 수 없어서, 타임아웃된 시도마다
-워커 하나가 프로세스가 사는 동안 그대로 남았다(피드당 최대 `max_retries`개). 코루틴 안의 httpx 타임아웃은
-진짜로 취소되는 타임아웃이고, 포기한 뒤에 아무 비용도 남기지 않는다.
+**피드 구성은 1차 출처를 먼저 둔다.** 운영 config는 연구소와 플랫폼의 자체 피드(OpenAI, Google DeepMind, Google
+Research, Hugging Face)와 1차 분석 뉴스레터(Latent Space, Import AI 등)를 두고, 21일 동안 한 건도 내지 않은 피드는
+뺀다. 웹 검색이 찾는 재가공 기사보다 연구소의 원문이 낫고, 그 원문이 후보 풀에 없으면 랭커가 고를 수도 없다.
+Tavily의 X 프로필 쿼리처럼 결과가 대부분 프로필 페이지인 검색도 두지 않는다. X는 RSSHub가 공급한다.
+
+**본문은 httpx로 받아서 feedparser에 넘긴다.** `feedparser.parse(url)`은 타임아웃 없는 urllib으로 직접
+가져오니 매달린 호스트를 끊을 수 없다. 코루틴 안의 httpx 타임아웃은 진짜로 취소되고 아무 비용도 남기지 않는다.
+
+**본문의 HTML은 수집 시점에 벗긴다.** `parse_feed_entries`가 `<`를 포함한 본문을 BeautifulSoup
+`get_text(" ", strip=True)`로 텍스트로 바꾼다. Substack 본문은 65~74%가 마크업이라(예: 122,215자 중 텍스트
+31,424자) 그대로 두면 `item_text_max_tokens` 절단이 산문 대신 태그를 남기고, 같은 이야기의 중복 쌍에서 마크업이
+많은 쪽이 "더 긴" 본문으로 살아남는다. 링크를 `item.text`에서 읽는 코드는 없다.
 
 **fan-out 상한(`max_concurrency`, 기본 5)이 필요한 이유.** 한 번에 도는 fetch 수를 묶어서 수집기의 최악
 wall time을 계산 가능하게 유지한다. 세마포어는 `collect()` 안에서, 다시 말해 실행 중인 루프에서 만든다
@@ -392,32 +393,25 @@ HTTP 503은 세 번 시도하는데 그보다 회복 가능성이 높은 실패�
 
 ### 4.4 Reddit (`reddit.py`)
 
-공개 `.rss` 피드(`https://www.reddit.com/r/{sub}/{sort}/.rss`)를 쓴다. Reddit이 셀프서비스 OAuth 앱 생성을
-동결했고(Responsible Builder Policy, 2025-11) `.json` API는 데이터센터 IP를 차단했지만 `.rss` 피드는 열려
-있기 때문이다. 그래서 자격증명도 앱 등록도 필요하지 않다.
+공개 `.rss` 피드를 쓴다. Reddit이 셀프서비스 OAuth 앱 생성을 동결했고(Responsible Builder Policy, 2025-11)
+`.json` API는 데이터센터 IP를 차단했지만 `.rss` 피드는 열려 있기 때문이다. 그래서 자격증명도 앱 등록도 필요하지
+않다.
 
-경로는 `fetch_feed_with_retry(..., proxy_fallback=True)`이고, 시도마다 직접 요청을 먼저 하고 Cloudflare
-프록시를 폴백으로 둔다(`shared/proxy.py`의 `fetch_with_proxy_fallback`). 순서가 반대인 이유는 `.rss`가
-프록시에서는 403이고 직접 요청은 200이기 때문이다. 이 조합이면 AWS Lambda IP에서도 동작한다.
+**서브레딧 전부를 요청 한 번으로 받는다.** `https://www.reddit.com/r/A+B/{sort}/.rss?limit=…`다. 몇 초 간격으로
+서브레딧을 하나씩 요청하면 두 번째 요청이 429를 받는다. 운영 30회 실행 모두 r/MachineLearning이 첫 두 시도에서
+429였고 17회는 수집을 놓쳤다. 다중 서브레딧 피드는 하루치 전체를 돌려주며(실측 52개, 48 + 4), 각 엔트리는 링크의
+`/r/<sub>/comments/`(없으면 category 태그)로 서브레딧을 되찾는다. `limit`은 서브레딧당 상한이고 피드 순서(업스트림
+랭킹)대로 그만큼만 남긴다. `limit × 서브레딧 수`가 Reddit 리스팅 상한 100을 넘지 않게 요청한다.
 
-**후보 선택은 마지막 시도가 아니라 최선의 사용 가능한 응답이다.** 순서는 이렇다. (1) entries가 있는 첫 후보,
-(2) 없으면 오류 없이 답한 첫 후보(진짜로 조용한 피드다), (3) 모든 후보가 오류일 때만 오류를 올린다(프록시가
-설정돼 있으면 마지막 것, 즉 차단된 호스트에 대해 더 정보가 많은 쪽이다). 마지막 시도를 돌려주면 직접 요청의
-200-entries-0(조용한 서브레딧)이 프록시의 429로 덮인다. 호출자는 일시적 실패를 보고 재시도를 전부 소진하고,
-서브레딧 2개 구성에서는 깨끗하게 빈 날이 소스 전체의 FAILED가 된다.
+**top 정렬은 `t=day`다.** Reddit의 창은 fetch 시각 기준이고 실행은 하루 간격이다. 더 넓은 창(`t=week`)은 다른
+랭킹이다. 지난주에 뜬 글이 오늘 글을 밀어내고, 실제 30시간 윈도는 `in_collection_window`가 어차피 다시 거른다.
 
-**업스트림 윈도는 파생값이다.** 피드 URL에 붙는 `&t=`는 `recency_bucket(lookback_hours)`가 정한다. 업스트림이
-제공하는 이름 있는 창(hour/day/week/month/year) 중 수집 윈도를 **덮는 가장 좁은 것**을 고른다. 값을 `day`로
-박아두면 30시간 윈도에 대고 업스트림에 24시간만 요청하게 되어, config에서 `lookback_hours`를 넓혀도 업스트림
-쪽은 그대로다. 넓게 덮는 것은 안전하다. 어차피 `in_collection_window`가 모든 항목을 다시 거른다. 버킷 표는
-정의값이지 튜닝값이 아니다. 하루는 24시간이고 한 주는 그 7배다.
+경로는 공용 `fetch_feed_with_retry`이고 Lambda에서도 직접 요청한다. `.rss`는 데이터센터 IP에서도 200이고, 429는
+재시도 가능한 오류로 분류되어 지터가 붙은 선형 백오프로 다시 시도한다. 프록시 경로는 없다. Lambda에 연결된 적이 한 번도
+없었고, 로컬에서는 재시도 가능한 429를 프록시의 403(즉시 실패)으로 바꿔 Reddit을 통째로 잃게 했다.
 
-**레이트리밋 대응.** 서브레딧을 `asyncio.gather`로 동시 요청하면 단일 IP의 버스트가 429를 유발하고, 관측상 매
-실행마다 한 서브레딧을 잃었다. 그래서 순차로 수집하고 요청 사이에 간격을 두며, 각 fetch는 지터를 곁들여
-재시도한다. 429와 5xx와 타임아웃만 재시도하고, 지터는 URL을 시드로 한 결정적 값이며, 404 같은 영구 오류는 즉시
-실패시킨다. 전 서브레딧이 실패했을 때만 RuntimeError로 올려 헬스체크가 FAILED로 알린다.
-일부만 실패한 실행은 `record_run_health(total, failed, empty, threshold, what="subreddits")`로 보고한다. 이
-호출이 없으면 6개 중 4개가 프록시 429로 죽어도 소스는 OK로 읽히고 아무것도 알리지 않는다.
+**헬스.** 요청이 하나라서 실패는 소스 단위다. 재시도를 소진하면 예외가 올라가 FAILED가 된다. 피드에 한 건도
+없는 서브레딧은 빈 입력으로 세고 `empty_rate_threshold`로 판정한다.
 
 **트레이드오프.** RSS에는 `score`나 `num_comments` 같은 engagement 값이 없어서, Reddit 항목의 랭킹은 LLM의
 품질 판단에 더 의존한다.
@@ -425,23 +419,19 @@ HTTP 503은 세 번 시도하는데 그보다 회복 가능성이 높은 실패�
 ### 4.5 RSSHub (`rsshub.py`)
 
 로컬이나 컨테이너 RSSHub를 통해 X/Twitter 피드를 읽고, S3에 사전 동기화된 스냅샷(`rsshub_items.json`,
-`scripts/sync_rsshub_to_s3.py`가 적재한다)이 있으면 공유 `load_items_from_s3`로 그것을 쓴다.
+`scripts/sync_to_s3.py rsshub`가 적재한다)이 있으면 공유 `load_items_from_s3`로 그것을 쓴다.
 
 계정별 fetch도 RSS와 같은 공용 `fetch_feed_with_retry`를 쓴다. httpx 타임아웃이 매달린 피드 호스트를 끊고,
 타임아웃은 빈 결과가 아니라 실패로 집계한다. 매 시도가 자기 `request_timeout`을 온전히 갖고, RSSHub 자신의
-HTTP 상태도 분류한다. 429와 5xx는 재시도하고 그 밖의 4xx와 파싱 불가 본문은 즉시 실패시킨다. 계정이 약 41개인
-최대 소스라 여기서 시도가 한 번뿐이면 한 번의 blip이 그 저자의 하루를 가져가고, 그런 blip이 몇 개 겹치면
-`error_rate_threshold`까지 밀린다. 빈 본문의 502를 일반 파싱 실패로 분류하는 것도 같은 이유로 곤란하다.
+HTTP 상태도 분류한다. 429와 5xx는 재시도하고 그 밖의 4xx와 파싱 불가 본문은 즉시 실패시킨다. 계정이 가장 많은
+소스라 시도가 한 번뿐이면 blip 몇 개가 겹치는 것만으로 `error_rate_threshold`까지 밀린다.
 
 degraded 힌트는 실제로 실패한 계정의 platform에서 뽑는다. Twitter 쿠키 만료를 무조건 단정하면 mastodon 같은
 다른 라우트가 죽은 날에 운영자를 엉뚱한 컨테이너 설정으로 보낸다.
 
-**팬아웃 상한.** 계정 수가 40개를 넘으니 한 번에 모두 띄우면 상류에 대한 버스트가 되고 최악 벽시계를 계산할
-수 없게 된다. 그래서 `collect()` 안에서, 임포트나 `__init__`이 아니라 실행 중인 루프에서
-`asyncio.Semaphore(max_concurrency)`를 만든다. 최악 벽시계는
-`ceil(accounts / max_concurrency) × request_timeout`이고, 이를 실제로 묶는 것은
-`collectors.collector_budget_sec`(기본 600초)다. 41개 계정이면 이 곱이 Lambda 예산보다도 크므로 Lambda 예산만
-믿을 수 없다. 막힌 소스 하나가 실행 전체를 죽인다([§4.1](#41-공통-계약)).
+**팬아웃 상한.** 계정 수가 40개를 넘으니 한 번에 모두 띄우면 상류에 대한 버스트가 된다. 그래서 `collect()`
+안에서 `asyncio.Semaphore(max_concurrency)`를 만들고, 소스 전체는 `collectors.collector_budget_sec`가
+묶는다([§4.1](#41-공통-계약)).
 
 **헬스.** 실패한 계정과 빈 계정을 자체 추적하며 `error_rate_threshold`를 갖는다. 서비스
 도달성(`_check_reachable`)은 OK인데 모든 계정이 실패하면 RuntimeError로 올려 FAILED로 알린다. 조용한 날과
@@ -449,9 +439,13 @@ degraded 힌트는 실제로 실패한 계정의 platform에서 뽑는다. Twitt
 
 ### 4.6 YouTube (`youtube.py`)
 
-AWS에서는 `scripts/sync_youtube_to_s3.py`가 거주용 IP로 자막까지 수집해 적재한 `youtube_items.json`을 공유
+AWS에서는 `scripts/sync_to_s3.py youtube`가 거주용 IP로 자막까지 수집해 적재한 `youtube_items.json`을 공유
 `load_items_from_s3`로 먼저 읽는다. 이 경로를 강하게 선호한다. 없으면 `YOUTUBE_API_KEY`로 라이브 수집하고,
-키도 없으면 프록시 경유 RSS로 폴백한다.
+키도 없으면 채널 RSS로 폴백한다.
+
+**정규 영상 목록을 읽는다.** 채널의 `UULF…` 재생목록(정규 영상만, Shorts 제외)을 먼저 읽고, 그 목록이 없는
+채널(`404 playlistNotFound`)만 전체 업로드 `UU…`로 폴백한다. `max_videos_per_channel`이 1이면 전체 업로드
+목록에서는 40초짜리 Short가 그 채널의 자리를 가져갔다. Lenny's와 No Priors의 최근 업로드 8개 중 6개가 Shorts였다.
 
 **API 키 해석은 루프 밖에서 한 번만 한다.** `collect()`가 park 파일을 확인한 뒤 `asyncio.to_thread`로
 `resolve_secret`(env를 먼저, 그다음 SSM)을 한 번 호출하고 결과를 `self.api_key`에 둔다. lazy 프로퍼티로 두면
@@ -469,29 +463,36 @@ SSM을 아예 건드리지 않는다.
 **실패 신호.** API 거부(쿼터 소진, 키 폐기 등 non-200), 깨진 JSON, 채널 ID 해석 실패는 빈 결과가 아니라
 예외다. 채널 하나의 실패는 허용하고, 모든 채널이 실패할 때만 FAILED로 승격한다.
 
-**RSS 폴백도 공용 피드 경로를 탄다.** `fetch_feed_with_retry(..., proxy_fallback=True)` +
-`parse_feed_entries(limit=_CHANNEL_FETCH_DEPTH)`다. raw `feedparser.parse(url)`은 이 자리에 쓰지 않는다. 소켓
-타임아웃이 없고(feedparser는 타임아웃 없는 urllib으로 받는다) 재시도가 없고 bozo/빈 문서 검사도 없다. 채널
-하나가 먹히면 바깥 `wait_for(channel_budget_sec)`는 await만 취소하고 워커 스레드는 계속 도는데, `asyncio.run`이
-종료 시 기본 executor를 join하니 다이제스트가 이미 게시된 뒤에도 15분 예산에서 수 분이 죽은 시간으로 빠진다.
-게다가 잘린 응답이 FAILED가 아니라 EMPTY(=조용한 날)로 읽히고, 5xx나 DNS 한 번이 그 채널의 하루를 가져간다.
-video id는 `yt_videoid`(없으면 watch 링크)에서 읽어 item id로 쓰고, 읽히지 않는 항목은 버린다. 자막 조회와
+**RSS 폴백도 공용 피드 경로를 탄다.** `fetch_feed_with_retry` +
+`parse_feed_entries(limit=_CHANNEL_FETCH_DEPTH)`다. 타임아웃과 재시도, bozo/빈 문서 검사가 RSS와 같다. video id는 `yt_videoid`(없으면 watch 링크)에서 읽어 item id로 쓰고, 읽히지 않는 항목은 버린다. 자막 조회와
 canonical watch URL이 모두 그 id에서 나오므로 해시 폴백 id는 하류에서 쓸모없다.
 
-**헬스 노브는 전부 전달한다.** `record_run_health`/`flag_degraded_park`의 `empty_threshold`와 `max_failed`는
-기본값이 비활성(100.0 / 0)이라, `threshold=`만 넘기면 `collectors.youtube.empty_rate_threshold: 90`이 strict
-모델을 통과하고도 조용한 no-op이 된다(전부 해석되지만 전부 빈 채널 9개가 OK로 보고된다). 모든 수집기의 호출
-지점을 테스트가 고정한다.
+**헬스 임계는 수집기 config가 소유한다.** `record_run_health`와 `flag_degraded_park`는 임계를 인자로 받지 않고
+`self.config`(`BaseCollectorConfig`)의 `error_rate_threshold`와 `empty_rate_threshold`를 읽는다. 호출 지점이
+임계를 빠뜨려 config 값이 조용히 무시되는 모양 자체가 없다.
 
-**다양성.** `max_videos_per_channel=1`로 고빈도 채널이 후보 풀을 독점하지 못하게 한다.
+**다양성.** `max_videos_per_channel`(코드 기본값과 템플릿은 3, 운영 config는 1)로 고빈도 채널이 후보 풀을 독점하지 못하게 한다.
 
 ### 4.7 WebSearch (`web_search.py`)
 
-LLM 쿼리 정제(`RefineQueryPrompt`)를 곁들인 Tavily 검색이다.
+LLM 쿼리 정제(`RefineQueryPrompt`)를 곁들인 Tavily 검색이다. `exclude_domains`(웹 검색 config에 하나)는 broad와
+정제 검색 모두에 Tavily의 `exclude_domains`로 넘어가 콘텐츠 팜을 결과에서 뺀다. 정제 쿼리는 어떤 트렌드
+검색에도 속하지 않아서 트렌드별 필드로는 그 검색에 닿지 않는다. 운영 config는 최근 게시 URL 33개 중 6개를
+차지한 `finance.biggo.com`과 `tech-insider.org`를 제외한다.
 
-날짜 파싱에 주의점이 있다. `_parse_date`는 Tavily의 date-only 문자열(`2026-07-10`)과 tz 없는 ISO 문자열을 모두
-UTC로 정규화한다. naive datetime을 tz-aware cutoff와 비교하면 TypeError가 나고, 그 예외는 결과를 조용히
-드롭한다.
+날짜 파싱에 주의점이 있다. `_parse_date`는 tz 없는 ISO 문자열을 UTC로 정규화한다. naive datetime을 tz-aware
+cutoff와 비교하면 TypeError가 나고, 그 예외는 결과를 조용히 드롭한다. 날짜만 있는 값(`2026-07-10`)은
+**다이제스트 시간대(`aws.timezone`) 기준 그날 23:59:59**로 읽는다. 그 순간은 그날 윈도(그날 자정 KST에서 끝난다)와
+다음 날 윈도 양쪽에 들어가므로, 그날 실행 뒤에 발행된 결과도 다음 실행에서 실리고 재수록은 published-URL 원장이 막는다.
+00:00으로 읽으면 다음 날 윈도보다 앞이 되어 어느 실행에도 실리지 않고, 23:59:59 UTC로 읽으면 그날 윈도 밖이라
+당일 뉴스가 하루 늦게 실린다. RFC 2822 폴백에서 `-0000`처럼 시간대가 없는 값은 호스트 로컬 시간이 아니라
+UTC로 읽는다.
+
+`_deduplicate`는 aggregator와 중복처럼 보이지만 역할이 다르다. 쿼리 정제 LLM 호출 전에 broad 결과를 줄인다.
+
+정제 프롬프트는 broad 결과에 없는 주제로 "빈칸을 채우라"고 하지 않는다. 그 지시는 모델의 사전지식에서 주제를
+끌어와 철 지난 버전과 연도가 박힌 쿼리("Claude Opus 4.5", "best open source local LLM 2024")를 만들었고, 그날
+고른 SEO 기사도 그 단계에서 나왔다.
 
 쿼리 재시도는 재시도로 결과가 바뀔 수 있는 실패만 대상으로 한다. 타임아웃(`asyncio`와 Tavily 양쪽)과 전송
 계층 오류(`httpx.HTTPError`)다. 폐기된 키나 401, 사용량 초과는 판정이라 첫 응답에서 끝낸다. `retry_on`을
@@ -503,19 +504,18 @@ UTC로 정규화한다. naive datetime을 tz-aware cutoff와 비교하면 TypeEr
 `gather_collector_results(tasks, labels, raise_if_all_failed=False)`가 작업을 동시 실행하고 작업별 예외를
 로깅한 뒤 건너뛴다. 반환값이 평탄한 리스트가 아니라 `CollectorRunResult(items, total, failed, empty)`인 것이
 핵심이다. 몇 개의 입력이 응답했는지가 항목과 함께 흘러야 한다. 항목 수만으로는 40개 피드 중 2개만 답한 실행과
-건강한 실행을 구분할 수 없다. `raise_if_all_failed=True`면(RSS와 YouTube, web_search 수집기가 쓴다. Reddit은
-순차 수집이라 같은 규칙을 직접 구현한다) 모든 작업이 실패했을 때만 RuntimeError를 올려 소스가 EMPTY가 아니라
+건강한 실행을 구분할 수 없다. `raise_if_all_failed=True`면(RSS와 YouTube, web_search 수집기가 쓴다. Reddit은 요청이
+하나라 그 요청의 실패가 곧 소스 실패다) 모든 작업이 실패했을 때만 RuntimeError를 올려 소스가 EMPTY가 아니라
 FAILED로 분류되게 한다. 부분 실패는 그대로 허용한다.
 
-`BaseCollector.record_run_health(total, failed, empty, threshold, what, hint)`와
+`BaseCollector.record_run_health(total, failed, empty, what, hint)`와
 `flag_degraded_park(parked, ...)`는 임계 중 하나라도 걸리면 `degraded_detail`을 세우고, 같은 카운트를
 `run_meta`(park-meta 키)에 남겨 sync 스크립트가 항목과 함께 park하게 한다. 모든 수집기가 이 한 구현을 쓴다.
 소스별 사본을 두면 한 소스만 반쪽 상태를 보고하고 나머지는 침묵한다. 이 메서드들은 보고만 하고 어떤 항목도
 필터링하지 않는다.
 
-`pipeline.runner.run_collectors_with_health()`는 헬스 리포팅을 위해 동일 작업을 실행하되
-`HealthReport`([§8](#8-헬스-체크와-알림) 참조)를 반환한다. `gather_collector_results`는 다른 호출자들을 위해
-그대로 유지된다.
+`pipeline.runner.run_collectors_with_health()`는 수집기를 동시에 돌리고 `HealthReport`([§8](#8-헬스-체크와-알림)
+참조)를 반환한다.
 
 **공유 스레드 풀은 하나다.** 이 함수가 시작할 때 `collectors.thread_pool_max_workers`(기본 16) 크기의
 `ThreadPoolExecutor`를 루프의 기본 executor로 설치한다. 수집기별 `max_concurrency`는 자기 fan-out만 묶는데
@@ -539,7 +539,8 @@ FAILED로 분류되게 한다. 부분 실패는 그대로 허용한다.
 
 ### 5.1 집계기 (`aggregator.py`)
 
-URL로 먼저, 그다음 정규화된 제목으로 중복을 제거한다.
+URL로 먼저, 그다음 정규화된 제목으로 중복을 제거한다. 제목 정규화(`normalize_title`)는 앞머리의
+`RT 이름:`을 떼므로 셀프 리트윗이 원문과 겹친다.
 
 **URL 정규화.** 모듈 레벨 `normalize_url`이 scheme과 host case, trailing slash, 추적 파라미터(`utm_*`,
 `fbclid`, `ref` 등), fragment를 접어서 같은 기사가 https 기준으로 일치하게 만든다. cross-day 원장도 같은
@@ -565,7 +566,9 @@ web-search 항목도 포함한다. URL 호스트를 쓰며 `resolve_origin_key`�
 콘텐츠 팜과 통신사 기사가 구별되지 않았기 때문이다. 반면 Tavily의 relevance score는 의도적으로 넣지 않는다.
 검색 적합도는 소스 권위가 아니고, 검증되지 않은 신호를 랭킹 입력에 더하는 일이 된다.
 
-**점수 산출.** Claude Opus 4.8로 `RankingPrompt`를 병렬 배치 호출하고 JSON 점수를 파싱한다.
+**점수 산출.** Claude Opus 5.5로 `RankingPrompt`를 병렬 배치 호출하고 JSON 점수를 파싱한다. 프롬프트는 점수와
+근거만 묻는다. 카테고리나 동일 사건 중복 페널티는 묻지 않는다. 같은 사건은 에디터가 병합하고, 배치 경계에 따라
+달라지는 페널티는 배치가 다른 두 항목을 둘 다 통과시키곤 했다.
 
 **배치 재시도와 fan-out 상한.** 각 배치의 Converse 호출은 `retry_async`로 재시도한다(`ranking_max_retries`
 기본 3, `ranking_retry_backoff_sec` 기본 5초 선형 백오프). 재시도 없이 `[]`로 삼키면 한 번의 스로틀이나 일시적
@@ -588,31 +591,30 @@ web-search 항목도 포함한다. URL 호스트를 쓰며 `resolve_origin_key`�
 `len(ranked) == len(items)`가 되어 커버리지가 1.0으로 읽힌다. 재질의가 뜨지 않고, `items_scored`가 실제 풀보다
 커지고, 에디터가 같은 스토리를 두 번 받는다.
 
+**빠진 id는 한 번 다시 묻는다.** 모델이 배치의 일부 id를 빠뜨리면 그 id만 모아 한 번 재질의한다. 비율 임계를
+두지 않는다. 40개 중 1개가 빠지는 일이 운영 30회 중 5회 있었고, 그 1건은 재질의가 없으면 경고 한 줄과 함께
+사라진다. 재질의가 실패하거나 여전히 모자라도 첫 결과는 그대로 남는다.
+
 **배치 구성(`_make_batches`).** 항목 수(`ranking_batch_size`)와 누적 입력 토큰 예산을 모두 상한으로 쓴다. 수만
 상한으로 두면 `ranking_batch_size` x `item_text_max_tokens`가 모델 컨텍스트 창을 넘길 수 있고, 넘친 배치는
-Converse 호출부터 실패한다. 예산은 컨텍스트 창의 `ranking_batch_token_budget_ratio`(기본 0.7)이고, 모델이
-레지스트리에 없으면 `ranking_context_window_fallback`을 쓴다. 두 값 모두 config다. 항목별 토큰 카운트는
+Converse 호출부터 실패한다. 예산은 컨텍스트 창의 `ranking_batch_token_budget_ratio`(기본 0.7)이다. 모든
+`LanguageModelId`가 레지스트리에 있다는 것은 테스트로 고정되어 있어 미등록 모델용 대체 창은 없다. 수 상한은 배치마다 고르게
+나눈다(`ceil(n / ceil(n / ranking_batch_size))`, 41건이면 20/21). 꽉 채워 자르면 1건짜리 꼬리 배치가 비교 대상
+없이 혼자 채점된다. 항목은 `item_id`의 **해시** 순으로 정렬해 배치에 넣는다. 배치 구성이 결정론적이면서 소스와
+문자 체계가 섞인다. `item_id` 자체는 피드 GUID(RSS와 X는 기사 URL, 그 밖은 글이나 영상 id)라서 그대로 정렬하면
+GeekNews 33건이 한 배치에, X 전부가 다른 배치에 몰렸다. 항목별 토큰 카운트는
 `asyncio.to_thread`로 병렬 측정한다. `count_tokens`와 `truncate_to_tokens`는 동기 boto3 CountTokens 호출이라,
 하루치 후보(관측상 약 90건)를 직렬로 재면 첫 Converse가 나가기도 전에 이벤트 루프가 90여 번의 왕복 동안 막혔다.
 
-**오버선정, 그리고 코어와 백필의 구분.** `rank(items, select_count, core_count)`은
-`top_n + digest_candidate_buffer`(기본 3)만큼 넘기되, 소스 슬롯 보장은 `core_count`(= `top_n`) 코어에만
-적용한다. 슬롯을 `top_n + buffer` 전체에 적용하면 어떤 소스의 보장 슬롯이 에디터가 끝내 쓰지 않는 후보로
-충족될 수 있고, 그러면 독자가 받는 다이제스트에는 그 보장이 존재하지 않는다. 버퍼분은 그대로 전부 넘기고
-`RankedItem.backfill=True`로 표시하며, 프롬프트에 문장을 추가하는 대신 `_format_ranked_items`가 항목별
-`BACKFILL:` 필드로 알린다. `MUST INCLUDE`와 같은 방식이다. 백필 후보도 완전히 사용 가능하니 병합 후 보충하는
-동작은 그대로다.
+**후보 풀과 품질 우선 선정.** `rank(items, select_count)`는 `top_n + digest_candidate_buffer`(기본 5 + 3 = 8)개의
+후보 풀을 고른다. 소스 슬롯과 origin 상한은 이 **풀**을 채우는 데 쓰여서, 각 소스의 `min_score` 이상 최선
+항목이 에디터 앞에 놓인다. 실제로 나가는 5개는 에디터가 풀에서 가장 강한 서로 다른 이야기를 골라 정한다.
+보장 자리를 출고분에 강제하지 않는 이유는 두 가지다. 운영 30회 중 14회 에디터가 약한 보장 항목을 더 강한
+후보로 바꿨고, 강제하면 0.62짜리 링크뿐인 Reddit 글이 0.70짜리 Anthropic 보고서를 밀어냈다. 다양성은 풀이
+보장하고 품질은 에디터가 정한다.
 
-**grace 구제 (`_grace_candidates`, `source_slot_score_grace` 기본 0.1).** 슬롯을 보유한 소스가 `min_score`
-위에 단 하나도 없으면, grace 밴드(`min_score - grace`) 안의 최선 항목 1건을 후보로 admit한다. 절대 점수
-프롬프트가 체계적으로 저평가하는 대화체 소스가 전부 차단되는 일을 막는다. 영상이나 팟캐스트 transcript는
-짧은 기사에 비해 구조적으로 불리하다. 다만 grace 항목은 자기 소스의 보장 슬롯만 채울 수 있고, 아래의 완화된
-fallback fill에서는 제외된다. 조용한 날 약한 항목으로 패딩하지 않기 위한 제약이다.
-
-구제에는 예산이 있다(`source_slot_grace_max_admissions`, 기본 1). grace 항목은 독자가 읽는 코어 슬롯을 하나
-쓰므로, 예산이 없으면 조용한 소스가 몇 개든 그만큼 가져간다. 실측된 최악은 5칸 중 2칸이 0.56과 0.50에 가고
-0.78과 0.75, 0.72, 0.68이 떨어진 실행이다. 예산은 점수가 높은 후보부터, 즉 임계값에 가장 가까운 소스부터
-받는다.
+임계 아래 항목을 구제하는 장치는 두지 않는다(운영에서 발동한 3회 모두 루브릭이 저가치라 부르는 0.6 미만
+항목을 넣었다). 슬롯 보유 소스에 임계 이상 항목이 없으면 그 자리는 fill 패스가 다음 항목으로 채운다.
 
 **선정과 다양성 (`_apply_source_slots`).** 순서는 이렇다. 먼저 `source_slots`로 소스별 기본 슬롯을 채우고
 `source_cap_multiplier × slot`까지 오버플로를 채운다. 그리고 `max_per_origin`으로 하나의 origin 키가 차지하는
@@ -621,48 +623,36 @@ fallback fill에서는 제외된다. 조용한 날 약한 항목으로 패딩하
 fill 패스는 하나의 `fill(respect_origin, respect_source)` 루프로 통일되어 있고 어떤 캡을 지키는지만 다르다.
 ① 캡 둘 다 지키기, ② per-origin 캡만 완화하고 source 캡은 유지, ③ 최후 수단으로 source 캡까지 완화하되 이때도
 `max_per_origin`을 만족하는 후보를 먼저 고르기. ③은 `len(selected) < limit`일 때만 들어가고 발동하면 INFO 한
-줄을 남긴다. 그래야 수집기 부분 장애가 눈에 보인다. 남은 후보가 전부 한 소스에 몰린 날 다양성 캡이 읽을
-스토리 수를 깎지 않게 하는 장치다. grace 항목은 ②와 ③에서 모두 제외된다.
+줄을 남긴다. 그래야 수집기 부분 장애가 눈에 보인다. 남은 후보가 전부 한 소스에 몰린 날 다양성 캡이 후보 수를
+깎지 않게 하는 장치다.
 
 origin은 `resolve_origin_key`로 해석한다. YouTube는 channel_url, Reddit은 subreddit, RSS는 feed_url, X는
 author, Web은 URL 호스트(`urlparse().netloc`에서 `www.` 제거)다. PSL이나 등록가능도메인 휴리스틱을 쓰지 않으니
 서브도메인은 별개 origin이다. 다섯 소스 전부에 키가 있어야 한다. 한 소스만 키가 비면 그 소스의 항목이 origin
 캡을 전부 우회해서 한 매체가 여러 슬롯을 차지한다.
 
-**슬롯 합이 `top_n`에 닿으면 점수는 소스 안에서만 정렬한다.** `_apply_source_slots`는 `top_n`에서 멈추니, 모든
-소스가 보장 슬롯을 하나씩 채운 순간 완화 패스 세 개가 도달 불가가 된다. 그러면 한 소스의 0.50이 다른 소스의
-0.78을 구조적으로 앞선다. 고르게 섞인 다이제스트를 원해서 슬롯을 쓰는 것이니 그 자체는 정당한 설정이지만,
-기록이 없으면 낮은 점수만 실린 날이 랭킹 실패로 읽힌다. 그래서 `sum(source_slots) >= top_n`이면 config 로드가
-WARNING을 남긴다. 숫자를 고른 것은 운영자이니 에러가 아니다.
-
 **`source_slots: {}`도 origin 캡을 잃지 않는다.** 슬롯이 비었을 때 `above_threshold[:limit]`로 조기 반환하면
 `max_per_origin`이 슬롯과 함께 사라져서 한 피드가 그날 전부를 차지할 수 있다. origin 캡은 바로 그것을 막으려고
 있다. 그래서 보장 슬롯 패스만 (반복할 것이 없어서) 비고, fill 패스는 그대로 돈다.
 
-**grace 선택은 결정론적이다.** 동점에서 `max()`는 배치 안에서 LLM이 답한 순서를 그대로 따르므로 실행마다
-흔들린다. 이 파일의 다른 선택 경로와 같이 `(-score, item_id)`로 끊는다. grace가 `source_slots`에 묶여 있는 것은
-의도다. 보장 슬롯을 채울 수 있게 하는 장치이니 보장 슬롯이 없으면 구제할 대상도 없고, 그때 임계값 아래 항목을
-넣는 것은 전체 기준선을 낮추는 일이다.
-
 **저자별 가산 보정은 없다.** origin별 가중 nudge를 두지 않는다. nudge 0.1에서도 최대 변화폭이 0.02인데 실제
 Opus 점수는 0.02–0.05 단위로 양자화되어 나온다(관측된 한 실행의 0.82/0.78/0.75/0.72/0.70). 거의 정확한 동점만
 가를 수 있는 노브이면서, 대가로 손으로 관리하는 핸들 allowlist와 그 목록을 유지하기 위해서만 존재하는
-unmatched-key 경고 경로를 요구한다. 권위는 프롬프트의 *Source Authority* 기준이 이미 판단한다. 신호 하나는 한
-곳에서.
+unmatched-key 경고 경로를 요구한다. 권위는 프롬프트의 *Source Authority* 기준이 이미 판단한다. 같은 신호를 두 곳에서 판단하지 않는다.
 
 **핀 항목도 캡에 계수한다.** 핀은 `rank()`가 앞에 붙이고 이 fill을 통과하지 않으니, 카운터에 반영하지 않으면
 핀과 같은 origin의 항목이 나란히 실린다. 그래서 카운터를 핀으로 먼저 채운 뒤 나머지를 채우고, 캡 때문에 미달이
-되면 마지막 완화 패스가 `top_n`까지 메운다.
+되면 마지막 완화 패스가 풀 크기까지 메운다.
 
 ### 5.3 트렌드 트래커 (`trend_tracker.py`)
 
 구조화된 `trends.json`을 유지한다. slug id와 증거 리스트를 가진 `Trend` 객체들이다. 날짜 기반 상태
-(active, cooling, archived), momentum 감쇠 랭킹, active 캡 아카이브가 전부 여기 있고, 자세한 규칙은
+(active, cooling), 보존 기간이 지나면 삭제, momentum 감쇠 랭킹, active 캡이 전부 여기 있고, 자세한 규칙은
 [§7.1](#71-트렌드--구조화-trendsjson)에 정리했다.
 
 ### 5.4 다이제스트 생성기 (`digest_generator.py`)
 
-Claude Sonnet 5로 `DigestPrompt`를 호출해 구조화 `DigestContent`를 얻는다. Pydantic 모델이며 `lead`, 코드가
+Claude Sonnet 5.5로 `DigestPrompt`를 호출해 구조화 `DigestContent`를 얻는다(모델 선택의 측정은 [§6](#모델-팩토리)). Pydantic 모델이며 `lead`, 코드가
 항상 1로 고정하는 `headline_index`, 그리고 각각 title, url, source_tag, metrics, body, implication을 가진
 `items[]`로 이루어진다.
 
@@ -691,8 +681,7 @@ Claude Sonnet 5로 `DigestPrompt`를 호출해 구조화 `DigestContent`를 얻�
 스킵하고 나머지는 유지한다. url이나 body가 빠진 경우가 그렇다. 전체를 0-item으로 무너뜨리지 않는 것이다.
 
 단 `items[0]`(헤드라인)이 검증에 실패하거나 lead가 없거나 JSON이 통째로 깨지면 `DigestContentError`를
-raise한다. minimal 폴백(`lead=raw[:1000], items=[]`)을 두면 안 된다. 그 폴백은 다섯 스토리를 전부 잃은 다이제스트
-두 건을 정상 게시로 통과시켰다. 호출자가 `digest_max_retries`만큼 재질의하고, 계속 실패하면 실행 자체가 실패로
+raise한다. 스토리 없는 minimal 폴백을 두지 않는다. 그런 다이제스트는 정상 게시로 통과해 버린다. 호출자가 `digest_max_retries`만큼 재질의하고, 계속 실패하면 실행 자체가 실패로
 남아 깨진 게시물이 나가지 않는다.
 
 **JSON 키 순서가 load-bearing이다.** 프롬프트는 `items`를 먼저, `lead`를 마지막에 요청한다. 이미 쓴 스토리에
@@ -706,17 +695,17 @@ raise한다. minimal 폴백(`lead=raw[:1000], items=[]`)을 두면 안 된다. �
 **예산은 코드가 계산해서 넘긴다.** 항목 산문 예산은 추정치가 아니라 코드가 소유한 고정 파트에서 파생한다
 (`_item_prose_budget`은 `THREADS_MAX_POST_CHARS`에서 그 항목의 `URL + 소스 줄 + 빈 줄 구분자`, 즉
 `threads_item_overhead_chars`를 뺀 값이다). 예산은 **후보마다 따로** 계산해서 `PROSE BUDGET`이라는 코드 소유
-필드로 `BACKFILL`, `SOURCE COVERAGE` 옆에 붙여 보낸다. 후보 전체의 최악 오버헤드로 하나의 숫자를 뽑아 프롬프트
-문장에 박으면 URL이 짧은 항목이 풀에서 가장 긴 URL 값을 대신 물어서, 오지 않은 캡에 마지막 문장을 잃는다.
+필드로 붙여 보낸다. 후보 전체의 최악 오버헤드로 하나의 숫자를 뽑아 프롬프트
+문장에 박으면 URL이 짧은 항목도 풀에서 가장 긴 URL 기준 예산을 받아, 닿지도 않을 상한 때문에 마지막 문장을 잃는다.
 
 이 숫자에는 에디터가 쓰는 title도 들어간다. body와 implication만 세면 한국어 제목이 예산 밖에서 소비되고, 표본
-95건 중 5건이 마지막 문장을 잃는다. `digest_item_prose_max_chars`(기본 380)는 상한 ceiling일 뿐이고 0이면 채널
-캡이 없다. lead도 예산을 받는다(`_lead_budget`은 500에서 코드가 붙이는 카운트다운 개그와 그 앞의 빈 줄을 뺀
+95건 중 5건이 마지막 문장을 잃는다. 이 계산 위에 덧씌우는 고정 상한은 없다(URL이 짧은 항목은 약 440자를
+받는다). lead도 예산을 받는다(`_lead_budget`은 500에서 코드가 붙이는 카운트다운 개그와 그 앞의 빈 줄을 뺀
 값이다).
 
 캡과 계산에 쓰는 채널 무관 프리미티브는 `shared`에 둔다. `shared/constants.py`의
 `THREADS_MAX_POST_CHARS`(500)와 `THREADS_POST_SEPARATOR`, `shared/formatting.py`의 `split_sentences`,
-`truncate_at_word`, `strip_slack_mrkdwn`, `threads_item_overhead_chars`다. 예산 계산이 `output/renderers.py`의
+`truncate_at_word`, `strip_markup`, `threads_item_overhead_chars`다. 예산 계산이 `output/renderers.py`의
 private 헬퍼를 부르면 파이프라인이 출력 채널의 내부 이름에 의존하게 되고, 500이라는 같은 숫자가 렌더러와
 게시기에 따로 박힌다.
 
@@ -724,31 +713,31 @@ private 헬퍼를 부르면 파이프라인이 출력 채널의 내부 이름에
 가지를 함께 넣는다.
 
 - `target_count`는 기본적으로 `min(top_n, 후보수)`다. 다만 사용자가 `top_n`보다 많은 URL을 핀하면 헤드라인
-  1개와 전체 핀을 담도록 상향해서 핀도 헤드라인도 트림에 밀리지 않게 한다. 에디터는 오버선정 후보를 병합해
-  정확히 `target_count`개의 distinct 스토리를 내되, 모델이 초과 emit하면 코드가 트림한다
+  1개와 전체 핀을 담도록 상향해서 핀도 헤드라인도 트림에 밀리지 않게 한다. 에디터는 후보 풀에서 가장 강한
+  `target_count`개의 distinct 스토리를 고르고 같은 사건은 병합하되, 모델이 초과 emit하면 코드가 트림한다
   (`_trim_keeping_pinned`는 결정론적 상한이고, items[0] 헤드라인을 우선 보존한 뒤 나머지 슬롯에 핀을 보존한다).
-- `recent_leads`는 최근 며칠의 lead를 "이 오프닝 각은 피하라"는 뜻으로 보여준다. 특정 문구를 금지하지 않고
-  일반화하는 방식이다. 각 lead의 첫 문장만 보여주는데, 달라야 하는 것은 오프닝 각이고 그것이 첫 문장이기
-  때문이다. 잘라내기는 저장 포맷이 아니라 포맷 시점(`_format_recent_leads`)에 일어나니 전문으로 저장된 기존
-  이력도 그대로 동작하고 마이그레이션이 필요 없다. `RECENT_LEAD_PREVIEW_CHARS`는 문장 경계가 없는 산문용
-  백스톱이다.
-- `recent_titles`는 직전 다이제스트가 실은 스토리 제목 목록이며, 오늘이 그것의 재방송이 되지 않게 하려는
-  것이다. 프레이밍은 한 줄이고 임계나 유사도 휴리스틱은 없다. 실제로 재발행을 막는 것은 여전히 URL 원장이고
-  여기서는 정보로만 준다. `pipeline.runner.run_pipeline`이 cross-day dedup이 이미 가져온 스냅샷에서 뽑으니 추가 호출도
-  없다.
-
-**Slack 마크업이 없다.** 다이제스트 경로는 `sanitize_slack_mrkdwn`을 호출하지 않는다. 그 정규화는 딥
-리서치 경로 전용이다. `output/delivery.py`의 `_deliver_slack`이 모델이 흘린 마크업을 1차로 보정하고
-`agent_runtime/app.py`의 폴백이 동일 정규화를 적용한다. 채널별 마크업은 각 렌더러가 붙인다.
+- `recent_leads`는 최근 며칠의 lead를 "이 논지는 되풀이하지 말라"는 뜻으로 보여준다. 특정 문구를 금지하지 않고
+  일반화하는 방식이다. 각 lead의 **마지막** 문장만 보여준다. lead는 첫 문장에서 스토리 이름을 대고 마지막에
+  논지를 놓으니, 되풀이하면 안 되는 논지가 마지막 문장에 있다(스토리 반복은 `recent_titles`가 다룬다). 첫 문장을
+  보여주던 때는 "누가 그 이득을 가져가나"라는 같은 논지가 lead 32개 중 11개를 닫았다. 잘라내기는 포맷
+  시점(`_format_recent_leads`)에 일어나니 전문으로 저장된 기존 이력도 그대로 동작한다.
+  `RECENT_LEAD_PREVIEW_CHARS`는 문장 경계가 없는 산문용 백스톱이다.
+- `recent_titles`는 TTL 창(`published_url_ttl_days`) 안 **모든** 스냅샷의 스토리 제목을 최신순으로 중복 없이 모은
+  목록이다. 주간 요약 글이 이미 실린 이야기를 새 URL로 다시 가져오면 URL 원장은 그것을 알아보지 못하고, 직전
+  하루치 제목만 보여주던 때는 2026-10-11 다섯 이야기 중 셋이 1~4일 전에 실린 것이었다. 프레이밍은 한 줄이고
+  임계나 유사도 휴리스틱은 없다. 실제로 재발행을 막는 것은 여전히 URL 원장이다. `pipeline.runner.run_pipeline`이
+  cross-day dedup이 이미 가져온 스냅샷에서 뽑으니 추가 호출도 없다.
 
 **시스템 오브 레코드.** `render_digest_text`가 구조화 콘텐츠를 평문 산문으로 렌더해 `digest_text`를 만들고,
 트렌드 분류기와 AgentCore 스냅샷이 그것을 쓴다.
 
 **그라운딩(옵션, `enable_grounding_check`).** 산문 필드의 구체적 주장을 소스 항목과 코드가 산출한 트렌드
 사실에 대조해, 근거 없는 부분만 외과적으로 수정한다. 대조 대상은 실제로 실린 스토리의 소스뿐이다
-(`_fill_source_metadata`가 돌려주는 매칭 결과). 랭킹 후보 전체를 이어 붙이면 탈락한 backfill 후보에만 있는
-숫자나 제품명이 근거 있음으로 통과한다. 만들어낸 구체 사실을 잡으려고 존재하는 단 한 번의 패스에서의 false
-negative이고, 동시에 버퍼만큼의 잉여 입력 토큰(항목당 `item_text_max_tokens`)을 크리티컬 패스에 싣는 일이다.
+(`_fill_source_metadata`가 돌려주는 매칭 결과). 랭킹 후보 전체를 이어 붙이면 에디터가 고르지 않은 후보에만 있는
+숫자나 제품명이 근거 있음으로 통과한다. 만들어낸 구체 사실을 잡으려고 둔 한 번뿐인 검사가 그것을 놓치고,
+동시에 풀의 잉여 입력 토큰(항목당 `item_text_max_tokens`)을 크리티컬 패스에 싣는다. 수정본은 라벨 줄
+(`LEAD:`, `ITEM N BODY:`, `ITEM N IMPLICATION:`)로 되돌려 붙이는데, 마커가 없거나 **비어 있는** 필드는 원래 값을
+유지한다. 빈 마커를 그대로 적용하면 빈 필드가 게시된다.
 
 **에디터의 한국어를 정규식으로 검사하지 않는다.** 산문 규칙은 프롬프트가 읽는 `KOREAN_STYLE_RULES`에만 있고,
 그것을 코드로 다시 판정하는 린트 계층은 두지 않는다. 이유는 두 겹이다.
@@ -761,168 +750,167 @@ negative이고, 동시에 버퍼만큼의 잉여 입력 토큰(항목당 `item_t
 그 서명이 em-dash다).
 
 둘째, 걸렸을 때 할 수 있는 일이 없다. 재질의는 같은 `prompt_vars`를 바이트 단위로 동일하게 다시 보내므로 무엇이
-걸렸는지 모델에 전달되지 않는다. 옳게 발화해도 약 50k 토큰짜리 Sonnet 호출로 주사위를 다시 굴리는 것뿐이다.
+걸렸는지 모델에 전달되지 않는다. 옳게 발화해도 약 50k 토큰짜리 다이제스트 호출로 주사위를 다시 굴리는 것뿐이다.
 품질 문제가 재발한다면 필요한 것은 정규식이 아니라 무엇이 틀렸는지 실어보내는 재질의다.
+
+운영 30회 중 18회 한 건 이상을 수정했고(원문 '수십만 번'을 '수만 번'으로 쓴 경우, 최고치를 평균으로 쓴 경우
+등), 수정안은 '근거 없는 구체값 빼기' 하나다. '추론으로 낮추기'는 두지 않는다. 시사점 규칙이 금지하는
+'~수 있다' 류 헤지를 그라운딩이 다시 써 넣게 되기 때문이다. 근거 없는 주장에 "보도에 따르면"을 붙이는 선택지도
+두지 않는다. 원문 어디에도 없는 주장이니 출처를 붙이면 지어낸 사실이 거짓 출처를 얻는다.
+
+**`KOREAN_STYLE_RULES`는 "A가 아니라 B"와 "A보다 B" 대비 공식을 피하라고 한다.** 게시된 31개 다이제스트
+(09-09~10-10)의 시사점 155개 중 41개(26%)가 그 틀이었다. 보이스 가이던스는 그 틀을 유도하는 문장도, 그대로
+복사되는 예시 문구('~로 읽힌다', '보통 이런 구도는')도 담지 않는다. 판단은 판단으로 표시하라는 원칙만 둔다.
+예시를 주면 모델이 그 문구를 그대로 가져와 lead와 리서치 리포트에 반복했다. lead 스펙은 "3-4 concrete
+sentences"다.
 
 `_verify_grounding`은 이 규칙의 예외가 아니다. 그쪽은 주장이 원문에 있는지를 보는 포함 관계 검사여서 코드로
 판정되고, 문법 판단이 아니다.
 
-### 5.5 채널별 렌더링 (`output/renderers.py`)
+### 5.5 Threads 렌더링 (`output/renderers.py`)
 
-구조화 `DigestContent`를 채널 포맷으로 변환한다. 다이제스트 경로는 채널마다 다른 렌더러를 통과한다.
-
-**`render_slack_blocks`.** Slack Block Kit을 만든다. header와 lead section, 이미지가 있으면 이미지, 그리고
-항목마다 divider와 title 링크, source, metrics context, `rich_text_quote`로 감싼 body, implication 순이다.
-메시지당 블록 상한에 맞춰 청크로 분할한다. `output/slack_handler.send_digest_to_slack`이 쓴다.
+구조화 `DigestContent`와 리서치 리포트를 Threads 게시물로 바꾼다. 마크업은 없다(Threads는 렌더링하지 않는다).
 
 **`render_threads_posts`.** root는 lead이고 항목마다 평탄한 reply 하나를 만든다. 500자 이하로 문장 경계에서
-트림하며 title과 소스 줄, URL은 유지하고 Slack 마크업은 없다.
+트림하며 title과 소스 줄, URL은 유지한다.
 
-**소스 줄은 자기 블록이 아니라 제목 줄의 괄호 안에 온다**(`제목 (r/LocalLLaMA · ▶️ 775)`). Slack은 태그를
-인라인 코드로 렌더링해서 그것만으로 메타데이터임이 드러나지만, 쓰레드는 마크업을 렌더링하지 않아 백틱이
-벗겨진다. 그러면 `r/LocalLLaMA`나 `@karpathy`처럼 모양이 스스로를 설명하는 태그는 살아남고 매체명
-(`Simon Willison's Weblog`)만 줄 하나를 차지한 맨 명사구가 되어, 흘러나온 조각처럼 읽힌다. 괄호는 한국어에서 그
-자체로 부가정보 표식이고, 마크업 제거를 견디며, 다섯 소스 형태 전부에 라벨 단어 없이 적용된다. 블록 둘이 하나로
-합쳐지며 구분자 하나를 절약하니 예산 순증은 1자다. Slack은 컨텍스트 블록을 그대로 쓴다. 잘못 읽히는 채널이
-아니다.
+**소스 줄은 자기 블록이 아니라 제목 줄의 괄호 안에 온다**(`제목 (r/LocalLLaMA · ▶️ 775)`). 매체명
+(`Simon Willison's Weblog`)만 한 줄을 차지하면 흘러나온 조각처럼 읽힌다. 괄호는 한국어에서 그 자체로 부가정보
+표식이고, 다섯 소스 형태 전부에 라벨 단어 없이 적용된다.
 
 **YouTube 태그는 플랫폼이 아니라 채널명이다.** 다른 네 소스의 태그는 구체적 출처를 지목하는데(서브레딧, 계정,
 매체, 호스트) 여기서만 리터럴 `YouTube`를 쓰면 독자가 얻는 정보가 없고, 에디터가 화자를 **제목에** 덧붙여
-벌충한다(`AI를 키우는 건 아이를 키우는 것과 다르다 — Ryan Greenblatt`의 em-dash가 그 벌충이다). 수집기가
-`author`에 `channelTitle`을 이미 담고 있어 새로 구할 데이터가 없다. RSS 폴백 경로는 author를 남기지 않으니 그때만
+벌충한다. 수집기가 `author`에 `channelTitle`을 이미 담고 있다. RSS 폴백 경로는 author를 남기지 않으니 그때만
 플랫폼 이름이 바닥값으로 남는다.
 
 **implication은 body와 한 단락으로 잇지 않는다.** 빈 줄로 분리해 자기 블록으로 내보낸다. 이어 붙이면 목소리 줄이
 본문의 마지막 문장처럼 읽혀서 항목이 착지하는 지점이 사라진다. 이 추가 구분자는
 `threads_item_overhead_chars`(에디터에게 알려주는 파생 예산)와 `_item_post_overflows`(트림 카운트)에도 똑같이
-반영되어 예산이 정확히 유지된다. 산문이 캡에 걸려 잘린 항목이 있으면 개수만 WARNING으로 남기고 본문 텍스트는
-로깅하지 않는다. 에디터가 산문 예산을 넘겼다는 신호다.
+반영되어 예산이 정확히 유지된다. 산문이 캡에 걸려 잘린 항목이 있으면 개수만 WARNING으로 남긴다.
 
-**`render_research_blocks`.** 딥 리서치 리포트(Slack mrkdwn)를 다이제스트와 같은 룩의 Block Kit으로
-렌더한다. header 블록(`:satellite: OmniSummary Deep Research`) 뒤로, 번호 매긴 섹션 제목(`*N. ...*`)마다 그 앞에
-divider를 넣어 한 덩어리 텍스트가 아니라 깔끔히 구획된 형태로 보이게 한다. header 바로 아래의 divider는 빈
-띠로 보이니 억제한다. 산문은 `SLACK_MAX_SECTION_CHARS`(2900) 단위로 단락 패킹하고 메시지당 블록 캡으로 청크
-분할한다. 리서치 Slack 경로(`output/delivery.py`의 `_deliver_slack`)의 기본 렌더러다.
+**`render_threads_research`.** 딥 리서치 리포트(Markdown)를 Threads용 root와 평탄한 reply chain(각 500자
+이하)으로 렌더한다. 에이전트가 `---`만 있는 줄로 자기 게시물 경계를 표시하니 렌더러는 그 경계를 존중하고, 500자를
+넘긴 게시물만 문장 경계로 재분할하면서 인용 URL을 보존한다. 구분자가 없으면 문장 패킹으로 폴백한다.
+`max_posts`(0보다 큰 값)로 총 게시물 수를 하드 캡하고 초과분은 드롭한다. 게시물 번호는 퍼블리셔가 다시 매기고,
+Markdown 마크업은 `strip_markup`으로 제거한다(`[label](url)`은 `label (url)`로 바꾼다).
 
-**`render_threads_research`.** 딥 리서치 리포트를 Threads용 root와 평탄한 reply chain(각 500자 이하)으로
-렌더한다. 에이전트가 `---`만 있는 줄로 자기 게시물 경계를 표시하니(번호와 제목과 본문이 한 게시물에 묶인다)
-렌더러는 그 경계를 존중하고, 500자를 넘긴 게시물만 문장 경계로 재분할하면서 인용 URL을 보존한다. 구분자가 없는
-구버전 출력은 문장 패킹으로 폴백한다. `max_posts`(0보다 큰 값)로 총 게시물 수를 하드 캡하고 초과분은
-드롭한다. Slack 마크업은 `strip_slack_mrkdwn`으로 제거한다(`<url|label>`은 `label (url)`로 바꾸고
-`*bold*`와 `_italic_`, `` `code` `` 마커를 제거하되 URL은 보호한다).
+### 5.6 데일리 비주얼 (`daily_visual.py`)
 
-**`render_agent_blocks`.** 구조가 없는 자유형 에이전트 텍스트를 Block Kit section으로 단순 단락 패킹하고
-래핑하는 폴백 전용 래퍼다. 호출자는 `agent_runtime/app.py`의 Slack 폴백(`_send_slack_message`) 하나뿐이며,
-에이전트가 `deliver_report`를 끝내 호출하지 않았거나 Slack 전달이 실패한 경우에 닿는다. 정상 리서치 Slack 경로는
-`render_research_blocks`를 쓴다.
+다이제스트 Lambda가 비동기로 호출하는 비주얼 Lambda에서 돌며, 그날 Threads 게시물의 루트 이미지인 4컷 한글
+만화를 만든다.
 
-### 5.6 데일리 비주얼 (`daily_visual.py`, `enable_daily_visual`)
+**무엇을 그리는가.** 헤드라인(`items[0]`)을 그린다. lead와 이미지와 텍스트가 한 스토리로 일치하게 하려는
+것이다. 에디터는 무엇을 그릴지가 아니라 어떻게 그릴지만 브리핑한다. 다이제스트 프롬프트의 헤드라인 선정은 중요도
+우선이고, 시각화 용이성은 동등하게 중요한 스토리 사이의 tie-break만 한다.
 
-다이제스트 전송 후에 실행되며 그날 다이제스트에 붙는 일러스트를 만든다.
+**형식은 화자가 이끄는 세로 4컷이 기본이다.** `VisualEditorPrompt`는 위에서 아래로 읽는 세로 네 컷
+(setup, development, turn, punchline)과 컷마다 짧은 한국어 대사 또는 내레이션 한 줄을 요구한다. 이야기가 분명히
+다른 구성(2x2 격자, 단일 컷, 가로 파노라마)으로 더 잘 전달될 때만 바꾸고, 그 구성을 instruction에 적는다. 편집기
+출력은 `{skip, use_character, instruction}`이다. 아트 디렉터(`VisualSynopsisPrompt`)는 세로 스트립을 `tall`
+(848x2544, 4:3 컷 네 개를 한 열로 쌓은 1:3. 2560을 넘는 해상도는 실험적이라 긴 변을 그 아래로 둔다)로, 2x2를
+`portrait`로 브리프한다. 2x2(1024x1536)의 컷 하나는 512x768이었고, 세로 스트립은 컷당 848x636이라 같은 단가에서
+컷마다 더 큰 화면을 쓴다. Threads는 종횡비 10:1과 8MB까지 받는다. 날마다 형식과 방향을 돌리던 장치(형식 이력,
+최근 방향 넛지, 멀티패널·캐릭터 비율 넛지)는 두지 않는다(측정상 형식을 바꾸지 못했다. 요청한 방향과 실제
+방향이 28회 중 8회 일치). `VisualBrief.orientation`은 필수 필드라 브리프가 빠뜨린 값이 조용히 기본값이 되지 않는다.
+`VisualBrief.prompt`의 상한은 GPT 이미지 API 한도인 32000자이고 `title`에는 상한이 없다. 4컷 브리프는 4000자를
+넘기기도 해서, 그보다 낮은 상한은 좋은 브리프를 검증에서 떨어뜨려 그날 이미지를 잃게 한다(title은 로그 한 줄에만
+쓰인다).
 
-**무엇을 그리는가.** 헤드라인(`items[0]`)을 그린다. lead와 이미지와 텍스트가 한 스토리로 일치하도록 강제하는
-것이 목적이다. 에디터는 무엇을 그릴지가 아니라 어떻게 그릴지만 브리핑하고, 프롬프트에서 `item_number`를 아예
-요구하지 않는다. 헤드라인은 상류에서 마킹되고 코드는 그 값을 읽지 않았다. 다이제스트 프롬프트의 헤드라인
-선정은 중요도 우선이고, 시각화 용이성은 동등하게 중요한 스토리 사이의 tie-break만 한다. 그 이상으로 몰면
-deep-tech 뉴스가 헤드라인에서 밀리고 에디터의 드문 `skip` 경로가 흔해진다. 적합한 그림이 없으면 `skip`한다.
+아트 디렉터 프롬프트는 이야기에 필요한 실제 단서(인물, 조직 로고와 색, 제품, 장소)로 대상을 알아보게 하라고만
+한다. 브랜드를 간판이나 배지 글자로 반드시 적으라는 지시는 두지 않는다. 그 지시는 이야기와 무관한 로고와 간판
+문구를 끌어들였다. 아트 디렉터에게 따로 주는 유머 지시도 없다. 농담은 편집기가 쓰고 아트 디렉터는 그것을 옮긴다.
 
-**포맷 변주 (`visual_formats.json`, `RollingLog`, `visual_format_window` 기본 6).** 최근 비주얼의
-orientation과 format을 추적하고, 가장 오래 안 쓴 orientation을 에디터 프롬프트(`format_guidance`)와 생성
-instruction에 주입해 연속된 비주얼이 모양과 구성에서 실제로 달라지게 한다. LRU는 orientation별 마지막 사용
-인덱스로 계산한다. 윈도의 첫 항목을 그대로 집으면 나중에 다시 쓴 orientation을, 그러니까 가장 최근 것을 고르게 된다.
-게시 후 선택한 포맷을 `date`로 dedup해 기록하니 같은 날 재실행은 교체가 되고 변주 윈도를 잠식하지 않는다.
-상태 스토어 초기화가 실패하면 히스토리 없이 degrade하고 크래시하지 않는다.
+**이미지 문구는 한국어다.** 같은 4컷 브리프를 `gpt-image-2`, `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`
+(모두 high)로 렌더해 비교했다. 세 모델 모두 한국어 문자열을 정확히 그렸다. sunburst를 고른 이유는 로고가
+정확하고(flare는 GLM 자리에 OpenAI 로고를 그렸다) 완성도가 가장 높으며 렌더 한 장의 출력 토큰이 약 1.4k(약
+$0.05)이기 때문이다. sunburst는 지시하지 않은 영어 포스터나 슬로건을 그려 넣는 경향이 있어서, 이미지 문구 규칙에
+"그 밖의 글자는 없다(지어낸 포스터, 슬로건, 캡션 금지)"는 한 구절을 넣었다. 그 구절이 들어간 렌더에서는 장면
+속 간판 외의 영어 문구가 사라졌다.
 
-**멀티패널 비율 유도 (`visual_multi_panel_target_ratio` 기본 0.34).** 에디터는 방치하면 단컷 구성으로
-기울기 때문에, 최근 윈도의 멀티패널 비중이 목표보다 낮으면 시퀀스나 반전, 설정과 응수가 있으면 멀티패널
-만화로 가라는 쪽으로, 높으면 단컷 쪽으로 프롬프트를 soft-steer한다. 쿼터가 아니라 유도이고 최종 결정은
-스토리가 한다. 0이면 유도가 없어서 순수하게 에디터 판단이 되고, 히스토리에 해당 키를 기록한 항목이 없으면
-근거가 없으니 유도를 건너뛴다.
+**오너 페르소나가 화자다 (`visual_character_enabled`, `visual_character_sheet`,
+`visual_character_reference`).** 다이제스트 화자(특이점을 믿는 과학 덕후 기술자)를 그린 재등장 캐릭터가 만화의
+시점 인물이다. 나오는 컷에서는 구경만 하지 않고 반응하거나 끼어들거나 펀치라인을 친다. 편집기는 그가 농담을
+방해할 때만 `use_character`를 끈다. 캐릭터 시트(문장)는 instruction에 들어가고, 정면·3/4·측면과 표정 세 가지를
+담은 기준 시트 이미지(`assets/persona.jpg`)가 입력 이미지로 함께 간다. 그래서 그 날의 렌더는 `images.generate`가
+아니라 `images.edit`이고, 프롬프트 앞에 "첨부 이미지가 화자의 기준 시트이니 그대로 그려라"는 고정 문구
+(`REFERENCE_NOTE`)가 붙는다. 문장만으로는 날마다 얼굴과 옷이 달랐다(테스트 렌더 대부분의 청년이 시트의 안경과
+카디건을 갖추지 않았다). 시트 이미지를 넣자 세로 4컷 네 편 모두에서 머리 모양, 안경, 투톤 카디건이 시트와
+같았다. 시트 파일을 못 읽으면 경고하고 참조 없이 그린다. 시트를 바꾸려면 이 파일만 교체하면 된다.
 
-**재등장 캐릭터 (`visual_character_enabled`, `visual_character_sheet`, `visual_character_target_ratio`).**
-에디터가 이 스토리에 맞다고 판단한 날(`use_character`)에만 등장하며, 캐릭터 시트를 instruction에 주입해
-이미지 모델이 같은 인물을 그리게 한다. 정체성은 시그니처 소품에 실려서 매일 바뀌는 화풍을 견딘다. 시트는
-의도적으로 얇게 유지한다. 두껍게 쓰면 참조 과적합과 해부 붕괴를 유발한다. 등장 빈도도 최근 윈도 기준으로 목표
-비율을 향해 soft-steer하되(0이면 유도 없음) 스토리에 맞지 않으면 에디터가 여전히 건너뛴다.
+**실존 인물은 알아보게 그린다.** 아트 디렉터는 실존 인물마다 이름과 한눈에 알아볼 특징(얼굴형, 헤어라인,
+안경, 체형, 상징적인 복장)을 적고, 모든 컷에서 같게 유지한다. 시사만평의 관행대로 실존 인물 묘사는 허용한다
+(소유자 결정).
+
+**물리적으로 그럴듯해야 한다.** 렌더된 만화가 실제로 틀린 것은 화풍이 아니라 배치였다. 칸막이 책상 줄 위
+선반에 의자째 올라앉은 로봇, 허공에 걸린 표지판, 쥐지 않은 채 손에 붙은 소품, 거리와 맞지 않는 크기다. 그래서
+`visual_synopsis_style_aesthetic`은 화풍(깔끔한 한국 웹툰체) 다음에 구체적인 규칙을 둔다. 컷마다 눈높이와 바닥면은
+하나이고, 모든 인물과 물체는 표면 위에 있거나 실제로 쥐고 있으며, 크기는 거리와 맞고, 떠 있는 표지판이나 불가능한
+적층, 관통이 없고, 손가락은 다섯이며, 컷당 인물은 셋 이하에 동작은 하나다. 품질 등급은 `xhigh`다. 같은 브리프를
+high, xhigh, 고해상도(1536x2304)로 렌더해 비교하자 xhigh가 손과 소품, 원근이 가장 일관됐다.
+
+**렌더 뒤에 검수하고 한 번 고친다 (`VisualReviewPrompt`).** 브리프를 쓴 모델(Sonnet 5.5)이 이미지를 보고
+휴대폰 화면에서 독자가 알아챌 결함을 최대 세 개, 컷 번호와 함께 적는다. 물리·공간, 크기·원근, 해부, 브리프와 다른
+문구나 지어낸 문구(이야기 속 회사의 로고와 워드마크는 제외), 컷 수와 순서다. 검수에는 원본 해상도 그대로 JPEG로
+다시 인코딩한 사본을 보낸다. 세로 PNG는 2.5~3.6MB라 Bedrock 이미지 한도 3.75MB에 붙어 있고, 넘으면 검수가 매번
+건너뛰어진다(실측 3.6MB → 0.7MB). 결함이 있으면 그 결함만 고치라는
+지시로 이미지를 한 번 `images.edit`하고, 다시 검수해 결함이 더 적은 쪽을 쓴다. 같은 프롬프트로 다시 굴리는 재시도가
+아니라 무엇이 틀렸는지 실어 보내는 수정이다(산문 린트를 지운 이유가 정보 없는 재굴림이었다). 비전 검수는 Sonnet
+5.5가 Opus 5.5보다 실제 결함을 잘 찾았다. 결함이 확인된 이미지에서 Opus는 대부분을 놓쳤다. 검수 실패, 수정 실패,
+마감 시간 부족은 모두 그린 그대로 게시하는 쪽으로 떨어진다. 첫 측정에서 수정은 3→0, 3→2, 2→2(원본 유지)였고, 한
+편은 결함 없이 통과했다. 비주얼 한 편에 브리프, 렌더, 검수 두 번, 수정 한 번이 들어 약 $0.2(추정)다.
 
 **편집 관점을 함께 넘긴다.** 다이제스트의 리드에서 카운트다운 접두를 제거한 것과 헤드라인 항목의
-`implication`을 instruction에 정보로 넘긴다. 아트 디렉터가 원본 기사만 보던 탓에 표면 사실만 그리는 문제를
-막으려는 것이다. 관측된 예로, 리드의 논지가 "출시 주기가 격차의 원인"인 날 그림은 네 주자가 동시에 골인하는
-장면이어서 "다 비슷하다"는 반대 메시지가 됐다. 다만 일치를 강제하지는 않는다. 이미지가 리드의 논지를 논증해야
-한다는 제약은 과하다.
+`implication`을 instruction에 정보로 넘긴다. 아트 디렉터가 원본 기사만 보면 표면 사실만 그린다. 다만 일치를
+강제하지는 않는다. 이미지가 리드의 논지를 논증해야 한다는 제약은 과하다.
 
 **가드레일 (`visual_guardrails`, 비우면 미적용).** 스타일 지시도 논지 요구도 아니라, 이미지가 하지 말아야 할
 두 가지다.
 
-1. 받은 편집 관점의 정서를 뒤집지 말 것. 관측된 예는 순환 벤더 파이낸싱에 대한 리드("누가 위험을 지는지는
-   다음 다운턴에야 드러난다")가 로켓과 지폐가 쏟아지는 승리 포스터로 그려진 실행이다. 이것은 "논지를
-   논증하라"보다 훨씬 약한 요구이고, 그 강한 규칙은 과한 제약으로 두지 않는다.
-2. 기업이나 국가를 인종으로 코딩된 인물로 의인화하지 말 것. 관측된 예는 모델 경쟁을 각 랩 국적의 육상 선수로
-   그린 비주얼이다. 반면 실존 인물을 알아보게 그리는 것은 허용하고 권장한다. 시사만평의 표준 관행이고 계정
-   주인의 편집 판단에 속한다.
+1. 받은 편집 관점의 정서를 뒤집지 말 것. 회의적이거나 경고하는 관점을 축하하는 그림으로 그리지 않는다. "논지를
+   논증하라"보다 훨씬 약한 요구다.
+2. 기업이나 국가를 인종으로 코딩된 인물로 의인화하지 말 것. 반면 실존 인물을 알아보게 그리는 것은 허용한다.
+   시사만평의 표준 관행이다.
 
-⚠️ 이 문구의 인과 효과는 미증명이다. 문제가 났던 케이스로 A/B를 시도하면 에디터가 합성 content가 아닌
-`ranked_items` 헤드라인을 그려서 실험이 성립하지 않고, 이미지 생성이 확률적이라 팔당 1샘플로는 노이즈와 구분되지
-않는다. 비용이 0이고 config로 즉시 해제할 수 있고 지시문 포함 여부가 테스트로 고정돼 있다는 근거로 두는 것이며,
-효과를 주장하지는 않는다.
+이 문구의 인과 효과는 측정되지 않았다. 이미지 생성이 확률적이라 사례당 한 샘플로는 노이즈와 구분되지 않는다.
+비용이 0이고 config로 즉시 해제할 수 있다는 근거로 둔다.
 
-**맥락 보강.** 에디터가 고른 리서치 스텝(papers, community, news)을 실행해 맥락을 수집한다.
+렌더 전의 조사 단계는 없다. 에디터가 고른 검색을 돌리던 단계는 Semantic Scholar 429를 30일에 19회 냈고 실패
+문자열이 그대로 맥락으로 들어갔다. 에디터는 헤드라인 전문과 다이제스트의 관점을 이미 받는다.
 
-**생성과 게시.** `VisualGenerator`(시놉시스에서 gpt-image로)로 1컷 밈이나 패러디, 일러스트, 또는 N컷 카툰을
-만들어 Slack에 게시하고, `enable_threads_post`가 켜져 있으면 Threads에도 게시한다.
+**브리프는 다이제스트 모델이 쓴다.** 편집기와 아트 디렉터 모두 `digest_model`(Sonnet 5.5)을 쓴다. 10-07
+헤드라인("OpenAI, AI가 쓴 수학 연구원고 722편 공개")으로 Sonnet 5.5 브리프를 렌더하자 기승전결과 한국어
+대사가 정확한 4컷이 나왔다.
 
-**플랜 파싱이 실패하면 그냥 건너뛴다.** 에디터 JSON을 못 읽으면 `{"skip": True}`로 취급한다. 재질의로 LLM을 한
-번 더 부르지도 않고, 일반 폴백 instruction으로 gpt-image를 태우는 낭비 렌더도 하지 않는다.
+**플랜 파싱이 실패하면 그냥 건너뛴다.** 에디터 JSON을 못 읽으면 `{"skip": True}`로 취급한다. 재질의도, 일반 폴백
+instruction으로 렌더하는 낭비도 없다.
 
-**플랜의 불리언은 `coerce_bool`로 강제한다.** `skip`과 `multi_panel`, `use_character`는 모델이 손으로 쓴 JSON
-값이라 문자열일 수 있다. 맨 truthiness는 `"false"`를 True로 읽는다. 불리언에 인용부호를 붙이는 모델이 보낸
-`"skip": "false"` 하나가 아무 오류도 없이 그날 비주얼을 죽이고, `"use_character": "false"`는 에디터 판단과 반대로
-마스코트 시트를 주입한 뒤 내일의 유도를 결정하는 변주 윈도에 `use_character=True`를 적는다.
+**플랜의 불리언은 `coerce_bool`로 강제한다.** `skip`과 `use_character`는 모델이 쓴 JSON 값이라
+문자열일 수 있고, 맨 truthiness는 `"false"`를 True로 읽는다.
 
 **비주얼 실패가 다이제스트를 삼키지 않는다.** 이미지는 첨부물이고, 이 함수가 Threads의 유일한 게시 경로다.
 OpenAI 키가 없거나 에디터 호출이 실패하거나 에디터가 skip하거나 렌더가 실패하는 경우는 모두 `_make_visual`
 안에서 흡수되어 `(None, None)`으로 떨어지고, `run()`은 그대로 텍스트만으로 Threads(lead와 스토리별 reply)를
-게시한다. 이 경우들이 게시 이전에 `return False`로 빠지면 비주얼만의 문제로 그날 다이제스트가 조용히 사라진다.
-OpenAI 키는 `strict=True`로 읽어서 미설정과 SSM 읽기 실패를 구분한다. 느슨한 읽기는 둘 다 `""`가 되어 파라미터
-스토어 장애를 의도된 설정처럼 보이게 한다. 그러면서도 `SecretUnavailableError`는 `_make_visual` 안에서 잡는다.
-엄격한 시크릿 읽기가 텍스트 다이제스트를 비용으로 삼는 일은 없어야 한다.
+게시한다. OpenAI 키는 `strict=True`로 읽어서 미설정과 SSM 읽기 실패를 구분하되, `SecretUnavailableError`는
+`_make_visual` 안에서 잡는다. 엄격한 시크릿 읽기가 텍스트 다이제스트를 비용으로 삼는 일은 없어야 한다.
 
-**instruction 빌더는 하나뿐이다(`_build_instruction`).** 편집 관점과 가드레일, 포맷 유도, 캐릭터 시트를 붙여
-최종 아트 디렉터 instruction을 만드는 부분은 I/O 없는 순수 함수로 분리돼 있다. `scripts/sample_visual_brief.py`가
-프로덕션이 실제로 보내는 문자열을 채점할 수 있어야 하기 때문이다. 샘플러가 맨 `plan["instruction"]`만 브리핑하면
-편집 관점도 가드레일도 포맷 유도도 캐릭터도 없는 프롬프트, 즉 배포되지 않는 것을 평가하게 된다. 그래서 샘플러는
-다이제스트를 먼저 생성해 실제 `DigestContent`를 넘기고 없는 편집 관점을 지어내지 않으며, 테스트가 두 경로의
-출력이 바이트 단위로 같음을 고정한다.
+**instruction 빌더는 하나뿐이다(`_build_instruction`).** 편집 관점과 가드레일, 캐릭터 시트를 붙여 최종 아트
+디렉터 instruction을 만드는 부분은 I/O 없는 순수 함수다. `scripts/sample_visual_brief.py`가 프로덕션이 실제로
+보내는 문자열을 채점할 수 있어야 하기 때문이고, 테스트가 두 경로의 출력이 같음을 고정한다.
 
-**게시는 `output/digest_delivery.py`의 `DigestPublisher`가 한다.** Slack 이미지 업로드, Threads root와 reply
-체인, 그 체인의 멱등 원장, 이미지의 S3 호스팅이 모두 여기 있다. 이미지 생성기와 게시기를 한 클래스에 두면 비주얼
-실패가 전달을 건너뛰지 못하게 막는 조기 종료 가드가 필요해지고, 반환값도 Threads 전용 실행이 "skipped"로 보고되지
-않게 `slack_ok or threads_ok` 같은 형태가 되어야 한다. 게시기가 이미지를 **옵셔널 인자**로 받으면 렌더 실패는
-구조적으로 텍스트 전용 게시일 뿐이고, 게시 경로를 OpenAI 키 없이 테스트할 수 있다. `DailyVisualMaker`는
-`(image_bytes, VisualBrief)`를 만들어 넘기는 일만 한다.
+**게시는 `output/digest_delivery.py`의 `DigestPublisher`가 한다.** Threads root와 reply 체인, 그 체인의 멱등
+원장, 이미지의 S3 호스팅이 모두 여기 있다. 게시기가 이미지를 **옵셔널 인자**로 받으니 렌더 실패는 구조적으로
+텍스트 전용 게시일 뿐이고, 게시 경로를 OpenAI 키 없이 테스트할 수 있다.
 
-**이미 게시된 날은 조기 종료한다.** 렌더 전에 `DigestPublisher.has_a_destination`에 물어서 게시할 것이 남아
-있지 않으면 에디터 호출과 gpt-image 렌더 비용을 아예 쓰지 않는다. Threads 원장에 오늘이 있고
-`enable_slack_post`가 꺼져 있으며 force가 아닌 경우다. 게이트는 의도적으로 좁게 두었다. Slack 전달이 켜져 있으면
-이미지에는 Threads 마커와 무관한 별도 목적지가 있으니 그대로 진행한다.
+**게시할 곳이 없으면 렌더하지 않는다.** 렌더 전에 `DigestPublisher.has_a_destination`에 묻는다. Threads가
+꺼져 있거나, 원장에 오늘이 이미 있거나(force가 아닐 때), 스토리가 0건이면 에디터 호출과 렌더 비용을 쓰지 않는다.
+스토리 없는 날은 `threads_outcome = ThreadsDelivery(0, 1)`을 남겨 그날의 전달 알림이 no-op이 되지 않게 한다.
 
-**스토리 없는 날은 렌더를 사지 않는다.** 스토리가 0건이면 Threads는 의도적으로 게시하지 않고,
-`enable_slack_post`가 꺼져 있으면 이미지에 남은 목적지가 없다. 두 조건이 동시에 참일 때만 렌더 이전에 종료하며,
-Slack이 켜져 있으면 업로드가 실제 목적지이니 그대로 진행한다. 같은 판정 안에서 로그와
-`threads_outcome = ThreadsDelivery(0, 1)`을 남긴다. 그 기록 덕분에 그날의 전달 알림이 no-op이 되지 않는다.
-
-**텍스트만 나간 날도 알린다.** `expected`는 포스트 수만 세므로 이미지가 빠진 날도 그 척도로는 완전한 성공이다.
-렌더 실패와 OpenAI 키 부재, 시크릿 읽기 실패는 이미지를 조용히 사라지게 하고 흔적은 maker 안의 로그 한 줄뿐이다.
-그래서 `outcome.published and not outcome.with_image`면 `shared/alerts.publish_alert` 경로로 ALERT를 보낸다.
+**텍스트만 나간 날도 알린다.** `outcome.published and not outcome.with_image`면 `shared/alerts.publish_alert`
+경로로 ALERT를 보낸다. 렌더 실패와 키 부재는 그 밖에는 maker 안의 로그 한 줄만 남긴다.
 
 **헤드라인 매핑.** `content.headline_index`(큐레이션 items 기준)를 `normalize_url`로 랭킹 항목에 되매핑한다.
-끝내 매칭되지 않으면 `or 1`로 떨어뜨리지 않는다. 그것은 랭킹 1위, 곧 lead와는 다른 스토리다. 대신 큐레이션
-헤드라인 자신의 title과 body, implication을 소스로 브리핑해 이미지와 텍스트의 동기화를 지킨다. 이때 에디터에게
-넘기는 헤드라인 마커는 0으로, 없다는 뜻이다.
-
-**성공 판정.** `run()`은 활성화된 채널 중 하나라도 게시에 성공하면 True다. Slack만 보면
-`enable_slack_post: false` 구성에서 Threads가 성공한 실행이 skipped로 기록된다. 게시 결과(`ThreadsDelivery`)는
-`maker.threads_outcome`으로 노출되어 비주얼 Lambda가 부분 전달을 알림으로 올린다.
+끝내 매칭되지 않으면 랭킹 1위로 떨어뜨리지 않고 큐레이션 헤드라인 자신의 title과 body, implication을 소스로
+브리핑해 이미지와 텍스트의 동기화를 지킨다.
 
 전체적으로 best-effort다. 파이프라인을 막지 않으며 실패는 항상 로깅된다.
 
@@ -935,8 +923,8 @@ Slack이 켜져 있으면 업로드가 실제 목적지이니 그대로 진행�
 인트로를 비우고 생성 도중 크래시하지 않는다. 수집과 랭킹과 LLM 비용을 다 쓴 뒤에 죽는 것이 최악이다.
 
 **언제 붙는가.** 다이제스트 생성 시점에 `content.lead`에 붙이며(`digest_generator.generate` →
-`place_countdown_intro`) 그 실행의 KST `digest_date`로 계산한다. 인트로가 저장 콘텐츠의 일부가 되니 모든
-채널(Slack Block Kit, Threads root)에 함께 나가고, 트렌드 재등장 수치와 같은 시계(같은 날짜)를 쓴다.
+`place_countdown_intro`) 그 실행의 KST `digest_date`로 계산한다. 인트로가 저장 콘텐츠의 일부가 되니 Threads
+root에 함께 나가고, 트렌드 재등장 수치와 같은 시계(같은 날짜)를 쓴다.
 
 **위치 노브(`agi_countdown_position`, 코드 기본값과 배포 설정 모두 `prefix`).** 접두로 두면 Threads root의 첫
 줄, 곧 피드 독자가 유일하게 보는 줄을 매일 같은 고정 문장이 차지한다. 실제로 연속 40개 게시물이 동일 문장으로
@@ -958,8 +946,9 @@ Slack이 켜져 있으면 업로드가 실제 목적지이니 그대로 진행�
 ### 5.8 Threads 전달 (`output/threads_handler.py`, `enable_threads_post`)
 
 **누가 부르는가.** 다이제스트 Lambda가 아니라 데일리 비주얼 Lambda가 `DigestPublisher.publish`로 게시한다.
-Threads 게시물은 이미지 root와 reply chain이 한 세트라 이미지를 만든 쪽이 함께 보내야 한다. 따라서 Threads
-전달에는 `enable_threads_post`와 `enable_daily_visual`이 둘 다 필요하다.
+Threads 게시물은 이미지 root와 reply chain이 한 세트라 이미지를 만든 쪽이 함께 보내야 한다. 비주얼 Lambda는
+항상 돌고 Threads 게시만 `enable_threads_post`가 정한다. 이미지를 끄는 토글은 따로 두지 않는다. 그런 토글은 이
+Lambda가 유일한 게시 경로라서 Threads 전달을 알림 없이 통째로 멈췄다.
 
 **흐름(`post_to_threads`).** 이미지 root를 게시하고 스토리당 reply 하나로 평탄한 chain을 만든다. reply는
 서로가 아니라 모두 root에 매단다. reply-of-reply로 중첩되면 첫 개만 보인다.
@@ -990,7 +979,7 @@ addressable해지지 않았다"는 **0번**인 반면 reply 재시도는 25일�
 
 **best-effort 계약.** API 오류는 로깅 후 건너뛰고 절대 raise하지 않는다. `output/delivery.py`의 리서치 경로가
 이 계약에 의존한다. 단 자격증명(`THREADS_ACCESS_TOKEN`, `THREADS_USER_ID`) 부재는 ERROR로 올린다.
-`enable_threads_post`가 켜진 구성에서 그것은 그날 다이제스트가 어디에도 전달되지 않는 상태이고, INFO
+`enable_threads_post`가 켜진 구성에서 자격증명이 없으면 그날 다이제스트가 어디에도 전달되지 않으니, INFO
 "skipping" 한 줄로 넘길 사건이 아니다.
 
 **토큰 갱신.** `lambda_handlers/threads_refresh_handler.py`와 약 50일 주기 EventBridge 스케줄이 60일 만료
@@ -1001,70 +990,83 @@ addressable해지지 않았다"는 **0번**인 반면 reply 재시도는 25일�
 ### 의존성 경계
 
 이 프로젝트는 `langchain-core`(프롬프트, 출력 파서, 러너블, 콜백)와 `langchain-aws`(모델 클래스)만 쓴다.
-**최상위 `langchain` umbrella 패키지는 의존성이 아니며 다시 추가하지 말 것.** 한 번도 import되지 않으면서
-`langchain-text-splitters`와 `sqlalchemy`를 끌고 왔고, 그 둘이 이 코드가 도달하지 않는 경로(`prompts.loading`,
-`HTMLHeaderTextSplitter.split_text_from_url`)의 권고를 실어 와 `security` 잡을 빨갛게 만들었다.
+**최상위 `langchain` umbrella 패키지는 의존성이 아니며 다시 추가하지 말 것.** 아무것도 import하지 않으면서
+`langchain-text-splitters`와 `sqlalchemy`를 끌고 오고, 그 둘은 이 코드가 도달하지 않는 경로의 권고로 pip-audit
+게이트를 실패시킨다.
 
 ### 모델 팩토리
 
 `BedrockLanguageModelFactory.get_model(model_id, stage=..., **kwargs)`가 `ChatBedrockConverse`를 반환한다.
-리전은 `BedrockCrossRegionModelHelper`가 가능하면 `global.`이나 `apac.` inference-profile ID로 해석하고,
+리전은 `BedrockCrossRegionModelHelper`가 `global.` inference-profile ID를 먼저, 없으면 리전 프리픽스(us-west-2면
+`us.`)를 붙인 ID로 해석하고,
 이 프로젝트의 application inference profile이 있으면 그 ARN을 우선한다.
 
 **모델 클래스는 하나다.** `use_converse` 같은 분기로 `ChatBedrock`과 갈리지 않고, thinking이나 1M 컨텍스트,
-성능 레이턴시를 구성하는 역량 레이어도 없다. 그런 레이어가 요구하는 `enable_thinking`과 `thinking_effort`,
-`latency_mode`를 넘기는 config 필드가 없고, 해석기가 항상 profile ARN이나 `global.*` id를 돌려주므로
-cross-region 판정이 늘 참이어서 다른 분기는 애초에 도달 불가다. 게다가 남은 역량 플래그
-`supports_temperature`와 `supports_forced_tool_choice`는 **Converse** 기준의 값이라, 다른 클래스가 구성되는 순간
-플래그의 의미가 성립하지 않는다. 해석이 맨 모델 id로 폴백해도 Converse가 그것을 받으니 잃는 폴백도 없다.
+성능 레이턴시를 구성하는 역량 레이어도 없다. 해석기가 항상 profile ARN이나 `global.*` id를 돌려주니 다른 분기는
+도달 불가이고, 레지스트리의 플래그는 **Converse** 기준의 값이다. 해석이 맨 모델 id로 폴백해도 Converse가 그것을
+받으니 잃는 폴백도 없다.
 
 **생성자 표면은 테스트로 고정한다.** `ChatBedrockConverse`가 pydantic `extra="forbid"`이니 프레임워크 메이저
 업그레이드가 kwarg 하나를 renaming하면 즉시 깨진다. 그런데 나머지 테스트는 전부 config 딕셔너리만 검증하니,
 그 딕셔너리를 실제 클래스에 넣어보지 않으면 그린으로 배포된다. 그래서 `tests/test_model_factory.py`의
 `TestModelClassConstructorSurface`가 배포 환경에서만 도는 profile ARN 경로까지 포함해 실제 인스턴스를 생성한다.
 
-**모델 ID.** `shared/constants.py`의 `LanguageModelId`에 열거되어 있고 최신은 Opus 5와 Sonnet 5다(Opus 4.8도
-유지한다). Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.1(`anthropic.claude-opus-5-5`, `-sonnet-5-5`,
-`-haiku-5-5`, `-fable-5-1`)도 선택할 수 있지만 기본값으로 쓰는 단계는 없다. 이 네 모델의 플래그는 Anthropic API
-문서 기준이고 아직 Converse로 직접 호출해 확인하지 않았다. Opus 5.5와 Haiku 5.5는 effort 기본값이 `high`가 아니라
-`medium`이라, 단계 모델을 바꿀 때는 품질을 다시 측정해야 한다. Opus 5의 역량 플래그는 버전 번호로 추정하지 않고 Converse로 직접 검증했다. `temperature`와 레거시
-`thinking.type="enabled"`/`budget_tokens`는 둘 다 ValidationException이고, `adaptive`와
-`output_config.effort`만 통과한다. Opus 4.7과 4.8, Sonnet 5도 같다. 단가도 Opus 4.8과 같으니 비용 옵션이
-아니라 품질 옵션이다.
+**모델 ID와 단계별 선택.** `shared/constants.py`의 `LanguageModelId`는 선택 가능한 모델만 담는다(Sonnet 4.6, Sonnet 5,
+Opus 4.8, Opus 5, 그리고 5.5 계열). 단계별 모델은 다음과 같다.
 
-**샘플링 파라미터 게이팅.** Sonnet 5와 Opus 4.7/4.8/5, 5.5 계열과 Fable 5.1은 비기본 `temperature`를 400으로
-거부한다. 그래서 해당 모델은 `LanguageModelInfo.supports_temperature=False`로 표시하고 팩토리가 `temperature`를
-생략한다.
+| 단계 | 모델 | 근거 |
+|------|------|------|
+| 랭킹 | Opus 5.5 | 135건 실제 풀에서 Opus 4.8과 상위 5개 중 3개, 8개 중 5개가 겹쳤다(Sonnet과 Opus를 비교했을 때와 같은 수준). 한 번에 Opus 4.8 $0.49, Opus 5.5 $0.45로 더 싸다. 점수가 전반적으로 약 0.04 낮게 나오니 `min_score` 근처 항목 수를 지켜본다 |
+| 다이제스트, 그라운딩, 비주얼 편집기와 아트 디렉터 | Sonnet 5.5 | 같은 후보 풀(2026-10-11)로 비교했다. Opus 5.5는 리드가 6문장(스펙 3-4), 본문이 5·4·4·3·3문장, 산문 1426자였고(다이제스트와 그라운딩 한 번에 약 $0.27), Sonnet 5.5는 리드 4문장, 본문 모두 3문장, 1186자로 스펙을 지켰다(약 $0.11). Opus 5.5의 비유는 더 생생했지만 리드에서 같은 논지를 되풀이했다. 네 단계가 모두 `digest_model`을 읽으니 함께 바뀌고, Sonnet 5.5가 쓴 4컷 브리프도 깔끔했다 |
+| 딥 리서치 | Opus 5.5 | 온디맨드 실행이고 품질이 결과물의 전부다. 실측 한 번에 약 2만 출력 토큰, 10 사이클 |
+| 트렌드, 쿼리 정제 | Sonnet 5.5 | 짧은 구조화 출력 |
+| CountTokens | Sonnet 4.6 | Opus 계열은 CountTokens를 지원하지 않는다(아래) |
 
-**강제 tool choice 게이팅.** Opus 5.5와 Sonnet 5.5, Fable 5.1은 `tool_choice`의 `any`와 `tool`을 400으로 거부한다.
-langchain-aws는 id에 "claude"가 들어 있으면 강제 선택을 지원한다고 추론하고, application inference profile
-ARN이면 아무것도 지원하지 않는다고 추론한다. 그러면 비주얼 브리프의 `with_structured_output`이 global id에서는
-도구를 강제해 400이 나고 ARN에서는 강제하지 않는다. 그래서 `supports_forced_tool_choice=False`인 모델은 팩토리가
-`supports_tool_choice_values=("auto",)`를 명시해 두 경로 모두 강제 없이 스키마 도구만 붙인다. 모델이 도구를
-부르지 않고 답하면 `VisualGenerator.brief()`가 명시적인 오류를 낸다. Converse로 직접 검증한 사실(레거시 thinking 형태를 거부하고 adaptive와 effort가
-필요하다는 것)은 재확인에 실제 호출 비용이 드니 `LanguageModelInfo`의 docstring에 문장으로 남겨두었다.
+Fable 5.1은 등록하지 않았다. Bedrock이 계정의 기본 데이터 보존 모드에서 이 모델을 거부한다("data retention mode
+'default' is not available for this model"). 계정 단위의 설정 변경이 필요하다.
+
+**레지스트리 플래그(`LanguageModelInfo`)는 Converse로 직접 확인한 값이다.** 재확인에 실제 호출 비용이 드니
+docstring에도 같은 사실을 적어두었다.
+
+- `supports_temperature`: Sonnet 4.6만 True다. 나머지는 비기본 `temperature`를 ValidationException으로 거부하고,
+  레거시 `thinking.type="enabled"`/`budget_tokens`도 거부한다. 팩토리는 False인 모델에 `temperature`를 보내지
+  않는다.
+- `supports_forced_tool_choice`: Opus 5.5와 Sonnet 5.5는 `tool_choice`의 `any`와 `tool`을 거부한다(Haiku 5.5는
+  받는다). langchain-aws는 id에 "claude"가 있으면 강제 선택을 지원한다고, application inference profile ARN이면
+  아무것도 지원하지 않는다고 추론한다. 그러면 비주얼 브리프의 `with_structured_output`이 global id에서는 도구를
+  강제해 400이 나고 ARN에서는 강제하지 않는다. 그래서 False인 모델은 팩토리가 `supports_tool_choice_values=("auto",)`를
+  명시하고, 모델이 도구를 부르지 않고 답하면 `VisualGenerator.brief()`가 명시적인 오류를 낸다.
+- `effort`: Opus 5.5와 Haiku 5.5는 effort 기본값이 `medium`이다(다른 모델은 `high`). 이 필드가 `"high"`인 모델은
+  팩토리가 `additional_model_request_fields={"output_config": {"effort": "high"}}`를 보내고, 리서치 에이전트도 같은
+  필드로 Strands `additional_request_fields`를 채운다. 단계의 모델을 바꿨다고 추론 깊이가 조용히 낮아지지 않게
+  하려는 것이다. 5.5 계열은 thinking을 끌 수 없고 생략하면 adaptive로 돈다.
 
 ### 단계 태깅과 사용량 로깅
 
-`get_model(model_id, stage="ranking"|"digest"|"trends"|"visual-editor"|"visual-synopsis"|"query-refine")`처럼
+`get_model(model_id, stage="ranking"|"digest"|"grounding"|"trends"|"visual-editor"|"visual-synopsis"|"query-refine")`처럼
 단계를 함께 받는다. 붙은 콜백이 호출마다
 `LLM usage stage=... model=... input=... output=... cache_read=... cache_write=...`를 남긴다.
 
-이유는 단순하다. 청구는 모델 단위인데 Sonnet 5 하나를 다이제스트와 그라운딩, 트렌드, 비주얼, 쿼리 정제,
-리서치 에이전트가 공유한다. 이 태그 없이는 토큰 총량을 쓴 주체로 되짚을 수 없다(실측으로 실행당 Sonnet 입력이
-157k, 랭커가 82k였다). 텔레메트리는 설계상 best-effort이며 어떤 읽기 실패도 생성을 막지 못한다.
+이유는 단순하다. 청구는 모델 단위인데 여러 단계가 한 모델을 공유한다(랭킹과 리서치는 Opus 5.5, 다이제스트와
+그라운딩, 비주얼, 트렌드, 쿼리 정제는 Sonnet 5.5). 이 태그 없이는 토큰 총량을 쓴 주체로 되짚을 수 없다. 리서치 에이전트는 `get_model`을 우회하니 대신
+CLI 결과 JSON의 `usage`가 같은 단위(입력, 출력, 캐시 읽기·쓰기 토큰)로 보고한다. 텔레메트리는 설계상 best-effort이며 어떤 읽기 실패도 생성을 막지 못한다.
 
 ### 비용 귀속 (application inference profile)
 
 온디맨드 `InvokeModel`은 과금 대상 리소스가 없어서 비용 할당 태그가 붙지 않는다. 그래서
 `BedrockCrossRegionModelHelper`가 시스템 프로필을 해석한 뒤, 이 프로젝트의 application inference
-profile(`{project}-{stage}-{model-slug}`, `scripts/put_inference_profiles.py`가 `Project`와 `Stage` 태그와 함께
-생성한다)을 찾아 그 ARN을 반환한다.
+profile(`{project}-{stage}-{model-slug}`)을 찾아 그 ARN을 반환한다. 이름은
+`application_profile_name(model_id, project, stage)` 하나가 만든다. `scripts/put_inference_profiles.py`는
+`config.aws.project_name`/`stage`로 이름과 `Project`·`Stage` 태그를 함께 정하고, 런타임 해석기는 스택이 같은
+config에서 Lambda에 넣는 `PROJECT_NAME`/`STAGE`를 쓴다. 그래서 dev가 아닌 스테이지에서도 두 경로가 같은 이름을 본다.
 
 해석이 이 한 곳뿐이라는 점이 중요하다. LangChain 팩토리와 Strands 리서치 에이전트가 동시에 커버된다.
-에이전트는 `get_model`을 우회하니 단계 로깅으로는 잡히지 않는다. 프로필이 없거나 조회가 거부되면 시스템
+프로필이 없거나 조회가 거부되면 시스템
 프로필로 조용히 폴백한다. 리포팅이 생성을 막아서는 안 된다. `ChatBedrockConverse`는 ARN에 `provider`를
 요구하니 config 빌더가 `provider="anthropic"`을 붙인다.
+
+단계의 모델을 바꾸면 그 모델의 프로필을 `put_inference_profiles.py`로 다시 만든다. 없으면 시스템 프로필로 돌고
+비용이 태그되지 않는다.
 
 ⚠️ IAM 주의. `application-inference-profile`은 `inference-profile`과 다른 ARN 리소스 타입이라 정책에 따로
 넣어야 한다. 누락하면 프로필이 존재하는 순간 모든 Bedrock 호출이 AccessDenied가 된다.
@@ -1076,8 +1078,8 @@ API로 권위 있는 카운트를 얻는다. 일부 베이스 모델만 CountTok
 AccessDenied 또는 'doesn't support counting tokens'로 거부한다) 호출자 모델과 무관하게 항상
 `TOKEN_COUNT_MODEL`(Sonnet 4.6)로 카운트한다. 그래서 두 함수는 `model_id`를 받지 않는다.
 
-**토크나이저 주의.** Sonnet 5는 토크나이저가 달라서 같은 텍스트를 더 많은 토큰으로 센다. 따라서 이 카운트는
-Sonnet 5의 실제 사용량을 약간 과소평가한다. 다만 `item_text_max_tokens` 컷이 더 넉넉한 상한이 되니 컨텍스트
+**토크나이저 주의.** Opus 4.7 이후 모델과 Sonnet 5 계열은 토크나이저가 달라서 같은 텍스트를 더 많은 토큰으로
+센다(최대 약 1.35배). 따라서 이 카운트는 실제 사용량을 약간 과소평가한다. 다만 `item_text_max_tokens` 컷이 더 넉넉한 상한이 되니 컨텍스트
 초과 위험은 없고 보수적인 방향이다.
 
 cross-region `global.`이나 `us.` 같은 프리픽스는 베이스 id로 스트립하고, 오류가 나면 char/4 추정으로
@@ -1092,40 +1094,41 @@ cross-region `global.`이나 `us.` 같은 프리픽스는 베이스 id로 스트
 
 `resolve_secret(env_var, ssm_suffix)`는 env를 먼저 보고 그다음 SSM(`/{project}/{stage}/{suffix}`,
 SecureString 복호화)을 본다. OpenAI 키는 데일리 비주얼의 gpt-image 렌더에서만 쓰이고, Tavily 키는 리서치
-백엔드와 웹서치 수집기에서 같은 순서로 해소된다.
-
-**사다리는 하나다.** AgentCore 런타임의 Slack 폴백도 이 함수를 쓴다. 사본을 두면 플레이스홀더 처리와 리전 해석이
-빠진 채로 갈라진다. 예외는 `lambda_handlers/slack_event_handler.py` 하나뿐이고, 그 핸들러는 `lambda_handlers/`만
-담은 독립 zip으로 배포되어 `shared`를 임포트할 수 없기 때문이다
-(`test_handler_imports_nothing_outside_the_zip`이 이를 고정한다).
+백엔드와 웹서치 수집기에서 같은 순서로 해소된다. 사다리는 이 하나뿐이다. 사본을 두면 플레이스홀더 처리와 리전
+해석이 빠진 채로 갈라진다.
 
 **리전은 `aws_region()`이 정한다.** env(`AWS_REGION` → `AWS_DEFAULT_REGION`), 없으면 `config.aws.region`,
 그것도 비면 `None`을 돌려 boto3가 프로파일에서 풀게 한다. 모듈마다
 `os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2"))` 리터럴을 들고 있으면 개발자 한 명의
 리전이 코드에 박혀 `config.aws.region`과 갈라지고, 다른 배포에서 SSM이나 AgentCore 호출이 엉뚱한 리전으로 간다.
 
+env가 config보다 앞이라는 점은 로컬에서 함정이 된다. 모델 호출용으로 `AWS_REGION=us-west-2`를 물려받은 셸에서
+돌리면 AgentCore Memory(ap-northeast-2) 조회가 `ResourceNotFoundException`으로 실패하고 cross-day dedup이 경고만
+남긴다. Memory를 건드리는 로컬 실행에는 `AWS_REGION=ap-northeast-2`를 준다. Lambda에서는 `AWS_REGION`이 함수
+리전이라 문제가 없다.
+
 ### 프롬프트 캐싱
 
 Bedrock 프롬프트 캐싱은 Claude 기준으로 캐시 가능 프리픽스 최소치가 약 1024 토큰이다. 그래서 효과가 있는
 곳에만 적용한다.
 
-**에이전트에는 적용한다.** 약 1.7K 토큰의 시스템 프롬프트와 도구 스키마가 매 ReAct 스텝마다, 그리고 멀티턴
-세션 내내 재전송되니 그 프리픽스를 캐싱한다.
+**에이전트에는 적용한다.** 약 1.7K 토큰의 시스템 프롬프트와 도구 스키마, 누적된 도구 결과가 매 ReAct 스텝마다
+재전송되니 그 프리픽스를 캐싱한다(실측 한 실행에서 캐시 읽기 30만 토큰).
 `BedrockModel(cache_config=CacheConfig(strategy="anthropic"))`(`agent/research_agent.py`)이다.
 
 여기서 `"auto"`가 아니라 `"anthropic"`인 것이 중요하다. Strands는 `"auto"`를 model id 문자열에 `claude`나
 `anthropic`이 있는지로 판단하는데, 배포되는 id는 application inference profile
 ARN(`arn:...:application-inference-profile/<opaque-id>`)이고 그 안에는 둘 다 없다. 그러면 `"auto"`는 이 모델이
 캐싱을 지원하지 않는다고 결론 내려 cache point를 전부 조용히 버린다. 비용 귀속 프로필을 켜는 것만으로 캐싱이
-꺼지는 셈이고, 리서치 턴은 시스템 프롬프트와 누적된 도구 결과 전체를 매번 재전송하니 모르고 잃기에 가장 비싼
-항목이다. 이 레지스트리의 모든 모델이 Anthropic이니(Bedrock 팩토리도 ARN id에 `provider="anthropic"`을 붙이며 같은
+꺼지는 셈이고, 리서치 턴은 시스템 프롬프트와 누적된 도구 결과 전체를 매번 재전송하니 모르고 잃으면 가장 비싼
+기능이다. 이 레지스트리의 모든 모델이 Anthropic이니(Bedrock 팩토리도 ARN id에 `provider="anthropic"`을 붙이며 같은
 사실을 단언한다) 문자열 추측에 맡기지 않고 명시한다. 검증은 `AgentResult.metrics.accumulated_usage`로 한다. 첫
 호출에 `cacheWriteInputTokens`, 이후 `cacheReadInputTokens`가 발생한다.
 
 **파이프라인에는 적용하지 않는다.** 단발성 프롬프트(랭커와 다이제스트, 트렌드, 시각화 시놉시스로 모두 약 530
 토큰이며 실행당 한 번 호출한다)는 캐시 최소치에 미달하고 호출 간 재사용도 없으니 의도적으로 캐싱하지 않는다.
 그래서 모델 레지스트리에도 `supports_prompt_caching` 같은 플래그를 두지 않는다. 어차피 모든 엔트리가 True가 되고
-읽는 곳도 없어서, 레지스트리가 쓰지 않는 능력을 광고하는 것으로 끝난다. 파이프라인 스테이지의
+읽는 곳도 없어서, 레지스트리에 쓰이지 않는 플래그만 남는다. 파이프라인 스테이지의
 `cache_read`/`cache_write` 로그 필드가 항상 0인 것도 그래서 정상이다.
 
 ## 7. 메모리: 세 개의 분리된 저장소
@@ -1134,23 +1137,31 @@ ARN(`arn:...:application-inference-profile/<opaque-id>`)이고 그 안에는 둘
 구조화된 상태이고, 다이제스트 스냅샷은 Lambda 사이에 넘기는 그날의 사진이며, cross-day dedup 히스토리는 짧은
 TTL의 원장이다.
 
+- **기억하는 것.** 매일 다이제스트를 분류해 `trends.json`에 트렌드별 한 줄 근거를 날짜와 함께 쌓는다. 날짜별
+  다이제스트 스냅샷(90일), 최근 lead, 발행 URL과 Threads 게시 날짜도 남긴다.
+- **압축하는 방식.** 요약을 다시 쓰지 않고 상한으로 자른다. 트렌드당 근거 최근 `trend_max_evidence`(5)개,
+  30일(`trend_retention_days`) 동안 다시 보이지 않으면 삭제, 다이제스트에는 모멘텀 상위
+  `trend_max_active_trends`(10)개만 넣는다. LLM이 매일 요약을 다시 쓰는 방식은 이력을 잃고 지어내서 쓰지 않는다.
+- **기억하지 않는 것.** 근거 5개를 넘는 오래된 흐름의 서사는 사라지고 첫 등장일과 추적 일수만 남는다. 읽는
+  쪽(분류기와 다이제스트는 최신 근거, `recall_trends`는 최근 3개)이 그 이상을 쓰지 않는다.
+
 ### 7.1 트렌드 — 구조화 `trends.json`
 
 `StateStore`에 저장되며 시스템 오브 레코드다. 관리 주체는 `pipeline/trend_tracker.py`의 `TrendTracker`다.
 
 **스토어 선택(`create_state_store`).** `STATE_BUCKET`(env), `config.aws.state_bucket_name`, 로컬 파일 폴백
 순으로 **버킷 유무만** 보고 결정한다. `is_running_in_aws()` 같은 플랫폼 감지로 갈라서는 안 된다. Lambda가 아닌
-호출자(AgentCore 런타임, 컨테이너, 실 버킷을 향한 로컬 실행)가 `STATE_BUCKET`을 들고 있어도 trends.json을 로컬
+호출자(로컬 리서치 CLI, 실 버킷을 향한 로컬 실행)가 `STATE_BUCKET`을 들고 있어도 trends.json을 로컬
 파일시스템에 쓰게 되고, 그러면 트렌드 히스토리가 통째로 사라진다. AWS 밖에서는 세션을 `config.aws.profile`과
 `region`으로 만들어 `.env`에 `STATE_BUCKET`을 둔 개발자가 자격증명을 잃지 않게 하고, AWS 안에서는 실행 역할, 곧
 기본 세션을 쓴다. prefix 규약은 env 경로(`S3_PREFIX`가 곧 digest-state prefix)와 config 경로(`s3_prefix`에
 `/digest_state`를 붙인다)가 서로 다르니 그대로 유지한다.
 
 **읽기 실패는 히스토리 없음과 다르다(`StateReadError`).** 스로틀되거나 거부된 S3 GET이 `None`을 반환하면 키가
-없는 것과 구분되지 않고, 다음 read-modify-write가 그 공백을 영구화한다. 발행 URL 원장과 최근 lead, 비주얼 포맷
-윈도, Threads 멱등 마커가 한 번의 실패 읽기로 비워질 수 있다는 뜻이다.
+없는 것과 구분되지 않고, 다음 read-modify-write가 그 공백을 영구화한다. 발행 URL 원장과 최근 lead, Threads 멱등
+마커가 한 번의 실패 읽기로 비워질 수 있다는 뜻이다.
 
-그래서 `read`와 `exists`는 `NoSuchKey`와 404만 조용히 없음으로 처리하고, 그 외 `ClientError`(및 로컬
+그래서 `read`는 `NoSuchKey`와 404만 조용히 없음으로 처리하고, 그 외 `ClientError`(및 로컬
 `OSError`)는 `StateReadError`를 raise한다. 소비자는 전부 동일하게 처리한다. ERROR를 로깅하고, 히스토리는
 모른다고 보고, 쓰기를 생략한다. 이 예외는 게시 경로로는 절대 전파되지 않는다. `RollingLog.entries()`는 `[]`,
 `ThreadsPostLedger.already_posted()`는 `False`를 반환한다. 중복 게시는 복구할 수 있지만 미게시는 그렇지 않기
@@ -1160,22 +1171,17 @@ TTL의 원장이다.
 분류한다. 부기는 전부 결정론적 Python이다.
 
 - 증거 날짜는 코드가 스탬프한다. LLM이 아니다.
-- 상태(active, cooling, archived)는 `last_seen`을 `trend_cooling_days`와 `trend_retention_days`에 비교해
-  계산한다.
+- 상태(active, cooling)는 `last_seen`을 `trend_cooling_days`에 비교해 계산하고, `last_seen`은 저장된 증거의
+  가장 늦은 날짜에서 도출한다. 그래서 같은 날 재실행이 오늘 증거를 걷어내면 `last_seen`도 함께 뒤로 간다.
+- `last_seen`이 `trend_retention_days`를 넘긴 트렌드는 보관 단계 없이 삭제한다(보관된 트렌드는 어느 독자도 읽지
+  않아 되살아날 수 없었다).
 - momentum은 recency 감쇠다. `0.5^(age/half_life)`이고 `trend_momentum_half_life_days` 기본값은 7일이다.
 - 트렌드당 증거는 `trend_max_evidence`로 캡한다.
 - `trend_max_active_trends`는 **읽는 쪽에만** 캡을 건다(`get_trends_context`). 저장된 status를 이 캡으로
-  바꾸지는 않는다. 초과분을 최저 momentum부터 ARCHIVED로 돌리는 루프는 애초에 붙지 않는다. 같은 함수의 위쪽
-  루프가 매 실행 `last_seen` 나이만으로 status를 다시 도출하니, 캡 때문에 아카이브된 트렌드는 다음 실행에 아직
-  최근이면 ACTIVE로 되돌아온다. 실측하면 "Archived low-momentum trend over active cap"이 30일간 365번(실행당
-  12번), 59개 id에 걸쳐 발화하고 한 id는 13번 아카이브된다. 게다가 이것은 낭비로 끝나지 않고 **아래 규칙을
-  위반**한다. `_render_existing`이 ARCHIVED를 분류기 시야에서 숨기므로, 숨겨지는 10개가 매 실행 바뀌고 못 보는
-  트렌드는 연장될 수 없어 새 id로 다시 생성된다. active 목록을 묶는 일은 `trend_cooling_days`가 안정적이고 도출
-  가능한 규칙으로 이미 한다(관측된 74개 중 20개가 그 안에 있었다).
-- **아카이브 purge.** 아카이브는 status만 바꾸고 증거를 유지하니 "증거 없는 트렌드 제거" 규칙에 걸리지 않아
-  영구히 잔존하고, 그대로 두면 `trends.json`이 무한 성장한다. 그래서 `last_seen`이 retention의 2배를 넘긴
-  아카이브 트렌드는 완전히 제거한다. 짧게 아카이브됐다 되살아날 여지를 남기는 grace다.
-- 동일 날짜 재실행은 멱등이다. 그날 증거를 교체한다.
+  바꾸지는 않는다. 캡 때문에 숨긴 트렌드는 분류기도 못 보게 되어 연장될 수 없고 새 id로 다시 생성된다.
+- 동일 날짜 재실행은 멱등이다. 그날 증거를 교체한다. 오늘 증거는 분류기용 목록을 렌더하기 **전에** 걷어내서,
+  분류기가 첫 실행의 스토리를 기존 트렌드로 보지 않는다. 다이제스트용 블록도 다이제스트 날짜 **이전** 증거만
+  쓴다. 그렇지 않으면 19:00 실행의 스토리가 19:25 재실행에 "최근 며칠의 트렌드"로 되돌아갔다.
 
 **로드 견고성.** 전체 `TrendMemory.model_validate_json`이 실패하면(스키마 드리프트나 제거된 enum 값 등) 모든
 history를 버리지 않고 트렌드별로 관대하게 복구한다(`_recover_trends`가 개별 검증해 살아남는 것만 유지한다).
@@ -1185,19 +1191,20 @@ history를 버리지 않고 트렌드별로 관대하게 복구한다(`_recover_
 
 **주입, 이른바 recurrence ammunition.** 다이제스트 생성 시 active와 cooling 트렌드를 momentum 순으로 렌더해
 `DigestPrompt`에 주입하되, 각 트렌드에 코드가 증거에서 산출한 재등장 사실을 붙인다(`_render_ammunition`).
-추적 N일째, 서로 다른 N일 재등장, 이번 달 N회 같은 값이다. 이 수치가 lead의 날카로운 근거로 쓰이고 LLM이
-지어내지 않는다.
+추적 N일째, 서로 다른 N일 재등장 같은 값이다. 이 수치가 lead의 날카로운 근거로 쓰이고 LLM이 지어내지 않는다.
+"이번 달 N회"는 두지 않는다. 근거 캡(5개)에 걸린 트렌드에서는 실제보다 적게 셌다.
 
 다이제스트용 블록만 `trend_max_active_trends`로 캡한다. 새 노브를 만들지 않고 기존 active 캡을 재사용했다.
-`visible`에는 cooling도 들어가서 20줄을 넘길 수 있고 대부분은 에디터가 쓰지 않는 식은 실이다. 반면 분류기용
+`visible`에는 cooling도 들어가서 20줄을 넘길 수 있고 대부분은 에디터가 쓰지 않는 끊긴 흐름이다. 반면 분류기용
 `_render_existing`은 캡하지 않는다. 거기서 cooling 트렌드를 숨기면 그 실이 고아가 되고 모델이 같은 주제에
 중복 id를 새로 만든다.
 
 ### 7.2 다이제스트 스냅샷 — AgentCore Memory (`shared/memory.py`)
 
-`AgentCoreMemoryStore`가 오늘의 ranked 아이템 스냅샷을 단기 세션 이벤트로 기록한다(`create_event`, 세션
-`digest-<date>`, `_fit_to_limit`으로 100k 한도를 보장한다). 목적은 데일리 비주얼 Lambda가 cross-Lambda로 이
-스냅샷을 읽어 맥락을 공유하는 것이다.
+`AgentCoreMemoryStore`가 그날의 스냅샷(`ranked_items`와 `digest_result`)을 단기 세션 이벤트로 기록한다
+(`create_event`, 세션 `digest-<date>`). 각 `RankedItem`이 자기 `CollectedItem`을 품고 있으니 수집 원본은 따로
+저장하지 않는다. `_fit_to_limit`이 100k자 한도를 지킨다. 넘치면 ranked 항목 본문을 자르고, 그래도 넘치면 본문
+없는 메타데이터만 남긴다. 목적은 데일리 비주얼 Lambda와 리서치 CLI의 `recall_digest`가 이 스냅샷을 읽는 것이다.
 
 **읽기는 그 날짜의 세션을 직접 읽는다.** `get_digest(date)`가 `digest-YYYY-MM-DD` 세션을 직접 읽는다. 비주얼
 Lambda는 자기가 트리거된 날짜의 콘텐츠를 게시해야 하니 최신을 읽고 날짜를 비교하는 방식은 쓸 수 없다.
@@ -1206,28 +1213,30 @@ Lambda는 자기가 트리거된 날짜의 콘텐츠를 게시해야 하니 최�
 
 읽기 자체가 실패하면(스로틀이나 거부) `None`이 아니라 `MemoryReadError`를 raise한다. `None`으로 떨어뜨리면 그날
 다이제스트가 없는 것과 구분되지 않아 비주얼 Lambda가 게시를 건너뛰고 200을 반환한다. 게시 경로는 그대로 터뜨려
-Errors 알람과 DLQ로 보내고(`retry_attempts=0`이다), 보강용 읽기인 `pipeline/runner.py`의 cross-day dedup 시드만
-catch해서 degrade한다.
-
-`get_latest_digest()`도 있고, `_digest_session_ids`는 `list_sessions`를 NextToken으로 페이지네이션한다. 세션은
-삭제되지 않으니 100개를 넘기면 단일 페이지가 최신 세션을 놓칠 수 있다. `MAX_SESSION_PAGES` 안전 캡이 있다.
+Errors 알람과 DLQ로 보내고(`retry_attempts=0`이다), 보강용 읽기인 cross-day dedup 시드만 날짜별로 건너뛴다.
 
 **세션 안에서도 최신 이벤트를 고른다.** 한 세션은 보통 이벤트 1건이지만 같은 날 재실행이 두 번째를
 append하고, `list_events`는 순서를 보장하지 않는다. `maxResults=1`은 그날의 첫 시도, 즉 폐기된 쪽을 서빙할 수
 있다. 그래서 작은 페이지(`EVENTS_PER_SESSION`)를 읽고 `eventTimestamp`로 최신을 고르며, 동률일 때만 페이로드의
 `digest_result.generated_at`으로 선택적 tie-break를 한다. 그 필드 없이 저장된 기존 스냅샷도 그대로 로드된다.
-페이지 크기를 작게 둔 이유는 `get_recent_digests`가 세션마다 이 페이지를 읽기 때문이다. 이력이 늘어도 세션당
+페이지 크기를 작게 둔 이유는 `get_recent_digests`가 날짜마다 이 페이지를 읽기 때문이다. 이력이 늘어도 세션당
 비용이 커지지 않아야 한다. 파싱 불가 이벤트는 건너뛰되, 그래서 아무것도 남지 않으면 예외를 올려 읽기 실패가 빈
 날로 읽히지 않게 한다.
 
 **시맨틱 recall과 장기 전략은 쓰지 않는다.** 관리형 추출은 트렌드의 흐름이 아니라 안정적인 사용자-사실을 뽑도록
 설계돼 있어서 이 용도에 맞지 않는다. cross-day 연속성은 `trends.json`이 담당한다([§7.1](#71-트렌드--구조화-trendsjson)).
 
-`LocalMemoryStore`는 오프라인 폴백이며 `digest_*.json`만 다룬다.
+**스토어 선택(`create_memory_store`).** `MEMORY_ID`(CDK가 Lambda에만 넣는다)가 있으면 그 id를, 없으면 스택이
+만든 메모리를 이름(`digest_memory_name(project, stage)`, CDK와 같은 함수)으로 찾아 `config.aws.region`에서 연다.
+로컬 실행(`main.py`, `research_cli.py`)이 운영 스냅샷을 읽게 하려는 것이다. 예전처럼 `MEMORY_ID`가 없다고 로컬
+파일로 떨어지면 cross-day dedup은 어제를 못 보고 `recall_digest`는 거의 모든 날짜에 답하지 못했다. 리전은 셸의
+`AWS_REGION`(모델 호출용으로 다른 값일 수 있다)이 아니라 스택 리전이다. 메모리를 찾지 못할 때만
+`LocalMemoryStore`(`digest_*.json`)로 폴백한다.
 
-**윈도 조회.** `get_recent_digests(n, exclude_date, after_date)`가 cross-day dedup
-시드를 제공한다([§7.3](#73-cross-day-dedup-히스토리-sharedhistory_storepy)). `exclude_date`는 오늘 자기 스냅샷을 빼서 같은 날 재실행이
-자기 스토리를 살리게 하고, `after_date`는 원장과 같은 TTL 윈도로 하한을 둔다.
+**윈도 조회.** `get_recent_digests(before, days)`가 cross-day dedup 시드를
+제공한다([§7.3](#73-cross-day-dedup-히스토리-sharedhistory_storepy)). 세션 id가 날짜로 정해지니 `before` 이전 `days`일의
+세션을 직접 읽고, 세션 목록을 페이지네이션하지 않는다(그래서 `ListSessions` 권한도 필요 없다). `before` 당일은
+빼서 같은 날 재실행이 자기 스토리를 살리게 하고, 한 날짜의 읽기 실패는 경고하고 건너뛴다.
 
 ### 7.3 cross-day dedup 히스토리 (`shared/history_store.py`)
 
@@ -1238,8 +1247,7 @@ append하고, `list_events`는 순서를 보장하지 않는다. `maxResults=1`�
 날(age 0)을 제외하니 같은 날 재실행이 자기 다이제스트를 재현할 수 있다. within-run 중복은
 집계기가 처리한다. `record()`가 발행 URL을 오늘로 스탬프해 병합하고 TTL 밖 항목을 prune한다.
 
-**`RollingLog`.** 한 JSON blob에 담는 capped FIFO다. 반복 방지용 최근 lead(`recent_leads.json`)와 비주얼 포맷
-변주(`visual_formats.json`)에 쓴다. `append(record, dedup_key=...)`로 같은 키 값의 기존 항목을 교체할 수 있고,
+**`RollingLog`.** 한 JSON blob에 담는 capped FIFO다. 반복 방지용 최근 lead(`recent_leads.json`)에 쓴다. `append(record, dedup_key=...)`로 같은 키 값의 기존 항목을 교체할 수 있고,
 leads는 `date`로 dedup해서 `--force-republish` 재실행이 같은 날 lead를 중복 추가해 반복 방지 윈도를 잠식하지
 않게 한다.
 
@@ -1253,8 +1261,7 @@ leads는 `date`로 dedup해서 `--force-republish` 재실행이 같은 날 lead�
 아니라 AgentCore Memory 히스토리로도 self-heal되게 한다. 원장이 비어도 작동한다.
 
 **시드와 기록(`pipeline.runner.run_pipeline`).** exclude 집합을 원장과 최근 AgentCore Memory 스냅샷 양쪽에서
-시드한다(`get_recent_digests(ttl, exclude_date=today, after_date=today-ttl)`으로 같은 TTL 윈도로 날짜를
-한정한다). 생성 후에는 발행된 `content.items` URL을 원장에 기록하고, lead를 `recent_leads.json`에 append하되
+시드한다(`get_recent_digests(today, published_url_ttl_days)`로 원장과 같은 TTL 윈도를 읽는다). 생성 후에는 발행된 `content.items` URL을 원장에 기록하고, lead를 `recent_leads.json`에 append하되
 AGI 카운트다운 프리픽스를 제거한다(`_editorial_lead`). novelty 신호가 고정 보일러플레이트가 아니라 편집 각이
 되어야 한다.
 
@@ -1275,13 +1282,9 @@ AGI 카운트다운 프리픽스를 제거한다(`_editorial_lead`). novelty 신
   컴프리헨션으로 다시 구현하게 되고, 판정이 두 벌로 갈라진다.
 - `RankingHealth(batches_total, batches_failed, items_total, items_scored, items_lost)`는
   `coverage`와 `degraded`, `summary()`를 갖고 `DigestResult.ranking_health`로 실려 나간다. `degraded`의 조건은
-  재시도까지 실패한 배치가 있는 것 하나다. 커버리지 비율로 degrade하는 조건은 두지 않는다. 그것이 노리는 대상,
-  곧 응답이 두 번 다 파싱되지 않아 모든 카운터가 0으로 남는 배치는 이미 raise로 처리된다. 실측 커버리지도 30회
-  실행에서 0.93~1.0 또는 0.0으로 이분되어, 튜닝된 비율이 `batches_failed`와 다른 무언가를 가려낼 여지가 없다.
-
-  랭커 쪽 `ranking_min_coverage_ratio`는 다른 물건이다. 알림이 아니라 **재질의 게이트**이고, 모델이 한 id를 두 번
-  채점하고 다른 하나를 빠뜨리는 경우를 복구한다. 중복을 그대로 세면 커버리지가 1.0으로 읽혀 그 항목이 조용히
-  유실된다.
+  재시도까지 실패한 배치가 있는 것 하나다. 커버리지 비율로 degrade하는 조건은 두지 않는다. 실측 커버리지가 30회
+  실행에서 0.93~1.0 또는 0.0으로 이분되어, 비율이 `batches_failed`와 다른 것을 가려낼 여지가 없다. 빠진 id는
+  랭커가 재질의로 메운다([§5.2](#52-랭커-rankerpy)).
 
 STALE과 DEGRADED는 실패가 아니니 `failed_sources`에 들어가지 않는다. FAILED 승격 경로와 분리되어 있다.
 
@@ -1309,19 +1312,12 @@ STALE과 DEGRADED는 실패가 아니니 `failed_sources`에 들어가지 않는
 날이 매일 페이징하지 않게 하는 config 게이트다.
 
 **랭킹 헬스 알림(`_maybe_alert_ranking`, 파이프라인 이후).** 위 수집기 알림은 파이프라인 이전 호출을 그대로
-두고, 랭킹 판정은 별도로 게시한다. 파이프라인 예외가 수집기 알림을 삼켜서는 안 된다. 재시도까지
-실패한 배치가 있으면(약 후보 40건 소실) 겉보기 정상인
-다이제스트에도 알림이 간다. **실제로 나간 다이제스트의 다양성 위반도 같은 알림에 실린다.** 랭커는
-`max_per_origin`과 보장 슬롯을 랭크 코어에서만 보장하는데, 병합 backfill 후보는 두 캡을 의도적으로 무시하고
-프롬프트는 그것을 교체로 쓰라고 부탁만 한다. `DigestGenerator`가 `_fill_source_metadata`가 돌려주는 '실제 게시된
-`CollectedItem`' 목록으로 origin과 source를 세어 위반을 ERROR로 남기고 `DigestResult.diversity_breaches`로
-넘긴다. 후보가 아예 없던 소스는 조용한 날이니 위반이 아니다. 탐지 전용이다. 스토리를 바꿔치기하지 않는다.
+두고, 랭킹 판정은 별도로 게시한다. 파이프라인 예외가 수집기 알림을 삼켜서는 안 된다. 재시도까지 실패한 배치가
+있으면(약 후보 40건 소실) 겉보기 정상인 다이제스트에도 알림이 간다.
 
-'후보가 있었다'의 기준은 오버선정 목록 전체가 아니라 **코어 후보**다(`not r.backfill and not r.grace`).
-`ranked_items`는 `top_n + digest_candidate_buffer`이고, backfill 항목은 프롬프트가 병합된 스토리의 **교체**로
-쓰라고 명시한 선택 후보이며, grace 항목은 `min_score` 아래로 그 소스의 보장 슬롯이 채워질 수 있게만 있는
-것이다. 목록 전체를 감사하면 에디터가 지시받은 그대로 후보를 사양한 것이 'Digest diversity breach'로 남고 SNS
-'Ranking Health' 알림까지 간다. 버퍼가 설계대로 동작하는 것에 알림이 울리는 셈이다.
+출고된 다이제스트의 소스 구성은 알리지 않는다. 무엇을 내보낼지는 에디터의 판단이고([§5.2](#52-랭커-rankerpy)),
+사후에 할 수 있는 조치가 없다. 그런 알림이 운영 30회 중 14회 울리자 진짜 소스 장애 알림(X 수집 중단 54일)이 그
+소음에 묻혔다. 알림은 사람이 조치할 수 있는 상태에만 쓴다.
 
 **알림 경로는 한 곳이 소유한다(`shared/alerts.publish_alert`).** `ALERT_SNS_TOPIC_ARN` 조회와 `format_alarm`
 조립, publish, 경고 로그, 예외 삼키기가 모두 여기 있고, 핸들러는 `fields` 조립만 갖는다. 두 Lambda 핸들러가 같은
@@ -1344,8 +1340,7 @@ correlation id다. 매 invoke마다 세팅되는 값이니 알림에 실어야 �
 
 **EMF 봉투는 `shared/metrics.emit_emf`가 소유한다.** `_aws`/Timestamp 봉투를 호출 지점마다 손으로 만들면
 `"Dimensions": [[]]`로 렌더되기 쉽고, 차원이 없으면 dev와 prod가 **같은 데이터포인트**에 쓴다. prod가 아무것도
-내지 못한 날 dev의 5건짜리 실행이 prod의 `Maximum<1` EmptyDigestAlarm을 초록으로 유지하고, dev 실패가 prod
-AgentErrors를 페이징한다. 그래서 이 함수가 `PROJECT_NAME`/`STAGE`에서 읽은 `Project`/`Stage` 차원을 붙이고(값이
+내지 못한 날 dev의 5건짜리 실행이 prod의 `Maximum<1` EmptyDigestAlarm을 초록으로 유지한다. 그래서 이 함수가 `PROJECT_NAME`/`STAGE`에서 읽은 `Project`/`Stage` 차원을 붙이고(값이
 비면 그 차원은 생략한다. CloudWatch가 빈 차원 값을 가진 레코드를 거부하기 때문이다), CDK 알람도 같은
 `metric_dimensions` 맵으로 만든다. 네임스페이스는 `shared/constants.METRIC_NAMESPACE` 하나다. EMF는 로그 한
 줄이니 새 AWS 리소스는 필요 없다.
@@ -1373,12 +1368,10 @@ no-op이다.
 건너뛰고 예외를 다시 raise해 Errors 알람과 DLQ(재생 가능)로 남긴다. 조용히 넘기면 '어제 콘텐츠 게시' 대신
 '완전 무출력인데 아무 신호 없음'이 된다.
 
-**Threads 부분 전달 알림과 게시 결과 메트릭.** 비주얼 Lambda는 `ThreadsDelivery`(posted/expected)를 보고
-누락이 있으면 `ALERT_SNS_TOPIC_ARN`으로 SNS 알림을 올린다. env가 없으면 no-op이라 로컬 실행은 조용하다.
-그리고 `ThreadsPostsPublished`와 `ThreadsImagePublished`(root가 그날 이미지를 실었는지 0/1)를 하나의 EMF
-레코드로, 결과가 없는 실행(0건)에도 무조건 남긴다. EMF stdout 전용이며 아직 알람이나 CDK 연결은 없다.
-데이터포인트를 아예 찍지 않으면 CloudWatch에서는 0이 아니라 "데이터 없음"으로 읽히는데, 그 경우가 바로 측정
-가치가 가장 큰 날이다.
+**Threads 부분 전달 알림.** 비주얼 Lambda는 `ThreadsDelivery`(posted/expected)를 보고 누락이 있거나, 텍스트만
+나갔거나, 게시가 실패하면 `ALERT_SNS_TOPIC_ARN`으로 SNS 알림을 올린다. env가 없으면 no-op이라 로컬 실행은
+조용하다. 게시 결과를 EMF 메트릭으로 따로 남기지 않는다. 그 메트릭을 읽는 알람이나 대시보드가 없었고, 같은
+판정을 SNS 알림이 이미 낸다.
 
 타임스탬프는 어느 emit 지점에서든 `datetime.now(UTC)`를 쓴다. naive 로컬 시계로 찍으면 UTC epoch ms로 해석돼
 엉뚱한 시각에 기록된다.
@@ -1390,7 +1383,7 @@ no-op이다.
 **남은 실행 시간으로 게시 경로를 bound한다.** 비주얼 Lambda는 자기 `context.get_remaining_time_in_millis()`를
 평범한 monotonic float 하나로 바꿔(`_remaining_deadline`이고, context 객체는 파이프라인에 넘기지 않는다)
 `run(deadline=...)`에서 `_post_threads`, `post_to_threads`로, 그리고 이미지 생성기로 흘린다.
-`deadline=None`이면(로컬 실행과 `main.py`, research_cli) 아무것도 깎지 않는다. 딜라인이 있을 때만 인덱싱 예산이
+`deadline=None`이면(로컬 실행과 `main.py`, `research_cli.py`) 아무것도 깎지 않는다. 딜라인이 있을 때만 인덱싱 예산이
 `min(270초, 남은 시간 − 게시 예비분)`으로 줄고(예비분 `THREADS_PUBLISH_RESERVE_SEC`은
 `THREADS_MEDIA_PROCESS_WAIT_SEC`과 reply 재시도 상수에서 산출한다), 남은 시간이 충분하면 270초를 절대 깎지
 않는다. 스토리를 잃는 쪽은 인덱싱을 오래 기다리는 것이 아니라 일찍 포기하는 것이다. 이미지 쪽에서는 moderation
@@ -1398,240 +1391,151 @@ no-op이다.
 
 ## 9. 딥 리서치 에이전트
 
-Slack 멘션으로 트리거되는 자율 딥 리서치 에이전트다. 자유형 토픽을 받아 열린 웹과 학술 문헌, 커뮤니티를 스스로
-리서치한 뒤 한국어로 합성한 출처 표기 리포트를 채널에 전달한다. 다이제스트와 분리된 독립 웹 리서치이며
-다이제스트 항목에 묶이지 않는다. AgentCore Runtime 위에서 Strands로 돈다.
+자유형 토픽 하나를 열린 웹과 학술 문헌, 커뮤니티로 스스로 리서치해 한국어로 합성한 출처 표기 리포트를 쓰는
+자율 에이전트다. 다이제스트와 분리된 독립 리서치이며 다이제스트 항목에 묶이지 않는다. 로컬 CLI가 Strands로
+실행한다. AWS에 상시 떠 있는 런타임은 없다.
+
+### 9.1 CLI 계약 (`research_cli.py`)과 OpenClaw 스킬
+
+```bash
+uv --directory ~/Projects/omnisummary run python research_cli.py "<토픽>" [--publish threads] [--output-dir PATH]
+```
+
+**stdout에는 JSON 객체 하나만 쓴다.** 로그는 전부 stderr로 간다. 필드는 `status`(`succeeded`, `failed`,
+`rejected`), `topic`, `title`, `markdown_path`, `markdown`, `sources`(리포트가 인용한 URL), `images`(stage된 OG
+이미지), `threads`, `model`, `stop_reason`, `usage`(입력·출력·캐시 읽기·쓰기 토큰, 사이클 수, 도구별 호출 수),
+`warnings`, `error`다. `--publish threads`를 준 실행만 `threads`가
+`{published, partial, posts_delivered, posts_rendered, dropped, trimmed}`이고, 나머지는 `null`이다. 리포트는
+`reports/`(gitignore 대상, `--output-dir`로 변경)에 `YYYY-MM-DD-HHMMSS-<토픽 해시>.md`로 저장된다.
+
+**종료 코드.** `0` 성공, `1` 실패(리포트 없음, 실행 오류, 요청한 Threads 게시가 완료되지 않음), `2` 입력
+거부(빈 토픽. 알 수 없는 옵션이면 argparse가 JSON 대신 사용법을 stderr에 쓴다).
+
+**게시는 플래그로만 한다.** Threads는 공개 계정이다. `--publish threads`가 없으면 에이전트가 무엇을 쓰든 게시되지
+않는다. 플래그는 `DeliveryContext.publish_threads`라는 데이터로 흐르고, 프롬프트에는 `[DELIVERY] Threads
+publishing: ALLOWED|NOT allowed.` 한 줄로 알린다. 토픽의 문구로 게시 여부를 추론하게 두면 'Meta Threads 추천
+알고리즘'처럼 주제가 Threads인 요청까지 게시 요청이 된다.
+
+**경고(`warnings`).** 에이전트가 `deliver_report`로 리포트를 제출하지 않고 답만 했으면 인용이 검사되지 않았다는
+경고와, 어떤 도구도 돌려주지 않은 URL 목록을 싣는다. `stop_reason`이 `limit_*`이면 예산에서 멈췄다고 적고,
+Threads에서 드롭되거나 잘린 게시물이 있으면 그 수를 적는다.
+
+**로그 보안.** `.env`가 `LOG_LEVEL=DEBUG`여도 서드파티 로거는 WARNING으로 고정한다. botocore DEBUG는 세션
+토큰이 담긴 요청 헤더를 남기고, 호출자(OpenClaw)는 stderr를 보관할 수 있다. `LOG_LEVEL`은 앱 로거만 움직인다.
+
+**OpenClaw 스킬.** 정본은 `~/.openclaw/workspace/skills/omnisummary-research/SKILL.md`이고 저장소에는 두지 않는다
+(사용자 정의 스킬은 워크스페이스 한 곳에만 둔다). scholar-lens 스킬과 같은 구성으로 외부 효과와 경계, 사전 점검,
+명령, 출력, 검증과 보고, 실패와 재시도 정책을 적는다. 핵심 규칙은 둘이다. `--publish threads`는 사용자가 그
+요청에서 Threads 게시를 명시했을 때만 붙이고, Threads에 게시한 실행은 다시 돌리지 않는다(`--publish` 없이 실패한
+실행은 한 번 재시도할 수 있다).
 
 ### 구성 (`agent/research_agent.py`의 `create_research_agent`)
 
-`BedrockModel`(기본 Sonnet 5, `config.agent.model_id`)을 streaming과
+`BedrockModel`(기본 Opus 5.5, `config.agent.model_id`)을 streaming과
 `CacheConfig(strategy="anthropic")`([§6의 프롬프트 캐싱](#프롬프트-캐싱) 참조)으로 구성하고 도구 8개로 Strands
-`Agent`를 만든다. `max_tokens`는 `LANGUAGE_MODEL_INFO`에서 모델 역량으로 가져오고, 미등록 모델이면
-`_DEFAULT_MAX_OUTPUT_TOKENS`(64000)로 폴백한다. cross-region inference-profile id는
-`BedrockCrossRegionModelHelper`로 해석한다.
+`Agent`를 만든다. `max_tokens`는 `LANGUAGE_MODEL_INFO`에서 가져오고, `temperature`와 effort는 Bedrock 팩토리와
+같은 레지스트리 플래그로 정한다(Opus 5.5는 `additional_request_fields`로 effort `high`). cross-region
+inference-profile id는 `BedrockCrossRegionModelHelper`로 해석한다. 에이전트는 stdout에 아무것도 쓰지 않는다
+(`callback_handler=None`). stdout은 JSON 한 개의 자리다.
 
-boto 세션은 AWS에서는 env 리전으로, 로컬에서는 `config.aws.bedrock_region`과 `profile`로 만들고
-`boto_read_timeout`, `boto_connect_timeout`, `boto_max_attempts`를 적용한다.
+boto 세션은 `AWS_BEDROCK_REGION` 또는 `config.aws.bedrock_region`과, 해석되는 경우의 `config.aws.profile`로
+만들고 `boto_read_timeout`, `boto_connect_timeout`, `boto_max_attempts`를 적용한다. 실행마다
+`research_run_limits(config)`가 `Limits`(`research_max_turns`, `research_max_total_tokens`,
+`research_max_output_tokens`)를 넘긴다. 상한에 걸린 실행도 텍스트를 반환하니, CLI가 `stop_reason`으로 경고를 단다.
 
 **도구 목록은 프롬프트에서 파생된다.** `_render_tools_block(tools)`이 실제로 바인딩된 도구의 Strands tool
-spec에서 이름과 인자, 한 줄 요약을 뽑아 `<tools>` 블록을 만든다. 프롬프트에 손으로 쓴 번호 목록을 두면 바인딩
-목록과 일치시킬 장치가 없어서, 도구 이름을 바꾸거나 추가하거나 지우는 순간 모델이 호출할 수 없는 메뉴를 읽는다.
-이름과 인자, 설명은 각 도구의 시그니처와 docstring, 다시 말해 한 번만 적힌 곳에서 나온다.
+spec에서 이름과 인자, 한 줄 요약을 뽑아 `<tools>` 블록을 만든다. 손으로 쓴 목록을 두면 도구 이름을 바꾸는 순간
+모델이 호출할 수 없는 메뉴를 읽는다.
 
 ### `SYSTEM_PROMPT_TEMPLATE`
 
-자율 에이전트 철학을 따르되 리서치 리포트에 특화된 구획을 가진다.
-
-- **`<role>`** — Slack 트리거 딥 리서치 에이전트이며 다이제스트와 무관한 독립 리서치임을 밝히고, 토픽과 각을
-  메시지에서 추론하게 한다. 되묻지 않는다.
+- **`<role>`** — 독립 딥 리서치 에이전트임을 밝히고, 토픽과 각을 메시지에서 추론하게 한다. 되묻지 않는다.
 - **`<context>`** — 오늘 날짜와 타임존을 코드가 시계에서 계산해 주입한다. 이것이 없으면 모델은 "최신"을 학습
-  시점 기준으로 판단하고 `recall_digest`에 넘길 절대 날짜(YYYY-MM-DD)를 추측해야 한다. 추측이 틀리면 조용히
-  아무것도 recall하지 않는다.
-- **`<voice>`** — 데일리 다이제스트와 동일한 반복 내레이터 페르소나를 쓴다
-  (`config.pipeline.digest_voice_guidance` 주입). 단 리포트 길이에 맞게 적응시키며, 반복 금지와 선형 전개,
-  산문체, 섹션 번호 매김 규율이 여기 있다.
+  시점 기준으로 판단하고 `recall_digest`에 넘길 절대 날짜를 추측해야 한다.
+- **`<voice>`** — 데일리 다이제스트와 같은 내레이터 페르소나(`config.pipeline.digest_voice_guidance` 주입)를
+  리포트 길이에 맞게 쓴다. 반복 금지는 한 번만 적는다.
 - **`<tools>`와 `<flow>`** — 도구 8개와 권장하되 강제하지 않는 흐름이다. 이해와 재작성, 다중 소스 리서치,
-  아웃라인, 작성, 이미지 첨부, 전달 순이다. 검색 폭 `research_breadth`와 깊이 `research_max_iterations`를
-  가이던스로 주입한다.
-- **`<delivery>`** — 기본 채널은 Slack이고, 사용자가 "쓰레드"나 "스레드", "threads"를 명시할 때만 Threads다.
-  추가 요청이면 둘 다, 대체 요청이면 Threads만이다. 리서치는 채널과 무관하게 한 번만 깊게 하고, 두 채널은
-  깊이가 아니라 **범위**로 갈린다. Slack은 `research_slack_target_words` 분량으로 전 섹션을 싣고, Threads는
-  `research_max_threads_posts` 캡 안에서(게시물당 `THREADS_MAX_POST_CHARS` 이하, `---` 구분) 논점을 더 적게
-  가져가되 하나하나를 제대로 설명한다. 같은 사실과 수치, 출처, 결론을 그대로 담되 길이만 줄이라고 요구하면 안
-  된다. 캡 10에서 Threads의 산문 예산은 약 4,200자이고 Slack은 약 8,700자로 2.1:1인데, 사실을 다 남기는 유일한
-  방법은 그 사실을 의미 있게 만드는 설명을 버리는 것이어서 리포트가 주장 목록처럼 읽힌다. 캡을 6으로 조이면
-  비율이 3.4:1이 되어 그 압력이 그만큼 커진다. 그래서 프롬프트가 요구하는 것은 요약이 아니라 범위 좁히기다.
-- **`<language>`, `<formatting>`, `<citations>`** — 한국어 규칙(공유 `KOREAN_STYLE_RULES` 주입), Slack mrkdwn과
-  Threads 평문의 차이, 출처 구분(검증과 주장, 추론)과 날조 금지.
+  아웃라인, 작성, 이미지 첨부(기본은 생략), 전달 순이다. 검색 폭 `research_breadth`와 깊이
+  `research_max_iterations`를 가이던스로 주입한다.
+- **`<delivery>`** — 항상 전체 리포트(약 `research_target_words` 단어)를 Markdown으로
+  `deliver_report(channel="markdown")`에 넘긴다. `[DELIVERY]`가 허용할 때만 Threads 스레드를 추가로 넘긴다.
+  Threads는 깊이가 아니라 **범위**로 갈린다. `research_max_threads_posts` 캡 안에서(게시물당
+  `THREADS_MAX_POST_CHARS` 이하, `---` 구분) 논점을 더 적게 가져가되 하나하나를 제대로 설명한다. 같은 사실을 다
+  담은 채 길이만 줄이라고 하면 사실을 의미 있게 만드는 설명이 먼저 버려져 주장 목록처럼 읽힌다.
+- **`<language>`, `<formatting>`, `<citations>`** — 한국어 규칙(공유 `KOREAN_STYLE_RULES` 주입), Markdown
+  리포트(`# 제목`, `## N. 섹션`)와 Threads 평문의 차이, 출처 구분(검증과 주장, 추론)과 날조 금지.
 
 ### 도구 (`agent/research_tools.py`)
 
 모두 `@tool` 비동기 함수이고 에이전트가 자유롭게 조합한다.
 
 **`web_search(query, recency)`** — 열린 웹 검색이다. `recency="news"`면 Tavily `topic="news"`를 쓴다. 공유
-`tavily_search`(`shared/research/research_backends.py`)에 위임한다. 결과 포맷(`_format_search_results`)은
-Tavily가 일부 페이지에 주는 명시적 null title/url/content를 `or ''`로 흡수한다. `None[:n]`이 쿼리 전체를
-실패시키면 에이전트가 배경지식 폴백으로, 결국 환각으로 밀려난다.
+`tavily_search`(`shared/research/research_backends.py`)에 위임한다. 결과 포맷은 Tavily가 일부 페이지에 주는
+명시적 null title/url/content를 흡수한다.
 
-**`community_search(query)`** — Reddit과 X, HN, Substack의 반응과 여론을 본다. `community_search_domains`를
-`include_domains`로 `tavily_search`에 전달한다.
+**`community_search(query)`** — Reddit과 X, HN, Substack의 반응을 본다. `community_search_domains`를
+`include_domains`로 넘긴다.
 
 **`search_papers(query)`** — Semantic Scholar다(`semantic_scholar_search`, 429면 retry와 backoff).
 
-**`read_url(url)`** — 특정 페이지의 전문을 가져온다(`extract_url`로 Tavily extract를 호출하고
-`research_content_cap_chars`로 캡한다).
+**`read_url(url)`** — 특정 페이지의 전문을 가져온다(Tavily extract, `research_content_cap_chars`로 캡).
 
-**`recall_trends(query)`** — `shared/constants.py`의 `TRENDS_KEY`(`trends.json`)를 직접 쿼리한다. 키워드
-매칭과 momentum 정렬로 active와 cooling 트렌드 중 상위 `recall_memory_top_k`를 준다. 시맨틱 recall이나
-AgentCore 장기 메모리가 아니다. cross-day 트렌드 메모리의 "이전 동향" 각을 위한 도구다.
+**`recall_trends(query)`** — `trends.json`을 직접 쿼리한다. 키워드 매칭과 momentum 정렬로 active와 cooling
+트렌드 중 상위 `recall_memory_top_k`를 준다.
 
 **`recall_digest(digest_date)`** — 그 날짜의 다이제스트 스냅샷(AgentCore Memory)에서 lead와 스토리 제목을
-되읽는다. "X일에 뭘 다뤘나"에 답하는 단일 목적 도구이고 모드나 파라미터가 없다. 출력은 bounded다(`top_n`개
-스토리, 줄당 `search_content_preview_chars`). 없는 날은 다른 날짜로 폴백하지 않고
-`No digest stored for <date>.` 문자열을 돌려준다. 엉뚱한 날을 그날의 커버리지로 인용하는 것보다 recall 실패가
-낫다. 그리고 읽기 실패는 없는 날과 다른 문장으로 degrade한다. 스로틀이나 거부, 설정 오류를 "그날은 아무것도
-안 다뤘다"로 보고하면 리포트가 실제로 다룬 주제를 안 다뤘다고 주장하게 된다. 잘못된 날짜 형식도 평문 한 줄로
-degrade한다.
+되읽는다. 출력은 bounded다(`top_n`개 스토리, 줄당 `search_content_preview_chars`). 없는 날은 다른 날짜로
+폴백하지 않고 `No digest stored for <date>.`를 돌려주고, 읽기 실패는 그와 다른 문장으로 degrade한다. 스로틀이나
+거부를 "그날은 아무것도 안 다뤘다"로 보고하면 리포트가 사실과 다른 주장을 한다.
 
-**`attach_image(source_url)`** — 소스 페이지의 대표 이미지(og:image)를 받아 전달 컨텍스트에
-stage한다(`fetch_og_image`). `research_max_staged_images` 캡에 도달하면 거부한다.
+**`attach_image(source_url)`** — 소스 페이지의 대표 이미지(og:image)를 받아 stage한다(`fetch_og_image`).
+`research_max_staged_images` 캡에 도달하면 거부한다. Threads 게시물에는 첫 1장만 실린다.
 
-**`deliver_report(report, channel)`** — 완성된 리포트를 채널("slack"이 기본이고 "threads"도 가능)에 게시한다.
-`output.delivery.deliver_research_report`에 위임한다. 알 수 없는 채널이면 에이전트가 스스로 고치도록 오류
-문자열을 반환하고 조용히 강등하지 않는다. 반환 문자열은 실제 전달량(`DeliveryStats`의 rendered, delivered,
-dropped, trimmed)을 담는다. 뭉뚱그려 "Delivered the report"로 보고하면 캡을 넘겨 드롭된 게시물과 500자 컷으로
-잘린 게시물, 붙지 않은 reply가 모두 성공으로 읽히고, 에이전트가 최종 답변에서 완전한 전달을 단정한다. 불완전하면
-그렇게 말하고 재전송은 하지 않는다. `delivered_channels` 가드로 두 번째 호출은 no-op이니 재전송 경로 자체를 만들지
-않는다. 같은 채널로 두 번째 호출이 오면 `NOT_POSTED`를 그대로 전달한다. 그 호출의 텍스트는 게시되지 않았고, 두
-번째 호출의 가장 그럴듯한 이유는 **수정된 리포트**다. 첫 시도의 카운트와 함께 "Delivered"로 답하면 나가지도 않은
-정정이 나갔다고 요청자에게 말하는 셈이다.
+**`deliver_report(report, channel)`** — `"markdown"`(기본)은 리포트를 CLI에 넘기고, 다시 부르면 수정본으로
+교체한다. `"threads"`는 이 실행이 허용할 때만 게시한다. 허용되지 않은 채널과 알 수 없는 채널은 아무것도 하지
+않고 스스로 고칠 수 있는 거부 문자열을 돌려준다. Threads 반환 문자열은 실제 전달량(`DeliveryStats`의 rendered,
+delivered, dropped, trimmed)을 담는다. 이미 게시된 채널에 두 번째 호출이 오면 `NOT_POSTED`다. 두 번째 호출의
+가장 그럴듯한 이유는 수정된 리포트이니, "Delivered"로 답하면 나가지도 않은 정정이 나갔다고 말하는 셈이다.
 
-채널은 **데이터로 받는다.** `DeliveryContext.requested_channels`가 이 invoke가 게시할 수 있는 채널이고,
-엔트리포인트가 정한다. CLI는 `--channel`을 그대로 넣고, Slack ingress는 `["slack", "threads"]`를 payload에 담는다.
-타입까지 잡아둔 플래그를 다시 한국어 문장으로 합성해 모델에게 재파싱시킬 이유가 없다. Slack 요청이 Threads도
-원하는지는 요청자의 말 안에만 있으니 그 판단은 모델이 하되, 목록에 없는 채널은 알 수 없는 채널과 같은 자기교정
-거부 문자열을 받는다. 공개 계정에 게시할지를 프롬프트의 표현 목록 하나로 정하면, 같은 매처가 'Meta Threads 추천
-알고리즘'처럼 주제가 Threads인 요청까지 게시 요청으로 판정한다.
+**인용 가드.** 검색·읽기 도구는 결과에 실려 나간 URL을 모두 `DeliveryContext.seen_urls`에
+`normalize_citation_url` 형태로 적어두고, `deliver_report`는 리포트가 인용한 URL 중 그 집합에 없는 것이 하나라도
+있으면 받지 않는다. 반환 문자열이 문제의 URL을 열거하니 에이전트가 그것만 빼거나 바꿔 다시 호출한다. 비교는
+양쪽 모두 `shared.formatting.extract_urls`를 거치며, Markdown 링크 `[label](url)`과 괄호 안 URL, http→https
+재작성을 통과시킨다. 가드는 조작된 인용을 막으려고 있으니 실제 인용을 떨어뜨리는 쪽으로는 엄격해지지 않는다.
 
-게시 전에 인용 가드가 한 번 더 막는다. 검색·읽기 도구는 결과에 실려 나간 URL을 모두
-`DeliveryContext.seen_urls`에 `normalize_citation_url` 형태로 적어두고, `deliver_report`는 리포트가 인용한
-URL 중 그 집합에 없는 것이 하나라도 있으면 게시하지 않는다. 어떤 도구도 돌려주지 않은 URL은 조작된 출처이고,
-Threads 계정은 공개다. 이때 반환 문자열은 문제가 된 URL을 그대로 열거해서 에이전트가 그것만 빼거나 실제로
-받은 URL로 바꿔 다시 호출할 수 있게 한다. 운영 로그에서 실제로 보게 되는 분기가 이쪽이다. 비교는 양쪽 모두
-`shared.formatting.extract_urls`를 거치는데, 여기서 Slack mrkdwn을 먼저 평문으로 되돌리는 것이 필수다. `URL_RE`의
-`\S+`는 `|`에서 멈추지 않으므로, 되돌리지 않으면 시스템 프롬프트가 Slack에 요구하는 `<url|label>` 링크가
-`url|label`로 잡혀서 형식을 제대로 지킨 리포트가 전부 거부된다. http→https 재작성이나 괄호 안 URL도 같은 이유로
-통과시킨다. 가드는 조작된 인용을 막으려고 있는 것이므로 실제 인용을 떨어뜨리는 쪽으로는 절대 엄격해지지 않는다.
+### 9.2 리포트 전달 (`output/delivery.py`)
 
-`DeliveryContext`와 `current_delivery_context`, `request_context`는 전달 계약을 소유한 `output/delivery.py`에
-살고, 에이전트 엔트리포인트와 도구가 바인딩하도록 여기서 re-export된다.
+**`DeliveryContext`(dataclass)** — 실행별 상태다. `publish_threads`, `staged_images`, `delivered_channels`,
+`partial_channels`(root만 게시되고 reply가 모두 실패한 채널. 재전송하면 공개 계정에 중복이 생긴다), `seen_urls`,
+`report`(제출된 최신 Markdown), `threads_stats`(Threads 전달이 실제로 낸 렌더·게시·드롭·트림 수)가 있다. `request_context`는 contextvar로 바인딩해
+상태가 실행 사이에 쌓이지 않게 하고, `current_delivery_context`는 바인딩이 없으면 새 인스턴스를 반환한다.
 
-### 9.1 채널 인지 전달 (`output/delivery.py`)
-
-**`DeliveryContext`(dataclass)** — invoke별 전달 타깃과 staging을 담는다. `channel_id`와 `thread_ts`,
-`staged_images`(attach_image가 쌓은 OG 이미지), `delivered_channels`(성공 게시된 채널이며 채널별 폴백 판단에
-쓴다), `last_report`(deliver_report에 넘긴 마지막 리포트로, 런타임 폴백이 한 줄 확인 메시지가 아니라 실제
-리포트를 재게시하게 한다), `dry_run`(로컬 CLI에서 stdout으로 단락)이 있다. `request_context`는 contextvar로
-바인딩해 동시 invoke가 글로벌을 공유하지 않게 하고, `current_delivery_context`는 바인딩이 없으면 새 인스턴스를
-반환한다. warm 컨테이너에서 모듈 싱글톤이 staged_images와 채널을 누적하면 안 된다.
-
-**`DeliveryStats`** — 마지막 전달 시도의 결과다(`channel`, `rendered`, `delivered`, `dropped`, `trimmed`,
-`complete`). `DeliveryContext.last_stats`로 실려서 `deliver_report`의 반환 문자열과 부분 전달 알림의 근거가
-된다.
-
-**`deliver_research_report`** — 채널별 디스패치를 한다. 채널별로 멱등이며 `channel in delivered_channels`면
-재게시를 스킵한다. 재시도나 중복 도구 호출이 이중 게시를 만들어서는 안 된다. 성공하면
-`delivered_channels`에 기록하고, 이 집합이 런타임의 마지막 폴백이 필요한지 판단하는 신호가 된다. 성공했지만
-`last_stats.complete`가 아니면 `_notify_incomplete_delivery`가 요청자의 같은 스레드(`thread_ts`)에 한 줄
-안내를 남긴다.
-
-**`_deliver_slack`** — 순서가 있다. staged OG 이미지를 먼저 각각 파일 업로드한다. 소스 크레딧 캡션을 붙이고
-`extension_for(content_type)`으로 파일 확장자를 결정한다. 그다음 리포트에 `sanitize_slack_mrkdwn`을 적용해
-모델이 흘린 마크업(## 헤딩, `**bold**`, `[text](url)`, 이모지)을 코드로 보정한다. 폴백 경로와 같은 처리이고,
-`[text](url)`을 `<url|text>`로 바꿀 때 URL 안의 균형 괄호를 보존해 위키피디아나 arXiv, DOI 인용이 첫 `)`에서
-잘리지 않게 한다. 마지막으로 `render_research_blocks(header=":satellite: OmniSummary Deep Research")`로 Block
-Kit 청크를 게시한다. 알림과 프리뷰 텍스트는 `strip_slack_mrkdwn`으로 평문화한다. best-effort이며 실패하면
-False를 반환한다.
+**`deliver_research_report`** — `MARKDOWN`은 리포트를 기록하고 `POSTED`를 돌려준다. `THREADS`는 멱등이고
+`DeliveryOutcome`(`POSTED`, `NOT_POSTED`, `FAILED`)을 돌려준다. bool이 아닌 이유는 "이미 게시돼 이번 텍스트는
+안 나갔다"와 "게시 실패"가 다른 답이기 때문이다.
 
 **`_deliver_threads`** — `render_threads_research(report, max_posts=research_max_threads_posts)`로 root와
-평탄한 reply chain(각 500자 이하), 그리고 드롭·트림 수(`ThreadsResearchRender`)를 얻는다. staged 이미지가
-있으면 첫 1장만 root에 태운다. Threads 미디어 인덱싱이 느려서 나머지는 Slack 전용으로 둔다. PNG나 원본
-content_type 바이트를 S3 키(`{prefix}threads/research_<sha>.<ext>`)로 host하고 `post_to_threads`에
-`image_content_type`을 함께 넘긴다. 상태 버킷이 없으면 텍스트만으로 게시한다.
+평탄한 reply chain, 그리고 드롭·트림 수를 얻는다. stage된 이미지가 있으면 첫 1장을 S3
+(`{prefix}threads/research_<sha>.<ext>`)에 올려 root에 태운다. 상태 버킷이 없으면 텍스트만 게시한다.
+`post_to_threads`의 결과는 NamedTuple이라 늘 truthy이니 카운트를 명시적으로 읽는다.
 
-**`_dry_run_print`** — 실제 게시 대신 렌더 결과를 stdout으로 낸다. Threads는 root와 reply를, Slack은 sanitize
-후 header와 섹션 블록을 보여주고, Threads는 첫 이미지만 첨부됨을 명시한다.
-
-### 9.2 진입 Lambda (`lambda_handlers/slack_event_handler.py`)
-
-**스탠드얼론 zip 제약이 먼저다.** 이 핸들러는 `lambda_handlers/`만 담긴 독립 zip으로 패키징되니 `shared`는
-물론 어떤 형제 패키지도 import해서는 안 된다. zip에 없으니 cold start에서 `ImportModuleError`로 깨진다. 그래서
-의존성 없는 stdlib `logging` 로거를 자체적으로 둔다.
-`tests/test_slack_event_handler.py::test_handler_imports_nothing_outside_the_zip`가 이 규약을 가드한다.
-
-ingress 흐름은 이렇다.
-
-**서명 검증.** Slack 서명을 HMAC-SHA256으로 타이밍 안전하게 비교한다(`x-slack-signature`와
-`x-slack-request-timestamp`, `SIGNATURE_EXPIRATION_SEC` 윈도). 비숫자 timestamp가 `float()` ValueError로 502가
-되지 않게 try/except로 감싸서 깨끗하게 401을 반환한다. `url_verification` 챌린지는 즉시 echo한다.
-
-**서명 시크릿과 봇 토큰은 인프로세스 TTL 캐시로 읽는다(`_ssm_secret`, `SECRET_CACHE_TTL_SEC`≈300초).**
-서명 시크릿은 HMAC을 계산하기 **전에** 필요하니, 캐시가 없으면 WAF를 통과한 미인증 요청 하나하나가 복호화를
-포함한 `ssm:GetParameter` 한 번이 된다. 설정된 WAF 레이트 리밋(IP당 5분 2000회)이면 IP 하나로 GetParameter를
-스로틀까지 밀 수 있고, 이 조회는 fail-closed(`except -> return False`)라서 값싼 홍수가 유일한 대화형 경로의 401
-장애로 바뀐다. 실패는 캐시하지 않는다. 일시적 SSM 오류가 컨테이너 수명 내내 핸들러를 닫아두면 안 된다. 회전된
-시크릿은 TTL 안에(그리고 다음 cold start에) 반영된다.
-
-**중복 제거.** `app_mention` 이벤트의 `event_id`, 그리고 비동기 단계에서는 `event_id:text` 해시를 DynamoDB
-조건부 쓰기(`attribute_not_exists`와 TTL)로 멱등 처리한다. dedup 마커는 디스패치 성공을 전제로 다루니,
-self-invoke가 throw하면 `_release_event_marker`로 마커를 해제하고 500을 반환해 Slack 재시도가 깨끗한 상태로
-들어오게 한다. 마커가 먼저 굳어 재시도가 영구 드롭되는 것을 막는다. dedup 스토어 자체의 오류는 fail-open이다.
-진짜 이벤트를 막지 않는다.
-
-**즉시 ack.** 비동기 단계에서 AgentCore를 호출하기 전에 `_post_ack`가 원 스레드에 "딥 리서치를 시작합니다"와
-모래시계 힌트를 게시한다. 딥 리서치가 수 분 걸리는 동안 스레드가 침묵하지 않게 하려는 것이고 best-effort다.
-
-**비동기 self-invoke.** 첫 호출은 200을 즉시 반환하고 `action=invoke_agentcore`로 자기 Lambda를
-`InvocationType="Event"`로 재호출한다. 비동기 단계에서 멘션(`<@...>`)을 스트립하고
-`invoke_agent_runtime`(`AGENTCORE_RUNTIME_ARN`, `qualifier="DEFAULT"`)으로 `prompt`와 `channel_id`,
-`thread_ts` 페이로드를 전달한다.
-
-**폴백.** 런타임 invoke 자체가 throw하면(스로틀이나 cold-start 타임아웃) 외부 Slack 요청은 이미 200을 받았으니,
-`_post_fallback`이 원 스레드에 가시적인 오류 메시지를 게시한다.
-
-### 9.3 런타임 (`agent_runtime/app.py`, `BedrockAgentCoreApp`)
-
-`@app.entrypoint invoke(payload)`의 순서는 이렇다.
-
-1. payload의 `correlation_id`로 correlation id를 시드한다.
-2. `DeliveryContext(channel_id, thread_ts)`를 만들고 `create_research_agent()`로 에이전트를 생성한다.
-3. `request_context(delivery)`로 contextvar 스코프 안에서 에이전트를 실행한다. 동시 invoke가 한 요청의 채널을
-   다른 요청으로 누출하면 안 된다. 호출은 `agent(prompt, limits=research_run_limits())`이고, `Limits`는
-   `research_max_turns`와 `research_max_total_tokens`, `research_max_output_tokens`를 config에서 읽는다. 툴
-   루프는 사이클마다 대화 전체를 다시 보내고 이 경로가 인터넷에서 촉발되는 유일한 경로이니, 상한이 없으면 비용도
-   벽시계 시간도 무한이다. `research_run_limits`는 이 엔트리포인트가 아니라 `agent/research_agent.py`가
-   소유한다. 여기 private 헬퍼로 두면 상한이 이 경로에만 적용되고 `research_cli.py`는 `agent(prompt)`를 맨몸으로
-   호출하게 되는데, 프롬프트를 반복 수정하는 로컬 경로가 곧 수렴 실패가 가장 잘 나는 경로다. 두 엔트리포인트가
-   같은 함수를 쓰고, 테스트가 AST로 모든 `agent(...)` 호출에 `limits=`가 붙어 있는지 확인한다. `stop_reason`이
-   `limit_*`이면 WARNING을 남기고 응답과 폴백 게시물 끝에 "리포트가 중간에 끊겼다"는 한 줄을 붙인다. 상한에 걸린
-   실행도 텍스트를 반환하니, 그러지 않으면 수렴하지 못해 매번 예산을 태우는 주제를 정상적인 날과 구분할 수 없다.
-   응답은 `sanitize_slack_mrkdwn`을 거친다.
-
-   `AgentResult`를 버리지 않고 누적 usage와 cycle 수, 도구별 호출 수를 파이프라인 단계들과 같은
-   형식(`LLM usage stage=research ...`)으로 남긴다. `str(agent(prompt))`로 끝내면 가장 비싼 구성요소가 유일하게
-   지출이 기록되지 않는 단계가 된다. 같은 값을 EMF 메트릭으로 중복 발행하지는 않는다. 참조할 알람이나 대시보드가
-   없는 상태에서 같은 사실을 두 형식으로 내보내는 일이고, 로그 쪽이 단계 태깅과 형식을 파이프라인과 공유해서 더
-   유용하다. 예외가 나면 `_emit_agent_error_metric`(EMF `OmniSummary/AgentErrors`)을 찍고 raw 예외 문자열이 아닌
-   일반 안내 메시지로 응답한다. 모델 ID나 ARN, 백엔드 오류 바디가 Slack에 새지 않게 한다.
-
-**Slack 폴백.** 에이전트가 어떤 채널에도 전달하지 못했을 때만 `_send_slack_message`로 게시해 사용자가 최소한
-무언가는 받게 한다. 조건은 `channel_id and not delivery.delivered_channels`로, `deliver_report`를 끝내
-호출하지 않았거나 모든 전달이 실패한 경우다. Slack이 타깃이 아니었다는 이유만으로는 폴백하지 않는다. Threads
-전용 요청이 Threads에 성공했으면 Threads 포맷 리포트를 Slack에 중복 투척해서는 안 되기 때문이다. 이때 한 줄
-확인 메시지가 아니라 `delivery.last_report`(실제 리포트)를 우선 사용하고 `sanitize_slack_mrkdwn`으로
-게시한다. `_send_slack_message`가 `render_agent_blocks` 폴백 래퍼를 쓴다.
-
-이 마지막 폴백 게시도 try/except로 감싸서 여기서의 raise가 invocation을 하드 에러로 만들지 않게 한다. 다만 그
-경우에는 어떤 채널에도 아무것도 도달하지 못했으니 `_emit_agent_error_metric()`을 찍어 알람이 울게 한다.
-엔트리포인트는 여전히 텍스트를 반환하니, 그러지 않으면 완전히 무증상이다.
-
-### 9.4 OG 이미지 첨부 (`shared/media/og_image.py`)
+### 9.3 OG 이미지 첨부 (`shared/media/og_image.py`)
 
 **`fetch_og_image(url)`** — 페이지를 브라우저 UA로 fetch해 메타 태그를 파싱한다. 우선순위는 `og:image`,
 `og:image:url`, `twitter:image`, `twitter:image:src` 순이고 상대 URL은 페이지 URL로 절대화한다. 이미지는
 스트리밍으로 받아 oversize 바디를 다 버퍼링하지 않고 중간에 중단한다(Content-Length 선검사와 스트림 누적 검사,
 `og_image_max_bytes`와 `og_image_timeout_sec`). 렌더 가능한 래스터 타입(jpeg, png, webp, gif)만 통과시킨다.
-SVG 같은 벡터나 이색 타입은 Slack 프리뷰와 Threads fetcher가 다루지 못한다. 어떤 오류든, 미존재든, 비이미지든,
+SVG 같은 벡터나 이색 타입은 Threads fetcher가 다루지 못한다. 어떤 오류든, 미존재든, 비이미지든,
 oversize든 `None`을 반환하고 절대 raise하지 않는다. 반환 타입은
 `ImageAsset(data, source_url, image_url, content_type, alt)`다.
 
-**`extension_for(content_type)`** — 이미지 MIME을 파일 확장자로 바꾼다(기본 `png`). Slack 파일명과 Threads S3
-키에 쓰이며, content_type이 다운스트림까지 일관되게 전달되게 한다.
+**`extension_for(content_type)`** — 이미지 MIME을 파일 확장자로 바꾼다(기본 `png`). Threads S3 키에 쓰이며,
+content_type이 다운스트림까지 일관되게 전달되게 한다.
 
-### 9.5 공유 한국어 스타일 (`shared/config.py` `KOREAN_STYLE_RULES`)
+### 9.4 공유 한국어 스타일 (`shared/config.py` `KOREAN_STYLE_RULES`)
 
-모든 한국어 출력 표면이 공유하는 상수다. 데일리 다이제스트와 딥 리서치, Slack과 Threads가 함께 쓰는 산문 규약 상수다. 번역투
-회피, `~다` 평서체(존댓말 금지), 콜론 나열 금지가 들어 있다. 다이제스트의 `digest_language_rules`와 리서치
+데일리 다이제스트와 딥 리서치가 함께 쓰는 산문 규약 상수다. 번역투 회피, `~다` 평서체(존댓말 금지), 콜론
+나열과 쉼표로 두 문장을 잇는 것 금지, "A가 아니라 B" 같은 대비 공식 피하기가 들어 있다. 다이제스트의 `digest_language_rules`와 리서치
 에이전트의 `<language>` 블록 양쪽에 합성되어 두 기능이 register와 어조에서 갈라지지 않게 한다. 같은 작성자,
 같은 규칙이다.
 
@@ -1639,70 +1543,52 @@ oversize든 `None`을 반환하고 절대 raise하지 않는다. 반환 타입�
 
 `agent/visuals.py`의 `VisualGenerator`는 모드 없는 자유형 이미지 생성기다. 호출자는 데일리 비주얼
 파이프라인(`pipeline/daily_visual.py`의 `DailyVisualMaker`,
-[§5.6](#56-데일리-비주얼-daily_visualpy-enable_daily_visual)) 하나이고, 리서치 에이전트에는 이미지 생성 도구가
-없다.
+[§5.6](#56-데일리-비주얼-daily_visualpy)) 하나다.
 
-**설계.** 고정된 comic이나 diagram 모드, 컷 수 파라미터가 없다. 대신 자연어 `instruction`으로 원하는 형식을
-묘사한다. 1페이지 프리젠테이션 슬라이드, N컷 만화, 개념 다이어그램, 인포그래픽, 포스터 같은 것들이다. 데일리
-비주얼에서는 에디터(`VisualEditorPrompt`)가 헤드라인 스토리를 어떻게 그릴지 브리핑한다. source(다이제스트
-헤드라인 항목)와 수집한 `context`(논문과 기사 리서치)를 함께 넘긴다.
+**설계.** 고정된 comic이나 diagram 모드, 컷 수 파라미터가 없다. 자연어 `instruction`이 원하는 형식을 묘사하고,
+데일리 비주얼에서는 그것이 세로 4컷 만화다(에디터가 다른 구성을 고른 날만 예외다).
 
-**생성 흐름 (`VisualGenerator.generate(instruction, source, context)`).**
+**생성 흐름 (`VisualGenerator.generate(instruction, source, references=..., deadline=...)`).**
 
-1. **브리프** — `VisualSynopsisPrompt`로 Claude(Bedrock)가 단일 이미지 브리프를 만든다(JSON으로 title과
-   caption, prompt).
-2. **파싱** — Bedrock 구조화 출력(`with_structured_output(VisualBrief)`)으로 검증된 객체를 받는다. 손으로
-   JSON을 파싱하지 않는데, 브리프의 `prompt`가 최대 4000자 자유 문구라서 escape되지 않은 인용부호나 개행에
-   파서가 깨졌기 때문이다.
-3. **필드 유출 방어(`VisualBrief` 검증기)** — 구조화 출력은 다음 필드 값을 앞 문자열 끝에 흘리는 슬립을
-   반복한다. 관측된 두 형태는 태그가 붙은 것(`</caption>\n<parameter name="orientation">landscape`, 그대로
-   Threads에 게시됐다)과 태그 없이 캡션 맨 끝에 `\nportrait`만 붙은 것이다. 그래서 `title`과 `caption`은 두
-   단계로 정리한다. 먼저 태그 유사 마크업을 제거하되 `<2%` 같은 산문은 보존하고, 그다음 마지막 줄 전체가
-   orientation 필드의 허용값 중 하나면 그 줄을 떨어뜨린다. 후보값은 하드코딩 단어 목록이 아니라
-   `typing.get_args`로 Literal(`shared/constants.py`의 `VisualOrientation`)에서 파생한다. 비교 대상을 파싱된
-   `orientation` 하나로 두면 값이 어긋난 유출(캡션은 `landscape`, 필드는 기본값 `portrait`)을 놓친다. 산문
-   중간에 그 단어가 들어간 경우는 건드리지 않고, 실제로 값을 떨어뜨린 경우에만 WARNING을 남긴다.
-4. **이미지** — 브리프의 `prompt`로 OpenAI `gpt-image`를 호출해(`b64_json`) PNG 바이트를 얻는다. 30초에서
-   120초가 걸리는 블로킹 호출이라 `asyncio.to_thread`로 이벤트 루프에서 분리한다. 그러지 않으면 동시 Slack이나 Threads I/O가
-   렌더 동안 멈춘다. orientation(square, landscape, portrait)은 브리프가 시각에 맞게 고르고
-   `image_sizes` 딕셔너리로 gpt-image size에 매핑한다. 어휘는 한 곳에만 있다. `VisualBrief.orientation`이
-   `shared/constants.py`의 `VisualOrientation`으로 타이핑되고, `PipelineConfig`가 `image_sizes`의 키 집합이
-   정확히 그 어휘이고 값이 `<width>x<height>` 꼴인지 검증한다. 키를 Literal과 별개로 두면 config에서 키 이름
-   하나만 바꿔도 브리프가 검증에 실패하거나 조용히 기본 orientation으로 coerce된다. 매핑에 없는 orientation이면
-   **raise한다.** 폴백을 두지 않는 이유는 이 불변식을 앞의 두 장치가 이미, 그리고 더 이르게 닫기 때문이다.
-   Pydantic이 다른 값을 거부하고 config 검증은 19:00이 아니라 config 로드에서 실패한다. 여기까지 왔다면 둘 중
-   하나가 우회된 상태이고, 그때는 임의의 size를 골라 무언가를 렌더하는 것보다 말하는 편이 낫다.
-   모더레이션 차단은 간헐적으로 나니 완화된 브리프로 한 번 재생성한다.
-5. **게시** — `DigestPublisher`가 `output.slack_handler.send_image_to_slack`(`files_upload_v2`)으로 Slack에
-   업로드하고, `enable_threads_post`가 켜져 있으면 Threads에도 게시한다. 이미지는 옵셔널이라 렌더가 실패한
-   날도 텍스트로 나간다.
+1. **브리프** — `VisualSynopsisPrompt`로 Claude(Bedrock)가 단일 이미지 브리프를 만든다(`title`, `prompt`,
+   `orientation`). 구조화 출력(`with_structured_output(VisualBrief)`)으로 검증된 객체를 받는다. 강제 tool choice를
+   거부하는 모델(Opus 5.5, Sonnet 5.5)은 `auto`로 스키마 도구만 붙으니, 도구 호출 없이 답하면 명시적인 오류를
+   낸다.
+2. **이미지** — 브리프의 `prompt`로 OpenAI 이미지 API를 호출해(`b64_json`) PNG 바이트를 얻는다. 참조 이미지가
+   있으면 `images.edit`, 없으면 `images.generate`다. 수십 초가 걸리는 블로킹 호출이라 `asyncio.to_thread`로 이벤트
+   루프에서 분리한다. orientation(tall, portrait, square, landscape)은 `image_sizes` 딕셔너리로 size에 매핑한다. 어휘는 한 곳에만 있다. `VisualBrief.orientation`이
+   `shared/constants.py`의 `VisualOrientation`으로 타이핑된 **필수** 필드이고, `PipelineConfig`가 `image_sizes`의
+   키 집합이 정확히 그 어휘인지 검증한다. 매핑에 없는 orientation이면 raise한다.
+3. **모더레이션** — 차단은 간헐적으로 나니 완화 문구(`visual_moderation_softening_instruction`)를 붙인 브리프로 한
+   번 재생성한다. 비주얼 Lambda가 넘긴 `deadline`에 한 판을 더 돌 시간이 없으면 포기한다.
+4. **검수와 수정** — `_reviewed`가 위의 검수·한 번 수정·더 나은 쪽 선택을 한다. 비주얼 Lambda가 넘기는 마감에서
+   Threads 게시 몫(인덱싱 예산과 게시 예약)을 뺀 시각이 이미지 단계의 마감이다. 그 안에 검수 예산이 없으면 검수를
+   건너뛰고, 렌더 한 번과 검수 한 번을 더 할 시간이 없으면 수정하지 않는다. 느린 수정이 그날 게시를 잡아먹지 않게
+   하려는 것이다.
+5. **게시** — 반환된 `(image_bytes, VisualBrief)`를 `DigestPublisher`가 Threads root에 싣는다. 이미지는 옵셔널이라
+   렌더가 실패한 날도 텍스트로 나간다.
 
-**기본값을 두 벌 두지 않는다.** 열 개 넘는 비주얼 노브를 모두 필수 키워드 인자로 받고, 단일 원천은
-`PipelineConfig`다. 같은 기본값을 여기에도 두면 두 벌이 드리프트하고(`style_aesthetic`이 "clean modern style"로
-썩는 식으로) 일부 인자만 넘기는 호출자가 낡은 사본을 조용히 받는다.
+**기본값을 두 벌 두지 않는다.** 비주얼 노브를 모두 필수 키워드 인자로 받고, 단일 원천은 `PipelineConfig`다.
 
 **호출 상한.** OpenAI 클라이언트를 `visual_image_timeout_sec`과 `visual_image_max_retries`로 생성한다. SDK
 기본값 600초씩 2회는 15분 Lambda를 넘길 수 있다.
 
-**비용 가시성과 결정성.** `quality`는 `visual_image_quality`가 설정될 때만 보낸다. 비우면 OpenAI의 `auto`가
-티어를 고르는데 장당 단가가 약 4배 차이다. 이 프로젝트의 사이즈 기준으로 medium이 $0.041–0.053, high가
-$0.165–0.211이라, 비워두면 월 청구가 하루 1장에 약 $1.3에서 $5.2 사이로 불확정이고 렌더 로그에도
-`quality=auto->unreported`밖에 남지 않는다. 이미지 안에 들어가는 짧은 영문 레이블의 가독성도 같은 티어가
-결정한다. 그래서 config가 값을 못박고(현재 `"high"`), 타입은 low/medium/high/auto와 빈 문자열로 좁혀 오타가
-visual Lambda의 OpenAI 400이 아니라 config 로드에서 걸리게 한다. 어느 쪽이든 렌더는 응답이 보고하는 실제 티어와
-과금 토큰 수를 로그에 남긴다(`_usage_summary`. usage가 없거나 필드명이 바뀌면 `"unknown"`으로 degrade한다. SDK
-변경이 그날 이미지를 날려서는 안 된다).
+**품질 등급은 config가 못박는다.** `quality`를 비우면 OpenAI의 `auto`가 장당 단가가 몇 배 다른 등급 중 하나를
+골라 청구가 불확정이고, 렌더 로그도 무엇을 샀는지 말하지 못한다. 등급은 컷 안 한국어 문장의 가독성도 정한다.
+그래서 `visual_image_quality`를 `"xhigh"`로 고정하고, 타입을 low/medium/high/xhigh/max/auto와 빈 문자열로 좁혀 오타가 config
+로드에서 걸리게 한다. 렌더는 응답이 보고하는 실제 등급과 과금 토큰 수를 로그에 남긴다(`_usage_summary`. usage가
+없거나 필드명이 바뀌면 `"unknown"`으로 degrade한다).
 
-OpenAI 키(`resolve_secret`으로 env를 먼저, 그다음 SSM에서 해석한다)가 없으면 우아하게 비활성화된다. 새 출력
-형식이 필요하면 코드 변경 없이 instruction 문구만 바꾸면 된다.
+OpenAI 키(`resolve_secret`으로 env를 먼저, 그다음 SSM에서 해석한다)가 없으면 우아하게 비활성화된다.
 
 ## 11. 인프라(CDK)
 
 ### `foundation_stack`
 
-VPC와 ECR 리포, DynamoDB 중복 제거 테이블(SSE와 prod에서 PITR), S3 상태 버킷(CDK가 생성하는 경우 S3-managed
-암호화와 버저닝, 퍼블릭 차단, SSL 강제), ECS Fargate RSSHub 서비스와 service-discovery,
-SNS 알림 토픽과 선택적 이메일 구독, AgentCore Memory 리소스와 실행 역할, 그리고 IAM 역할들을 만든다.
+VPC와 ECR 리포(`{project}-{stage}-agent`, 다이제스트 이미지가 들어간다), S3 상태 버킷(CDK가 생성하는 경우
+S3-managed 암호화와 버저닝, 퍼블릭 차단, SSL 강제), ECS Fargate RSSHub 서비스와 service-discovery, SNS 알림
+토픽과 선택적 이메일 구독, 비동기 DLQ, AgentCore Memory 리소스(전략 없음, 실행 역할 없음), 그리고 Lambda 실행
+역할을 만든다.
 
 **RSSHub 서비스는 `aws.rsshub_desired_count`(기본 0)로 스케일된다.** 다이제스트는 이 서비스에 도달하지 않는다.
 `RSSHubCollector`는 S3 park 파일을 먼저 읽고, 쓸 수 있으면 도달성 확인조차 하기 전에 리턴하며, 로컬 sync cron이
@@ -1712,48 +1598,51 @@ SNS 알림 토픽과 선택적 이메일 구독, AgentCore Memory 리소스와 �
 
 **IAM은 최소 권한으로 잡는다.**
 
-- `ssm:GetParameter*`는 `/{project}/{stage}/*`로 스코프한다. 단 Slack 이벤트 역할은 그 공용 statement를 쓰지
-  않고 `slack-signing-secret`과 `slack-bot-token` **두 파라미터 ARN**만 갖는다. 핸들러가 읽는 것이 정확히 그
-  둘이고, 공용 경로는 OpenAI/Tavily/YouTube 키와 Threads 토큰과 X 세션 쿠키까지 포함하므로 인터넷에서 닿는
-  유일한 컴포넌트에 줄 이유가 없다.
-- `bedrock:InvokeModel*`은 foundation-model과 inference-profile, application-inference-profile ARN으로
-  스코프한다. 마지막 것은 별도 리소스 타입이며 필수다. 모델 리졸버가 비용 귀속용 application inference
+- `ssm:GetParameter`는 `/{project}/{stage}/*`로 스코프한다. 코드는 `get_parameter`만 부른다. `ssm:PutParameter`는
+  Threads 토큰 파라미터 하나로 스코프한다.
+- `bedrock:InvokeModel`과 `bedrock:CountTokens`는 foundation-model과 inference-profile,
+  application-inference-profile ARN으로 스코프한다. Lambda는 스트리밍하지 않으니 스트리밍 호출 액션은 주지 않는다. 마지막 것은 별도 리소스 타입이며 필수다. 모델 리졸버가 비용 귀속용 application inference
   profile을 선호하니, 빠뜨리면 프로필이 존재하는 순간 모든 Bedrock 호출이 AccessDenied가 된다. 그날
   다이제스트 전체가 죽는다는 뜻이다.
 - `lambda:InvokeFunction`은 데일리 비주얼 함수 하나(`{project}-{stage}-visual`)로 스코프한다. 파이프라인
-  역할의 유일한 cross-function 호출이 그 비동기 fan-out이다. `{project}-{stage}-*`로 넓히면 공개 API Gateway 뒤의
-  Slack 핸들러와 토큰 갱신 Lambda까지 들어온다. ARN은 application_stack이 붙이는 리터럴 이름으로 만든다. 함수
+  역할의 유일한 cross-function 호출이 그 비동기 fan-out이다. ARN은 application_stack이 붙이는 리터럴 이름으로 만든다. 함수
   객체를 참조하면 `fnd → app` 순환 의존이 된다.
-- S3 객체 접근은 프로젝트 루트 prefix(`config.aws.s3_prefix`에 `/*`를 붙인 것)로 스코프한다. 상태 버킷은 기존
-  공유 버킷일 수 있고, 이 prefix가 프로젝트가 만지는 모든 키를 덮는다. state_store의 `digest_state`와 수집기
-  park 파일, 데일리 비주얼의 `threads/*.png`가 그 안에 있다. 버킷 레벨 List는 CDK가 붙이고 그대로 둔다.
-- `bedrock-agentcore:InvokeAgentRuntime`과 Memory 데이터플레인 액션(`CreateEvent`/`ListEvents`/
-  `ListSessions`). 후자는 `memory/*`가 아니라 **이 스택이 만든 memory ARN**(과 그 `/*` 하위 리소스)으로
-  스코프한다. ARN은 statement를 만드는 자리에서 이미 손에 있고, 와일드카드로 두면 공유 계정의 다른 프로젝트 대화
-  상태까지 읽고 쓸 수 있게 된다.
-- CloudWatch Logs는 프로젝트 로그 그룹 ARN으로 스코프한다.
-- 계정 전역 관리형 정책은 쓰지 않는다.
+- S3는 프로젝트 루트 prefix(`config.aws.s3_prefix`에 `/*`를 붙인 것)의 `s3:GetObject`와 `s3:PutObject`, 그리고
+  버킷의 `s3:ListBucket`만 준다. 코드가 부르는 것은 get, put, 그리고 같은 역할로 서명하는 presigned GET뿐이다.
+  상태 버킷은 기존 공유 버킷일 수 있어서 삭제, 보존, 법적 보존 액션과 버킷 단위 Get은 주지 않는다. state_store의
+  `digest_state`와 수집기 park 파일, 데일리 비주얼의 `threads/*.png`가 그 prefix 안에 있다. `ListBucket`에
+  `s3:prefix` 조건을 걸지 않는 이유가 있다. 없는 키를 GetObject할 때 S3는 `ListBucket`으로 NoSuchKey와
+  AccessDenied를 가르는데, 그 검사에는 `s3:prefix`가 실리지 않아서 조건을 걸면 없는 키 읽기가 전부 AccessDenied가
+  된다. 그러면 처음 쓰는 상태 파일이 "히스토리 없음"이 아니라 읽기 실패가 된다.
+- Memory 데이터플레인 액션(`CreateEvent`, `ListEvents`)은 `memory/*`가 아니라 **이 스택이 만든 memory ARN**(과 그
+  `/*` 하위 리소스)으로 스코프한다. 세션 id가 날짜로 정해지니 `ListSessions`는 필요 없다. 와일드카드로 두면 공유
+  계정의 다른 프로젝트 대화 상태까지 읽고 쓸 수 있게 된다.
+- 로그 쓰기는 Lambda VPC 관리형 정책(`AWSLambdaVPCAccessExecutionRole`)이 덮는다. 다이제스트 Lambda가 VPC 안에 있어
+  어차피 필요한 정책이다.
 
 ### `application_stack`
 
-다이제스트 Lambda(DockerImage)와 데일리 비주얼 Lambda(DockerImage, 비동기), Slack 이벤트 Lambda, Threads 토큰
-갱신 Lambda(DockerImage), API Gateway와 스테이지 스로틀링, 스테이지에 연결된 WAFv2 WebACL(rate-limit와 AWS
-관리형 규칙셋 Common, KnownBadInputs, IpReputation), EventBridge 일일 다이제스트 크론(설정 기반 시와 분),
-EventBridge Threads 토큰 갱신 스케줄(`threads_token_refresh_days` 기본 약 50일 주기로, 60일 만료 안쪽에서
-토큰을 갱신해 SSM에 재기록한다), AgentCore Runtime(설정 가능한 `agentcore_image_ref`로 이미지를 바인딩한다),
-시크릿용 SSM 파라미터, 그리고 SNS로 향하는 CloudWatch 알람([§12](#12-관측성) 참조)을 만든다.
+다이제스트 Lambda(DockerImage, VPC 안), 데일리 비주얼 Lambda(DockerImage, 비동기, VPC 밖), Threads 토큰 갱신
+Lambda(DockerImage), EventBridge 일일 다이제스트 크론(설정 기반 시와 분), EventBridge Threads 토큰 갱신
+스케줄(`threads_token_refresh_days` 기본 약 50일 주기로, 60일 만료 안쪽에서 토큰을 갱신해 SSM에 재기록한다),
+시크릿용 SSM 파라미터, 그리고 SNS로 향하는 CloudWatch 알람([§12](#12-관측성) 참조)을 만든다. 세 Lambda가 같은
+이미지를 쓰고 핸들러만 다르다.
 
-**재시도와 DLQ.** 다이제스트와 비주얼, Slack 이벤트 Lambda는 `retry_attempts=0`에 SQS
+비주얼 Lambda가 VPC 밖인 이유는 부르는 것이 전부 공개 엔드포인트이기 때문이다(Bedrock, S3, AgentCore Memory,
+SNS, OpenAI, Threads). VPC는 Threads 게시의 유일한 경로에 ENI와 NAT 의존만 더했다. 다이제스트 Lambda는 RSSHub
+Fargate 서비스에 닿아야 하니 VPC 안에 남는다.
+
+**재시도와 DLQ.** 다이제스트와 비주얼 Lambda는 `retry_attempts=0`에 SQS
 DLQ(`foundation.async_dlq`로 `on_failure`)를 붙인다. Threads 갱신 Lambda도 `retry_attempts=0`인데, 명시값이
 없으면 비동기 재시도 2회가 기본이라 갱신 엔드포인트를 재호출한다. 파이프라인이 멱등이 아니고 Threads는
 idempotency key가 없어서 재시도가 이중 게시를 일으키니, 자동 재시도 대신 실패 건을 DLQ에 남겨 점검과 수동
 리플레이를 한다. 핸들러는 [§8](#핸들러-예외-전파)처럼 raise해서 Errors 알람이 뜨게 한다.
 
-**로그 그룹은 선언한다.** 네 Lambda 모두 `log_group=logs.LogGroup(...)`(retention 30일, removal DESTROY)을
+**로그 그룹은 선언한다.** 세 Lambda 모두 `log_group=logs.LogGroup(...)`(retention 30일, removal DESTROY)을
 직접 받는다. deprecated된 `log_retention=` prop은 속성을 세우는 것이 아니라 함수마다 `Custom::LogRetention`
 Lambda를 하나씩 렌더하고, 그 각각이 자기 실행 역할에 `logs:PutRetentionPolicy`와 `logs:DeleteRetentionPolicy`를
-Resource `"*"`로 든다. 공유 계정에서 그것은 임의의 로그 그룹의 보존 기간을 줄이거나 없앨 수 있는 권한이고, 알림
-이력을 조용히 지울 수 있는 수단이다. 선언 방식은 그 Lambda 4개와 역할 4개, 와일드카드 정책을 아예 만들지 않고,
+Resource `"*"`로 든다. 공유 계정에서는 아무 로그 그룹의 보존 기간이나 줄이거나 없앨 수 있는 권한이다.
+선언 방식은 그런 Lambda와 와일드카드 정책을 아예 만들지 않고,
 로그 그룹이 템플릿 리소스가 되므로 `test_sensitive_actions_not_wildcard_resource`와 retention 단정이 두 스택
 전체를 보게 된다. RSSHub 컨테이너의 그룹도 `ecs.LogDrivers.aws_logs(log_retention=...)`으로 보존 기간을 받는다.
 그러지 않으면 `RetentionInDays` 없이 `DeletionPolicy: Retain`이 붙어 두 스택에서 유일하게 영구 보존되는 그룹이
@@ -1792,44 +1681,39 @@ CloudFormation이 남긴 정확한 상태, 곧 `Type == String`이면서 `Value 
 Threads 갱신 Lambda는 갱신된 토큰을 `put_parameter(Overwrite=True)`로, `Type`을 지정하지 않고 덮어쓴다.
 `Type=SecureString`을 얹는 것은 타입 변경이라 파라미터가 아직 `String`이면 SSM이 `ValidationException`으로
 거절하고, 그러면 토큰이 갱신되지 않은 채 60일 뒤 Threads 전달이 끊긴다. `Type`을 생략하면 기존 타입(마이그레이션
-후에는 SecureString)을 유지하고 값만 갱신한다. 다만 그 생략은 암호화되지 않은 파라미터도 조용히 보존하니,
-기록 후 타입을 확인해 `SecureString`이 아니면 ERROR로 남긴다. best-effort이며 확인 실패가 성공한 갱신을 에러로
-바꾸지는 않는다.
+후에는 SecureString)을 유지하고 값만 갱신한다. 그 생략은 암호화되지 않은 파라미터도 그대로 두니, 암호화 여부는
+갱신 Lambda가 매번 확인하지 않고 `put_secrets.py --verify`가 보고한다.
 
 ## 12. 관측성
 
 ### 로깅 (`shared/logger.py`)
 
 AWS에서는 구조화 JSON 로그를 쓰고(`is_running_in_aws()`) 로컬에서는 사람이 읽는 형식을 쓴다. correlation id는
-`ContextVar` 기반(`set_correlation_id`와 `get_correlation_id`)으로 모든 레코드에 주입되며, Lambda 요청 id나
-AgentCore 페이로드에서 시드된다.
+`ContextVar` 기반(`set_correlation_id`와 `get_correlation_id`)으로 모든 레코드에 주입되며, Lambda 요청 id에서
+시드된다.
 
 id는 서비스 경계를 넘어 전달된다. 다이제스트 Lambda는 비주얼 Lambda 호출 payload에 자기 `correlation_id`를
-넣고(비주얼은 DLQ 봉투의 `requestPayload`까지 포함해 그 값을 자기 요청 id보다 먼저 쓴다), Slack 인그레스는
-요청 id에서 하나를 만들어 self-invoke payload와 AgentCore payload, `runtimeSessionId`에 함께 싣는다. 런타임은
-payload의 `correlation_id`를 읽는 쪽이니 보내는 쪽이 빠지면 매 홉이 새 id를 만들고, 한 번의 다이제스트나 리서치
-실행을 서비스 간에 추적할 수 없다.
+넣고, 비주얼은 DLQ 봉투의 `requestPayload`까지 포함해 그 값을 자기 요청 id보다 먼저 쓴다. 보내는 쪽이 빠지면 매
+홉이 새 id를 만들어 한 번의 다이제스트를 두 Lambda에 걸쳐 추적할 수 없다.
 
 ### 알람
 
-CloudWatch 알람 12개가 모두 SNS 알림 토픽으로, 그리고 이메일로 라우팅된다(`_add_alarms`).
+CloudWatch 알람 8개가 모두 SNS 알림 토픽으로, 그리고 이메일로 라우팅된다(`_add_alarms`).
 
-- **Lambda별 Errors 4개와 Timeout 4개** — digest와 slack-events, visual, threads-refresh 각각에 대해
-  예외(Errors)와 타임아웃 임박(max Duration이 설정 타임아웃의 90% 이상) 알람을 둔다. 타임아웃은 Errors로
-  집계되지 않으니 별도가 필요하다.
-- **API 5xx** — API Gateway server-error.
+- **Lambda별 Errors 3개와 Timeout 3개** — digest와 visual, threads-refresh 각각에 대해 예외(Errors)와 타임아웃
+  임박(max Duration이 설정 타임아웃의 90% 이상) 알람을 둔다. 타임아웃은 Errors로 집계되지 않으니 별도가 필요하다.
 - **EmptyDigestAlarm** — EMF `OmniSummary/DigestItemsPublished`(실행당 한 번)에 대한 24시간 윈도 알람이다.
   CloudWatch가 `evaluation_periods × period ≤ 86400s`로 제한하니 그 이상은 배포 시 거부된다. 0건 게시와 그날
   미실행을 모두 포착한다(missing-data=BREACHING).
 - **AsyncDLQAlarm** — async DLQ에 메시지가 쌓이면 알린다. 실패한 digest나 visual 실행이 대기 중이라는 뜻이다.
-- **AgentErrorsAlarm** — EMF `OmniSummary/AgentErrors`다. AgentCore 런타임이 자체 예외를 잡아 에러 메시지로
-  응답하니 체계적 장애가 EMF 메트릭으로만 보인다.
+
+딥 리서치는 로컬 CLI라 알람이 없다. 실패는 CLI의 종료 코드와 `error` 필드로 호출자에게 바로 돌아간다.
 
 ## 13. 테스트와 CI/CD
 
 ### 테스트 (`tests/`, pytest, `asyncio_mode=auto`)
 
-1,200개가 넘는 테스트가 있고 측정 커버리지는 약 94%, 게이트는 90%다. 게이트는 측정값을 따라 움직여야 한다.
+약 1,100개의 테스트가 있고 커버리지 게이트는 90%다. 게이트는 측정값을 따라 움직여야 한다.
 10포인트 이상 낮게 방치된 게이트는 진짜 회귀를 오타만큼이나 편하게 통과시킨다. `tests/conftest.py`의 autouse
 픽스처가 앰비언트 시크릿과 인프라 env를 monkeypatch로 비우고 SSM 클라이언트를 막아 hermetic하게 만든다. 개발자의
 `.env`나 AWS 프로파일에 결과가 좌우되지 않고, 실 SSM 왕복에 드는 수십 초도 들지 않는다. 같은 파일이
@@ -1838,9 +1722,7 @@ CloudWatch 알람 12개가 모두 SNS 알림 토픽으로, 그리고 이메일�
 
 커버하는 영역은 다음과 같다.
 
-- 수집기(공용 `collectors.base.fetch_feed`를 모킹해 재시도와 분류, 프록시 폴백, 헬스 판정을 돈다).
-- Slack 이벤트 핸들러(서명 검증과 중복 제거, 그리고 형제 패키지 import 금지 가드
-  `test_handler_imports_nothing_outside_the_zip`).
+- 수집기(공용 `collectors.base.fetch_feed`를 모킹해 재시도와 분류, 헬스 판정을 돈다).
 - 집계기와 랭커 파싱, 슬롯과 origin-cap 로직, 그리고 배치 재시도와 전면 실패 승격, fan-out 상한.
 - **`pipeline.runner.run_pipeline` 오케스트레이션(`test_run_pipeline.py`)** — 집계 후 빈 입력과 임계 미달 조기 반환,
   원장과 leads 기록, 트렌드 갱신, 원장과 AgentCore 스냅샷 양쪽에서 시드하는 cross-day dedup(URL 정규화 포함),
@@ -1850,20 +1732,21 @@ CloudWatch 알람 12개가 모두 SNS 알림 토픽으로, 그리고 이메일�
   ClientError의 구분, `create_state_store`의 버킷 기반 선택(AWS 밖에서도 `STATE_BUCKET`이면 S3와 프로파일 세션).
 - **WebSearch `collect()`(`test_web_search.py`)** — 쿼리별 fan-out과 URL dedup, per-trend domains와 topic 전달,
   전면 실패 승격, 부분 실패 허용, LLM 정제 2단계와 그 실패의 non-fatal성.
-- **Slack 이벤트 중복 제거(`test_slack_event_handler.py`)** — 조건부 PutItem과 TTL 마커, 중복 판정, dedup 스토어
-  장애 시 fail-open, 마커 릴리스, Slack 재전송이 실제로 한 번만 dispatch되는 end-to-end.
 - 헬스 리포트와 logger.
 - 메모리 스토어(로컬과 AgentCore 모킹).
 - 다이제스트 핸들러 알림.
-- 딥 리서치 에이전트 — 구성과 프롬프트 보간(`test_research_agent.py`), 도구 8개(`test_research_tools.py`),
-  리서치 백엔드(`test_research_backends.py`), 채널별 전달(`test_delivery.py`), 렌더러(`test_renderers.py`의
-  research와 threads 블록), OG 이미지(`test_og_image.py`), 리서치 CLI(`test_research_cli.py`),
-  `VisualGenerator`(`test_visuals.py`).
-- AgentCore 엔트리포인트(`agent_runtime/app.py`의 에이전트 생성과 Slack 토큰 env/SSM 해석, invoke 해피패스와
-  예외 처리, correlation ID, Slack 폴백, 실행 usage 로그와 EMF, 그리고 per-invocation `Limits` 전달과
-  `limit_*` 중단 처리).
-- trend_tracker(trim과 evidence-cap, archived-merge).
+- 딥 리서치 — 구성과 프롬프트 보간(`test_research_agent.py`), 도구 8개(`test_research_tools.py`), 리서치
+  백엔드(`test_research_backends.py`), 리포트 전달(`test_delivery.py`), 렌더러(`test_renderers.py`), OG
+  이미지(`test_og_image.py`), CLI의 JSON 계약과 종료 코드, `Limits` 전달(`test_research_cli.py`).
+- `VisualGenerator`(`test_visuals.py`)와 데일리 비주얼(`test_daily_visual.py`).
+- trend_tracker(보존 기간 삭제, 재실행 시 `last_seen` 도출, 같은 날 재실행이 오늘 증거를 문맥에서 빼는지, evidence 캡).
 - CDK assertion(`aws-cdk.assertions`로 두 스택을 검증한다).
+
+핵심 로직의 회귀 테스트는 **변이로 검증했다.** 코드를 일부러 망가뜨렸을 때 실패하는지 확인한 테스트들이다.
+그라운딩 수정이 올바른 필드에 붙고 빈 마커는 원래 값을 지키는지, 렌더 도중 다른 실행이 날짜를 차지하면 게시하지
+않는지, Threads 원장이 가장 최근 날짜를 남기고 다른 실행의 마커를 넘겨받지 않는지, URL 원장의 TTL 경계, 하드 컷된
+본문 뒤에도 URL이 온전히 남는지, fill 패스 순서(소스 캡 경계, origin 캡을 소스 캡보다 먼저 완화, 점수순 반환),
+배치가 소스를 섞는지가 그렇다. 반대로 결함을 고정하던 테스트(5000자 브리프를 거부하라는 테스트 등)는 고쳤다.
 
 ### CI (`.github/workflows/ci.yml`)
 
@@ -1876,21 +1759,6 @@ CloudWatch 알람 12개가 모두 SNS 알림 토픽으로, 그리고 이메일�
 **테스트와 커버리지 게이트.** 범위와 `fail_under`가 `pyproject.toml`(`[tool.coverage.*]`)에 있어서 커맨드라인
 수정으로 좁혀지지 않는다.
 
-**Cloudflare 워커 테스트.** 같은 잡에서 Node 22를 깔고 `node --test cloudflare-proxy/test/*.test.js`를 돈다
-(의존성은 없다. `node:test`와 `node:assert`만 쓴다). 레포에서 유일하게 인터넷에 노출되는 컴포넌트인데, 파이썬
-쪽에서는 `worker.js`에 특정 문자열이 있는지만 볼 수 있다. 그런 검사는 `isAllowedHost`가 무조건 true를 반환하거나
-401·403 분기가 뒤집혀도 통과한다. 실행 가능한 스위트는 실제 분기를 돈다. 토큰 누락·오류·미설정·길이만 다른 값,
-파싱 불가 url, `ftp:`와 `file:` 스킴, `evil-reddit.com`과 169.254 대상, 허용 서브도메인, 호출자가 준
-`?headers=`가 outbound fetch에 닿지 않는지, 그리고 리다이렉트다.
-
-**리다이렉트가 허용 목록을 우회하지 못하게 한다.** 워커는 `redirect: "manual"`로 fetch하고 매 홉의 `Location`을
-`isAllowedHost`로 다시 검사하며 홉 수에 상한을 둔다. `redirect: "follow"`면 허용 호스트(reddit이나 youtube)의
-302 한 번으로 이 인증된 워커가 임의의 호스트로 간다. 허용 목록이 막으려는 것이 바로 그 open proxy다. 토큰 비교는
-상수 시간이고, outbound User-Agent는 `wrangler.toml`의 `USER_AGENT` var다(파이썬 쪽
-`shared.constants.BROWSER_USER_AGENT`와 같은 문자열이어야 한다. 사본을 양쪽에 하드코딩하면 Chrome 메이저 하나쯤
-벌어진 뒤에야 알게 된다). 패턴이 아무것도 매치하지 않으면 `node --test`가 0으로 끝나므로 스텝은 `ls`를 먼저 돌려
-스위트가 사라진 경우를 실패로 만든다.
-
 **잡 상한과 캐시.** 모든 잡에 `timeout-minutes`가 있다. 기본 6시간 러너 타임아웃에 걸린 채 멈춘 빌드를
 방치하지 않기 위해서다. uv 휠 캐시는 `uv.lock`으로 키를 잡아 의존성이 바뀌면 재설치되니, 깨진 의존성 집합을
 캐시가 가릴 수 없다. Node는 npm 캐시를 쓴다.
@@ -1902,17 +1770,13 @@ CloudWatch 알람 12개가 모두 SNS 알림 토픽으로, 그리고 이메일�
 뒤처져 배포가 스키마 미스매치로 깨지는 부류를 PR 단계에서 잡는다. `ci_synth`는 `vpc_id`를 비우고 env-agnostic
 계정을 써서 자격증명 없이 완전 오프라인으로 돈다.
 
-**Docker 빌드와 이미지 import 체크.** 두 이미지를 단일 플랫폼 `load: true`(네이티브 amd64)로 빌드해 로컬 데몬에
-올린 뒤, `docker run --rm --network none --entrypoint python`으로 실제 엔트리 모듈을 import한다. digest는
-`lambda_handlers.*`와 `main`, agentcore는 `agent_runtime.app`이다. 빌드만으로는 import가 한 번도 실행되지 않으니
+**Docker 빌드와 이미지 import 체크.** 다이제스트 이미지를 `load: true`(네이티브 amd64)로 빌드해 로컬 데몬에
+올린 뒤, `docker run --rm --network none --entrypoint python`으로 세 `lambda_handlers.*`를 import하고
+`Config.load()`가 템플릿을 읽는지 확인한다. 빌드만으로는 import가 한 번도 실행되지 않으니
 COPY 누락이나 개발자 머신에서만 해석되는 모듈이 그대로 통과한다. 자격증명 없이 `--network none`이니 import
 시점의 AWS 호출이나 HTTP fetch가 콜드스타트가 아니라 CI에서 깨진다. import 체크는 빌드가 얼마나 캐시됐든
 로드된 이미지에 대해 항상 실행되니 레이어 캐시가 실패를 건너뛸 수 없다. 캐시는 `type=gha`이며 이미지별 scope를
 쓴다.
-
-agentcore는 배포는 arm64지만 CI는 amd64로 빌드한다. 베이스와 의존성이 모두 멀티아치이고, QEMU 에뮬레이션 없이
-import를 실행하려면 네이티브여야 하기 때문이다. QEMU 아래에서 `pip install`은 잡 예산을 넘긴다. 이 잡이 잡는
-것은 COPY 누락과 미해결 의존성이고, 둘 다 아키텍처와 무관하다.
 
 **의존성과 시크릿 스캔(`security` 잡).** `uv.lock`이 핀한 정확한 집합, 곧 이미지가 설치하는 그 버전들을
 `pip-audit --strict`로 감사한다. pyproject 범위를 재해석해 감사하면 배포되지 않는 버전을 검사하게 된다. 감사
@@ -1924,27 +1788,33 @@ vulnerabilities found"를 찍고 0으로 끝나기 때문이다. 경로에 `pyth
 버전 하나에 매달린다. 그래서 `.python-version`을 추적 파일로 두고 CI의 `uv python install`도 인수 없이 그 핀을
 읽는다.
 
-⚠️ **호출 형식 두 가지가 load-bearing이다.** 각각이 이 잡을 감사를 한 번도 수행하지 못한 채 실패시켰다. 첫째,
-`uvx pip-audit==2.9.0`은 핀된 uv 0.5.11에서 유효한 spec이 아니고 `--from`이 필요하다. 둘째, 그걸 고치면
-`pip-audit -r` 모드가 `ensurepip`로 자체 venv를 만드는데 uv 관리 standalone 파이썬에는 ensurepip가 없다
-(exit 127). 두 실패 모두 잡 이름만 보면 "취약점 발견"처럼 읽히니, 게이트가 죽어 있는지 살아 있는지를 양방향으로
-확인해야 한다. 현재 lock에서 clean하고 직전 lock에서 19개 패키지로 exit 1이 나오는지 본다. 실패할 수 없는
-게이트는 게이트가 아니다. `--no-install-project`도 필수다. editable 배포는 감사 불가로 보고되고 `--strict`가
-이를 실패로 바꾼다.
+**pip-audit은 `uvx --from pip-audit==2.9.0 pip-audit --strict --path <purelib>`로만 부른다.** `-r` 모드는
+`ensurepip`로 자체 venv를 만드는데 uv 관리 파이썬에는 ensurepip가 없다. `--no-install-project`도 필수다. editable
+배포는 감사 불가로 보고되고 `--strict`가 이를 실패로 바꾼다.
 
-그리고 `gitleaks`를 전체 히스토리에 돌린다. shallow clone은 tip만 보니 과거에 커밋되고 나중에 지워진 키를
-절대 찾지 못한다. CFN 템플릿이 실제로 평문 토큰을 담고 있었고, `config/config.yaml`은 gitignore인데 실제 값을
-갖고 있으니 잘못 add된 파일 하나가 곧 유출이다.
+그리고 `gitleaks`를 돌린다(`fetch-depth: 0`). PR 실행은 `GITHUB_TOKEN`이 있어야 하니 step env로 넘긴다.
+`config/config.yaml`은 gitignore인데 실제 값을 갖고 있으니 잘못 add된 파일 하나가 곧 유출이다.
 
-⚠️ **운영 주의.** `pip-audit --strict`는 잠긴 집합에 알려진 권고가 0건이기를 요구하니, 전이 의존성에 새 권고가
-공개되면 무관한 다음 푸시가 빨개진다. 스케줄 실행이 없어서 통보 시점이 곧 푸시 시점이다. 해소 순서는
-`uv lock --upgrade`, 미사용 의존성 제거, 상한 완화이며 `--ignore-vuln`은 도달 불가를 코드로 확인한 뒤의 마지막
-수단이다. 실제로 19건이 한꺼번에 쌓인 경우도 앞의 세 단계로 0건까지 내려갔으니, 억제부터 손대지 않아도 된다.
+**스케줄 실행.** `pip-audit --strict`는 잠긴 집합에 알려진 권고가 0건이기를 요구하니, 전이 의존성에 새 권고가
+공개되면 잠금 파일이 그대로여도 게이트가 빨개져야 한다. 그래서 CI는 push와 PR 외에 매주 월요일 00:00 UTC에도
+돈다. 해소 순서는 `uv lock --upgrade-package <pkg>`, 미사용 의존성 제거, 상한 완화이며 `--ignore-vuln`은 도달
+불가를 코드로 확인한 뒤의 마지막 수단이다.
 
-**이미지 하드닝.** 두 Dockerfile 모두 `uv.lock`이 핀한 집합을 설치한다(`uv export`로 뽑아
+**uv 버전은 하나다.** CI의 `UV_VERSION`과 Dockerfile이 0.6.14로 같다. 더 새 uv로 `uv lock`을 돌리면 잠금 파일의
+`revision`이 바뀌어 0.6.14의 `uv lock --check`가 실패하니, 잠금 파일은 `uvx --from uv==0.6.14 uv lock`으로 갱신한다.
+
+**액션 고정과 워크플로 검사.** 서드파티 액션은 커밋 SHA로 고정하고(주석에 메이저 태그), 모든 checkout은
+`persist-credentials: false`다. `.github/dependabot.yml`이 GitHub Actions를 매주 갱신한다(minor와 patch는 한 PR로
+묶는다). `.github/workflows/workflow-lint.yml`은 체크섬을 검증한 actionlint로 워크플로와 내장 셸 스크립트를
+shellcheck까지 검사한다. Python과 npm 의존성은 dependabot 대상이 아니다. 잠금 파일 갱신은 위의 주간 pip-audit가
+신호를 준다.
+
+**이미지 하드닝.** Dockerfile은 `uv.lock`이 핀한 집합을 설치한다(`uv export`로 뽑아
 `uv pip install --system`하고 프로젝트 자신은 `--no-deps`). `pip install .`은 빌드 시점에 pyproject 범위를 다시
 해석하므로 CI가 테스트한 적 없는 의존성 집합이 Lambda에서 돌 수 있다. 의존성 레이어를 소스 COPY보다 먼저 두어
-코드 변경이 레이어를 재사용한다.
+코드 변경이 레이어를 재사용한다. 이미지에는 Lambda가 쓰는 패키지만 들어간다(로컬 CLI인 `main.py`는 넣지 않고
+포트도 열지 않는다). `agent/__init__.py`는 비어 있어서 Lambda가 `agent.visuals`나 `agent.tool_state`를 import해도
+리서치 에이전트(Strands)는 로드되지 않는다.
 
 런타임은 non-root(uid 10001)다. 그래서 `shared/logger.py`는 로그 디렉터리를 무가드로 `mkdir`하지 않는다. 모듈
 스코프에서 그것을 하면 쓰기 권한이 없는 환경에서 import 자체가 PermissionError로 죽는다. 프로덕션은
@@ -1952,8 +1822,8 @@ vulnerabilities found"를 찍고 0으로 끝나기 때문이다. 경로에 `pyth
 mkdir과 FileHandler 열기 둘 다 실패하면 콘솔 전용으로 degrade한다. `.dockerignore`는 `.env`와 `.venv`, `logs/`,
 `cdk.out`을 빌드 컨텍스트에서 뺀다.
 
-**pre-commit (`.pre-commit-config.yaml`, `uv run pre-commit install`).** CI와 같은 게이트(ruff와 black,
-YAML/JSON, private-key 탐지, `uv lock --check`)를 푸시 전에 돌린다. mypy는 의도적으로 훅에서 제외했다. 전체
+**pre-commit (`.pre-commit-config.yaml`, `uv run pre-commit install`).** pre-commit은 dev extra에 들어 있다. ruff와
+black, YAML/JSON, 파일 끝·공백, private-key 탐지, `uv lock --check`를 커밋 전에 돌린다. mypy는 의도적으로 훅에서 제외했다. 전체
 의존성 해석이 필요하고 느려서, 사람들이 `--no-verify`를 쓰기 시작하면 얻는 것보다 잃는 게 크다.
 
 **CI는 추적되는 config로 synth한다.** `scripts/ci_synth.py`와 인프라 assertion 테스트 모두
@@ -1962,30 +1832,40 @@ YAML/JSON, private-key 탐지, `uv lock --check`)를 푸시 전에 돌린다. my
 ## 14. 주요 명령어
 
 ```bash
-uv run python main.py --dry-run --sources rss reddit   # 부분 dry run
-uv run python main.py                                   # 전체 파이프라인 + 전달(config에서 켠 채널로)
+uv run python main.py --dry-run --sources web_search   # 부분 dry run(상태 쓰기와 게시 없음)
+uv run python main.py                                   # 전체 파이프라인 + 비주얼 + Threads(config에서 켰을 때)
+uv run python research_cli.py "<토픽>"                  # 딥 리서치, JSON을 stdout에(게시 없음)
+uv run python research_cli.py "<토픽>" --publish threads # 리포트를 Threads에도 게시
+./scripts/sync_all_to_s3.sh                             # 로컬 → S3: X(RSSHub, 꺼져 있으면 컨테이너를 켠다) + YouTube
+uv run python scripts/sync_to_s3.py rsshub              # 소스 하나만
 uv run python -m pytest tests/ -v                       # 테스트
-uv run black --check . && uv run ruff check .           # lint/format
+uv run pre-commit run --all-files                       # ruff, black, 파일 검사, uv lock --check
 uv run mypy .                                           # 레포 전체 타입 체크
 uv run python scripts/ci_synth.py                       # 오프라인 CDK synth(인프로세스)
-# 배포: 두 이미지(digest amd64 + agentcore arm64)를 먼저 빌드/푸시하고, 푸시된 sha256 digest를
-# DIGEST_IMAGE_REF로 넘겨 배포한다(태그 문자열이 안 바뀌면 CFN이 Lambda를 재배포하지 않는다). CDK CLI는
-# npm install 후 npx로 쓴다. package.json에 aws-cdk-lib와 호환되게 핀돼 있어 글로벌 cdk의 스키마 미스매치를 피한다.
+
+# 배포: 다이제스트 이미지(amd64)를 빌드/푸시하고, 푸시된 sha256 digest를 DIGEST_IMAGE_REF로 넘긴다(태그 문자열이
+# 안 바뀌면 CFN이 Lambda를 재배포하지 않고, 빠뜨리면 Lambda가 :latest로 고정된다). CDK CLI는 package.json에 핀된
+# 것을 npx로 쓰고, deploy.py는 계정을 CLI가 넣는 CDK_DEFAULT_ACCOUNT에서 읽는다.
 npm install                                             # 1회 — 핀된 CDK CLI 설치
-# 빈 계정에서는 순서가 중요하다. 유일한 ECR 리포는 foundation 스택(foundation_stack.py의 AgentEcrRepo)이
-# 만들고 application 스택의 Lambda가 거기서 이미지를 해석하니, foundation 전에는 푸시할 곳이 없고
-# 이미지가 없으면 deploy --all이 실패한다.
 npx cdk bootstrap -a "uv run python scripts/deploy.py"  # 계정+리전당 1회
-npx cdk deploy '*-foundation' -a "uv run python scripts/deploy.py"   # ECR 리포부터 만든다
-# 리포 URI는 규칙으로 만든다: <account>.dkr.ecr.<region>.amazonaws.com/{project}-{stage}-agent
-aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin <account>.dkr.ecr.<region>.amazonaws.com
+# 빈 계정에서는 foundation부터(ECR 리포가 거기 있다): npx cdk deploy '*-foundation' -a "uv run python scripts/deploy.py"
+aws ecr get-login-password --profile research --region ap-northeast-2 | docker login --username AWS --password-stdin <account>.dkr.ecr.ap-northeast-2.amazonaws.com
 docker build --platform linux/amd64 --provenance=false -t <ecr>:latest . && docker push <ecr>:latest
-docker buildx build --platform linux/arm64 --provenance=false -f Dockerfile.agentcore -t <ecr>:arm64 . --push
-export DIGEST_IMAGE_REF=sha256:<pushed>                 # AGENTCORE_IMAGE_REF 기본 :arm64
-AWS_PROFILE=${AWS_PROFILE:-research} npx cdk deploy --all -a "uv run python scripts/deploy.py"
+export DIGEST_IMAGE_REF=sha256:<pushed>
+AWS_PROFILE=research npx cdk deploy --all -a "uv run python scripts/deploy.py"
 # 시크릿은 템플릿에 없다. 배포 직후 실제 값을 SecureString으로 기록한다(§3.5).
-AWS_PROFILE=${AWS_PROFILE:-research} uv run python scripts/put_secrets.py            # --dry-run / --verify / --force
-# 온디맨드 Bedrock은 과금 대상 리소스가 없어 비용 할당 태그가 안 붙는다. 계정/스테이지당 1회:
-AWS_PROFILE=${AWS_PROFILE:-research} uv run python scripts/put_inference_profiles.py  # --dry-run / --delete
-uv run pre-commit install                               # 1회 — CI 게이트를 푸시 전에
+AWS_PROFILE=research uv run python scripts/put_secrets.py              # --dry-run / --verify / --force
+# 비용 귀속용 application inference profile(이름은 config의 project/stage). 계정/스테이지당 1회, 단계 모델을 바꿨을 때도 다시:
+AWS_PROFILE=research uv run python scripts/put_inference_profiles.py   # --dry-run / --delete
+uv run pre-commit install                               # 1회 — 커밋 전 게이트
 ```
+
+**다이어그램.** README가 싣는 두 그림은 관리 방식이 다르다.
+
+- `docs/diagrams/architecture.drawio`는 손으로 편집하고
+  `drawio -x -f png -s 2 -b 10 -o docs/diagrams/architecture.png docs/diagrams/architecture.drawio`로 내보낸다.
+  `-e`는 쓰지 않는다(하류 이미지 처리가 깨진다).
+- `docs/diagrams/concept-pipeline.excalidraw`는 제자리에서 편집하고
+  `node scripts/render_excalidraw.mjs docs/diagrams/concept-pipeline.excalidraw docs/diagrams/concept-pipeline.png`로
+  다시 그린다. 이 스크립트는 폰트를 임베드한 SVG를 헤드리스 브라우저로 캡처해 손글씨 폰트를 살린다. 일반
+  `excalidraw-to-png` 경로는 resvg로 래스터화하면서 임베드 폰트를 버리고 sans-serif로 떨어진다.

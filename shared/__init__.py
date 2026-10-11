@@ -30,7 +30,7 @@ from .formatting import (
     resolve_origin_key,
     source_tag_and_metrics,
     split_sentences,
-    strip_slack_mrkdwn,
+    strip_markup,
     threads_item_overhead_chars,
     threads_meta_line,
     truncate_at_word,
@@ -55,6 +55,7 @@ from .models import (
     TrendMemory,
     TrendStatus,
     VisualBrief,
+    VisualReview,
 )
 from .prompts import (
     DigestPrompt,
@@ -63,6 +64,7 @@ from .prompts import (
     RefineQueryPrompt,
     TrendClassifyPrompt,
     VisualEditorPrompt,
+    VisualReviewPrompt,
     VisualSynopsisPrompt,
 )
 from .state_store import LocalStateStore, S3StateStore, StateReadError, StateStore, create_state_store
@@ -80,7 +82,6 @@ from .utils import (
     parse_json_from_llm_output,
     resolve_secret,
     retry_async,
-    sanitize_slack_mrkdwn,
 )
 
 __all__ = [
@@ -108,7 +109,7 @@ __all__ = [
     "source_tag_and_metrics",
     "URL_RE",
     "split_sentences",
-    "strip_slack_mrkdwn",
+    "strip_markup",
     "threads_item_overhead_chars",
     "threads_meta_line",
     "truncate_at_word",
@@ -138,6 +139,7 @@ __all__ = [
     "TrendMemory",
     "TrendStatus",
     "VisualBrief",
+    "VisualReview",
     "LocalPaths",
     "RankedItem",
     "RankingHealth",
@@ -145,6 +147,7 @@ __all__ = [
     "RefineQueryPrompt",
     "TrendClassifyPrompt",
     "VisualEditorPrompt",
+    "VisualReviewPrompt",
     "VisualSynopsisPrompt",
     "LocalStateStore",
     "StateReadError",
@@ -171,7 +174,6 @@ __all__ = [
     "generate_item_id",
     "parse_feed_published_date",
     "retry_async",
-    "sanitize_slack_mrkdwn",
     "resolve_secret",
     "available_boto_profile",
     "SecretUnavailableError",

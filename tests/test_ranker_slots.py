@@ -13,7 +13,6 @@ def _ranked(
     sub: str = "",
     feed: str = "",
     url: str = "",
-    grace: bool = False,
 ) -> RankedItem:
     metadata = {}
     if channel:
@@ -30,7 +29,7 @@ def _ranked(
         author=author or None,
         metadata=metadata,
     )
-    return RankedItem(item=item, score=score, grace=grace)
+    return RankedItem(item=item, score=score)
 
 
 def _ranker(**overrides):
@@ -282,66 +281,6 @@ class TestPinnedCaps:
         assert len(selected) == 3  # fallback relaxes origin cap (source cap 1x5=5 allows it)
 
 
-class TestSourceSlotGrace:
-    def test_admits_best_below_threshold_item_within_grace(self):
-        # YouTube has a slot but nothing clears 0.6; its best (0.55) is within grace 0.1 → admitted.
-        ranker = _ranker(
-            min_score=0.6,
-            source_slot_score_grace=0.1,
-            source_slots={"youtube": 1, "rss": 1},
-        )
-        ranked = [
-            _ranked(0.55, SourceType.YOUTUBE, item_id="y1", channel="c"),
-            _ranked(0.40, SourceType.YOUTUBE, item_id="y2", channel="c"),
-            _ranked(0.80, SourceType.RSS, item_id="r1"),
-        ]
-        extra = ranker._grace_candidates(ranked, [r for r in ranked if r.score >= 0.6], [])
-        assert [r.item.item_id for r in extra] == ["y1"]  # best within grace, only one
-
-    def test_no_grace_when_source_already_above_threshold(self):
-        ranker = _ranker(min_score=0.6, source_slot_score_grace=0.1, source_slots={"youtube": 1})
-        ranked = [
-            _ranked(0.70, SourceType.YOUTUBE, item_id="y1", channel="c"),
-            _ranked(0.55, SourceType.YOUTUBE, item_id="y2", channel="c"),
-        ]
-        extra = ranker._grace_candidates(ranked, [r for r in ranked if r.score >= 0.6], [])
-        assert extra == []  # already has an above-threshold item
-
-    def test_no_grace_when_source_covered_by_pinned_item(self):
-        # A source whose only above-threshold item is pinned (stripped from above_threshold) is
-        # NOT empty — a pin covers it, so grace must not admit a below-threshold filler for it.
-        ranker = _ranker(min_score=0.6, source_slot_score_grace=0.1, source_slots={"youtube": 1})
-        ranked = [
-            _ranked(0.85, SourceType.YOUTUBE, item_id="y_pin", channel="c"),
-            _ranked(0.55, SourceType.YOUTUBE, item_id="y_weak", channel="c"),
-        ]
-        pinned = [r for r in ranked if r.item.item_id == "y_pin"]
-        # above_threshold excludes the pinned item (as rank() does), so youtube looks empty here.
-        extra = ranker._grace_candidates(ranked, [], pinned)
-        assert extra == []  # covered by the pin → no weak filler, and the pin isn't re-admitted
-
-    def test_below_grace_floor_not_admitted(self):
-        ranker = _ranker(min_score=0.6, source_slot_score_grace=0.1, source_slots={"youtube": 1})
-        ranked = [_ranked(0.40, SourceType.YOUTUBE, item_id="y1", channel="c")]  # 0.40 < floor 0.50
-        assert ranker._grace_candidates(ranked, [], []) == []
-
-    def test_grace_disabled_returns_nothing(self):
-        ranker = _ranker(min_score=0.6, source_slot_score_grace=0.0, source_slots={"youtube": 1})
-        ranked = [_ranked(0.55, SourceType.YOUTUBE, item_id="y1", channel="c")]
-        assert ranker._grace_candidates(ranked, [], []) == []
-
-    def test_a_score_tie_breaks_deterministically_on_item_id(self):
-        # plain max() kept the FIRST equal-scoring candidate, i.e. the LLM's response order within a
-        # batch — not stable run to run, unlike every other selection path here.
-        ranker = _ranker(min_score=0.6, source_slot_score_grace=0.1, source_slots={"youtube": 1})
-        tied = [
-            _ranked(0.55, SourceType.YOUTUBE, item_id="y_b", channel="c"),
-            _ranked(0.55, SourceType.YOUTUBE, item_id="y_a", channel="c"),
-        ]
-        assert [r.item.item_id for r in ranker._grace_candidates(tied, [], [])] == ["y_a"]
-        assert [r.item.item_id for r in ranker._grace_candidates(list(reversed(tied)), [], [])] == ["y_a"]
-
-
 class TestLastResortSourceCapRelaxation:
     """When a collector outage leaves every remaining candidate on one source, the source cap alone
     would ship a short digest. The relaxation runs LAST, only while the digest is short, and prefers
@@ -381,50 +320,38 @@ class TestLastResortSourceCapRelaxation:
         # from a NEW feed over the higher-scoring one that repeats r1's origin.
         assert {r.item.item_id for r in selected} == {"r1", "other-origin"}
 
-    def test_grace_items_are_never_used_as_filler(self):
-        ranker = _ranker(
-            top_n=3,
-            min_score=0.6,
-            source_slots={"rss": 1},
-            source_cap_multiplier=1,
-            max_per_origin=1,
-        )
+
+class TestFillPassOrder:
+    def test_a_source_at_exactly_its_cap_takes_no_more(self):
+        r = _ranker(source_slots={"rss": 1, "web": 1}, source_cap_multiplier=1, max_per_origin=1)
         items = [
-            _ranked(0.9, SourceType.RSS, item_id="r1", feed="f1"),
-            _ranked(0.55, SourceType.YOUTUBE, item_id="g1", channel="c1", grace=True),
+            _ranked(0.9, SourceType.RSS, item_id="a", feed="f1"),
+            _ranked(0.8, SourceType.RSS, item_id="b", feed="f2"),
+            _ranked(0.7, SourceType.X, item_id="x", author="@a"),
+            _ranked(0.6, SourceType.WEB, item_id="w", url="https://w.example/1"),
         ]
-        selected = ranker._apply_source_slots(items, ranker.config.top_n)
-        assert {r.item.item_id for r in selected} == {"r1"}
+        assert {s.item.item_id for s in r._apply_source_slots(items, 3)} == {"a", "x", "w"}
 
-
-class TestBackfillHonoursTheOriginCap:
-    """The backfill candidates used to ignore max_per_origin outright, and _audit_shipped_diversity is
-    detection-only by design — so a backfill item the editor used as an ADDITION rather than a
-    replacement shipped a second story from an origin already at its cap. digest_2026-07-12 carried
-    two r/LocalLLaMA GPU benchmarks against max_per_origin=1."""
-
-    def _ranker(self):
-        return _ranker(top_n=1, min_score=0.5, max_per_origin=1, source_slots={})
-
-    def test_a_candidate_whose_origin_is_already_at_cap_is_skipped(self):
-        ranker = self._ranker()
-        core = [_ranked(0.95, SourceType.REDDIT, item_id="a", sub="LocalLLaMA")]
-        candidates = [
-            core[0],
-            _ranked(0.94, SourceType.REDDIT, item_id="b", sub="LocalLLaMA"),
-            _ranked(0.70, SourceType.REDDIT, item_id="c", sub="MachineLearning"),
+    def test_the_origin_cap_is_relaxed_before_the_source_cap(self):
+        # Short of the limit, a second item from an origin already used beats a higher-scored item
+        # from a source already at its cap: source diversity is the stronger promise.
+        r = _ranker(source_slots={"rss": 2, "web": 1, "x": 1}, source_cap_multiplier=1, max_per_origin=1)
+        items = [
+            _ranked(0.95, SourceType.X, item_id="x1", author="@a"),
+            _ranked(0.9, SourceType.RSS, item_id="a", feed="f1"),
+            _ranked(0.88, SourceType.X, item_id="z", author="@b"),
+            _ranked(0.85, SourceType.RSS, item_id="b", feed="f1"),
+            _ranked(0.7, SourceType.WEB, item_id="c", url="https://w.example/1"),
         ]
-        extras = ranker._backfill_candidates(candidates, core, room=2)
-        # The merge-topup purpose is intact: the freed slot is filled by the next DISTINCT origin.
-        assert [r.item.item_id for r in extras] == ["c"]
-        assert all(r.backfill for r in extras)
+        picked = {s.item.item_id for s in r._apply_source_slots(items, 4)}
+        assert "b" in picked and "z" not in picked
 
-    def test_the_cap_also_applies_among_the_backfill_items_themselves(self):
-        ranker = self._ranker()
-        core: list = []
-        candidates = [
-            _ranked(0.95, SourceType.REDDIT, item_id="a", sub="LocalLLaMA"),
-            _ranked(0.94, SourceType.REDDIT, item_id="b", sub="LocalLLaMA"),
+    def test_the_pool_comes_back_in_score_order(self):
+        r = _ranker(source_slots={"youtube": 1, "rss": 1}, max_per_origin=1)
+        items = [
+            _ranked(0.9, SourceType.RSS, item_id="a", feed="f1"),
+            _ranked(0.8, SourceType.RSS, item_id="b", feed="f2"),
+            _ranked(0.6, SourceType.YOUTUBE, item_id="y", channel="c1"),
         ]
-        extras = ranker._backfill_candidates(candidates, core, room=2)
-        assert [r.item.item_id for r in extras] == ["a"]
+        scores = [s.score for s in r._apply_source_slots(items, 3)]
+        assert scores == sorted(scores, reverse=True)

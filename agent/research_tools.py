@@ -44,8 +44,8 @@ def _uncited_urls(report: str) -> list[str]:
 
     A report is allowed to cite nothing; it is not allowed to cite something that was never
     returned. The comparison is lenient (extract_urls + normalize_citation_url) so an http→https
-    rewrite, a URL in parentheses, or the `<url|label>` form the system prompt MANDATES for Slack
-    still matches — matching the raw pattern refused every well-formed Slack report."""
+    rewrite, a URL in parentheses, or the `[label](url)` link the system prompt asks for still
+    matches."""
     seen = current_delivery_context().seen_urls
     unknown: list[str] = []
     for url in extract_urls(report):
@@ -119,7 +119,7 @@ async def recall_trends(query: str) -> str:
 
     def _load() -> TrendMemory:
         store = create_state_store(config)
-        raw = store.read(TRENDS_KEY) if store.exists(TRENDS_KEY) else None
+        raw = store.read(TRENDS_KEY)
         if not raw:
             return TrendMemory()
         return TrendMemory.model_validate_json(raw)
@@ -201,9 +201,7 @@ async def recall_digest(digest_date: str) -> str:
 
 @tool
 async def attach_image(source_url: str) -> str:
-    """Download the representative image (og:image) of a source page and stage it to be
-    attached to the delivered report. Call this for the best, most on-topic source before
-    delivering, so the post carries a real image from the article.
+    """Stage a source page's representative image (og:image) for the delivered report.
 
     Args:
         source_url: The article/source URL whose representative image to attach.
@@ -221,39 +219,35 @@ async def attach_image(source_url: str) -> str:
 
 
 @tool
-async def deliver_report(report: str, channel: str = "slack") -> str:
-    """Post the finished research report to a channel. Call this exactly once per target
-    channel, only after the report is complete. Default channel is "slack"; use "threads"
-    only when the user explicitly asked for Threads.
+async def deliver_report(report: str, channel: str = "markdown") -> str:
+    """Hand over the finished research report. Call it with channel "markdown" once the report is
+    complete; call it with channel "threads" only when this run is allowed to publish to Threads.
 
     Args:
-        report: The final report text. For Slack use mrkdwn; for Threads use plain text.
-        channel: "slack" (default) or "threads".
+        report: The final report. For "markdown" use Markdown; for "threads" use plain text.
+        channel: "markdown" (default) or "threads".
     """
-    from output.delivery import DeliveryOutcome, deliver_research_report
+    from output.delivery import RESEARCH_CHANNELS, THREADS, DeliveryOutcome, deliver_research_report
 
     delivery = current_delivery_context()
     target = channel.lower().strip()
-    if target not in ("slack", "threads"):
-        # Surface the mistake so the agent can correct itself, rather than silently downgrading
-        # an explicit Threads request to Slack.
-        return f'Unknown channel "{channel}". Use "slack" or "threads".'
+    if target not in RESEARCH_CHANNELS:
+        return f'Unknown channel "{channel}". Use one of: {", ".join(RESEARCH_CHANNELS)}.'
 
-    # The channels this invocation may publish to are DATA the entrypoint set (the CLI's --channel,
-    # the Slack ingress's payload), not something to infer from the request's wording. Same
-    # self-correcting refusal as an unknown channel: nothing is published and the agent can re-call.
-    allowed = delivery.requested_channels
-    if allowed and target not in allowed:
+    # Whether this run may publish to Threads is DATA the caller set (the CLI's --publish), not
+    # something to infer from the request's wording. A self-correcting refusal: nothing is published
+    # and the agent can re-call.
+    allowed = delivery.allowed_channels
+    if target not in allowed:
         permitted = ", ".join(sorted(allowed))
-        logger.error("Refusing to deliver to '%s'; this invocation requested %s", target, permitted)
+        logger.error("Refusing to deliver to '%s'; this run allows %s", target, permitted)
         return (
-            f'NOT delivered. This request did not ask for "{target}", so publishing there is not '
-            f"permitted. Call deliver_report again with one of: {permitted}."
+            f'NOT delivered. This run is not allowed to publish to "{target}". '
+            f"Call deliver_report again with one of: {permitted}."
         )
 
-    # A citation no tool ever returned is a fabricated source, and this posts to a PUBLIC Threads
-    # account. Refuse rather than publish, and name the offending URLs so the agent can drop or
-    # replace them; a re-call with a corrected report is the remedy.
+    # A citation no tool ever returned is a fabricated source. Refuse it, and name the offending URLs
+    # so the agent can drop or replace them; a re-call with a corrected report is the remedy.
     uncited = _uncited_urls(report)
     if uncited:
         logger.error("Refusing to deliver a report citing %d unverifiable URL(s): %s", len(uncited), uncited)
@@ -264,10 +258,11 @@ async def deliver_report(report: str, channel: str = "slack") -> str:
         )
 
     outcome = await deliver_research_report(report, channel=target, delivery=delivery)
-    # Report what the reader actually got. "Delivered the report" was returned even when half the
-    # posts were dropped over the channel cap or trimmed mid-sentence, so the agent's final answer
-    # asserted a complete delivery that never happened.
-    stats = delivery.last_stats
+    if target != THREADS:
+        return "Recorded the Markdown report."
+    # Report what the reader actually got: half a thread dropped over the channel cap is not
+    # "delivered", and the agent's final answer must not say it was.
+    stats = delivery.threads_stats
     if outcome is DeliveryOutcome.NOT_POSTED:
         # The text of THIS call was not published — saying "delivered" here announced a revision
         # the reader never received.

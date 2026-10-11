@@ -11,9 +11,7 @@ from .constants import THREADS_POST_SEPARATOR, SourceType
 from .logger import logger
 from .models import CollectedItem
 
-# A literal Unicode emoji, NOT a Slack `:shortcode:`. Slack renders both, but Threads renders no
-# shortcodes — and the Threads renderer strips Slack markup characters, so `:arrow_forward:` lost
-# its underscore and published as a bare ":arrowforward:" on 2026-08-18.
+# A literal Unicode emoji, NOT a `:shortcode:`: Threads renders no shortcodes.
 YOUTUBE_VIEWS_EMOJI = "▶️"
 RSS_NAME_DELIMITERS = (" - ", " — ")
 
@@ -134,11 +132,12 @@ def editorial_lead(lead: str, intro: str) -> str:
 
 
 def normalize_title(title: str) -> str:
-    """Normalize a title for dedup/clustering: strip HTML, lowercase, drop punctuation,
-    collapse whitespace. Shared by the aggregator (title dedup) and ranker (topic-coherent
-    batching) so both agree on what 'the same title' means."""
+    """Normalize a title for the aggregator's title dedup: strip HTML and a retweet's "RT name:"
+    prefix (an X retweet of a post otherwise survived as a second item), lowercase, drop
+    punctuation, collapse whitespace."""
     title = unicodedata.normalize("NFKC", title)
     title = re.sub(r"<[^>]+>", "", title)
+    title = re.sub(r"^\s*RT\s+[^:]{1,60}:\s*", "", title)
     title = re.sub(r"[^\w\s]", "", title.lower())
     return re.sub(r"\s+", " ", title).strip()
 
@@ -230,25 +229,25 @@ SOURCE_DESCRIPTORS: dict[SourceType, SourceDescriptor] = {
     SourceType.REDDIT: SourceDescriptor(
         origin_key=lambda item: item.metadata.get("subreddit", ""),
         label=lambda item: f"r/{item.metadata['subreddit']}" if item.metadata.get("subreddit") else "",
-        tag=lambda item: f"`r/{item.metadata['subreddit']}`" if item.metadata.get("subreddit") else "",
+        tag=lambda item: f"r/{item.metadata['subreddit']}" if item.metadata.get("subreddit") else "",
         metrics=_no_metrics,
     ),
     SourceType.RSS: SourceDescriptor(
         origin_key=lambda item: item.metadata.get("feed_url", ""),
         label=lambda item: item.metadata.get("feed_title", "") or item.metadata.get("feed_url", ""),
-        tag=lambda item: f"`{name}`" if (name := _rss_name(item)) else "",
+        tag=_rss_name,
         metrics=_no_metrics,
     ),
     SourceType.WEB: SourceDescriptor(
         origin_key=item_netloc,
         label=item_netloc,
-        tag=lambda item: f"`{host}`" if (host := item_netloc(item)) else "",
+        tag=item_netloc,
         metrics=_no_metrics,
     ),
     SourceType.X: SourceDescriptor(
         origin_key=lambda item: item.author or "",
         label=lambda item: f"@{item.author}" if item.author else "",
-        tag=lambda item: f"`@{item.author}`" if item.author else "",
+        tag=lambda item: f"@{item.author}" if item.author else "",
         metrics=_no_metrics,
     ),
     SourceType.YOUTUBE: SourceDescriptor(
@@ -259,7 +258,7 @@ SOURCE_DESCRIPTORS: dict[SourceType, SourceDescriptor] = {
         # reader learned nothing, and the editor compensated by appending the speaker to the item
         # TITLE instead. `author` is the channelTitle the collector already stores; the RSS-fallback
         # path has no author, so the platform name remains the floor.
-        tag=lambda item: f"`{item.author}`" if item.author else "`YouTube`",
+        tag=lambda item: item.author or "YouTube",
         metrics=_youtube_metrics,
     ),
 }
@@ -283,7 +282,7 @@ def resolve_origin_key(item: CollectedItem) -> str | None:
 
 
 def format_origin_label(item: CollectedItem) -> str:
-    """Plain-text origin label fed to the ranking prompt (no Slack markup), falling back to the host.
+    """Plain-text origin label fed to the ranking prompt, falling back to the host.
 
     An item with no origin line asked the prompt to judge "Source Authority" with the outlet
     withheld — a press release on a content farm and a wire-service report looked identical."""
@@ -291,38 +290,45 @@ def format_origin_label(item: CollectedItem) -> str:
 
 
 def source_tag_and_metrics(item: CollectedItem) -> tuple[str, str]:
-    """(source_tag, metrics) for an item: a backtick-wrapped source label and a ' · '-joined emoji
-    metric string. Code owns this — the LLM never writes source markup. The tag falls back to the
-    host for the same reason the origin key does: an item whose source metadata is missing still has
-    to tell the reader where it came from."""
+    """(source_tag, metrics) for an item: a plain source label and a ' · '-joined emoji metric
+    string. Code owns this — the LLM never writes source markup. The tag falls back to the host for
+    the same reason the origin key does: an item whose source metadata is missing still has to tell
+    the reader where it came from."""
     descriptor = SOURCE_DESCRIPTORS[item.source_type]
-    tag = descriptor.tag(item)
-    if not tag and (host := item_netloc(item)):
-        tag = f"`{host}`"
-    return tag, descriptor.metrics(item)
+    return descriptor.tag(item) or item_netloc(item), descriptor.metrics(item)
 
 
 # Sentence-ending boundaries: Korean '다.' plus the usual terminators. Splitting AFTER a boundary
 # (never on a fixed stride) is what lets a post be trimmed at a clean sentence.
 _SENTENCE_END = ("다.", "다!", "다?", ". ", "。", "! ", "? ", "…")
 # A bare http(s) URL run. Public so the renderers can protect/extract citation URLs with the same
-# pattern strip_slack_mrkdwn uses, instead of re-declaring it.
+# pattern strip_markup uses, instead of re-declaring it.
 URL_RE = re.compile(r"https?://\S+")
 # Punctuation a URL can pick up from the prose around it (a closing paren, a sentence period, the
-# '>' of a Slack link). Trimmed from the right by both the URL extractor and the citation normalizer.
+# '>' of an autolink). Trimmed from the right by both the URL extractor and the citation normalizer.
 _URL_TRAILING_PUNCT = "').,;:\"]>"
 
 
+def _trim_url(url: str) -> str:
+    """Strip prose punctuation off the end of a URL, keeping a ')' that closes a '(' inside it
+    (Wikipedia 'Foo_(bar)', DOIs): a plain rstrip ate that paren and the citation no longer matched."""
+    url = url.strip()
+    while url and url[-1] in _URL_TRAILING_PUNCT:
+        if url[-1] == ")" and url.count("(") >= url.count(")"):
+            break
+        url = url[:-1]
+    return url
+
+
 def extract_urls(text: str) -> list[str]:
-    """Every http(s) URL in `text`, in order of appearance, with Slack mrkdwn unwrapped first and
+    """Every http(s) URL in `text`, in order of appearance, with Markdown links unwrapped first and
     trailing prose punctuation trimmed.
 
-    URL_RE's `\\S+` does not stop at '|', so a well-formed Slack link `<https://ex.com/a|Label>`
-    matches as `https://ex.com/a|Label` and can never equal the bare URL a tool returned — which
-    made the citation guard refuse every correctly formatted Slack report. strip_slack_mrkdwn is
-    the converter that already knows this markup, so extraction goes through it rather than
-    growing a second URL pattern that has to be kept in sync with it."""
-    return [url.strip().rstrip(_URL_TRAILING_PUNCT) for url in URL_RE.findall(strip_slack_mrkdwn(text))]
+    URL_RE's `\\S+` does not stop at ')', so a Markdown link `[Label](https://ex.com/a)` would match
+    with its label glued on and never equal the bare URL a tool returned. strip_markup is the
+    converter that already knows this markup, so extraction goes through it rather than growing a
+    second URL pattern that has to be kept in sync with it."""
+    return [_trim_url(url) for url in URL_RE.findall(strip_markup(text))]
 
 
 def normalize_citation_url(url: str) -> str:
@@ -333,7 +339,7 @@ def normalize_citation_url(url: str) -> str:
     FABRICATED citation, so it must never reject a real one the model rewrote from http to https or
     quoted inside parentheses. The query string is kept — it is what distinguishes one video or
     search result from another."""
-    trimmed = url.strip().rstrip(_URL_TRAILING_PUNCT)
+    trimmed = _trim_url(url)
     parsed = urlparse(trimmed if "//" in trimmed else f"//{trimmed}")
     host = parsed.netloc.removeprefix("www.").lower()
     path = parsed.path.rstrip("/")
@@ -377,14 +383,18 @@ def truncate_at_word(text: str, max_len: int) -> str:
     return (window[:cut] if cut > 0 else window).rstrip()
 
 
-def strip_slack_mrkdwn(text: str) -> str:
-    """Convert Slack mrkdwn to plain text (for channels that render no markup, and for measuring
-    how long a string really is): turn <url|label> into 'label (url)', drop *bold*/_italic_/`code`
-    markers, and remove leading bullet/heading glyphs. URLs are protected from the marker strip —
-    they legitimately contain '_'/'*' (arxiv, github, query params), so stripping those characters
-    globally would silently break the links. Whitespace structure is preserved."""
-    text = re.sub(r"<([^|>]+)\|([^>]+)>", r"\2 (\1)", text)
-    text = re.sub(r"<([^>]+)>", r"\1", text)
+def strip_markup(text: str) -> str:
+    """Convert Markdown to plain text (for Threads, which renders no markup, and for measuring how
+    long a string really is): turn [label](url) and ![alt](url) into 'label (url)', unwrap <url>
+    autolinks, drop *bold*/_italic_/`code` markers, and remove leading bullet/heading glyphs. URLs
+    are protected from the marker strip — they legitimately contain '_'/'*' (arxiv, github, query
+    params), so stripping those characters globally would silently break the links. Whitespace
+    structure is preserved."""
+    # The URL may carry balanced parentheses (Wikipedia 'Foo_(bar)', DOIs); stopping at the first ')'
+    # would truncate the citation and leave a stray ')' in the prose.
+    url = r"https?://(?:[^()\s]|\([^()\s]*\))+"
+    text = re.sub(rf"!?\[([^\]]*)\]\(({url})\)", lambda m: f"{m.group(1)} ({m.group(2)})".lstrip(), text)
+    text = re.sub(r"<(https?://[^>\s]+)>", r"\1", text)
 
     # Stash URLs so the [*_`] strip below can't corrupt them, then restore verbatim.
     urls: list[str] = []
@@ -402,13 +412,11 @@ def strip_slack_mrkdwn(text: str) -> str:
 
 
 def threads_meta_line(source_tag: str, metrics: str) -> str:
-    """One item's provenance line exactly as a Threads post shows it: the same composition Slack's
-    context block uses, with the markup stripped (`source_tag` is stored backtick-wrapped for Slack
-    mrkdwn and Threads renders none, so the backticks would show up literally).
+    """One item's provenance line exactly as a Threads post shows it.
 
     Shared by the renderer that writes the line and the pipeline that budgets for its length, so the
     budget can never be derived from a string the post does not actually carry."""
-    return strip_slack_mrkdwn(" · ".join(p for p in (source_tag, metrics) if p)).strip()
+    return " · ".join(p.strip() for p in (source_tag, metrics) if p.strip())
 
 
 def threads_item_overhead_chars(meta: str, url: str) -> int:

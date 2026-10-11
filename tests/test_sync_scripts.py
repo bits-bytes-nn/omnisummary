@@ -13,10 +13,7 @@ _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 # The two syncs are the ONLY supply of X posts and of transcript-carrying YouTube items: the digest
 # Lambda reads their park files because a datacenter IP cannot fetch either. Both encode fixes for
 # documented stale-data incidents in code nothing exercised.
-_SYNCS = {
-    "rsshub": ("sync_rsshub_to_s3.py", "RSSHubCollector", "rsshub", "rsshub_items.json"),
-    "youtube": ("sync_youtube_to_s3.py", "YouTubeCollector", "youtube", "youtube_items.json"),
-}
+_SYNCS = {"rsshub": "rsshub_items.json", "youtube": "youtube_items.json"}
 
 
 class _StubCollector:
@@ -26,7 +23,6 @@ class _StubCollector:
     items: list = []
     raises: bool = False
     seen_state_bucket: str | None = "unset-marker"
-    seen_proxy: str | None = "unset-marker"
 
     def __init__(self, config) -> None:
         self.config = config
@@ -34,7 +30,6 @@ class _StubCollector:
 
     async def collect(self) -> list:
         type(self).seen_state_bucket = os.environ.get("STATE_BUCKET")
-        type(self).seen_proxy = os.environ.get("CLOUDFLARE_PROXY_URL")
         if type(self).raises:
             raise RuntimeError("upstream down")
         return type(self).items
@@ -61,24 +56,24 @@ def _config(*, source: str, bucket: str = "state-bkt", prefix: str = "omni") -> 
 
 @pytest.fixture(params=sorted(_SYNCS), ids=sorted(_SYNCS))
 def sync(request, monkeypatch):
-    """One loaded sync script per parametrization, with the process environment restored afterwards.
+    """The sync script loaded once per source, with the process environment restored afterwards.
 
-    The scripts pop STATE_BUCKET / the proxy vars at IMPORT time (that is the point: the collector
+    The scripts pop STATE_BUCKET at IMPORT time (that is the point: the collector
     they then run must not read the very file this run is about to overwrite), and they call
     load_dotenv() — so the import mutates the test process's environment."""
-    filename, collector_name, source, park_name = _SYNCS[request.param]
+    source = request.param
+    park_name = _SYNCS[source]
     before = dict(os.environ)
     # Set the vars whose REMOVAL is the guarantee under test, so the assertion is not vacuous.
     os.environ["STATE_BUCKET"] = "state-bkt"
-    os.environ["CLOUDFLARE_PROXY_URL"] = "https://proxy.example.com"
-    module = _load(filename)
+    module = _load("sync_to_s3.py")
     uploads: list[dict] = []
     s3 = MagicMock()
     s3.put_object.side_effect = lambda **kwargs: uploads.append(kwargs)
     boto3 = MagicMock()
     boto3.Session.return_value.client.return_value = s3
     monkeypatch.setattr(module, "boto3", boto3)
-    monkeypatch.setattr(module, collector_name, _StubCollector)
+    monkeypatch.setitem(module._SOURCES, source, (_StubCollector, park_name))
     monkeypatch.setattr(module.Config, "load", staticmethod(lambda: _config(source=source)))
     _StubCollector.items = []
     _StubCollector.raises = False
@@ -104,15 +99,8 @@ class TestTheSyncNeverReadsBackTheFileItIsAboutToWrite:
     def test_state_bucket_is_unset_while_collecting(self, sync):
         module, _, source, _, _ = sync
         _StubCollector.items = [_item(source)]
-        asyncio.run(module.main())
+        asyncio.run(module.main(source))
         assert _StubCollector.seen_state_bucket is None
-
-    def test_the_proxy_is_unset_while_collecting(self, sync):
-        # The whole point is to collect from THIS residential IP, not through a datacenter one.
-        module, _, source, _, _ = sync
-        _StubCollector.items = [_item(source)]
-        asyncio.run(module.main())
-        assert _StubCollector.seen_proxy is None
 
 
 class TestWhatGetsParked:
@@ -121,7 +109,7 @@ class TestWhatGetsParked:
         # block is what lets the Lambda-side reader report that as DEGRADED.
         module, uploads, source, park_name, _ = sync
         _StubCollector.items = [_item(source)]
-        asyncio.run(module.main())
+        asyncio.run(module.main(source))
         assert len(uploads) == 1
         assert uploads[0]["Bucket"] == "state-bkt"
         assert uploads[0]["Key"] == f"omni/{park_name}"
@@ -133,9 +121,9 @@ class TestWhatGetsParked:
     def test_a_quiet_day_still_stamps_the_sync_time(self, sync):
         # Returning early on zero items left YESTERDAY's file in place, so the digest re-ingested
         # stale items and reported OK. The empty envelope's stamp is the only proof the sync RAN.
-        module, uploads, _, _, _ = sync
+        module, uploads, source, _, _ = sync
         _StubCollector.items = []
-        asyncio.run(module.main())
+        asyncio.run(module.main(source))
         assert len(uploads) == 1
         payload = json.loads(uploads[0]["Body"].decode("utf-8"))
         assert payload["items"] == []
@@ -144,16 +132,16 @@ class TestWhatGetsParked:
     def test_a_failed_collection_uploads_nothing(self, sync):
         # A collector exception must propagate: overwriting the previous (good) park file with
         # nothing would turn one upstream outage into a day with no items at all.
-        module, uploads, _, _, _ = sync
+        module, uploads, source, _, _ = sync
         _StubCollector.raises = True
         with pytest.raises(RuntimeError, match="upstream down"):
-            asyncio.run(module.main())
+            asyncio.run(module.main(source))
         assert uploads == []
 
     def test_a_disabled_collector_uploads_nothing(self, sync, monkeypatch):
-        module, uploads, _, _, _ = sync
+        module, uploads, source, _, _ = sync
         monkeypatch.setattr(module.Config, "load", staticmethod(lambda: _config(source="none")))
-        asyncio.run(module.main())
+        asyncio.run(module.main(source))
         assert uploads == []
 
     def test_no_bucket_configured_writes_the_envelope_locally(self, sync, monkeypatch, tmp_path):
@@ -161,7 +149,7 @@ class TestWhatGetsParked:
         monkeypatch.setattr(module.Config, "load", staticmethod(lambda: _config(source=source, bucket="")))
         monkeypatch.chdir(tmp_path)
         _StubCollector.items = [_item(source)]
-        asyncio.run(module.main())
+        asyncio.run(module.main(source))
         assert uploads == []
         payload = json.loads((tmp_path / "digest_state" / park_name).read_text(encoding="utf-8"))
         assert len(payload["items"]) == 1
@@ -171,6 +159,6 @@ class TestWhatGetsParked:
         monkeypatch.setenv("S3_SYNC_ACCESS_KEY_ID", "AKIA")
         monkeypatch.setenv("S3_SYNC_SECRET_ACCESS_KEY", "secret")
         _StubCollector.items = [_item(source)]
-        asyncio.run(module.main())
+        asyncio.run(module.main(source))
         assert boto3.Session.call_args.kwargs["aws_access_key_id"] == "AKIA"
         assert "profile_name" not in boto3.Session.call_args.kwargs

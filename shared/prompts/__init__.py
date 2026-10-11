@@ -6,6 +6,7 @@ from .prompts import (
     RefineQueryPrompt,
     TrendClassifyPrompt,
     VisualEditorPrompt,
+    VisualReviewPrompt,
     VisualSynopsisPrompt,
 )
 
@@ -17,5 +18,6 @@ __all__ = [
     "RefineQueryPrompt",
     "TrendClassifyPrompt",
     "VisualEditorPrompt",
+    "VisualReviewPrompt",
     "VisualSynopsisPrompt",
 ]
