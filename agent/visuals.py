@@ -20,8 +20,7 @@ from shared import (
 )
 from shared.config import LanguageModelId
 
-# What one review call is allowed before a correction is attempted: the correction is a render
-# (image_timeout_sec) followed by a second review.
+# What one review call is allowed; with less time left the render ships unreviewed.
 REVIEW_BUDGET_SEC = 60
 
 # Prepended to the image prompt when the narrator's reference sheet rides along as an input image.
@@ -191,17 +190,6 @@ class VisualGenerator:
         prompt = REFERENCE_NOTE + brief.prompt if references else brief.prompt
         return self._call_images(prompt, self._resolve_size(brief), references, f"Rendered {brief.orientation}")
 
-    def fix(self, image: bytes, brief: VisualBrief, issues: list[str]) -> bytes:
-        """Edit the rendered comic to correct exactly the defects the review named. An edit of the
-        image, not a fresh render: everything the review did not flag is meant to survive."""
-        prompt = (
-            "Edit this comic. Keep the composition, panels, characters, faces, outfits, every line of "
-            "dialogue and the art style as they are, and correct ONLY these defects:\n"
-            + "\n".join(f"- {issue}" for issue in issues)
-            + f"\n\nThe intended comic, for reference:\n{brief.prompt}"
-        )
-        return self._call_images(prompt, self._resolve_size(brief), [image], "Corrected")
-
     async def review(self, image: bytes, brief: VisualBrief) -> list[str]:
         """The defects a reader would notice, most noticeable first; [] when clean OR when the review
         itself failed. Best-effort: a QA outage must never cost the day's visual."""
@@ -226,32 +214,18 @@ class VisualGenerator:
         return VisualReview.model_validate(result).issues if result else []
 
     async def _reviewed(self, image: bytes, brief: VisualBrief, deadline: float | None) -> bytes:
-        """Review the render and, when it has defects, apply ONE targeted edit for the three most
-        noticeable and keep whichever version the review finds fewer defects in. The edit carries what was
-        wrong, so this is not a re-roll of the same prompt. The full defect lists are compared: a capped
-        list read "3 -> 3" whether or not the edit fixed what it was asked to."""
+        """Review the render and LOG what it finds; the image ships as rendered. A correction edit used
+        to follow, but it lowered the defect count in only 4 of 12 runs at the price of a second render,
+        so the review now runs as a QA signal while the synopsis carries the quality."""
         if deadline is not None and deadline - time.monotonic() < REVIEW_BUDGET_SEC:
             logger.warning("No time left to review the visual; publishing it as rendered")
             return image
         issues = await self.review(image, brief)
-        if not issues:
+        if issues:
+            logger.info("Visual review found %d defect(s): %s", len(issues), " | ".join(issues))
+        else:
             logger.info("Visual review: no defects found")
-            return image
-        logger.info("Visual review found %d defect(s): %s", len(issues), " | ".join(issues))
-        if deadline is not None and deadline - time.monotonic() < self.image_timeout_sec + REVIEW_BUDGET_SEC:
-            logger.warning("No time left to correct the visual; publishing it as rendered")
-            return image
-        try:
-            fixed = await asyncio.to_thread(self.fix, image, brief, issues[:3])
-        except Exception:
-            logger.warning("Visual correction failed; publishing the image as rendered", exc_info=True)
-            return image
-        remaining = await self.review(fixed, brief)
-        kept = "corrected" if len(remaining) < len(issues) else "original"
-        logger.info(
-            "Kept the %s visual (%d -> %d defect(s)): %s", kept, len(issues), len(remaining), " | ".join(remaining)
-        )
-        return fixed if kept == "corrected" else image
+        return image
 
     @staticmethod
     def _is_moderation_error(exc: Exception) -> bool:
@@ -278,8 +252,8 @@ class VisualGenerator:
     ) -> tuple[bytes, VisualBrief]:
         """`references` are input images every render carries (the narrator's reference sheet).
         `deadline` is an optional monotonic timestamp bounding the caller (the visual Lambda's
-        remaining time); it gates the moderation-softened re-render and the correction edit, each a
-        whole extra image_timeout_sec. None (local runs) is unbounded."""
+        remaining time); it gates the moderation-softened re-render (a whole extra image_timeout_sec)
+        and the review. None (local runs) is unbounded."""
         brief = await self.brief(instruction, source)
         try:
             # The OpenAI call blocks for 30-120s; run it off the event loop so concurrent coroutines

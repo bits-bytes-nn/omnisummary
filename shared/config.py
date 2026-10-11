@@ -418,7 +418,8 @@ class PipelineConfig(_StrictModel):
         "harmonious palette. Physically plausible staging in every panel: one eye level and floor "
         "plane, every person and object resting on a surface or held in a hand that actually grips it, "
         "sizes consistent with distance, no floating signs or props, no impossible stacking, nothing "
-        "passing through anything else, natural anatomy with five-fingered hands"
+        "passing through anything else, natural anatomy with five-fingered hands, and a drawn face with "
+        "eyes and an expression on every person, background figures included"
     )
     # Guardrails appended to every visual instruction. Not style, not a thesis requirement: two
     # things the image must not DO. (1) The digest's angle is handed over as context the art
@@ -435,8 +436,8 @@ class PipelineConfig(_StrictModel):
         "cautionary, the image must not read as celebratory (and vice versa). You need not argue "
         "the angle — just don't invert it. "
         "Recognisable depictions of real people are fine. Do NOT, however, personify a company or "
-        "a country as an ethnically-coded human; use the real people involved, or stylised "
-        "figures, objects and mascots instead."
+        "a country as an ethnically-coded human; use the real people involved, or the company's "
+        "logo or product instead."
     )
     # Appended to the instruction when the image model's moderation blocks the first render,
     # to soften tone before a single retry. Configurable so ops can retune the safe-for-work
