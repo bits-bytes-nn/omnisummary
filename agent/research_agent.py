@@ -224,7 +224,7 @@ def create_research_agent(tools: list[Any] | None = None) -> Agent:
     boto_config = BotoConfig(
         read_timeout=config.agent.boto_read_timeout,
         connect_timeout=config.agent.boto_connect_timeout,
-        retries={"max_attempts": config.agent.boto_max_attempts},
+        retries={"max_attempts": config.agent.boto_max_attempts, "mode": "adaptive"},
     )
 
     model_id = config.agent.model_id

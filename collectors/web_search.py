@@ -151,6 +151,7 @@ class WebSearchCollector(BaseCollector):
                 {
                     "titles": titles,
                     "max_queries": self.config.max_refine_queries,
+                    "today": (self.config.reference_time or datetime.now(UTC)).date().isoformat(),
                 }
             )
             queries = parse_json_from_llm_output(raw)

@@ -73,14 +73,20 @@ class DigestPublisher:
         content: DigestContent | None,
         *,
         image_bytes: bytes | None = None,
+        image_alt: str = "",
         today: date | None = None,
         force_republish: bool = False,
         deadline: float | None = None,
     ) -> bool:
-        """Publish the digest to Threads, with the image when there is one."""
+        """Publish the digest to Threads, with the image (and its alt text) when there is one."""
         post_date = today or datetime.now(ZoneInfo(self.config.aws.timezone)).date()
         return await self._post_threads(
-            image_bytes, content, today=post_date, force_republish=force_republish, deadline=deadline
+            image_bytes,
+            content,
+            image_alt=image_alt,
+            today=post_date,
+            force_republish=force_republish,
+            deadline=deadline,
         )
 
     def _nothing_left_to_publish(self, post_date: date, force_republish: bool) -> bool:
@@ -97,6 +103,7 @@ class DigestPublisher:
         image_bytes: bytes | None,
         content: DigestContent | None,
         *,
+        image_alt: str = "",
         today: date | None = None,
         force_republish: bool = False,
         deadline: float | None = None,
@@ -161,6 +168,8 @@ class DigestPublisher:
                 image_bytes=image_bytes,
                 image_bucket=bucket,
                 image_key=image_key,
+                image_alt=image_alt,
+                topic_tag=self.config.pipeline.threads_topic_tag,
                 deadline=deadline,
             )
         except Exception:

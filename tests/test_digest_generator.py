@@ -549,15 +549,15 @@ class TestFormatRecentTitles:
     only — the URL ledger stays the mechanism that suppresses a repeat."""
 
     def test_bullets_the_titles(self):
-        from pipeline.digest_generator import _format_recent_titles
+        from pipeline.digest_generator import format_recent_titles
 
-        assert _format_recent_titles(["첫 스토리", "둘째 스토리"]) == "- 첫 스토리\n- 둘째 스토리"
+        assert format_recent_titles(["첫 스토리", "둘째 스토리"]) == "- 첫 스토리\n- 둘째 스토리"
 
     def test_states_when_there_is_no_recent_digest(self):
-        from pipeline.digest_generator import _format_recent_titles
+        from pipeline.digest_generator import format_recent_titles
 
-        assert "No recent digest" in _format_recent_titles([])
-        assert "No recent digest" in _format_recent_titles(None)
+        assert "No recent digest" in format_recent_titles([])
+        assert "No recent digest" in format_recent_titles(None)
 
 
 def _source_detail(item) -> str:
@@ -577,7 +577,7 @@ class TestFormatSourceDetail:
         assert "YouTube" in result
         # A literal Unicode emoji, not a `:shortcode:` — Threads renders no shortcodes, and the
         # markup strip removes underscores, which published a bare ":arrowforward:".
-        assert "▶️ 12,345" in result
+        assert "조회 12,345" in result
         assert ":" not in result.split("YouTube")[-1]
 
     def test_x_with_author(self):

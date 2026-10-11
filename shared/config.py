@@ -259,8 +259,9 @@ class PipelineConfig(_StrictModel):
     # Korean-only is the intended product.
     digest_language_rules: str = (
         "- Write in Korean (95%+); English ONLY for proper nouns and untranslatable technical terms. "
-        "Use ONE form per proper noun across the whole digest, as the source writes it: a term that is "
-        "not in the glossary below stays in Latin script. Make the particle after it agree with that "
+        "Use ONE form per proper noun: company, product, model and person names keep their official "
+        "Latin-script form (Anthropic, OpenAI, SoftBank, Simon Willison) even when the source "
+        "transliterates them; a term not in the glossary below stays in Latin script. Make the particle after it agree with that "
         "written form (OpenAI는, GPT-5가).\n"
         "- Translate terms that have established Korean equivalents: architecture → 아키텍처, "
         "benchmark → 벤치마크, inference → 추론, training → 학습, deployment → 배포, "
@@ -283,7 +284,7 @@ class PipelineConfig(_StrictModel):
         "WHO YOU ARE — a character with opinions. A technologist sure that the singularity and AGI "
         "are coming soon. A lifelong science geek and sci-fi "
         "reader who grew up imagining this future, now scanning the daily news for real evidence "
-        "it's arriving. But an engineer at heart: allergic to noise, and always asking who this "
+        "it's arriving. But an engineer at heart: allergic to noise, and asking who this "
         "abundance flows to — so you cheer "
         "the acceleration AND interrogate who captures its upside. Two instincts at once: you back "
         "acceleration yet watch distribution, so you fit no political camp — it reads as sharp "
@@ -303,7 +304,7 @@ class PipelineConfig(_StrictModel):
         "sci-fi aside on an ordinary detail; a brief first-person flash of candor or conviction. "
         "These are rare spices, never the main course; most lines carry none.\n"
         "CRAFT — Spice is in the FRAMING, never the facts: sharpen the angle and contrast, but never "
-        "state an inference as a reported fact; mark a sharp reading as judgment. Critique ideas, decisions, "
+        "state an inference as a reported fact. Critique ideas, decisions, "
         "incentives — never a person. Plain words over "
         "jargon and short sentences over dense ones, but never drop a rung of the argument to sound "
         "simple — 'easy' is the wording, not a missing step. On a pure-tech story keep the "
@@ -331,10 +332,6 @@ class PipelineConfig(_StrictModel):
     agi_countdown_position: Literal["prefix", "suffix"] = "prefix"
     item_text_max_tokens: int = Field(default=8000, ge=1)
     ranking_batch_size: int = Field(default=40, ge=1)
-    # Share of the ranking model's context window one batch of items may fill. The rest is the
-    # system prompt plus the JSON the model writes back; a batch that overflows fails the Converse
-    # call and used to take its whole batch of candidates with it.
-    ranking_batch_token_budget_ratio: float = Field(default=0.7, gt=0.0, le=1.0)
     # How many ranking batches may be in flight against Bedrock at once. Unbounded fan-out threw
     # every batch at Converse simultaneously, so a large day self-throttled (ThrottlingException)
     # and dropped whole batches of candidates.
@@ -354,7 +351,6 @@ class PipelineConfig(_StrictModel):
             "youtube": 1,
         }
     )
-    source_cap_multiplier: int = Field(default=2, ge=1)
     max_per_origin: int = Field(default=1, ge=1)
     # Score-calibration buckets the ranking prompt applies, injected as template text so
     # ops can retune the distribution without editing the prompt.
@@ -370,10 +366,13 @@ class PipelineConfig(_StrictModel):
     trend_momentum_half_life_days: float = Field(default=7.0, gt=0)
     # The digest's delivery channel. Off until the Threads access token / user id are provisioned in SSM.
     enable_threads_post: bool = False
+    # The ONE topic tag a Threads post may carry (Meta: 1-50 chars, no "." or "&"); it puts the root
+    # post into that topic's feed and tag search. Replies carry none. Empty disables it.
+    threads_topic_tag: str = Field(default="AI", pattern=r"^[^.&]{0,50}$")
     # Sunburst over flare: the same token price, and it draws brand logos correctly (docs/design.md).
     image_model: str = "gpt-image-2.5-sunburst"
-    # orientation -> gpt-image size. The four-panel comic renders as a portrait 2x2 grid; a
-    # single-frame visual picks whichever fits. The KEYS are not free-form: they are the VisualBrief
+    # orientation -> gpt-image size. The four-panel comic defaults to the 2x2 portrait grid; the
+    # editor picks another when the story needs it. The KEYS are not free-form: they are the VisualBrief
     # orientation vocabulary, checked below.
     image_sizes: dict[str, str] = Field(
         default_factory=lambda: {
@@ -448,8 +447,8 @@ class PipelineConfig(_StrictModel):
         "depictions of real named individuals; avoid anything that could read as defamatory."
     )
     # Recurring mascot = the visual embodiment of the digest's narrator persona (the singularity-
-    # believing science-geek technologist). Appears only SOME days, when the editor judges it fits
-    # the story. Identity rides on a FEW signature cues (hair cowlick, retro glasses, two-tone cardigan),
+    # believing science-geek technologist). He is the strip's viewpoint character unless the editor
+    # sets use_character false. Identity rides on a FEW signature cues (hair cowlick, retro glasses, two-tone cardigan),
     # not an exhaustive prop list, so he reads as the same person while pose/outfit/expression vary
     # day to day instead of converging on one identical look.
     visual_character_enabled: bool = True
@@ -475,8 +474,8 @@ class PipelineConfig(_StrictModel):
     @model_validator(mode="after")
     def _source_slots_name_real_source_types(self) -> "PipelineConfig":
         """source_slots keys are matched against `item.source_type.value` in the ranker's guaranteed-
-        slot pass, so a typo'd or renamed key matches no item: the guarantee silently vanishes and
-        the fill pass falls back to DEFAULT_SOURCE_SLOT for that source. Fail at config load."""
+        slot pass, so a typo'd or renamed key matches no item and that source's seat silently vanishes.
+        Fail at config load."""
         unknown = sorted(set(self.source_slots) - {source.value for source in SourceType})
         if unknown:
             raise ValueError(
@@ -518,7 +517,6 @@ class AgentConfig(_StrictModel):
     search_retry_backoff_sec: int = Field(default=2, ge=0)
     search_paper_max_authors: int = Field(default=3, ge=1)
     search_paper_abstract_max_chars: int = Field(default=200, ge=1)
-    recall_memory_top_k: int = Field(default=5, ge=1)
     boto_read_timeout: int = Field(default=300, ge=1)
     boto_connect_timeout: int = Field(default=60, ge=1)
     boto_max_attempts: int = Field(default=3, ge=1)

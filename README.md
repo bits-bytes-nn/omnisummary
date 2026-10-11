@@ -34,7 +34,7 @@ There are two independent paths.
 - **Multi-source collection** — Reddit (one multi-subreddit public `.rss` request), YouTube, X/Twitter (via RSSHub), RSS/Substack, web search (Tavily). Feed bodies are HTML-stripped at collection
 - **LLM ranking into a candidate pool** — Claude Opus 5.5 scores on multiple axes; source slots and per-origin caps make sure every source's best item reaches the editor, and the editor picks what ships
 - **Editorial digest** — Claude Sonnet 5.5 writes Korean prose with cross-day trend continuity, then a grounding pass checks every specific claim against the sources
-- **Daily comic** — a tall vertical four-panel comic narrated by the owner-persona character (kept on-model by a reference sheet), with Korean dialogue, rendered by `gpt-image-2.5-sunburst` and checked by a vision review that fixes what it finds once
+- **Daily comic** — a 2x2 four-panel comic narrated by the owner-persona character (kept on-model by a reference sheet), with Korean dialogue, rendered by `gpt-image-2.5-sunburst` and checked by a vision review that fixes what it finds once
 - **Threads delivery** — image root + flat reply chain, idempotent per day
 - **Deep-research CLI + OpenClaw skill** — an autonomous Strands agent with eight single-purpose tools; JSON contract on stdout, Markdown report on disk
 - **Operational excellence** — per-source health reporting (`OK` / `EMPTY` / `FAILED` / `STALE` / `DEGRADED`) into SNS email alerts, structured JSON logs with correlation IDs, 8 CloudWatch alarms
@@ -167,6 +167,10 @@ uv run python main.py
 uv run python research_cli.py "<topic>"
 uv run python research_cli.py "<topic>" --publish threads   # also publish a Threads thread
 
+# What the digest already published: free, read-only, one JSON object on stdout
+uv run python recall_cli.py digest 2026-10-11   # that day's lead and stories (default: today)
+uv run python recall_cli.py trends              # tracked cross-day trends, strongest first
+
 # Local→S3 sync for the sources that block datacenter IPs (X/RSSHub + YouTube transcripts)
 ./scripts/sync_all_to_s3.sh                  # both; one failing won't block the other
 uv run python scripts/sync_to_s3.py rsshub   # X only
@@ -198,7 +202,7 @@ A summary of each stage. [design.md](docs/design.md) is the line-by-line referen
 
 **2. Aggregation.** `ContentAggregator` deduplicates by URL and by normalized title (a leading `RT name:` is stripped, so a self-retweet matches its original). When two items collide it keeps the *better* one (pinned > longer body > first seen) rather than whichever arrived first.
 
-**3. Ranking.** `ContentRanker` scores items with Claude Opus 5.5 on technical substance, practitioner value, novelty, industry impact, research significance and source authority, with hard filters for promos and thin content. It then builds a candidate pool of `top_n + digest_candidate_buffer` (5 + 3): `source_slots` seat every source's best item above `min_score`, `max_per_origin` caps any single channel/author/feed/host, and a single fill loop relaxes those caps in a fixed order when the pool would otherwise come up short.
+**3. Ranking.** `ContentRanker` scores items with Claude Opus 5.5 on technical substance, practitioner value, novelty, industry impact, research significance and source authority, with hard filters for promos and thin content. It also sees the story titles recent digests ran, so a story that comes back under a new URL scores as a rehash unless it reports a real new development. It then builds a candidate pool of `top_n + digest_candidate_buffer` (5 + 3): `source_slots` seat every source's best item above `min_score`, the rest of the pool goes by score with `max_per_origin` capping any single channel/author/feed/host, and that cap is relaxed only when a quiet day would leave the pool short.
 
 **4. Trend tracking.** `TrendTracker` keeps structured trends in `trends.json`. The LLM only classifies today's items into existing or new trends; all bookkeeping is deterministic Python: date stamping, the active/cooling lifecycle, deletion past retention, recency-decay momentum, evidence caps. Active and cooling trends feed the next day's digest, which is what gives it cross-day continuity. Only evidence dated before the digest date counts, so a same-day re-run never reads its own first run back as history. Memory is compressed by caps, not rewritten: at most five dated evidence lines per trend, the ten highest-momentum trends in the prompt, and a trend unseen for 30 days is dropped.
 
@@ -206,19 +210,19 @@ A summary of each stage. [design.md](docs/design.md) is the line-by-line referen
 
 > ⚠️ **The JSON key order in the prompt is load-bearing.** It asks for `items` first and `lead` last, so the lead comments on stories that are already written. Measured word overlap with the headline reply dropped from 0.21–0.41 to 0.03–0.21. Do **not** reorder the requested keys to match `DigestContent`'s field order. That tidy-up is a regression.
 
-**6. Threads rendering.** `output/renderers.py` turns one `DigestContent` into a Threads root + flat reply chain. Formatting lives in code, not in prompt rules.
+**6. Threads rendering.** `output/renderers.py` turns one `DigestContent` into a Threads root + flat reply chain. Formatting lives in code, not in prompt rules. The root carries one topic tag (`pipeline.threads_topic_tag`, default `AI`) so it shows up in that topic's feed and tag search, and the comic carries Korean alt text describing each panel and its line.
 
-**7. Daily comic.** `DailyVisualMaker` illustrates the **headline** story, so the image, the lead, and the text all point at the same thing. The editor writes a vertical four-panel comic (setup, development, turn, punchline) narrated by the owner-persona character, with one short Korean line per panel; `VisualGenerator` turns it into an image brief, renders an 848x2544 strip with `gpt-image-2.5-sunburst` at xhigh (passing the persona reference sheet as an input image whenever the narrator appears, which is the default), then has the brief model review the image for physical, anatomy and text defects and applies one targeted fix when it finds any. This Lambda also owns the Threads post, and a failed render never swallows the digest. The text still goes out.
+**7. Daily comic.** `DailyVisualMaker` illustrates the **headline** story, so the image, the lead, and the text all point at the same thing. The editor writes a 2x2 four-panel comic (setup, development, turn, punchline) narrated by the owner-persona character, with one short Korean line per panel; `VisualGenerator` turns it into an image brief, renders it with `gpt-image-2.5-sunburst` at xhigh (1024x1536 for the 2x2 grid; the editor may pick a tall 848x2544 strip or another frame when the story needs it) (passing the persona reference sheet as an input image whenever the narrator appears, which is the default), then has the brief model review the image for physical, anatomy and text defects and applies one targeted fix when it finds any. This Lambda also owns the Threads post, and a failed render never swallows the digest. The text still goes out.
 
 **8. Deep research.** An autonomous Strands agent run by `research_cli.py`. It composes these eight tools freely. For example, "diffusion LLM 최신 동향" goes `web_search`/`search_papers`/`community_search` → `read_url` → `attach_image` → `deliver_report`:
 
 | Tool | Function |
 |------|----------|
-| `web_search(query, recency)` | Tavily open web; `recency="news"` for recent news |
+| `web_search(query, news, time_range)` | Tavily open web; `news=True` for news coverage, `time_range` day/week/month/year; results show their published date |
 | `community_search(query)` | Tavily over Reddit, X, HN, Substack |
-| `search_papers(query)` | Semantic Scholar |
+| `search_papers(query)` | OpenAlex works search (keyless): date, citation count, abstract |
 | `read_url(url)` | Fetch and extract a primary source's full text |
-| `recall_trends(query)` | Keyword match over `trends.json`, momentum-ranked |
+| `recall_trends()` | Every tracked trend in `trends.json`, momentum-ranked, for the agent to judge relevance |
 | `recall_digest(digest_date)` | What one specific day's digest carried. Never falls back to another date |
 | `attach_image(source_url)` | Download a source's OG image and stage it for delivery |
 | `deliver_report(report, channel)` | Hand over the Markdown report (`markdown`), or publish to Threads (`threads`, only with `--publish threads`) |
@@ -251,7 +255,7 @@ uv --directory ~/Projects/omnisummary run python research_cli.py "Mixture-of-Exp
 }
 ```
 
-Exit codes: `0` succeeded, `1` failed (no report, a run error, or a requested Threads publish that did not complete), `2` rejected input. Logs go to stderr, and third-party loggers stay at `WARNING` regardless of `LOG_LEVEL`, because botocore at DEBUG logs request headers that carry the session token.
+Exit codes: `0` succeeded, `1` failed (no report, a run error, or a requested Threads publish that did not complete), `2` rejected input. The same skill reads back past digests with `recall_cli.py` (`digest [DATE]`, `trends`), which costs nothing: `found: false` means nothing is stored for that date, while `status: failed` means the store could not be read. Logs go to stderr, and third-party loggers stay at `WARNING` regardless of `LOG_LEVEL`, because botocore at DEBUG logs request headers that carry the session token.
 
 ## AWS Deployment
 
@@ -375,7 +379,7 @@ crontab -e
 | AWS Bedrock | LLM (Claude Opus/Sonnet) | Usage-based |
 | OpenAI | `gpt-image-2.5-sunburst` daily comic at xhigh: one render plus at most one correction edit a day | Usage-based |
 | Tavily | Web search | Free tier |
-| Semantic Scholar | Paper search | Free |
+| OpenAlex | Paper search | Free (keyless, about 100 searches a day) |
 | YouTube Data API v3 | Video metadata | Free (10K units/day) |
 | Threads (Meta) | Delivery | Free |
 
@@ -385,6 +389,7 @@ crontab -e
 omnisummary/
 ├── main.py                  # CLI entry point (digest pipeline)
 ├── research_cli.py          # Deep-research CLI (JSON on stdout), used by the OpenClaw skill
+├── recall_cli.py            # Read back past digests and trends (JSON on stdout), used by the OpenClaw skill
 ├── Dockerfile               # Lambda image (amd64)
 ├── collectors/              # RSS, Reddit, RSSHub (X), YouTube, WebSearch + the S3 park loader
 ├── pipeline/                # Aggregator, Ranker, DigestGenerator, TrendTracker, DailyVisualMaker, runner (orchestration)

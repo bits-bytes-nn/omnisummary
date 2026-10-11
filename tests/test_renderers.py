@@ -62,7 +62,7 @@ class TestThreadsPosts:
         # Regression (2026-08-18, live post): metrics carried the shortcode `:arrow_forward:`, and the
         # markup strip removes `_`, so Threads published a bare ":arrowforward:". Metric emoji must
         # be real Unicode.
-        from shared.formatting import YOUTUBE_VIEWS_EMOJI
+        from shared.formatting import YOUTUBE_VIEWS_LABEL
 
         content = DigestContent(
             lead="리드.",
@@ -72,13 +72,13 @@ class TestThreadsPosts:
                     title="스토리",
                     url="http://e.com/x",
                     source_tag="YouTube",
-                    metrics=f"{YOUTUBE_VIEWS_EMOJI} 14,235",
+                    metrics=f"{YOUTUBE_VIEWS_LABEL} 14,235",
                     body="본문이다.",
                 )
             ],
         )
         _, replies = render_threads_posts(content)
-        assert f"YouTube · {YOUTUBE_VIEWS_EMOJI} 14,235" in replies[0]
+        assert f"YouTube · {YOUTUBE_VIEWS_LABEL} 14,235" in replies[0]
         assert ":" not in replies[0].split("\n\n")[1]
 
     def test_reply_carries_the_source_line(self):
@@ -434,7 +434,7 @@ class TestThreadsSourceAttribution:
         )
         tag, metrics = source_tag_and_metrics(item)
         assert tag == "AI Engineer"
-        assert metrics == "▶️ 775"
+        assert metrics == "조회 775"
 
     def test_a_youtube_item_with_no_author_keeps_the_platform_as_the_floor(self):
         # The RSS-fallback collection path stores no author.
@@ -451,7 +451,7 @@ class TestThreadsItemOverhead:
     def test_counts_the_inline_source_line_url_and_separators(self):
         # "title (meta)" \n\n body \n\n implication \n\n url → 3 separators (6 chars) + url + the
         # meta and the " ()" that wraps it onto the title line, which costs no separator of its own.
-        meta, url = "src · ▶️ 775", "http://e.com/1"
+        meta, url = "src · 조회 775", "http://e.com/1"
         assert threads_item_overhead_chars(meta, url) == len(meta) + 3 + len(url) + 6
 
     def test_no_source_line_costs_neither_the_text_nor_the_parentheses(self):

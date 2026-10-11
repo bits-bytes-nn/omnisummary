@@ -43,7 +43,8 @@ OmniSummary는 능동형(proactive) AI/ML 일일 다이제스트 시스템이다
 **둘째는 로컬 딥 리서치다.** `research_cli.py`가 Strands 에이전트를 로컬에서 실행한다. 에이전트는 자유형 토픽을
 받아 웹과 논문과 커뮤니티를 스스로 조사하고, 한국어로 합성한 출처 표기 리포트를 JSON으로 stdout에 돌려준다.
 OpenClaw 스킬(`~/.openclaw/workspace/skills/omnisummary-research/SKILL.md`)이 이 CLI를 호출하고, Threads 게시는
-`--publish threads`를 줄 때만 한다. 다이제스트와 분리된 독립 리서치라서 다이제스트가 다룬 항목에 묶이지 않는다.
+`--publish threads`를 줄 때만 한다. 다이제스트와 분리된 독립 리서치라서 다이제스트가 다룬 항목에 묶이지 않는다. 같은 스킬이
+`recall_cli.py`로 그날 다이제스트가 다룬 것과 추적 중인 트렌드를 모델 호출 없이 되읽는다.
 
 ```
 [EventBridge 크론] → [다이제스트 Lambda (Docker)]
@@ -80,7 +81,8 @@ OpenClaw 스킬(`~/.openclaw/workspace/skills/omnisummary-research/SKILL.md`)이
 | `pipeline/` | `ContentAggregator`, `ContentRanker`, `DigestGenerator`, `TrendTracker`, `DailyVisualMaker`, 그리고 오케스트레이션(`runner.py`: `run_collectors_with_health`, `run_pipeline`, `persist_digest`, `resolve_digest_window`) — CLI와 다이제스트 Lambda가 함께 타는 단일 경로 |
 | `agent/` | 딥 리서치 Strands 에이전트(`research_agent.py`)와 도구 8개(`research_tools.py`), 실행별 인메모리 상태 `DigestStateManager`(`tool_state.py`), 데일리 비주얼이 쓰는 이미지 생성기 `VisualGenerator`(`visuals.py`) |
 | `research_cli.py` | 딥 리서치 로컬 CLI. JSON 한 개를 stdout에 쓰고 로그는 stderr로 보낸다 |
-| `shared/` | config(공유 `KOREAN_STYLE_RULES` 포함), models, constants, utils(Bedrock 팩토리와 모델 레지스트리), logger, prompts, state_store, memory, history_store(cross-day dedup 원장과 롤링 로그), formatting, alerts, metrics, research(Tavily와 Semantic Scholar), media(OG 이미지 fetch) |
+| `recall_cli.py` | 다이제스트 메모리 조회 CLI(`digest [DATE]`, `trends`). 모델 호출 없는 무료 읽기 전용이고 JSON 한 개를 쓴다. 종료 코드 0/1/2이며, `failed`는 저장소를 못 읽었다는 뜻이고 `found: false`는 저장된 것이 없다는 뜻이다 |
+| `shared/` | config(공유 `KOREAN_STYLE_RULES` 포함), models, constants, utils(Bedrock 팩토리와 모델 레지스트리), logger, prompts, state_store, memory, history_store(cross-day dedup 원장과 롤링 로그), formatting, alerts, metrics, research(Tavily와 OpenAlex), media(OG 이미지 fetch) |
 | `output/` | 채널별 렌더러(`renderers.py`), 다이제스트 게시(`digest_delivery.py`: Threads 체인, 멱등 원장, 이미지 S3 호스팅), 리서치 리포트 전달(`delivery.py`), Threads API(`threads_handler.py`) |
 | `lambda_handlers/` | 다이제스트 핸들러, 데일리 비주얼 핸들러(`visual_handler`, 다이제스트 Lambda가 비동기로 호출한다), Threads 토큰 갱신 핸들러(`threads_refresh_handler`) |
 | `infrastructure/` | CDK `foundation_stack`과 `application_stack` |
@@ -160,19 +162,19 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 두었고, 비어 있으면 EMPTY로는 절대 알리지 않는다. 이름은 `shared/constants.py`의 `COLLECTOR_NAMES`(=
 `pipeline/runner.py`의 수집기 레지스트리 키)로 검증한다. 오타 난 이름은 어떤 소스와도 매칭되지 않아서, 감시하려던
 어두운 소스가 그대로 어두운 채 남는다. 그래서 config 로드에서 실패시킨다. 같은 이유로 `pipeline.source_slots`의
-키는 `SourceType` 값이어야 한다. 랭커는 `item.source_type.value`로 매칭하니 오타 난 키는 보장 슬롯을 조용히
-무력화하고 fill 패스가 `DEFAULT_SOURCE_SLOT`으로 폴백한다.
+키는 `SourceType` 값이어야 한다. 랭커는 `item.source_type.value`로 매칭하니 오타 난 키는 그 소스의 보장 슬롯을
+조용히 없앤다.
 
 ### 3.2 `pipeline`
 
 | 영역 | 필드 | 설명 |
 |------|------|------|
 | 모델 | `ranking_model`(Opus 5.5), `digest_model`(Sonnet 5.5, 그라운딩과 비주얼 편집기·아트 디렉터도 이 모델을 쓴다), `trend_model`(Sonnet 5.5) | 단계별 모델([§6](#모델-팩토리)) |
-| 랭킹 | `ranking_batch_size`(기본 40), `ranking_batch_token_budget_ratio`(기본 0.7), `ranking_max_concurrency`(기본 4), `ranking_max_retries`(기본 3), `ranking_retry_backoff_sec`(기본 5), `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치, 배치가 채울 수 있는 컨텍스트 창 비율, Bedrock fan-out 상한, 배치 재시도, 점수 루브릭 |
-| 후보 풀 | `top_n`(기본 5), `min_score`(기본 0.6), `digest_candidate_buffer`(기본 3), `source_slots`(소스마다 1), `source_cap_multiplier`, `max_per_origin`(기본 1) | 에디터에게 넘기는 후보는 `top_n + digest_candidate_buffer`개이고, 소스 슬롯과 origin 상한은 이 풀을 채우는 데만 쓴다. 실제로 나가는 `top_n`개는 에디터가 고른다([§5.2](#52-랭커-rankerpy)) |
+| 랭킹 | `ranking_batch_size`(기본 40), `ranking_max_concurrency`(기본 4), `ranking_max_retries`(기본 3), `ranking_retry_backoff_sec`(기본 5), `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치, Bedrock fan-out 상한, 배치 재시도, 점수 루브릭 |
+| 후보 풀 | `top_n`(기본 5), `min_score`(기본 0.6), `digest_candidate_buffer`(기본 3), `source_slots`(소스마다 1), `max_per_origin`(기본 1) | 에디터에게 넘기는 후보는 `top_n + digest_candidate_buffer`개이고, 소스 슬롯과 origin 상한은 이 풀을 채우는 데만 쓴다. 실제로 나가는 `top_n`개는 에디터가 고른다([§5.2](#52-랭커-rankerpy)) |
 | 중복 | `published_url_ttl_days`(기본 6, 최소 2), `recent_leads_window`(기본 5) | cross-day dedup 원장 TTL과 최근 다이제스트 제목을 읽는 창, 반복 방지용 최근 lead 윈도. TTL이 최소 2인 것은 날짜만 있는 웹 결과가 이틀 연속 윈도에 들어가고([§4.7](#47-websearch-web_searchpy)) 두 번째 게시를 원장이 막기 때문이다 |
 | 트렌드 | `trend_retention_days`, `trend_cooling_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존과 냉각 기간, 증거와 active 캡, momentum 반감기 |
-| 전달 | `enable_threads_post` | Threads 게시 on/off. 코드 기본값은 off이고 배포 설정은 on이다. 데일리 비주얼 Lambda가 게시한다 |
+| 전달 | `enable_threads_post`, `threads_topic_tag`(기본 `AI`) | Threads 게시 on/off. 코드 기본값은 off이고 배포 설정은 on이다. 데일리 비주얼 Lambda가 게시한다. 토픽 태그는 root 게시물에만 붙는다([§5.8](#58-threads-전달-outputthreads_handlerpy-enable_threads_post)) |
 | AGI 카운트다운 | `agi_countdown_date`(기본 `2029-01-01`), `agi_countdown_template`, `agi_countdown_after`, `agi_countdown_position`(`prefix`\|`suffix`, 코드 기본값과 배포 설정 모두 `prefix`) | 다이제스트 lead에 코드가 붙이는 "AGI N일 전" 인트로와, lead의 어느 쪽 끝에 붙일지([§5.7](#57-agi-카운트다운-인트로-sharedformattingpy-agi_countdown_intro) 참조) |
 | 시각화 | `image_model`(`gpt-image-2.5-sunburst`), `image_sizes`, `visual_image_quality`(`xhigh`), `visual_editor_source_max_tokens`, `visual_synopsis_source_max_tokens`, `visual_image_timeout_sec`(기본 300)과 `visual_image_max_retries`(기본 0), `visual_character_enabled`, `visual_character_sheet`, `visual_character_reference`(`assets/persona.jpg`) | 이미지 모델과 품질 등급, orientation에서 size로 가는 딕셔너리(키는 `VisualOrientation` 어휘로 고정이고 값만 튜닝한다), 입력 상한, 이미지 HTTP 호출 상한. SDK 기본값 600초씩 2회는 비주얼 Lambda의 15분 예산을 넘길 수 있어서 config로 고정했다 |
 | 프롬프트 주입 | `digest_language_rules`, `digest_voice_guidance`, `ranking_audience_description`, `digest_audience_description`, `visual_audience_description`, `visual_on_image_language`, `visual_synopsis_style_guidance`, `visual_synopsis_style_aesthetic`, `visual_guardrails`, `visual_moderation_softening_instruction` | 언어 규칙과 대상 독자, 톤, 미감, 가드레일, 모더레이션 완화 문구. 하드코딩 대신 템플릿 변수로 주입한다. `digest_language_rules`는 한국어 규칙과 번역 용어집을 튜닝하는 자리이고 언어 스위치가 아니다. 한국어 전용이 의도한 제품이다. `digest_voice_guidance`는 Gruber 톤이며, 단일 냉소 프레임으로 기본 고정하지 말고 그날 사실이 정당화할 때만 각을 세우도록 쓰여 있다 |
@@ -202,8 +204,7 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | `og_image_timeout_sec`, `og_image_max_bytes` | OG 이미지 fetch 타임아웃과 최대 바이트(스트리밍 중 초과하면 중단한다) |
 | `community_search_domains` | `community_search`의 도메인 허용 목록(reddit, x, HN, substack 등) |
 | `search_result_limit`, `search_content_preview_chars`, `search_request_timeout`, `search_max_retries`, `search_retry_backoff_sec` | 검색 결과 수, 미리보기, 타임아웃, 재시도 |
-| `search_paper_max_authors`, `search_paper_abstract_max_chars` | Semantic Scholar 결과 포맷 |
-| `recall_memory_top_k` | `recall_trends`가 반환할 상위 K 트렌드 |
+| `search_paper_max_authors`, `search_paper_abstract_max_chars` | OpenAlex 논문 결과 포맷 |
 | `boto_read_timeout`, `boto_connect_timeout`, `boto_max_attempts` | 에이전트 Bedrock 클라이언트의 boto 설정 |
 
 ### 3.4 `aws`
@@ -490,9 +491,12 @@ UTC로 읽는다.
 
 `_deduplicate`는 aggregator와 중복처럼 보이지만 역할이 다르다. 쿼리 정제 LLM 호출 전에 broad 결과를 줄인다.
 
-정제 프롬프트는 broad 결과에 없는 주제로 "빈칸을 채우라"고 하지 않는다. 그 지시는 모델의 사전지식에서 주제를
-끌어와 철 지난 버전과 연도가 박힌 쿼리("Claude Opus 4.5", "best open source local LLM 2024")를 만들었고, 그날
-고른 SEO 기사도 그 단계에서 나왔다.
+정제 프롬프트는 오늘 날짜(`reference_time` 기준)를 받고, broad 결과 제목이 아직 다루지 않은 지난 하루의 주요
+AI/ML 소식을 찾는 쿼리를 만든다. "이미 찾은 기사를 보완하라"와 "고유명사를 쓰라"였던 이전 지시는 받은 제목을 그대로
+되풀이하거나("Reflection AI …"가 사흘 연속) 사전지식의 철 지난 버전과 연도("OpenAI new model release December
+2025", "best open source local LLM 2024")를 박아, 10-11에는 정제 결과 12개 중 7개가 이미 풀에 있던 한 이야기였다.
+`industry` 트렌드 쿼리도 금융 기사를 부르던 "AI startup funding acquisition strategy" 대신 "AI lab acquisition or
+major funding news"다.
 
 쿼리 재시도는 재시도로 결과가 바뀔 수 있는 실패만 대상으로 한다. 타임아웃(`asyncio`와 Tavily 양쪽)과 전송
 계층 오류(`httpx.HTTPError`)다. 폐기된 키나 401, 사용량 초과는 판정이라 첫 응답에서 끝낸다. `retry_on`을
@@ -595,16 +599,20 @@ web-search 항목도 포함한다. URL 호스트를 쓰며 `resolve_origin_key`�
 두지 않는다. 40개 중 1개가 빠지는 일이 운영 30회 중 5회 있었고, 그 1건은 재질의가 없으면 경고 한 줄과 함께
 사라진다. 재질의가 실패하거나 여전히 모자라도 첫 결과는 그대로 남는다.
 
-**배치 구성(`_make_batches`).** 항목 수(`ranking_batch_size`)와 누적 입력 토큰 예산을 모두 상한으로 쓴다. 수만
-상한으로 두면 `ranking_batch_size` x `item_text_max_tokens`가 모델 컨텍스트 창을 넘길 수 있고, 넘친 배치는
-Converse 호출부터 실패한다. 예산은 컨텍스트 창의 `ranking_batch_token_budget_ratio`(기본 0.7)이다. 모든
-`LanguageModelId`가 레지스트리에 있다는 것은 테스트로 고정되어 있어 미등록 모델용 대체 창은 없다. 수 상한은 배치마다 고르게
-나눈다(`ceil(n / ceil(n / ranking_batch_size))`, 41건이면 20/21). 꽉 채워 자르면 1건짜리 꼬리 배치가 비교 대상
-없이 혼자 채점된다. 항목은 `item_id`의 **해시** 순으로 정렬해 배치에 넣는다. 배치 구성이 결정론적이면서 소스와
-문자 체계가 섞인다. `item_id` 자체는 피드 GUID(RSS와 X는 기사 URL, 그 밖은 글이나 영상 id)라서 그대로 정렬하면
-GeekNews 33건이 한 배치에, X 전부가 다른 배치에 몰렸다. 항목별 토큰 카운트는
-`asyncio.to_thread`로 병렬 측정한다. `count_tokens`와 `truncate_to_tokens`는 동기 boto3 CountTokens 호출이라,
-하루치 후보(관측상 약 90건)를 직렬로 재면 첫 Converse가 나가기도 전에 이벤트 루프가 90여 번의 왕복 동안 막혔다.
+**배치 구성(`_make_batches`).** 항목 수(`ranking_batch_size`)만 상한으로 쓴다. `ranking_batch_size` x
+`item_text_max_tokens`(40 x 10k)는 Opus 5.5의 1M 창에 한참 못 미치므로 토큰 예산 상한은 걸릴 일이 없었고,
+항목마다 CountTokens 호출만 늘렸다. 수 상한은 배치마다 고르게 나눈다(`ceil(n / ceil(n / ranking_batch_size))`,
+41건이면 20/21). 꽉 채워 자르면 1건짜리 꼬리 배치가 비교 대상 없이 혼자 채점된다. 항목은 `item_id`의 **해시**
+순으로 정렬해 배치에 넣는다. 배치 구성이 결정론적이면서 소스와 문자 체계가 섞인다. `item_id` 자체는 피드
+GUID(RSS와 X는 기사 URL, 그 밖은 글이나 영상 id)라서 그대로 정렬하면 GeekNews 33건이 한 배치에, X 전부가
+다른 배치에 몰렸다.
+
+**최근 다이제스트 제목을 랭커도 본다.** `rank(..., recent_titles=...)`는 러너가 에디터에게 주는 것과 같은
+`_recent_story_titles(snapshots)`(`published_url_ttl_days` 창의 출고 스토리 제목)를 받아 RankingPrompt의
+*Already in recent digests* 블록에 넣는다(`format_recent_titles`). Novelty 기준은 목록에 있는 스토리를 실질적
+새 진전이 없으면 재탕으로 본다. URL 원장은 정확한 URL만 맞추므로, 다른 매체나 주간 정리로 돌아온 같은 사건은
+랭커가 볼 근거가 없어 0.67–0.85를 받고 풀에 들어왔다. 2026-10-11 풀에서 기존 흐름은 1–4일 전에 나간 스토리 3개를
+다시 내보냈고, 제목을 랭커에 주자 그 3개가 풀에서 빠졌다. 정보일 뿐 필터가 아니다.
 
 **후보 풀과 품질 우선 선정.** `rank(items, select_count)`는 `top_n + digest_candidate_buffer`(기본 5 + 3 = 8)개의
 후보 풀을 고른다. 소스 슬롯과 origin 상한은 이 **풀**을 채우는 데 쓰여서, 각 소스의 `min_score` 이상 최선
@@ -616,15 +624,11 @@ GeekNews 33건이 한 배치에, X 전부가 다른 배치에 몰렸다. 항목�
 임계 아래 항목을 구제하는 장치는 두지 않는다(운영에서 발동한 3회 모두 루브릭이 저가치라 부르는 0.6 미만
 항목을 넣었다). 슬롯 보유 소스에 임계 이상 항목이 없으면 그 자리는 fill 패스가 다음 항목으로 채운다.
 
-**선정과 다양성 (`_apply_source_slots`).** 순서는 이렇다. 먼저 `source_slots`로 소스별 기본 슬롯을 채우고
-`source_cap_multiplier × slot`까지 오버플로를 채운다. 그리고 `max_per_origin`으로 하나의 origin 키가 차지하는
-항목 수를 제한한다. 단일 채널 독점에 대한 근본 해결책이 이것이다.
-
-fill 패스는 하나의 `fill(respect_origin, respect_source)` 루프로 통일되어 있고 어떤 캡을 지키는지만 다르다.
-① 캡 둘 다 지키기, ② per-origin 캡만 완화하고 source 캡은 유지, ③ 최후 수단으로 source 캡까지 완화하되 이때도
-`max_per_origin`을 만족하는 후보를 먼저 고르기. ③은 `len(selected) < limit`일 때만 들어가고 발동하면 INFO 한
-줄을 남긴다. 그래야 수집기 부분 장애가 눈에 보인다. 남은 후보가 전부 한 소스에 몰린 날 다양성 캡이 후보 수를
-깎지 않게 하는 장치다.
+**선정과 다양성 (`_apply_source_slots`).** 먼저 `source_slots`로 소스별 기본 슬롯을 config 순서대로 채운다.
+나머지 풀은 점수 순으로 채우되 `max_per_origin`으로 하나의 origin 키가 차지하는 항목 수를 제한한다(①). 그래도
+모자라면 origin 캡을 풀고 채운다(②). 서로 다른 origin이 너무 적은 조용한 날에도 풀이 짧아지지 않게 하려는 것이다.
+수집기(소스) 단위 상한은 없다. "rss"는 13개 매체를 묶고, 매체 단위 다양성은 `max_per_origin`이 이미 지킨다.
+수집기당 2개 상한을 두었을 때 16일 중 9일, 0.72–0.80 항목이 풀 밖에 남고 0.60–0.68 항목이 들어갔다.
 
 origin은 `resolve_origin_key`로 해석한다. YouTube는 channel_url, Reddit은 subreddit, RSS는 feed_url, X는
 author, Web은 URL 호스트(`urlparse().netloc`에서 `www.` 제거)다. PSL이나 등록가능도메인 휴리스틱을 쓰지 않으니
@@ -656,8 +660,9 @@ Claude Sonnet 5.5로 `DigestPrompt`를 호출해 구조화 `DigestContent`를 �
 항상 1로 고정하는 `headline_index`, 그리고 각각 title, url, source_tag, metrics, body, implication을 가진
 `items[]`로 이루어진다.
 
-**항목 스펙은 메뉴가 아니다.** `implication`의 요구는 하나다. 독자가 반대할 수 있는 것을 **단정하는** 한국어 한
-문장이고, 조건절과 `~수 있다`는 금지다. 형태를 여러 개 제시하면(단정, 질문, 반증 가능한 예측, 결정적 수치 하나,
+**항목 스펙은 메뉴가 아니다.** `implication`의 요구는 하나다. 업계 일반론이 아니라 **이 스토리에** 독자가 반대할 수
+있는 입장을 취하는 한국어 한 문장이고, 조건절과 `~수 있다`는 금지다(32일 160건 중 34건이 "시대·결국·언제나" 류의
+업계 경구로 흘렀다). 형태를 여러 개 제시하면(단정, 질문, 반증 가능한 예측, 결정적 수치 하나,
 반박 초대 같은 목록) 모델은 그중 가장 안전한 것을 고른다. 그런 목록을 준 상태로 보관된 20건에서 10건이
 '~다면/~라면 ... ~수 있다' 형태의 조건부 헤지였다. `body`도 같은 이유로 '2-3문장'이 아니라 '스토리에 필요한
 만큼(대개 두 문장)'이다. 고정 문장 수를 요구하면 20건 중 17건이 정확히 세 문장이 되고 가운데 문장이 매번
@@ -686,7 +691,9 @@ raise한다. 스토리 없는 minimal 폴백을 두지 않는다. 그런 다이�
 
 **JSON 키 순서가 load-bearing이다.** 프롬프트는 `items`를 먼저, `lead`를 마지막에 요청한다. 이미 쓴 스토리에
 대한 논평으로 lead를 쓰게 만드는 장치이고 측정된 효과가 있다. 헤드라인 reply와의 단어 겹침이 0.21–0.41에서
-0.03–0.21로 떨어졌다. `headline_index`는 프롬프트에서 아예 빼고 코드가 1로 고정한다. 그래야 에디터가 lead와
+0.03–0.21로 떨어졌다. lead 스펙은 같은 이유로, `items[0]`의 implication이 이미 한 말이 아닌 논지(트렌드 재료에서 끌어온
+더 넓은 흐름)를 세우라고 한다. "그것이 무엇을 뜻하는가"만 요구하던 때는 lead와 바로 아래 reply 1이 같은 논지를 연달아
+말했다(렌더한 14일 중 약 10일). `headline_index`는 프롬프트에서 아예 빼고 코드가 1로 고정한다. 그래야 에디터가 lead와
 비주얼을 서로 다른 스토리로 가리킬 수 없다.
 
 ⚠️ `DigestContent`의 필드 선언 순서(lead, headline_index, items)에 맞춰 프롬프트 키 순서를 되돌리지 말 것.
@@ -724,8 +731,9 @@ private 헬퍼를 부르면 파이프라인이 출력 채널의 내부 이름에
   `RECENT_LEAD_PREVIEW_CHARS`는 문장 경계가 없는 산문용 백스톱이다.
 - `recent_titles`는 TTL 창(`published_url_ttl_days`) 안 **모든** 스냅샷의 스토리 제목을 최신순으로 중복 없이 모은
   목록이다. 주간 요약 글이 이미 실린 이야기를 새 URL로 다시 가져오면 URL 원장은 그것을 알아보지 못하고, 직전
-  하루치 제목만 보여주던 때는 2026-10-11 다섯 이야기 중 셋이 1~4일 전에 실린 것이었다. 프레이밍은 한 줄이고
-  임계나 유사도 휴리스틱은 없다. 실제로 재발행을 막는 것은 여전히 URL 원장이다. `pipeline.runner.run_pipeline`이
+  하루치 제목만 보여주던 때는 2026-10-11 다섯 이야기 중 셋이 1~4일 전에 실린 것이었다. 프레이밍은 한 줄이다.
+  실질적 새 진전이 있을 때만 다시 싣고, 그때는 지난번 이후 무엇이 새로운지 본문에 말하라고 한다. 같은 목록을
+  랭커도 받는다([§5.2](#52-랭커-rankerpy)). 임계나 유사도 휴리스틱은 없다. 실제로 재발행을 막는 것은 여전히 URL 원장이다. `pipeline.runner.run_pipeline`이
   cross-day dedup이 이미 가져온 스냅샷에서 뽑으니 추가 호출도 없다.
 
 **시스템 오브 레코드.** `render_digest_text`가 구조화 콘텐츠를 평문 산문으로 렌더해 `digest_text`를 만들고,
@@ -760,8 +768,13 @@ private 헬퍼를 부르면 파이프라인이 출력 채널의 내부 이름에
 
 **`KOREAN_STYLE_RULES`는 "A가 아니라 B"와 "A보다 B" 대비 공식을 피하라고 한다.** 게시된 31개 다이제스트
 (09-09~10-10)의 시사점 155개 중 41개(26%)가 그 틀이었다. 보이스 가이던스는 그 틀을 유도하는 문장도, 그대로
-복사되는 예시 문구('~로 읽힌다', '보통 이런 구도는')도 담지 않는다. 판단은 판단으로 표시하라는 원칙만 둔다.
-예시를 주면 모델이 그 문구를 그대로 가져와 lead와 리서치 리포트에 반복했다. lead 스펙은 "3-4 concrete
+복사되는 예시 문구('~로 읽힌다', '보통 이런 구도는')도 담지 않는다. 예시를 주면 모델이 그 문구를 그대로 가져와
+lead와 리서치 리포트에 반복했다. "날카로운 해석은 판단으로 표시하라"는 문장도 지웠다. 시사점은 단정하라는 스펙과
+충돌해 '~로 읽힌다 / 셈이다 / 모양새다' 헤지를 불렀다(시사점 160건 중 12건, lead 32건 중 5건). 추론을 보도된 사실처럼
+쓰지 말라는 원칙은 남는다. "누가 그 이득을 가져가나" 렌즈도 '항상'을 뺐다. 순수 기술 스토리에서는 그 렌즈를
+가볍게 두라는 문장과 모순됐고 lead 32건 중 12건이 그 공식이었다. 고유명사는 소스가 음역해도 공식 라틴 표기를
+지킨다(Anthropic, OpenAI, SoftBank). "소스가 쓴 대로"였을 때는 한국어 소스가 음역한 날마다 표기가 바뀌어(Anthropic
+영문 15일·한글 8일) 같은 이름의 검색이 갈라졌다. lead 스펙은 "3-4 concrete
 sentences"다.
 
 `_verify_grounding`은 이 규칙의 예외가 아니다. 그쪽은 주장이 원문에 있는지를 보는 포함 관계 검사여서 코드로
@@ -774,7 +787,9 @@ sentences"다.
 **`render_threads_posts`.** root는 lead이고 항목마다 평탄한 reply 하나를 만든다. 500자 이하로 문장 경계에서
 트림하며 title과 소스 줄, URL은 유지한다.
 
-**소스 줄은 자기 블록이 아니라 제목 줄의 괄호 안에 온다**(`제목 (r/LocalLLaMA · ▶️ 775)`). 매체명
+**소스 줄은 자기 블록이 아니라 제목 줄의 괄호 안에 온다**(`제목 (r/LocalLLaMA · 조회 775)`). 조회수는 이모지가
+아니라 `조회` 텍스트다(`YOUTUBE_VIEWS_LABEL`). Threads는 이모지를 UTF-8 바이트 수로 500자 한도에 세는데(`▶️`는
+6) 렌더러는 `len()`으로 예산을 잡으므로, 꽉 찬 YouTube reply가 넘쳐 떨어질 수 있었다. 매체명
 (`Simon Willison's Weblog`)만 한 줄을 차지하면 흘러나온 조각처럼 읽힌다. 괄호는 한국어에서 그 자체로 부가정보
 표식이고, 다섯 소스 형태 전부에 라벨 단어 없이 적용된다.
 
@@ -803,13 +818,13 @@ Markdown 마크업은 `strip_markup`으로 제거한다(`[label](url)`은 `label
 것이다. 에디터는 무엇을 그릴지가 아니라 어떻게 그릴지만 브리핑한다. 다이제스트 프롬프트의 헤드라인 선정은 중요도
 우선이고, 시각화 용이성은 동등하게 중요한 스토리 사이의 tie-break만 한다.
 
-**형식은 화자가 이끄는 세로 4컷이 기본이다.** `VisualEditorPrompt`는 위에서 아래로 읽는 세로 네 컷
+**형식은 화자가 이끄는 2x2 4컷이 기본이다.** `VisualEditorPrompt`는 왼쪽에서 오른쪽, 위에서 아래로 읽는 네 컷
 (setup, development, turn, punchline)과 컷마다 짧은 한국어 대사 또는 내레이션 한 줄을 요구한다. 이야기가 분명히
-다른 구성(2x2 격자, 단일 컷, 가로 파노라마)으로 더 잘 전달될 때만 바꾸고, 그 구성을 instruction에 적는다. 편집기
+다른 구성(세로 스트립, 단일 컷, 가로 파노라마)으로 더 잘 전달될 때만 바꾸고, 그 구성을 instruction에 적는다. 편집기
 출력은 `{skip, use_character, instruction}`이다. 아트 디렉터(`VisualSynopsisPrompt`)는 세로 스트립을 `tall`
 (848x2544, 4:3 컷 네 개를 한 열로 쌓은 1:3. 2560을 넘는 해상도는 실험적이라 긴 변을 그 아래로 둔다)로, 2x2를
-`portrait`로 브리프한다. 2x2(1024x1536)의 컷 하나는 512x768이었고, 세로 스트립은 컷당 848x636이라 같은 단가에서
-컷마다 더 큰 화면을 쓴다. Threads는 종횡비 10:1과 8MB까지 받는다. 날마다 형식과 방향을 돌리던 장치(형식 이력,
+`portrait`로 브리프한다. 2x2(1024x1536)의 컷 하나는 512x768로 세로 스트립(컷당 848x636)보다 작지만, 피드에서 네
+컷이 한 화면에 들어오는 쪽을 기본으로 골랐다(세로 스트립은 피드 미리보기에서 펀치라인 컷이 가려질 수 있다). Threads는 종횡비 10:1과 8MB까지 받는다. 날마다 형식과 방향을 돌리던 장치(형식 이력,
 최근 방향 넛지, 멀티패널·캐릭터 비율 넛지)는 두지 않는다(측정상 형식을 바꾸지 못했다. 요청한 방향과 실제
 방향이 28회 중 8회 일치). `VisualBrief.orientation`은 필수 필드라 브리프가 빠뜨린 값이 조용히 기본값이 되지 않는다.
 `VisualBrief.prompt`의 상한은 GPT 이미지 API 한도인 32000자이고 `title`에는 상한이 없다. 4컷 브리프는 4000자를
@@ -823,14 +838,17 @@ Markdown 마크업은 `strip_markup`으로 제거한다(`[label](url)`은 `label
 **이미지 문구는 한국어다.** 같은 4컷 브리프를 `gpt-image-2`, `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`
 (모두 high)로 렌더해 비교했다. 세 모델 모두 한국어 문자열을 정확히 그렸다. sunburst를 고른 이유는 로고가
 정확하고(flare는 GLM 자리에 OpenAI 로고를 그렸다) 완성도가 가장 높으며 렌더 한 장의 출력 토큰이 약 1.4k(약
-$0.05)이기 때문이다. sunburst는 지시하지 않은 영어 포스터나 슬로건을 그려 넣는 경향이 있어서, 이미지 문구 규칙에
-"그 밖의 글자는 없다(지어낸 포스터, 슬로건, 캡션 금지)"는 한 구절을 넣었다. 그 구절이 들어간 렌더에서는 장면
-속 간판 외의 영어 문구가 사라졌다.
+$0.05)이기 때문이다. sunburst는 빈 벽을 지시하지 않은 영어 슬로건으로 채우는 경향이 있다. 그래서 아트 디렉터는
+포스터와 슬로건, 캡션을 지어내지 않을 뿐 아니라 이미지 프롬프트에도 "벽과 소품에는 다른 글자가 없다"고 적는다.
+금지를 아트 디렉터에게만 두었던 렌더는 네 컷 모두 벽에 영어 슬로건이 붙었고, 프롬프트에 적자 사라졌다. 대사 외의
+글자(화면, 표지, 라벨)는 크게 몇 단어를 한 번만 쓰고 여러 사본에 반복하지 않는다. 남은 문구 오류는 전부 작은
+소품 글자였다(로봇 40대에 붙은 모델명 태그, 서류철 여섯 장의 라벨). 큰 글자 한 곳은 정확히 렌더되고, 작은 글자를
+많은 사본에 쓰면 깨지며, 수정 편집도 그것은 고치지 못했다.
 
 **오너 페르소나가 화자다 (`visual_character_enabled`, `visual_character_sheet`,
 `visual_character_reference`).** 다이제스트 화자(특이점을 믿는 과학 덕후 기술자)를 그린 재등장 캐릭터가 만화의
 시점 인물이다. 나오는 컷에서는 구경만 하지 않고 반응하거나 끼어들거나 펀치라인을 친다. 편집기는 그가 농담을
-방해할 때만 `use_character`를 끈다. 캐릭터 시트(문장)는 instruction에 들어가고, 정면·3/4·측면과 표정 세 가지를
+방해할 때만 `use_character`를 끈다. 플랜이 그 값을 빠뜨리면 화자가 나오는 쪽이 기본이다. 캐릭터 시트(문장)는 instruction에 들어가고, 정면·3/4·측면과 표정 세 가지를
 담은 기준 시트 이미지(`assets/persona.jpg`)가 입력 이미지로 함께 간다. 그래서 그 날의 렌더는 `images.generate`가
 아니라 `images.edit`이고, 프롬프트 앞에 "첨부 이미지가 화자의 기준 시트이니 그대로 그려라"는 고정 문구
 (`REFERENCE_NOTE`)가 붙는다. 문장만으로는 날마다 얼굴과 옷이 달랐다(테스트 렌더 대부분의 청년이 시트의 안경과
@@ -849,13 +867,18 @@ $0.05)이기 때문이다. sunburst는 지시하지 않은 영어 포스터나 �
 high, xhigh, 고해상도(1536x2304)로 렌더해 비교하자 xhigh가 손과 소품, 원근이 가장 일관됐다.
 
 **렌더 뒤에 검수하고 한 번 고친다 (`VisualReviewPrompt`).** 브리프를 쓴 모델(Sonnet 5.5)이 이미지를 보고
-휴대폰 화면에서 독자가 알아챌 결함을 최대 세 개, 컷 번호와 함께 적는다. 물리·공간, 크기·원근, 해부, 브리프와 다른
-문구나 지어낸 문구(이야기 속 회사의 로고와 워드마크는 제외), 컷 수와 순서다. 검수에는 원본 해상도 그대로 JPEG로
+휴대폰 화면에서 독자가 알아챌 결함을 눈에 띄는 순서로, 컷 번호와 함께 모두 적는다. 물리·공간, 크기·원근, 해부,
+브리프와 다른 문구나 지어낸 문구(이야기 속 회사의 로고와 워드마크는 제외), 컷 수와 순서다. 브리프는 각 컷의 뜻과
+대사를 알려주는 맥락일 뿐이어서, 연출이 브리프와 다른 것(자세, 몸짓, 소품 위치)은 뜻을 깨지 않는 한 결함이
+아니다. 그렇게 두지 않자 검수가 자세 차이를 10개씩 적어 비교가 무의미해졌다. 검수에는 원본 해상도 그대로 JPEG로
 다시 인코딩한 사본을 보낸다. 세로 PNG는 2.5~3.6MB라 Bedrock 이미지 한도 3.75MB에 붙어 있고, 넘으면 검수가 매번
 건너뛰어진다(실측 3.6MB → 0.7MB). 결함이 있으면 그 결함만 고치라는
-지시로 이미지를 한 번 `images.edit`하고, 다시 검수해 결함이 더 적은 쪽을 쓴다. 같은 프롬프트로 다시 굴리는 재시도가
+지시로 이미지를 한 번 `images.edit`하고(눈에 띄는 상위 셋만 넘긴다), 다시 검수해 결함이 더 적은 쪽을 쓴다.
+비교는 잘리지 않은 전체 목록으로 한다. 셋으로 자른 목록은 수정이 무엇을 고쳤든 "3 → 3"으로 읽혔다. 로그에는 남은
+결함도 적는다. 같은 프롬프트로 다시 굴리는 재시도가
 아니라 무엇이 틀렸는지 실어 보내는 수정이다(산문 린트를 지운 이유가 정보 없는 재굴림이었다). 비전 검수는 Sonnet
-5.5가 Opus 5.5보다 실제 결함을 잘 찾았다. 결함이 확인된 이미지에서 Opus는 대부분을 놓쳤다. 검수 실패, 수정 실패,
+5.5가 Opus 5.5보다 실제 결함을 잘 찾았다. 결함이 확인된 이미지에서 Opus는 대부분을 놓쳤다. 다만 한국어를 잘못
+읽기도 한다(테스트 렌더에서 "칩"을 "집"으로 읽었다). 이때도 결함 수 비교가 바른 원본을 지켰다. 검수 실패, 수정 실패,
 마감 시간 부족은 모두 그린 그대로 게시하는 쪽으로 떨어진다. 첫 측정에서 수정은 3→0, 3→2, 2→2(원본 유지)였고, 한
 편은 결함 없이 통과했다. 비주얼 한 편에 브리프, 렌더, 검수 두 번, 수정 한 번이 들어 약 $0.2(추정)다.
 
@@ -874,7 +897,7 @@ high, xhigh, 고해상도(1536x2304)로 렌더해 비교하자 xhigh가 손과 �
 이 문구의 인과 효과는 측정되지 않았다. 이미지 생성이 확률적이라 사례당 한 샘플로는 노이즈와 구분되지 않는다.
 비용이 0이고 config로 즉시 해제할 수 있다는 근거로 둔다.
 
-렌더 전의 조사 단계는 없다. 에디터가 고른 검색을 돌리던 단계는 Semantic Scholar 429를 30일에 19회 냈고 실패
+렌더 전의 조사 단계는 없다. 에디터가 고른 검색을 돌리던 단계는 논문 검색 API의 429를 30일에 19회 냈고 실패
 문자열이 그대로 맥락으로 들어갔다. 에디터는 헤드라인 전문과 다이제스트의 관점을 이미 받는다.
 
 **브리프는 다이제스트 모델이 쓴다.** 편집기와 아트 디렉터 모두 `digest_model`(Sonnet 5.5)을 쓴다. 10-07
@@ -952,6 +975,13 @@ Lambda가 유일한 게시 경로라서 Threads 전달을 알림 없이 통째�
 
 **흐름(`post_to_threads`).** 이미지 root를 게시하고 스토리당 reply 하나로 평탄한 chain을 만든다. reply는
 서로가 아니라 모두 root에 매단다. reply-of-reply로 중첩되면 첫 개만 보인다.
+
+**토픽 태그와 대체 텍스트는 root에만 붙는다.** Threads 게시물 하나는 토픽 태그를 하나만 가질 수 있고(1–50자,
+`.`과 `&` 불가), 붙은 게시물은 그 토픽 피드와 태그 검색에 들어간다. root가 `pipeline.threads_topic_tag`(기본 `AI`,
+config가 형식을 검증한다)를 싣고 reply에는 붙이지 않는다. 다섯 reply에 같은 태그를 달면 스팸처럼 읽힌다. 리서치
+리포트의 root도 같은 태그를 쓴다. 만화 root는 `alt_text`(최대 1000자)로 `VisualBrief.alt_text`를 보낸다. 아트
+디렉터가 쓰는 한국어 설명으로 컷마다 한 문장과 대사를 담는다. 그러지 않으면 만화의 한국어 대사가 픽셀로만 남아
+스크린 리더가 읽을 것이 없다. 검색 효과는 Meta가 문서화하지 않았으니 접근성 개선이다.
 
 **이미지 호스팅.** Threads는 바이트 업로드를 받지 않고 공개 URL만 fetch하니, PNG를 S3에 올리고 단기 presigned
 URL을 Meta에 한 번 넘긴다(`_upload_image_for_hosting`).
@@ -1228,9 +1258,12 @@ append하고, `list_events`는 순서를 보장하지 않는다. `maxResults=1`�
 
 **스토어 선택(`create_memory_store`).** `MEMORY_ID`(CDK가 Lambda에만 넣는다)가 있으면 그 id를, 없으면 스택이
 만든 메모리를 이름(`digest_memory_name(project, stage)`, CDK와 같은 함수)으로 찾아 `config.aws.region`에서 연다.
-로컬 실행(`main.py`, `research_cli.py`)이 운영 스냅샷을 읽게 하려는 것이다. 예전처럼 `MEMORY_ID`가 없다고 로컬
-파일로 떨어지면 cross-day dedup은 어제를 못 보고 `recall_digest`는 거의 모든 날짜에 답하지 못했다. 리전은 셸의
-`AWS_REGION`(모델 호출용으로 다른 값일 수 있다)이 아니라 스택 리전이다. 메모리를 찾지 못할 때만
+로컬 실행(`main.py`, `research_cli.py`, `recall_cli.py`)이 운영 스냅샷을 읽게 하려는 것이다. 예전처럼 `MEMORY_ID`가
+없다고 로컬 파일로 떨어지면 cross-day dedup은 어제를 못 보고 `recall_digest`는 거의 모든 날짜에 답하지 못했다. 이름
+조회와 이벤트를 읽는 `bedrock-agentcore` 클라이언트는 하나의 세션을 쓴다. 프로필은
+`available_boto_profile(config.aws.profile)`, 리전은 스택 리전(`config.aws.region`)이다. 셸의 `AWS_PROFILE`과
+`AWS_REGION`은 다른 계정이나 모델 호출 리전을 가리킬 수 있고, 읽기 클라이언트만 기본 세션을 쓰던 때는 이름으로
+찾은 메모리를 "Memory not found"로 답했다. 메모리를 찾지 못할 때만
 `LocalMemoryStore`(`digest_*.json`)로 폴백한다.
 
 **윈도 조회.** `get_recent_digests(before, days)`가 cross-day dedup 시드를
@@ -1268,7 +1301,7 @@ AGI 카운트다운 프리픽스를 제거한다(`_editorial_lead`). novelty 신
 ### `recall_trends`는 어디를 보는가
 
 혼동하기 쉬운 지점이라 따로 적어둔다. `recall_trends` 도구는 AgentCore가 아니라 `trends.json`을 직접
-쿼리한다(키워드 매칭과 momentum 정렬, `TrendMemory.search`). 메모리 리소스(`AWS::BedrockAgentCore::Memory`)는
+읽고, 증거가 있는 트렌드 전부를 momentum 순으로 돌려준다. 메모리 리소스(`AWS::BedrockAgentCore::Memory`)는
 이벤트 전용이고(단기, `event_expiry_duration` 90일) 시맨틱 전략도 `RetrieveMemoryRecords` 권한도 없다.
 
 ## 8. 헬스 체크와 알림
@@ -1439,7 +1472,8 @@ inference-profile id는 `BedrockCrossRegionModelHelper`로 해석한다. 에이�
 (`callback_handler=None`). stdout은 JSON 한 개의 자리다.
 
 boto 세션은 `AWS_BEDROCK_REGION` 또는 `config.aws.bedrock_region`과, 해석되는 경우의 `config.aws.profile`로
-만들고 `boto_read_timeout`, `boto_connect_timeout`, `boto_max_attempts`를 적용한다. 실행마다
+만들고 `boto_read_timeout`, `boto_connect_timeout`, `boto_max_attempts`(재시도 모드 `adaptive`, 파이프라인 팩토리와 같다)를
+적용한다. 실행마다
 `research_run_limits(config)`가 `Limits`(`research_max_turns`, `research_max_total_tokens`,
 `research_max_output_tokens`)를 넘긴다. 상한에 걸린 실행도 텍스트를 반환하니, CLI가 `stop_reason`으로 경고를 단다.
 
@@ -1469,19 +1503,25 @@ spec에서 이름과 인자, 한 줄 요약을 뽑아 `<tools>` 블록을 만든
 
 모두 `@tool` 비동기 함수이고 에이전트가 자유롭게 조합한다.
 
-**`web_search(query, recency)`** — 열린 웹 검색이다. `recency="news"`면 Tavily `topic="news"`를 쓴다. 공유
-`tavily_search`(`shared/research/research_backends.py`)에 위임한다. 결과 포맷은 Tavily가 일부 페이지에 주는
-명시적 null title/url/content를 흡수한다.
+**`web_search(query, news, time_range)`** — 열린 웹 검색이다. `news=True`면 Tavily `topic="news"`를 쓰고,
+`time_range`(`day`|`week`|`month`|`year`)는 기간을 좁힌다. 둘 다 스키마의 boolean과 enum으로 나간다. 공유
+`tavily_search`(`shared/research/research_backends.py`)에 위임한다. 결과에는 Tavily가 날짜를 줄 때
+`Published:` 줄이 붙는다. "최신 동향" 질문이 이 도구의 주 용도인데 날짜를 버리면 모든 결과가 날짜 없이 읽혔다.
+결과 포맷은 Tavily가 일부 페이지에 주는 명시적 null title/url/content를 흡수한다.
 
 **`community_search(query)`** — Reddit과 X, HN, Substack의 반응을 본다. `community_search_domains`를
 `include_domains`로 넘긴다.
 
-**`search_papers(query)`** — Semantic Scholar다(`semantic_scholar_search`, 429면 retry와 backoff).
+**`search_papers(query)`** — OpenAlex `works?search=`다(`paper_search`, 키 없음, 하루 약 100회 무료). 자연어
+쿼리를 받고 `filter=has_abstract:true`로 초록이 있는 논문만 받는다. 게시일과 피인용 수를 붙이고, 역색인으로 오는
+초록을 문장으로 되살린다. 429와 5xx는 retry와 backoff를 거친다. 키 없는 Semantic Scholar는 이 환경에서 7회 호출
+모두 429였고, 그래서 리포트에 논문이 한 편도 실리지 않았다.
 
 **`read_url(url)`** — 특정 페이지의 전문을 가져온다(Tavily extract, `research_content_cap_chars`로 캡).
 
-**`recall_trends(query)`** — `trends.json`을 직접 쿼리한다. 키워드 매칭과 momentum 정렬로 active와 cooling
-트렌드 중 상위 `recall_memory_top_k`를 준다.
+**`recall_trends()`** — 인자가 없다. `trends.json`에서 증거가 있는 트렌드 전부를 momentum(KST 날짜 기준) 순으로,
+처음·마지막 관측일과 관측 일수, 최신 요지(`search_content_preview_chars`로 캡)와 함께 준다. 관련성은 모델이 판단한다.
+키워드 매칭은 "diffusion LLM"에 "AI Doom Discourse"를 1위로 주었고, 한국어 질의는 영어 트렌드와 하나도 맞지 않았다.
 
 **`recall_digest(digest_date)`** — 그 날짜의 다이제스트 스냅샷(AgentCore Memory)에서 lead와 스토리 제목을
 되읽는다. 출력은 bounded다(`top_n`개 스토리, 줄당 `search_content_preview_chars`). 없는 날은 다른 날짜로
@@ -1491,7 +1531,7 @@ spec에서 이름과 인자, 한 줄 요약을 뽑아 `<tools>` 블록을 만든
 **`attach_image(source_url)`** — 소스 페이지의 대표 이미지(og:image)를 받아 stage한다(`fetch_og_image`).
 `research_max_staged_images` 캡에 도달하면 거부한다. Threads 게시물에는 첫 1장만 실린다.
 
-**`deliver_report(report, channel)`** — `"markdown"`(기본)은 리포트를 CLI에 넘기고, 다시 부르면 수정본으로
+**`deliver_report(report, channel)`** — `channel`은 `"markdown"`|`"threads"` enum이다. `"markdown"`(기본)은 리포트를 CLI에 넘기고, 다시 부르면 수정본으로
 교체한다. `"threads"`는 이 실행이 허용할 때만 게시한다. 허용되지 않은 채널과 알 수 없는 채널은 아무것도 하지
 않고 스스로 고칠 수 있는 거부 문자열을 돌려준다. Threads 반환 문자열은 실제 전달량(`DeliveryStats`의 rendered,
 delivered, dropped, trimmed)을 담는다. 이미 게시된 채널에 두 번째 호출이 오면 `NOT_POSTED`다. 두 번째 호출의
@@ -1502,6 +1542,13 @@ delivered, dropped, trimmed)을 담는다. 이미 게시된 채널에 두 번째
 있으면 받지 않는다. 반환 문자열이 문제의 URL을 열거하니 에이전트가 그것만 빼거나 바꿔 다시 호출한다. 비교는
 양쪽 모두 `shared.formatting.extract_urls`를 거치며, Markdown 링크 `[label](url)`과 괄호 안 URL, http→https
 재작성을 통과시킨다. 가드는 조작된 인용을 막으려고 있으니 실제 인용을 떨어뜨리는 쪽으로는 엄격해지지 않는다.
+
+**AgentCore 내장 도구는 쓰지 않는다.** AgentCore Gateway의 Web Search 커넥터는 결과마다 게시일과 날짜 필터를 주지만
+us-east-1, eu-west-1, ap-northeast-1에만 있고(us-west-2와 ap-northeast-2는 없다) 1천 건당 약 $7로 Tavily와 비슷하다.
+쓰려면 세 번째 리전에 Gateway와 서비스 역할, MCP 클라이언트 수명 관리가 붙고, `read_url`과 웹 검색 수집기 때문에
+Tavily도 그대로 남아 검색 벤더가 둘이 된다. 고유 이점인 날짜는 `web_search`의 `Published:`와 `time_range`로 얻었다.
+AgentCore Browser도 쓰지 않는다. 다이제스트에 실린 실제 URL 10개로 Tavily extract를 재면 8개는 전문을, 페이월
+1개는 요약만 읽었고, 브라우저도 페이월은 못 넘는다. Claude의 웹 검색·fetch 서버 도구는 Bedrock에 없다.
 
 ### 9.2 리포트 전달 (`output/delivery.py`)
 
@@ -1546,7 +1593,7 @@ content_type이 다운스트림까지 일관되게 전달되게 한다.
 [§5.6](#56-데일리-비주얼-daily_visualpy)) 하나다.
 
 **설계.** 고정된 comic이나 diagram 모드, 컷 수 파라미터가 없다. 자연어 `instruction`이 원하는 형식을 묘사하고,
-데일리 비주얼에서는 그것이 세로 4컷 만화다(에디터가 다른 구성을 고른 날만 예외다).
+데일리 비주얼에서는 그것이 2x2 4컷 만화다(에디터가 다른 구성을 고른 날만 예외다).
 
 **생성 흐름 (`VisualGenerator.generate(instruction, source, references=..., deadline=...)`).**
 

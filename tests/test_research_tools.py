@@ -13,13 +13,13 @@ class TestSearchTools:
     async def test_web_search_general(self):
         with patch.object(rt, "tavily_search", new=AsyncMock(return_value="ok")) as tav:
             await rt.web_search._tool_func("q")
-        assert tav.await_args.kwargs.get("topic") is None
+        assert tav.await_args.kwargs == {"topic": None, "time_range": None}
 
     @pytest.mark.asyncio
-    async def test_web_search_news_maps_topic(self):
+    async def test_web_search_news_and_time_range_pass_through(self):
         with patch.object(rt, "tavily_search", new=AsyncMock(return_value="ok")) as tav:
-            await rt.web_search._tool_func("q", recency="news")
-        assert tav.await_args.kwargs.get("topic") == "news"
+            await rt.web_search._tool_func("q", news=True, time_range="week")
+        assert tav.await_args.kwargs == {"topic": "news", "time_range": "week"}
 
     @pytest.mark.asyncio
     async def test_community_search_passes_domains(self):
@@ -29,8 +29,8 @@ class TestSearchTools:
         assert tav.await_args.kwargs.get("include_domains") == domains
 
     @pytest.mark.asyncio
-    async def test_semantic_scholar_search_delegates(self):
-        with patch.object(rt, "semantic_scholar_search", new=AsyncMock(return_value="papers")) as sp:
+    async def test_paper_search_delegates(self):
+        with patch.object(rt, "paper_search", new=AsyncMock(return_value="papers")) as sp:
             result = await rt.search_papers._tool_func("transformers")
         sp.assert_awaited_once_with("transformers")
         assert result == "papers"
@@ -44,31 +44,39 @@ class TestSearchTools:
 
 
 class TestRecallTrends:
-    @pytest.mark.asyncio
-    async def test_no_match_message(self):
+    @staticmethod
+    def _store(memory_json: str | None) -> MagicMock:
         store = MagicMock()
-        store.read.return_value = None
-        memory = MagicMock()
-        memory.search.return_value = []
-        with patch("shared.create_state_store", return_value=store):
-            with patch("shared.TrendMemory", return_value=memory):
-                result = await rt.recall_trends._tool_func("open models")
-        assert "No earlier trends recalled" in result
+        store.read.return_value = memory_json
+        return store
 
     @pytest.mark.asyncio
-    async def test_formats_matched_trend(self):
-        ev = MagicMock(date="2026-06-01", summary="GLM released")
-        trend = MagicMock(title="open weights", evidence=[ev])
-        trend.status.value = "accelerating"
-        store = MagicMock()
-        store.read.return_value = '{"trends": []}'
-        memory = MagicMock()
-        memory.search.return_value = [trend]
-        with patch("shared.create_state_store", return_value=store):
-            with patch("shared.TrendMemory") as tm:
-                tm.model_validate_json.return_value = memory
-                result = await rt.recall_trends._tool_func("open weights")
-        assert "open weights" in result and "GLM released" in result
+    async def test_returns_every_trend_strongest_first_for_the_model_to_judge(self):
+        # Substring matching ranked "AI Doom Discourse" first for "diffusion LLM" and returned nothing
+        # for a Korean query against the English trends; the whole list lets the model judge.
+        from shared.models import Trend, TrendEvidence, TrendMemory
+
+        memory = TrendMemory(
+            trends=[
+                Trend(id="old", title="Old Thread", evidence=[TrendEvidence(date="2026-01-01", summary="stale")]),
+                Trend(
+                    id="hot",
+                    title="Diffusion LLMs",
+                    first_seen="2026-10-01",
+                    last_seen="2026-10-10",
+                    evidence=[
+                        TrendEvidence(date="2026-10-01", summary="first"),
+                        TrendEvidence(date="2026-10-10", summary="Mercury 2 ships"),
+                    ],
+                ),
+                Trend(id="empty", title="No Evidence"),
+            ]
+        )
+        with patch("shared.create_state_store", return_value=self._store(memory.model_dump_json())):
+            result = await rt.recall_trends._tool_func()
+        assert result.index("Diffusion LLMs") < result.index("Old Thread")
+        assert "2026-10-01 to 2026-10-10, 2 day(s)): Mercury 2 ships" in result
+        assert "No Evidence" not in result
 
     @pytest.mark.asyncio
     async def test_a_store_failure_is_not_reported_as_no_history(self):
@@ -76,16 +84,14 @@ class TestRecallTrends:
         # throttled/denied read indistinguishable from an untracked topic, and the report then
         # asserted that absence. Same distinction recall_digest draws for the digest store.
         with patch("shared.create_state_store", side_effect=RuntimeError("boom")):
-            result = await rt.recall_trends._tool_func("x")
+            result = await rt.recall_trends._tool_func()
         assert "could not be READ" in result
         assert "No earlier trends recalled" not in result
 
     @pytest.mark.asyncio
     async def test_an_empty_store_still_reports_no_history(self):
-        store = MagicMock()
-        store.read.return_value = None
-        with patch("shared.create_state_store", return_value=store):
-            result = await rt.recall_trends._tool_func("x")
+        with patch("shared.create_state_store", return_value=self._store(None)):
+            result = await rt.recall_trends._tool_func()
         assert "No earlier trends recalled" in result
 
 

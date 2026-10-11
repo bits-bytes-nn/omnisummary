@@ -246,7 +246,8 @@ async def run_pipeline(
     # Over-select (top_n + buffer): the editor picks the strongest top_n distinct stories from it.
     select_count = config.pipeline.top_n + config.pipeline.digest_candidate_buffer
     ranker = ContentRanker(config.pipeline, llm_factory)
-    ranked_items = await ranker.rank(items, select_count=select_count)
+    recent_titles = _recent_story_titles(snapshots)
+    ranked_items = await ranker.rank(items, select_count=select_count, recent_titles=recent_titles)
     logger.info("Ranked %d items (from %d)", len(ranked_items), len(items))
 
     if not ranked_items:
@@ -264,7 +265,7 @@ async def run_pipeline(
         trends_context=trends_context,
         today=digest_date,
         recent_leads=recent_leads,
-        recent_titles=_recent_story_titles(snapshots),
+        recent_titles=recent_titles,
     )
     logger.info("Generated digest with %d ranked items", len(digest.ranked_items))
     # Carry the ranking verdict on the result so the delivery/alerting layer can say the digest was
@@ -328,7 +329,8 @@ def _recent_story_titles(snapshots: list[dict]) -> list[str]:
     """Story titles from every snapshot the cross-day dedup seed already fetched (the
     published_url_ttl_days window, newest first), so the editor sees what recent digests ran. One
     day was not enough: a weekly roundup brings a story back under a NEW URL the ledger cannot
-    match, and on 2026-10-11 three of five stories had run 1-4 days earlier. Information only."""
+    match, and on 2026-10-11 three of five stories had run 1-4 days earlier. The ranker reads it for
+    Novelty and the editor for selection; it is information, not a filter."""
     titles: list[str] = []
     for snap in snapshots or []:
         content = ((snap or {}).get("digest_result") or {}).get("content") or {}

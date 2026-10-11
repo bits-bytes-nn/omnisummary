@@ -15,7 +15,7 @@ from .constants import (
 from .formatting import (
     COUNTDOWN_SUFFIX_SEPARATOR,
     URL_RE,
-    YOUTUBE_VIEWS_EMOJI,
+    YOUTUBE_VIEWS_LABEL,
     agi_countdown_intro,
     clean_rss_feed_name,
     editorial_lead,
@@ -93,7 +93,7 @@ __all__ = [
     "BedrockLanguageModelFactory",
     "DOMAIN_TO_SOURCE",
     "COUNTDOWN_SUFFIX_SEPARATOR",
-    "YOUTUBE_VIEWS_EMOJI",
+    "YOUTUBE_VIEWS_LABEL",
     "agi_countdown_intro",
     "editorial_lead",
     "place_countdown_intro",

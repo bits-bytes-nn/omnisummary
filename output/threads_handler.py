@@ -9,6 +9,9 @@ import httpx
 
 from shared import THREADS_MAX_POST_CHARS, logger, resolve_secret
 
+# Meta's cap on an image post's alt_text.
+THREADS_ALT_TEXT_MAX_CHARS = 1000
+
 THREADS_API_BASE = "https://graph.threads.net/v1.0"
 # Meta processes the media container asynchronously; publishing too early fails.
 THREADS_MEDIA_PROCESS_WAIT_SEC = 30
@@ -106,6 +109,8 @@ async def _publish_post(
     *,
     text: str = "",
     image_url: str = "",
+    image_alt: str = "",
+    topic_tag: str = "",
     reply_to_id: str = "",
 ) -> str:
     params: dict[str, Any] = {"media_type": "IMAGE" if image_url else "TEXT"}
@@ -113,6 +118,10 @@ async def _publish_post(
         params["text"] = text[:THREADS_MAX_POST_CHARS]
     if image_url:
         params["image_url"] = image_url
+        if image_alt:
+            params["alt_text"] = image_alt[:THREADS_ALT_TEXT_MAX_CHARS]
+    if topic_tag:
+        params["topic_tag"] = topic_tag
     if reply_to_id:
         params["reply_to_id"] = reply_to_id
     creation_id = await _create_container(client, user_id, token, **params)
@@ -208,6 +217,8 @@ async def post_to_threads(
     image_bucket: str = "",
     image_key: str = "",
     image_content_type: str = "image/png",
+    image_alt: str = "",
+    topic_tag: str = "",
     request_timeout: int = 60,
     deadline: float | None = None,
 ) -> ThreadsDelivery:
@@ -246,7 +257,13 @@ async def post_to_threads(
     try:
         async with httpx.AsyncClient(timeout=request_timeout) as client:
             root_id = await _publish_post(
-                client, user_id, token, text=root_text[:THREADS_MAX_POST_CHARS], image_url=image_url
+                client,
+                user_id,
+                token,
+                text=root_text[:THREADS_MAX_POST_CHARS],
+                image_url=image_url,
+                image_alt=image_alt,
+                topic_tag=topic_tag,
             )
             logger.info("Posted Threads root '%s'", root_id)
             # An image root needs time to become addressable as a reply target, so every reply

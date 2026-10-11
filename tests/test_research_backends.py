@@ -123,26 +123,6 @@ class TestExtractUrl:
         assert "No readable content" in result
 
     @pytest.mark.asyncio
-    async def test_semantic_scholar_search_author_missing_name(self):
-        # Some Semantic Scholar author objects lack 'name' — must not KeyError.
-        payload = {
-            "data": [
-                {
-                    "title": "T",
-                    "year": 2024,
-                    "authors": [{"authorId": "1"}, {"name": "Real"}],
-                    "url": "u",
-                    "abstract": "a",
-                }
-            ]
-        }
-        resp = MagicMock(status_code=200)
-        resp.json.return_value = payload
-        with patch.object(rb, "retry_async", new=AsyncMock(return_value=resp)):
-            result = await rb.semantic_scholar_search("q")
-        assert "Real" in result and "T" in result
-
-    @pytest.mark.asyncio
     async def test_extract_exception(self):
         client = MagicMock()
         client.extract = AsyncMock(side_effect=RuntimeError("boom"))
@@ -153,26 +133,37 @@ class TestExtractUrl:
 
 
 class TestSearchPapers:
-    @pytest.mark.asyncio
-    async def test_parses_papers(self):
-        payload = {
-            "data": [
-                {
-                    "title": "Attention Is All You Need",
-                    "year": 2017,
-                    "authors": [{"name": "Vaswani"}, {"name": "Shazeer"}],
-                    "url": "http://paper",
-                    "abstract": "Transformers.",
-                }
-            ]
-        }
-        resp = MagicMock(status_code=200)
+    WORK = {
+        "id": "https://openalex.org/W1",
+        "doi": "https://doi.org/10.48550/arxiv.2607.21519",
+        "title": "Diffusion Language Model for Recommendation",
+        "publication_date": "2026-07-23",
+        "cited_by_count": 3,
+        "authorships": [{"author": {"display_name": "Kim"}}, {"author": {}}, {"author": {"display_name": "Lee"}}],
+        "primary_location": {"landing_page_url": "https://arxiv.org/abs/2607.21519"},
+        "abstract_inverted_index": {"Diffusion": [0], "models": [1], "recommend.": [2]},
+    }
+
+    @staticmethod
+    def _response(payload: dict, status: int = 200) -> MagicMock:
+        resp = MagicMock(status_code=status)
         resp.json.return_value = payload
-        with patch.object(rb, "retry_async", new=AsyncMock(return_value=resp)):
-            result = await rb.semantic_scholar_search("transformers")
-        assert "Attention Is All You Need" in result
-        assert "Vaswani" in result
-        assert "http://paper" in result
+        return resp
+
+    @pytest.mark.asyncio
+    async def test_parses_works_with_date_citations_and_rebuilt_abstract(self):
+        with patch.object(rb, "retry_async", new=AsyncMock(return_value=self._response({"results": [self.WORK]}))):
+            result = await rb.paper_search("diffusion recommendation")
+        assert "Diffusion Language Model for Recommendation (2026-07-23; cited by 3) by Kim, Lee" in result
+        assert "URL: https://arxiv.org/abs/2607.21519" in result
+        assert "Abstract: Diffusion models recommend." in result
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_the_doi_without_a_landing_page(self):
+        work = {**self.WORK, "primary_location": None}
+        with patch.object(rb, "retry_async", new=AsyncMock(return_value=self._response({"results": [work]}))):
+            result = await rb.paper_search("q")
+        assert "URL: https://doi.org/10.48550/arxiv.2607.21519" in result
 
     @pytest.mark.asyncio
     async def test_rate_limited_returns_message(self):
@@ -181,13 +172,11 @@ class TestSearchPapers:
             "retry_async",
             new=AsyncMock(side_effect=httpx.HTTPStatusError("429", request=MagicMock(), response=MagicMock())),
         ):
-            result = await rb.semantic_scholar_search("q")
+            result = await rb.paper_search("q")
         assert "SEARCH_FAILED" in result
 
     @pytest.mark.asyncio
     async def test_no_papers(self):
-        resp = MagicMock(status_code=200)
-        resp.json.return_value = {"data": []}
-        with patch.object(rb, "retry_async", new=AsyncMock(return_value=resp)):
-            result = await rb.semantic_scholar_search("q")
+        with patch.object(rb, "retry_async", new=AsyncMock(return_value=self._response({"results": []}))):
+            result = await rb.paper_search("q")
         assert result == "No related papers found."

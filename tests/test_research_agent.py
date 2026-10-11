@@ -234,7 +234,7 @@ class TestVoiceInjection:
         for tool in tools:
             assert f"{tool.tool_name}(" in block
         # arguments come from the real signature, not prose
-        assert "web_search(query, recency)" in block
+        assert "web_search(query, news, time_range)" in block
         assert "deliver_report(report, channel)" in block
         # one line per tool, numbered
         assert len(block.splitlines()) == len(tools)

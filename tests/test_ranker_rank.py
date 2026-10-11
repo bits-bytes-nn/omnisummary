@@ -13,12 +13,9 @@ from shared.models import CollectedItem
 
 
 def _mock_factory() -> MagicMock:
-    """A mock LLM factory with realistic numeric token helpers so token-budget batching works.
-    count_tokens ~= chars/4; truncate is a no-op; context window is a real 200k."""
+    """A mock LLM factory whose truncate is a no-op."""
     factory = MagicMock()
-    factory.count_tokens.side_effect = lambda text: len(text) // 4
     factory.truncate_to_tokens.side_effect = lambda text, max_tokens: text
-    factory.get_model_info.return_value = MagicMock(context_window_size=200_000)
     return factory
 
 
@@ -47,6 +44,14 @@ def _rankings(scores: dict[str, float]) -> str:
 
 
 class TestRankEndToEnd:
+    @pytest.mark.asyncio
+    async def test_recent_digest_titles_reach_the_ranking_prompt(self):
+        # The URL ledger cannot match a story that returns under a new URL; without the titles the
+        # Novelty criterion had nothing to judge a rehash against.
+        ranker, seen = _ranker_with_outputs([_rankings({"a": 0.9})], source_slots={})
+        await ranker.rank(_items([("a", SourceType.RSS)]), recent_titles=["Claude Haiku 5.5 출시"])
+        assert "- Claude Haiku 5.5 출시" in seen[0]
+
     @pytest.mark.asyncio
     async def test_empty_input_short_circuits(self):
         ranker = _ranker("", top_n=5, min_score=0.6)
@@ -79,7 +84,6 @@ class TestRankEndToEnd:
             top_n=3,
             min_score=0.6,
             source_slots={"web": 1, "x": 1, "rss": 1, "reddit": 1, "youtube": 1},
-            source_cap_multiplier=5,
         )
         result = await ranker.rank(items)
         assert len(result) == 3
@@ -153,7 +157,6 @@ class TestRankEndToEnd:
             top_n=3,
             min_score=0.6,
             source_slots={"web": 1},
-            source_cap_multiplier=5,
             max_per_origin=1,
         )
         result = await ranker.rank(items)
@@ -302,35 +305,13 @@ class TestRankEndToEnd:
         assert len(result) == 8  # every batch still scored
         assert state["peak"] <= 2, f"fan-out exceeded ranking_max_concurrency: peak={state['peak']}"
 
-    @pytest.mark.asyncio
-    async def test_batches_split_on_token_budget_not_just_count(self):
-        # Even under the item-count cap, a batch must not exceed the context-window token budget:
-        # big items force more, smaller batches so a single Converse call can't overflow.
-        config = PipelineConfig(ranking_batch_size=40, item_text_max_tokens=100_000)
-        factory = _mock_factory()
-        # count_tokens ~= chars/4; make each item ~50k tokens (200k chars) so 2 items ≈ 100k tokens,
-        # and the 70% * 200k = 140k budget forces a new batch after 2 items.
-        big_items = [
-            CollectedItem(
-                item_id=f"b{n}", source_type=SourceType.RSS, title=f"t{n}", url=f"http://e.com/{n}", text="x" * 200_000
-            )
-            for n in range(6)
-        ]
-        ranker = ContentRanker(config, factory)
-        batches = await ranker._make_batches(big_items)
-        # Every batch stays within the token budget (each ~50k-token item → <=2 per 140k batch).
-        assert all(len(b) <= 3 for b in batches)
-        assert sum(len(b) for b in batches) == 6  # no item lost
-        assert len(batches) >= 3  # count-40 cap alone would have made 1 batch
-
-    @pytest.mark.asyncio
-    async def test_the_count_cap_is_spread_evenly_instead_of_leaving_a_tiny_tail(self):
+    def test_the_count_cap_is_spread_evenly_instead_of_leaving_a_tiny_tail(self):
         config = PipelineConfig(ranking_batch_size=40)
         items = [
             CollectedItem(item_id=f"i{n:02d}", source_type=SourceType.RSS, title=f"t{n}", url=f"http://e.com/{n}")
             for n in range(41)
         ]
-        batches = await ContentRanker(config, _mock_factory())._make_batches(items)
+        batches = ContentRanker(config, _mock_factory())._make_batches(items)
         assert sorted(len(b) for b in batches) == [20, 21]
 
 
@@ -469,10 +450,10 @@ class TestRankingHealthVerdict:
         ranker = _ranker(_rankings({"a": 0.9}), min_score=0.6, ranking_batch_size=1, ranking_max_retries=1)
         original = ranker._score_batch
 
-        async def flaky(batch, semaphore):
+        async def flaky(batch, semaphore, recent_titles):
             if batch[0].item_id != "a":
                 raise RuntimeError("throttled")
-            return await original(batch, semaphore)
+            return await original(batch, semaphore, recent_titles)
 
         with patch.object(ranker, "_score_batch", side_effect=flaky):
             with patch("pipeline.ranker.logger.error") as err:

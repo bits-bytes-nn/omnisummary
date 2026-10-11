@@ -11,8 +11,9 @@ from .constants import THREADS_POST_SEPARATOR, SourceType
 from .logger import logger
 from .models import CollectedItem
 
-# A literal Unicode emoji, NOT a `:shortcode:`: Threads renders no shortcodes.
-YOUTUBE_VIEWS_EMOJI = "▶️"
+# Text, not an emoji: Threads counts an emoji as its UTF-8 bytes against the 500-char cap ("▶️" is 6)
+# while the renderer budgets with len(), so a full-length YouTube reply could overrun and drop.
+YOUTUBE_VIEWS_LABEL = "조회"
 RSS_NAME_DELIMITERS = (" - ", " — ")
 
 
@@ -218,7 +219,7 @@ def _no_metrics(item: CollectedItem) -> str:
 
 def _youtube_metrics(item: CollectedItem) -> str:
     views = item.metadata.get("view_count")
-    return f"{YOUTUBE_VIEWS_EMOJI} {views:,}" if views else ""
+    return f"{YOUTUBE_VIEWS_LABEL} {views:,}" if views else ""
 
 
 def _rss_name(item: CollectedItem) -> str:

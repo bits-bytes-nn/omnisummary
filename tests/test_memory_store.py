@@ -80,6 +80,12 @@ class TestLocalMemoryStore:
         assert [r["d"] for r in store.get_recent_digests(date(2026, 6, 9), 3)] == ["2026-06-08"]
 
 
+def store_region() -> str:
+    from shared import get_config
+
+    return get_config().aws.region
+
+
 class TestCreateMemoryStore:
     def test_local_when_no_memory_is_deployed(self, monkeypatch, tmp_path):
         monkeypatch.delenv("MEMORY_ID", raising=False)
@@ -95,18 +101,22 @@ class TestCreateMemoryStore:
         session.client.return_value.get_paginator.return_value.paginate.return_value = [
             {"memories": [{"id": "other_dev_digest_state-AAA"}, {"id": "omnisummary_dev_digest_state-9GEp6f8MtL"}]}
         ]
-        with patch("shared.memory.boto3.Session", return_value=session), patch("shared.memory.boto3.client"):
+        with patch("shared.memory.boto3.Session", return_value=session):
             store = create_memory_store()
         assert isinstance(store, AgentCoreMemoryStore)
         assert store.memory_id == "omnisummary_dev_digest_state-9GEp6f8MtL"
+        # The READ client comes from the same profiled session as the lookup: a default client on the
+        # shell's AWS_PROFILE (another account) found the memory by name, then "Memory not found".
+        assert [c.args[0] for c in session.client.call_args_list] == ["bedrock-agentcore-control", "bedrock-agentcore"]
 
     def test_agentcore_when_memory_id_set(self, monkeypatch):
         monkeypatch.setenv("MEMORY_ID", "mem-123")
-        with patch("shared.memory.boto3.client") as mock_client:
+        session = MagicMock()
+        with patch("shared.memory.boto3.Session", return_value=session):
             store = create_memory_store()
         assert isinstance(store, AgentCoreMemoryStore)
         assert store.memory_id == "mem-123"
-        mock_client.assert_called_once()
+        session.client.assert_called_once_with("bedrock-agentcore", region_name=store_region())
 
 
 class TestAgentCoreMemoryStore:

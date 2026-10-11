@@ -49,7 +49,6 @@ class TestOriginCap:
             top_n=3,
             min_score=0.5,
             source_slots={"youtube": 1},
-            source_cap_multiplier=2,
             max_per_origin=1,
         )
         # 3 high-scoring videos all from the same channel
@@ -59,10 +58,8 @@ class TestOriginCap:
             _ranked(0.86, SourceType.YOUTUBE, item_id="v3", channel="chanA"),
         ]
         selected = ranker._apply_source_slots(items, ranker.config.top_n)
-        # No distinct origins to diversify into and no other source with candidates, so after the
-        # origin cap and then the source cap are exhausted the LAST-RESORT pass fills the digest
-        # rather than shipping it short: with a collector outage the caps have nothing left to
-        # spend diversity on, and a reader loses a story for a diversity that cannot happen.
+        # No distinct origins to diversify into, so the relaxed pass fills the pool rather than
+        # leaving it short for a diversity that cannot happen.
         assert len(selected) == 3
         assert {r.item.item_id for r in selected} == {"v1", "v2", "v3"}
 
@@ -71,7 +68,6 @@ class TestOriginCap:
             top_n=3,
             min_score=0.5,
             source_slots={"youtube": 1},
-            source_cap_multiplier=5,
             max_per_origin=1,
         )
         items = [
@@ -91,7 +87,6 @@ class TestOriginCap:
             top_n=2,
             min_score=0.5,
             source_slots={"youtube": 1},
-            source_cap_multiplier=5,
             max_per_origin=2,
         )
         items = [
@@ -111,7 +106,6 @@ class TestOriginCap:
             top_n=2,
             min_score=0.5,
             source_slots={"rss": 3},
-            source_cap_multiplier=1,
             max_per_origin=1,
         )
         items = [
@@ -128,7 +122,7 @@ class TestOriginCap:
         # URL as SourceType.X, whose origin is item.author — which those items never carry. RSSHub was
         # unreachable that day, yet "Source x: 1 items" was filled by an author-less scrape that had no
         # origin key, no Origin line in the ranking prompt, and no max_per_origin at all.
-        ranker = _ranker(top_n=2, min_score=0.5, source_slots={"x": 3}, source_cap_multiplier=1, max_per_origin=1)
+        ranker = _ranker(top_n=2, min_score=0.5, source_slots={"x": 3}, max_per_origin=1)
         items = [
             _ranked(0.95, SourceType.X, item_id="s1", url="https://x.com/a/status/1"),
             _ranked(0.94, SourceType.X, item_id="s2", url="https://x.com/b/status/2"),
@@ -145,7 +139,6 @@ class TestOriginCap:
             top_n=3,
             min_score=0.5,
             source_slots={"web": 1, "rss": 1},
-            source_cap_multiplier=5,
             max_per_origin=1,
         )
         items = [
@@ -187,59 +180,6 @@ class TestOriginCapWithoutSourceSlots:
         assert {r.item.item_id for r in selected} == {"r1", "r2"}
 
 
-class TestSlotOrder:
-    def test_short_limit_gives_slots_to_the_strongest_sources(self):
-        # limit(2) < sum(source_slots)(3): the guaranteed pass used to walk the config key order, so
-        # the LAST-listed source lost its slot no matter how strong its candidate was.
-        ranker = _ranker(
-            top_n=2,
-            min_score=0.5,
-            source_slots={"reddit": 1, "rss": 1, "youtube": 1},
-            source_cap_multiplier=1,
-            max_per_origin=1,
-        )
-        items = [
-            _ranked(0.95, SourceType.YOUTUBE, item_id="y1", channel="chanA"),
-            _ranked(0.90, SourceType.RSS, item_id="r1", feed="https://f.example/feed"),
-            _ranked(0.60, SourceType.REDDIT, item_id="d1", sub="ml"),
-        ]
-        selected = ranker._apply_source_slots(items, ranker.config.top_n)
-        assert {r.item.item_id for r in selected} == {"y1", "r1"}
-
-    def test_full_limit_selection_is_order_independent(self):
-        # With limit >= sum(source_slots) (the live config) every source fills its own slot, so the
-        # strength ordering must not change the outcome — whatever order the YAML lists.
-        slots = {"reddit": 1, "rss": 1, "youtube": 1}
-        items = [
-            _ranked(0.95, SourceType.YOUTUBE, item_id="y1", channel="chanA"),
-            _ranked(0.90, SourceType.RSS, item_id="r1", feed="https://f.example/feed"),
-            _ranked(0.60, SourceType.REDDIT, item_id="d1", sub="ml"),
-        ]
-        selected_ids = set()
-        for keys in (("reddit", "rss", "youtube"), ("youtube", "rss", "reddit")):
-            ranker = _ranker(
-                top_n=3,
-                min_score=0.5,
-                source_slots={k: slots[k] for k in keys},
-                source_cap_multiplier=1,
-                max_per_origin=1,
-            )
-            selected_ids.add(frozenset(r.item.item_id for r in ranker._apply_source_slots(items, 3)))
-        assert selected_ids == {frozenset({"y1", "r1", "d1"})}
-
-    def test_ties_break_on_source_key_for_determinism(self):
-        ranker = _ranker(source_slots={"rss": 1, "reddit": 1, "youtube": 1})
-        items = [
-            _ranked(0.8, SourceType.RSS, item_id="r1"),
-            _ranked(0.8, SourceType.REDDIT, item_id="d1"),
-        ]
-        assert [src for src, _ in ranker._slot_order(items, ranker.config.source_slots)] == [
-            "reddit",
-            "rss",
-            "youtube",
-        ]
-
-
 class TestPinnedCaps:
     def test_pinned_item_counts_toward_origin_and_source_caps(self):
         # Pinned items are prepended by rank() and never entered this fill, so their origin went
@@ -248,7 +188,6 @@ class TestPinnedCaps:
             top_n=3,
             min_score=0.5,
             source_slots={"web": 1, "rss": 1},
-            source_cap_multiplier=5,
             max_per_origin=1,
         )
         pinned = [_ranked(0.99, SourceType.WEB, item_id="p1", url="https://site-a.example/pin")]
@@ -269,7 +208,6 @@ class TestPinnedCaps:
             top_n=3,
             min_score=0.5,
             source_slots={"x": 1},
-            source_cap_multiplier=5,
             max_per_origin=1,
         )
         items = [
@@ -278,73 +216,22 @@ class TestPinnedCaps:
             _ranked(0.86, SourceType.X, item_id="t3", author="alice"),
         ]
         selected = ranker._apply_source_slots(items, ranker.config.top_n)
-        assert len(selected) == 3  # fallback relaxes origin cap (source cap 1x5=5 allows it)
-
-
-class TestLastResortSourceCapRelaxation:
-    """When a collector outage leaves every remaining candidate on one source, the source cap alone
-    would ship a short digest. The relaxation runs LAST, only while the digest is short, and prefers
-    candidates that still satisfy max_per_origin."""
-
-    def test_not_entered_when_the_caps_already_fill_the_limit(self):
-        ranker = _ranker(
-            top_n=2,
-            min_score=0.5,
-            source_slots={"rss": 1, "web": 1},
-            source_cap_multiplier=1,
-            max_per_origin=1,
-        )
-        items = [
-            _ranked(0.9, SourceType.RSS, item_id="r1", feed="f1"),
-            _ranked(0.8, SourceType.WEB, item_id="w1", url="http://a.com/1"),
-            _ranked(0.7, SourceType.RSS, item_id="r2", feed="f2"),
-        ]
-        selected = ranker._apply_source_slots(items, ranker.config.top_n)
-        assert {r.item.item_id for r in selected} == {"r1", "w1"}
-
-    def test_prefers_a_distinct_origin_over_a_repeat_one(self):
-        ranker = _ranker(
-            top_n=2,
-            min_score=0.5,
-            source_slots={"rss": 1},
-            source_cap_multiplier=1,
-            max_per_origin=1,
-        )
-        items = [
-            _ranked(0.9, SourceType.RSS, item_id="r1", feed="f1"),
-            _ranked(0.88, SourceType.RSS, item_id="same-origin", feed="f1"),
-            _ranked(0.86, SourceType.RSS, item_id="other-origin", feed="f2"),
-        ]
-        selected = ranker._apply_source_slots(items, ranker.config.top_n)
-        # r1 takes the guaranteed slot (cap 1x1 exhausted); the relaxed pass then prefers the item
-        # from a NEW feed over the higher-scoring one that repeats r1's origin.
-        assert {r.item.item_id for r in selected} == {"r1", "other-origin"}
+        assert len(selected) == 3  # the relaxed pass lifts the origin cap
 
 
 class TestFillPassOrder:
-    def test_a_source_at_exactly_its_cap_takes_no_more(self):
-        r = _ranker(source_slots={"rss": 1, "web": 1}, source_cap_multiplier=1, max_per_origin=1)
+    def test_past_its_seat_a_source_competes_on_score_alone(self):
+        # A per-source cap of 2 kept a 0.80 RSS story out of the pool while 0.60 items got in on 9 of
+        # 16 days; max_per_origin already keeps one publisher from flooding it.
+        r = _ranker(source_slots={"rss": 1, "youtube": 1}, max_per_origin=1)
         items = [
             _ranked(0.9, SourceType.RSS, item_id="a", feed="f1"),
-            _ranked(0.8, SourceType.RSS, item_id="b", feed="f2"),
-            _ranked(0.7, SourceType.X, item_id="x", author="@a"),
-            _ranked(0.6, SourceType.WEB, item_id="w", url="https://w.example/1"),
+            _ranked(0.85, SourceType.RSS, item_id="b", feed="f2"),
+            _ranked(0.8, SourceType.RSS, item_id="c", feed="f3"),
+            _ranked(0.6, SourceType.YOUTUBE, item_id="y", channel="c1"),
         ]
-        assert {s.item.item_id for s in r._apply_source_slots(items, 3)} == {"a", "x", "w"}
-
-    def test_the_origin_cap_is_relaxed_before_the_source_cap(self):
-        # Short of the limit, a second item from an origin already used beats a higher-scored item
-        # from a source already at its cap: source diversity is the stronger promise.
-        r = _ranker(source_slots={"rss": 2, "web": 1, "x": 1}, source_cap_multiplier=1, max_per_origin=1)
-        items = [
-            _ranked(0.95, SourceType.X, item_id="x1", author="@a"),
-            _ranked(0.9, SourceType.RSS, item_id="a", feed="f1"),
-            _ranked(0.88, SourceType.X, item_id="z", author="@b"),
-            _ranked(0.85, SourceType.RSS, item_id="b", feed="f1"),
-            _ranked(0.7, SourceType.WEB, item_id="c", url="https://w.example/1"),
-        ]
-        picked = {s.item.item_id for s in r._apply_source_slots(items, 4)}
-        assert "b" in picked and "z" not in picked
+        assert {s.item.item_id for s in r._apply_source_slots(items, 3)} == {"a", "b", "y"}
+        assert {s.item.item_id for s in r._apply_source_slots(items, 4)} == {"a", "b", "c", "y"}
 
     def test_the_pool_comes_back_in_score_order(self):
         r = _ranker(source_slots={"youtube": 1, "rss": 1}, max_per_origin=1)

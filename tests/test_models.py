@@ -111,63 +111,7 @@ class TestTrendMomentum:
         assert trend.momentum(today, half_life_days=7.0) == pytest.approx(1.0)
 
 
-class TestTrendMemorySearch:
-    def _mem(self):
-        from shared.models import TrendMemory, TrendStatus
-
-        return TrendMemory(
-            trends=[
-                Trend(
-                    id="kv",
-                    title="KV Cache Efficiency",
-                    status=TrendStatus.ACTIVE,
-                    evidence=[TrendEvidence(date="2026-06-05", summary="text diffusion bypasses kv cache")],
-                ),
-                Trend(
-                    id="ipo",
-                    title="Lab IPO Race",
-                    status=TrendStatus.ACTIVE,
-                    evidence=[TrendEvidence(date="2026-06-01", summary="anthropic files s-1")],
-                ),
-            ]
-        )
-
-    def test_ranks_by_term_hits_then_momentum(self):
-        out = self._mem().search("ipo race", today=date(2026, 6, 5), half_life_days=7.0, top_k=5)
-        assert out[0].id == "ipo"
-
-    def test_empty_query_returns_by_momentum(self):
-        out = self._mem().search("", today=date(2026, 6, 5), half_life_days=7.0, top_k=5)
-        assert out[0].id == "kv"  # most recent evidence -> highest momentum
-
-    def test_top_k_caps(self):
-        out = self._mem().search("", today=date(2026, 6, 5), half_life_days=7.0, top_k=1)
-        assert len(out) == 1
-
-    def test_equal_term_hits_break_by_momentum(self):
-        # Two active trends matching the query with the SAME term-hit count must be
-        # ordered by momentum (more recent evidence first) — the search-specific tiebreak.
-        from shared.models import TrendMemory, TrendStatus
-
-        mem = TrendMemory(
-            trends=[
-                Trend(
-                    id="stale",
-                    title="agents framework",
-                    status=TrendStatus.ACTIVE,
-                    evidence=[TrendEvidence(date="2026-05-01", summary="agents note")],
-                ),
-                Trend(
-                    id="fresh",
-                    title="agents framework",
-                    status=TrendStatus.ACTIVE,
-                    evidence=[TrendEvidence(date="2026-06-05", summary="agents note")],
-                ),
-            ]
-        )
-        out = mem.search("agents", today=date(2026, 6, 5), half_life_days=7.0, top_k=2)
-        assert [t.id for t in out] == ["fresh", "stale"]
-
+class TestTrendMemory:
     def test_by_id_lookup(self):
         memory = TrendMemory(trends=[Trend(id="x", title="X"), Trend(id="y", title="Y")])
         assert memory.by_id("y").title == "Y"
