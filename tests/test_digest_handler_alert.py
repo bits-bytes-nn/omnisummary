@@ -158,17 +158,3 @@ class TestRankingHealthAlert:
             digest_handler._maybe_alert_ranking(self._digest(ranking_health=clean), date(2026, 8, 18))
             digest_handler._maybe_alert_ranking(None, date(2026, 8, 18))
         client.assert_not_called()
-
-    def test_publishes_a_diversity_breach_in_the_shipped_digest(self, monkeypatch):
-        # The ranker guarantees max_per_origin on the ranked CORE; the editor's backfill candidates
-        # ignore it, so a shipped digest can carry two stories from one origin with the ranking pass
-        # itself perfectly clean.
-        from datetime import date
-
-        monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:::topic")
-        sns = MagicMock()
-        digest = self._digest(diversity_breaches=["max_per_origin=1 exceeded by 'r/LocalLLaMA' (2 stories)"])
-        with patch("lambda_handlers.digest_handler.boto3.client", return_value=sns):
-            digest_handler._maybe_alert_ranking(digest, date(2026, 8, 18))
-        sns.publish.assert_called_once()
-        assert "r/LocalLLaMA" in sns.publish.call_args.kwargs["Message"]

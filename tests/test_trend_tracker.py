@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import date, timedelta
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,9 +19,6 @@ class _FakeStore:
 
     def write(self, key: str, content: str) -> None:
         self.data[key] = content
-
-    def exists(self, key: str) -> bool:
-        return key in self.data
 
 
 def _patched_tracker(store, observations, monkeypatch, **overrides) -> TrendTracker:
@@ -147,16 +144,44 @@ class TestUpdateTrends:
 
 
 class TestLifecycle:
-    def test_status_transitions_by_date(self):
+    def test_status_transitions_by_date_and_retention_drops(self):
         config = PipelineConfig(trend_cooling_days=7, trend_retention_days=30)
         tracker = TrendTracker(config, MagicMock(), _FakeStore())
-        active = Trend(id="a", title="A", first_seen="2026-06-01", last_seen="2026-06-04")
-        cooling = Trend(id="c", title="C", first_seen="2026-05-01", last_seen="2026-05-25")
-        archived = Trend(id="z", title="Z", first_seen="2026-04-01", last_seen="2026-05-01")
-        today = date(2026, 6, 5)
-        assert tracker._compute_status(active, today) == TrendStatus.ACTIVE
-        assert tracker._compute_status(cooling, today) == TrendStatus.COOLING
-        assert tracker._compute_status(archived, today) == TrendStatus.ARCHIVED
+
+        def trend(tid: str, seen: str) -> Trend:
+            return Trend(
+                id=tid, title=tid, first_seen=seen, last_seen=seen, evidence=[TrendEvidence(date=seen, summary="e")]
+            )
+
+        memory = TrendMemory(trends=[trend("a", "2026-06-04"), trend("c", "2026-05-25"), trend("z", "2026-05-01")])
+        tracker._run_lifecycle(memory, "2026-06-05")
+        assert {t.id: t.status for t in memory.trends} == {"a": TrendStatus.ACTIVE, "c": TrendStatus.COOLING}
+
+    @pytest.mark.asyncio
+    async def test_a_same_day_rerun_rederives_last_seen_from_the_remaining_evidence(self, monkeypatch):
+        # The re-run strips today's evidence before re-applying; a trend the second pass does not
+        # re-emit kept last_seen at today and stayed ACTIVE with its retention clock restarted.
+        existing = TrendMemory(
+            trends=[
+                Trend(
+                    id="t",
+                    title="T",
+                    first_seen="2026-06-01",
+                    last_seen="2026-06-20",
+                    evidence=[
+                        TrendEvidence(date="2026-06-01", summary="old"),
+                        TrendEvidence(date="2026-06-20", summary="today, first pass"),
+                    ],
+                )
+            ]
+        )
+        store = _FakeStore({TRENDS_KEY: existing.model_dump_json()})
+        tracker = _patched_tracker(store, [], monkeypatch, trend_cooling_days=7, trend_retention_days=30)
+        await tracker.update_trends("d", "2026-06-20")
+        t = TrendMemory.model_validate_json(store.data[TRENDS_KEY]).by_id("t")
+        assert t is not None
+        assert t.last_seen == "2026-06-01"
+        assert t.status == TrendStatus.COOLING
 
     @pytest.mark.asyncio
     async def test_max_evidence_cap_drops_oldest(self, monkeypatch):
@@ -177,15 +202,12 @@ class TestLifecycle:
         assert t.evidence[0].summary == "e4"
 
     @pytest.mark.asyncio
-    async def test_long_archived_trends_are_purged(self, monkeypatch):
-        # A trend last seen far beyond 2x retention must be dropped, not retained forever with
-        # its evidence (which would bloat trends.json indefinitely).
+    async def test_a_trend_past_retention_is_dropped(self, monkeypatch):
         stale = Trend(
             id="old",
             title="Old",
             first_seen="2026-01-01",
             last_seen="2026-01-05",
-            status=TrendStatus.ARCHIVED,
             evidence=[TrendEvidence(date="2026-01-05", summary="e")],
         )
         fresh = Trend(
@@ -197,10 +219,9 @@ class TestLifecycle:
         )
         store = _FakeStore({TRENDS_KEY: TrendMemory(trends=[stale, fresh]).model_dump_json()})
         tracker = _patched_tracker(store, [], monkeypatch, trend_retention_days=30)
-        await tracker.update_trends("d", "2026-06-06")  # stale is ~152 days old > 2*30
+        await tracker.update_trends("d", "2026-06-06")
         memory = TrendMemory.model_validate_json(store.data[TRENDS_KEY])
-        ids = {t.id for t in memory.trends}
-        assert "old" not in ids and "new" in ids
+        assert {t.id for t in memory.trends} == {"new"}
 
 
 class TestLoadRecovery:
@@ -237,9 +258,6 @@ class TestUnreadableTrendStateIsNotEmptyState:
         def write(self, key: str, content: str) -> None:
             self.writes[key] = content
 
-        def exists(self, key: str) -> bool:
-            raise StateReadError(f"cannot stat {key}")
-
     def test_load_degrades_without_raising(self):
         tracker = TrendTracker(PipelineConfig(), MagicMock(), self._UnreadableStore())
         assert tracker._load_memory().trends == []
@@ -271,12 +289,10 @@ class TestGetTrendsContext:
                 title="High",
                 status=TrendStatus.ACTIVE,
                 first_seen="2026-06-01",
-                last_seen=date.today().isoformat(),
-                evidence=[TrendEvidence(date=date.today().isoformat(), summary="fresh")],
+                last_seen=(date.today() - timedelta(days=1)).isoformat(),
+                evidence=[TrendEvidence(date=(date.today() - timedelta(days=1)).isoformat(), summary="fresh")],
             ),
-            Trend(
-                id="gone", title="Gone", status=TrendStatus.ARCHIVED, first_seen="2026-01-01", last_seen="2026-02-01"
-            ),
+            Trend(id="gone", title="Gone", first_seen="2026-01-01", last_seen="2026-02-01"),
         ]
         store = _FakeStore({TRENDS_KEY: TrendMemory(trends=trends).model_dump_json()})
         tracker = TrendTracker(config, MagicMock(), store)
@@ -304,8 +320,8 @@ class TestGetTrendsContext:
         ]
         store = _FakeStore({TRENDS_KEY: TrendMemory(trends=trends).model_dump_json()})
         tracker = TrendTracker(PipelineConfig(), MagicMock(), store)
-        ctx = tracker.get_trends_context(today=date(2026, 6, 10))
-        assert "10일째 추적 중" in ctx  # (2026-06-10 - 2026-06-01).days + 1 = 10, from the supplied date
+        ctx = tracker.get_trends_context(today=date(2026, 6, 11))
+        assert "11일째 추적 중" in ctx  # (2026-06-11 - 2026-06-01).days + 1 = 11, from the supplied date
 
 
 class TestDigestFacingTrendCap:
@@ -335,7 +351,7 @@ class TestDigestFacingTrendCap:
         config = PipelineConfig(trend_max_active_trends=3)
         store = _FakeStore({TRENDS_KEY: self._memory(8).model_dump_json()})
         tracker = TrendTracker(config, MagicMock(), store)
-        ctx = tracker.get_trends_context(today=date(2026, 6, 10))
+        ctx = tracker.get_trends_context(today=date(2026, 6, 11))
         lines = [ln for ln in ctx.splitlines() if ln.startswith("- ")]
         assert len(lines) == 3
         assert "Trend 0" in ctx and "Trend 7" not in ctx
@@ -347,3 +363,34 @@ class TestDigestFacingTrendCap:
         tracker = TrendTracker(config, MagicMock(), store)
         existing = tracker._render_existing(memory)
         assert len([ln for ln in existing.splitlines() if ln.startswith("- ")]) == 8
+
+
+def test_a_same_day_rerun_does_not_see_todays_first_run_as_history():
+    # Today the 19:00 run stored its stories as evidence; a 19:25 re-run then got them back as
+    # "ongoing trends from recent days". Only evidence dated before the digest date is context.
+    today = date(2026, 10, 11)
+    memory = TrendMemory(
+        trends=[
+            Trend(
+                id="old",
+                title="Old thread",
+                first_seen="2026-10-01",
+                last_seen="2026-10-10",
+                evidence=[
+                    TrendEvidence(date="2026-10-10", summary="yesterday's note"),
+                    TrendEvidence(date="2026-10-11", summary="tonight's first run"),
+                ],
+            ),
+            Trend(
+                id="new",
+                title="Born tonight",
+                first_seen="2026-10-11",
+                last_seen="2026-10-11",
+                evidence=[TrendEvidence(date="2026-10-11", summary="first run only")],
+            ),
+        ]
+    )
+    store = _FakeStore({TRENDS_KEY: memory.model_dump_json()})
+    ctx = TrendTracker(PipelineConfig(), MagicMock(), store).get_trends_context(today=today)
+    assert "yesterday's note" in ctx
+    assert "tonight's first run" not in ctx and "Born tonight" not in ctx

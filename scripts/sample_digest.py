@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate one digest (no Slack send) and write the digest text to a file, so the
+"""Generate one digest (no publishing) and write the digest text to a file, so the
 article-quality workflow can evaluate real output of the current DigestPrompt against a
 fixed, cached candidate set. Reuses a cached collected-items snapshot when present so
 each round only varies the prompt, not the upstream data.
@@ -49,7 +49,9 @@ async def main() -> None:
             logger.info("Cached %d collected items to %s", len(collected), cache_path)
 
     items = ContentAggregator().aggregate(collected)
-    ranked = await ContentRanker(config.pipeline, factory).rank(items)
+    ranked = await ContentRanker(config.pipeline, factory).rank(
+        items, select_count=config.pipeline.top_n + config.pipeline.digest_candidate_buffer
+    )
     trends = TrendTracker(config.pipeline, factory, create_state_store(config)).get_trends_context()
     digest = await DigestGenerator(config.pipeline, factory).generate(ranked, items, trends_context=trends)
 

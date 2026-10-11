@@ -366,7 +366,7 @@ class TestParkedItems:
     @pytest.mark.asyncio
     async def test_stale_park_items_are_used_and_flagged(self):
         c = RSSHubCollector(_config())
-        stale = ParkedItems(outcome=ParkOutcome.STALE, items=[_item("old")], age_hours=72.0, detail="72h")
+        stale = ParkedItems(outcome=ParkOutcome.STALE, items=[_item("old")], detail="72h")
         with patch("collectors.rsshub.load_items_from_s3", return_value=stale):
             items = await c.collect()
         assert [i.item_id for i in items] == ["old"]
@@ -382,7 +382,7 @@ class TestParkedItems:
         in_window.published_at = datetime(2026, 6, 2, 12, tzinfo=UTC)
         too_old = _item("ancient")
         too_old.published_at = datetime(2026, 5, 20, tzinfo=UTC)
-        stale = ParkedItems(outcome=ParkOutcome.STALE, items=[in_window, too_old], age_hours=72.0, detail="72h")
+        stale = ParkedItems(outcome=ParkOutcome.STALE, items=[in_window, too_old], detail="72h")
         with patch("collectors.rsshub.load_items_from_s3", return_value=stale):
             items = await c.collect()
         assert [i.item_id for i in items] == ["fresh"]

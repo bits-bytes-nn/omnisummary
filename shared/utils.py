@@ -3,12 +3,11 @@ import hashlib
 import json
 import os
 import re
-from abc import ABC, abstractmethod
 from calendar import timegm
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -26,179 +25,45 @@ TOKEN_COUNT_MODEL = LanguageModelId.CLAUDE_V4_6_SONNET
 
 
 class LanguageModelInfo(BaseModel):
-    """What the factory actually acts on. It carried four more capability flags (thinking,
-    1M-context, performance-optimization, adaptive-thinking) that no config field and no non-test
-    caller ever set, plus the ChatBedrock branch they shaped, which the cross-region resolver made
-    unreachable — every production call resolves to an application-inference-profile ARN or a
-    `global.*` id, so Converse was always the class. Removed 2026-08-19.
+    """What the factory acts on, hand-verified against Converse (re-establishing it costs real
+    invocations, so it is written down here):
 
-    Hand-verified against Converse and worth keeping written down, since re-establishing it costs
-    real invocations: Sonnet 5 and Opus 4.7/4.8/5 reject a `temperature` param AND the legacy
-    thinking.type="enabled" + budget_tokens form; they need thinking.type="adaptive" +
-    output_config.effort. Only the temperature half is enforced below, because nothing asks for
-    thinking.
-
-    `supports_forced_tool_choice` is False for models that 400 on tool_choice "any"/"tool" (Opus 5.5,
-    Sonnet 5.5, Fable 5.1). It is stated here rather than left to langchain-aws, which infers
-    ("auto", "any", "tool") for any id containing "claude" and () for an application-inference-
-    profile ARN — so structured output would force the tool on the global id and not on the ARN."""
+    - Every registered model rejects a non-default `temperature` (ValidationException), except
+      Sonnet 4.6, which is only used for CountTokens.
+    - Opus 5.5 and Sonnet 5.5 reject tool_choice "any"/"tool"; Haiku 5.5 and the older models accept
+      it. langchain-aws infers ("auto", "any", "tool") for any id containing "claude" and () for an
+      application-inference-profile ARN, so the factory states the flag instead of inheriting either.
+    - Opus 5.5 and Haiku 5.5 default to effort "medium" where every other model defaults to "high";
+      `effort` pins it so swapping a stage's model does not silently lower its reasoning depth.
+    - Fable 5.1 is not registered: Bedrock rejects it under the account's default data-retention mode
+      ("data retention mode 'default' is not available for this model")."""
 
     context_window_size: int
     max_output_tokens: int
-    supports_temperature: bool = True
+    supports_temperature: bool = False
     supports_forced_tool_choice: bool = True
+    effort: str | None = None
 
 
+# 64000, not the 128K ceiling: every pipeline call is a non-streaming ainvoke, and a higher cap would
+# only raise the HTTP-timeout risk with no caller needing that much output.
 LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
-    LanguageModelId.CLAUDE_V3_HAIKU: LanguageModelInfo(
-        context_window_size=200000,
-        max_output_tokens=4096,
-    ),
-    LanguageModelId.CLAUDE_V3_5_HAIKU: LanguageModelInfo(
-        context_window_size=200000,
-        max_output_tokens=8192,
-    ),
-    LanguageModelId.CLAUDE_V4_5_HAIKU: LanguageModelInfo(
-        context_window_size=200000,
-        max_output_tokens=64000,
-    ),
-    LanguageModelId.CLAUDE_V3_5_SONNET: LanguageModelInfo(context_window_size=200000, max_output_tokens=8192),
-    LanguageModelId.CLAUDE_V3_5_SONNET_V2: LanguageModelInfo(context_window_size=200000, max_output_tokens=8192),
-    LanguageModelId.CLAUDE_V3_7_SONNET: LanguageModelInfo(
-        context_window_size=200000,
-        max_output_tokens=64000,
-    ),
-    LanguageModelId.CLAUDE_V4_SONNET: LanguageModelInfo(
-        context_window_size=200000,
-        max_output_tokens=64000,
-    ),
-    LanguageModelId.CLAUDE_V4_5_SONNET: LanguageModelInfo(
-        context_window_size=200000,
-        max_output_tokens=64000,
-    ),
     LanguageModelId.CLAUDE_V4_6_SONNET: LanguageModelInfo(
-        context_window_size=200000,
-        max_output_tokens=64000,
+        context_window_size=200000, max_output_tokens=64000, supports_temperature=True
     ),
-    LanguageModelId.CLAUDE_V5_SONNET: LanguageModelInfo(
-        context_window_size=1000000,
-        # 64000 to match the rest of the registry: all pipeline/agent calls are non-streaming
-        # ainvoke, and Sonnet 5's true 128K ceiling would only raise the HTTP-timeout risk with
-        # no caller needing that much output. Bump to 128000 only alongside a streaming path.
-        max_output_tokens=64000,
-        # Sonnet 5 rejects non-default sampling params with a 400. The factory always sends
-        # temperature=0.0, so this must be False.
-        supports_temperature=False,
-    ),
-    LanguageModelId.CLAUDE_V4_OPUS: LanguageModelInfo(
-        context_window_size=200000,
-        max_output_tokens=64000,
-    ),
-    LanguageModelId.CLAUDE_V4_1_OPUS: LanguageModelInfo(
-        context_window_size=200000,
-        max_output_tokens=64000,
-    ),
-    LanguageModelId.CLAUDE_V4_5_OPUS: LanguageModelInfo(
-        context_window_size=200000,
-        max_output_tokens=64000,
-    ),
-    LanguageModelId.CLAUDE_V4_6_OPUS: LanguageModelInfo(
-        context_window_size=1000000,
-        max_output_tokens=64000,
-    ),
-    LanguageModelId.CLAUDE_V4_7_OPUS: LanguageModelInfo(
-        context_window_size=1000000,
-        max_output_tokens=64000,
-        supports_temperature=False,
-    ),
-    LanguageModelId.CLAUDE_V4_8_OPUS: LanguageModelInfo(
-        context_window_size=1000000,
-        max_output_tokens=64000,
-        supports_temperature=False,
-    ),
-    LanguageModelId.CLAUDE_V5_OPUS: LanguageModelInfo(
-        context_window_size=1000000,
-        max_output_tokens=64000,
-        # Verified against Converse on global.anthropic.claude-opus-5: a `temperature` param and the
-        # legacy thinking.type="enabled"/budget_tokens form BOTH return ValidationException, while
-        # thinking.type="adaptive" + output_config.effort succeeds — the same shape as Opus 4.7/4.8
-        # and Sonnet 5.
-        supports_temperature=False,
-    ),
-    # Claude 5.5 / Fable 5.1: per Anthropic's API reference, NOT yet hand-verified against Converse.
-    # All four reject non-default sampling params, budget_tokens thinking and assistant prefill, and
-    # run adaptive thinking when `thinking` is omitted (which the factory never sends). Opus 5.5 and
-    # Haiku 5.5 default to effort "medium" rather than "high".
+    LanguageModelId.CLAUDE_V5_SONNET: LanguageModelInfo(context_window_size=1000000, max_output_tokens=64000),
+    LanguageModelId.CLAUDE_V4_8_OPUS: LanguageModelInfo(context_window_size=1000000, max_output_tokens=64000),
+    LanguageModelId.CLAUDE_V5_OPUS: LanguageModelInfo(context_window_size=1000000, max_output_tokens=64000),
     LanguageModelId.CLAUDE_V5_5_HAIKU: LanguageModelInfo(
-        context_window_size=1000000,
-        max_output_tokens=64000,
-        supports_temperature=False,
+        context_window_size=1000000, max_output_tokens=64000, effort="high"
     ),
     LanguageModelId.CLAUDE_V5_5_SONNET: LanguageModelInfo(
-        context_window_size=1000000,
-        max_output_tokens=64000,
-        supports_temperature=False,
-        supports_forced_tool_choice=False,
+        context_window_size=1000000, max_output_tokens=64000, supports_forced_tool_choice=False
     ),
     LanguageModelId.CLAUDE_V5_5_OPUS: LanguageModelInfo(
-        context_window_size=1000000,
-        max_output_tokens=64000,
-        supports_temperature=False,
-        supports_forced_tool_choice=False,
+        context_window_size=1000000, max_output_tokens=64000, supports_forced_tool_choice=False, effort="high"
     ),
-    LanguageModelId.CLAUDE_V5_1_FABLE: LanguageModelInfo(
-        context_window_size=1000000,
-        max_output_tokens=64000,
-        supports_temperature=False,
-        supports_forced_tool_choice=False,
-    ),
-    # NOTE: add new models here
 }
-
-
-ModelIdT = TypeVar("ModelIdT")
-ModelInfoT = TypeVar("ModelInfoT")
-WrapperT = TypeVar("WrapperT")
-
-
-class BaseBedrockModelFactory(Generic[ModelIdT, ModelInfoT, WrapperT], ABC):
-    BOTO_READ_TIMEOUT: ClassVar[int] = 300
-    BOTO_MAX_ATTEMPTS: ClassVar[int] = 3
-    MAX_POOL_CONNECTIONS: ClassVar[int] = 50
-
-    def __init__(
-        self,
-        boto_session: boto3.Session | None = None,
-        region_name: str | None = None,
-        profile_name: str | None = None,
-    ) -> None:
-        self.boto_session = boto_session or boto3.Session(profile_name=profile_name)
-        self.region_name = region_name or self.boto_session.region_name
-        boto_config = BotoConfig(
-            read_timeout=self.BOTO_READ_TIMEOUT,
-            connect_timeout=60,
-            retries={"max_attempts": self.BOTO_MAX_ATTEMPTS, "mode": "adaptive"},
-            max_pool_connections=self.MAX_POOL_CONNECTIONS,
-        )
-        # boto3's client() overloads exceed what mypy can resolve for a dynamic service name.
-        self._client = self.boto_session.client(  # type: ignore[call-overload]
-            self._get_boto_service_name(),
-            region_name=self.region_name,
-            config=boto_config,
-        )
-        logger.debug("Initialized %s for region: '%s'", self.__class__.__name__, self.region_name)
-
-    @abstractmethod
-    def _get_boto_service_name(self) -> str: ...
-
-    @abstractmethod
-    def _get_model_info_dict(self) -> dict[ModelIdT, ModelInfoT]: ...
-
-    @abstractmethod
-    def get_model(self, model_id: ModelIdT, **kwargs: Any) -> WrapperT: ...
-
-    def get_model_info(self, model_id: ModelIdT) -> ModelInfoT | None:
-        return self._get_model_info_dict().get(model_id)
 
 
 class _TokenUsageLogger(BaseCallbackHandler):
@@ -268,11 +133,10 @@ class BedrockCrossRegionModelHelper:
         return resolved
 
     @staticmethod
-    def application_profile_name(model_id: LanguageModelId) -> str:
-        """Deterministic name for this project/stage's application inference profile for a model.
-        Shared by the resolver and scripts/put_inference_profiles.py so neither can drift."""
-        project = os.getenv("PROJECT_NAME", "omnisummary")
-        stage = os.getenv("STAGE", "dev")
+    def application_profile_name(model_id: LanguageModelId, project: str, stage: str) -> str:
+        """Deterministic name for a project/stage's application inference profile for a model.
+        Shared by the resolver (project/stage from the env CDK sets on the Lambdas) and
+        scripts/put_inference_profiles.py (from the config it tags with), so neither can drift."""
         slug = re.sub(r"[^A-Za-z0-9]+", "-", model_id.value).strip("-")
         return f"{project}-{stage}-{slug}"
 
@@ -288,7 +152,9 @@ class BedrockCrossRegionModelHelper:
         Best-effort by design: cost attribution must never be able to stop a generation, so a
         missing profile, a denied ListInferenceProfiles or any unexpected error keeps the
         system-defined id the caller would have used anyway."""
-        wanted = BedrockCrossRegionModelHelper.application_profile_name(model_id)
+        wanted = BedrockCrossRegionModelHelper.application_profile_name(
+            model_id, os.getenv("PROJECT_NAME", "omnisummary"), os.getenv("STAGE", "dev")
+        )
         try:
             client = boto_session.client("bedrock", region_name=region_name)
             paginator = client.get_paginator("list_inference_profiles")
@@ -356,14 +222,31 @@ class BedrockCrossRegionModelHelper:
             raise RuntimeError(f"Failed to check cross-region model availability: {e}") from e
 
 
-class BedrockLanguageModelFactory(BaseBedrockModelFactory[LanguageModelId, LanguageModelInfo, ChatBedrockConverse]):
+class BedrockLanguageModelFactory:
     DEFAULT_TEMPERATURE: ClassVar[float] = 0.0
+    BOTO_READ_TIMEOUT: ClassVar[int] = 300
+    BOTO_MAX_ATTEMPTS: ClassVar[int] = 3
+    MAX_POOL_CONNECTIONS: ClassVar[int] = 50
 
-    def _get_boto_service_name(self) -> str:
-        return "bedrock-runtime"
+    def __init__(
+        self,
+        boto_session: boto3.Session | None = None,
+        region_name: str | None = None,
+    ) -> None:
+        self.boto_session = boto_session or boto3.Session()
+        self.region_name = region_name or self.boto_session.region_name
+        boto_config = BotoConfig(
+            read_timeout=self.BOTO_READ_TIMEOUT,
+            connect_timeout=60,
+            retries={"max_attempts": self.BOTO_MAX_ATTEMPTS, "mode": "adaptive"},
+            max_pool_connections=self.MAX_POOL_CONNECTIONS,
+        )
+        self._client = self.boto_session.client("bedrock-runtime", region_name=self.region_name, config=boto_config)
+        logger.debug("Initialized %s for region: '%s'", self.__class__.__name__, self.region_name)
 
-    def _get_model_info_dict(self) -> dict[LanguageModelId, LanguageModelInfo]:
-        return LANGUAGE_MODEL_INFO
+    @staticmethod
+    def get_model_info(model_id: LanguageModelId) -> LanguageModelInfo:
+        return LANGUAGE_MODEL_INFO[model_id]
 
     def count_tokens(self, text: str) -> int:
         """Authoritative token count via the Bedrock CountTokens API (not a local heuristic).
@@ -423,8 +306,6 @@ class BedrockLanguageModelFactory(BaseBedrockModelFactory[LanguageModelId, Langu
         token usage can be attributed in the logs — the bill is per MODEL, and several stages share
         one model, so without it a token total cannot be traced to the call that spent it."""
         model_info = self.get_model_info(model_id)
-        if not model_info:
-            raise ValueError(f"Unsupported language model ID: '{model_id.value}'")
         resolved_model_id = BedrockCrossRegionModelHelper.get_cross_region_model_id(
             self.boto_session, model_id, self.region_name or ""
         )
@@ -444,7 +325,6 @@ class BedrockLanguageModelFactory(BaseBedrockModelFactory[LanguageModelId, Langu
             *(config.get("callbacks") or []),
             _TokenUsageLogger(str(kwargs.get("stage") or "unattributed"), resolved_model_id),
         ]
-        # Newer models (Sonnet 5, Opus 4.7/4.8/5, the 5.5 family, Fable 5.1) reject `temperature`.
         config["max_tokens"] = final_max_tokens
         if model_info.supports_temperature:
             config["temperature"] = kwargs.get("temperature", self.DEFAULT_TEMPERATURE)
@@ -452,6 +332,8 @@ class BedrockLanguageModelFactory(BaseBedrockModelFactory[LanguageModelId, Langu
         # instead of forcing it, whether the resolved id is a global profile or an opaque ARN.
         if not model_info.supports_forced_tool_choice:
             config["supports_tool_choice_values"] = ("auto",)
+        if model_info.effort:
+            config["additional_model_request_fields"] = {"output_config": {"effort": model_info.effort}}
         return config
 
     def _build_base_config(self, resolved_model_id: str, **kwargs: Any) -> dict[str, Any]:
@@ -469,7 +351,6 @@ class BedrockLanguageModelFactory(BaseBedrockModelFactory[LanguageModelId, Langu
             config["provider"] = "anthropic"
         if self.boto_session.profile_name and self.boto_session.profile_name != "default":
             config["credentials_profile_name"] = self.boto_session.profile_name
-        config["stop_sequences"] = ["\n\nHuman:"]
         return config
 
     @staticmethod
@@ -519,10 +400,8 @@ def available_boto_profile(profile: str) -> str | None:
 
     Picking the credential source by PLATFORM SNIFF was wrong in both directions. is_running_in_aws()
     looks for AWS_EXECUTION_ENV / AWS_LAMBDA_FUNCTION_NAME / AWS_BATCH_JOB_ID /
-    ECS_CONTAINER_METADATA_URI, and the AgentCore runtime sets none of them (its CfnRuntime
-    environment carries only AWS_BEDROCK_REGION / PROJECT_NAME / STAGE / MEMORY_ID / STATE_BUCKET /
-    S3_PREFIX, and Dockerfile.agentcore only PYTHONUNBUFFERED) — so inside a container with no
-    ~/.aws/config the sniff chose the named-profile branch and the session could not be built at all.
+    ECS_CONTAINER_METADATA_URI, and a managed runtime that sets none of them sent a container with no
+    ~/.aws/config down the named-profile branch, where the session could not be built at all.
 
     Ambient credentials are what every managed runtime supplies, so they are the default; the
     configured profile is honoured exactly where it exists, which is the developer laptop it was
@@ -705,89 +584,3 @@ async def retry_async(
                 await asyncio.sleep(delay)
     assert last_error is not None
     raise last_error
-
-
-_CJK = "가-힣぀-ヿ一-鿿"
-
-
-def _normalize_bold_spans(text: str) -> str:
-    """Fix Slack *bold* spacing per-span so it renders correctly.
-
-    Slack requires no space just inside the * markers (`*x *` fails) and a word
-    boundary just outside (`a*x*` fails). CJK text has no spaces around emphasis,
-    so a CJK neighbour (e.g. a Korean particle `*설계*가`) must NOT get padding.
-    Handled as a single match-per-span pass to avoid the cross-span corruption of
-    chained regexes.
-    """
-
-    def repair(m: re.Match) -> str:
-        before, inner, after = m.group("before"), m.group("inner"), m.group("after")
-        inner = inner.strip()
-        if not inner:
-            return f"{before}{after}"  # empty bold -> drop the markers
-        lead = " " if before and not before.isspace() and not re.match(rf"[{_CJK}]", before) else ""
-        trail = " " if after and not after.isspace() and not re.match(rf"[{_CJK}]", after) else ""
-        return f"{before}{lead}*{inner}*{trail}{after}"
-
-    # (char before) *inner* (char after); inner has no '*' or newline
-    return re.sub(r"(?P<before>.?)\*(?P<inner>[^*\n]+?)\*(?P<after>.?)", repair, text)
-
-
-def _normalize_italic_spans(text: str) -> str:
-    """Fix Slack _italic_ spacing per-span, mirroring _normalize_bold_spans.
-
-    The digest prompt mandates the implications sentence be _italic_, and in Korean the
-    closing `_` is immediately followed by a particle (`_시사점_이다`), which Slack renders
-    as literal underscores. Pad the boundary with a space unless the neighbour is CJK.
-    Only multi-word spans (containing a space) are treated as emphasis, so snake_case
-    identifiers and `code`/URL underscores are left untouched.
-    """
-
-    def repair(m: re.Match) -> str:
-        before, inner, after = m.group("before"), m.group("inner"), m.group("after")
-        # Treat as emphasis only if multi-word OR contains CJK (Korean has no snake_case);
-        # a single ASCII token like `snake_case` is an identifier, not italic.
-        if " " not in inner and not re.search(rf"[{_CJK}]", inner):
-            return m.group(0)
-        inner = inner.strip()
-        if not inner:
-            return f"{before}{after}"
-        lead = " " if before and not before.isspace() and not re.match(rf"[{_CJK}]", before) else ""
-        trail = " " if after and not after.isspace() and not re.match(rf"[{_CJK}]", after) else ""
-        return f"{before}{lead}_{inner}_{trail}{after}"
-
-    return re.sub(r"(?P<before>.?)_(?P<inner>[^_\n]+?)_(?P<after>.?)", repair, text)
-
-
-def sanitize_slack_mrkdwn(text: str) -> str:
-    text = re.sub(r"\n---+\n", "\n\n", text)
-    text = re.sub(r"\n\*\*\*+\n", "\n\n", text)
-    text = re.sub(r"\n___+\n", "\n\n", text)
-
-    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
-
-    text = re.sub(r"\*\*([^*\n]+?)\*\*", r"*\1*", text)
-    text = _normalize_bold_spans(text)
-    text = _normalize_italic_spans(text)
-
-    # URL capture allows balanced paren groups (e.g. Wikipedia 'Foo_(bar)', arXiv, DOIs) instead of
-    # stopping at the first ')', which would truncate the link and leak a stray ')' into the text.
-    _url = r"(?:[^()\s]|\([^()\s]*\))+"
-    text = re.sub(rf"!\[([^\]]*)\]\((?P<u>{_url})\)", r"<\g<u>|\1>", text)
-    text = re.sub(rf"\[([^\]]+)\]\((?P<u>{_url})\)", r"<\g<u>|\1>", text)
-
-    text = re.sub(
-        r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF"
-        r"\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF"
-        r"\U00002702-\U000027B0\U0000FE00-\U0000FE0F\U0000200D"
-        r"\U00002194-\U00002199\U000021A9-\U000021AA\U0000231A-\U0000231B"
-        r"\U000023E9-\U000023F3\U000025AA-\U000025B7\U000025B9-\U000025FE\U00002600-\U000026FF"
-        r"\U00002934-\U00002935\U00003030\U0000303D\U00003297\U00003299]+",
-        "",
-        text,
-    )
-
-    text = re.sub(r"\n{3,}", "\n\n", text)
-
-    text = re.sub(r"(?<!\n)\n(\*<)", r"\n\n\1", text)
-    return text.strip()

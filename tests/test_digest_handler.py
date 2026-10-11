@@ -85,8 +85,7 @@ class TestRun:
                                     with patch("lambda_handlers.digest_handler._trigger_visual") as trigger:
                                         await digest_handler._run()
         today = datetime.now(ZoneInfo("Asia/Seoul")).date()
-        persisted_items, persisted_ranked, persisted_digest, persisted_date = persist.call_args.args
-        assert persisted_items == items
+        persisted_ranked, persisted_digest, persisted_date = persist.call_args.args
         assert len(persisted_ranked) == 3
         assert persisted_digest.content.items  # the stories actually reach the snapshot
         assert persisted_date == today

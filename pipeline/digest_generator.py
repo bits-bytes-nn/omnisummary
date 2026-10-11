@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import Counter
 from datetime import UTC, date, datetime
 
 from langchain_core.output_parsers import StrOutputParser
@@ -22,7 +21,6 @@ from shared import (
     logger,
     parse_json_from_llm_output,
     place_countdown_intro,
-    resolve_origin_key,
     retry_async,
     source_tag_and_metrics,
     split_sentences,
@@ -69,9 +67,8 @@ class DigestGenerator:
                 generated_at=datetime.now(UTC),
             )
 
-        # The ranker over-selects (top_n + buffer); the editor merges same-event items and
-        # then emits exactly target_count distinct stories, backfilling from the buffer so a
-        # merge never shrinks the digest below the target.
+        # The ranker hands over top_n + buffer candidates; the editor picks the strongest
+        # target_count distinct stories, merging same-event items.
         target_count = min(self.config.top_n, len(ranked_items))
         # A user can pin more URLs than top_n. Both the headline (items[0]) and every pinned item
         # must survive the trim, so raise the target to fit them all rather than silently dropping
@@ -153,51 +150,7 @@ class DigestGenerator:
             ranked_items=ranked_items,
             content=content,
             generated_at=datetime.now(UTC),
-            diversity_breaches=self._audit_shipped_diversity(shipped_sources, ranked_items),
         )
-
-    def _audit_shipped_diversity(self, shipped: list[CollectedItem], ranked_items: list[RankedItem]) -> list[str]:
-        """Check the diversity caps against the digest that actually SHIPS.
-
-        The ranker enforces max_per_origin and the guaranteed source slots on the ranked core, but the
-        merge-backfill candidates it hands over deliberately ignore both, and nothing verified that
-        the editor used a backfill item as a REPLACEMENT rather than an addition — the prompt only
-        asks. So a shipped digest can carry two stories from one subreddit/handle while a source that
-        HAD a candidate drops out entirely.
-
-        Detection only, by design: reported (ERROR log + DigestResult) so the alerting path can say
-        so, never acted on by swapping stories — that would change what ships."""
-        breaches: list[str] = []
-        cap = self.config.max_per_origin
-        origins = Counter(key for key in (resolve_origin_key(item) for item in shipped) if key)
-        over = sorted((origin, count) for origin, count in origins.items() if count > cap)
-        if over:
-            breaches.append(
-                f"max_per_origin={cap} exceeded by "
-                + ", ".join(f"'{origin}' ({count} stories)" for origin, count in over)
-            )
-        # Only a source that had a CORE candidate can be said to have been dropped. `ranked_items` is
-        # the over-selected list (top_n + digest_candidate_buffer), and its backfill and grace entries
-        # are explicitly offered as optional: the prompt tells the editor to use a backfill item as a
-        # REPLACEMENT for a merged story, and a grace item is below min_score and only there so its
-        # source's guaranteed slot stays fillable. Auditing against the full list therefore alerted on
-        # the buffer working as designed — the editor declining exactly what it was told it may
-        # decline reached SNS as a 'Ranking Health' ALERT. A collector that returned nothing is a
-        # quiet day either way, not a diversity failure.
-        shipped_sources = {item.source_type.value for item in shipped}
-        available = {r.item.source_type.value for r in ranked_items if not r.backfill and not r.grace}
-        dropped = sorted(
-            source
-            for source, slot in self.config.source_slots.items()
-            if slot >= 1 and source in available and source not in shipped_sources
-        )
-        if dropped:
-            breaches.append(
-                f"source(s) with a guaranteed slot and a ranked candidate shipped nothing: {', '.join(dropped)}"
-            )
-        for breach in breaches:
-            logger.error("Digest diversity breach (as shipped): %s", breach)
-        return breaches
 
     def _prose_budget(self, meta: str, url: str) -> int:
         """Characters the editor may spend on ONE item's title + body + implication.
@@ -207,11 +160,8 @@ class DigestGenerator:
         this item's own overhead. It used to be the worst case across the whole candidate pool, which
         charged every short-URL item for the longest URL in it. The TITLE is inside the number because
         the editor authors it — the old budget covered body + implication only, so every Korean title
-        was spent off-budget and 5 of 95 sampled items lost their closing sentence.
-        digest_item_prose_max_chars stays an optional CEILING: 0 means "no channel cap here"."""
-        derived = max(0, THREADS_MAX_POST_CHARS - threads_item_overhead_chars(meta, url))
-        ceiling = self.config.digest_item_prose_max_chars
-        return min(derived, ceiling) if ceiling > 0 else derived
+        was spent off-budget and 5 of 95 sampled items lost their closing sentence."""
+        return max(0, THREADS_MAX_POST_CHARS - threads_item_overhead_chars(meta, url))
 
     def _item_prose_budget(self, item: CollectedItem) -> int:
         """The budget for one ranked candidate, off the provenance line its post will really carry."""
@@ -369,8 +319,8 @@ class DigestGenerator:
 
         `sources_items` is what actually SHIPPED (_fill_source_metadata's match map), not every
         ranked candidate. Joining the whole candidate list meant a number or product name whose only
-        support was a dropped backfill candidate read as grounded — a false negative in the single
-        pass that exists to catch invented specifics — and carried the buffer's surplus input tokens
+        support was a candidate the editor dropped read as grounded — a false negative in the single
+        pass that exists to catch invented specifics — and carried the pool's surplus input tokens
         (item_text_max_tokens each) on the critical path."""
         try:
             sources = "\n\n".join(
@@ -403,7 +353,6 @@ class DigestGenerator:
             tag, metrics = self._source_tag_and_metrics(item)
             fields = [
                 ("Score", f"{ranked.score:.2f}"),
-                ("Categories", ", ".join(ranked.categories)),
                 ("Reasoning", ranked.reasoning),
                 ("Title", item.title),
                 ("URL", item.url),
@@ -417,30 +366,9 @@ class DigestGenerator:
                 fields.insert(
                     0, ("MUST INCLUDE", "user-pinned — keep this item in the digest, do not drop or merge it away")
                 )
-            # The ranker enforces the source-mix guarantees on the first top_n candidates; these
-            # extras exist so a merge of two same-event items can still be topped up to top_n. Say
-            # so per item (a code-owned field, like MUST INCLUDE) instead of asking the prompt to
-            # infer which candidates are spare from their position in the list.
-            elif ranked.backfill:
-                fields.insert(0, ("BACKFILL", "spare candidate — use it to replace a merged item, not in addition"))
-            # A grace item is below min_score BY DESIGN: it is the best its source had, and it is here
-            # so that source's guaranteed slot stays fillable. Without saying so, its low Score was the
-            # only thing the editor could see and it lost to every ordinary candidate — the youtube
-            # grace candidate of digest_2026-07-12 is in ranked_items and absent from the shipped five.
-            elif ranked.grace:
-                fields.insert(
-                    0,
-                    (
-                        "SOURCE COVERAGE",
-                        f"best candidate its source ({item.source_type.value}) had — its low score reflects "
-                        "the medium, not the story; prefer it over a second story from a source already "
-                        "represented",
-                    ),
-                )
             # This item's OWN prose budget, code-owned like MUST INCLUDE: the fixed parts of a Threads
             # post differ per item, so one worst-case number for the whole pool charged every
-            # short-URL item for the longest URL in it — and the lint measures each item against
-            # exactly the number stated here.
+            # short-URL item for the longest URL in it.
             budget = self._item_prose_budget(item)
             if budget > 0:
                 budgets.append(budget)
@@ -485,29 +413,28 @@ def _format_recent_leads(recent_leads: list[str] | None) -> str:
     """Render the last few days' leads as a bulleted block for the anti-repetition prompt
     input. Generic — names no phrase to ban, just 'here are recent openings, differ from them'.
 
-    Only each lead's FIRST SENTENCE is shown. What must differ is the opening ANGLE, and that is the
-    opening sentence; the 200-character previews carried a paragraph of prose the editor was never
-    asked to compare against. Derived HERE, at format time, so leads already stored as full prose
-    keep working — no history migration."""
+    Only each lead's LAST sentence is shown: the lead names its story first and lands its thesis
+    last, and the thesis is what must not repeat (the story is covered by the recent titles). Showing
+    the first sentence meant the "do not reuse the thesis" rule never saw one — the "who captures the
+    upside" thesis closed 11 of 32 leads. Derived at format time, so stored leads keep working."""
     leads = [ln.strip() for ln in (recent_leads or []) if ln and ln.strip()]
     if not leads:
         return "(No recent digests — no prior angles to avoid.)"
-    return "\n".join(f"- {_first_sentence(ln)}" for ln in leads)
+    return "\n".join(f"- {_last_sentence(ln)}" for ln in leads)
 
 
-def _first_sentence(text: str) -> str:
-    """The text's first sentence, hard-capped as a backstop for prose with no sentence boundary."""
+def _last_sentence(text: str) -> str:
+    """The text's last sentence, hard-capped as a backstop for prose with no sentence boundary."""
     sentences = split_sentences(text)
-    first = (sentences[0] if sentences else text).strip()
-    if len(first) <= RECENT_LEAD_PREVIEW_CHARS:
-        return first
-    return first[:RECENT_LEAD_PREVIEW_CHARS].rstrip() + "…"
+    last = (sentences[-1] if sentences else text).strip()
+    if len(last) <= RECENT_LEAD_PREVIEW_CHARS:
+        return last
+    return last[:RECENT_LEAD_PREVIEW_CHARS].rstrip() + "…"
 
 
 def _format_recent_titles(recent_titles: list[str] | None) -> str:
-    """The story titles the LAST published digest carried. The editor needs to know what yesterday
-    already ran so today isn't a re-run of it; the URL ledger stays the mechanism that actually
-    suppresses a repeat, so this is information, not a filter."""
+    """The story titles recent digests carried, so today isn't a re-run of them. The URL ledger stays
+    the mechanism that actually suppresses a repeat; this is information, not a filter."""
     titles = [t.strip() for t in (recent_titles or []) if t and t.strip()]
     if not titles:
         return "(No recent digest on record.)"
@@ -548,8 +475,9 @@ def _grounding_payload(content: DigestContent) -> str:
 
 
 def _apply_grounding_payload(content: DigestContent, corrected: str) -> DigestContent:
-    """Parse the corrected labelled lines back onto the content. Any field whose marker is
-    missing keeps its original value; a malformed payload leaves content unchanged."""
+    """Parse the corrected labelled lines back onto the content. A field whose marker is missing
+    OR empty keeps its original value (an empty marker would otherwise ship a blank field); a
+    malformed payload leaves content unchanged."""
     updated = content.model_copy(deep=True)
     current_key: tuple[str, int | None] | None = None
     buffers: dict[tuple[str, int | None], list[str]] = {}
@@ -560,14 +488,12 @@ def _apply_grounding_payload(content: DigestContent, corrected: str) -> DigestCo
             buffers[key] = [rest]
         elif current_key is not None:
             buffers[current_key].append(line)
+    text = {key: "\n".join(lines).strip() for key, lines in buffers.items()}
 
-    if ("LEAD", None) in buffers:
-        updated.lead = "\n".join(buffers[("LEAD", None)]).strip()
+    updated.lead = text.get(("LEAD", None)) or updated.lead
     for i, item in enumerate(updated.items):
-        if ("BODY", i) in buffers:
-            item.body = "\n".join(buffers[("BODY", i)]).strip()
-        if ("IMPLICATION", i) in buffers:
-            item.implication = "\n".join(buffers[("IMPLICATION", i)]).strip()
+        item.body = text.get(("BODY", i)) or item.body
+        item.implication = text.get(("IMPLICATION", i)) or item.implication
     return updated
 
 

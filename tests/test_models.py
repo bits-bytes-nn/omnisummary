@@ -58,16 +58,12 @@ class TestRankedItem:
 
 class TestVisualBrief:
     def test_valid_brief(self):
-        brief = VisualBrief(title="T", caption="C", prompt="P")
+        brief = VisualBrief(title="T", prompt="P", orientation="portrait")
         assert brief.title == "T"
 
-    def test_overlong_title_rejected(self):
-        with pytest.raises(ValidationError):
-            VisualBrief(title="x" * 101, caption="C", prompt="P")
-
-    def test_overlong_caption_rejected(self):
-        with pytest.raises(ValidationError):
-            VisualBrief(title="T", caption="x" * 601, prompt="P")
+    def test_a_long_title_does_not_cost_the_visual(self):
+        # The title only feeds a log line; a length cap could only fail an otherwise good brief.
+        assert VisualBrief(title="x" * 300, prompt="P", orientation="portrait")
 
 
 class TestTrendMomentum:
@@ -133,18 +129,8 @@ class TestTrendMemorySearch:
                     status=TrendStatus.ACTIVE,
                     evidence=[TrendEvidence(date="2026-06-01", summary="anthropic files s-1")],
                 ),
-                Trend(
-                    id="old",
-                    title="Archived Topic",
-                    status=TrendStatus.ARCHIVED,
-                    evidence=[TrendEvidence(date="2026-05-01", summary="kv cache old note")],
-                ),
             ]
         )
-
-    def test_excludes_archived(self):
-        out = self._mem().search("kv cache", today=date(2026, 6, 5), half_life_days=7.0, top_k=5)
-        assert [t.id for t in out] == ["kv"]  # archived 'old' excluded despite matching
 
     def test_ranks_by_term_hits_then_momentum(self):
         out = self._mem().search("ipo race", today=date(2026, 6, 5), half_life_days=7.0, top_k=5)

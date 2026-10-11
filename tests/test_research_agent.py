@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from shared.constants import LanguageModelId
+from shared.utils import LANGUAGE_MODEL_INFO
 
 
 class TestAgentPromptCaching:
@@ -157,7 +158,7 @@ class TestVoiceInjection:
         # The digest narrator persona is actually injected (the headline feature).
         token = cfg.pipeline.digest_voice_guidance.split()[0]
         assert token in prompt
-        assert str(cfg.agent.research_slack_target_words) in prompt
+        assert str(cfg.agent.research_target_words) in prompt
 
     def test_threads_post_cap_comes_from_the_renderer_constant(self):
         # The prompt used to spell the per-post limit as a literal "500" while the renderer enforced
@@ -167,17 +168,6 @@ class TestVoiceInjection:
 
         assert "{threads_max_post_chars}" in SYSTEM_PROMPT_TEMPLATE
         assert "500" not in SYSTEM_PROMPT_TEMPLATE
-
-    def test_threads_scope_is_narrowed_not_compressed(self):
-        # A 6-post cap gave Threads ~2.5k chars of prose against Slack's ~8.7k, and the prompt still
-        # demanded the same facts, figures and conclusions. The only way to obey both was to cut the
-        # explanation, which is what made Threads reports read as assertion lists. The instruction
-        # now trades scope for depth, so it must NOT ask for parity again.
-        from agent.research_agent import SYSTEM_PROMPT_TEMPLATE
-
-        assert "FEWER points" in SYSTEM_PROMPT_TEMPLATE
-        assert "COMPRESSED" not in SYSTEM_PROMPT_TEMPLATE
-        assert "same facts, figures, sources, and conclusions" not in SYSTEM_PROMPT_TEMPLATE
 
     def test_todays_date_is_injected_from_the_clock(self):
         # The prompt interpolated persona, knobs and the tool menu but never the date, so the model
@@ -246,9 +236,8 @@ class TestVoiceInjection:
         # arguments come from the real signature, not prose
         assert "web_search(query, recency)" in block
         assert "deliver_report(report, channel)" in block
-        # one line per tool, numbered, and no stale name survives
+        # one line per tool, numbered
         assert len(block.splitlines()) == len(tools)
-        assert "make_visual" not in block and "get_detail" not in block
 
     def test_a_renamed_tool_changes_the_menu(self):
         # The point of deriving the block: dropping a tool must remove it, with no edit anywhere.
@@ -320,12 +309,31 @@ class TestAgentTemperatureGating:
                 ra.create_research_agent()
 
         assert captured.get("temperature") == 0.0
+        # A model that takes temperature gets no effort field (effort is the newer models' knob).
+        assert "additional_request_fields" not in captured
+
+    def test_the_agent_prints_nothing_to_stdout(self):
+        # The CLI's stdout carries exactly one JSON object; Strands' default callback prints the
+        # streamed text there.
+        with (
+            patch("agent.research_agent.BedrockModel", return_value=MagicMock()),
+            patch("agent.research_agent.Agent", return_value=MagicMock(tool_names=["t"])) as agent_cls,
+            patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
+            patch(
+                "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
+                return_value="global.anthropic.claude-sonnet-5",
+            ),
+        ):
+            from agent.research_agent import create_research_agent
+
+            create_research_agent()
+        assert agent_cls.call_args.kwargs["callback_handler"] is None
 
 
 class TestAgentClaude55Request:
-    """The 5.5 family / Fable 5.1 400 on a non-default temperature, and Opus 5.5 / Sonnet 5.5 /
-    Fable 5.1 also on forced tool_choice. Builds the real Strands BedrockModel from the kwargs the
-    agent passes and asserts on the Converse request it would send."""
+    """The 5.5 family 400s on a non-default temperature, Opus 5.5 / Sonnet 5.5 also on forced
+    tool_choice, and Opus 5.5 / Haiku 5.5 default effort to "medium". Builds the real Strands
+    BedrockModel from the kwargs the agent passes and asserts on the Converse request it would send."""
 
     @pytest.mark.parametrize(
         "model_id",
@@ -333,11 +341,10 @@ class TestAgentClaude55Request:
             LanguageModelId.CLAUDE_V5_5_OPUS,
             LanguageModelId.CLAUDE_V5_5_SONNET,
             LanguageModelId.CLAUDE_V5_5_HAIKU,
-            LanguageModelId.CLAUDE_V5_1_FABLE,
         ],
         ids=lambda m: m.name,
     )
-    def test_request_has_no_temperature_and_auto_tool_choice(self, model_id):
+    def test_request_has_no_temperature_auto_tool_choice_and_pinned_effort(self, model_id):
         from strands.models.bedrock import BedrockModel
 
         from shared.config import Config
@@ -372,34 +379,16 @@ class TestAgentClaude55Request:
         )
         assert "temperature" not in request["inferenceConfig"]
         assert request["toolConfig"]["toolChoice"] == {"auto": {}}
-        assert "additionalModelRequestFields" not in request
-
-
-class TestAgentMaxTokensFallback:
-    def test_warns_when_model_info_missing(self):
-        with (
-            patch("agent.research_agent.BedrockModel", return_value=MagicMock()),
-            patch("agent.research_agent.Agent", return_value=MagicMock(tool_names=["t"])),
-            patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
-            patch(
-                "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
-                return_value="global.anthropic.claude-sonnet-5",
-            ),
-            patch("agent.research_agent.LANGUAGE_MODEL_INFO", {}),
-            patch("agent.research_agent.logger") as log,
-        ):
-            from agent.research_agent import create_research_agent
-
-            create_research_agent()
-
-        assert log.warning.called
+        effort = LANGUAGE_MODEL_INFO[model_id].effort
+        assert request.get("additionalModelRequestFields") == (
+            {"output_config": {"effort": effort}} if effort else None
+        )
 
 
 class TestAgentCredentialSelection:
-    """The credential source used to be chosen by platform sniff: is_running_in_aws() looks for
-    AWS_EXECUTION_ENV / AWS_LAMBDA_FUNCTION_NAME / AWS_BATCH_JOB_ID / ECS_CONTAINER_METADATA_URI, and
-    the AgentCore runtime's CfnRuntime environment sets NONE of them — so inside a container with no
-    ~/.aws/config the sniff picked profile_name="research" and the agent could not be built at all."""
+    """The credential source used to be chosen by platform sniff (is_running_in_aws()), which in a
+    runtime that sets none of the Lambda/Batch/ECS variables picked profile_name="research" inside a
+    container with no ~/.aws/config, so the agent could not be built at all."""
 
     def _session_kwargs(self, *, resolved_profile):
         with (
@@ -424,8 +413,8 @@ class TestAgentCredentialSelection:
         assert self._session_kwargs(resolved_profile="research")["profile_name"] == "research"
 
     def test_the_bedrock_region_falls_back_to_config(self, monkeypatch):
-        # AWS_BEDROCK_REGION is set by the CfnRuntime environment; a local run has only the config,
-        # and passing region_name=None there sent Bedrock calls to boto3's default region.
+        # A local run usually has no AWS_BEDROCK_REGION, and passing region_name=None there sent
+        # Bedrock calls to boto3's default region.
         monkeypatch.delenv("AWS_BEDROCK_REGION", raising=False)
         from shared.config import Config
 

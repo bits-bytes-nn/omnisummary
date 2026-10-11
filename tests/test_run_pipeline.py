@@ -53,7 +53,6 @@ class _Pipeline:
         self.tracker.update_trends = AsyncMock()
         self.memory = MagicMock()
         self.memory.get_recent_digests.return_value = []
-        self.send_slack = AsyncMock(return_value=True)
         self.visual = MagicMock()
         self.visual.run = AsyncMock(return_value=True)
 
@@ -61,8 +60,7 @@ class _Pipeline:
         ranked = self.ranked
         digest = self.digest
 
-        async def rank(items, select_count=None, core_count=None):
-            self.ranked_input = items
+        async def rank(items, select_count=None):
             return ranked if ranked is not None else _ranked(items)
 
         async def generate(ranked_items, items, **kwargs):
@@ -77,12 +75,11 @@ class _Pipeline:
             patch.object(runner, "ContentRanker", return_value=self.ranker),
             patch.object(runner, "DigestGenerator", return_value=self.generator),
             patch.object(runner, "TrendTracker", return_value=self.tracker),
-            patch.object(runner, "send_digest_to_slack", self.send_slack),
             patch.object(runner, "persist_digest"),
             patch("pipeline.daily_visual.DailyVisualMaker", return_value=self.visual),
         ]
         started = [p.start() for p in self._patches]
-        self.persist_digest = started[6]
+        self.persist_digest = started[5]
         return self
 
     def __exit__(self, *exc):
@@ -93,9 +90,7 @@ class _Pipeline:
 
 def _config(**pipeline_overrides) -> Config:
     config = Config()
-    config.pipeline.enable_slack_post = False
     config.pipeline.enable_threads_post = False
-    config.pipeline.enable_daily_visual = False
     for key, value in pipeline_overrides.items():
         setattr(config.pipeline, key, value)
     return config
@@ -175,9 +170,7 @@ class TestRunPipelineHappyPath:
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
                 await _run(p, config, [_item("https://a.example/1")])
-        assert p.ranker.rank.await_args.kwargs["select_count"] == 8
-        # ...while the source-slot guarantees are enforced on the top_n the reader actually gets.
-        assert p.ranker.rank.await_args.kwargs["core_count"] == 5
+        assert p.ranker.rank.await_args.kwargs == {"select_count": 8}
 
 
 class TestRunPipelineDedup:
@@ -204,9 +197,8 @@ class TestRunPipelineDedup:
                     p, _config(), [_item("https://old.example/1"), _item("https://new.example/2")]
                 )
         assert [it.url for it in collected] == ["https://new.example/2"]
-        kwargs = p.memory.get_recent_digests.call_args.kwargs
-        assert kwargs["exclude_date"] == DIGEST_DATE.isoformat()  # today's own snapshot is kept
-        assert kwargs["after_date"] == "2026-05-28"  # floored at digest_date - ttl (6 days)
+        # The ledger's TTL window before today (today's own snapshot is excluded by the store).
+        assert p.memory.get_recent_digests.call_args.args == (DIGEST_DATE, 6)
 
     @pytest.mark.asyncio
     async def test_memory_failure_is_non_fatal(self):
@@ -223,29 +215,15 @@ class TestRunPipelineDryRun:
         items = [_item("https://a.example/1")]
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
-                collected, ranked, digest = await _run(
-                    p, _config(enable_slack_post=True, enable_daily_visual=True), items, dry_run=True
-                )
+                collected, ranked, digest = await _run(p, _config(), items, dry_run=True)
                 assert p.store.read_json(PUBLISHED_URLS_KEY) is None
                 assert p.store.read_json(RECENT_LEADS_KEY) is None
         assert collected and ranked and digest
         p.tracker.update_trends.assert_not_awaited()
-        p.send_slack.assert_not_awaited()
         p.visual.run.assert_not_awaited()
 
 
 class TestRunPipelineDelivery:
-    @pytest.mark.asyncio
-    async def test_slack_post_only_when_enabled(self):
-        items = [_item("https://a.example/1")]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with _Pipeline(tmpdir) as p:
-                await _run(p, _config(enable_slack_post=False), items)
-                p.send_slack.assert_not_awaited()
-            with _Pipeline(tmpdir) as p:
-                await _run(p, _config(enable_slack_post=True), items)
-                p.send_slack.assert_awaited_once()
-
     @pytest.mark.asyncio
     async def test_visual_runs_inline_outside_aws_and_carries_force_republish(self):
         # In AWS the digest Lambda fires a separate visual Lambda; locally it must run inline so
@@ -254,7 +232,7 @@ class TestRunPipelineDelivery:
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
                 with patch.object(runner, "is_running_in_aws", return_value=False):
-                    await _run(p, _config(enable_daily_visual=True), items, force_republish=True)
+                    await _run(p, _config(), items, force_republish=True)
         p.visual.run.assert_awaited_once()
         assert p.visual.run.await_args.kwargs["force_republish"] is True
         assert p.visual.run.await_args.kwargs["today"] == DIGEST_DATE
@@ -265,7 +243,7 @@ class TestRunPipelineDelivery:
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
                 with patch.object(runner, "is_running_in_aws", return_value=True):
-                    await _run(p, _config(enable_daily_visual=True), items)
+                    await _run(p, _config(), items)
         p.visual.run.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -275,7 +253,7 @@ class TestRunPipelineDelivery:
             with _Pipeline(tmpdir) as p:
                 p.visual.run.side_effect = RuntimeError("openai down")
                 with patch.object(runner, "is_running_in_aws", return_value=False):
-                    collected, ranked, digest = await _run(p, _config(enable_daily_visual=True), items)
+                    collected, ranked, digest = await _run(p, _config(), items)
         assert collected and ranked and digest  # the digest itself already shipped
 
     @pytest.mark.asyncio
@@ -301,13 +279,15 @@ class TestRunPipelineDelivery:
 
 
 class TestRecentStoryTitles:
-    """The editor is told what the LAST digest ran, read off the snapshots the cross-day dedup seed
+    """The editor is told what recent digests ran, read off the snapshots the cross-day dedup seed
     already fetched — no extra call, and no change to the URL ledger."""
 
-    def test_titles_come_from_the_newest_snapshot(self):
+    def test_titles_come_from_every_snapshot_in_the_window_newest_first(self):
+        # A weekly roundup re-surfaces a story under a new URL; one day of titles missed three
+        # repeats on 2026-10-11.
         newest = {"digest_result": {"content": {"items": [{"title": "어제 1"}, {"title": "어제 2"}]}}}
-        older = {"digest_result": {"content": {"items": [{"title": "그제 1"}]}}}
-        assert runner._recent_story_titles([newest, older]) == ["어제 1", "어제 2"]
+        older = {"digest_result": {"content": {"items": [{"title": "그제 1"}, {"title": "어제 1"}]}}}
+        assert runner._recent_story_titles([newest, older]) == ["어제 1", "어제 2", "그제 1"]
 
     def test_a_story_less_or_missing_snapshot_degrades_to_nothing(self):
         assert runner._recent_story_titles([]) == []

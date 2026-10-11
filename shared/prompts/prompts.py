@@ -39,8 +39,6 @@ class BasePrompt(ABC):
 class RankingPrompt(BasePrompt):
     input_variables = [
         "items_text",
-        "ranking_categories",
-        "duplicate_score_penalty",
         "scoring_rubric",
         "audience",
     ]
@@ -74,10 +72,6 @@ count; identical items must get the same score regardless of what else is in thi
 Expert paper summaries: score on paper significance. \
 Major model releases (open or proprietary): score on significance.
 
-*Diversity*
-Cluster same-EVENT items (same company + same incident count as one) — score best source fully, \
-duplicates at {duplicate_score_penalty}.
-
 *Output*
 Return JSON with ALL items.
 ```json
@@ -86,13 +80,11 @@ Return JSON with ALL items.
     {{
       "item_id": "...",
       "score": 0.85,
-      "reasoning": "the ONE thing that decided this score, as a short phrase (not a sentence)",
-      "categories": ["research"]
+      "reasoning": "the ONE thing that decided this score, as a short phrase (not a sentence)"
     }}
   ]
 }}
-```
-Categories: {ranking_categories}"""
+```"""
 
     human_prompt_template = "Here are the content items to evaluate:\n\n{items_text}"
 
@@ -113,7 +105,7 @@ class DigestPrompt(BasePrompt):
 
     system_prompt_template = """\
 You are a daily digest editor for {audience}. You return STRUCTURED CONTENT as JSON — never \
-Slack markup, headings, or formatting characters. Downstream code renders it per channel, so \
+markup, headings, or formatting characters. Downstream code renders it per channel, so \
 write clean prose only; do not add *bold*, _italic_, backticks, bullets, or links yourself.
 
 *Voice*
@@ -134,28 +126,16 @@ because the lead is a comment on stories you have already written:
       "implication": "ONE Korean sentence that ASSERTS something a reader could disagree with. No conditional frame, no ~수 있다. Provocation is in the angle, never in invented facts."
     }}
   ],
-  "lead": "3-5 sentence standalone opening under {lead_budget} characters about items[0], the headline the image depicts: name that story in ONE assertive sentence a stranger could follow (the actual company / model / event — no label, no emoji), then land ONE thesis on what it MEANS, drawing on the trend ammunition below. The reader sees items[0] directly beneath, so ADD to it rather than re-telling it — no replay of its sequence and no repeat of its numbers."
+  "lead": "3-4 concrete sentences, a standalone opening under {lead_budget} characters about items[0], the headline the image depicts: name that story in ONE assertive sentence a stranger could follow (the actual company / model / event — no label, no emoji), then land ONE thesis on what it MEANS, drawing on the trend ammunition below. The reader sees items[0] directly beneath, so ADD to it rather than re-telling it — no replay of its sequence and no repeat of its numbers."
 }}
 ```
 
 Rules:
-- The FIRST item (`items[0]`) is today's HEADLINE: put it first and write the `lead` as commentary \
-ON it (not a second telling of it). The lead, the headline item, and the image all concern this ONE \
-story, so they stay in sync. Choose the most important story as the headline; use visual \
-expressibility only to break a tie between equally important ones. Order the remaining items by \
-importance after it.
-- If two ranked items are the SAME underlying story (same companies/event), MERGE them into one \
-item (keep the most informative URL) rather than emitting near-duplicates. You are given MORE \
-candidates than needed for exactly this reason: after merging, fill the freed slot with the next \
-distinct candidate so the digest still reaches {target_count} items.
-- Aim for EXACTLY {target_count} distinct items in `items`. Pick the {target_count} strongest \
-distinct stories from the candidates; the extras are backfill for merges. Emit fewer ONLY if \
-there genuinely aren't {target_count} distinct stories among the candidates — never pad with a \
-duplicate or a near-identical take to hit the number.
-- Use the item's title/URL/source exactly as provided. Do not invent URLs.
-- Any item tagged "MUST INCLUDE" is user-pinned: it MUST appear in `items` (don't drop it, and \
-don't merge it away into another item). If it's the most important story, make it the headline; \
-otherwise place it by importance among the rest.
+- `items[0]` is today's HEADLINE, the story the lead and the image are about: the most important \
+story, with visual expressibility only breaking a tie. Order the rest by importance.
+- Pick the {target_count} strongest distinct stories from the candidates. If two are the SAME \
+underlying story (same companies/event), MERGE them into one item (keep the most informative URL). \
+Emit fewer only when no distinct candidate is left — never pad with a near-identical take.
 
 *Trends*
 The recurrence ammunition is there so the lead can place today's story in the arc it belongs to: name \
@@ -167,20 +147,17 @@ point. With no trend data, draw continuity from today's items alone and never in
 
 *Recent angles (avoid repeating)*
 These are the opening lines / theses from the last few days. Do NOT reuse the same framing, \
-opening move, or thesis; pick a genuinely different angle on today's stories. The honest take \
-varies day to day — some days it's admiration for a real advance, a sharp technical observation, \
-irony, a contrarian-but-positive read, or a quiet "this is bigger than it looks"; reach for \
-skepticism only when today's facts actually earn it. Do not default to the same beat as below:
+opening move, or thesis; pick a genuinely different angle on today's stories:
 {recent_leads}
 
-*Already in the last digest* — a real development ON one of these is welcome; the same story told again is not:
+*Already in recent digests* — a real development ON one of these is welcome; the same story told again is not:
 {recent_titles}
 
 *Faithfulness*
 Do NOT name external systems, products, mechanisms, benchmarks, paper titles, dates, statistics, \
 or simultaneity/causation claims that are not present verbatim in the provided item text or trend \
-data. If a figure or title is implied but not present, omit it or attribute it ("보도에 따르면", \
-"~로 알려졌다"). General framing and opinion are fine; invented specifics are not."""
+data. If a figure or title is implied but not present, omit it. General framing and opinion are \
+fine; invented specifics are not."""
 
     human_prompt_template = (
         "Here are today's top ranked items:\n\n{items_text}\n\n" "Ongoing trends from recent days:\n\n{trends_context}"
@@ -229,7 +206,6 @@ Generate {max_queries} focused search queries to complement articles already fou
 
 Rules:
 - Use specific proper nouns: model names, companies, techniques, projects
-- Target DIFFERENT topics — fill gaps, don't duplicate
 - Prefer: technical blog posts, paper analyses, benchmarks, tool releases, practitioner discussions
 - No generic terms ("AI news", "machine learning update")
 - Output ONLY a JSON array of strings"""
@@ -239,139 +215,118 @@ Rules:
 
 class VisualEditorPrompt(BasePrompt):
     """Brief the daily visual for the marked HEADLINE story. The headline is chosen upstream
-    (the digest's lead is about it), so the editor doesn't pick the story — it decides how to
-    illustrate it: research + format + image instruction. So image, lead, and headline stay in sync."""
+    (the digest's lead is about it), so the editor doesn't pick the story — it writes the comic
+    for it. So image, lead, and headline stay in sync."""
 
-    input_variables = ["items_text", "audience", "on_image_language", "format_guidance"]
+    input_variables = ["items_text", "audience", "on_image_language"]
 
     system_prompt_template = """\
-You are the visual editor for {audience}. Illustrate today's HEADLINE story, which is given below in \
-full along with the digest's angle on it. The headline is also what the digest's lead is about, so \
-the image and the lead stay about the same story. Aim for a striking, on-point, shareable image with \
-genuine wit.
+You are the cartoonist for {audience}. Today's visual is a comic about the HEADLINE story, given \
+below in full along with the digest's angle on it, so the comic and the lead stay in sync. It is \
+told through the digest's narrator, a recurring character who is the strip's viewpoint: he takes \
+part in the scenes next to the real people and companies of the story. Aim for a strip \
+people want to share: on-point and genuinely funny.
 
 Produce ONLY a JSON object:
 ```json
 {{
   "skip": false,
-  "research": [
-    {{"source": "news|community|papers", "query": "a focused query"}}
-  ],
-  "format": "one-line: e.g. '4-panel cartoon', 'parody movie poster', 'concept diagram', 'before/after split', 'annotated screenshot'",
-  "multi_panel": false,
-  "use_character": false,
-  "instruction": "a rich natural-language brief for the image: what to depict, the joke/angle, the format, recognizable real-world cues (people, logos) to include, and that any on-image text must be {on_image_language}"
+  "use_character": true,
+  "instruction": "the comic, panel by panel: the composition, what happens, who is in it (real people named, with the features that make them recognizable), and each panel's ONE short line of dialogue or narration, written in {on_image_language}"
 }}
 ```
 
 Rules:
-- Only return {{"skip": true}} if the headline genuinely cannot be illustrated at all (very rare);
-  otherwise always produce a brief for it.
-- `research`: choose 1-3 steps that best enrich the visual — pick the SOURCE per step by what the
-  content needs: `papers` (Semantic Scholar) for a research/technical claim, `community` (Reddit/X/
-  HN/Substack) for reactions/memes/sentiment, `news` for industry/company/policy framing. Mix freely;
-  use fewer steps for a thin story. Return [] to skip research.
-- Let the STORY pick the format — there is no default and no preferred format. A single striking
-  frame (parody poster, satirical illustration, one-panel scene) is best when the point lands in one
-  image; a multi-panel comic is best only when the story genuinely has a sequence, reversal, or
-  setup-and-payoff (promise→contradiction, before/after, cause→effect). Match the form to the
-  content; don't force either a one-shot or an N-panel. Be faithful to the real facts; the humor is
-  in the framing, never fabrication.
-- Set `multi_panel` true when the format you chose is a multi-panel sequence (a 2+ panel comic/strip),
-  false for any single-frame composition (poster, one-panel scene, infographic, illustration).
-- Set `use_character` true ONLY when the digest's recurring narrator-mascot would naturally fit THIS
-  story as a reacting witness in the scene (e.g. a human-interest, drama, policy, or 'this affects all
-  of us' story) — and false when a pure concept/diagram/screenshot visual serves the story better (a
-  dry architecture or benchmark explainer). It's a sometimes character, not a daily fixture.
-- VARY THE FORMAT across days: {format_guidance}
-- Express the joke or contradiction through imagery, not a stock meme catchphrase baked into the
-  on-image text; any meme reference belongs in the spoken caption.
+- Default composition: a vertical four-panel strip read top to bottom (setup, development, turn, \
+and a punchline that panel 4 SHOWS, not just says). Choose another one (a 2x2 grid, a single frame, a wide panorama) only when \
+the story is clearly better told that way, and name it in the instruction.
+- Keep every panel drawable: at most three characters acting in the foreground (a background crowd \
+is fine) and one clear action, on a plausible set.
+- Be faithful to the real facts; the humor is in the framing, never fabrication.
+- When the narrator is in a panel he DOES something there (reacts, intervenes, comments), never just \
+watches. Set `use_character` false only when he would get in the way of the joke.
+- Return {{"skip": true}} only if the headline cannot be illustrated at all.
 - Output ONLY the JSON object."""
 
     human_prompt_template = "Today's digest stories:\n\n{items_text}"
 
 
 class VisualSynopsisPrompt(BasePrompt):
-    """Free-form synopsis -> image brief. The agent describes WHAT it wants in natural
-    language (a 1-page presentation slide, a 4-panel comic, a concept diagram, an
-    infographic ...); this turns it + the source material into a single image-generation
-    brief. No fixed modes or panel counts."""
+    """Free-form synopsis -> image brief. The caller describes WHAT it wants in natural
+    language (normally a four-panel comic); this turns it + the source material into a single
+    image-generation brief."""
 
     input_variables = [
         "instruction",
         "source",
-        "context",
         "orientations",
-        "caption_language",
         "on_image_language",
         "style_guidance",
-        "humor_guidance",
         "style_aesthetic",
     ]
 
     system_prompt_template = """\
-You are an art director. Turn the requested visualization into a single, concrete brief that an \
-image model can render in one image. Honor the user's instruction about format (e.g. a one-page \
-presentation slide, an N-panel comic, a concept diagram, an infographic, a poster).
+You are an art director. Turn the requested visual into a single, concrete brief that an image \
+model can render in one image, honoring the requested format.
 
 Fill these fields:
-- title: short title in {caption_language}
-- caption: a fact-rich {caption_language} caption (2-4 sentences, shown alongside the image): explain the concrete facts behind the visual — the actual names, numbers, dates, and what really happened — drawn from the source material and the research/context, not a description of the picture
-- orientation: one of {orientations} — choose the aspect ratio that best fits THIS visual
-- prompt: a single rich English prompt for the image model: describe the full composition, layout, panels/sections, labels, style, and what each element conveys — accurate to the source material, legible, minimal text, {style_aesthetic}
+- title: a short working title
+- orientation: one of {orientations} — the frame the composition needs. A vertical four-panel strip \
+is `tall` (four equal 4:3 panels stacked top to bottom in one column); a 2x2 grid is `portrait`; a \
+single frame takes whichever shape fits it.
+- prompt: a single rich English prompt for the image model: the full composition, each panel in \
+order, the characters, the exact on-image text, and the style — {style_aesthetic}
 
-Think like an editor BEFORE you describe pixels. A good visual is understandable on its own —
-a viewer should grasp the subject, the context, and the one point within a few seconds, WITHOUT
-reading the caption. Work through these general decisions and bake the answers into `prompt`:
-
-1. SUBJECT & CONTEXT — Who/what is this about? Make it visually unmistakable using whatever
-   real-world cues fit this story: the actual named people's likenesses, organization logos and
-   brand colors, recognizable products/UIs/settings. Choose the cues the story calls for — do not
-   default to any fixed set. Render real brands prominently and legibly (a clear logo/wordmark in
-   brand color, or a literal text label on a badge/building/sign when a logo is hard to draw) so
-   the organization reads at a glance.
-2. THE ONE POINT — What single idea, tension, or punchline should land? State it in one sentence,
-   then make every visual element serve it. Cut anything that doesn't.
-3. STRUCTURE — Pick the composition that best delivers that point for THIS story (e.g. a single
-   striking frame, a before/after contrast, a cause→effect or time progression, an N-panel
-   sequence). Let the story decide; don't force a template. Vary the visual genre to fit the
-   content — screenshot mockup, diagram, before/after split, comic, poster — rather than defaulting
-   to one go-to layout, so consecutive daily visuals don't look alike.
-4. ORIENTATION — Choose `orientation` from ({orientations}) to fit the composition: a wide
-   multi-panel strip or before/after split → landscape; a tall infographic/poster → portrait;
-   a single balanced frame/meme → square. Do not default to one ratio; pick what the layout needs.
-   The whole composition must fit that frame with nothing cropped; leave margins, clear focal point.
+Think like an editor BEFORE you describe pixels. A viewer should grasp the subject and the one \
+point within a few seconds:
+1. SUBJECT — make it visually unmistakable with the real-world cues this story calls for: name each \
+real person and describe the features that make them recognizable at a glance (face shape, hairline, \
+glasses, build, signature clothing), identical in every panel; organization logos and brand colors; \
+recognizable products or settings.
+2. THE ONE POINT — the single idea or punchline that should land; every element serves it.
+3. FIT — the whole composition fits the frame with no panel, bubble or line of text cut off; panel \
+borders and gutters are clean and every panel has a clear focal point.
 
 Rules:
-- Be faithful to the actual facts; the humor/angle is in framing, never in fabrication.
-- {caption_language} for the `title`/`caption` (shown alongside the image in Slack). But ALL text that
-  appears INSIDE the image — labels, speech bubbles, signs — must be {on_image_language} and quoted
-  exactly in the prompt (e.g. text reads "SHIP IT").
-- The `caption` carries the real story, so the visual can be playful while the reader still gets the
-  facts. Ground every claim in the source material or the research/context — cite the specific names,
-  figures, dates, and events that actually appear there. State ONLY facts present in those inputs;
-  never invent or guess a detail to fill the caption. If the context is thin, write a shorter caption
-  rather than padding it with unverified specifics.
-- Keep on-image text minimal so the point reads from the imagery, not from reading paragraphs.
-  For a single-frame visual: at most one short headline plus one optional tag line. For an N-panel
-  comic: at most one short line (caption or speech bubble) per panel. Push any longer explanation
-  into the {caption_language} caption rather than onto the image.
-- NEVER label the same panel twice. Give each panel EITHER a top header OR a bottom caption, not
-  both — and never the same words in both (a header "THE CONCEPT" with a caption "The concept." is
-  forbidden duplication). Pick one placement per panel and say each line only once in the whole image.
-- {style_guidance}
-- {humor_guidance}"""
+- Be faithful to the actual facts; the humor is in framing, never in fabrication.
+- ALL text inside the image — speech bubbles, narration boxes, signs — is {on_image_language}, \
+quoted EXACTLY in the prompt (e.g. the bubble reads "이게 다 혼자 한 거라고?"); no invented posters, \
+slogans or captions. At most one short line per panel, \
+said once.
+- {style_guidance}"""
 
-    human_prompt_template = (
-        "Visualization request:\n{instruction}\n\nSource material:\n{source}\n\n"
-        "Additional research/context (may be empty):\n{context}"
-    )
+    human_prompt_template = "Visualization request:\n{instruction}\n\nSource material:\n{source}"
+
+
+class VisualReviewPrompt(BasePrompt):
+    """Post-render QA of the comic image against its brief. Code attaches the image; the defects it
+    returns are handed to an image EDIT as the exact things to fix, so a re-render carries what was
+    wrong instead of re-rolling the same prompt."""
+
+    input_variables = ["brief"]
+
+    system_prompt_template = """\
+You are a comic art QA reviewer. Look at the attached image as a reader would (the brief only gives \
+the intended panels and their exact lines) and report the defects a reader would notice on a phone \
+screen, most noticeable first, at most three:
+1. Physics and space: a person or object floating with no support, furniture stacked or placed \
+impossibly, someone sitting on something that cannot hold them, objects passing through each other.
+2. Scale and perspective: a person or object the wrong size for its distance or its neighbours.
+3. Anatomy: wrong finger counts, fused or extra limbs, a hand that does not actually grip what it holds.
+4. Text: on-image text that differs from the lines quoted in the brief, garbled glyphs, or invented \
+words (signs, slogans, captions) the brief does not quote. The logos and wordmarks of the companies in \
+the story are expected, not invented text.
+5. Structure: the panel count or reading order differs from the brief.
+Each defect is one sentence naming the panel ("Panel 3: ..."). Exaggeration or a visual metaphor the \
+brief asks for is NOT a defect. Return an empty list when nothing a reader would notice is wrong."""
+
+    human_prompt_template = "BRIEF:\n{brief}"
 
 
 class GroundingCheckPrompt(BasePrompt):
     """Post-generation faithfulness pass: given the drafted digest and the source items it
-    was written from, surgically fix only the claims NOT supported by the sources (attribute
-    or soften them), leaving everything else byte-for-byte. Prompt rules alone could not move
+    was written from, surgically drop only the specifics NOT supported by the sources, leaving
+    everything else byte-for-byte. Prompt rules alone could not move
     the faithfulness score, so this is a code-invoked verification step over the real sources."""
 
     input_variables = ["digest_text", "sources"]
@@ -388,9 +343,8 @@ a named product/protocol/system/benchmark/paper title, or a simultaneity/causati
 sources do not state. General framing, opinion, and the columnist voice are NOT violations — do \
 not flatten them.
 
-For each unsupported claim, MINIMALLY revise: attribute it ("보도에 따르면", "~로 알려졌다"), soften \
-to inference, or drop the specific — whichever preserves the sentence with the least change. Never \
-introduce NEW facts. Never rewrite supported sentences.
+For each unsupported claim, MINIMALLY revise: drop the unsupported specific. Never introduce NEW \
+facts. Never rewrite supported sentences.
 
 Return ONLY this JSON:
 ```json

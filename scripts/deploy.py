@@ -4,7 +4,6 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import boto3
 from aws_cdk import App, Environment
 
 from infrastructure.application_stack import OmniSummaryApplicationStack
@@ -15,13 +14,12 @@ from shared import Config
 def main():
     config = Config.load()
 
-    boto_session = boto3.Session(
-        region_name=config.aws.region,
-        profile_name=config.aws.profile or None,
-    )
-    account_id = boto_session.client("sts").get_caller_identity()["Account"]
-
-    env = Environment(account=account_id, region=config.aws.region)
+    # The account the CDK CLI resolved from ITS credentials (the ones it deploys with), not a second
+    # STS call through config.aws.profile, which can name a different account.
+    account = os.environ.get("CDK_DEFAULT_ACCOUNT")
+    if not account:
+        raise SystemExit("CDK_DEFAULT_ACCOUNT is unset: run this through the CDK CLI (npx cdk deploy -a ...)")
+    env = Environment(account=account, region=config.aws.region)
 
     app = App()
 
@@ -42,7 +40,6 @@ def main():
         # values would land in plaintext in cdk.out, the CDK staging bucket and GetTemplate. The
         # stack creates the parameters holding a placeholder; run scripts/put_secrets.py after the
         # deploy to write the real values as SecureStrings.
-        agentcore_image_ref=os.getenv("AGENTCORE_IMAGE_REF", ""),
         digest_image_ref=os.getenv("DIGEST_IMAGE_REF", ""),
         env=env,
     )

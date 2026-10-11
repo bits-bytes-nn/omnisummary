@@ -48,7 +48,6 @@ def main() -> None:
         f"{config.aws.project_name}-{config.aws.stage}-application",
         config=config,
         foundation=foundation,
-        agentcore_image_ref=os.getenv("AGENTCORE_IMAGE_REF", "sha256:" + "0" * 64),
         digest_image_ref=os.getenv("DIGEST_IMAGE_REF", "sha256:" + "0" * 64),
         env=env,
     )

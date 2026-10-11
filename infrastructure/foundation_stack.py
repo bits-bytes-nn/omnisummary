@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 
 from aws_cdk import Duration, RemovalPolicy, Stack, Tags
-from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_ecr as ecr
 from aws_cdk import aws_ecs as ecs
@@ -20,6 +19,7 @@ from constructs import Construct
 
 from shared import Config
 from shared.constants import RSSHUB_PORT, SSM_PLACEHOLDER, SSM_RSSHUB_SECRET_ENV_VARS
+from shared.memory import digest_memory_name
 
 
 class OmniSummaryFoundationStack(Stack):
@@ -89,28 +89,16 @@ class OmniSummaryFoundationStack(Stack):
             lifecycle_rules=[ecr.LifecycleRule(max_image_count=10)],
         )
 
-        self.dedup_table = dynamodb.Table(
-            self,
-            "EventDedup",
-            table_name=f"{project_name}-{stage}-event-dedup",
-            partition_key=dynamodb.Attribute(name="event_id", type=dynamodb.AttributeType.STRING),
-            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
-            time_to_live_attribute="ttl",
-            removal_policy=RemovalPolicy.DESTROY,
-            encryption=dynamodb.TableEncryption.AWS_MANAGED,
-            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
-                point_in_time_recovery_enabled=is_prod
-            ),
-        )
-
         ssm_read_statement = iam.PolicyStatement(
-            actions=["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"],
+            actions=["ssm:GetParameter"],
             resources=[f"arn:aws:ssm:{self.region}:{self.account}:parameter/{project_name}/{stage}/*"],
         )
         bedrock_invoke_statement = iam.PolicyStatement(
             # CountTokens powers token counting/truncation (replaces the local tiktoken heuristic);
             # without it the calls AccessDeny and silently fall back to a char/4 estimate.
-            actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:CountTokens"],
+            # No streaming action: every Lambda call is a non-streaming Converse (only the local
+            # research CLI streams, under the operator's own credentials).
+            actions=["bedrock:InvokeModel", "bedrock:CountTokens"],
             resources=[
                 "arn:aws:bedrock:*::foundation-model/*",
                 f"arn:aws:bedrock:*:{self.account}:inference-profile/*",
@@ -122,42 +110,13 @@ class OmniSummaryFoundationStack(Stack):
                 f"arn:aws:bedrock:*:{self.account}:application-inference-profile/*",
             ],
         )
-        # The cross-region helper resolves a model ID to its inference-profile ARN
-        # before invoking. Without these, it AccessDenies on ListInferenceProfiles and
-        # falls back to a bare model ID, which Bedrock rejects for on-demand throughput.
+        # ListInferenceProfiles: the cross-region helper resolves a model ID to a profile before
+        # invoking (without it, a bare model ID that on-demand Bedrock rejects). GetInferenceProfile:
+        # langchain-aws reads the model behind an application-profile ARN.
         bedrock_profile_statement = iam.PolicyStatement(
             actions=["bedrock:GetInferenceProfile", "bedrock:ListInferenceProfiles"],
             resources=["*"],
         )
-        logs_statement = iam.PolicyStatement(
-            actions=["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
-            resources=[
-                f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/lambda/{project_name}-{stage}-*",
-                f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/bedrock-agentcore/*",
-            ],
-        )
-
-        self.agentcore_role = iam.Role(
-            self,
-            "AgentCoreRole",
-            assumed_by=iam.ServicePrincipal("bedrock-agentcore.amazonaws.com"),
-            managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name("AmazonEC2ContainerRegistryReadOnly"),
-            ],
-        )
-        self.agentcore_role.add_to_policy(ssm_read_statement)
-        self.agentcore_role.add_to_policy(bedrock_invoke_statement)
-        self.agentcore_role.add_to_policy(bedrock_profile_statement)
-        self.agentcore_role.add_to_policy(logs_statement)
-        # Scope object access to the project's own prefix instead of the entire bucket. The bucket
-        # can be a pre-existing shared one (config.aws.state_bucket_name), so a bucket-wide
-        # grant hands every other tenant's objects to this role. The root prefix provably covers
-        # everything the project touches: {prefix}/digest_state/* (state_store), {prefix}/<file>
-        # park files (collectors.base.park_file_key) and {prefix}/threads/*.png (daily visual).
-        # An empty s3_prefix keeps the previous bucket-wide behaviour.
-        objects_prefix = f"{config.aws.s3_prefix.strip('/')}/*" if config.aws.s3_prefix.strip("/") else "*"
-        self.state_bucket.grant_read_write(self.agentcore_role, objects_prefix)
-
         self.lambda_role = iam.Role(
             self,
             "LambdaRole",
@@ -169,24 +128,39 @@ class OmniSummaryFoundationStack(Stack):
         self.lambda_role.add_to_policy(ssm_read_statement)
         self.lambda_role.add_to_policy(bedrock_invoke_statement)
         self.lambda_role.add_to_policy(bedrock_profile_statement)
-        self.lambda_role.add_to_policy(logs_statement)
-        self.state_bucket.grant_read_write(self.lambda_role, objects_prefix)
-        self.dedup_table.grant_read_write_data(self.lambda_role)
-        # The digest Lambda's only cross-function call is the async fan-out to the daily-visual
-        # Lambda, so grant exactly that one function instead of every {project}-{stage}-* function
-        # (which included the public-facing Slack handler and the token-refresh Lambda). Built from
-        # the literal name the application stack assigns, so foundation takes NO dependency on it —
-        # importing the function object here would create a foundation -> application cycle.
+        # Scope object access to the project's own prefix instead of the entire bucket. The bucket
+        # can be a pre-existing shared one (config.aws.state_bucket_name), so a bucket-wide
+        # grant hands every other tenant's objects to this role. The root prefix provably covers
+        # everything the project touches: {prefix}/digest_state/* (state_store), {prefix}/<file>
+        # park files (collectors.base.park_file_key) and {prefix}/threads/*.png (daily visual).
+        # Exactly the calls the code makes: get_object/put_object (and the presigned GET Threads
+        # fetches, signed by this role). ListBucket only so a missing key reads as NoSuchKey rather
+        # than AccessDenied. It cannot carry an s3:prefix condition: S3 checks it on a GetObject for a
+        # missing key, where no prefix exists, so the condition would turn every NoSuchKey into
+        # AccessDenied. grant_read_write also handed out delete, legal-hold and retention actions.
+        # An empty s3_prefix keeps the bucket-wide object scope.
+        prefix = config.aws.s3_prefix.strip("/")
         self.lambda_role.add_to_policy(
             iam.PolicyStatement(
-                actions=["lambda:InvokeFunction"],
-                resources=[f"arn:aws:lambda:{self.region}:{self.account}:function:{project_name}-{stage}-visual"],
+                actions=["s3:GetObject", "s3:PutObject"],
+                resources=[self.state_bucket.arn_for_objects(f"{prefix}/*" if prefix else "*")],
             )
         )
         self.lambda_role.add_to_policy(
             iam.PolicyStatement(
-                actions=["bedrock-agentcore:InvokeAgentRuntime"],
-                resources=[f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:runtime/*"],
+                actions=["s3:ListBucket"],
+                resources=[self.state_bucket.bucket_arn],
+            )
+        )
+        # The digest Lambda's only cross-function call is the async fan-out to the daily-visual
+        # Lambda, so grant exactly that one function instead of every {project}-{stage}-* function
+        # (which included the token-refresh Lambda). Built from the literal name the application
+        # stack assigns, so foundation takes NO dependency on it — importing the function object here
+        # would create a foundation -> application cycle.
+        self.lambda_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["lambda:InvokeFunction"],
+                resources=[f"arn:aws:lambda:{self.region}:{self.account}:function:{project_name}-{stage}-visual"],
             )
         )
         # The Threads token-refresh Lambda writes the renewed token back to its own SSM param.
@@ -196,46 +170,6 @@ class OmniSummaryFoundationStack(Stack):
                 resources=[
                     f"arn:aws:ssm:{self.region}:{self.account}:parameter/{project_name}/{stage}/threads-access-token"
                 ],
-            )
-        )
-
-        # The Slack-events Lambda sits behind a public API Gateway — the only internet-reachable
-        # entry point in the system — so it gets its own least-privilege role instead of sharing the
-        # pipeline's. It needs exactly four things: read its Slack tokens from SSM, dedupe events in
-        # DynamoDB, self-invoke asynchronously (it answers Slack inside 3s and continues in a second
-        # invocation), and start the AgentCore runtime. It deliberately does NOT get the state
-        # bucket, bedrock:InvokeModel (the runtime holds that under agentcore_role), SNS publish,
-        # ssm:PutParameter, or InvokeFunction on every other function in the project.
-        self.slack_role = iam.Role(
-            self,
-            "SlackEventRole",
-            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
-        )
-        # NOT the shared ssm_read_statement: that covers parameter/{project}/{stage}/*, which is the
-        # OpenAI/Tavily/YouTube keys, the Threads access token and the X session cookies. The handler
-        # reads exactly two parameters (_verify_slack_signature and _resolve_slack_bot_token), so the
-        # internet-reachable component gets exactly those two ARNs.
-        self.slack_role.add_to_policy(
-            iam.PolicyStatement(
-                actions=["ssm:GetParameter"],
-                resources=[
-                    f"arn:aws:ssm:{self.region}:{self.account}:parameter/{project_name}/{stage}/{name}"
-                    for name in ("slack-signing-secret", "slack-bot-token")
-                ],
-            )
-        )
-        self.slack_role.add_to_policy(logs_statement)
-        self.dedup_table.grant_read_write_data(self.slack_role)
-        self.slack_role.add_to_policy(
-            iam.PolicyStatement(
-                actions=["lambda:InvokeFunction"],
-                resources=[f"arn:aws:lambda:{self.region}:{self.account}:function:{project_name}-{stage}-slack-events"],
-            )
-        )
-        self.slack_role.add_to_policy(
-            iam.PolicyStatement(
-                actions=["bedrock-agentcore:InvokeAgentRuntime"],
-                resources=[f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:runtime/*"],
             )
         )
 
@@ -254,49 +188,38 @@ class OmniSummaryFoundationStack(Stack):
             retention_period=Duration.days(14),
         )
 
-        memory_exec_role = iam.Role(
-            self,
-            "MemoryExecutionRole",
-            assumed_by=iam.ServicePrincipal("bedrock-agentcore.amazonaws.com"),
-        )
-        memory_exec_role.add_to_policy(bedrock_invoke_statement)
-        memory_exec_role.add_to_policy(bedrock_profile_statement)
-
-        # Short-term event memory only: digest snapshots are stored/reloaded via
-        # CreateEvent/ListEvents. Trend memory now lives in the structured trends.json
-        # (StateStore), so the semantic-extraction strategy and RetrieveMemoryRecords
-        # are no longer needed.
+        # Short-term event memory only: digest snapshots are stored/reloaded via CreateEvent/ListEvents.
+        # With no extraction strategy the memory never invokes a model, so it needs no execution role.
         self.memory = CfnMemory(
             self,
             "DigestMemory",
-            name=f"{project_name}_{stage}_digest_state".replace("-", "_"),
+            name=digest_memory_name(project_name, stage),
             event_expiry_duration=90,
             description="OmniSummary digest snapshot state",
-            memory_execution_role_arn=memory_exec_role.role_arn,
         )
         self.memory_id = self.memory.attr_memory_id
 
-        # Scoped to THIS stack's memory (the ARN is already in scope above) instead of memory/* —
-        # otherwise both roles could read and write the event history of every AgentCore memory in
-        # the account, which in a shared account is other projects' conversation state. The `/*`
-        # companion covers the per-session sub-resources the data-plane actions address.
-        memory_data_statement = iam.PolicyStatement(
-            actions=[
-                "bedrock-agentcore:CreateEvent",
-                "bedrock-agentcore:ListEvents",
-                "bedrock-agentcore:ListSessions",
-            ],
-            resources=[self.memory.attr_memory_arn, f"{self.memory.attr_memory_arn}/*"],
+        # Scoped to THIS stack's memory instead of memory/* — otherwise the role could read and write
+        # the event history of every AgentCore memory in the account, which in a shared account is
+        # other projects' conversation state. The `/*` companion covers the per-session
+        # sub-resources the data-plane actions address. Session ids are deterministic
+        # (`digest-YYYY-MM-DD`), so no ListSessions.
+        self.lambda_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["bedrock-agentcore:CreateEvent", "bedrock-agentcore:ListEvents"],
+                resources=[self.memory.attr_memory_arn, f"{self.memory.attr_memory_arn}/*"],
+            )
         )
-        self.lambda_role.add_to_policy(memory_data_statement)
-        self.agentcore_role.add_to_policy(memory_data_statement)
 
         self.ecs_cluster = ecs.Cluster(self, "EcsCluster", vpc=self.vpc)
 
+        namespace_name, rsshub_service = "omnisummary.local", "rsshub"
+        # The digest Lambda's RSSHub endpoint, built from the same two names the service registers.
+        self.rsshub_base_url = f"http://{rsshub_service}.{namespace_name}:{RSSHUB_PORT}"
         namespace = sd.PrivateDnsNamespace(
             self,
             "ServiceNamespace",
-            name="omnisummary.local",
+            name=namespace_name,
             vpc=self.vpc,
         )
 
@@ -343,7 +266,7 @@ class OmniSummaryFoundationStack(Stack):
             assign_public_ip=False,
             vpc_subnets=self.vpc_subnets,
             cloud_map_options=ecs.CloudMapOptions(
-                name="rsshub",
+                name=rsshub_service,
                 cloud_map_namespace=namespace,
                 dns_record_type=sd.DnsRecordType.A,
             ),

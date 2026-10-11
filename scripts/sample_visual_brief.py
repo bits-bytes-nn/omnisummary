@@ -6,7 +6,7 @@ without paying for gpt-image. Reuses the same cached candidate set as sample_dig
 It grades what PRODUCTION sends: the digest is generated first (so the real DigestContent — and
 therefore the real editorial angle — exists), and the art-director instruction is built by the
 maker's own DailyVisualMaker._build_instruction. Briefing the bare `plan["instruction"]` instead
-scored a prompt that never ships: no editorial angle, no guardrails, no format nudge, no character.
+scored a prompt that never ships: no editorial angle, no guardrails, no character.
 
 Usage: uv run python scripts/sample_visual_brief.py <out_json> [cache_path]
 """
@@ -49,7 +49,6 @@ async def main() -> None:
     ranked = await ContentRanker(config.pipeline, factory).rank(
         items,
         select_count=config.pipeline.top_n + config.pipeline.digest_candidate_buffer,
-        core_count=config.pipeline.top_n,
     )
     # The digest comes FIRST because the visual's editorial angle is derived from its lead: the
     # sampler must pass in the real DigestContent rather than invent a take it does not have.
@@ -59,20 +58,16 @@ async def main() -> None:
     maker = DailyVisualMaker(config, factory)
     headline_index = maker._headline_ranked_index(content, ranked)
     marker_index, headline_title, source = maker._headline_brief(content, ranked, headline_index)
-    recent_formats = maker.format_log.entries() if maker.format_log else []
-    preferred_orientation = maker._least_recent_orientation(recent_formats)
-    plan = await maker._pick_story(ranked, marker_index, recent_formats, preferred_orientation)
+    take = maker._editorial_take(content, post_date)
+    plan = await maker._pick_story(ranked, marker_index, headline_source=source, editorial_take=take)
     out: dict = {"editor_plan": plan}
 
     if plan and not plan.get("skip"):
-        instruction, use_character = maker._build_instruction(
-            plan, content, post_date, headline_title, recent_formats, preferred_orientation
-        )
+        instruction = maker._build_instruction(plan, content, post_date, headline_title)
         # Reuse the maker's generator so the sampled brief uses the exact production config
         # (VisualGenerator carries no defaults of its own).
-        brief = await maker.generator.brief(instruction, source, "")
+        brief = await maker.generator.brief(instruction, source)
         out["chosen_item_title"] = headline_title
-        out["use_character"] = use_character
         out["instruction"] = instruction
         out["brief"] = brief.model_dump()
 

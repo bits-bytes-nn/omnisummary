@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import math
 from collections import Counter, defaultdict
 
 from langchain_core.output_parsers import StrOutputParser
@@ -16,7 +18,6 @@ from shared import (
     format_collected_item,
     format_origin_label,
     logger,
-    normalize_title,
     parse_json_from_llm_output,
     resolve_origin_key,
     retry_async,
@@ -41,31 +42,28 @@ class ContentRanker:
     def _truncate(self, text: str, max_tokens: int) -> str:
         return self.llm_factory.truncate_to_tokens(text, max_tokens)
 
-    async def rank(
-        self, items: list[CollectedItem], select_count: int | None = None, core_count: int | None = None
-    ) -> list[RankedItem]:
-        """Select the day's candidates.
+    async def rank(self, items: list[CollectedItem], select_count: int | None = None) -> list[RankedItem]:
+        """Select the candidate pool the digest editor picks from (`select_count`, top_n + buffer).
 
-        `select_count` is how many candidates the digest editor is handed (top_n + buffer);
-        `core_count` is how many stories the READER gets (top_n). The source-slot guarantees are
-        enforced on the CORE, not on the whole candidate list — with slots applied to top_n+buffer,
-        every source's guaranteed slot could be satisfied by an item the editor then never used, so
-        the digest itself carried no such guarantee. The buffer is still handed over in full (marked
-        `backfill`) so merging same-event items can still be topped up to top_n."""
+        The source slots and max_per_origin shape the POOL, so every source's best item is
+        considered; the editor then picks the strongest top_n distinct stories from it. Quality wins
+        over a guaranteed seat: enforcing the slots on what ships put a 0.62 link-only post ahead of a
+        0.70 report, and the editor overrode the guarantee on 14 of 30 runs anyway."""
         if not items:
             logger.warning("No items to rank")
             return []
         limit = select_count or self.config.top_n
-        core_limit = min(core_count or limit, limit)
 
         logger.info("Ranking %d items with model '%s'", len(items), self.config.ranking_model.value)
 
         # Scoring is absolute (the prompt calibrates each item to fixed 0-1 criteria), so
         # large inputs are split into batches scored CONCURRENTLY and merged — a single
         # call over 100+ items dominated the Lambda runtime. Results are independent.
-        # Sort by normalized title first so near-duplicate stories co-locate in the same
-        # batch, where the prompt's same-topic clustering/dedup can still see both.
-        ordered = sorted(items, key=lambda it: (normalize_title(it.title), it.item_id))
+        # Ordered by a HASH of item_id so batch membership is deterministic and every batch mixes
+        # sources and scripts. item_id itself is the feed GUID (an article URL for RSS/X, a post or
+        # video id elsewhere), and sorting on it put 33 GeekNews items in one batch and all of X in
+        # another.
+        ordered = sorted(items, key=lambda it: hashlib.sha256(it.item_id.encode()).hexdigest())
         batches = await self._make_batches(ordered)
         if len(batches) > 1:
             logger.info(
@@ -128,8 +126,6 @@ class ContentRanker:
         above_threshold = [
             r for r in ranked_items if r.score >= self.config.min_score and r.item.item_id not in pinned_ids
         ]
-        grace = self._grace_candidates(ranked_items, above_threshold, pinned)
-        above_threshold.extend(grace)
         above_threshold.sort(key=lambda r: (-r.score, r.item.item_id))
 
         source_scores: dict[str, list[float]] = {}
@@ -149,76 +145,31 @@ class ContentRanker:
 
         # Reserve slots for the pinned items so the source-slotting fills only the remainder,
         # then prepend the pinned items so they always lead and never get crowded out.
-        remaining = max(0, core_limit - len(pinned))
-        filled = self._apply_source_slots(above_threshold, remaining, pinned)
-        core = pinned + filled
-        extras = self._backfill_candidates(above_threshold, core, limit - len(core))
-        selected = core + extras
+        remaining = max(0, limit - len(pinned))
+        selected = pinned + self._apply_source_slots(above_threshold, remaining, pinned)
 
         if pinned:
             logger.info("Force-included %d pinned item(s): %s", len(pinned), [r.item.url for r in pinned])
         logger.info(
-            "Ranked %d items → %d above min_score %.2f → %d core (with source slots) + %d backfill",
+            "Ranked %d items → %d above min_score %.2f → %d candidates (with source slots)",
             len(items),
             len(above_threshold),
             self.config.min_score,
-            len(core),
-            len(extras),
+            len(selected),
         )
         for r in selected:
             logger.info(
-                "  Selected%s: [%s] %.2f - '%s'",
-                " (backfill)" if r.backfill else (" (grace)" if r.grace else ""),
+                "  Selected: [%s] %.2f - '%s'",
                 r.item.source_type.value,
                 r.score,
                 r.item.title[:70],
             )
         return selected
 
-    def _backfill_candidates(
-        self, above_threshold: list[RankedItem], core: list[RankedItem], room: int
-    ) -> list[RankedItem]:
-        """The extra candidates handed to the editor beyond the core, in score order, flagged as
-        backfill. They exist so a merge of two same-event items can still be topped up to top_n
-        distinct stories. Grace items (below min_score) are never backfill — they may only earn their
-        own source's guaranteed slot.
-
-        max_per_origin is honoured HERE too. It used to be ignored deliberately ("the guarantees
-        belong to the core"), and _audit_shipped_diversity is detection-only by design, so a backfill
-        item the editor used as an ADDITION rather than a replacement shipped a second story from an
-        origin already at its cap — digest_2026-07-12 carried two r/LocalLLaMA GPU benchmarks against
-        max_per_origin=1. Skipping such a candidate uses data already in hand and leaves the
-        merge-topup purpose intact: the freed slot is filled by the next DISTINCT origin instead."""
-        if room <= 0:
-            return []
-        chosen_ids = {r.item.item_id for r in core}
-        origin_counts: dict[str, int] = defaultdict(int)
-        for ranked in core:
-            core_origin = resolve_origin_key(ranked.item)
-            if core_origin:
-                origin_counts[core_origin] += 1
-        cap = self.config.max_per_origin
-        extras: list[RankedItem] = []
-        for item in above_threshold:
-            if len(extras) >= room:
-                break
-            if item.item.item_id in chosen_ids or item.grace:
-                continue
-            origin = resolve_origin_key(item.item)
-            if origin and origin_counts[origin] >= cap:
-                continue
-            item.backfill = True
-            extras.append(item)
-            chosen_ids.add(item.item.item_id)
-            if origin:
-                origin_counts[origin] += 1
-        return extras
-
     async def _rank_batch(self, items: list[CollectedItem], semaphore: asyncio.Semaphore) -> list[RankedItem]:
         """Score one batch and reconcile its COVERAGE: an LLM that quietly omits item ids returns a
         perfectly valid response, so those candidates used to vanish from the day's pool without a
-        trace. The shortfall is always logged, and when coverage falls below
-        ranking_min_coverage_ratio the omitted items get ONE extra re-ask (never more). A failed or
+        trace. Any omitted items get ONE extra re-ask covering exactly them (never more). A failed or
         still-short re-ask leaves the original outcome untouched — it can never fail the batch."""
         ranked = await self._score_batch(items, semaphore)
         scored_ids = {r.item.item_id for r in ranked}
@@ -233,16 +184,7 @@ class ContentRanker:
             len(missing),
             [it.item_id for it in missing],
         )
-        coverage = len(ranked) / len(items)
-        if coverage >= self.config.ranking_min_coverage_ratio:
-            return ranked
-
-        logger.info(
-            "Re-asking the ranker once for %d omitted item(s) (coverage %.2f < %.2f)",
-            len(missing),
-            coverage,
-            self.config.ranking_min_coverage_ratio,
-        )
+        logger.info("Re-asking the ranker once for %d omitted item(s)", len(missing))
         recovered: list[RankedItem] = []
         try:
             recovered = await self._score_batch(missing, semaphore)
@@ -275,8 +217,6 @@ class ContentRanker:
             return await chain.ainvoke(
                 {
                     "items_text": items_text,
-                    "ranking_categories": ", ".join(self.config.ranking_categories),
-                    "duplicate_score_penalty": self.config.ranking_duplicate_score_penalty,
                     "scoring_rubric": self.config.ranking_scoring_rubric,
                     "audience": self.config.ranking_audience_description,
                 }
@@ -290,74 +230,6 @@ class ContentRanker:
                 description=f"Ranking batch of {len(items)} items",
             )
         return self._parse_rankings(raw_output, items)
-
-    def _grace_candidates(
-        self, ranked_items: list[RankedItem], above_threshold: list[RankedItem], pinned: list[RankedItem]
-    ) -> list[RankedItem]:
-        """Per-source safety net: for each source that has a guaranteed slot but landed NOTHING
-        above min_score, admit its single best item if it's within source_slot_score_grace of the
-        threshold. The absolute-scoring prompt systematically under-rates conversational sources
-        (video/podcast transcripts vs tight articles); this keeps a strong-but-0.55 item eligible
-        without lowering the global bar for everyone. Generalizes to any under-scored source.
-
-        An admitted item is marked `grace` on the RankedItem itself, which is what makes the ranker's
-        intent survive the handoff: as a local id set it went no further than this module, so the
-        editor saw a 0.50 grace item as just the weakest candidate in the list and dropped it, and the
-        diversity audit then read the source as available-but-declined.
-
-        Pinned items are already guaranteed a slot, so a source they cover is NOT empty — treat it
-        as covered and exclude pinned ids from the candidate pool. Otherwise a pinned item that is
-        its source's only above-threshold entry (it's stripped from above_threshold) makes the
-        source look shut out, and grace would re-admit the pin itself (double emission) or pad the
-        source with a below-threshold filler it should not get.
-
-        The coupling to source_slots is INTENTIONAL: grace exists to keep a source's GUARANTEED slot
-        fillable, so with no guaranteed slots there is nothing to rescue and admitting a
-        below-threshold item would just lower the global bar."""
-        grace = self.config.source_slot_score_grace
-        budget = self.config.source_slot_grace_max_admissions
-        if not grace or not budget or not self.config.source_slots:
-            return []
-        floor = self.config.min_score - grace
-        pinned_ids = {r.item.item_id for r in pinned}
-        have_above = {r.item.source_type.value for r in above_threshold}
-        have_above |= {r.item.source_type.value for r in pinned}
-        rescued: list[RankedItem] = []
-        for src, slot in self.config.source_slots.items():
-            if slot < 1 or src in have_above:
-                continue
-            candidates = [
-                r
-                for r in ranked_items
-                if r.item.source_type.value == src and floor <= r.score and r.item.item_id not in pinned_ids
-            ]
-            if candidates:
-                # (-score, item_id), like every other selection path here: plain max() broke a score
-                # tie by the LLM's response order within a batch, which is not stable run to run.
-                rescued.append(min(candidates, key=lambda r: (-r.score, r.item.item_id)))
-        # The rescue is BUDGETED. Every admission spends one of the reader's core slots on an item the
-        # ranker put below the bar, and unbudgeted it spent as many as there were empty sources: two of
-        # five on 2026-07-12, at 0.56 and 0.50, over ten candidates above the bar. Same ordering as
-        # everywhere else, so the source closest to the threshold is the one rescued.
-        rescued.sort(key=lambda r: (-r.score, r.item.item_id))
-        extra, over_budget = rescued[:budget], rescued[budget:]
-        for best in extra:
-            best.grace = True
-            logger.info(
-                "Source '%s' had nothing above %.2f; admitting best item at %.2f (grace floor %.2f)",
-                best.item.source_type.value,
-                self.config.min_score,
-                best.score,
-                floor,
-            )
-        for skipped in over_budget:
-            logger.info(
-                "Source '%s' stays uncovered: its best item (%.2f) is past the grace budget of %d",
-                skipped.item.source_type.value,
-                skipped.score,
-                budget,
-            )
-        return extra
 
     def _apply_source_slots(
         self,
@@ -420,13 +292,12 @@ class ContentRanker:
         def fill(*, respect_origin: bool, respect_source: bool) -> int:
             """Walk the remaining candidates in score order and take what the given caps allow.
             One loop for every fill pass — the three passes differ ONLY in which caps they honour.
-            Grace items (below min_score) are never filler: they may earn their own source's
-            guaranteed slot and nothing more. Returns how many items this pass added."""
+            Returns how many items this pass added."""
             added = 0
             for item in above_threshold:
                 if len(selected) >= limit:
                     break
-                if item.item.item_id in selected_ids or item.grace:
+                if item.item.item_id in selected_ids:
                     continue
                 src = item.item.source_type.value
                 cap = source_slots.get(src, DEFAULT_SOURCE_SLOT) * self.config.source_cap_multiplier
@@ -485,22 +356,21 @@ class ContentRanker:
         return sorted(source_slots.items(), key=lambda kv: (-best.get(kv[0], 0.0), kv[0]))
 
     async def _make_batches(self, ordered: list[CollectedItem]) -> list[list[CollectedItem]]:
-        """Split ranking input into batches capped by BOTH item count (ranking_batch_size) and a
-        cumulative input-token budget. A fixed count alone can blow the model's context window:
-        ranking_batch_size(40) × item_text_max_tokens(10k) = 400k > Opus 200k, and a batch that
-        overflows fails the Converse call → _rank_batch drops the WHOLE batch silently. Bound the
-        batch by ranking_batch_token_budget_ratio of the context window (leaving room for the system
-        prompt + JSON output). Each item's truncated-text count is cached (truncate runs anyway), so
+        """Split ranking input into batches capped by BOTH item count and a cumulative input-token
+        budget. The count is spread EVENLY (ceil(n / ceil(n / ranking_batch_size))): filling each batch
+        to the cap left 1-item tail batches, scored with nothing beside them to calibrate against. A
+        fixed count alone can overflow the context window (ranking_batch_size × item_text_max_tokens),
+        and an overflowing batch fails the Converse call. So the batch is also bounded by
+        ranking_batch_token_budget_ratio of the window, leaving room for the system prompt and JSON. Each item's truncated-text count is cached (truncate runs anyway), so
         this adds no API cost.
 
         The counts are measured CONCURRENTLY in threads: truncate_to_tokens and count_tokens are
         sync boto3 CountTokens calls, so measuring the day's ~90 candidates one at a time from this
         async caller blocked the event loop for 90+ serialized round-trips before the first Converse
         request even left the process."""
-        model_info = self.llm_factory.get_model_info(self.config.ranking_model)
-        window = model_info.context_window_size if model_info else self.config.ranking_context_window_fallback
+        window = self.llm_factory.get_model_info(self.config.ranking_model).context_window_size
         token_budget = int(window * self.config.ranking_batch_token_budget_ratio)
-        count_cap = self.config.ranking_batch_size
+        count_cap = math.ceil(len(ordered) / math.ceil(len(ordered) / self.config.ranking_batch_size))
         token_counts = await asyncio.gather(*(asyncio.to_thread(self._count_item_tokens, item) for item in ordered))
         batches: list[list[CollectedItem]] = []
         current: list[CollectedItem] = []
@@ -564,9 +434,7 @@ class ContentRanker:
         The `=== Item N ===` header the prompt builder emits invites the model to answer with the
         DISPLAY ORDINAL, and production logs show it doing exactly that ('30', '27', '18', '9', '5'),
         alongside a truncated 14-character id and full URLs. All of those were discarded with a
-        warning — and because the coverage re-ask only fires below ranking_min_coverage_ratio, one run
-        logged 'Unknown item_id 30' and then '38/40 scored, coverage 0.95' and never re-asked, so
-        those candidates left the day's pool silently.
+        warning, so those candidates left the day's pool silently.
 
         Exact match first, so a genuine id can never be reinterpreted as an ordinal. A prefix is
         accepted only when it is UNAMBIGUOUS across the batch."""
@@ -622,7 +490,6 @@ class ContentRanker:
                         item=items_by_id[item_id],
                         score=float(entry["score"]),
                         reasoning=entry.get("reasoning", ""),
-                        categories=entry.get("categories", []),
                     )
                 )
                 seen_ids.add(item_id)

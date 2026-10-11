@@ -68,7 +68,9 @@ def main() -> int:
     print(f"region {region} | {len(models)} configured model(s) | {len(existing)} existing application profile(s)\n")
 
     for model, settings in sorted(models.items(), key=lambda kv: kv[0].value):
-        name = BedrockCrossRegionModelHelper.application_profile_name(model)
+        # Named from the config it tags with, not the PROJECT_NAME/STAGE env (unset locally, so a
+        # prod config used to create dev-named profiles the prod Lambdas never found).
+        name = BedrockCrossRegionModelHelper.application_profile_name(model, config.aws.project_name, config.aws.stage)
         arn = existing.get(name)
         if args.delete:
             if not arn:

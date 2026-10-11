@@ -14,6 +14,7 @@ import boto3
 import feedparser
 import httpx
 from botocore.exceptions import BotoCoreError, ClientError
+from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field, ValidationError
 
 from shared import (
@@ -25,8 +26,8 @@ from shared import (
     parse_feed_published_date,
     retry_async,
 )
-from shared.constants import BROWSER_USER_AGENT, EMPTY_RATE_CHECK_DISABLED
-from shared.proxy import fetch_with_proxy_fallback
+from shared.config import BaseCollectorConfig
+from shared.constants import BROWSER_USER_AGENT
 
 # HTTP statuses worth another attempt: rate limiting and server-side faults. Everything else —
 # notably 403 (quota exhausted / revoked key) and 404 (unknown resource) — is a verdict retrying
@@ -88,13 +89,11 @@ class ParkOutcome(str, Enum):
 
 
 class ParkedItems(BaseModel):
-    """Outcome of reading a collector's S3 park file, with the park's age carried explicitly so a
-    stalled sync can be reported by the health check. Returned (never a bare list + a hidden
+    """Outcome of reading a collector's S3 park file. Returned (never a bare list + a hidden
     module-level flag) so staleness travels with the data it describes."""
 
     outcome: ParkOutcome
     items: list[CollectedItem] = Field(default_factory=list)
-    age_hours: float | None = None
     detail: str = ""
     # Whatever the writing sync recorded about HOW the collection went (e.g. how many of its feeds
     # failed). A fresh, on-time park file says nothing about a sync that collected from 2 of 40
@@ -138,9 +137,9 @@ def degradation_reason(
     for a rate to express a partial outage. Removed 2026-08-19: reddit was the only source small
     enough to need it, and measured over 30 production runs r/MachineLearning 429s on 29 of them and
     exhausts its retries on 4 — so armed at 1 it paged 4 times a month on a condition present in 97%
-    of runs, with no action available (Reddit rate-limits datacenter IPs; the retry-then-proxy
-    fallback IS the mitigation and worked the other 26 days). On all four days reddit still shipped a
-    story in its slot. It was the only arming in either config file, so the field went with it."""
+    of runs, with no action available (the retry IS the mitigation and worked the other 26 days). On
+    all four days reddit still shipped a story in its slot. It was the only arming in either config
+    file, so the field went with it."""
     fail_rate = failed / total * 100
     empty_rate = empty / total * 100
     if failed > 0 and fail_rate > threshold:
@@ -164,6 +163,9 @@ class BaseCollector(ABC):
     # REPLACED wholesale (record_run_health), never mutated in place — the class-level default is a
     # shared empty dict, exactly like park_status/degraded_detail above.
     run_meta: dict[str, int] = {}
+    # Every collector's config; the health verdicts below read their thresholds from it, so a
+    # source can never forget to forward a configured knob.
+    config: BaseCollectorConfig
 
     @abstractmethod
     async def collect(self) -> list[CollectedItem]: ...
@@ -174,10 +176,8 @@ class BaseCollector(ABC):
         total: int,
         failed: int,
         empty: int = 0,
-        threshold: float,
         what: str,
         hint: str = "",
-        empty_threshold: float = EMPTY_RATE_CHECK_DISABLED,
     ) -> None:
         """Record how many of the source's inputs answered, and report the source DEGRADED when too
         many of them failed OR came back empty.
@@ -197,8 +197,8 @@ class BaseCollector(ABC):
             failed=failed,
             empty=empty,
             what=what,
-            threshold=threshold,
-            empty_threshold=empty_threshold,
+            threshold=self.config.error_rate_threshold,
+            empty_threshold=self.config.empty_rate_threshold,
         )
         if not reason:
             return
@@ -209,10 +209,8 @@ class BaseCollector(ABC):
         self,
         parked: ParkedItems,
         *,
-        threshold: float,
         what: str,
         hint: str = "",
-        empty_threshold: float = EMPTY_RATE_CHECK_DISABLED,
     ) -> None:
         """Report a park file that a HALF-DEAD sync wrote as DEGRADED. The file itself is fresh and
         carries items, so nothing else in the health check can tell that the local sync collected
@@ -229,8 +227,8 @@ class BaseCollector(ABC):
             failed=failed,
             empty=empty,
             what=what,
-            threshold=threshold,
-            empty_threshold=empty_threshold,
+            threshold=self.config.error_rate_threshold,
+            empty_threshold=self.config.empty_rate_threshold,
         )
         if not reason:
             return
@@ -269,30 +267,6 @@ def collection_window_dates(lookback_hours: int, reference_time: datetime | None
     start = _as_aware_utc(cutoff_datetime(lookback_hours, reference_time))
     end = _as_aware_utc(reference_time) if reference_time is not None else datetime.now(UTC)
     return start.date().isoformat(), end.date().isoformat()
-
-
-# The named recency windows an upstream typically offers, in hours. Definitional, not tuned: a day is
-# 24 hours, a week is 7 of those. Ordered narrowest first so the first one that COVERS the collection
-# window wins.
-_RECENCY_BUCKETS: tuple[tuple[str, int], ...] = (
-    ("hour", 1),
-    ("day", 24),
-    ("week", 7 * 24),
-    ("month", 30 * 24),
-    ("year", 365 * 24),
-)
-
-
-def recency_bucket(lookback_hours: int) -> str:
-    """The narrowest named upstream window that still covers `lookback_hours`.
-
-    Derived rather than pinned: a hardcoded 'day' against a 30-hour window asked the upstream for less
-    than the pipeline believed it had, so widening lookback_hours in config changed nothing upstream.
-    Over-covering is safe — `in_collection_window` filters every item anyway."""
-    for name, hours in _RECENCY_BUCKETS:
-        if lookback_hours <= hours:
-            return name
-    return _RECENCY_BUCKETS[-1][0]
 
 
 def _as_aware_utc(moment: datetime) -> datetime:
@@ -359,13 +333,6 @@ def parked_items_in_window(
     return kept
 
 
-# Default age budget for sync-parked items: older ones are still used (better stale than empty)
-# but reported STALE, so a silently-stopped local cron (laptop asleep, cron disabled) surfaces
-# instead of looking like a healthy run that keeps re-ingesting the same days-old YouTube/X items.
-# Per-collector override: collectors.<source>.park_max_age_hours.
-S3_ITEMS_MAX_AGE_HOURS = 36
-
-
 def dump_items_envelope(
     items: list[CollectedItem], generated_at: datetime | None = None, meta: dict[str, Any] | None = None
 ) -> str:
@@ -399,7 +366,7 @@ def park_root_prefix(state_prefix: str) -> str:
     return prefix.rsplit("/", 1)[0] if "/" in prefix else ""
 
 
-def load_items_from_s3(filename: str, max_age_hours: int = S3_ITEMS_MAX_AGE_HOURS) -> ParkedItems:
+def load_items_from_s3(filename: str, max_age_hours: int) -> ParkedItems:
     """Load a collector's pre-fetched items from S3 (uploaded by a local sync script).
 
     Sources that YouTube/X block from datacenter (Lambda) IPs are collected locally on a
@@ -440,16 +407,16 @@ def load_items_from_s3(filename: str, max_age_hours: int = S3_ITEMS_MAX_AGE_HOUR
         if not items and stale:
             detail = f"park file 's3://{bucket}/{s3_key}' is empty and {age_hours:.1f}h old (>{max_age_hours}h)"
             logger.warning("%s — treating as absent and falling back to live collection", detail)
-            return ParkedItems(outcome=ParkOutcome.ABSENT, age_hours=age_hours, detail=detail)
+            return ParkedItems(outcome=ParkOutcome.ABSENT, detail=detail)
         if stale:
             detail = (
                 f"park file 's3://{bucket}/{s3_key}' is {age_hours:.1f}h old (>{max_age_hours}h); "
                 "the local sync may have stalled — using stale data"
             )
             logger.warning("%s", detail)
-            return ParkedItems(outcome=ParkOutcome.STALE, items=items, age_hours=age_hours, detail=detail, meta=meta)
+            return ParkedItems(outcome=ParkOutcome.STALE, items=items, detail=detail, meta=meta)
         logger.info("Loaded %d items from 's3://%s/%s'", len(items), bucket, s3_key)
-        return ParkedItems(outcome=ParkOutcome.FRESH, items=items, age_hours=age_hours, meta=meta)
+        return ParkedItems(outcome=ParkOutcome.FRESH, items=items, meta=meta)
     except ClientError as e:
         # Classification changes the log level and the reported status ONLY — every ClientError
         # still falls through to live collection, so an unrecognised S3 failure can never abort a
@@ -578,23 +545,13 @@ async def fetch_feed_with_retry(
     timeout: float,
     max_retries: int,
     backoff_sec: float,
-    proxy_fallback: bool = False,
 ) -> Any:
     """fetch_feed with the retry policy every feed collector shares: a timeout / transport failure /
     429 / 5xx is retried with jittered linear backoff, a permanent verdict (403/404, malformed body)
     is not. The jitter seed is the URL, so the dozens of feeds retrying at once don't resynchronise
-    into the burst the upstream rate-limited.
-
-    With proxy_fallback each attempt tries the direct URL first and then the Cloudflare proxy,
-    keeping the best usable response of the two (see fetch_with_proxy_fallback)."""
+    into the burst the upstream rate-limited."""
 
     async def _attempt() -> Any:
-        if proxy_fallback:
-            return await fetch_with_proxy_fallback(
-                url,
-                lambda candidate: fetch_feed(candidate, description=description, timeout=timeout),
-                has_entries=lambda feed: bool(feed.entries),
-            )
         return await fetch_feed(url, description=description, timeout=timeout)
 
     return await retry_async(
@@ -644,6 +601,8 @@ def parse_feed_entries(
                 text = entry.content[0].get("value", "")
             elif hasattr(entry, "summary"):
                 text = entry.summary or ""
+            if "<" in text:
+                text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
 
             item_id = item_id_of(entry, link) if item_id_of else (entry.get("id", "") or generate_item_id(link))
 

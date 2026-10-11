@@ -44,8 +44,8 @@ def templates():
 class TestNoSecretsInTheTemplate:
     """A CloudFormation template is not a secret store: it is written to cdk.out, uploaded to the
     CDK staging bucket, and returned verbatim by cloudformation:GetTemplate. The stack used to pass
-    the real Slack bot token, Tavily/OpenAI/YouTube keys, the Threads access token and the X session
-    cookies straight into it. Only placeholders and ARNs may appear."""
+    the real Tavily/OpenAI/YouTube keys, the Threads access token and the X session cookies straight
+    into it. Only placeholders and ARNs may appear."""
 
     def test_every_ssm_parameter_holds_only_the_placeholder(self, templates):
         foundation, application = templates
@@ -101,66 +101,6 @@ class TestRSSHubServiceScale:
         foundation.resource_count_is("AWS::ECS::TaskDefinition", 1)
 
 
-class TestSlackLambdaLeastPrivilege:
-    """The Slack-events Lambda is the only internet-reachable entry point, and it used to run with
-    the pipeline's role — Bedrock model invocation, the state bucket, SNS publish, ssm:PutParameter
-    on the Threads token, and InvokeFunction on every function in the project."""
-
-    def test_slack_lambda_does_not_share_the_pipeline_role(self, templates):
-        _, application = templates
-        fns = application.find_resources("AWS::Lambda::Function")
-        roles = {
-            props["Properties"].get("FunctionName", ""): json.dumps(props["Properties"]["Role"])
-            for props in fns.values()
-            if props["Properties"].get("FunctionName")
-        }
-        slack = next(v for k, v in roles.items() if k.endswith("slack-events"))
-        pipeline = next(v for k, v in roles.items() if k.endswith("-digest"))
-        assert "SlackEventRole" in slack
-        assert slack != pipeline
-
-    def test_slack_role_has_no_bedrock_model_or_bucket_access(self, templates):
-        foundation, _ = templates
-        policies = foundation.find_resources("AWS::IAM::Policy")
-        actions: list[str] = []
-        for props in policies.values():
-            if "SlackEventRole" not in json.dumps(props["Properties"].get("Roles", "")):
-                continue
-            for statement in props["Properties"]["PolicyDocument"]["Statement"]:
-                action = statement.get("Action")
-                actions.extend([action] if isinstance(action, str) else action)
-        assert actions, "expected an inline policy attached to SlackEventRole"
-        assert not [a for a in actions if a.startswith("bedrock:")]
-        assert not [a for a in actions if a.startswith("s3:")]
-        assert not [a for a in actions if a.startswith("sns:")]
-        assert "ssm:PutParameter" not in actions
-        # It still needs its own four capabilities.
-        assert "bedrock-agentcore:InvokeAgentRuntime" in actions
-        assert "lambda:InvokeFunction" in actions
-        assert "ssm:GetParameter" in actions
-
-    def test_slack_role_reads_only_its_two_slack_parameters(self, templates):
-        # The shared ssm_read_statement covers parameter/{project}/{stage}/* — the OpenAI/Tavily/
-        # YouTube keys, the Threads token and the X cookies. The handler reads exactly the signing
-        # secret and the bot token, so the only internet-reachable component gets exactly those.
-        foundation, _ = templates
-        resources: list[str] = []
-        for props in foundation.find_resources("AWS::IAM::Policy").values():
-            if "SlackEventRole" not in json.dumps(props["Properties"].get("Roles", "")):
-                continue
-            for statement in props["Properties"]["PolicyDocument"]["Statement"]:
-                action = statement.get("Action")
-                actions = [action] if isinstance(action, str) else action
-                if not any(a.startswith("ssm:") for a in actions):
-                    continue
-                resource = statement.get("Resource")
-                resources.extend([resource] if isinstance(resource, str) else resource)
-        assert resources, "expected an ssm statement on SlackEventRole"
-        assert not [r for r in resources if r.endswith("/dev/*")]
-        suffixes = sorted(r.rsplit("/", 1)[-1] for r in resources)
-        assert suffixes == ["slack-bot-token", "slack-signing-secret"]
-
-
 class TestFoundationStack:
     def test_sns_topic_created(self, templates):
         foundation, _ = templates
@@ -182,13 +122,6 @@ class TestFoundationStack:
                 "BucketEncryption": Match.any_value(),
                 "PublicAccessBlockConfiguration": Match.any_value(),
             },
-        )
-
-    def test_dynamodb_encrypted(self, templates):
-        foundation, _ = templates
-        foundation.has_resource_properties(
-            "AWS::DynamoDB::Table",
-            {"SSESpecification": {"SSEEnabled": True}},
         )
 
     def test_no_broad_managed_policies(self, templates):
@@ -292,36 +225,12 @@ class TestNoPrivilegedNoOpBuildProject:
 
 
 class TestApplicationStack:
-    def test_waf_web_acl(self, templates):
-        _, app = templates
-        app.resource_count_is("AWS::WAFv2::WebACL", 1)
-        app.resource_count_is("AWS::WAFv2::WebACLAssociation", 1)
-
-    def test_waf_has_rate_limit_rule(self, templates):
-        _, app = templates
-        acls = app.find_resources("AWS::WAFv2::WebACL")
-        rendered = str(acls)
-        assert "RateBasedStatement" in rendered
-        assert "AWSManagedRulesCommonRuleSet" in rendered
-
-    def test_waf_enforces_block_not_just_monitor(self, templates):
-        _, app = templates
-        acl = next(iter(app.find_resources("AWS::WAFv2::WebACL").values()))
-        props = acl["Properties"]
-        # default allow, rate-limit rule actually blocks (not Count/monitor-only)
-        assert "Allow" in props["DefaultAction"]
-        rate_rule = next(r for r in props["Rules"] if r["Name"] == "RateLimit")
-        assert "Block" in rate_rule["Action"]
-        assert rate_rule["Statement"]["RateBasedStatement"]["Limit"] > 0
-
     def test_cloudwatch_alarms(self, templates):
         _, app = templates
-        # 4 lambdas (digest, slack, visual, threads-refresh) × (errors + timeout) + api 5xx
-        # + empty-digest + async-DLQ + agent-errors = 12
-        app.resource_count_is("AWS::CloudWatch::Alarm", 12)
+        # 3 lambdas (digest, visual, threads-refresh) × (errors + timeout) + empty-digest + async-DLQ = 8
+        app.resource_count_is("AWS::CloudWatch::Alarm", 8)
         # the symptomless-failure alarms specifically exist (count alone wouldn't catch a swap)
         app.has_resource_properties("AWS::CloudWatch::Alarm", {"MetricName": "DigestItemsPublished"})
-        app.has_resource_properties("AWS::CloudWatch::Alarm", {"MetricName": "AgentErrors"})
         app.has_resource_properties("AWS::CloudWatch::Alarm", {"MetricName": "ApproximateNumberOfMessagesVisible"})
 
     def test_every_alarm_notifies_the_alerts_topic(self, templates):
@@ -371,12 +280,11 @@ class TestApplicationStack:
     def test_emf_alarms_read_this_deployments_datapoints_only(self, templates):
         # The EMF records are dimensioned by project/stage (shared/metrics.py). An undimensioned
         # alarm aggregates every deployment into one series: a dev run of 5 items kept prod's
-        # Maximum<1 empty-digest alarm green on a day prod shipped nothing, and dev agent failures
-        # paged on prod's error alarm.
+        # Maximum<1 empty-digest alarm green on a day prod shipped nothing.
         _, app = templates
         expected = [{"Name": name, "Value": value} for name, value in metric_dimensions("omnisummary", "dev").items()]
         assert expected, "the dimension map must not be empty"
-        for metric_name in ("DigestItemsPublished", "AgentErrors"):
+        for metric_name in ("DigestItemsPublished",):
             app.has_resource_properties(
                 "AWS::CloudWatch::Alarm",
                 {"Namespace": METRIC_NAMESPACE, "MetricName": metric_name, "Dimensions": expected},
@@ -416,21 +324,13 @@ class TestApplicationStack:
         # them (a retried digest re-posts, a retried refresh re-calls the Threads endpoint).
         _, app = templates
         configs = app.find_resources("AWS::Lambda::EventInvokeConfig")
-        assert len(configs) == 4  # digest, visual, slack-events, threads-refresh
+        assert len(configs) == 3  # digest, visual, threads-refresh
         assert all(v["Properties"]["MaximumRetryAttempts"] == 0 for v in configs.values())
-
-    def test_api_gateway_throttling(self, templates):
-        _, app = templates
-        app.has_resource_properties(
-            "AWS::ApiGateway::Stage",
-            {"MethodSettings": Match.array_with([Match.object_like({"ThrottlingRateLimit": Match.any_value()})])},
-        )
 
 
 class TestLeastPrivilegeGrants:
     """The pipeline role held s3:* on the WHOLE bucket (which can be a pre-existing shared one) and
-    lambda:InvokeFunction on every {project}-{stage}-* function, including the internet-facing Slack
-    handler. Both are scoped down."""
+    lambda:InvokeFunction on every {project}-{stage}-* function. Both are scoped down."""
 
     @pytest.fixture(scope="class")
     @classmethod
@@ -464,9 +364,18 @@ class TestLeastPrivilegeGrants:
         assert keyspaces, "expected S3 object grants"
         # Every object key space must carry the project prefix — state_store's digest_state, the
         # collectors' park files and the daily visual's Threads images all live under it. A bare
-        # "<bucket>/*" would be the whole (possibly shared, pre-existing) bucket. The bucket-level
-        # ARN itself stays for List, which CDK adds and which is deliberately left alone.
+        # "<bucket>/*" would be the whole (possibly shared, pre-existing) bucket.
         assert all('"/omnisummary/*"' in arn for arn in keyspaces), keyspaces
+
+    def test_only_get_put_and_list_and_nothing_deletes(self, prefixed_foundation):
+        s3 = [
+            s
+            for s in self._statements(prefixed_foundation)
+            if json.dumps(s["Action"]).startswith('"s3:')
+            or any(a.startswith("s3:") for a in (s["Action"] if isinstance(s["Action"], list) else []))
+        ]
+        actions = {a for s in s3 for a in (s["Action"] if isinstance(s["Action"], list) else [s["Action"]])}
+        assert actions == {"s3:GetObject", "s3:PutObject", "s3:ListBucket"}
 
     def test_invoke_function_is_scoped_to_the_visual_function(self, templates):
         foundation, _ = templates
@@ -515,7 +424,7 @@ _PUSHED_DIGEST = "sha256:" + "ab" * 32
 
 @pytest.fixture(scope="module")
 def pinned_template():
-    """The stack as a real deploy renders it: both image refs pinned to a pushed digest.
+    """The stack as a real deploy renders it: the image ref pinned to a pushed digest.
 
     The default fixture passes NO refs, so every assertion in this file runs against the `latest`
     rendering and the pinned branch never renders at all — while pinning is what makes a deploy
@@ -531,7 +440,6 @@ def pinned_template():
         "app-pinned",
         config=config,
         foundation=foundation,
-        agentcore_image_ref=_PUSHED_DIGEST,
         digest_image_ref=_PUSHED_DIGEST,
         env=env,
     )
@@ -544,7 +452,6 @@ class TestThePushedImageDigestReachesEveryFunction:
 
     @staticmethod
     def _image_uris(template):
-        # Only the image-backed functions; the Slack ingress ships as a zip (no ImageUri at all).
         funcs = template.find_resources("AWS::Lambda::Function")
         return {
             logical_id: json.dumps(func["Properties"]["Code"]["ImageUri"])
@@ -566,11 +473,3 @@ class TestThePushedImageDigestReachesEveryFunction:
         assert len(image_uris) == 3, image_uris
         for logical_id, uri in image_uris.items():
             assert ":latest" in uri, logical_id
-
-    def test_the_agentcore_runtime_uses_at_for_a_digest_and_colon_for_a_tag(self, pinned_template, templates):
-        pinned = pinned_template.find_resources("AWS::BedrockAgentCore::Runtime")
-        uri = json.dumps(next(iter(pinned.values()))["Properties"]["AgentRuntimeArtifact"])
-        assert f"@{_PUSHED_DIGEST}" in uri
-        _, app = templates
-        default = app.find_resources("AWS::BedrockAgentCore::Runtime")
-        assert ":arm64" in json.dumps(next(iter(default.values()))["Properties"]["AgentRuntimeArtifact"])

@@ -135,7 +135,7 @@ class TestSourceDescriptorRegistry:
         from shared.formatting import source_tag_and_metrics
 
         tag, metrics = source_tag_and_metrics(_sourced(SourceType.X, url="https://x.com/a/status/1"))
-        assert tag == "`x.com`"
+        assert tag == "x.com"
         assert metrics == ""
 
     def test_only_youtube_carries_metrics(self):
@@ -179,21 +179,21 @@ class TestPublicPackageBoundaries:
 
 
 class TestExtractUrls:
-    """URL_RE's `\\S+` does not stop at '|', so the raw pattern read a Slack `<url|label>` link as
-    `url|label` and the citation guard refused every well-formed Slack report. extract_urls unwraps
-    the markup first, through the converter that already knows it."""
+    """URL_RE's `\\S+` does not stop at ')', so the raw pattern could read a Markdown link's URL with
+    the closing paren glued on. extract_urls unwraps the markup first, through the converter that
+    already knows it."""
 
-    def test_a_slack_link_with_a_label_yields_the_bare_url(self):
-        from shared.formatting import URL_RE, extract_urls
-
-        report = "근거: <https://real.example/a|Real Example>"
-        assert extract_urls(report) == ["https://real.example/a"]
-        assert URL_RE.findall(report) == ["https://real.example/a|Real"]
-
-    def test_a_multi_word_label_does_not_leak_into_the_url(self):
+    def test_a_markdown_link_with_a_label_yields_the_bare_url(self):
         from shared.formatting import extract_urls
 
-        assert extract_urls("<https://ex.example/p?q=1|한 줄 라벨>") == ["https://ex.example/p?q=1"]
+        assert extract_urls("근거: [Real Example](https://real.example/a)") == ["https://real.example/a"]
+
+    def test_a_url_with_balanced_parens_keeps_them(self):
+        from shared.formatting import extract_urls
+
+        assert extract_urls("[Foo](https://en.wikipedia.org/wiki/Foo_(bar))") == [
+            "https://en.wikipedia.org/wiki/Foo_(bar)"
+        ]
 
     def test_an_angle_wrapped_url_yields_the_bare_url(self):
         from shared.formatting import extract_urls
@@ -206,11 +206,11 @@ class TestExtractUrls:
         text = "본문 (https://a.example/1). 그리고 https://b.example/2, 끝."
         assert extract_urls(text) == ["https://a.example/1", "https://b.example/2"]
 
-    def test_a_slack_link_and_the_bare_url_normalize_to_the_same_identity(self):
+    def test_a_markdown_link_and_the_bare_url_normalize_to_the_same_identity(self):
         from shared.formatting import extract_urls, normalize_citation_url
 
         surfaced = normalize_citation_url("http://www.real.example/a/")
-        (cited,) = extract_urls("<https://real.example/a|Real Example>")
+        (cited,) = extract_urls("[Real Example](https://real.example/a)")
         assert normalize_citation_url(cited) == surfaced
 
 

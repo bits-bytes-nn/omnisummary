@@ -8,7 +8,6 @@ from zoneinfo import ZoneInfo
 
 from shared import (
     DigestContent,
-    VisualBrief,
     agi_countdown_intro,
     get_correlation_id,
     logger,
@@ -22,16 +21,12 @@ if TYPE_CHECKING:
 
 
 class DigestPublisher:
-    """The digest's publish path: the Slack image upload, the Threads root + reply chain, that
-    chain's idempotency ledger and the S3 hosting of its image.
+    """The digest's publish path: the Threads root + reply chain, that chain's idempotency ledger
+    and the S3 hosting of its image.
 
-    It lives here, beside the channel handlers, because it used to live inside DailyVisualMaker —
-    a class named for image generation that also owned the digest's ONLY publish path. Two of that
-    method's three early returns existed purely to stop a visual failure from skipping delivery, and
-    its return value had to become `slack_ok or threads_ok` to stop reporting "skipped" for every
-    Threads-only run. The image is an OPTIONAL argument here, so a failed render is just a text-only
-    publish and cannot short-circuit the day's digest by construction — and the publish path is
-    exercisable without an OpenAI key.
+    It lives here, beside the channel handler, rather than inside DailyVisualMaker: the image is an
+    OPTIONAL argument, so a failed render is just a text-only publish and cannot short-circuit the
+    day's digest by construction — and the publish path is exercisable without an OpenAI key.
 
     Best-effort in both directions: no failure escapes into the pipeline, and every outcome is left
     on `threads_outcome` so the caller can alert on a partial or missing delivery."""
@@ -52,20 +47,18 @@ class DigestPublisher:
         rendered, so a day with no destination doesn't pay for an LLM editor pass plus a gpt-image
         render it can never publish. Owns the logging and the delivery verdict for both refusals."""
         if self._nothing_left_to_publish(post_date, force_republish):
-            logger.info(
-                "Threads digest for %s already posted and no other channel is enabled, skipping "
-                "(use force to re-publish)",
-                post_date,
-            )
+            if self.config.pipeline.enable_threads_post:
+                logger.info("Threads digest for %s already posted, skipping (use force to re-publish)", post_date)
+            else:
+                logger.info("Threads posting is disabled; nothing to publish for %s", post_date)
             return False
-        if self._no_destination_for_the_image(content):
+        if not (content and content.items):
             # A story-less digest is deliberately NOT posted to Threads (that shape published the
-            # broken 2026-08-13/08-17 roots), so with Slack off there is no destination left for an
-            # image. Record the same verdict _post_threads would have, so the caller's delivery
-            # alert still fires for the unpublished day.
+            # broken 2026-08-13/08-17 roots), so there is no destination left for an image. Record
+            # the same verdict _post_threads would have, so the caller's delivery alert still fires
+            # for the unpublished day.
             logger.error(
-                "Digest for %s carries no stories and Slack is disabled; skipping the visual render "
-                "(the day stays retryable)",
+                "Digest for %s carries no stories; skipping the visual render (the day stays retryable)",
                 post_date,
             )
             if self.config.pipeline.enable_threads_post:
@@ -80,56 +73,24 @@ class DigestPublisher:
         content: DigestContent | None,
         *,
         image_bytes: bytes | None = None,
-        brief: VisualBrief | None = None,
         today: date | None = None,
         force_republish: bool = False,
         deadline: float | None = None,
     ) -> bool:
-        """Publish the digest to every enabled channel, with the image when there is one.
-
-        Success = at least one enabled channel published. Returning only the Slack verdict reported
-        "skipped" for every Threads-only run (the current config), hiding real outcomes."""
+        """Publish the digest to Threads, with the image when there is one."""
         post_date = today or datetime.now(ZoneInfo(self.config.aws.timezone)).date()
-        slack_ok = await self._post_slack(image_bytes, brief)
-        threads_ok = await self._post_threads(
+        return await self._post_threads(
             image_bytes, content, today=post_date, force_republish=force_republish, deadline=deadline
         )
-        return slack_ok or threads_ok
 
     def _nothing_left_to_publish(self, post_date: date, force_republish: bool) -> bool:
-        """True when the day is provably done: Threads already carries this date's digest AND no
-        other channel could take the visual.
-
-        Deliberately narrow — with enable_slack_post on, the Slack image upload is a separate
-        delivery the Threads marker says nothing about, so the run must proceed."""
-        if force_republish or self.config.pipeline.enable_slack_post:
+        """True when the day is provably done: Threads is the only channel, and either it is off or
+        it already carries this date's digest."""
+        if force_republish:
             return False
         if not self.config.pipeline.enable_threads_post:
-            return False
+            return True
         return bool(self.threads_ledger and self.threads_ledger.already_posted(post_date))
-
-    def _no_destination_for_the_image(self, content: DigestContent | None) -> bool:
-        """True when a rendered image has no possible destination: the digest carries no stories
-        (Threads refuses that shape) AND Slack — the other real destination — is off."""
-        if self.config.pipeline.enable_slack_post:
-            return False
-        return not (content and content.items)
-
-    async def _post_slack(self, image_bytes: bytes | None, brief: VisualBrief | None) -> bool:
-        if not self.config.pipeline.enable_slack_post:
-            return False
-        if not image_bytes or not brief:
-            return False
-        from output.slack_handler import send_image_to_slack
-
-        emoji = self.config.pipeline.visual_caption_emoji
-        return await send_image_to_slack(
-            image_bytes,
-            channel_id=self.config.slack.channel_id,
-            title=brief.title,
-            comment=f"{emoji} *{brief.title}*\n{brief.caption}",
-            bot_token=self.config.slack.bot_token,
-        )
 
     async def _post_threads(
         self,

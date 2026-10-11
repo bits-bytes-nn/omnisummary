@@ -15,26 +15,10 @@ from shared import (
     BedrockLanguageModelFactory,
     Config,
     create_memory_store,
-    emit_emf,
     logger,
     publish_alert,
     set_correlation_id,
 )
-
-THREADS_POSTS_METRIC = "ThreadsPostsPublished"
-THREADS_IMAGE_METRIC = "ThreadsImagePublished"
-
-
-def _emit_threads_metrics(outcome: ThreadsDelivery | None) -> None:
-    """Emit what the day's Threads delivery actually produced, as ONE CloudWatch EMF record: how
-    many posts (root + replies) landed, and whether the root carried the visual.
-
-    Emitted UNCONDITIONALLY — including for a run with no outcome at all (0 posts). This Lambda is
-    the only delivery path, and skipping the datapoint when nothing was delivered is exactly the
-    case worth measuring: a missing datapoint reads as "no data", not as a zero."""
-    posted = outcome.posted if outcome else 0
-    with_image = 1 if (outcome and outcome.with_image) else 0
-    emit_emf({THREADS_POSTS_METRIC: posted, THREADS_IMAGE_METRIC: with_image})
 
 
 def _remaining_deadline(context: Any) -> float | None:
@@ -55,7 +39,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Daily-visual Lambda, invoked asynchronously by the digest Lambda so visual
     generation (LLM editor + Tavily + gpt-image, ~1-2 min) stays off the digest's
     critical path. Loads the digest snapshot for the requested date from AgentCore Memory
-    and publishes the digest (image + text) to Slack/Threads.
+    and publishes the digest (image + text) to Threads.
 
     Failures are logged and RE-RAISED so Lambda records an invocation error: that is what makes
     the Errors alarm fire and puts the async invoke in the DLQ. Re-raising is safe because the
@@ -146,10 +130,6 @@ def _maybe_alert_threads_outcome(outcome: ThreadsDelivery | None, digest_date: d
 
 async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = None) -> None:
     config = Config.load()
-    if not config.pipeline.enable_daily_visual:
-        logger.info("Daily visual disabled, skipping")
-        return
-
     digest_date, dated_invoke = _requested_date(event or {}, ZoneInfo(config.aws.timezone))
     # Load the snapshot BY DATE. 'Load the latest' published yesterday's stories whenever today's
     # snapshot was missing, and comparing digest_result.generated_at instead is not an option: it
@@ -176,5 +156,4 @@ async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = 
     posted = await maker.run(ranked_items, content, today=digest_date, deadline=deadline)
     logger.info("Daily visual %s for %s", "posted" if posted else "skipped", digest_date)
     outcome = maker.threads_outcome
-    _emit_threads_metrics(outcome)
     _maybe_alert_threads_outcome(outcome, digest_date)

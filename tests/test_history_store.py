@@ -21,9 +21,6 @@ class _MemStore(StateStore):
     def write(self, key: str, content: str) -> None:
         self.blobs[key] = content
 
-    def exists(self, key: str) -> bool:
-        return key in self.blobs
-
 
 class TestPublishedUrlLedger:
     def test_record_then_recent_within_ttl(self):
@@ -200,9 +197,6 @@ class _UnreadableStore(StateStore):
     def write(self, key: str, content: str) -> None:
         self.writes[key] = content
 
-    def exists(self, key: str) -> bool:
-        raise StateReadError(f"cannot stat {key}")
-
 
 class TestUnreadableStateIsNotEmptyState:
     """Regression: an unreadable state blob read exactly like "no history yet", so the next
@@ -230,7 +224,33 @@ class TestUnreadableStateIsNotEmptyState:
 
     def test_rolling_log_returns_empty_and_skips_the_append(self):
         store = _UnreadableStore()
-        log = RollingLog(store, "visual_formats.json", max_entries=7)
+        log = RollingLog(store, "recent_leads.json", max_entries=7)
         assert log.entries() == []  # called from the publish path — must not raise
-        log.append({"date": "2026-06-10", "orientation": "square"}, dedup_key="date")
+        log.append({"date": "2026-06-10", "lead": "a"}, dedup_key="date")
         assert store.writes == {}
+
+
+class TestLedgerBoundaries:
+    def test_the_threads_ledger_keeps_the_newest_dates_when_it_caps(self):
+        # Keeping the OLDEST 30 would trim every new mark away on write, so a retried run re-posts.
+        ledger = ThreadsPostLedger(_MemStore())
+        start = date(2026, 1, 1)
+        for d in range(ThreadsPostLedger.MAX_DATES + 1):
+            ledger.mark(start + timedelta(days=d))
+        assert ledger.already_posted(start + timedelta(days=ThreadsPostLedger.MAX_DATES))
+        assert not ledger.already_posted(start)
+
+    def test_a_second_mark_does_not_take_over_the_first_runs_marker(self):
+        ledger = ThreadsPostLedger(_MemStore())
+        day = date(2026, 6, 10)
+        ledger.mark(day, "run-a")
+        ledger.mark(day, "run-b")
+        ledger.unmark(day, "run-b")  # B's rollback must not erase A's successful post
+        assert ledger.already_posted(day)
+
+    def test_a_url_is_excluded_until_the_ttl_day_and_not_on_it(self):
+        store = _MemStore()
+        ledger = PublishedUrlLedger(store, ttl_days=6)
+        ledger.record(["https://e.com/a"], date(2026, 6, 1))
+        assert "https://e.com/a" in ledger.recent_urls(date(2026, 6, 6))  # age 5
+        assert "https://e.com/a" not in ledger.recent_urls(date(2026, 6, 7))  # age 6 == ttl

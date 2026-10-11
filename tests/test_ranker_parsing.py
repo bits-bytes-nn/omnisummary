@@ -23,7 +23,7 @@ class TestParseRankings:
         raw = json.dumps(
             {
                 "rankings": [
-                    {"item_id": "item_1", "score": 0.9, "reasoning": "Important", "categories": ["AI"]},
+                    {"item_id": "item_1", "score": 0.9, "reasoning": "Important"},
                     {"item_id": "item_2", "score": 0.5, "reasoning": "Moderate"},
                 ]
             }
@@ -121,9 +121,8 @@ class TestParseRankings:
 class TestItemIdResolution:
     """The `=== Item N ===` header the prompt builder emits invites the model to answer with the
     DISPLAY ORDINAL, and production logs show it doing exactly that ('30', '27', '18', '9', '5'),
-    plus a truncated 14-char id and full URLs. Each was discarded with a warning — and since the
-    coverage re-ask only fires below ranking_min_coverage_ratio, one run logged 'Unknown item_id 30'
-    then '38/40 scored, coverage 0.95' and never re-asked. Those candidates left the pool silently."""
+    plus a truncated 14-char id and full URLs. Each was discarded with a warning, so those
+    candidates left the pool silently."""
 
     def _parse(self, raw_id: str, items: list[CollectedItem] | None = None):
         items = items or _items()

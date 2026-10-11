@@ -4,28 +4,21 @@ from shared.config import get_config
 from shared.utils import BedrockCrossRegionModelHelper
 
 # Env vars a developer's shell or `.env` supplies in real runs. Any of them leaking into a test
-# changes behavior: a real SLACK_BOT_TOKEN makes a "no token configured" path take the token
-# branch, a STATE_BUCKET sends a collector to the S3 park file instead of live collection. Cleared
+# changes behavior: a real OPENAI_API_KEY makes a "no key configured" path take the key branch,
+# a STATE_BUCKET sends a collector to the S3 park file instead of live collection. Cleared
 # for every test so the suite behaves the same on a laptop with a full .env and in CI without one.
 LEAKY_ENV_VARS = (
-    "SLACK_BOT_TOKEN",
-    "SLACK_CHANNEL_ID",
-    "SLACK_SIGNING_SECRET",
     "TAVILY_API_KEY",
     "OPENAI_API_KEY",
     "YOUTUBE_API_KEY",
     "THREADS_ACCESS_TOKEN",
     "THREADS_USER_ID",
-    "CLOUDFLARE_PROXY_URL",
-    "CLOUDFLARE_PROXY_TOKEN",
     "STATE_BUCKET",
     "S3_PREFIX",
     "MEMORY_ID",
     "ALERT_SNS_TOPIC_ARN",
     "VISUAL_FUNCTION_NAME",
     "RSSHUB_BASE_URL",
-    "AGENTCORE_RUNTIME_ARN",
-    "DDB_TABLE_NAME",
 )
 
 

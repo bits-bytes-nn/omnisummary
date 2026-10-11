@@ -19,10 +19,10 @@ _META_IMAGE_KEYS = (
     ("name", "twitter:image"),
     ("name", "twitter:image:src"),
 )
-# Raster types Slack and Threads render reliably. SVG and other vector/exotic types are excluded —
-# Slack file previews and Meta's Threads fetcher don't handle them dependably.
+# Raster types Threads renders reliably. SVG and other vector/exotic types are excluded — Meta's
+# Threads fetcher doesn't handle them dependably.
 _RENDERABLE_IMAGE_TYPES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif"})
-# Map content-type → file extension for the Slack filename and the Threads S3 key.
+# Map content-type → file extension for the Threads S3 key.
 _CONTENT_TYPE_EXT = {
     "image/jpeg": "jpg",
     "image/png": "png",

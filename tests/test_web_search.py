@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -72,20 +73,38 @@ class TestParseResults:
         assert len(items) == 1
 
     def test_date_only_published_date_is_kept(self):
-        # Tavily often returns a date-only 'published_date' ('2026-06-03'), which parses to a naive
-        # datetime; comparing it to the tz-aware cutoff used to raise TypeError and silently drop
-        # the result. It must now be treated as UTC and kept when recent.
+        # Tavily often returns a date-only 'published_date', which parses to a naive datetime;
+        # comparing it to the tz-aware cutoff used to raise TypeError and silently drop the result.
         c = _collector(min_search_score=0.0)
         r = {
             "url": "https://example.com/d",
             "title": "date-only",
             "content": "x",
             "score": 0.9,
-            "published_date": "2026-06-03",
+            "published_date": "2026-06-02",
         }
         items = c._parse_results({"results": [r]}, trend_name="t")
         assert len(items) == 1
         assert items[0].published_at.tzinfo is not None
+
+    def test_an_rfc2822_date_without_a_zone_is_utc_not_host_local(self):
+        from collectors.web_search import _parse_date
+
+        assert _parse_date("Sat, 10 Oct 2026 12:00:00 -0000") == datetime(2026, 10, 10, 12, tzinfo=UTC)
+        assert _parse_date("Sat, 10 Oct 2026 12:00:00 +0900") == datetime(2026, 10, 10, 3, tzinfo=UTC)
+
+    def test_a_result_dated_today_is_collected_by_todays_run_and_tomorrows(self):
+        # The shipped window is 30h back from midnight KST at the end of the digest date
+        # (resolve_digest_window). Read as midnight, a result dated today but published after the run
+        # fell before tomorrow's window; read as end of day UTC, it fell after today's window and
+        # shipped a day late. The published-URL ledger stops the second collection from repeating it.
+        kst = ZoneInfo("Asia/Seoul")
+        r = {"url": "https://example.com/d", "title": "d", "content": "x", "score": 0.9, "published_date": "2026-10-10"}
+        for reference in (datetime(2026, 10, 11, tzinfo=kst), datetime(2026, 10, 12, tzinfo=kst)):
+            c = _collector(min_search_score=0.0)
+            c.config.reference_time = reference
+            c.config.lookback_hours = 30
+            assert len(c._parse_results({"results": [r]}, trend_name="t")) == 1
 
 
 def _search_collector(*, llm_factory=None, **kwargs) -> WebSearchCollector:
@@ -162,6 +181,17 @@ class TestCollect:
         assert last["include_domains"] == ["arxiv.org"] and last["topic"] == "general"
         # The window Tavily is asked about is the run's own, anchored to reference_time.
         assert (last["start_date"], last["end_date"]) == ("2026-06-02", "2026-06-03")
+
+    @pytest.mark.asyncio
+    async def test_excluded_domains_reach_every_search_broad_and_refined(self, monkeypatch):
+        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        c = _search_collector(min_search_score=0.3, exclude_domains=["finance.biggo.com"])
+        client = MagicMock()
+        client.search = AsyncMock(return_value={"results": []})
+        c._client_instance = client
+        await c.collect()
+        await c._search_trend("refined q", [], "refined")
+        assert all(call.kwargs["exclude_domains"] == ["finance.biggo.com"] for call in client.search.await_args_list)
 
     @pytest.mark.asyncio
     async def test_the_requested_window_widens_with_the_configured_lookback(self, monkeypatch):

@@ -71,103 +71,28 @@ class TestCountTokens:
         assert client.count_tokens.call_count == 1  # API called only once, then degraded
 
 
-class TestTemperatureGating:
-    def test_opus_48_omits_temperature(self):
-        # Opus 4.7/4.8 reject the temperature param -> must not be sent.
-        f = _factory()
-        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_8_OPUS]
-        cfg = f._build_model_config(info, "global.anthropic.claude-opus-4-8")
-        assert "temperature" not in cfg
-        assert cfg["max_tokens"] > 0
-
-    def test_sonnet_46_includes_temperature(self):
-        f = _factory()
-        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
-        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-4-6")
-        assert "temperature" in cfg
-
-    def test_a_plain_model_id_still_builds_a_converse_config(self):
-        # The id the deleted ChatBedrock branch used to take: cross-region resolution failing back
-        # to the bare model id. Converse accepts it, so the branch removal loses no fallback.
-        f = _factory()
-        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
-        cfg = f._build_model_config(info, "anthropic.claude-sonnet-4-6")
-        assert "model_kwargs" not in cfg
-        assert cfg["temperature"] == BedrockLanguageModelFactory.DEFAULT_TEMPERATURE
-        assert cfg["max_tokens"] > 0
-
-    def test_sonnet_5_omits_temperature(self):
-        # Sonnet 5 rejects non-default sampling params (400), same as Opus 4.7/4.8. It is now
-        # the default digest/agent/trend model, so lock the gating in explicitly.
-        f = _factory()
-        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
-        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5")
-        assert "temperature" not in cfg
-        assert cfg["max_tokens"] > 0
-
-
-class TestOpus5Registry:
-    """Opus 5 is selectable from config. Its capability flags were VERIFIED against Converse on
-    global.anthropic.claude-opus-5, not inferred from the version number: a `temperature` param and
-    the legacy thinking.type="enabled"/budget_tokens form both return ValidationException, while
-    thinking.type="adaptive" + output_config.effort succeeds. Getting these wrong 400s every call."""
-
-    def test_opus_5_is_registered(self):
-        assert LanguageModelId.CLAUDE_V5_OPUS in LANGUAGE_MODEL_INFO
-
-    def test_opus_5_rejects_sampling_params(self):
-        assert LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_OPUS].supports_temperature is False
-
-    def test_opus_5_matches_the_other_claude_5_family_gates(self):
-        # Same shape as Sonnet 5 / Opus 4.8 — a new family member that silently differs on this flag
-        # 400s every call, which is the failure mode this pins.
-        opus5 = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_OPUS]
-        for sibling in (LanguageModelId.CLAUDE_V5_SONNET, LanguageModelId.CLAUDE_V4_8_OPUS):
-            assert opus5.supports_temperature == LANGUAGE_MODEL_INFO[sibling].supports_temperature
-
-
-CLAUDE_5_5_FAMILY = [
-    LanguageModelId.CLAUDE_V5_5_OPUS,
-    LanguageModelId.CLAUDE_V5_5_SONNET,
-    LanguageModelId.CLAUDE_V5_5_HAIKU,
-    LanguageModelId.CLAUDE_V5_1_FABLE,
-]
 NO_FORCED_TOOL_CHOICE = [
     LanguageModelId.CLAUDE_V5_5_OPUS,
     LanguageModelId.CLAUDE_V5_5_SONNET,
-    LanguageModelId.CLAUDE_V5_1_FABLE,
 ]
 PROFILE_ARN = "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc"
 
 
-class TestClaude55Registry:
-    """Opus 5.5 / Sonnet 5.5 / Haiku 5.5 / Fable 5.1 are selectable. All four 400 on non-default
-    sampling params; Opus 5.5, Sonnet 5.5 and Fable 5.1 also 400 on forced tool_choice."""
+class TestRequestGating:
+    """What the factory sends per model. The flags were verified against Converse (temperature and
+    forced tool_choice return ValidationException where the registry says so), so these pin the
+    request shape rather than restating the table."""
 
-    @pytest.mark.parametrize("model", CLAUDE_5_5_FAMILY, ids=lambda m: m.name)
-    def test_is_registered_with_1m_context_and_the_non_streaming_output_cap(self, model):
-        info = LANGUAGE_MODEL_INFO[model]
-        assert info.context_window_size == 1000000
-        assert info.max_output_tokens == 64000
-
-    def test_base_ids_carry_no_version_suffix(self):
-        assert [m.value for m in CLAUDE_5_5_FAMILY] == [
-            "anthropic.claude-opus-5-5",
-            "anthropic.claude-sonnet-5-5",
-            "anthropic.claude-haiku-5-5",
-            "anthropic.claude-fable-5-1",
-        ]
-
-    @pytest.mark.parametrize("model", CLAUDE_5_5_FAMILY, ids=lambda m: m.name)
+    @pytest.mark.parametrize("model", [m for m in LANGUAGE_MODEL_INFO if m != LanguageModelId.CLAUDE_V4_6_SONNET])
     def test_temperature_is_never_sent(self, model):
-        info = LANGUAGE_MODEL_INFO[model]
-        assert info.supports_temperature is False
-        cfg = _factory()._build_model_config(info, f"global.{model.value}", temperature=0.7)
+        cfg = _factory()._build_model_config(LANGUAGE_MODEL_INFO[model], f"global.{model.value}", temperature=0.7)
         assert "temperature" not in cfg
 
-    @pytest.mark.parametrize("model", CLAUDE_5_5_FAMILY, ids=lambda m: m.name)
-    def test_forced_tool_choice_flag(self, model):
-        assert LANGUAGE_MODEL_INFO[model].supports_forced_tool_choice is (model not in NO_FORCED_TOOL_CHOICE)
+    def test_the_counting_model_still_takes_temperature(self):
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
+        cfg = _factory()._build_model_config(info, "anthropic.claude-sonnet-4-6")
+        assert cfg["temperature"] == BedrockLanguageModelFactory.DEFAULT_TEMPERATURE
+        assert "model_kwargs" not in cfg
 
     @pytest.mark.parametrize("resolved", ["global", "arn"])
     @pytest.mark.parametrize("model", NO_FORCED_TOOL_CHOICE, ids=lambda m: m.name)
@@ -180,6 +105,16 @@ class TestClaude55Registry:
         for model in (LanguageModelId.CLAUDE_V5_SONNET, LanguageModelId.CLAUDE_V5_5_HAIKU):
             cfg = _factory()._build_model_config(LANGUAGE_MODEL_INFO[model], f"global.{model.value}")
             assert "supports_tool_choice_values" not in cfg
+
+    @pytest.mark.parametrize("model", [LanguageModelId.CLAUDE_V5_5_OPUS, LanguageModelId.CLAUDE_V5_5_HAIKU])
+    def test_a_medium_default_effort_is_pinned_to_high(self, model):
+        cfg = _factory()._build_model_config(LANGUAGE_MODEL_INFO[model], f"global.{model.value}")
+        assert cfg["additional_model_request_fields"] == {"output_config": {"effort": "high"}}
+
+    @pytest.mark.parametrize("model", [LanguageModelId.CLAUDE_V5_SONNET, LanguageModelId.CLAUDE_V5_5_SONNET])
+    def test_a_high_default_effort_sends_nothing(self, model):
+        cfg = _factory()._build_model_config(LANGUAGE_MODEL_INFO[model], f"global.{model.value}")
+        assert "additional_model_request_fields" not in cfg
 
 
 class TestStructuredOutputRequest:
@@ -196,7 +131,7 @@ class TestStructuredOutputRequest:
                         "toolUse": {
                             "toolUseId": "t1",
                             "name": "VisualBrief",
-                            "input": {"title": "T", "caption": "C", "prompt": "P", "orientation": "square"},
+                            "input": {"title": "T", "prompt": "P", "orientation": "square"},
                         }
                     }
                 ],
@@ -229,7 +164,10 @@ class TestStructuredOutputRequest:
         assert "toolChoice" not in request["toolConfig"]
         assert [t["toolSpec"]["name"] for t in request["toolConfig"]["tools"]] == ["VisualBrief"]
         assert "temperature" not in request["inferenceConfig"]
-        assert "additionalModelRequestFields" not in request
+        effort = LANGUAGE_MODEL_INFO[model].effort
+        assert request.get("additionalModelRequestFields") == (
+            {"output_config": {"effort": effort}} if effort else None
+        )
 
     def test_a_model_that_accepts_forced_tool_choice_still_gets_it(self):
         # Pins the unchanged path for the current default (Sonnet 5 on a global id).
@@ -244,10 +182,7 @@ class TestModelClassConstructorSurface:
     is what turns a silent framework break into a red build. No network: the boto client is a mock."""
 
     CASES = [
-        (LanguageModelId.CLAUDE_V4_8_OPUS, {}),
-        (LanguageModelId.CLAUDE_V5_SONNET, {}),
-        (LanguageModelId.CLAUDE_V5_OPUS, {}),
-        *[(model, {}) for model in CLAUDE_5_5_FAMILY],
+        *[(model, {}) for model in LANGUAGE_MODEL_INFO],
         (LanguageModelId.CLAUDE_V5_SONNET, {"enable_thinking": True}),
         (LanguageModelId.CLAUDE_V4_6_SONNET, {"enable_thinking": True}),  # legacy budget_tokens form
         (LanguageModelId.CLAUDE_V5_SONNET, {"supports_1m_context_window": True}),
@@ -327,17 +262,30 @@ class TestApplicationProfileResolution:
     resolution happens in one place, both the LangChain factory and the Strands research agent get
     it. It must degrade silently: cost reporting may never stop a generation."""
 
-    def test_profile_name_is_deterministic_and_slugged(self, monkeypatch):
+    def test_profile_name_is_deterministic_and_slugged(self):
+        from shared.utils import BedrockCrossRegionModelHelper as H
+
+        name = H.application_profile_name(LanguageModelId.CLAUDE_V4_8_OPUS, "omnisummary", "dev")
+        assert name == "omnisummary-dev-anthropic-claude-opus-4-8"
+        # dots and colons in a model id are not valid in a profile name
+        name = H.application_profile_name(LanguageModelId.CLAUDE_V5_5_OPUS, "omnisummary", "prod")
+        assert name.startswith("omnisummary-prod-") and "." not in name and ":" not in name
+
+    def test_the_resolver_looks_up_the_name_the_script_creates(self, monkeypatch):
+        # put_inference_profiles names profiles from config; the Lambda resolver from the env CDK
+        # sets from the same config. A prod Lambda must look for the prod-named profile.
         from shared.utils import BedrockCrossRegionModelHelper as H
 
         monkeypatch.setenv("PROJECT_NAME", "omnisummary")
-        monkeypatch.setenv("STAGE", "dev")
-        assert (
-            H.application_profile_name(LanguageModelId.CLAUDE_V4_8_OPUS) == "omnisummary-dev-anthropic-claude-opus-4-8"
-        )
-        # dots and colons in a model id are not valid in a profile name
-        name = H.application_profile_name(LanguageModelId.CLAUDE_V3_HAIKU)
-        assert "." not in name and ":" not in name
+        monkeypatch.setenv("STAGE", "prod")
+        wanted = H.application_profile_name(LanguageModelId.CLAUDE_V5_5_OPUS, "omnisummary", "prod")
+        client = MagicMock()
+        client.get_paginator.return_value.paginate.return_value = [
+            {"inferenceProfileSummaries": [{"inferenceProfileName": wanted, "inferenceProfileArn": "arn:prod"}]}
+        ]
+        session = MagicMock()
+        session.client.return_value = client
+        assert H._application_profile_arn(session, LanguageModelId.CLAUDE_V5_5_OPUS, "us-west-2", "fb") == "arn:prod"
 
     def test_matching_profile_is_preferred(self, monkeypatch):
         from shared.utils import BedrockCrossRegionModelHelper as H
@@ -493,17 +441,6 @@ class TestGetModel:
         assert isinstance(model, ChatBedrockConverse)
         assert model.model_id == resolved
 
-    def test_a_plain_id_also_builds_the_converse_class(self):
-        # Cross-region resolution falling back to the bare model id used to pick ChatBedrock. Converse
-        # takes the plain id too, so the class is now unconditional and the flags the registry keeps
-        # (supports_temperature) were verified against Converse in the first place.
-        from langchain_aws import ChatBedrockConverse
-
-        model_id = LanguageModelId.CLAUDE_V3_5_SONNET
-        model = self._built(model_id, model_id.value, stage="digest")
-        assert isinstance(model, ChatBedrockConverse)
-        assert model.model_id == model_id.value
-
     def test_the_stage_reaches_the_usage_logger(self):
         # The bill is per MODEL and several stages share one, so the stage tag is the only way a
         # token total is attributable at all.
@@ -513,8 +450,7 @@ class TestGetModel:
         loggers = [c for c in (model.callbacks or []) if isinstance(c, _TokenUsageLogger)]
         assert [c.stage for c in loggers] == ["ranking"]
 
-    def test_an_unregistered_model_is_rejected(self):
-        f = _factory()
-        with patch.object(f, "get_model_info", return_value=None):
-            with pytest.raises(ValueError, match="Unsupported language model ID"):
-                f.get_model(LanguageModelId.CLAUDE_V5_SONNET)
+    def test_every_model_id_is_registered(self):
+        # Config fields are typed with LanguageModelId, so a registry gap would only surface as a
+        # KeyError on the first call of the stage that uses it.
+        assert set(LanguageModelId) == set(LANGUAGE_MODEL_INFO)

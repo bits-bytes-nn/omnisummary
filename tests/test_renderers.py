@@ -1,17 +1,10 @@
 from output.renderers import (
-    SLACK_MAX_BLOCKS_PER_MESSAGE,
-    SLACK_MAX_SECTION_CHARS,
     _fit_one_post,
-    _hard_split_link_safe,
-    _split_long_paragraph,
-    render_agent_blocks,
-    render_research_blocks,
-    render_slack_blocks,
     render_threads_posts,
     render_threads_research,
 )
 from shared.constants import THREADS_MAX_POST_CHARS, SourceType
-from shared.formatting import source_tag_and_metrics, strip_slack_mrkdwn, threads_item_overhead_chars
+from shared.formatting import source_tag_and_metrics, strip_markup, threads_item_overhead_chars
 from shared.models import CollectedItem, DigestContent, DigestItem
 
 
@@ -23,7 +16,7 @@ def _content(n_items: int = 2, lead: str = "오늘의 리드.") -> DigestContent
             DigestItem(
                 title=f"스토리 {i}",
                 url=f"http://e.com/{i}",
-                source_tag=f"`src{i}`",
+                source_tag=f"src{i}",
                 metrics="👍 +10" if i == 1 else "",
                 body=f"본문 {i} 입니다.",
                 implication=f"시사점 {i}.",
@@ -31,49 +24,6 @@ def _content(n_items: int = 2, lead: str = "오늘의 리드.") -> DigestContent
             for i in range(1, n_items + 1)
         ],
     )
-
-
-class TestSlackBlocks:
-    def test_header_lead_and_item_blocks(self):
-        chunks = render_slack_blocks(_content(2), header="HDR")
-        blocks = chunks[0]
-        assert blocks[0]["type"] == "header"
-        assert blocks[1]["type"] == "section"  # lead
-        types = [b["type"] for b in blocks]
-        assert "divider" in types
-        assert any(b.get("type") == "rich_text" for b in blocks)  # body quote
-
-    def test_image_block_added_when_url_present(self):
-        chunks = render_slack_blocks(_content(1), header="HDR", image_url="https://img/x.png")
-        assert any(b["type"] == "image" and b["image_url"] == "https://img/x.png" for b in chunks[0])
-
-    def test_title_links_and_implication_italic(self):
-        chunks = render_slack_blocks(_content(1), header="HDR")
-        texts = [b["text"]["text"] for b in chunks[0] if b["type"] == "section"]
-        assert any("<http://e.com/1|스토리 1>" in t for t in texts)
-        assert any(t.startswith("_") and t.endswith("_") for t in texts)
-
-    def test_chunks_under_block_limit(self):
-        chunks = render_slack_blocks(_content(40), header="HDR")
-        assert all(len(c) <= SLACK_MAX_BLOCKS_PER_MESSAGE for c in chunks)
-        assert len(chunks) > 1
-
-    def test_oversize_lead_body_implication_split_under_section_cap(self):
-        # A field longer than Slack's 3000-char section cap must be split across multiple blocks,
-        # or chat_postMessage rejects the whole message as invalid_blocks (dropping the digest).
-        huge = "문장이다. " * 900  # ~5400 chars, well over the cap
-        content = DigestContent(
-            lead=huge,
-            headline_index=1,
-            items=[DigestItem(title="스토리", url="http://e.com/x", body=huge, implication=huge)],
-        )
-        blocks = [b for chunk in render_slack_blocks(content, header="HDR") for b in chunk]
-        for b in blocks:
-            if b["type"] == "section":
-                assert len(b["text"]["text"]) <= SLACK_MAX_SECTION_CHARS
-            elif b["type"] == "rich_text":
-                for el in b["elements"][0]["elements"]:
-                    assert len(el["text"]) <= SLACK_MAX_SECTION_CHARS
 
 
 class TestThreadsPosts:
@@ -108,10 +58,10 @@ class TestThreadsPosts:
         body_line = [ln for ln in post.split("\n\n") if "문장" in ln][0]
         assert body_line.rstrip().endswith("다.")
 
-    def test_source_line_never_publishes_a_slack_emoji_shortcode(self):
-        # Regression (2026-08-18, live post): metrics carried the Slack shortcode
-        # `:arrow_forward:`, and strip_slack_mrkdwn removes `_`, so Threads published a bare
-        # ":arrowforward:". Metric emoji must survive the strip intact — i.e. be real Unicode.
+    def test_source_line_never_publishes_an_emoji_shortcode(self):
+        # Regression (2026-08-18, live post): metrics carried the shortcode `:arrow_forward:`, and the
+        # markup strip removes `_`, so Threads published a bare ":arrowforward:". Metric emoji must
+        # be real Unicode.
         from shared.formatting import YOUTUBE_VIEWS_EMOJI
 
         content = DigestContent(
@@ -121,7 +71,7 @@ class TestThreadsPosts:
                 DigestItem(
                     title="스토리",
                     url="http://e.com/x",
-                    source_tag="`YouTube`",
+                    source_tag="YouTube",
                     metrics=f"{YOUTUBE_VIEWS_EMOJI} 14,235",
                     body="본문이다.",
                 )
@@ -131,11 +81,9 @@ class TestThreadsPosts:
         assert f"YouTube · {YOUTUBE_VIEWS_EMOJI} 14,235" in replies[0]
         assert ":" not in replies[0].split("\n\n")[1]
 
-    def test_reply_carries_the_source_line_without_slack_markup(self):
-        # The pipeline computes `source_tag`/`metrics` and Slack shows them, but the Threads reply
-        # used to discard both — a reader couldn't tell a Reddit thread from an arXiv paper without
-        # opening the link. The tag is stored backtick-wrapped for Slack mrkdwn, and Threads renders
-        # no markup, so the backticks must be stripped rather than published literally.
+    def test_reply_carries_the_source_line(self):
+        # The Threads reply used to discard `source_tag`/`metrics` — a reader couldn't tell a Reddit
+        # thread from an arXiv paper without opening the link.
         _, replies = render_threads_posts(_content(1))
         post = replies[0]
         assert "src1 · 👍 +10" in post
@@ -151,7 +99,7 @@ class TestThreadsPosts:
                 DigestItem(
                     title="스토리",
                     url="http://e.com/x",
-                    source_tag="`r/LocalLLaMA`",
+                    source_tag="r/LocalLLaMA",
                     metrics="👍 +44",
                     body="이것은 긴 본문 문장이다. " * 40,
                     implication="핵심 시사점이다.",
@@ -302,87 +250,32 @@ class TestThreadsPosts:
         log.warning.assert_not_called()
 
 
-class TestAgentBlocks:
-    def test_wraps_text_in_section(self):
-        chunks = render_agent_blocks("안녕하세요 *굵게* 답변입니다.")
-        assert chunks[0][0]["type"] == "section"
-        assert chunks[0][0]["text"]["text"] == "안녕하세요 *굵게* 답변입니다."
-
-    def test_empty_text_returns_no_chunks(self):
-        # Empty input → no chunks so callers post nothing (never blocks=[], which Slack rejects).
-        assert render_agent_blocks("") == []
-        assert render_agent_blocks("   \n\n  ") == []
-
-    def test_long_text_split_into_section_sized_blocks(self):
-        text = "\n\n".join(["가" * 2000, "나" * 2000, "다" * 2000])
-        chunks = render_agent_blocks(text)
-        all_blocks = [b for c in chunks for b in c]
-        assert all(len(b["text"]["text"]) <= SLACK_MAX_SECTION_CHARS for b in all_blocks)
-
-    def test_single_oversized_paragraph_is_hard_split(self):
-        chunks = render_agent_blocks("x" * (SLACK_MAX_SECTION_CHARS * 2 + 50))
-        all_blocks = [b for c in chunks for b in c]
-        assert all(len(b["text"]["text"]) <= SLACK_MAX_SECTION_CHARS for b in all_blocks)
-        assert len(all_blocks) >= 3
-
-    def test_oversize_paragraph_never_splits_a_link(self):
-        # A long paragraph with a Slack link straddling the section boundary must not be cleaved:
-        # no produced block may contain a '<' without its matching '>'.
-        link = "<https://example.com/very/long/path/with_underscores|클릭하세요>"
-        para = "가" * (SLACK_MAX_SECTION_CHARS - 10) + link + "나" * 200
-        chunks = render_agent_blocks(para)
-        for c in chunks:
-            for b in c:
-                t = b["text"]["text"]
-                assert t.count("<") == t.count(">")  # balanced — no half-link
-
-
-class TestResearchBlocks:
-    def test_first_block_is_header(self):
-        chunks = render_research_blocks("본문이다.", header=":satellite: Deep Research")
-        assert chunks[0][0]["type"] == "header"
-        assert chunks[0][0]["text"]["text"] == ":satellite: Deep Research"
-
-    def test_divider_before_numbered_heading(self):
-        report = "도입부 문장이다.\n\n*1. 첫 섹션*\n\n첫 섹션 본문이다.\n\n*2. 둘째 섹션*\n\n둘째 본문이다."
-        blocks = [b for c in render_research_blocks(report, header="H") for b in c]
-        types = [b["type"] for b in blocks]
-        # header first, then a divider precedes each "*N. ...*" heading
-        assert types[0] == "header"
-        assert types.count("divider") == 2
-
-    def test_sections_under_char_cap(self):
-        report = "\n\n".join(["가" * 2500, "*1. 섹션*", "나" * 2500])
-        blocks = [b for c in render_research_blocks(report, header="H") for b in c]
-        for b in blocks:
-            if b["type"] == "section":
-                assert len(b["text"]["text"]) <= SLACK_MAX_SECTION_CHARS
-
-    def test_empty_report_renders_nothing(self):
-        # An empty/whitespace report must produce NO blocks, so the delivery loop posts nothing
-        # rather than a lonely header band with no content (matches render_agent_blocks).
-        assert render_research_blocks("   ", header="H") == []
-
-
-class TestStripSlackMrkdwn:
+class TestStripMarkup:
     def test_link_becomes_label_and_url(self):
-        assert strip_slack_mrkdwn("<https://x.com|엑스>") == "엑스 (https://x.com)"
+        assert strip_markup("[엑스](https://x.com)") == "엑스 (https://x.com)"
+
+    def test_image_link_keeps_only_the_url_when_the_alt_is_empty(self):
+        assert strip_markup("![](https://x.com/a.png)") == "(https://x.com/a.png)"
 
     def test_bare_angle_link(self):
-        assert strip_slack_mrkdwn("<https://x.com>") == "https://x.com"
+        assert strip_markup("<https://x.com>") == "https://x.com"
+
+    def test_link_with_balanced_parens_in_the_url_is_kept_whole(self):
+        out = strip_markup("[Foo](https://en.wikipedia.org/wiki/Foo_(bar)) 참고")
+        assert out == "Foo (https://en.wikipedia.org/wiki/Foo_(bar)) 참고"
 
     def test_drops_bold_italic_code(self):
-        assert strip_slack_mrkdwn("*굵게* _기울임_ `코드`") == "굵게 기울임 코드"
+        assert strip_markup("**굵게** _기울임_ `코드`") == "굵게 기울임 코드"
 
     def test_strips_leading_bullets_and_headings(self):
-        assert strip_slack_mrkdwn("- 항목\n## 제목") == "항목\n제목"
+        assert strip_markup("- 항목\n## 제목") == "항목\n제목"
 
     def test_preserves_underscores_in_linked_url(self):
         # Regression: the [*_`] strip must not corrupt URLs (arxiv/github/query params use '_').
-        assert strip_slack_mrkdwn("<https://arxiv.org/abs/2_3_4|논문>") == "논문 (https://arxiv.org/abs/2_3_4)"
+        assert strip_markup("[논문](https://arxiv.org/abs/2_3_4)") == "논문 (https://arxiv.org/abs/2_3_4)"
 
     def test_preserves_underscores_in_bare_url(self):
-        out = strip_slack_mrkdwn("참고 https://github.com/a_b/c_d *굵게*")
+        out = strip_markup("참고 https://github.com/a_b/c_d **굵게**")
         assert "https://github.com/a_b/c_d" in out
         assert "굵게" in out and "*" not in out
 
@@ -396,10 +289,10 @@ class TestThreadsResearch:
         assert len(replies) >= 1
 
     def test_strips_markdown_for_threads(self):
-        root, replies, *_ = render_threads_research("리드 *굵게* 본문이다. <https://x.com|링크> 참고하라.")
+        root, replies, *_ = render_threads_research("리드 **굵게** 본문이다. [링크](https://x.com) 참고하라.")
         joined = root + " " + " ".join(replies)
         assert "*" not in joined
-        assert "<https" not in joined
+        assert "](" not in joined
         assert "링크 (https://x.com)" in joined
 
     def test_reports_dropped_and_trimmed_counts(self):
@@ -426,8 +319,6 @@ class TestThreadsResearch:
         report = "\n\n".join(f"섹션 {i} 문장이다. " * 8 for i in range(30))
         root, replies, *_ = render_threads_research(report, max_posts=8)
         assert 1 + len(replies) <= 8
-        # no Slack pointer — the Threads post stands on its own
-        assert "Slack" not in (root + " ".join(replies))
 
     def test_no_cap_when_max_posts_zero(self):
         report = "\n\n".join(f"섹션 {i} 문장이다. " * 8 for i in range(30))
@@ -516,35 +407,12 @@ class TestThreadsResearch:
         assert replies == []
 
 
-class TestHardSplitLinkSafe:
-    def test_long_link_span_isolated_not_merged(self):
-        # A cut landing inside a long <url|label> span must emit the preceding text as its own
-        # <=max_len piece and put the link on its own piece — never a merged over-cap piece.
-        para = "가" * 400 + " <http://example.com/" + "q" * 300 + "|라벨> 꼬리말."
-        pieces = _hard_split_link_safe(para, 500)
-        non_link = [p for p in pieces if "<http" not in p]
-        assert all(len(p) <= 500 for p in non_link)  # non-link pieces respect the cap
-        for p in pieces:
-            assert p.count("<") == p.count(">")  # no link cleaved across pieces
-
-    def test_bare_short_text_unchanged(self):
-        assert _hard_split_link_safe("짧은 텍스트", 500) == ["짧은 텍스트"]
-
-    def test_split_long_paragraph_keeps_slack_sections_in_bound(self):
-        # A long <url|label> straddling the 2900 budget must not yield a >2900 non-link section.
-        big = "글" * 2890 + " <http://example.com/" + "z" * 140 + "|라벨> 나머지 문장이다."
-        pieces = _split_long_paragraph(big, SLACK_MAX_SECTION_CHARS)
-        non_link = [p for p in pieces if "<http" not in p]
-        assert all(len(p) <= SLACK_MAX_SECTION_CHARS for p in non_link)
-
-
 class TestThreadsSourceAttribution:
     """On Threads the source tag is the ONLY thing telling a Reddit thread from an arXiv paper, and
     it read wrong for two separate reasons. Both shipped in the 2026-08-18 digest."""
 
     def test_the_source_rides_in_parentheses_on_the_title_line(self):
-        # It was a block of its own. Slack renders the tag as inline code so it reads as metadata;
-        # Threads renders no markup, so a publication name was left as a bare noun phrase alone on a
+        # It was a block of its own, so a publication name was left as a bare noun phrase alone on a
         # line, indistinguishable from a stray fragment.
         post = _fit_one_post("제목이다", "Simon Willison's Weblog", "본문이다.", "시사점이다.", "http://e.com/1")
         assert post.splitlines()[0] == "제목이다 (Simon Willison's Weblog)"
@@ -565,7 +433,7 @@ class TestThreadsSourceAttribution:
             metadata={"view_count": 775, "channel_url": "https://youtube.com/@x"},
         )
         tag, metrics = source_tag_and_metrics(item)
-        assert tag == "`AI Engineer`"
+        assert tag == "AI Engineer"
         assert metrics == "▶️ 775"
 
     def test_a_youtube_item_with_no_author_keeps_the_platform_as_the_floor(self):
@@ -573,7 +441,7 @@ class TestThreadsSourceAttribution:
         item = CollectedItem(
             source_type=SourceType.YOUTUBE, title="t", url="https://youtu.be/x", metadata={"channel_url": "u"}
         )
-        assert source_tag_and_metrics(item)[0] == "`YouTube`"
+        assert source_tag_and_metrics(item)[0] == "YouTube"
 
 
 class TestThreadsItemOverhead:
@@ -600,7 +468,7 @@ class TestThreadsItemOverhead:
             headline_index=1,
             items=[
                 DigestItem(
-                    title=title, url=url, source_tag="`src1`", metrics="👍 +10", body=body, implication=implication
+                    title=title, url=url, source_tag="src1", metrics="👍 +10", body=body, implication=implication
                 )
             ],
         )
@@ -668,3 +536,23 @@ class TestThreadsResearchNumbering:
         root, replies, *_ = render_threads_research(report, max_posts=10)
         assert all(len(post) <= 500 for post in [root, *replies])
         assert root.startswith("1/3  소제목 1")
+
+
+class TestThreadsItemFit:
+    def test_body_sentences_go_from_the_end_and_the_first_one_stays(self):
+        from output.renderers import _fit_one_post
+
+        body = "첫 문장은 핵심이다. " + " ".join(f"덧붙인 문장 {i}번이다." for i in range(60))
+        post = _fit_one_post("제목", "src", body, "시사점이다.", "https://e.com/x")
+        assert len(post) <= THREADS_MAX_POST_CHARS
+        assert "첫 문장은 핵심이다." in post and "덧붙인 문장 59번이다." not in post
+
+    def test_a_hard_cut_body_still_ends_with_the_whole_url(self):
+        # With no word boundary the body is cut exactly to the room; a room that forgot the separator
+        # overran 500 by two, and the publisher's own cut then chopped the link's last characters.
+        from output.renderers import _fit_one_post
+
+        url = "https://e.com/a-long-path-that-must-survive"
+        post = _fit_one_post("제목", "src", "가" * 1000, "시" * 600, url)
+        assert len(post) <= THREADS_MAX_POST_CHARS
+        assert post.endswith(url)

@@ -79,6 +79,8 @@ def _latest_within_window(items: list[CollectedItem], limit: int) -> list[Collec
 
 
 class YouTubeCollector(BaseCollector):
+    config: YouTubeCollectorConfig
+
     def __init__(self, config: YouTubeCollectorConfig):
         self.config = config
         # Resolved once per collect() (see _resolve_api_key), never lazily per access: the SSM
@@ -127,8 +129,6 @@ class YouTubeCollector(BaseCollector):
             # the meta block the sync writes does. Reporting only — every item is still returned.
             self.flag_degraded_park(
                 parked,
-                threshold=self.config.error_rate_threshold,
-                empty_threshold=self.config.empty_rate_threshold,
                 what="channels",
             )
             # Through the SAME window both live branches apply: a stale park file otherwise fed
@@ -174,8 +174,6 @@ class YouTubeCollector(BaseCollector):
             total=result.total,
             failed=result.failed,
             empty=result.empty,
-            threshold=self.config.error_rate_threshold,
-            empty_threshold=self.config.empty_rate_threshold,
             what="channels",
         )
         return result.items
@@ -215,18 +213,23 @@ class YouTubeCollector(BaseCollector):
                 # the health report, not a healthy-but-empty channel.
                 raise RuntimeError(f"Could not resolve canonical channel ID for '{channel_url}'")
 
-            uploads_playlist = f"UU{channel_id[2:]}"
-            response = await self._get_api(
-                client,
-                "playlistItems",
-                {
-                    "part": "snippet",
-                    "playlistId": uploads_playlist,
-                    "maxResults": _CHANNEL_FETCH_DEPTH,
-                    "key": self.api_key,
-                },
-                description=f"YouTube playlistItems for '{channel_url}'",
-            )
+            # UULF is the channel's long-form uploads (no Shorts): with max_videos_per_channel 1 the
+            # plain UU uploads list let a 40-second Short displace the episode (6 of 8 recent Lenny's
+            # and No Priors uploads were Shorts). A channel without one answers 404 playlistNotFound.
+            for prefix in ("UULF", "UU"):
+                response = await self._get_api(
+                    client,
+                    "playlistItems",
+                    {
+                        "part": "snippet",
+                        "playlistId": f"{prefix}{channel_id[2:]}",
+                        "maxResults": _CHANNEL_FETCH_DEPTH,
+                        "key": self.api_key,
+                    },
+                    description=f"YouTube playlistItems for '{channel_url}'",
+                )
+                if response.status_code != 404:
+                    break
             # Raise (not return []) on an API rejection or a malformed body: these are FAILURES,
             # and gather_collector_results only escalates when EVERY channel failed — so a quota
             # exhaustion / revoked key across all channels reports FAILED instead of a silent EMPTY,
@@ -252,7 +255,7 @@ class YouTubeCollector(BaseCollector):
                 client,
                 "videos",
                 {
-                    "part": "snippet,statistics,contentDetails",
+                    "part": "snippet,statistics",
                     "id": ",".join(video_ids),
                     "key": self.api_key,
                 },
@@ -338,7 +341,6 @@ class YouTubeCollector(BaseCollector):
             timeout=self.config.request_timeout,
             max_retries=self.config.max_retries,
             backoff_sec=self.config.retry_backoff_sec,
-            proxy_fallback=True,
         )
 
         # The RSS feed isn't reliably newest-first either, so scan a fixed depth of entries,

@@ -100,12 +100,12 @@ class TestGroundingCheck:
     async def test_revises_unsupported_claim(self):
         out = json.dumps(
             {
-                "violations": [{"claim": "$7B", "issue": "not in source", "fix": "attributed"}],
-                "corrected_digest": "LEAD: 보도에 따르면 대규모 투자.\nITEM 0 BODY: 본문.\nITEM 0 IMPLICATION: 시사점.",
+                "violations": [{"claim": "$7B", "issue": "not in source", "fix": "dropped the figure"}],
+                "corrected_digest": "LEAD: 대규모 투자.\nITEM 0 BODY: 본문.\nITEM 0 IMPLICATION: 시사점.",
             }
         )
         result = await _generator(out)._verify_grounding(_content(), _sources())
-        assert "보도에 따르면" in result.lead
+        assert result.lead.startswith("대규모 투자")
 
     @pytest.mark.asyncio
     async def test_no_violation_keeps_original(self):
@@ -243,19 +243,19 @@ class TestProseBudgetReachesTheEditor:
 
         factory = MagicMock()
         factory.get_model.return_value = RunnableLambda(_reply)
-        config = PipelineConfig(enable_grounding_check=False, digest_item_prose_max_chars=333)
+        config = PipelineConfig(enable_grounding_check=False)
         gen = DigestGenerator(config, factory)
         ranked = [
             RankedItem(item=CollectedItem(item_id="i", source_type=SourceType.RSS, title="T", url="u"), score=0.8)
         ]
         await gen.generate(ranked, [r.item for r in ranked], today=date(2030, 1, 1))
-        assert any("333" in s for s in seen)
+        budget = gen._item_prose_budget(ranked[0].item)
+        assert any(f"{budget} characters" in s for s in seen)
 
 
 class TestDerivedBudgets:
     """The per-item number is computed from the parts CODE owns (URL + source line + separators)
-    and now covers the TITLE too, because the editor authors it. digest_item_prose_max_chars is
-    only a ceiling."""
+    and now covers the TITLE too, because the editor authors it."""
 
     @staticmethod
     def _gen(**overrides) -> DigestGenerator:
@@ -270,7 +270,7 @@ class TestDerivedBudgets:
     def test_budget_shrinks_with_the_real_fixed_parts(self):
         from shared.constants import THREADS_MAX_POST_CHARS
 
-        gen = self._gen(digest_item_prose_max_chars=0)  # ceiling off: pure derivation
+        gen = self._gen()
         short_url, long_url = "https://e.com/a", "https://e.com/" + "p" * 120
         short = gen._item_prose_budget(self._web(short_url).item)
         long_ = gen._item_prose_budget(self._web(long_url).item)
@@ -280,16 +280,12 @@ class TestDerivedBudgets:
     def test_each_candidate_keeps_its_own_budget(self):
         # The budget used to be the worst case across the whole pool, so a short-URL item was charged
         # for the longest URL in it and lost its closing sentence to a cap it never came near.
-        gen = self._gen(digest_item_prose_max_chars=0)
+        gen = self._gen()
         short, long_ = self._web("https://e.com/a"), self._web("https://e.com/" + "p" * 120)
         assert gen._item_prose_budget(short.item) > gen._item_prose_budget(long_.item)
 
-    def test_configured_ceiling_still_applies(self):
-        gen = self._gen(digest_item_prose_max_chars=100)
-        assert gen._item_prose_budget(self._web("https://e.com/a").item) == 100
-
     def test_every_candidates_budget_reaches_the_editor(self):
-        gen = self._gen(digest_item_prose_max_chars=0)
+        gen = self._gen()
         items = [self._web("https://e.com/a"), self._web("https://e.com/" + "p" * 120)]
         rendered = gen._format_ranked_items(items)
         for ranked in items:
@@ -529,19 +525,17 @@ class TestFormatRecentLeads:
         assert "No recent digests" in _format_recent_leads([])
         assert "No recent digests" in _format_recent_leads(["", "  "])
 
-    def test_only_the_first_sentence_of_each_lead_is_shown(self):
-        # The opening ANGLE is the opening sentence; the rest of the lead is prose the editor is not
-        # being asked to compare against, and five 200-char previews spent ~1000 prompt characters
-        # on it. Derived at format time — a lead stored as full prose still works.
+    def test_only_the_thesis_sentence_of_each_lead_is_shown(self):
+        # The lead names its story first and lands its thesis last; the thesis is what must not
+        # repeat, and the first sentence never carried one.
         from pipeline.digest_generator import _format_recent_leads
 
-        stored = "오픈AI가 또 모델을 냈다. 두 번째 문장이다. 세 번째 문장이다."
+        stored = "오픈AI가 또 모델을 냈다. 두 번째 문장이다. 결국 이득은 플랫폼이 챙긴다."
         out = _format_recent_leads([stored])
-        assert out == "- 오픈AI가 또 모델을 냈다."
+        assert out == "- 결국 이득은 플랫폼이 챙긴다."
 
     def test_long_leads_are_truncated_in_code_not_by_a_prompt_rule(self):
-        # What must differ is the OPENING angle, and it sits at the front; five full leads crowded
-        # the prompt with prose the editor is not being asked to compare against.
+        # Five full leads crowded the prompt with prose the editor is not being asked to compare.
         from pipeline.digest_generator import RECENT_LEAD_PREVIEW_CHARS, _format_recent_leads
 
         out = _format_recent_leads(["가" * (RECENT_LEAD_PREVIEW_CHARS + 50)])
@@ -575,25 +569,25 @@ class TestFormatSourceDetail:
     def test_reddit(self):
         # .rss feed carries no score/num_comments — only the subreddit tag is rendered.
         item = _item(SourceType.REDDIT, metadata={"subreddit": "LocalLLaMA"})
-        assert _source_detail(item) == "`r/LocalLLaMA`"
+        assert _source_detail(item) == "r/LocalLLaMA"
 
     def test_youtube(self):
         item = _item(SourceType.YOUTUBE, metadata={"view_count": 12345})
         result = _source_detail(item)
-        assert "`YouTube`" in result
-        # A literal Unicode emoji, not a Slack `:shortcode:` — Threads renders no shortcodes, and
-        # its renderer strips Slack markup characters, which published a bare ":arrowforward:".
+        assert "YouTube" in result
+        # A literal Unicode emoji, not a `:shortcode:` — Threads renders no shortcodes, and the
+        # markup strip removes underscores, which published a bare ":arrowforward:".
         assert "▶️ 12,345" in result
-        assert ":" not in result.split("`YouTube`")[-1]
+        assert ":" not in result.split("YouTube")[-1]
 
     def test_x_with_author(self):
         item = _item(SourceType.X, author="karpathy")
-        assert "`@karpathy`" in _source_detail(item)
+        assert "@karpathy" in _source_detail(item)
 
     def test_rss_with_feed_title(self):
         item = _item(SourceType.RSS, metadata={"feed_title": "GeekNews - 개발/기술/스타트업 뉴스 서비스"})
         result = _source_detail(item)
-        assert "`GeekNews`" in result
+        assert "GeekNews" in result
         assert "개발" not in result
 
     def test_web(self):
@@ -603,12 +597,12 @@ class TestFormatSourceDetail:
             title="Test",
             url="http://arxiv.org/abs/1234",
         )
-        assert "`arxiv.org`" in _source_detail(item)
+        assert "arxiv.org" in _source_detail(item)
 
     def test_reddit_no_engagement(self):
         item = _item(SourceType.REDDIT, metadata={"subreddit": "MachineLearning"})
         result = _source_detail(item)
-        assert "`r/MachineLearning`" in result
+        assert "r/MachineLearning" in result
         assert ":thumbsup:" not in result
 
 
@@ -677,7 +671,7 @@ class TestCountdownPosition:
 class TestSourceMatchingByNormalizedUrl:
     """The editor echoes each story's URL back, and the source tag was matched by EXACT string: one
     trailing slash, an http→https flip or a dropped utm param and the story shipped with no
-    provenance line at all — on Slack and on Threads."""
+    provenance line at all on Threads."""
 
     def _generator_with(self, ranked_url: str):
         gen = _generator("{}")
@@ -700,7 +694,7 @@ class TestSourceMatchingByNormalizedUrl:
             lead="l", headline_index=1, items=[DigestItem(title="T", url="https://interconnects.ai/p/x", body="b")]
         )
         gen._fill_source_metadata(content, ranked)
-        assert content.items[0].source_tag == "`Interconnects`"
+        assert content.items[0].source_tag == "Interconnects"
 
     def test_identical_urls_are_unaffected(self):
         gen, ranked = self._generator_with("https://interconnects.ai/p/x")
@@ -708,7 +702,7 @@ class TestSourceMatchingByNormalizedUrl:
             lead="l", headline_index=1, items=[DigestItem(title="T", url="https://interconnects.ai/p/x", body="b")]
         )
         gen._fill_source_metadata(content, ranked)
-        assert content.items[0].source_tag == "`Interconnects`"
+        assert content.items[0].source_tag == "Interconnects"
 
     def test_the_match_map_is_returned_for_the_grounding_check(self):
         gen, ranked = self._generator_with("https://interconnects.ai/p/x")
@@ -788,17 +782,16 @@ class TestUnmatchedItemsNeverShip:
 
     @pytest.mark.asyncio
     async def test_grounding_sees_only_the_sources_that_shipped(self):
-        # Joining ALL ranked candidates meant a specific claim whose only support was a DROPPED
-        # backfill candidate read as grounded — a false negative in the one pass that exists to
-        # catch invented specifics — and carried the buffer's surplus input tokens.
+        # Joining ALL ranked candidates meant a specific claim whose only support was a candidate the
+        # editor DROPPED read as grounded — a false negative in the one pass that exists to catch
+        # invented specifics — and carried the pool's surplus input tokens.
         shipped = RankedItem(
             item=CollectedItem(item_id="a", source_type=SourceType.RSS, title="Shipped", url="u1", text="kept body"),
             score=0.9,
         )
         dropped = RankedItem(
-            item=CollectedItem(item_id="b", source_type=SourceType.RSS, title="Backfill", url="u2", text="unused body"),
+            item=CollectedItem(item_id="b", source_type=SourceType.RSS, title="Dropped", url="u2", text="unused body"),
             score=0.8,
-            backfill=True,
         )
         payload = json.dumps({"lead": "리드.", "items": [{"title": "T", "url": "u1", "body": "b"}]})
         factory = MagicMock()
@@ -814,53 +807,6 @@ class TestUnmatchedItemsNeverShip:
         await gen.generate([shipped, dropped], [])
         assert "kept body" in seen[1]
         assert "unused body" not in seen[1]
-
-
-class TestBackfillMarking:
-    """The ranker guarantees the source mix on the core top_n and hands the rest over as backfill.
-    The editor is told WHICH candidates those are with a code-owned per-item field (like MUST
-    INCLUDE) rather than having to infer it from list position."""
-
-    @staticmethod
-    def _pair():
-        core = RankedItem(
-            item=CollectedItem(item_id="a", source_type=SourceType.RSS, title="Core", url="u1", text="b"), score=0.9
-        )
-        extra = RankedItem(
-            item=CollectedItem(item_id="b", source_type=SourceType.WEB, title="Spare", url="u2", text="b"),
-            score=0.7,
-            backfill=True,
-        )
-        return [core, extra]
-
-    def test_only_backfill_candidates_carry_the_marker(self):
-        text = _generator("")._format_ranked_items(self._pair())
-        blocks = text.split("=== Item ")
-        core_block = next(b for b in blocks if "Title: Core" in b)
-        extra_block = next(b for b in blocks if "Title: Spare" in b)
-        assert "BACKFILL" not in core_block
-        assert "BACKFILL" in extra_block
-        assert text.count("BACKFILL") == 1
-
-    def test_a_pinned_backfill_item_is_still_marked_must_include(self):
-        items = self._pair()
-        items[1].item.metadata["pinned"] = True
-        text = _generator("")._format_ranked_items(items)
-        assert "MUST INCLUDE" in text
-        assert "BACKFILL" not in text  # a pin is never "spare"
-
-    def test_a_grace_candidate_says_why_its_score_is_low(self):
-        # Tracked only as a local id set inside the ranker, a 0.50 grace item reached the editor
-        # indistinguishable from the weakest ordinary candidate and predictably lost, defeating the
-        # source-coverage guarantee it exists to serve.
-        items = self._pair()
-        items[1].backfill = False
-        items[1].grace = True
-        text = _generator("")._format_ranked_items(items)
-        blocks = text.split("=== Item ")
-        assert "SOURCE COVERAGE" not in next(b for b in blocks if "Title: Core" in b)
-        assert "SOURCE COVERAGE" in next(b for b in blocks if "Title: Spare" in b)
-        assert "BACKFILL" not in text
 
 
 class TestDroppedStoryIsAnError:
@@ -891,123 +837,6 @@ class TestDroppedStoryIsAnError:
         assert not err.called
 
 
-class TestShippedDiversityAudit:
-    """_apply_source_slots guarantees max_per_origin on the ranked CORE, but ranker._backfill_candidates
-    deliberately ignores both caps and the prompt only ASKS the editor to use a backfill item as a
-    replacement. So the digest that actually ships can carry two stories from one subreddit/handle and
-    drop a source. Detection only: reported, never reselected."""
-
-    @staticmethod
-    def _reddit(item_id: str, sub: str) -> CollectedItem:
-        return CollectedItem(
-            item_id=item_id,
-            source_type=SourceType.REDDIT,
-            title=item_id,
-            url=f"http://reddit.test/{item_id}",
-            metadata={"subreddit": sub},
-        )
-
-    @staticmethod
-    def _rss(item_id: str, feed: str = "https://feed.test/rss") -> CollectedItem:
-        return CollectedItem(
-            item_id=item_id,
-            source_type=SourceType.RSS,
-            title=item_id,
-            url=f"http://rss.test/{item_id}",
-            metadata={"feed_url": feed},
-        )
-
-    def _generator(self, **overrides):
-        config = PipelineConfig(**overrides)
-        return DigestGenerator(config, MagicMock())
-
-    def test_two_stories_from_one_origin_are_reported(self):
-        gen = self._generator(max_per_origin=1, source_slots={})
-        shipped = [self._reddit("p1", "LocalLLaMA"), self._reddit("p2", "LocalLLaMA")]
-        ranked = [RankedItem(item=item, score=0.9) for item in shipped]
-        with patch("pipeline.digest_generator.logger.error") as err:
-            breaches = gen._audit_shipped_diversity(shipped, ranked)
-        assert len(breaches) == 1 and "LocalLLaMA" in breaches[0]
-        assert err.called  # invisible in the digest itself, so it must be loud in the logs
-
-    def test_a_compliant_digest_reports_nothing(self):
-        gen = self._generator(max_per_origin=1, source_slots={"reddit": 1, "rss": 1})
-        shipped = [self._reddit("p1", "LocalLLaMA"), self._rss("r1")]
-        ranked = [RankedItem(item=item, score=0.9) for item in shipped]
-        with patch("pipeline.digest_generator.logger.error") as err:
-            assert gen._audit_shipped_diversity(shipped, ranked) == []
-        assert not err.called
-
-    def test_a_slotted_source_that_had_a_candidate_but_shipped_nothing_is_reported(self):
-        gen = self._generator(max_per_origin=2, source_slots={"reddit": 1, "rss": 1})
-        shipped = [self._reddit("p1", "LocalLLaMA")]
-        ranked = [RankedItem(item=item, score=0.9) for item in (*shipped, self._rss("r1"))]
-        breaches = gen._audit_shipped_diversity(shipped, ranked)
-        assert len(breaches) == 1 and "rss" in breaches[0]
-
-    def test_a_source_with_no_candidate_at_all_is_a_quiet_day_not_a_breach(self):
-        # A dark collector (reddit/x on a quiet day) must not alert here — that would page daily.
-        gen = self._generator(max_per_origin=2, source_slots={"reddit": 1, "rss": 1})
-        shipped = [self._rss("r1")]
-        ranked = [RankedItem(item=shipped[0], score=0.9)]
-        assert gen._audit_shipped_diversity(shipped, ranked) == []
-
-    def test_declining_a_backfill_candidate_is_not_a_breach(self):
-        # `ranked_items` is the OVER-selected list (top_n + digest_candidate_buffer), and the prompt
-        # tells the editor to use a backfill item as a REPLACEMENT for a merged story. Auditing against
-        # the full list turned the editor obeying that instruction into an SNS 'Ranking Health' ALERT.
-        gen = self._generator(max_per_origin=2, source_slots={"reddit": 1, "rss": 1})
-        shipped = [self._reddit("p1", "LocalLLaMA")]
-        ranked = [
-            RankedItem(item=shipped[0], score=0.9),
-            RankedItem(item=self._rss("r1"), score=0.72, backfill=True),
-        ]
-        assert gen._audit_shipped_diversity(shipped, ranked) == []
-
-    def test_declining_a_grace_candidate_is_not_a_breach(self):
-        # A grace item is below min_score by design: it exists so its source's guaranteed slot stays
-        # fillable, not as a promise the source will ship. Its absence is not a diversity failure.
-        gen = self._generator(max_per_origin=2, min_score=0.6, source_slots={"reddit": 1, "rss": 1})
-        shipped = [self._reddit("p1", "LocalLLaMA")]
-        ranked = [
-            RankedItem(item=shipped[0], score=0.9),
-            RankedItem(item=self._rss("r1"), score=0.5, grace=True),
-        ]
-        assert gen._audit_shipped_diversity(shipped, ranked) == []
-
-    def test_a_declined_CORE_candidate_is_still_a_breach(self):
-        # The mechanism is narrowed to the buffer, not removed: a source whose candidate the ranker
-        # put in the diversified core is a real guarantee, and dropping it still reports.
-        gen = self._generator(max_per_origin=2, source_slots={"reddit": 1, "rss": 1})
-        shipped = [self._reddit("p1", "LocalLLaMA")]
-        ranked = [
-            RankedItem(item=shipped[0], score=0.9),
-            RankedItem(item=self._rss("r1"), score=0.85),
-        ]
-        breaches = gen._audit_shipped_diversity(shipped, ranked)
-        assert len(breaches) == 1 and "rss" in breaches[0]
-
-    @pytest.mark.asyncio
-    async def test_the_verdict_rides_on_the_digest_result(self):
-        emitted = {
-            "items": [
-                {"title": "T1", "url": "http://reddit.test/p1", "body": "본문."},
-                {"title": "T2", "url": "http://reddit.test/p2", "body": "본문."},
-            ],
-            "lead": "리드 문장.",
-        }
-        config = PipelineConfig(max_per_origin=1, source_slots={}, top_n=2, enable_grounding_check=False)
-        factory = MagicMock()
-        factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content=json.dumps(emitted)))
-        gen = DigestGenerator(config, factory)
-        ranked = [
-            RankedItem(item=self._reddit("p1", "LocalLLaMA"), score=0.9),
-            RankedItem(item=self._reddit("p2", "LocalLLaMA"), score=0.88),
-        ]
-        result = await gen.generate(ranked, [r.item for r in ranked])
-        assert result.diversity_breaches and "LocalLLaMA" in result.diversity_breaches[0]
-
-
 class TestGroundingStageAttribution:
     def test_the_grounding_pass_is_billed_under_its_own_stage(self):
         # A second ~50k-token Sonnet call billed as "digest" is indistinguishable from the generation
@@ -1017,3 +846,32 @@ class TestGroundingStageAttribution:
         DigestGenerator(PipelineConfig(), factory)
         stages = [call.kwargs["stage"] for call in factory.get_model.call_args_list]
         assert stages == ["digest", "grounding"]
+
+
+def test_grounding_corrections_land_on_the_right_fields_and_leave_the_input_alone():
+    from pipeline.digest_generator import _apply_grounding_payload
+    from shared import DigestContent, DigestItem
+
+    original = DigestContent(
+        lead="원래 리드.",
+        items=[
+            DigestItem(title="A", url="u0", body="본문 0.", implication="시사점 0."),
+            DigestItem(title="B", url="u1", body="본문 1.", implication="시사점 1."),
+        ],
+    )
+    corrected = "\n".join(
+        [
+            "LEAD: 고친 리드.",
+            "ITEM 0 BODY: 본문 0.",
+            "ITEM 1 BODY: 고친 본문 1.",
+            "둘째 줄.",
+            "ITEM 1 IMPLICATION: 고친 시사점 1.",
+            "ITEM 0 IMPLICATION:",
+        ]
+    )
+    out = _apply_grounding_payload(original, corrected)
+    assert out.lead == "고친 리드."
+    assert out.items[1].body == "고친 본문 1.\n둘째 줄."
+    assert out.items[1].implication == "고친 시사점 1."
+    assert out.items[0].implication == "시사점 0."  # an empty marker keeps the original
+    assert original.items[1].body == "본문 1."  # the input is not mutated

@@ -213,5 +213,6 @@ logs/
 node_modules/
 omnisummary.egg-info/
 references/
+reports/
 cdk.context.json
 assets/.$*.bkp

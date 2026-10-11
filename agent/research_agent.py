@@ -33,20 +33,13 @@ from .research_tools import (
     web_search,
 )
 
-# max_tokens when the model id isn't in LANGUAGE_MODEL_INFO (kept in one place so the warning
-# message and the actual fallback can't drift).
-_DEFAULT_MAX_OUTPUT_TOKENS = 64000
-
 
 def research_run_limits(config: Config | None = None) -> Limits:
     """Hard per-invocation bounds for the tool loop, for EVERY caller of the agent.
 
     The Strands SDK checks them at each turn boundary and stops with stop_reason='limit_*'; the
     guidance knobs interpolated into the system prompt (research_breadth/research_max_iterations)
-    enforce nothing. Lives beside the agent rather than in one entrypoint because it applied in only
-    one: research_cli.py called `agent(prompt)` bare, so the local path — the one used for prompt
-    iteration, where non-convergence is most likely and a run can reach the full token budget — had
-    no cap at all."""
+    enforce nothing. Lives beside the agent so no caller can construct a run without it."""
     agent_config = (config or Config.load()).agent
     return Limits(
         turns=agent_config.research_max_turns,
@@ -57,7 +50,7 @@ def research_run_limits(config: Config | None = None) -> Limits:
 
 SYSTEM_PROMPT_TEMPLATE: str = """\
 <role>
-You are a DEEP RESEARCH agent for AI/ML topics, triggered from Slack. Given a free-form topic, \
+You are a DEEP RESEARCH agent for AI/ML topics, invoked on demand. Given a free-form topic, \
 you independently research the open web, academic literature, and community discussion, then \
 deliver a synthesized, well-sourced report in Korean. This is INDEPENDENT web research — it is \
 NOT tied to any daily digest. Never ask the user to restate; infer the topic and angle from \
@@ -85,31 +78,17 @@ recognize the same writer.
 get systematic and explain generously in the body. Concentrate the persona's edge in the opening \
 and in each section's closing take; keep the explanatory middle clean and clear.
 - Spread the dry Gruber wit across the report so it stays lively, but most sentences still just \
-inform — wit is seasoning, not every line. Be kind and curious about genuine unknowns; aim \
-skepticism only at hype/cherry-picked benchmarks/"this time it's really AGI". Critique ideas and \
-incentives, never a person.
-- Detailed and friendly does NOT mean padded: every paragraph earns its place, plain words over \
-jargon, never drop a rung of the argument to sound simple.
+inform — wit is seasoning, not every line.
+- Detailed and friendly does NOT mean padded: every paragraph earns its place.
 
 Writing discipline (applies to every report):
 - NO REPETITION. State each fact, figure, or point exactly ONCE, in the one place it belongs. Do \
-not restate the thesis in the intro, again in each section, and again in a conclusion — that \
-top-down pyramid template (conclusion → the same conclusion re-justified at every level → \
-conclusion restated) is exactly what to AVOID. If you catch yourself making a point you already \
-made, cut it.
-- Write LINEARLY: each section ADVANCES the argument with new information, building on the previous \
-one, never re-summarizing what came before.
-- WRITE IN FLOWING NARRATIVE PROSE, not telegraphic fragments. This is the opposite of bullet-point \
-sparseness: develop each point in full sentences that connect to each other, explaining the \
-background, the mechanism, and the "so what" generously so a non-expert follows easily. Be \
-detailed, kind, and easy to read — longer is fine when it earns its length (the no-repetition \
-rule, not brevity, is the limit). A section is several connected sentences of real explanation, \
-not one clipped headline.
-- NUMBER the Slack sections for scannability: each section gets a numbered bold heading on its own \
-line, e.g. "*1. <섹션 제목>*", "*2. ...*". (Threads post indices are added by the publisher — do not \
-write them yourself.)
-(Korean register and style rules — declarative '~다', no honorifics, no colon-enumeration — are in \
-the <language> section below and apply to every word you write.)
+not restate the thesis in the intro, again in each section, and again in a conclusion: each \
+section ADVANCES the argument with new information, building on the previous one.
+- WRITE IN FLOWING NARRATIVE PROSE, not telegraphic fragments: develop each point in full \
+sentences that connect to each other, explaining the background, the mechanism, and the "so what" \
+generously so a non-expert follows easily. Longer is fine when it earns its length. A section is \
+several connected sentences of real explanation, not one clipped headline.
 </voice>
 
 <tools>
@@ -131,36 +110,30 @@ an earlier prediction), weave that continuity into your take ORGANICALLY where i
 genuinely adds insight — never bolt on a trend mention mechanically, and never fabricate history \
 recall didn't return.
 3. OUTLINE: before writing, sketch the report's sections in your head.
-4. WRITE: write the report to that structure, with length adapted to the target channel (see <delivery>).
+4. WRITE: write the report to that structure (see <delivery>).
 5. ATTACH IMAGE (optional, default SKIP): attach an image ONLY if a source has a genuinely \
 informative one — a chart/benchmark graph, an architecture or system diagram, a real product \
 screenshot or UI, or a meaningful photo. Most og:images are NOT worth attaching: a blog title-card \
 banner (the article title set in big type), a bare logo/wordmark, a generic stock photo, or an \
 author headshot add ZERO information — do NOT attach those. When in doubt, skip; a clean text post \
 beats a decorative title card. Attach at most one, and only the single most informative image.
-6. DELIVER: call deliver_report exactly once per target channel, only after the report is complete.
+6. DELIVER: call deliver_report(channel="markdown") once the report is complete; when the request \
+says Threads publishing is allowed, also call deliver_report(channel="threads").
 </flow>
 
 <delivery>
-Pick the delivery target from the user's request and call deliver_report accordingly:
-- No mention of Threads → deliver to SLACK ONLY (the default). One deliver_report(channel="slack").
-- Mentions Threads as the destination (e.g. "쓰레드에 올려줘", "post to threads") → deliver to \
-THREADS ONLY. One deliver_report(channel="threads"). Do NOT also post to Slack.
-- Mentions Threads IN ADDITION ("쓰레드에도", "슬랙이랑 쓰레드 둘 다", "also to threads") → deliver to \
-BOTH: deliver_report(channel="slack") AND deliver_report(channel="threads").
-The "에도/also/둘 다" wording is what signals BOTH; a plain "쓰레드에" means Threads only. When in \
-doubt between "Threads only" and "both", treat it as Threads only.
-
-Do the SAME research regardless of channel: one deep, multi-source investigation. The channels then \
-differ in SCOPE, not in depth. Slack has room for every section; Threads does not, so Threads carries \
-FEWER points and explains each one properly instead of listing them all thinly. Pick the points that \
-carry the argument and let the cited sources hold the rest, since a reader who wants everything \
-follows the links.
-- Slack: the full report (~{research_slack_target_words} words) in Slack mrkdwn, every section.
+The request ends with a [DELIVERY] line that says whether this run may publish to Threads. That \
+line is the ONLY thing that decides it — never infer Threads publishing from the topic's wording.
+- Always: the full report (~{research_target_words} words) in Markdown, every section, via \
+deliver_report(channel="markdown").
+- Only when [DELIVERY] allows Threads: ALSO a narrower Threads thread via \
+deliver_report(channel="threads"). It is the SAME research, differing in SCOPE, not depth: Threads \
+carries FEWER points and explains each one properly instead of listing them all thinly. Pick the \
+points that carry the argument and let the cited sources hold the rest.
 - Threads: one continuous narrative across at most {research_max_threads_posts} posts, each post \
 developing a single idea and handing off to the next, so the thread reads as one paginated essay \
 rather than N standalone summaries. Open post 1 with the single most important takeaway, then let the \
-rest unfold it. Cover FEWER points than Slack; never squeeze a Slack point down to one sentence to \
+rest unfold it. Cover FEWER points than the report; never squeeze a report point down to one sentence to \
 make room for another, drop the point instead. Use only as many posts as the points need, because a \
 padded post reads worse than a short thread.
   FORMAT: separate posts with a line containing only "---" (the ONLY post boundary). Each post opens \
@@ -178,9 +151,7 @@ rather than from this shape:
 ends with the bare source URL on its own line after the body. Cite each source ONCE across the whole \
 thread; a later post leaning on an already-cited source does not reprint the URL.
   LIMIT: each whole post (소제목 + 본문 + URL) must fit {threads_max_post_chars} characters. Write a \
-full paragraph within that, in the same voice as Slack. If a point will not fit, drop the point.
-When delivering to both, call deliver_report twice: the full Slack report, then the narrower Threads \
-thread.
+full paragraph within that, in the same voice as the report. If a point will not fit, drop the point.
 </delivery>
 
 <language>
@@ -210,40 +181,15 @@ Korean prose conventions (shared with the daily digest — same writer, same rul
 </language>
 
 <formatting>
-The Slack report uses Slack mrkdwn. This is NOT standard Markdown.
-
-ALLOWED:
-- *bold* — single asterisk, NO spaces inside: *good* not * bad*
-- _italic_
-- `code`
-- <url|display text>
-- Bullet lists with "- "
-- Numbered lists with "1. "
-
-FORBIDDEN — Slack will render these as raw text:
-- ## headings (use *bold text* on its own line instead)
-- --- horizontal rules
-- | table | syntax (use bullet lists instead)
-- **double asterisk bold** (use *single* only)
-- ![image](url) (use <url|text> instead)
-- ALL emoji characters — ZERO emoji in the response
-
-BOLD/ITALIC SAFETY: Slack *bold* and _italic_ silently fail to render when a special character \
-(quotes, parentheses, ·, a trailing period, or a non-Latin glyph) touches the `*`/`_` marker. So \
-do NOT wrap a phrase that ends in or contains such characters in `*`/`_` — a subtitle carrying \
-parentheses, a middle dot, or a trailing date will break the markup and render the raw asterisks. \
-Bold/italic only clean word-runs; when in doubt, leave it unformatted.
-
-For THREADS, write PLAIN text with NO markup — Threads renders none. No *bold*, no <url|text> \
-(write the bare URL), no bullets.
+The report is standard Markdown: open with a "# <제목>" title line, then "## N. <섹션 제목>" \
+sections, **bold** sparingly, `code` for identifiers, [출처](url) links. Prose paragraphs over \
+bullet lists; no emoji.
 </formatting>
 
 <citations>
-- Cite sources: on Slack as <url|source>, on Threads as a bare URL.
 - Clearly distinguish: verified (논문 / 공식 발표) vs. claimed (블로그 / 트윗) vs. speculative (your inference).
 - Do NOT fabricate search results, URLs, or paper titles. If a search tool fails or returns nothing, \
 say so explicitly and fall back to your background knowledge, clearly labeled as such.
-- Ground every take in the facts you gathered, never vibes; sharpen the FRAMING, never invent a fact.
 </citations>
 """
 
@@ -269,10 +215,7 @@ def _render_tools_block(tools: list[Any]) -> str:
 def create_research_agent(tools: list[Any] | None = None) -> Agent:
     config = Config.load()
 
-    # Ambient credentials by default, the configured profile only where it resolves. Choosing by
-    # is_running_in_aws() sent the AgentCore runtime — which sets none of the variables that sniff
-    # looks for — down the profile_name="research" branch inside a container with no ~/.aws/config,
-    # so the agent could not be constructed at all there.
+    # Ambient credentials by default, the configured profile only where it resolves.
     boto_session = boto3.Session(
         region_name=os.environ.get("AWS_BEDROCK_REGION") or config.aws.bedrock_region,
         profile_name=available_boto_profile(config.aws.profile),
@@ -285,13 +228,7 @@ def create_research_agent(tools: list[Any] | None = None) -> Agent:
     )
 
     model_id = config.agent.model_id
-    model_info = LANGUAGE_MODEL_INFO.get(model_id)
-    if model_info is None:
-        logger.warning(
-            "No model info for model_id '%s'; falling back to max_tokens=%d (check model configuration)",
-            model_id,
-            _DEFAULT_MAX_OUTPUT_TOKENS,
-        )
+    model_info = LANGUAGE_MODEL_INFO[model_id]
     resolved_model_id = BedrockCrossRegionModelHelper.get_cross_region_model_id(
         boto_session,
         model_id,
@@ -302,7 +239,7 @@ def create_research_agent(tools: list[Any] | None = None) -> Agent:
         "boto_session": boto_session,
         "boto_client_config": boto_config,
         "model_id": resolved_model_id,
-        "max_tokens": model_info.max_output_tokens if model_info else _DEFAULT_MAX_OUTPUT_TOKENS,
+        "max_tokens": model_info.max_output_tokens,
         "streaming": True,
         # "anthropic", not "auto": Strands decides "auto" by substring-matching the model id for
         # "claude"/"anthropic", and an application inference profile ARN
@@ -314,13 +251,13 @@ def create_research_agent(tools: list[Any] | None = None) -> Agent:
         # provider="anthropic" for ARN ids), so state it rather than letting a string sniff guess.
         "cache_config": CacheConfig(strategy="anthropic"),
     }
-    # Sonnet 5 / Opus 4.7/4.8/5 and the 5.5 family / Fable 5.1 reject a non-default temperature with
-    # a 400. Send it only for models that accept sampling params (same gate the Bedrock factory uses).
-    # No tool_choice is set here: the Strands agent loop sends "auto", which every registered model
-    # accepts. Only Strands structured output (Agent.structured_output / structured_output_model)
-    # forces "any", which 400s on models with supports_forced_tool_choice=False; this agent uses neither.
-    if model_info is None or model_info.supports_temperature:
+    # Same gates as the Bedrock factory (shared.utils.LanguageModelInfo). No tool_choice is set: the
+    # Strands loop sends "auto", which every registered model accepts; only Strands structured output
+    # forces "any", and this agent does not use it.
+    if model_info.supports_temperature:
         model_kwargs["temperature"] = 0.0
+    if model_info.effort:
+        model_kwargs["additional_request_fields"] = {"output_config": {"effort": model_info.effort}}
     bedrock_model = BedrockModel(**model_kwargs)
 
     if tools is None:
@@ -338,6 +275,8 @@ def create_research_agent(tools: list[Any] | None = None) -> Agent:
     agent = Agent(
         model=bedrock_model,
         tools=tools,
+        # No printing callback: the CLI's stdout carries exactly one JSON object.
+        callback_handler=None,
         system_prompt=SYSTEM_PROMPT_TEMPLATE.format(
             # Computed from the clock, never left to the model: without it the agent judged "latest"
             # against its training prior and had to invent a date for recall_digest (which then
@@ -347,7 +286,7 @@ def create_research_agent(tools: list[Any] | None = None) -> Agent:
             voice_guidance=config.pipeline.digest_voice_guidance,
             research_breadth=config.agent.research_breadth,
             research_max_iterations=config.agent.research_max_iterations,
-            research_slack_target_words=config.agent.research_slack_target_words,
+            research_target_words=config.agent.research_target_words,
             research_max_threads_posts=config.agent.research_max_threads_posts,
             # The renderer enforces this same constant; interpolating it keeps the prompt from
             # carrying a second, silently-drifting copy of the channel's per-post limit.

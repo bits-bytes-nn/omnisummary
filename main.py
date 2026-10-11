@@ -19,7 +19,7 @@ def _positive_int(value: str) -> int:
 async def main() -> None:
     parser = argparse.ArgumentParser(description="OmniSummary - Daily AI Digest")
     parser.add_argument("--sources", nargs="+", help="Specific sources to collect from")
-    parser.add_argument("--dry-run", action="store_true", help="Run without sending to Slack")
+    parser.add_argument("--dry-run", action="store_true", help="Run without publishing or persisting")
     parser.add_argument("--top-n", type=_positive_int, help="Override top_n from config (>= 1)")
     parser.add_argument("--date", type=str, help="Digest date (YYYY-MM-DD). Defaults to today")
     parser.add_argument(
