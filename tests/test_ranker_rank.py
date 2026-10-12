@@ -53,6 +53,38 @@ class TestRankEndToEnd:
         assert "- Claude Haiku 5.5 출시" in seen[0]
 
     @pytest.mark.asyncio
+    async def test_formatting_a_batch_does_not_block_the_event_loop(self):
+        # truncate_to_tokens makes blocking boto3 CountTokens calls; formatting on the loop serialized
+        # the "parallel" batches (~30s of a 67s ranking phase on 2026-10-12).
+        import asyncio
+        import time
+
+        ranker, _ = _ranker_with_outputs([_rankings({"a": 0.9})], source_slots={})
+        ticks = 0
+        advanced_during_truncation: list[bool] = []
+
+        def _slow_truncate(text: str, max_tokens: int) -> str:
+            before = ticks
+            time.sleep(0.05)
+            advanced_during_truncation.append(ticks > before)
+            return text
+
+        ranker.llm_factory.truncate_to_tokens.side_effect = _slow_truncate
+
+        async def _tick() -> None:
+            nonlocal ticks
+            while True:
+                ticks += 1
+                await asyncio.sleep(0)
+
+        ticker = asyncio.ensure_future(_tick())
+        try:
+            await ranker.rank(_items([("a", SourceType.RSS)]))
+        finally:
+            ticker.cancel()
+        assert advanced_during_truncation and all(advanced_during_truncation)
+
+    @pytest.mark.asyncio
     async def test_empty_input_short_circuits(self):
         ranker = _ranker("", top_n=5, min_score=0.6)
         assert await ranker.rank([]) == []
@@ -148,7 +180,7 @@ class TestRankEndToEnd:
     @pytest.mark.asyncio
     async def test_pinned_web_item_still_fills_to_top_n_via_relaxed_pass(self):
         # Counting the pin's origin must not starve the digest: when every remaining candidate
-        # shares the pin's host, the relaxed final pass (per-origin cap off, source cap kept)
+        # shares the pin's host, the relaxed final pass (per-origin cap off)
         # still fills to top_n.
         items = _items([("p", SourceType.WEB), ("w1", SourceType.WEB), ("w2", SourceType.WEB)])
         items[0].metadata = {"pinned": True}

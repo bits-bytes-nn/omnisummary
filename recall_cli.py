@@ -62,7 +62,6 @@ def _trends(config: Config, today: date) -> list[dict[str, Any]]:
             "status": t.status.value,
             "first_seen": t.first_seen or t.evidence[0].date,
             "last_seen": t.last_seen or t.evidence[-1].date,
-            "days": len({ev.date for ev in t.evidence}),
             "evidence": [{"date": ev.date, "summary": ev.summary} for ev in t.evidence],
         }
         for t in trends

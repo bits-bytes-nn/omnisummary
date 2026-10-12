@@ -11,6 +11,7 @@ scored a prompt that never ships: no editorial angle, no guardrails, no characte
 Usage: uv run python scripts/sample_visual_brief.py <out_json> [cache_path]
 """
 
+import argparse
 import asyncio
 import json
 import os
@@ -29,8 +30,13 @@ from shared import BedrockLanguageModelFactory, CollectedItem, Config, logger
 
 
 async def main() -> None:
-    out_path = Path(sys.argv[1])
-    cache_path = Path(sys.argv[2]) if len(sys.argv) > 2 else None
+    parser = argparse.ArgumentParser(
+        description="Write the visual brief production would send for today's digest (nothing is rendered or published)"
+    )
+    parser.add_argument("out_path", type=Path, help="Where to write the output")
+    parser.add_argument("cache_path", type=Path, nargs="?", help="Collected-items cache to reuse (written if absent)")
+    args = parser.parse_args()
+    out_path, cache_path = args.out_path, args.cache_path
 
     config = Config.load()
     post_date = datetime.now(ZoneInfo(config.aws.timezone)).date()

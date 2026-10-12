@@ -7,6 +7,7 @@ each round only varies the prompt, not the upstream data.
 Usage: uv run python scripts/sample_digest.py <out_path> [cache_path]
 """
 
+import argparse
 import asyncio
 import json
 import os
@@ -29,8 +30,11 @@ async def _collect(config, factory) -> list[CollectedItem]:
 
 
 async def main() -> None:
-    out_path = Path(sys.argv[1])
-    cache_path = Path(sys.argv[2]) if len(sys.argv) > 2 else None
+    parser = argparse.ArgumentParser(description="Generate one digest (nothing is published) and write it to a file")
+    parser.add_argument("out_path", type=Path, help="Where to write the output")
+    parser.add_argument("cache_path", type=Path, nargs="?", help="Collected-items cache to reuse (written if absent)")
+    args = parser.parse_args()
+    out_path, cache_path = args.out_path, args.cache_path
 
     config = Config.load()
     session = boto3.Session(region_name=config.aws.bedrock_region, profile_name=config.aws.profile or None)

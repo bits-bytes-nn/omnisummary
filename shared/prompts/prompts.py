@@ -124,7 +124,7 @@ because the lead is a comment on stories you have already written:
       "title": "the Korean display title for this story",
       "url": "the item's URL exactly as provided",
       "body": "As few tight Korean sentences as the story needs (often two): what this is, why it matters, the key detail. Keep it compact and self-contained so the whole item reads as ONE short social post.{prose_budget_rule} Every sentence must end completely (no trailing fragments).",
-      "implication": "ONE Korean sentence that takes a stance on THIS story a reader could disagree with, not a general truth about the industry. No conditional frame, no ~수 있다. Provocation is in the angle, never in invented facts."
+      "implication": "ONE Korean sentence that takes a stance on THIS story a reader could disagree with, not a general truth about the industry. State the stance flatly, as the whole sentence; a caveat that matters belongs in the body. Provocation is in the angle, never in invented facts."
     }}
   ],
   "lead": "3-4 concrete sentences, a standalone opening under {lead_budget} characters about items[0], the headline the image depicts: name that story in ONE assertive sentence a stranger could follow (the actual company / model / event — no label, no emoji), then land ONE thesis that items[0]'s implication does not already make: the wider arc it belongs to, drawn from the trend ammunition below. The reader sees items[0] directly beneath, so ADD to it rather than re-telling it — no replay of its sequence and no repeat of its numbers."
@@ -228,7 +228,7 @@ told through the digest's narrator, a recurring character who is the strip's vie
 part in the scenes next to the real people and companies of the story. Aim for a strip a reader \
 who has NOT read the story understands at a glance, then finds funny: panel 1 says plainly what \
 happened (who did what, the key number) in a narration box; panels 2-3 show the story's real facts as \
-literal scenes with the real people, products and numbers, not an allegory; panel 4 lands the \
+literal scenes with the real people and products (a number only when the LOGLINE rests on it), not an allegory; panel 4 lands the \
 punchline. Every line and every sign or label is plain {on_image_language} a non-specialist gets (names \
 of people, companies and products stay as written; no benchmark names, metrics or jargon); the humor \
 comes from the narrator's take \

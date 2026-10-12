@@ -291,7 +291,7 @@ class TestAgentTemperatureGating:
             captured.update(kwargs)
             return MagicMock()
 
-        temp_ok = LanguageModelInfo(context_window_size=200000, max_output_tokens=64000, supports_temperature=True)
+        temp_ok = LanguageModelInfo(max_output_tokens=64000, supports_temperature=True)
         with (
             patch("agent.research_agent.BedrockModel", side_effect=fake_bedrock_model),
             patch("agent.research_agent.Agent", return_value=MagicMock(tool_names=["t"])),
