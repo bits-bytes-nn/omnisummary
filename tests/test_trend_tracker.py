@@ -202,6 +202,22 @@ class TestLifecycle:
         assert t.evidence[0].summary == "e4"
 
     @pytest.mark.asyncio
+    async def test_a_backfilled_older_day_never_displaces_newer_evidence(self, monkeypatch):
+        # A --date backfill appends an OLDER day last; capping by position then dropped a newer entry.
+        ev = [TrendEvidence(date=f"2026-06-0{i}", summary=f"e{i}") for i in range(3, 6)]
+        existing = TrendMemory(
+            trends=[Trend(id="t", title="T", first_seen="2026-06-03", last_seen="2026-06-05", evidence=ev)]
+        )
+        store = _FakeStore({TRENDS_KEY: existing.model_dump_json()})
+        obs = [{"trend_id": "t", "new_title": "", "summary": "backfill"}]
+        tracker = _patched_tracker(store, obs, monkeypatch, trend_max_evidence=3)
+        await tracker.update_trends("d", "2026-06-01")
+
+        t = TrendMemory.model_validate_json(store.data[TRENDS_KEY]).by_id("t")
+        assert t is not None
+        assert [e.date for e in t.evidence] == ["2026-06-03", "2026-06-04", "2026-06-05"]
+
+    @pytest.mark.asyncio
     async def test_a_trend_past_retention_is_dropped(self, monkeypatch):
         stale = Trend(
             id="old",

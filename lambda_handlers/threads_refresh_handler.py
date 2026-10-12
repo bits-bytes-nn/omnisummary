@@ -30,17 +30,35 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         logger.info("No Threads access token configured, nothing to refresh")
         return {"statusCode": 200, "body": "no token"}
 
+    # The token rides in the query string, and httpx puts the request URL into its error text, so no
+    # httpx error may reach the log or the traceback: each failure is re-raised `from None` without it.
     try:
         resp = httpx.get(
             THREADS_REFRESH_URL,
             params={"grant_type": "th_refresh_token", "access_token": token},
             timeout=30,
         )
-        resp.raise_for_status()
+    except (httpx.HTTPError, httpx.InvalidURL) as e:
+        logger.error("Threads token refresh request failed (%s)", type(e).__name__)
+        raise RuntimeError(f"Threads token refresh request failed ({type(e).__name__})") from None
+    if resp.is_error:
+        # The error's code and type only, never the body: it is not ours to promise it never echoes the token.
+        try:
+            error = resp.json().get("error", {})
+        except ValueError:
+            error = {}
+        logger.error(
+            "Threads token refresh returned HTTP %d (code=%s, type=%s)",
+            resp.status_code,
+            error.get("code"),
+            error.get("type"),
+        )
+        raise RuntimeError(f"Threads token refresh failed (HTTP {resp.status_code})")
+    try:
         new_token = resp.json()["access_token"]
-    except Exception as e:
-        logger.error("Failed to refresh Threads token: %s", e)
-        raise
+    except (ValueError, KeyError):
+        logger.error("Threads token refresh response carried no access_token")
+        raise RuntimeError("Threads token refresh response carried no access_token") from None
 
     project = os.environ.get("PROJECT_NAME", "omnisummary")
     stage = os.environ.get("STAGE", "dev")
