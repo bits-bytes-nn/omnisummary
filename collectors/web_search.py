@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, datetime, timedelta, tzinfo
 from email.utils import parsedate_to_datetime
 from typing import Literal
 from urllib.parse import urlparse
@@ -151,7 +151,10 @@ class WebSearchCollector(BaseCollector):
                 {
                     "titles": titles,
                     "max_queries": self.config.max_refine_queries,
-                    "today": (self.config.reference_time or datetime.now(UTC)).date().isoformat(),
+                    # reference_time is midnight at the END of the digest date, so step back into that day.
+                    "today": ((self.config.reference_time or datetime.now(UTC)) - timedelta(seconds=1))
+                    .date()
+                    .isoformat(),
                 }
             )
             queries = parse_json_from_llm_output(raw)

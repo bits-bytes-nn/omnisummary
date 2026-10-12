@@ -273,7 +273,7 @@ class DigestGenerator:
 
         Matched on the aggregator's normalize_url, not an exact string: the editor echoes the URL
         back, and one trailing slash / http→https / dropped utm param was enough to lose the match —
-        the story then shipped with no source line at all, on Slack and on Threads. Identical URLs
+        the story then shipped with no source line at all. Identical URLs
         take the same path they always did.
 
         An item that matches NO candidate is a story the editor invented, or whose URL it mangled
@@ -443,8 +443,8 @@ def format_recent_titles(recent_titles: list[str] | None) -> str:
 
 def render_digest_text(content: DigestContent) -> str:
     """Plain-prose rendering of the structured content — the system-of-record `digest_text`
-    fed to the trend classifier, the AgentCore memory snapshot, and the follow-up agent.
-    No Slack markup; channel renderers add their own."""
+    fed to the trend classifier, the AgentCore memory snapshot, and the research agent.
+    No markup; channel renderers add their own."""
     parts = [content.lead.strip(), ""]
     for item in content.items:
         meta = " · ".join(p for p in (item.source_tag, item.metrics) if p)

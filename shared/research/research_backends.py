@@ -42,8 +42,12 @@ async def tavily_search(
     if not client:
         return "TAVILY_API_KEY not configured."
 
-    agent_config = get_config().agent
+    config = get_config()
+    agent_config = config.agent
     kwargs: dict = {"query": query, "max_results": agent_config.search_result_limit}
+    # The digest's content-farm list applies here too, or copy sites reach the research reports.
+    if config.collectors.web_search.exclude_domains:
+        kwargs["exclude_domains"] = config.collectors.web_search.exclude_domains
     if topic:
         kwargs["topic"] = topic
     if time_range:

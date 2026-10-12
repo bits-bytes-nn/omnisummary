@@ -48,6 +48,18 @@ class TestTavilySearch:
         assert kwargs["include_domains"] == ["x.com"]
 
     @pytest.mark.asyncio
+    async def test_the_digests_content_farm_list_applies_to_research_search(self, monkeypatch):
+        monkeypatch.setattr(rb.get_config().collectors.web_search, "exclude_domains", ["farm.example"])
+        client = MagicMock()
+        client.search = AsyncMock(return_value={"results": [{"title": "t", "url": "u", "content": "c"}]})
+        client.close = AsyncMock()
+        with patch.object(rb, "_get_tavily_client", return_value=client):
+            await rb.tavily_search("q")
+        assert (
+            client.search.call_args.kwargs["exclude_domains"] == rb.get_config().collectors.web_search.exclude_domains
+        )
+
+    @pytest.mark.asyncio
     async def test_closes_client_after_search(self):
         client = MagicMock()
         client.search = AsyncMock(return_value={"results": [{"title": "t", "url": "u", "content": "c"}]})
