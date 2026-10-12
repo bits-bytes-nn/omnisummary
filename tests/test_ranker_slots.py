@@ -181,7 +181,7 @@ class TestOriginCapWithoutSourceSlots:
 
 
 class TestPinnedCaps:
-    def test_pinned_item_counts_toward_origin_and_source_caps(self):
+    def test_pinned_item_counts_toward_the_origin_cap(self):
         # Pinned items are prepended by rank() and never entered this fill, so their origin went
         # uncounted and a same-origin item landed alongside the pin.
         ranker = _ranker(
@@ -203,7 +203,7 @@ class TestPinnedCaps:
 
     def test_fallback_fills_top_n_when_origins_exhausted(self):
         # Only one X author has items; without the relaxation pass the digest would stop
-        # at 1 (origin cap) even though top_n=3 and the source cap allows more.
+        # at 1 (origin cap) even though top_n=3.
         ranker = _ranker(
             top_n=3,
             min_score=0.5,

@@ -75,7 +75,7 @@ class TestRecallTrends:
         with patch("shared.create_state_store", return_value=self._store(memory.model_dump_json())):
             result = await rt.recall_trends._tool_func()
         assert result.index("Diffusion LLMs") < result.index("Old Thread")
-        assert "2026-10-01 to 2026-10-10, 2 day(s)): Mercury 2 ships" in result
+        assert "first seen 2026-10-01, latest evidence on 2026-10-01, 2026-10-10): Mercury 2 ships" in result
         assert "No Evidence" not in result
 
     @pytest.mark.asyncio
@@ -235,7 +235,11 @@ class TestDeliverReport:
             ) as deliver:
                 msg = await rt.deliver_report._tool_func("body", channel="slack")
         deliver.assert_not_awaited()  # invalid channel is rejected, not silently downgraded
-        assert "Unknown channel" in msg
+        assert "NOT delivered" in msg
+        assert rt.deliver_report.tool_spec["inputSchema"]["json"]["properties"]["channel"]["enum"] == [
+            "markdown",
+            "threads",
+        ]
 
     @pytest.mark.asyncio
     async def test_threads_is_refused_unless_the_caller_asked_for_it(self):

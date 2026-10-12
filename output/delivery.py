@@ -17,7 +17,6 @@ from .renderers import render_threads_research
 # only when the caller asked for it.
 MARKDOWN = "markdown"
 THREADS = "threads"
-RESEARCH_CHANNELS = (MARKDOWN, THREADS)
 
 
 @dataclass

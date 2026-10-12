@@ -405,7 +405,7 @@ class PipelineConfig(_StrictModel):
     # Style/humor guidance injected into the visual synopsis prompt. Configurable so the
     # visual pipeline's tone can be retuned (or reused for non-AI domains) without forking.
     visual_synopsis_style_guidance: str = (
-        "Multi-panel: the same characters, outfits, setting and art style in every panel; each panel "
+        "Multi-panel: the same characters, outfits and art style in every panel; each panel "
         "follows from the previous so the sequence reads in order without explanation."
     )
     # Default aesthetic injected into the image-generation prompt. Configurable so the visual
@@ -444,7 +444,7 @@ class PipelineConfig(_StrictModel):
     # guidance without editing code.
     visual_moderation_softening_instruction: str = (
         "IMPORTANT: keep it clearly safe-for-work and good-natured. "
-        "Use brand mascots/logos and generic stylized characters rather than realistic "
+        "Use company logos and products and generic stylized characters rather than realistic "
         "depictions of real named individuals; avoid anything that could read as defamatory."
     )
     # Recurring mascot = the visual embodiment of the digest's narrator persona (the singularity-

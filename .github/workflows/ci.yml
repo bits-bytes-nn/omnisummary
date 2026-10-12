@@ -171,6 +171,7 @@ jobs:
           docker run --rm --network none --entrypoint python omnisummary-digest:ci -c
           "from shared import Config; c = Config.load();
           assert c.collectors.web_search.trend_searches, 'the image resolved to bare code defaults';
+          assert __import__('pathlib').Path(c.pipeline.visual_character_reference).is_file(), 'persona sheet missing';
           print('digest image config loads OK:', c.aws.region, c.pipeline.digest_model.value)"
 
   security:

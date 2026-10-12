@@ -38,7 +38,6 @@ class LanguageModelInfo(BaseModel):
     - Fable 5.1 is not registered: Bedrock rejects it under the account's default data-retention mode
       ("data retention mode 'default' is not available for this model")."""
 
-    context_window_size: int
     max_output_tokens: int
     supports_temperature: bool = False
     supports_forced_tool_choice: bool = True
@@ -48,20 +47,14 @@ class LanguageModelInfo(BaseModel):
 # 64000, not the 128K ceiling: every pipeline call is a non-streaming ainvoke, and a higher cap would
 # only raise the HTTP-timeout risk with no caller needing that much output.
 LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
-    LanguageModelId.CLAUDE_V4_6_SONNET: LanguageModelInfo(
-        context_window_size=200000, max_output_tokens=64000, supports_temperature=True
-    ),
-    LanguageModelId.CLAUDE_V5_SONNET: LanguageModelInfo(context_window_size=1000000, max_output_tokens=64000),
-    LanguageModelId.CLAUDE_V4_8_OPUS: LanguageModelInfo(context_window_size=1000000, max_output_tokens=64000),
-    LanguageModelId.CLAUDE_V5_OPUS: LanguageModelInfo(context_window_size=1000000, max_output_tokens=64000),
-    LanguageModelId.CLAUDE_V5_5_HAIKU: LanguageModelInfo(
-        context_window_size=1000000, max_output_tokens=64000, effort="high"
-    ),
-    LanguageModelId.CLAUDE_V5_5_SONNET: LanguageModelInfo(
-        context_window_size=1000000, max_output_tokens=64000, supports_forced_tool_choice=False
-    ),
+    LanguageModelId.CLAUDE_V4_6_SONNET: LanguageModelInfo(max_output_tokens=64000, supports_temperature=True),
+    LanguageModelId.CLAUDE_V5_SONNET: LanguageModelInfo(max_output_tokens=64000),
+    LanguageModelId.CLAUDE_V4_8_OPUS: LanguageModelInfo(max_output_tokens=64000),
+    LanguageModelId.CLAUDE_V5_OPUS: LanguageModelInfo(max_output_tokens=64000),
+    LanguageModelId.CLAUDE_V5_5_HAIKU: LanguageModelInfo(max_output_tokens=64000, effort="high"),
+    LanguageModelId.CLAUDE_V5_5_SONNET: LanguageModelInfo(max_output_tokens=64000, supports_forced_tool_choice=False),
     LanguageModelId.CLAUDE_V5_5_OPUS: LanguageModelInfo(
-        context_window_size=1000000, max_output_tokens=64000, supports_forced_tool_choice=False, effort="high"
+        max_output_tokens=64000, supports_forced_tool_choice=False, effort="high"
     ),
 }
 

@@ -220,7 +220,8 @@ class ContentRanker:
         swallowed into [] — a single throttle or transient 5xx silently deleted a whole batch of
         candidates from the day's pool. Now it retries, and a permanent failure PROPAGATES so
         rank() can decide (one bad batch is tolerated; all of them is an outage)."""
-        items_text = self._format_items(items)
+        # Off the event loop: truncation makes blocking CountTokens calls, which serialized the batches.
+        items_text = await asyncio.to_thread(self._format_items, items)
         chain = RankingPrompt.get_prompt() | self.llm | StrOutputParser()
 
         async def _invoke() -> str:

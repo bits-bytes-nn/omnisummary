@@ -59,11 +59,6 @@ collectors:
           - "frontier AI model release GPT Claude Gemini Llama"
           - "LLM benchmark SOTA new results"
         topic: news
-      - name: research
-        queries:
-          - "AI research paper NeurIPS ICML ICLR arXiv"
-          - "machine learning new technique architecture"
-        topic: news
       - name: industry
         queries:
           - "AI lab acquisition or major funding news"

@@ -63,7 +63,7 @@ async def web_search(
 
     Args:
         query: The search query.
-        news: True for industry/company/policy news coverage.
+        news: True for industry/company/policy news coverage (about the last week unless time_range says otherwise).
         time_range: Only results from the last day, week, month or year; omit for any time.
     """
     return _record_seen_urls(await tavily_search(query, topic="news" if news else None, time_range=time_range))
@@ -107,7 +107,8 @@ async def read_url(url: str) -> str:
 @tool
 async def recall_trends() -> str:
     """Every AI/ML trend tracked across earlier daily digests (cross-day memory), strongest first,
-    with when it was seen and its latest evidence. Judge yourself which ones bear on the topic; the
+    with when it was first seen and the dates of its latest evidence (only the last few are kept, so
+    they are not a count of every appearance). Judge yourself which ones bear on the topic; the
     trends are written in English. Use this for the "how has this evolved / what came before" angle."""
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -143,8 +144,8 @@ async def recall_trends() -> str:
     today = datetime.now(ZoneInfo(config.aws.timezone)).date()
     trends.sort(key=lambda t: t.momentum(today, half_life), reverse=True)
     lines = [
-        f"- {t.title} ({t.status.value}; {t.first_seen or t.evidence[0].date} to {t.last_seen or t.evidence[-1].date}, "
-        f"{len({ev.date for ev in t.evidence})} day(s)): {t.evidence[-1].summary[:gist_chars]}"
+        f"- {t.title} ({t.status.value}; first seen {t.first_seen or t.evidence[0].date}, latest evidence on "
+        f"{', '.join(sorted({ev.date for ev in t.evidence}))}): {t.evidence[-1].summary[:gist_chars]}"
         for t in trends
     ]
     return "Earlier trends:\n\n" + "\n".join(lines)
@@ -230,12 +231,10 @@ async def deliver_report(report: str, channel: Literal["markdown", "threads"] = 
         report: The final report. For "markdown" use Markdown; for "threads" use plain text.
         channel: "markdown" (default) or "threads".
     """
-    from output.delivery import RESEARCH_CHANNELS, THREADS, DeliveryOutcome, deliver_research_report
+    from output.delivery import THREADS, DeliveryOutcome, deliver_research_report
 
     delivery = current_delivery_context()
-    target = channel.lower().strip()
-    if target not in RESEARCH_CHANNELS:
-        return f'Unknown channel "{channel}". Use one of: {", ".join(RESEARCH_CHANNELS)}.'
+    target = channel
 
     # Whether this run may publish to Threads is DATA the caller set (the CLI's --publish), not
     # something to infer from the request's wording. A self-correcting refusal: nothing is published
