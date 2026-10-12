@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -95,7 +97,18 @@ class DailyVisualMaker:
         if not self.publisher.has_a_destination(content, post_date, force_republish):
             return False
 
-        image_bytes, brief = await self._make_visual(ranked_items, content, post_date, deadline=deadline)
+        # The whole visual stage, not just the render, is bounded: an editor or brief call hanging on
+        # Bedrock (read_timeout 300 x 3 attempts) could otherwise run the Lambda out of time and lose
+        # the text digest too. Past the deadline the day posts text-only.
+        image_deadline = self._image_deadline(deadline)
+        try:
+            image_bytes, brief = await asyncio.wait_for(
+                self._make_visual(ranked_items, content, post_date, deadline=deadline),
+                timeout=None if image_deadline is None else max(0.0, image_deadline - time.monotonic()),
+            )
+        except TimeoutError:
+            logger.error("Daily visual ran past its deadline; publishing the digest text-only")
+            image_bytes, brief = None, None
 
         return await self.publisher.publish(
             content,

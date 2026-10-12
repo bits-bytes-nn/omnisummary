@@ -17,6 +17,7 @@ class TestThreadsRefreshHandler:
         # refresh" — a 200 that quietly let the live token expire. strict=True makes it raise.
         with patch.object(h, "resolve_secret", return_value="OLD") as rs:
             with patch.object(h.httpx, "get") as get:
+                get.return_value.is_error = False
                 get.return_value.json.return_value = {"access_token": "NEW"}
                 with patch.object(h.boto3, "client"):
                     h.handler({}, None)
@@ -26,6 +27,7 @@ class TestThreadsRefreshHandler:
         monkeypatch.setenv("PROJECT_NAME", "omnisummary")
         monkeypatch.setenv("STAGE", "dev")
         resp = MagicMock()
+        resp.is_error = False
         resp.json.return_value = {"access_token": "NEW_TOKEN", "expires_in": 5184000}
         ssm = MagicMock()
         with patch.object(h, "resolve_secret", return_value="OLD_TOKEN"):
@@ -48,14 +50,33 @@ class TestThreadsRefreshHandler:
         # A silent 500 body left the token un-refreshed with no alarm until Threads delivery
         # broke 60 days later; the failure must reach Lambda's Errors metric.
         with patch.object(h, "resolve_secret", return_value="OLD"):
-            with patch.object(h.httpx, "get", side_effect=RuntimeError("network")):
+            with patch.object(h.httpx, "get", side_effect=h.httpx.ConnectError("network")):
                 with patch.object(h, "logger") as log:
-                    with pytest.raises(RuntimeError, match="network"):
+                    with pytest.raises(RuntimeError, match="request failed"):
                         h.handler({}, None)
         assert log.error.called
 
+    def test_a_failed_refresh_never_leaks_the_token(self):
+        # httpx's error text carries the request URL, and the token is in its query string: the old
+        # handler logged str(e) and re-raised it, writing the long-lived token into CloudWatch.
+        secret = "THAAsecretTOKEN123"
+
+        def _get(url, **kwargs):
+            transport = h.httpx.MockTransport(lambda request: h.httpx.Response(400, text="expired"))
+            with h.httpx.Client(transport=transport) as client:
+                return client.get(url, **kwargs)
+
+        with patch.object(h, "resolve_secret", return_value=secret):
+            with patch.object(h.httpx, "get", side_effect=_get):
+                with patch.object(h, "logger") as log:
+                    with pytest.raises(RuntimeError) as raised:
+                        h.handler({}, None)
+        assert secret not in str(raised.value)
+        assert all(secret not in str(c) for c in log.error.call_args_list)
+
     def test_ssm_write_failure_reraises(self):
         resp = MagicMock()
+        resp.is_error = False
         resp.json.return_value = {"access_token": "NEW"}
         ssm = MagicMock()
         ssm.put_parameter.side_effect = RuntimeError("denied")

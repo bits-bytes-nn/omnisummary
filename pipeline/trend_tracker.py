@@ -236,6 +236,8 @@ class TrendTracker:
         retention is dropped outright."""
         today = date.fromisoformat(today_date)
         for trend in memory.trends:
+            # Sorted first: a --date backfill appends an older day last, and the cap kept it over newer ones.
+            trend.evidence.sort(key=lambda ev: ev.date)
             if len(trend.evidence) > self.config.trend_max_evidence:
                 trend.evidence = trend.evidence[-self.config.trend_max_evidence :]
             if trend.evidence:

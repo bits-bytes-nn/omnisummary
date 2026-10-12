@@ -423,7 +423,7 @@ class TestDailyVisualMaker:
         content = DigestContent(
             lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
         )
-        deadline = time.monotonic() + 300
+        deadline = time.monotonic() + 900
         gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait")))
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
             with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
@@ -437,6 +437,37 @@ class TestDailyVisualMaker:
         assert th.await_args.kwargs["deadline"] == deadline
         # The image work must finish early enough to leave the Threads publish its full budget.
         assert gen.await_args.kwargs["deadline"] == deadline - THREADS_INDEXING_BUDGET_SEC - THREADS_PUBLISH_RESERVE_SEC
+
+    @pytest.mark.asyncio
+    async def test_a_hung_editor_past_the_deadline_still_posts_the_text(self):
+        # The editor and brief calls sit on Bedrock (read_timeout 300 x 3); unbounded, a hang there ran
+        # the Lambda out of time and lost the text digest with the image.
+        import asyncio
+        import time
+        from datetime import date
+
+        from output.threads_handler import THREADS_INDEXING_BUDGET_SEC, THREADS_PUBLISH_RESERVE_SEC
+        from shared.models import DigestContent, DigestItem
+
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = True
+        content = DigestContent(
+            lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
+        )
+
+        async def _hang(*_a, **_k):
+            await asyncio.sleep(60)
+
+        deadline = time.monotonic() + THREADS_INDEXING_BUDGET_SEC + THREADS_PUBLISH_RESERVE_SEC + 0.05
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_pick_story", new=_hang):
+                with patch(
+                    "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
+                ) as th:
+                    started = time.monotonic()
+                    assert await maker.run(_items(), content, today=date(2026, 6, 10), deadline=deadline) is True
+        assert time.monotonic() - started < 5  # cut at the deadline, not after the hang
+        assert th.await_args.kwargs["image_bytes"] is None
 
     @pytest.mark.asyncio
     async def test_a_run_that_claims_the_date_during_our_render_stops_our_post(self):
