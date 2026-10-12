@@ -315,6 +315,20 @@ class TestCollect:
         assert {i.url for i in items} == {"https://a.example/1", "https://refined.example/9"}
 
     @pytest.mark.asyncio
+    async def test_refinement_is_told_the_digest_date_not_the_next_day(self, monkeypatch):
+        # reference_time is midnight at the END of the digest date; its .date() is the next day.
+        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        seen: list[str] = []
+        factory = MagicMock()
+        factory.get_model.return_value = RunnableLambda(lambda p: (seen.append(str(p)), AIMessage(content="[]"))[1])
+        c = _search_collector(min_search_score=0.3, max_refine_queries=2, llm_factory=factory)
+        client = MagicMock()
+        client.search = AsyncMock(return_value={"results": [_result(0.9, url="https://a.example/1", title="A")]})
+        c._client_instance = client
+        await c.collect()
+        assert "Today is 2026-06-02." in seen[0]
+
+    @pytest.mark.asyncio
     async def test_refinement_skipped_when_broad_phase_empty(self, monkeypatch):
         # Nothing to refine FROM → no extra LLM call and no extra searches.
         monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
