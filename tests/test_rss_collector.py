@@ -1,6 +1,6 @@
 import asyncio
 from datetime import UTC, datetime
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -221,3 +221,41 @@ class TestRSSCollect:
             items = await c.collect()
         assert len(items) == 1
         assert "3/4 feeds returned nothing" in c.degraded_detail
+
+
+class TestSummaryOnlyEntries:
+    @pytest.mark.asyncio
+    async def test_a_summary_only_entry_gets_the_page_text(self):
+        c = RSSCollector(_config())
+        pages = AsyncMock(return_value={"https://example.com/p/1": "the full article text"})
+        with (
+            patch("collectors.base.fetch_feed", return_value=_feed([_entry()])),
+            patch("collectors.rss.extract_pages", new=pages),
+        ):
+            items = await c.collect()
+        pages.assert_awaited_once_with(["https://example.com/p/1"])
+        assert items[0].text == "the full article text"
+
+    @pytest.mark.asyncio
+    async def test_an_entry_with_full_content_is_not_fetched(self):
+        entry = _entry()
+        entry["content"] = [{"value": "full body in the feed"}]
+        c = RSSCollector(_config())
+        pages = AsyncMock(return_value={})
+        with (
+            patch("collectors.base.fetch_feed", return_value=_feed([entry])),
+            patch("collectors.rss.extract_pages", new=pages),
+        ):
+            items = await c.collect()
+        pages.assert_not_awaited()
+        assert items[0].text == "full body in the feed"
+
+    @pytest.mark.asyncio
+    async def test_the_feed_text_stays_when_the_page_reads_shorter_or_fails(self):
+        c = RSSCollector(_config())
+        with (
+            patch("collectors.base.fetch_feed", return_value=_feed([_entry()])),
+            patch("collectors.rss.extract_pages", new=AsyncMock(return_value={"https://example.com/p/1": "x"})),
+        ):
+            items = await c.collect()
+        assert items[0].text == "body"

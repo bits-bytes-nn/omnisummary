@@ -2,26 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import io
 import time
 from collections.abc import Sequence
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
-
 from shared import (
     BedrockLanguageModelFactory,
     VisualBrief,
-    VisualReview,
-    VisualReviewPrompt,
     VisualSynopsisPrompt,
     logger,
     resolve_secret,
 )
 from shared.config import LanguageModelId
-
-# What one review call is allowed; with less time left the render ships unreviewed.
-REVIEW_BUDGET_SEC = 60
 
 # Prepended to the image prompt when the narrator's reference sheet rides along as an input image.
 REFERENCE_NOTE = (
@@ -37,17 +29,6 @@ def _image_file(index: int, data: bytes) -> tuple[str, bytes, str]:
     if data[:2] == b"\xff\xd8":
         return f"input{index}.jpg", data, "image/jpeg"
     return f"input{index}.png", data, "image/png"
-
-
-def _review_copy(image: bytes) -> bytes:
-    """The render re-encoded as a full-resolution JPEG for the vision review. A tall PNG runs 2.5-3.6MB
-    against Bedrock's 3.75MB per-image cap; past it the review would be skipped every time."""
-    from PIL import Image
-
-    buffer = io.BytesIO()
-    with Image.open(io.BytesIO(image)) as img:
-        img.convert("RGB").save(buffer, format="JPEG", quality=90)
-    return buffer.getvalue()
 
 
 def _usage_summary(usage: Any) -> str:
@@ -99,7 +80,6 @@ class VisualGenerator:
         # of free text: the brief's `prompt` is thousands of chars of free-form copy that often
         # contains unescaped quotes/newlines, which broke hand-parsing the model's JSON.
         self.llm = llm_factory.get_model(brief_model, stage="visual-synopsis").with_structured_output(VisualBrief)
-        self.reviewer = llm_factory.get_model(brief_model, stage="visual-review").with_structured_output(VisualReview)
         self.image_model = image_model
         # orientation -> gpt-image size; the brief picks the orientation that fits the visual.
         self.image_sizes = image_sizes
@@ -190,43 +170,6 @@ class VisualGenerator:
         prompt = REFERENCE_NOTE + brief.prompt if references else brief.prompt
         return self._call_images(prompt, self._resolve_size(brief), references, f"Rendered {brief.orientation}")
 
-    async def review(self, image: bytes, brief: VisualBrief) -> list[str]:
-        """The defects a reader would notice, most noticeable first; [] when clean OR when the review
-        itself failed. Best-effort: a QA outage must never cost the day's visual."""
-        try:
-            message = HumanMessage(
-                content=[
-                    {
-                        "type": "image",
-                        "source_type": "base64",
-                        "mime_type": "image/jpeg",
-                        "data": base64.b64encode(_review_copy(image)).decode(),
-                    },
-                    {"type": "text", "text": VisualReviewPrompt.human_prompt_template.format(brief=brief.prompt)},
-                ]
-            )
-            result = await self.reviewer.ainvoke(
-                [SystemMessage(content=VisualReviewPrompt.system_prompt_template), message]
-            )
-        except Exception:
-            logger.warning("Visual review failed; keeping the image unreviewed", exc_info=True)
-            return []
-        return VisualReview.model_validate(result).issues if result else []
-
-    async def _reviewed(self, image: bytes, brief: VisualBrief, deadline: float | None) -> bytes:
-        """Review the render and LOG what it finds; the image ships as rendered. A correction edit used
-        to follow, but it lowered the defect count in only 4 of 12 runs at the price of a second render,
-        so the review now runs as a QA signal while the synopsis carries the quality."""
-        if deadline is not None and deadline - time.monotonic() < REVIEW_BUDGET_SEC:
-            logger.warning("No time left to review the visual; publishing it as rendered")
-            return image
-        issues = await self.review(image, brief)
-        if issues:
-            logger.info("Visual review found %d defect(s): %s", len(issues), " | ".join(issues))
-        else:
-            logger.info("Visual review: no defects found")
-        return image
-
     @staticmethod
     def _is_moderation_error(exc: Exception) -> bool:
         # Prefer the typed OpenAI exception / structured error code, which survives API
@@ -252,8 +195,8 @@ class VisualGenerator:
     ) -> tuple[bytes, VisualBrief]:
         """`references` are input images every render carries (the narrator's reference sheet).
         `deadline` is an optional monotonic timestamp bounding the caller (the visual Lambda's
-        remaining time); it gates the moderation-softened re-render (a whole extra image_timeout_sec)
-        and the review. None (local runs) is unbounded."""
+        remaining time); it gates the moderation-softened re-render (a whole extra image_timeout_sec).
+        None (local runs) is unbounded."""
         brief = await self.brief(instruction, source)
         try:
             # The OpenAI call blocks for 30-120s; run it off the event loop so concurrent coroutines
@@ -270,4 +213,4 @@ class VisualGenerator:
             logger.warning("Image moderation blocked the prompt; retrying with a softened brief")
             brief = await self.brief(f"{instruction}\n\n{self.moderation_softening_instruction}", source)
             image = await asyncio.to_thread(self.render, brief, references)
-        return await self._reviewed(image, brief, deadline), brief
+        return image, brief

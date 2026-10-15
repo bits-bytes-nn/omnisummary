@@ -40,11 +40,20 @@ def main():
         # values would land in plaintext in cdk.out, the CDK staging bucket and GetTemplate. The
         # stack creates the parameters holding a placeholder; run scripts/put_secrets.py after the
         # deploy to write the real values as SecureStrings.
-        digest_image_ref=os.getenv("DIGEST_IMAGE_REF", ""),
+        digest_image_ref=_digest_image_ref(),
         env=env,
     )
 
     app.synth()
+
+
+def _digest_image_ref() -> str:
+    """The pushed image digest to pin. Without it the Lambdas reference `:latest`, and CloudFormation
+    sees an unchanged image string and redeploys nothing."""
+    ref = os.getenv("DIGEST_IMAGE_REF", "")
+    if not ref:
+        print("WARNING: DIGEST_IMAGE_REF is not set; the Lambdas keep their current image", file=sys.stderr)
+    return ref
 
 
 if __name__ == "__main__":

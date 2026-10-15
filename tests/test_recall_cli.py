@@ -66,3 +66,4 @@ class TestTrends:
             result, code = recall_cli.run(["trends"])
         assert code == recall_cli.EXIT_OK
         assert [t["title"] for t in result["trends"]] == ["New", "Old"]
+        assert result["trends"][0]["latest"] == "s"

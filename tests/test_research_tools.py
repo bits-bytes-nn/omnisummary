@@ -388,6 +388,20 @@ class TestCitationGuard:
         deliver.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_a_failed_read_does_not_make_a_url_citable(self):
+        delivery = DeliveryContext()
+        with request_context(delivery):
+            with patch("agent.research_tools.extract_url", new=AsyncMock(return_value="")):
+                result = await rt.read_url._tool_func("https://invented.example/post")
+            with patch(
+                "output.delivery.deliver_research_report", new=AsyncMock(return_value=DeliveryOutcome.POSTED)
+            ) as deliver:
+                await rt.deliver_report._tool_func("출처 https://invented.example/post")
+        assert "not a source" in result
+        assert delivery.seen_urls == set()
+        deliver.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_report_citing_nothing_is_delivered(self):
         delivery = DeliveryContext()
         with request_context(delivery):

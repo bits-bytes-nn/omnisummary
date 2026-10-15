@@ -100,8 +100,13 @@ async def read_url(url: str) -> str:
     Args:
         url: The page URL to read.
     """
+    text = await extract_url(url)
+    if not text:
+        # A page that could not be read is not a source: recording it would let an invented URL
+        # pass deliver_report's citation check after one failed read.
+        return f"Could not read {url}; it is not a source you can cite."
     # The page URL itself counts as surfaced: the agent read it, so citing it is grounded.
-    return _record_seen_urls(await extract_url(url), url)
+    return _record_seen_urls(text, url)
 
 
 @tool

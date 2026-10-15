@@ -91,7 +91,7 @@ class TestExtractUrl:
     @pytest.mark.asyncio
     async def test_no_key(self):
         with patch.object(rb, "_get_tavily_client", return_value=None):
-            assert "TAVILY_API_KEY not configured" in await rb.extract_url("http://x")
+            assert await rb.extract_url("http://x") == ""
 
     @pytest.mark.asyncio
     async def test_returns_capped_content(self):
@@ -123,7 +123,7 @@ class TestExtractUrl:
         client.close = AsyncMock()
         with patch.object(rb, "_get_tavily_client", return_value=client):
             result = await rb.extract_url("http://x")
-        assert "No readable content" in result
+        assert result == ""
 
     @pytest.mark.asyncio
     async def test_empty_extract(self):
@@ -132,7 +132,7 @@ class TestExtractUrl:
         client.close = AsyncMock()
         with patch.object(rb, "_get_tavily_client", return_value=client):
             result = await rb.extract_url("http://x")
-        assert "No readable content" in result
+        assert result == ""
 
     @pytest.mark.asyncio
     async def test_extract_exception(self):
@@ -141,7 +141,7 @@ class TestExtractUrl:
         client.close = AsyncMock()
         with patch.object(rb, "_get_tavily_client", return_value=client):
             result = await rb.extract_url("http://x")
-        assert "Could not read URL" in result
+        assert result == ""
 
 
 class TestSearchPapers:
@@ -185,10 +185,34 @@ class TestSearchPapers:
             new=AsyncMock(side_effect=httpx.HTTPStatusError("429", request=MagicMock(), response=MagicMock())),
         ):
             result = await rb.paper_search("q")
-        assert "SEARCH_FAILED" in result
+        assert "Search failed" in result
 
     @pytest.mark.asyncio
     async def test_no_papers(self):
         with patch.object(rb, "retry_async", new=AsyncMock(return_value=self._response({"results": []}))):
             result = await rb.paper_search("q")
         assert result == "No related papers found."
+
+
+class TestExtractPages:
+    @pytest.mark.asyncio
+    async def test_batches_and_keys_by_url_skipping_a_failed_batch(self):
+        urls = [f"http://x/{i}" for i in range(rb.EXTRACT_BATCH_SIZE + 1)]
+        client = MagicMock()
+        client.extract = AsyncMock(
+            side_effect=[
+                {"results": [{"url": "http://x/0", "raw_content": "page"}, {"url": "http://x/1"}]},
+                RuntimeError,
+            ]
+        )
+        client.close = AsyncMock()
+        with patch.object(rb, "_get_tavily_client", return_value=client):
+            pages = await rb.extract_pages(urls)
+        assert pages == {"http://x/0": "page"}
+        assert [len(c.kwargs["urls"]) for c in client.extract.call_args_list] == [rb.EXTRACT_BATCH_SIZE, 1]
+        client.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_key_reads_nothing(self):
+        with patch.object(rb, "_get_tavily_client", return_value=None):
+            assert await rb.extract_pages(["http://x"]) == {}

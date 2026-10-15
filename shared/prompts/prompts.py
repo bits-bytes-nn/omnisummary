@@ -124,10 +124,10 @@ because the lead is a comment on stories you have already written:
       "title": "the Korean display title for this story",
       "url": "the item's URL exactly as provided",
       "body": "As few tight Korean sentences as the story needs (often two): what this is, why it matters, the key detail. Keep it compact and self-contained so the whole item reads as ONE short social post.{prose_budget_rule} Every sentence must end completely (no trailing fragments).",
-      "implication": "ONE Korean sentence that takes a stance on THIS story a reader could disagree with, not a general truth about the industry. State the stance flatly, as the whole sentence; a caveat that matters belongs in the body. Provocation is in the angle, never in invented facts."
+      "implication": "ONE Korean sentence that takes a stance on THIS story a reader could disagree with, not a general truth about the industry. State the stance flatly, as the whole sentence; caveats, 'unverified' and 'self-reported' included, belong in the body. Provocation is in the angle, never in invented facts."
     }}
   ],
-  "lead": "3-4 concrete sentences, a standalone opening under {lead_budget} characters about items[0], the headline the image depicts: name that story in ONE assertive sentence a stranger could follow (the actual company / model / event — no label, no emoji), then land ONE thesis that items[0]'s implication does not already make: the wider arc it belongs to, drawn from the trend ammunition below. The reader sees items[0] directly beneath, so ADD to it rather than re-telling it — no replay of its sequence and no repeat of its numbers."
+  "lead": "3-4 concrete sentences, a standalone opening under {lead_budget} characters about items[0], the headline the image depicts: name that story in ONE assertive sentence a stranger could follow (the actual company / model / event — no label, no emoji), then land ONE thesis that items[0]'s implication does not already make: the wider arc it belongs to, when the trend ammunition below supports one. The reader sees items[0] directly beneath, so ADD to it rather than re-telling it — no replay of its sequence and no repeat of its numbers."
 }}
 ```
 
@@ -223,13 +223,13 @@ class VisualEditorPrompt(BasePrompt):
 
     system_prompt_template = """\
 You are the cartoonist for {audience}. Today's visual is a comic about the HEADLINE story, given \
-below in full along with the digest's angle on it, so the comic and the lead stay in sync. It is \
+below in full along with the digest's angle on it: match its tone, not its thesis, which the post already states. It is \
 told through the digest's narrator, a recurring character who is the strip's viewpoint: he takes \
 part in the scenes next to the real people and companies of the story. Aim for a strip a reader \
 who has NOT read the story understands at a glance, then finds funny: panel 1 says plainly what \
 happened (who did what, the key number) in a narration box; panels 2-3 show the story's real facts as \
-literal scenes with the real people and products (a number only when the LOGLINE rests on it), not an allegory; panel 4 lands the \
-punchline. Every line and every sign or label is plain {on_image_language} a non-specialist gets (names \
+literal scenes with the real people and products (a number only when the LOGLINE rests on it), not an allegory; panel 4 SHOWS the payoff, a \
+sight gag that grows out of those facts, and its line reacts to it rather than stating a moral. Every line and every sign or label is plain {on_image_language} a non-specialist gets (names \
 of people, companies and products stay as written; no benchmark names, metrics or jargon); the humor \
 comes from the narrator's take \
 on the real facts.
@@ -239,19 +239,17 @@ Produce ONLY a JSON object:
 {{
   "skip": false,
   "use_character": true,
-  "instruction": "the comic as a synopsis in this shape. LOGLINE: the one point a reader should come away with, in one sentence with one claim; whatever else the story or the digest's angle says stays out of the strip. COMPOSITION: the layout. Then one entry per panel, PANEL n (setup / development / turn / punchline): where it is, who is in it (real people named, with the features that make them recognizable; the narrator is just 'the narrator', his look is fixed elsewhere), what they do, and its ONE short line of dialogue or narration in {on_image_language}. Each panel follows from the one before and sets up the next; together they prove the LOGLINE."
+  "instruction": "the comic as a synopsis in this shape. LOGLINE: what happened and the one funny turn it leads to, in one sentence; nothing else from the story or the angle goes in. COMPOSITION: the layout. Then one entry per panel, PANEL n (setup / development / turn / punchline): where it is, who is in it (real people named, with the features that make them recognizable; the narrator is just 'the narrator', his look is fixed elsewhere), what they do, and its ONE short line of dialogue or narration in {on_image_language}. Each panel follows from the one before and sets up the next; together they set up panel 4's payoff."
 }}
 ```
 
 Rules:
 - Default composition: a 2x2 four-panel grid read left to right, top to bottom (setup, development, \
-turn, and a punchline that panel 4 SHOWS, not just says). Choose another one (a vertical strip, a single frame, a wide panorama) only when \
+turn, payoff). Choose another one (a vertical strip, a single frame, a wide panorama) only when \
 the story is clearly better told that way, and name it in the instruction.
 - Keep every panel drawable: at most three characters acting in the foreground (a background crowd \
 is fine) and one clear action, on a plausible set.
-- Be faithful to the real facts; the humor is in the framing, never fabrication.
-- When the narrator is in a panel he DOES something there (reacts, intervenes, comments), never just \
-watches. Set `use_character` false only when he would get in the way of the joke.
+- Set `use_character` false only when the narrator would get in the way of the joke.
 - Return {{"skip": true}} only if the headline cannot be illustrated at all.
 - Output ONLY the JSON object."""
 
@@ -304,31 +302,6 @@ a label) is a few large words written once, never repeated on copies of an objec
 - {style_guidance}"""
 
     human_prompt_template = "Visualization request:\n{instruction}\n\nSource material:\n{source}"
-
-
-class VisualReviewPrompt(BasePrompt):
-    """Post-render QA of the comic image against its brief. Code attaches the image; the defects it
-    returns are logged as a QA signal; the image ships as rendered."""
-
-    input_variables = ["brief"]
-
-    system_prompt_template = """\
-You are a comic art QA reviewer. Look at the attached image as a reader would and report the defects \
-a reader would notice on a phone screen, most noticeable first. The brief is context for what each \
-panel means and its exact lines; staging that differs from it (a pose, a gesture, where a prop sits) is \
-not a defect unless it breaks the panel's meaning:
-1. Physics and space: a person or object floating with no support, furniture stacked or placed \
-impossibly, someone sitting on something that cannot hold them, objects passing through each other.
-2. Scale and perspective: a person or object the wrong size for its distance or its neighbours.
-3. Anatomy: wrong finger counts, fused or extra limbs, a blank or missing face, a hand that does not actually grip what it holds.
-4. Text: on-image text that differs from the lines quoted in the brief, garbled glyphs, or invented \
-words (signs, slogans, captions) the brief does not quote. The logos and wordmarks of the companies in \
-the story are expected, not invented text.
-5. Structure: the panel count or reading order differs from the brief.
-Each defect is one sentence naming the panel ("Panel 3: ..."). Exaggeration or a visual metaphor the \
-brief asks for is NOT a defect. Return an empty list when nothing a reader would notice is wrong."""
-
-    human_prompt_template = "BRIEF:\n{brief}"
 
 
 class GroundingCheckPrompt(BasePrompt):
