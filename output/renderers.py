@@ -15,6 +15,9 @@ from shared import (
     truncate_at_word,
 )
 
+# Marks each of the other stories' titles in the root post.
+STORY_INDEX_BULLET = "· "
+
 __all__ = [
     "render_threads_posts",
     "render_threads_research",
@@ -118,15 +121,38 @@ def _pack_sentences(text: str, max_len: int) -> str:
     return " ".join(kept) if kept else truncate_at_word(text, max_len)
 
 
+def _with_story_index(lead: str, titles: list[str], countdown: str = "") -> str:
+    """The root text with the day's other story titles listed under the lead's prose (above a suffix
+    countdown sign-off). The story replies are read by 2-5% of the root's viewers, so without this a
+    feed reader never learned what else the digest carried. Titles that do not fit the cap are
+    dropped from the end; the lead itself is never trimmed for the list."""
+    head, sep, last_line = lead.rpartition("\n")
+    gag = countdown.strip()
+    sign_off = last_line.strip() if sep and gag and last_line.strip() == gag else ""
+    prose = head.strip() if sign_off else lead
+    lines = [f"{STORY_INDEX_BULLET}{title.strip()}" for title in titles if title.strip()]
+    for kept in range(len(lines), 0, -1):
+        root = THREADS_POST_SEPARATOR.join(p for p in (prose, "\n".join(lines[:kept]), sign_off) if p)
+        if len(root) <= THREADS_MAX_POST_CHARS:
+            if kept < len(lines):
+                logger.info(
+                    "Threads root lists %d of %d other stories (cap %d)", kept, len(lines), THREADS_MAX_POST_CHARS
+                )
+            return root
+    return lead
+
+
 def render_threads_posts(content: DigestContent, countdown: str = "") -> tuple[str, list[str]]:
-    """Render DigestContent for Threads: a root text (the lead) and a reply chain with EXACTLY ONE
-    reply per item (title + source line + body + implication + URL). Each reply is trimmed to fit
-    Threads' 500-char cap at a clean sentence boundary — never mid-word — keeping the title, the
-    source line and the URL. No markup (Threads renders none).
+    """Render DigestContent for Threads: a root text (the lead, then the other stories' titles) and a
+    reply chain with EXACTLY ONE reply per item (title + source line + body + implication + URL). Each
+    reply is trimmed to fit Threads' 500-char cap at a clean sentence boundary — never mid-word —
+    keeping the title, the source line and the URL. No markup (Threads renders none).
 
     `countdown` is the code-owned AGI-countdown gag as the pipeline computed it, so an over-long
     lead can drop THAT rather than the day's argument. Empty (the default) simply trims prose."""
-    lead = _fit_lead(content.lead.strip(), countdown)
+    lead = _with_story_index(
+        _fit_lead(content.lead.strip(), countdown), [item.title for item in content.items[1:]], countdown
+    )
     replies: list[str] = []
     trimmed = 0
     for item in content.items:

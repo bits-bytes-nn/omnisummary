@@ -4,6 +4,7 @@ import asyncio
 
 from shared import CollectedItem, SourceType, logger
 from shared.config import RSSCollectorConfig
+from shared.research import extract_pages
 
 from .base import (
     BaseCollector,
@@ -47,7 +48,32 @@ class RSSCollector(BaseCollector):
             empty=result.empty,
             what="feeds",
         )
-        return result.items
+        return await self._fill_summary_only(result.items)
+
+    @staticmethod
+    async def _fill_summary_only(items: list[CollectedItem]) -> list[CollectedItem]:
+        """Swap in the page text for entries whose feed ships only a summary. Several primary-source
+        feeds (DeepMind, Google Research, Hugging Face) carry an empty or one-line description, and
+        the ranker then scored a title alone: an empty "Gemini 4 Argon" post scored 0.84 and shipped
+        as a one-sentence story. The feed text stays when the page reads shorter or not at all."""
+        thin = [it for it in items if it.metadata.get("summary_only")]
+        if not thin:
+            return items
+        pages = await extract_pages(list(dict.fromkeys(it.url for it in thin)))
+        filled = added = 0
+        for item in thin:
+            page = pages.get(item.url, "")
+            if len(page) > len(item.text):
+                added += len(page) - len(item.text)
+                item.text = page
+                filled += 1
+        logger.info(
+            "RSS: replaced the feed summary with the page text for %d of %d summary-only items (+%d chars)",
+            filled,
+            len(thin),
+            added,
+        )
+        return items
 
     async def _collect_feed(self, feed_url: str, semaphore: asyncio.Semaphore) -> list[CollectedItem]:
         async with semaphore:
@@ -63,7 +89,7 @@ class RSSCollector(BaseCollector):
                 max_retries=self.config.max_retries,
                 backoff_sec=self.config.retry_backoff_sec,
             )
-            return parse_feed_entries(
+            items = parse_feed_entries(
                 feed,
                 source_type=SourceType.RSS,
                 lookback_hours=self.config.lookback_hours,
@@ -71,3 +97,8 @@ class RSSCollector(BaseCollector):
                 description=f"RSS feed '{feed_url}'",
                 metadata={"feed_url": feed_url, "feed_title": feed.feed.get("title", "")},
             )
+            summary_only = {entry.get("link", "") for entry in feed.entries if not entry.get("content")}
+            for item in items:
+                if item.url in summary_only:
+                    item.metadata = {**item.metadata, "summary_only": True}
+            return items

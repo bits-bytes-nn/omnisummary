@@ -34,7 +34,7 @@ There are two independent paths.
 - **Multi-source collection** — Reddit (one multi-subreddit public `.rss` request), YouTube, X/Twitter (via RSSHub), RSS/Substack, web search (Tavily). Feed bodies are HTML-stripped at collection
 - **LLM ranking into a candidate pool** — Claude Opus 5.5 scores on multiple axes; source slots and per-origin caps make sure every source's best item reaches the editor, and the editor picks what ships
 - **Editorial digest** — Claude Sonnet 5.5 writes Korean prose with cross-day trend continuity, then a grounding pass checks every specific claim against the sources
-- **Daily comic** — a 2x2 four-panel comic narrated by the owner-persona character (kept on-model by a reference sheet), with Korean dialogue, rendered by `gpt-image-2.5-sunburst` and checked by a vision review whose findings are logged
+- **Daily comic** — a 2x2 four-panel comic narrated by the owner-persona character (kept on-model by a reference sheet), with Korean dialogue, rendered by `gpt-image-2.5-sunburst`
 - **Threads delivery** — image root + flat reply chain, idempotent per day
 - **Deep-research CLI + OpenClaw skill** — an autonomous Strands agent with eight single-purpose tools; JSON contract on stdout, Markdown report on disk
 - **Operational excellence** — per-source health reporting (`OK` / `EMPTY` / `FAILED` / `STALE` / `DEGRADED`) into SNS email alerts, structured JSON logs with correlation IDs, 8 CloudWatch alarms
@@ -196,13 +196,13 @@ A summary of each stage. [design.md](docs/design.md) is the line-by-line referen
 |-----------|--------|--------|
 | `RedditCollector` | Reddit public `.rss` | One `r/A+B` request (`t=day` for top), fetched directly with retry |
 | `YouTubeCollector` | YouTube Data API v3 | S3 park file on AWS, live otherwise; reads the long-form uploads (`UULF`) so Shorts don't take the channel's slot |
-| `RSSCollector` | RSS/Atom | httpx + feedparser, HTML stripped |
+| `RSSCollector` | RSS/Atom | httpx + feedparser, HTML stripped; a summary-only entry gets its page text via Tavily extract |
 | `RSSHubCollector` | X/Twitter via RSSHub | S3 park file on AWS, local Docker otherwise |
 | `WebSearchCollector` | Tavily | Direct, with LLM query refinement and `exclude_domains` for content farms |
 
 **2. Aggregation.** `ContentAggregator` deduplicates by URL and by normalized title (a leading `RT name:` is stripped, so a self-retweet matches its original). When two items collide it keeps the *better* one (pinned > longer body > first seen) rather than whichever arrived first.
 
-**3. Ranking.** `ContentRanker` scores items with Claude Opus 5.5 on technical substance, practitioner value, novelty, industry impact, research significance and source authority, with hard filters for promos and thin content. It also sees the story titles recent digests ran, so a story that comes back under a new URL scores as a rehash unless it reports a real new development. It then builds a candidate pool of `top_n + digest_candidate_buffer` (5 + 3): `source_slots` seat every source's best item above `min_score`, the rest of the pool goes by score with `max_per_origin` capping any single channel/author/feed/host, and that cap is relaxed only when a quiet day would leave the pool short.
+**3. Ranking.** `ContentRanker` scores items with Claude Opus 5.5 on technical substance, practitioner value, novelty, industry impact, research significance and source authority, with hard filters for promos and thin content. It also sees the story titles recent digests ran, so a story that comes back under a new URL scores as a rehash unless it reports a real new development. It then builds a candidate pool of `top_n + digest_candidate_buffer` (5 + 7): `source_slots` seat every source's best item above `min_score`, the rest of the pool goes by score with `max_per_origin` capping any single channel/author/feed/host, and that cap is relaxed only when a quiet day would leave the pool short.
 
 **4. Trend tracking.** `TrendTracker` keeps structured trends in `trends.json`. The LLM only classifies today's items into existing or new trends; all bookkeeping is deterministic Python: date stamping, the active/cooling lifecycle, deletion past retention, recency-decay momentum, evidence caps. Active and cooling trends feed the next day's digest, which is what gives it cross-day continuity. Only evidence dated before the digest date counts, so a same-day re-run never reads its own first run back as history. Memory is compressed by caps, not rewritten: at most five dated evidence lines per trend, the ten highest-momentum trends in the prompt, and a trend unseen for 30 days is dropped.
 
@@ -210,9 +210,9 @@ A summary of each stage. [design.md](docs/design.md) is the line-by-line referen
 
 > ⚠️ **The JSON key order in the prompt is load-bearing.** It asks for `items` first and `lead` last, so the lead comments on stories that are already written. Measured word overlap with the headline reply dropped from 0.21–0.41 to 0.03–0.21. Do **not** reorder the requested keys to match `DigestContent`'s field order. That tidy-up is a regression.
 
-**6. Threads rendering.** `output/renderers.py` turns one `DigestContent` into a Threads root + flat reply chain. Formatting lives in code, not in prompt rules. The root carries one topic tag (`pipeline.threads_topic_tag`, default `AI`) so it shows up in that topic's feed and tag search, and the comic carries Korean alt text describing each panel and its line.
+**6. Threads rendering.** `output/renderers.py` turns one `DigestContent` into a Threads root + flat reply chain. Formatting lives in code, not in prompt rules. The root is the lead followed by the other stories' titles, since the story replies are read by only 2-5% of the root's viewers. It carries one topic tag (`pipeline.threads_topic_tag`, default `AI`) so it shows up in that topic's feed and tag search, and the comic carries Korean alt text describing each panel and its line.
 
-**7. Daily comic.** `DailyVisualMaker` illustrates the **headline** story, so the image, the lead, and the text all point at the same thing. The editor writes a 2x2 four-panel comic (setup, development, turn, punchline) narrated by the owner-persona character, with one short Korean line per panel; `VisualGenerator` turns it into an image brief, renders it with `gpt-image-2.5-sunburst` at xhigh (1024x1536 for the 2x2 grid; the editor may pick a tall 848x2544 strip or another frame when the story needs it) (passing the persona reference sheet as an input image whenever the narrator appears, which is the default), then has the brief model review the image for physical, anatomy and text defects and logs what it finds. This Lambda also owns the Threads post, and a failed render never swallows the digest. The text still goes out.
+**7. Daily comic.** `DailyVisualMaker` illustrates the **headline** story, so the image, the lead, and the text all point at the same thing. The editor writes a 2x2 four-panel comic (setup, development, turn, payoff: a sight gag that grows out of the facts, not a moral) narrated by the owner-persona character, with one short Korean line per panel; `VisualGenerator` turns it into an image brief, renders it with `gpt-image-2.5-sunburst` at xhigh (1024x1536 for the 2x2 grid; the editor may pick a tall 848x2544 strip or another frame when the story needs it) (passing the persona reference sheet as an input image whenever the narrator appears, which is the default). The image ships as drawn. This Lambda also owns the Threads post, and a failed render never swallows the digest. The text still goes out.
 
 **8. Deep research.** An autonomous Strands agent run by `research_cli.py`. It composes these eight tools freely. For example, "diffusion LLM 최신 동향" goes `web_search`/`search_papers`/`community_search` → `read_url` → `attach_image` → `deliver_report`:
 
@@ -284,7 +284,8 @@ aws ecr get-login-password --region <region> | docker login --username AWS --pas
 docker build --platform linux/amd64 --provenance=false -t "$ECR_URI:latest" . && docker push "$ECR_URI:latest"
 
 # 4. Deploy everything, pinning the pushed digest.
-export DIGEST_IMAGE_REF=sha256:<pushed-digest>
+export DIGEST_IMAGE_REF=$(aws ecr describe-images --region <region> --repository-name omnisummary-<stage>-agent \
+  --image-ids imageTag=latest --query 'imageDetails[0].imageDigest' --output text)
 npx cdk deploy --all -a "uv run python scripts/deploy.py"
 
 # 5. Secrets and cost attribution.

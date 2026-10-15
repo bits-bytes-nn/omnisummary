@@ -128,12 +128,6 @@ class VisualBrief(BaseModel):
     )
 
 
-class VisualReview(BaseModel):
-    """What the post-render QA found: each defect as one sentence naming its panel, empty when clean."""
-
-    issues: list[str] = Field(default_factory=list)
-
-
 class ImageAsset(BaseModel):
     """A representative image downloaded from a source page (its og:image / twitter:image),
     carried through to Threads delivery. `source_url` is the article the image belongs

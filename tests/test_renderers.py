@@ -29,7 +29,7 @@ def _content(n_items: int = 2, lead: str = "오늘의 리드.") -> DigestContent
 class TestThreadsPosts:
     def test_exactly_one_reply_per_item(self):
         root, replies = render_threads_posts(_content(3))
-        assert root == "오늘의 리드."
+        assert root == "오늘의 리드.\n\n· 스토리 2\n· 스토리 3"
         assert len(replies) == 3  # one reply per item, never more
         assert "스토리 1" in replies[0] and "http://e.com/1" in replies[0]
 
@@ -248,6 +248,30 @@ class TestThreadsPosts:
             root, _ = render_threads_posts(_content(1, lead="짧은 리드다.\n\nAGI 등장 870일 전이다."))
         assert root == "짧은 리드다.\n\nAGI 등장 870일 전이다."
         log.warning.assert_not_called()
+
+
+class TestRootStoryIndex:
+    def test_the_root_lists_the_other_stories_but_not_the_headline(self):
+        root, _ = render_threads_posts(_content(5))
+        lines = root.split("\n\n")[1].split("\n")
+        assert lines == ["· 스토리 2", "· 스토리 3", "· 스토리 4", "· 스토리 5"]
+        assert "스토리 1" not in root
+
+    def test_a_suffix_countdown_stays_the_last_line(self):
+        gag = "AGI 등장 870일 전이다."
+        root, _ = render_threads_posts(_content(2, lead=f"리드다.\n\n{gag}"), gag)
+        assert root == f"리드다.\n\n· 스토리 2\n\n{gag}"
+
+    def test_titles_that_do_not_fit_drop_from_the_end_and_the_lead_is_kept(self):
+        lead = "리드 문장이다. " * 53
+        root, _ = render_threads_posts(_content(5, lead=lead.strip()))
+        assert len(root) <= THREADS_MAX_POST_CHARS
+        assert root.startswith(lead.strip())
+        assert "· 스토리 2" in root and "· 스토리 5" not in root
+
+    def test_a_single_story_digest_has_no_list(self):
+        root, _ = render_threads_posts(_content(1))
+        assert root == "오늘의 리드."
 
 
 class TestStripMarkup:

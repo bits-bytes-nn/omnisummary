@@ -45,7 +45,7 @@ repos:
       # set nobody tested. CI checks this too — this just fails it before the push.
       - id: uv-lock-current
         name: uv.lock is current with pyproject.toml
-        entry: uv lock --check
+        entry: uvx --from uv==0.6.14 uv lock --check
         language: system
         files: ^(pyproject\.toml|uv\.lock)$
         pass_filenames: false

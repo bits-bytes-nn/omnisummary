@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 from tavily import AsyncTavilyClient
 
@@ -72,27 +74,56 @@ async def tavily_search(
 async def extract_url(url: str) -> str:
     """Fetch and extract the full readable text of a single page via Tavily extract,
     capped at the configured research content limit. Used by the deep-research agent's
-    read_url tool to pull a primary source it found via search."""
+    read_url tool to pull a primary source it found via search. "" when nothing readable came
+    back (the reason is logged), so the caller can tell a read page from a failed one."""
     client = _get_tavily_client()
     if not client:
-        return "TAVILY_API_KEY not configured."
+        logger.warning("TAVILY_API_KEY not configured; cannot read '%s'", url)
+        return ""
 
     cap = get_config().agent.research_content_cap_chars
     try:
         response = await client.extract(urls=[url], format="text")
     except Exception as e:
         logger.warning("Tavily extract failed for '%s': %s", url, e)
-        return f"Could not read URL: {e}"
+        return ""
     finally:
         await client.close()
 
     results = response.get("results", [])
-    if not results:
-        return f"No readable content extracted from {url}."
-    content = results[0].get("raw_content") or results[0].get("content") or ""
+    content = (results[0].get("raw_content") or results[0].get("content") or "") if results else ""
     if not content:
-        return f"No readable content extracted from {url}."
+        logger.warning("No readable content extracted from '%s'", url)
     return content[:cap]
+
+
+# Tavily extract takes at most 20 URLs per request.
+EXTRACT_BATCH_SIZE = 20
+
+
+async def extract_pages(urls: list[str]) -> dict[str, str]:
+    """Page text for each URL Tavily could read, keyed by URL. Best-effort: a failed batch or a
+    missing key yields fewer entries, never an error, so a caller keeps whatever text it had."""
+    client = await asyncio.to_thread(_get_tavily_client)
+    if not client or not urls:
+        return {}
+    pages: dict[str, str] = {}
+    try:
+        for start in range(0, len(urls), EXTRACT_BATCH_SIZE):
+            try:
+                response = await client.extract(urls=urls[start : start + EXTRACT_BATCH_SIZE], format="text")
+            except Exception as e:
+                logger.warning(
+                    "Tavily extract failed for %d URL(s): %s", len(urls[start : start + EXTRACT_BATCH_SIZE]), e
+                )
+                continue
+            for result in response.get("results", []):
+                content = result.get("raw_content") or result.get("content") or ""
+                if result.get("url") and content:
+                    pages[result["url"]] = content
+    finally:
+        await client.close()
+    return pages
 
 
 def _openalex_abstract(inverted: dict[str, list[int]] | None) -> str:
@@ -132,15 +163,15 @@ async def paper_search(query: str) -> str:
             )
         except httpx.HTTPError as e:
             logger.warning("OpenAlex paper search failed: %s", e)
-            return f"SEARCH_FAILED: paper search unavailable ({e}). Could not retrieve papers."
+            return f"Search failed: paper search unavailable ({e})."
 
         if response.status_code != 200:
             logger.warning("OpenAlex returned status %d", response.status_code)
-            return f"SEARCH_FAILED: paper search returned status {response.status_code}."
+            return f"Search failed: paper search returned status {response.status_code}."
         try:
             works = response.json().get("results", [])
         except ValueError:
-            return "SEARCH_FAILED: invalid response from the paper search."
+            return "Search failed: invalid response from the paper search."
         if not works:
             return "No related papers found."
 

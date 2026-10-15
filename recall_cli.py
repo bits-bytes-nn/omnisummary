@@ -1,8 +1,8 @@
 """Read back what the daily digest has already published, for OpenClaw and other local callers.
 
 `digest [DATE]` prints that day's lead and stories; `trends` prints the tracked cross-day trends,
-strongest first. Read-only and free (no model call). Prints exactly ONE JSON object on stdout;
-logs go to stderr. Exit codes: 0 succeeded (also when nothing is stored), 1 failed, 2 rejected input.
+strongest first, each with its latest evidence only (all of it ran to ~70KB of JSON). Read-only
+and free (no model call). Prints exactly ONE JSON object on stdout; logs go to stderr. Exit codes: 0 succeeded (also when nothing is stored), 1 failed, 2 rejected input.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _digest(config: Config, day: date) -> dict[str, Any]:
+def _digest(day: date) -> dict[str, Any]:
     data = create_memory_store().get_digest(day.isoformat())
     content = DigestStateManager.load_from_dict(data).get_content() if data else None
     if content is None or not content.items:
@@ -62,7 +62,7 @@ def _trends(config: Config, today: date) -> list[dict[str, Any]]:
             "status": t.status.value,
             "first_seen": t.first_seen or t.evidence[0].date,
             "last_seen": t.last_seen or t.evidence[-1].date,
-            "evidence": [{"date": ev.date, "summary": ev.summary} for ev in t.evidence],
+            "latest": t.evidence[-1].summary,
         }
         for t in trends
     ]
@@ -80,7 +80,7 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
             except ValueError:
                 result.update(status="rejected", error=f'"{args.date}" is not a YYYY-MM-DD date.')
                 return result, EXIT_REJECTED
-            result.update(date=day.isoformat(), **_digest(config, day))
+            result.update(date=day.isoformat(), **_digest(day))
         else:
             result["trends"] = _trends(config, today)
     except Exception as e:

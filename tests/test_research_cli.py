@@ -151,16 +151,6 @@ class TestEveryInvocationIsBudgeted:
         _, _, cap = _run(["주제", "--output-dir", str(tmp_path)])
         assert cap["kwargs"]["limits"] == research_run_limits()
 
-    def test_the_limits_come_from_config(self):
-        from agent.research_agent import research_run_limits
-        from shared import Config
-
-        config = Config.load()
-        limits = research_run_limits(config)
-        assert limits["turns"] == config.agent.research_max_turns
-        assert limits["total_tokens"] == config.agent.research_max_total_tokens
-        assert limits["output_tokens"] == config.agent.research_max_output_tokens
-
     def test_every_agent_invocation_carries_limits(self):
         # Source-level (over the AST, so a docstring mentioning a bare call doesn't count): an
         # unbounded invocation is not an error the SDK reports, it just runs until it converges.

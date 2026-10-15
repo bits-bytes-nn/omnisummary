@@ -232,8 +232,10 @@ class PipelineConfig(_StrictModel):
     min_score: float = Field(default=0.6, ge=0.0, le=1.0)
     # Extra ranked candidates handed to the digest editor beyond top_n: it picks the strongest top_n
     # distinct stories from the pool, so the buffer is both its choice and its room to merge
-    # same-event items. 0 hands over exactly top_n.
-    digest_candidate_buffer: int = Field(default=3, ge=0)
+    # same-event items. 0 hands over exactly top_n. At 3, same-event copies from different publishers
+    # (one launch posted by the lab, a newsletter and two X accounts) left exactly top_n distinct
+    # stories in the pool on 2 of 3 runs, so the editor had nothing to choose from.
+    digest_candidate_buffer: int = Field(default=7, ge=0)
     # Days a published URL stays in the cross-day dedup ledger; an article seen within this
     # window is skipped so the digest doesn't re-summarize the same story days apart. At least 2:
     # a date-only web result falls inside two consecutive windows, and the ledger is what stops it
