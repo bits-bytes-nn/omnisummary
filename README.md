@@ -109,7 +109,6 @@ Secrets go in `.env` locally (see `.env.template`) and in SSM Parameter Store on
 | `OPENAI_API_KEY` | The daily comic render |
 | `THREADS_ACCESS_TOKEN` / `THREADS_USER_ID` | Threads delivery (60-day token, auto-refreshed into SSM on AWS) |
 | `ALERT_EMAIL` | Source-health SNS email alerts (AWS) |
-| `TWITTER_AUTH_TOKEN` / `TWITTER_CT0` | X/Twitter via RSSHub. Your x.com session cookies |
 | `S3_SYNC_ACCESS_KEY_ID` / `S3_SYNC_SECRET_ACCESS_KEY` | Optional dedicated creds for the local→S3 sync (otherwise `AWS_PROFILE`) |
 
 > **Secrets never pass through the CDK stack.** A CloudFormation template can't hold a SecureString, so
@@ -153,7 +152,7 @@ docker run -d --name rsshub --restart unless-stopped -p 1200:1200 \
 curl -s "http://localhost:1200/twitter/user/karpathy" | head   # smoke test
 ```
 
-Without the cookies the container still starts, but X feeds come back empty. Cookies expire every so often. When the RSSHub failure rate climbs (it's logged as a warning), refresh them and recreate the container. `--restart unless-stopped` does not bring back a container that was stopped explicitly, so the sync script starts it if `localhost:1200` doesn't answer. On AWS the same image can run on ECS Fargate.
+Without the cookies the container still starts, but X feeds come back empty. Cookies expire every so often. When the RSSHub failure rate climbs (it's logged as a warning), refresh them and recreate the container. `--restart unless-stopped` does not bring back a container that was stopped explicitly, so the sync script starts it if `localhost:1200` doesn't answer.
 
 ## Usage
 

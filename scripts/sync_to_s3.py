@@ -13,7 +13,6 @@ import argparse
 import asyncio
 import os
 import sys
-from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -63,12 +62,8 @@ async def main(source: str) -> None:
 
     bucket = config.aws.state_bucket_name
     if not bucket:
-        logger.warning("No state_bucket_name configured, saving locally only")
-        out = Path("digest_state") / park_name
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(payload, encoding="utf-8")
-        logger.info("Saved %d items to '%s'", len(items), out)
-        return
+        # A local file nothing reads would let the sync report success while the digest gets no park.
+        raise SystemExit("aws.state_bucket_name is not configured; the park file has nowhere to go")
 
     s3_key = park_file_key(park_name, config.aws.s3_prefix)
     s3_access_key = os.getenv("S3_SYNC_ACCESS_KEY_ID", "")

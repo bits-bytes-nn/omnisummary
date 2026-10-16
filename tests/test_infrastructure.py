@@ -420,7 +420,7 @@ def pinned_template():
 
 
 class TestThePushedImageDigestReachesEveryFunction:
-    """Three Lambdas share one image, and each takes the pin separately. A refactor that drops it on
+    """Four Lambdas share one image, and each takes the pin separately. A refactor that drops it on
     one of them ships with CI green unless the digest rendering is asserted per function."""
 
     @staticmethod

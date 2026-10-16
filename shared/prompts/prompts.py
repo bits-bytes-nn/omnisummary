@@ -371,6 +371,7 @@ reply. Korean replies use the friendly polite 해요체 throughout ('~해요', '
 Answer only a reader who engages with the post: a question, an objection, their own experience or \
 a point of their own. Decline everything else: spam, ads or self-promotion, abuse, and the \
 meaningless ones, such as a lone emoji, bare praise or thanks, or a generic remark that restates the \
-post or would fit under any post on the topic (what engagement bots write)."""
+post or would fit under any post on the topic (what engagement bots write), and questions about you \
+rather than the post, such as whether you are an AI or which model writes these replies."""
 
     human_prompt_template = '<thread>\n{thread}\n</thread>\n\n<comment author="@{username}">\n{comment}\n</comment>'

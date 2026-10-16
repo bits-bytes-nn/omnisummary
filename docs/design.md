@@ -240,7 +240,7 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 
 **`.env`의 시크릿은 CDK 스택을 통과하지 않는다.** CloudFormation 템플릿은 SecureString을 담을 수 없어서, 값을
 스택에 넘기면 `cdk.out/*.template.json`과 CDK 스테이징 버킷, `cloudformation:GetTemplate` 응답에 평문으로
-남는다. 그 경로에 노출되는 것은 Tavily·OpenAI·YouTube 키, Threads 토큰, X 세션 쿠키, 곧 이 프로젝트의 모든
+남는다. 그 경로에 노출되는 것은 Tavily·OpenAI·YouTube 키, Threads 토큰, 곧 이 프로젝트가 AWS에 두는 모든
 자격증명이다.
 
 그래서 스택은 파라미터 경로만 `SSM_PLACEHOLDER` 값으로 만들고, 실제 값은 `scripts/put_secrets.py`가
@@ -961,8 +961,7 @@ root에 함께 나가고, 트렌드 재등장 수치와 같은 시계(같은 날
 
 **lead를 연다.** 개그는 lead 맨 앞에 붙는다(`place_countdown_intro`). Threads root의 첫 줄, 곧 피드 독자가 유일하게
 보는 줄을 매일 같은 고정 문장이 차지한다. 실제로 연속 40개 게시물이 동일 문장으로 시작했다. 그래도 카운트다운은 이
-계정의 서명이고, 소유자가 첫 줄 도달률 논리보다 알아볼 수 있는 브랜딩을 위에 뒀다. 맺음말로 옮기는 `suffix` 위치
-노브가 있었지만 어느 배포도 쓰지 않아 2026-10-16에 지웠다. 노브 하나가 렌더러, 생성기, 전달 경로에 분기를 남겼다.
+계정의 서명이고, 소유자가 첫 줄 도달률 논리보다 알아볼 수 있는 브랜딩을 위에 뒀다.
 
 **각만 볼 때는 뺀다(`editorial_lead`).** 최근 lead 신선도 비교와 비주얼의 편집 관점 전달은 개그를 뺀 각만 본다.
 
@@ -1035,8 +1034,8 @@ addressable해지지 않았다"는 **0번**인 반면 reply 재시도는 25일�
 있으니, root에 단 댓글에는 root와 함께 계정의 스토리 reply를 모두 보여 준다. 두 실행이 같은 대화를 읽으면 둘 다
 답하므로 Lambda의 동시 실행은 1이다.
 
-**원장.** `comment_replies.json`(`CommentReplyLedger`)에 답한 댓글, 거절한 댓글, Threads가 답글을 영구히 거부한 댓글(지워진 댓글, 권한 오류 등 재시도해도 바뀌지 않는
-오류)을 기록한다. 거절한 댓글을 매시간 모델에 다시 묻지 않고, 거부된 댓글로 일주일 내내 매시간 알람이 울리지 않게 하기
+**원장.** `comment_replies.json`(`CommentReplyLedger`)에 답한 댓글, 거절한 댓글, Threads가 답글을 영구히 거부한 댓글(권한 오류 등 재시도해도 바뀌지 않는 오류)을
+기록한다. 거절한 댓글을 매시간 모델에 다시 묻지 않고, 거부된 댓글로 일주일 내내 매시간 알람이 울리지 않게 하기
 위해서다. 이미 답한 댓글은 대화 안의 자기 답글로도 걸러지니, 원장 기록이 실패해도 같은 댓글에 두 번 답하지 않는다.
 원장을 못 읽으면 실행을 멈춘다. 모르는 이력으로 돌면 거절한 댓글을 모두 다시 묻게 된다. 초안 작성 실패와 일시적일 수
 있는 게시 실패(400, 429, 5xx)는 기록하지 않아 다음 실행이 다시 시도한다. 어느 실패든 핸들러는 나머지를 다 처리한 뒤 예외를
@@ -1044,7 +1043,8 @@ addressable해지지 않았다"는 **0번**인 반면 reply 재시도는 25일�
 
 **모델과 출력.** `digest_model`(Sonnet 5.5)이 `CommentReplyPrompt`로 답글을 쓰거나(`reply: true`) 거절한다. 질문,
 반론, 자기 경험이나 자기 논점처럼 게시물에 실제로 반응한 댓글에만 답한다. 스팸, 광고, 욕설과 무의미한 댓글(이모지만,
-칭찬이나 인사만, 게시물을 되풀이하거나 어느 글에나 붙을 일반론, 즉 참여 유도 봇이 쓰는 것)은 거절한다. 판정은
+칭찬이나 인사만, 게시물을 되풀이하거나 어느 글에나 붙을 일반론, 즉 참여 유도 봇이 쓰는 것), 그리고 "AI냐, 어떤 모델이냐"처럼 게시물이 아니라 계정에 대한 질문은 거절한다. 둘 다
+운영자 결정이다. 판정은
 Bedrock의 JSON 스키마 제약 출력(`with_structured_output(..., method="json_schema")`)으로 받는다. Sonnet 5.5는 도구 호출을 강제할 수 없고, `auto`로
 둔 스키마 도구에는 영어 댓글 5개 중 4개를 평문으로 답해 답글과 거절을 구분할 수 없었다. 제약 출력에서는 실제 댓글
 4개가 모두 판정 형식을 지켰다. Haiku 5.5는 도구 호출을 강제할 수 있지만 영어 댓글에 한국어로 답했고 4개 중 3개를
@@ -1518,7 +1518,7 @@ Threads에서 드롭되거나 잘린 게시물이 있으면 그 수를 적는다
 inference-profile id는 `BedrockCrossRegionModelHelper`로 해석한다. 에이전트는 stdout에 아무것도 쓰지 않는다
 (`callback_handler=None`). stdout은 JSON 한 개의 자리다.
 
-boto 세션은 `AWS_BEDROCK_REGION` 또는 `config.aws.bedrock_region`과, 해석되는 경우의 `config.aws.profile`로
+boto 세션은 `config.aws.bedrock_region`과, 해석되는 경우의 `config.aws.profile`로
 만들고 `boto_read_timeout`, `boto_connect_timeout`, `boto_max_attempts`(재시도 모드 `adaptive`, 파이프라인 팩토리와 같다)를
 적용한다. 실행마다
 `research_run_limits(config)`가 `Limits`(`research_max_turns`, `research_max_total_tokens`,
@@ -1685,9 +1685,8 @@ S3-managed 암호화와 버저닝, 퍼블릭 차단, SSL 강제), SNS 알림
 토픽과 선택적 이메일 구독, 비동기 DLQ, AgentCore Memory 리소스(전략 없음, 실행 역할 없음), 그리고 Lambda 실행
 역할을 만든다.
 
-**AWS에서는 RSSHub를 돌리지 않는다.** ECS Fargate RSSHub 서비스(태스크 수 0, 월 약 $40였을 때도 있다)와
-service-discovery, X 쿠키 SSM 파라미터, 그 서비스에 닿으려고만 들어가 있던 다이제스트 Lambda의 VPC 연결을
-2026-10-17에 지웠다. 다이제스트는 그 서비스에 한 번도 닿지 않았다. `RSSHubCollector`는 S3 park 파일을 먼저 읽고
+**AWS에서는 RSSHub를 돌리지 않고, 어느 Lambda도 VPC에 두지 않는다.** X 항목은 S3 park 파일에서만 온다.
+`RSSHubCollector`는 S3 park 파일을 먼저 읽고
 쓸 수 있으면 바로 리턴하며, 로컬 sync cron이 매 실행 30분 전에 그 파일을 갱신한다. park 파일을 쓸 수 없는 날
 Lambda의 RSSHub 수집은 `localhost`에 닿지 못해 FAILED로 보고되고, 그것이 로컬 sync를 확인하라는 신호다.
 
@@ -1859,7 +1858,7 @@ CloudWatch 알람 10개가 모두 SNS 알림 토픽으로, 그리고 이메일�
 계정을 써서 자격증명 없이 완전 오프라인으로 돈다.
 
 **Docker 빌드와 이미지 import 체크.** 다이제스트 이미지를 `load: true`(네이티브 amd64)로 빌드해 로컬 데몬에
-올린 뒤, `docker run --rm --network none --entrypoint python`으로 세 `lambda_handlers.*`를 import하고
+올린 뒤, `docker run --rm --network none --entrypoint python`으로 네 `lambda_handlers.*`를 import하고
 `Config.load()`가 템플릿을 읽는지 확인한다. 빌드만으로는 import가 한 번도 실행되지 않으니
 COPY 누락이나 개발자 머신에서만 해석되는 모듈이 그대로 통과한다. 자격증명 없이 `--network none`이니 import
 시점의 AWS 호출이나 HTTP fetch가 콜드스타트가 아니라 CI에서 깨진다. import 체크는 빌드가 얼마나 캐시됐든

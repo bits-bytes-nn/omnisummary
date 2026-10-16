@@ -412,10 +412,8 @@ class TestAgentCredentialSelection:
     def test_a_resolvable_profile_is_honoured(self):
         assert self._session_kwargs(resolved_profile="research")["profile_name"] == "research"
 
-    def test_the_bedrock_region_falls_back_to_config(self, monkeypatch):
-        # A local run usually has no AWS_BEDROCK_REGION, and passing region_name=None there sent
-        # Bedrock calls to boto3's default region.
-        monkeypatch.delenv("AWS_BEDROCK_REGION", raising=False)
+    def test_the_bedrock_region_comes_from_config(self):
+        # region_name=None sent Bedrock calls to boto3's default region.
         from shared.config import Config
 
         assert self._session_kwargs(resolved_profile=None)["region_name"] == Config.load().aws.bedrock_region

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -217,7 +216,7 @@ def create_research_agent(tools: list[Any] | None = None) -> Agent:
 
     # Ambient credentials by default, the configured profile only where it resolves.
     boto_session = boto3.Session(
-        region_name=os.environ.get("AWS_BEDROCK_REGION") or config.aws.bedrock_region,
+        region_name=config.aws.bedrock_region,
         profile_name=available_boto_profile(config.aws.profile),
     )
 

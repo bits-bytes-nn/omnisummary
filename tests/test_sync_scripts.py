@@ -144,15 +144,14 @@ class TestWhatGetsParked:
         asyncio.run(module.main(source))
         assert uploads == []
 
-    def test_no_bucket_configured_writes_the_envelope_locally(self, sync, monkeypatch, tmp_path):
-        module, uploads, source, park_name, _ = sync
+    def test_no_bucket_configured_fails_instead_of_reporting_a_sync(self, sync, monkeypatch):
+        # A local file nothing reads let the sync exit 0 while the digest got no park file.
+        module, uploads, source, _, _ = sync
         monkeypatch.setattr(module.Config, "load", staticmethod(lambda: _config(source=source, bucket="")))
-        monkeypatch.chdir(tmp_path)
         _StubCollector.items = [_item(source)]
-        asyncio.run(module.main(source))
+        with pytest.raises(SystemExit):
+            asyncio.run(module.main(source))
         assert uploads == []
-        payload = json.loads((tmp_path / "digest_state" / park_name).read_text(encoding="utf-8"))
-        assert len(payload["items"]) == 1
 
     def test_explicit_sync_credentials_are_preferred_over_the_profile(self, sync, monkeypatch):
         module, _, source, _, boto3 = sync

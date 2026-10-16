@@ -5,7 +5,7 @@ from collections.abc import Iterable
 
 import httpx
 
-from shared import CollectedItem, SourceType, logger, retry_async
+from shared import CollectedItem, SourceType, is_running_in_aws, logger, retry_async
 from shared.config import RSSHubCollectorConfig
 from shared.constants import TWITTER_PLATFORMS
 
@@ -66,6 +66,13 @@ class RSSHubCollector(BaseCollector):
                 lookback_hours=self.config.lookback_hours,
                 reference_time=self.config.reference_time,
                 description="RSSHub park file",
+            )
+
+        if is_running_in_aws():
+            # Nothing in AWS runs RSSHub, so probing it would only name the wrong cause.
+            raise RuntimeError(
+                f"X park file unusable ({parked.detail or parked.outcome.value}); "
+                "check the local sync (scripts/sync_all_to_s3.sh)"
             )
 
         if not self.config.accounts:
