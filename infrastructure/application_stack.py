@@ -3,7 +3,6 @@ from __future__ import annotations
 from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack, Tags
 from aws_cdk import aws_cloudwatch as cloudwatch
 from aws_cdk import aws_cloudwatch_actions as cw_actions
-from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_events as events
 from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_lambda as lambda_
@@ -14,7 +13,7 @@ from aws_cdk import aws_ssm as ssm
 from constructs import Construct
 
 from shared import Config
-from shared.constants import DIGEST_ITEMS_METRIC, METRIC_NAMESPACE, RSSHUB_PORT, SSM_PLACEHOLDER, SSM_SECRET_ENV_VARS
+from shared.constants import DIGEST_ITEMS_METRIC, METRIC_NAMESPACE, SSM_PLACEHOLDER, SSM_SECRET_ENV_VARS
 from shared.metrics import metric_dimensions
 
 from .foundation_stack import OmniSummaryFoundationStack
@@ -97,9 +96,6 @@ class OmniSummaryApplicationStack(Stack):
             timeout=Duration.minutes(15),
             memory_size=512,
             role=foundation.lambda_role,
-            # Outside the VPC: everything it calls (Bedrock, S3, AgentCore Memory, SNS, OpenAI, Threads)
-            # is a public endpoint, so the VPC only added an ENI and a NAT dependency to the digest's
-            # only Threads delivery path. The digest Lambda stays inside for the RSSHub service.
             # No auto-retry: the ThreadsPostLedger idempotency marker already blocks a re-post,
             # and retry_attempts=0 avoids re-running the costly gpt-image render on failure.
             # Failures go to the DLQ for manual replay instead.
@@ -134,8 +130,6 @@ class OmniSummaryApplicationStack(Stack):
             timeout=Duration.minutes(15),
             memory_size=1024,
             role=foundation.lambda_role,
-            vpc=foundation.vpc,
-            vpc_subnets=foundation.vpc_subnets,
             # No auto-retry on the daily cron invoke: the pipeline is not idempotent (a retry
             # re-posts the digest). A failure goes to the DLQ for inspection/manual replay.
             retry_attempts=0,
@@ -144,33 +138,12 @@ class OmniSummaryApplicationStack(Stack):
             environment={
                 "STATE_BUCKET": foundation.state_bucket.bucket_name,
                 "S3_PREFIX": state_prefix,
-                "RSSHUB_BASE_URL": foundation.rsshub_base_url,
                 "PROJECT_NAME": project_name,
                 "STAGE": stage,
                 "ALERT_SNS_TOPIC_ARN": foundation.alerts_topic.topic_arn,
                 "MEMORY_ID": foundation.memory_id,
                 "VISUAL_FUNCTION_NAME": visual_lambda.function_name,
             },
-        )
-
-        # The digest Lambda resolves rsshub.omnisummary.local and connects to the Fargate RSSHub
-        # service, but the service's security group had no ingress rule for the Lambda's SG, so
-        # every X feed fetch silently timed out in AWS (the S3 park file is what actually supplied
-        # X items). Added from THIS stack — which already depends on foundation — so the rule is
-        # a plain ingress addition with no new SG/service and no cross-stack cycle. It is written
-        # as an explicit CfnSecurityGroupIngress rather than connections.allow_from(), because the
-        # latter attaches the rule to the RSSHub SG's own stack (foundation) and CDK then rejects
-        # the fnd -> app SG reference as a dependency cycle. The Lambda SG allows all egress by
-        # default, so ingress is the only missing half.
-        ec2.CfnSecurityGroupIngress(
-            self,
-            "RSSHubIngressFromDigestLambda",
-            group_id=foundation.rsshub_service.connections.security_groups[0].security_group_id,
-            source_security_group_id=digest_lambda.connections.security_groups[0].security_group_id,
-            ip_protocol="tcp",
-            from_port=RSSHUB_PORT,
-            to_port=RSSHUB_PORT,
-            description="Digest Lambda to RSSHub",
         )
 
         events.Rule(
@@ -214,8 +187,7 @@ class OmniSummaryApplicationStack(Stack):
             targets=[targets.LambdaFunction(threads_refresh_lambda)],
         )
 
-        # Answers readers' comments on the account's recent posts. Outside the VPC like the visual
-        # Lambda: it calls only public endpoints (Threads, Bedrock, S3). One run handles at most
+        # Answers readers' comments on the account's recent posts. One run handles at most
         # pipeline.comment_reply_max_per_run comments, one model call and one post each.
         comment_reply_lambda = lambda_.DockerImageFunction(
             self,

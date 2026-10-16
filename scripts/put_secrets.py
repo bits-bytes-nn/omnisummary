@@ -39,7 +39,7 @@ from botocore.exceptions import ClientError
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared import Config  # noqa: E402
-from shared.constants import ALL_SSM_SECRET_ENV_VARS, SSM_PLACEHOLDER  # noqa: E402
+from shared.constants import SSM_PLACEHOLDER, SSM_SECRET_ENV_VARS  # noqa: E402
 
 
 def main() -> int:
@@ -67,7 +67,7 @@ def main() -> int:
         return _verify(ssm, project, stage)
 
     written, skipped, unchanged, failed = [], [], [], []
-    for name, env_var in ALL_SSM_SECRET_ENV_VARS.items():
+    for name, env_var in SSM_SECRET_ENV_VARS.items():
         value = os.getenv(env_var, "").strip()
         path = f"/{project}/{stage}/{name}"
         if not value:
@@ -195,7 +195,7 @@ def _verify(ssm, project: str, stage: str) -> int:
     """Read-only report: which secret parameters are set, and which still hold the placeholder.
     Nothing is written, so it is safe to run against prod at any time."""
     placeholders, ok, plaintext, missing = [], [], [], []
-    for name in ALL_SSM_SECRET_ENV_VARS:
+    for name in SSM_SECRET_ENV_VARS:
         path = f"/{project}/{stage}/{name}"
         try:
             param = ssm.get_parameter(Name=path, WithDecryption=True)["Parameter"]

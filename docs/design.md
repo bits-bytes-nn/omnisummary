@@ -110,7 +110,7 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 반복되므로, 값을 읽기만 하는 리프 호출자는 `lru_cache(maxsize=1)`로 감싼 `get_config()`를 쓴다
 (`output/delivery.py`, `shared/research/research_backends.py`, `agent/research_tools.py`,
 `shared/media/og_image.py`). 반면 Config를 변경하는 쪽은 자기 인스턴스가 필요하니 계속
-`Config.load()`나 `from_yaml`을 쓴다. `main`과 핸들러의 `set_reference_time`, `ci_synth`의 `vpc_id`, 인프라
+`Config.load()`나 `from_yaml`을 쓴다. `main`과 핸들러의 `set_reference_time`, 인프라
 테스트의 버킷 오버라이드가 여기 해당한다. 테스트에서는 conftest의 autouse 픽스처가 매 테스트 전후로 캐시를
 비운다.
 
@@ -217,8 +217,7 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | `digest_cron_hour` / `digest_cron_minute` | EventBridge 크론(UTC 기준) |
 | `threads_token_refresh_days` | Threads 장기 토큰(60일 만료)의 갱신 주기(기본 50일, 59 이하) |
 | `comment_reply_interval_minutes` | 댓글 답글 Lambda의 실행 주기(기본 60분, Lambda 타임아웃인 10 이상) |
-| `rsshub_desired_count` | RSSHub Fargate 서비스의 태스크 수(기본 0, [§11](#foundation_stack) 참조) |
-| `vpc_id`, `subnet_ids`, `state_bucket_name`, `s3_prefix` | 네트워킹과 상태 버킷 |
+| `state_bucket_name`, `s3_prefix` | 상태 버킷 |
 
 ### 3.5 시크릿과 환경 변수
 
@@ -230,7 +229,7 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | `THREADS_USER_ID` | `.env` → SSM | Threads 게시 대상 사용자 ID |
 | `YOUTUBE_API_KEY` | `.env` → SSM | YouTube Data API |
 | `ALERT_EMAIL` | `.env` → 배포 시 SNS 구독 | 소스 실패 알림 |
-| `MEMORY_ID`, `STATE_BUCKET`, `S3_PREFIX`, `ALERT_SNS_TOPIC_ARN`, `RSSHUB_BASE_URL`, `PROJECT_NAME`, `STAGE` | CDK 주입(AWS) | 런타임 리소스 식별자 |
+| `MEMORY_ID`, `STATE_BUCKET`, `S3_PREFIX`, `ALERT_SNS_TOPIC_ARN`, `PROJECT_NAME`, `STAGE` | CDK 주입(AWS) | 런타임 리소스 식별자 |
 
 `TAVILY_API_KEY`에는 단서가 하나 붙는다. web_search 수집기만 이 키를 `resolve_secret(strict=True)`로
 해석한다. SSM 읽기 실패(거부나 스로틀)와 키 부재를 구분해야 하기 때문이다. 둘을 같이 `[]`로 떨어뜨리면 그날 웹
@@ -254,9 +253,8 @@ Lambda가 제자리에서 회전시키니, 로컬 `.env` 사본을 다시 쓰면
 미설정으로 취급하니, put_secrets를 건너뛴 배포는 플레이스홀더를 API 토큰으로 보내는 대신 정상적인 '자격증명
 없음' 경로로 degrade한다. Lambda와 로컬 CLI는 env를 먼저 보고 그다음 SSM을 본다.
 
-X 세션 쿠키만 경로가 다르다. Fargate 태스크 정의의 `secrets` 블록으로 주입되며, 템플릿에는 ARN만 들어가고 값은
-태스크 시작 시 ECS 에이전트가 가져온다. `RSSHUB_BASE_URL`은 `rsshub_base_url` CDK context로 재정의할 수 있고,
-로컬 개발에서는 RSSHub Docker 컨테이너가 `localhost:RSSHUB_PORT`(기본 `1200`)에서 돌아야 X 수집이 된다.
+X 세션 쿠키는 SSM에 두지 않는다. 로컬 RSSHub Docker 컨테이너(`localhost:RSSHUB_PORT`, 기본 `1200`)만 쓰고, AWS의
+다이제스트는 로컬 sync가 올린 S3 park 파일에서 X 항목을 읽는다.
 
 ## 4. 수집기
 
@@ -1682,16 +1680,16 @@ OpenAI 키(`resolve_secret`으로 env를 먼저, 그다음 SSM에서 해석한�
 
 ### `foundation_stack`
 
-VPC와 ECR 리포(`{project}-{stage}-agent`, 다이제스트 이미지가 들어간다), S3 상태 버킷(CDK가 생성하는 경우
-S3-managed 암호화와 버저닝, 퍼블릭 차단, SSL 강제), ECS Fargate RSSHub 서비스와 service-discovery, SNS 알림
+ECR 리포(`{project}-{stage}-agent`, 다이제스트 이미지가 들어간다), S3 상태 버킷(CDK가 생성하는 경우
+S3-managed 암호화와 버저닝, 퍼블릭 차단, SSL 강제), SNS 알림
 토픽과 선택적 이메일 구독, 비동기 DLQ, AgentCore Memory 리소스(전략 없음, 실행 역할 없음), 그리고 Lambda 실행
 역할을 만든다.
 
-**RSSHub 서비스는 `aws.rsshub_desired_count`(기본 0)로 스케일된다.** 다이제스트는 이 서비스에 도달하지 않는다.
-`RSSHubCollector`는 S3 park 파일을 먼저 읽고, 쓸 수 있으면 도달성 확인조차 하기 전에 리턴하며, 로컬 sync cron이
-매 실행 30분 전에 그 파일을 갱신한다. 그래서 다이제스트 로그의 X 항목은 항상 park 파일에서 나온다. 반면 이
-서비스는 계정의 유일한 상시 Fargate 태스크로 월 약 $40이다. 태스크 정의는 그대로 배포되니 1로 올리면 로컬 sync가
-멈춘 날의 AWS 폴백이 복구된다. 그 상태는 이미 헬스 STALE로 표면화된다.
+**AWS에서는 RSSHub를 돌리지 않는다.** ECS Fargate RSSHub 서비스(태스크 수 0, 월 약 $40였을 때도 있다)와
+service-discovery, X 쿠키 SSM 파라미터, 그 서비스에 닿으려고만 들어가 있던 다이제스트 Lambda의 VPC 연결을
+2026-10-17에 지웠다. 다이제스트는 그 서비스에 한 번도 닿지 않았다. `RSSHubCollector`는 S3 park 파일을 먼저 읽고
+쓸 수 있으면 바로 리턴하며, 로컬 sync cron이 매 실행 30분 전에 그 파일을 갱신한다. park 파일을 쓸 수 없는 날
+Lambda의 RSSHub 수집은 `localhost`에 닿지 못해 FAILED로 보고되고, 그것이 로컬 sync를 확인하라는 신호다.
 
 **IAM은 최소 권한으로 잡는다.**
 
@@ -1714,21 +1712,20 @@ S3-managed 암호화와 버저닝, 퍼블릭 차단, SSL 강제), ECS Fargate RS
 - Memory 데이터플레인 액션(`CreateEvent`, `ListEvents`)은 `memory/*`가 아니라 **이 스택이 만든 memory ARN**(과 그
   `/*` 하위 리소스)으로 스코프한다. 세션 id가 날짜로 정해지니 `ListSessions`는 필요 없다. 와일드카드로 두면 공유
   계정의 다른 프로젝트 대화 상태까지 읽고 쓸 수 있게 된다.
-- 로그 쓰기는 Lambda VPC 관리형 정책(`AWSLambdaVPCAccessExecutionRole`)이 덮는다. 다이제스트 Lambda가 VPC 안에 있어
-  어차피 필요한 정책이다.
+- 로그 쓰기(`logs:CreateLogStream`, `logs:PutLogEvents`)는 이 프로젝트의 함수 로그 그룹
+  (`/aws/lambda/{project}-{stage}-*`)으로 스코프한다. 이전의 VPC 접근 관리형 정책은 계정의 모든 로그 그룹 쓰기를 줬다.
 
 ### `application_stack`
 
-다이제스트 Lambda(DockerImage, VPC 안), 데일리 비주얼 Lambda(DockerImage, 비동기, VPC 밖), Threads 토큰 갱신
-Lambda(DockerImage), 댓글 답글 Lambda(DockerImage, VPC 밖, 동시 실행 1), EventBridge 일일 다이제스트 크론(설정 기반
+다이제스트 Lambda(DockerImage), 데일리 비주얼 Lambda(DockerImage, 비동기), Threads 토큰 갱신
+Lambda(DockerImage), 댓글 답글 Lambda(DockerImage, 동시 실행 1), EventBridge 일일 다이제스트 크론(설정 기반
 시와 분), EventBridge Threads 토큰 갱신 스케줄(`threads_token_refresh_days` 기본 약 50일 주기로, 60일 만료 안쪽에서
 토큰을 갱신해 SSM에 재기록한다), EventBridge 댓글 답글 스케줄(`comment_reply_interval_minutes` 기본 60분), 시크릿용
 SSM 파라미터, 그리고 SNS로 향하는 CloudWatch 알람([§12](#12-관측성) 참조)을 만든다. 네 Lambda가 같은 이미지를 쓰고
 핸들러만 다르다.
 
-비주얼 Lambda가 VPC 밖인 이유는 부르는 것이 전부 공개 엔드포인트이기 때문이다(Bedrock, S3, AgentCore Memory,
-SNS, OpenAI, Threads). VPC는 다이제스트 게시의 유일한 경로에 ENI와 NAT 의존만 더했다. 다이제스트 Lambda는 RSSHub
-Fargate 서비스에 닿아야 하니 VPC 안에 남는다.
+어느 Lambda도 VPC에 두지 않는다. 부르는 것이 전부 공개 엔드포인트이기 때문이다(Bedrock, S3, AgentCore Memory,
+SNS, OpenAI, Threads, Tavily와 수집 대상).
 
 **재시도와 DLQ.** 다이제스트와 비주얼 Lambda는 `retry_attempts=0`에 SQS
 DLQ(`foundation.async_dlq`로 `on_failure`)를 붙인다. Threads 갱신과 댓글 답글 Lambda도 `retry_attempts=0`이고 DLQ는 없다. 명시값이
@@ -1743,18 +1740,10 @@ Lambda를 하나씩 렌더하고, 그 각각이 자기 실행 역할에 `logs:Pu
 Resource `"*"`로 든다. 공유 계정에서는 아무 로그 그룹의 보존 기간이나 줄이거나 없앨 수 있는 권한이다.
 선언 방식은 그런 Lambda와 와일드카드 정책을 아예 만들지 않고,
 로그 그룹이 템플릿 리소스가 되므로 `test_sensitive_actions_not_wildcard_resource`와 retention 단정이 두 스택
-전체를 보게 된다. RSSHub 컨테이너의 그룹도 `ecs.LogDrivers.aws_logs(log_retention=...)`으로 보존 기간을 받는다.
-그러지 않으면 `RetentionInDays` 없이 `DeletionPolicy: Retain`이 붙어 두 스택에서 유일하게 영구 보존되는 그룹이
-된다.
+전체를 보게 된다.
 
 ⚠️ CloudFormation은 **이미 존재하는 로그 그룹을 adopt하지 않는다.** 이 선언 없이 배포된 적이 있는 스택이라면
 Lambda가 암묵적으로 만들어둔 `/aws/lambda/<function>`을 먼저 삭제하거나 import해야 한다.
-
-**RSSHub 보안그룹 ingress.** 다이제스트 Lambda SG에서 RSSHub Fargate 서비스 SG(`RSSHUB_PORT`)로 가는 인그레스를
-이 스택에서 `CfnSecurityGroupIngress`로 추가한다. Lambda SG는 기본이 전체 egress라 ingress만 빠지기 쉽고, 그
-상태에서는 AWS의 X 피드 fetch가 전부 타임아웃한다(park 파일이 항목을 공급하므로 다이제스트만 보면 정상으로
-읽힌다). `connections.allow_from()`은 규칙을 foundation 쪽에 붙여 `fnd → app` 순환 참조가 되니 명시적 인그레스
-리소스를 쓴다.
 
 **시크릿 처리.** 스택은 파라미터 경로만 만들고 값은 `SSM_PLACEHOLDER`로 둔다. CloudFormation은 SecureString을
 만들 수 없고, 값을 스택에 넘기면 템플릿과 CDK staging 버킷, `GetTemplate` 응답에 평문으로 박힌다. 실제 값은
@@ -1866,7 +1855,7 @@ CloudWatch 알람 10개가 모두 SNS 알림 토픽으로, 그리고 이메일�
 `npx cdk synth -a "uv run python scripts/ci_synth.py"`를 돈다. `npm ci || npm install` 같은 폴백을 두면 lock
 부재나 불일치를 삼키고 다른 CLI를 깔아서 이 잡의 의미가 사라진다. 인프로세스 `app.synth()`가 아니라 실제 CLI를
 태우는 이유는 CLI와 `aws-cdk-lib`의 cloud-assembly 스키마 핸드셰이크를 검증하는 것이다. 글로벌 CLI가 라이브러리보다
-뒤처져 배포가 스키마 미스매치로 깨지는 부류를 PR 단계에서 잡는다. `ci_synth`는 `vpc_id`를 비우고 env-agnostic
+뒤처져 배포가 스키마 미스매치로 깨지는 부류를 PR 단계에서 잡는다. `ci_synth`는 env-agnostic
 계정을 써서 자격증명 없이 완전 오프라인으로 돈다.
 
 **Docker 빌드와 이미지 import 체크.** 다이제스트 이미지를 `load: true`(네이티브 amd64)로 빌드해 로컬 데몬에

@@ -22,13 +22,8 @@ CONFIG_TEMPLATE = Path(__file__).resolve().parent.parent / "config" / "config-te
 
 def main() -> None:
     config = Config.from_yaml(str(CONFIG_TEMPLATE))
-    # Clear vpc_id so the foundation stack CREATES a VPC instead of Vpc.from_lookup, which needs
-    # real credentials/context and can't run against the dummy CI account. This keeps `cdk synth`
-    # (via the pinned CLI) fully offline while still exercising the CLI↔aws-cdk-lib schema handshake
-    # — the exact break a bare in-process app.synth() misses.
-    config.aws.vpc_id = ""
-    # Env-agnostic (no concrete account) so creating a VPC uses CDK's dummy AZs (Fn::GetAZs / the
-    # 2-AZ stub) instead of an STS-backed availability-zone lookup — keeps synth fully offline.
+    # Env-agnostic (no concrete account), so synth runs fully offline while still exercising the
+    # CLI↔aws-cdk-lib schema handshake — the exact break a bare in-process app.synth() misses.
     env = Environment(region=config.aws.region)
     app = App()
 

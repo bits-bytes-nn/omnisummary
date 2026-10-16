@@ -8,7 +8,7 @@ from aws_cdk.assertions import Match, Template
 from infrastructure.application_stack import OmniSummaryApplicationStack
 from infrastructure.foundation_stack import OmniSummaryFoundationStack
 from shared import Config
-from shared.constants import ALL_SSM_SECRET_ENV_VARS, METRIC_NAMESPACE, RSSHUB_PORT, SSM_PLACEHOLDER
+from shared.constants import METRIC_NAMESPACE, SSM_PLACEHOLDER, SSM_SECRET_ENV_VARS
 from shared.metrics import metric_dimensions
 
 # The TRACKED config, matching what scripts/ci_synth.py synths: config/config.yaml is gitignored,
@@ -63,7 +63,7 @@ class TestNoSecretsInTheTemplate:
         # Equality, not a subset: a stack-created secret parameter that scripts/put_secrets.py does
         # not know about would stay a plaintext String placeholder forever, and nothing else would
         # ever notice — the "these are SecureStrings" claim has to cover every one of them.
-        assert names == set(ALL_SSM_SECRET_ENV_VARS)
+        assert names == set(SSM_SECRET_ENV_VARS)
 
     def test_secret_parameter_properties_are_pinned(self, templates):
         # put_secrets.py owns these parameters' VALUES out-of-band (it deletes the placeholder String
@@ -78,27 +78,6 @@ class TestNoSecretsInTheTemplate:
                 assert set(resource["Properties"]) <= {"Name", "Type", "Value", "Tags"}, logical_id
                 assert {"Name", "Type", "Value"} <= set(resource["Properties"]), logical_id
                 assert resource["Properties"]["Type"] == "String", logical_id
-
-    def test_rsshub_reads_x_cookies_as_secrets_not_plain_environment(self, templates):
-        foundation, _ = templates
-        task_defs = foundation.find_resources("AWS::ECS::TaskDefinition")
-        container = next(iter(task_defs.values()))["Properties"]["ContainerDefinitions"][0]
-        env_names = {e["Name"] for e in container.get("Environment", [])}
-        assert not {"TWITTER_AUTH_TOKEN", "TWITTER_CT0"} & env_names
-        assert {s["Name"] for s in container["Secrets"]} == {"TWITTER_AUTH_TOKEN", "TWITTER_CT0"}
-
-
-class TestRSSHubServiceScale:
-    def test_desired_count_comes_from_config_and_defaults_to_zero(self, templates):
-        # The digest never reaches this service: RSSHubCollector returns the S3 park file before it
-        # would even probe RSSHub (see TestParkedItems), and the local sync cron refreshes that file
-        # before every run — so a running task is pure cost. The task DEFINITION stays deployed, so
-        # raising aws.rsshub_desired_count to 1 restores the in-AWS fallback.
-        foundation, _ = templates
-        services = foundation.find_resources("AWS::ECS::Service")
-        assert len(services) == 1
-        assert next(iter(services.values()))["Properties"]["DesiredCount"] == 0
-        foundation.resource_count_is("AWS::ECS::TaskDefinition", 1)
 
 
 class TestFoundationStack:
@@ -171,13 +150,9 @@ class TestFoundationStack:
             template.resource_count_is("Custom::LogRetention", 0)
 
     def test_every_log_group_has_a_retention(self, templates):
-        # The RSSHub container's group had no RetentionInDays AND DeletionPolicy: Retain — the one log
-        # group in either stack kept forever. Assert over BOTH templates so the next log producer
-        # cannot reintroduce an unbounded one.
+        # Assert over BOTH templates so the next log producer cannot reintroduce an unbounded group.
         for template in templates:
-            groups = template.find_resources("AWS::Logs::LogGroup")
-            assert groups
-            for logical_id, group in groups.items():
+            for logical_id, group in template.find_resources("AWS::Logs::LogGroup").items():
                 assert group["Properties"].get("RetentionInDays"), f"{logical_id} retains logs forever"
 
     def test_ssm_resource_scoped_to_project_path(self, templates):
@@ -316,21 +291,6 @@ class TestApplicationStack:
             "ALERT_SNS_TOPIC_ARN" in v["Properties"].get("Environment", {}).get("Variables", {}) for v in funcs.values()
         )
         assert has_env
-
-    def test_rsshub_ingress_from_digest_lambda(self, templates):
-        # Without an ingress rule on the RSSHub service SG the digest Lambda cannot reach the
-        # Fargate RSSHub service at all (every X feed fetch times out).
-        _, app = templates
-        app.has_resource_properties(
-            "AWS::EC2::SecurityGroupIngress",
-            {
-                "IpProtocol": "tcp",
-                "FromPort": RSSHUB_PORT,
-                "ToPort": RSSHUB_PORT,
-                "GroupId": Match.any_value(),
-                "SourceSecurityGroupId": Match.any_value(),
-            },
-        )
 
     def test_every_lambda_disables_async_retries(self, templates):
         # The handlers re-raise so Errors alarms / the DLQ fire; retries must stay off on ALL of

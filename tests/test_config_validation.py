@@ -219,8 +219,8 @@ class TestCodeDefaultsMatchTheDeployedConfig:
 class TestParkedSourceTripwires:
     """The two S3-parked sources (youtube, rsshub) are collected by a DAILY local sync cron, so
     park_max_age_hours has to be set in the file: the code default of 36 is MORE than one sync
-    cadence, so a completely skipped sync day still read FRESH/OK — and with rsshub_desired_count=0
-    the park file is the only X path there is.
+    cadence, so a completely skipped sync day still read FRESH/OK — and with no RSSHub in AWS the
+    park file is the only X path there is.
 
     The empty-rate tripwire is per source, and only rsshub arms it. It targets all-200-with-no-entries
     (expired X cookies making every account feed answer empty), which trips no failure rate at all.

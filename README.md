@@ -39,7 +39,7 @@ There are two independent paths.
 - **Comment replies** — every hour Claude Sonnet 5.5 answers readers' new comments on the last week's posts (questions, objections, experiences) in the comment's language, and ignores spam and meaningless ones (bare praise, emoji, bot-style generic remarks)
 - **Deep-research CLI + OpenClaw skill** — an autonomous Strands agent with eight single-purpose tools; JSON contract on stdout, Markdown report on disk
 - **Operational excellence** — per-source health reporting (`OK` / `EMPTY` / `FAILED` / `STALE` / `DEGRADED`) into SNS email alerts, structured JSON logs with correlation IDs, 10 CloudWatch alarms
-- **AWS deployment** — Lambda + EventBridge cron + Bedrock AgentCore Memory + ECS (RSSHub), all in CDK
+- **AWS deployment** — Lambda + EventBridge cron + Bedrock AgentCore Memory, all in CDK
 
 ## Quick Start
 
@@ -301,13 +301,12 @@ On every later deploy only steps 3-4 apply: push the new image, then `deploy --a
 
 | Resource | Purpose |
 |----------|---------|
-| **Lambda** (Docker) | Digest pipeline, 15 min timeout, in the VPC (it can reach the RSSHub service) |
-| **Lambda** (Docker) | Daily comic + Threads publish, 15 min timeout. Async, off the digest critical path, outside the VPC, and the only digest publish path |
+| **Lambda** (Docker) | Digest pipeline, 15 min timeout. X items come from the S3 park file the local sync writes |
+| **Lambda** (Docker) | Daily comic + Threads publish, 15 min timeout. Async, off the digest critical path, and the only digest publish path |
 | **Lambda** (Docker) | Threads token refresh (~50-day schedule, writes the renewed 60-day token back to SSM) |
-| **Lambda** (Docker) | Comment replies, 10 min timeout, one run at a time, outside the VPC, every `aws.comment_reply_interval_minutes` (60). Does nothing unless `pipeline.enable_comment_replies` is on |
+| **Lambda** (Docker) | Comment replies, 10 min timeout, one run at a time, every `aws.comment_reply_interval_minutes` (60). Does nothing unless `pipeline.enable_comment_replies` is on |
 | **EventBridge** | Daily digest cron (config-driven hour/minute, **UTC**) + the token-refresh and comment-reply schedules |
 | **Bedrock AgentCore** | Memory (digest snapshots, one session per date) |
-| **ECS Fargate** | RSSHub container. `aws.rsshub_desired_count` **defaults to 0**: the digest reads the S3 park file first and never reaches this service, so running it around the clock is ~$40/month of pure cost. The task definition is still deployed, so set it to 1 to restore the AWS fallback |
 | **SSM Parameter Store** | All secrets, as SecureStrings written out-of-band |
 | **S3** | Trends + park files + Threads image hosting. The role gets `GetObject`/`PutObject` on the project prefix plus `ListBucket`, nothing else |
 | **SQS** | Async DLQ for the digest and visual Lambdas. Every Lambda runs `retry_attempts=0`, because Threads has no idempotency key and a retry would double-post. The handlers re-raise, so digest and visual failures land here for replay; the token-refresh and comment-reply Lambdas have no DLQ and raise into their Errors alarms |
@@ -326,7 +325,7 @@ Four behaviours worth knowing:
 - **One parameter SSM refuses does not abort the run.** Failures are listed under `FAILED` and the script exits non-zero, but every other secret still gets written.
 - **`--verify` is a read-only report** of which parameters are set, which still hold the placeholder, which are plaintext `String`, and which are missing. Safe to run against prod any time.
 
-The X session cookies reach the RSSHub Fargate container through the task definition's `secrets` block. The ARN goes in the template, and the ECS agent fetches the value at task start.
+The X session cookies stay local: only the RSSHub container on your machine uses them, and nothing in AWS runs RSSHub.
 
 ### Bedrock models and cost attribution
 
