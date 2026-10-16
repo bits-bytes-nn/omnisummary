@@ -71,8 +71,8 @@ class RSSHubCollector(BaseCollector):
         if is_running_in_aws():
             # Nothing in AWS runs RSSHub, so probing it would only name the wrong cause.
             raise RuntimeError(
-                f"X park file unusable ({parked.detail or parked.outcome.value}); "
-                "check the local sync (scripts/sync_all_to_s3.sh)"
+                "X park file unusable, check the local sync (scripts/sync_all_to_s3.sh): "
+                f"{parked.detail or parked.outcome.value}"
             )
 
         if not self.config.accounts:

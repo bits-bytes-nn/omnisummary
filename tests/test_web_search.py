@@ -271,6 +271,26 @@ class TestCollect:
         assert client.search.await_count == 4  # the timed-out query was retried
 
     @pytest.mark.asyncio
+    async def test_a_rate_limited_search_is_retried(self, monkeypatch):
+        from tavily.errors import UsageLimitExceededError
+
+        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        c = _search_collector(min_search_score=0.3, max_retries=2)
+        client = MagicMock()
+        client.search = AsyncMock(
+            side_effect=[
+                UsageLimitExceededError("429"),
+                {"results": [_result(0.9, url="https://ok.example/1", title="OK")]},
+                {"results": []},
+                {"results": []},
+            ]
+        )
+        c._client_instance = client
+        items = await c.collect()
+        assert [i.url for i in items] == ["https://ok.example/1"]
+        assert client.search.await_count == 4
+
+    @pytest.mark.asyncio
     async def test_partial_query_failure_keeps_the_rest(self, monkeypatch):
         monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
         c = _search_collector(min_search_score=0.3, max_retries=1)

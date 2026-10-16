@@ -44,6 +44,11 @@ async def main(source: str) -> None:
         logger.info("Collector '%s' is disabled, skipping", source)
         return
 
+    bucket = config.aws.state_bucket_name
+    if not bucket:
+        # A local file nothing reads would let the sync report success while the digest gets no park.
+        raise SystemExit("aws.state_bucket_name is not configured; the park file has nowhere to go")
+
     collector_cls, park_name = _SOURCES[source]
     collector = collector_cls(source_config)
     items = await collector.collect()
@@ -59,11 +64,6 @@ async def main(source: str) -> None:
     # Park HOW the sync went next to the items: a fresh file full of items from 3 of 40 inputs is
     # otherwise indistinguishable from a healthy one.
     payload = dump_items_envelope(items, meta=collector.run_meta)
-
-    bucket = config.aws.state_bucket_name
-    if not bucket:
-        # A local file nothing reads would let the sync report success while the digest gets no park.
-        raise SystemExit("aws.state_bucket_name is not configured; the park file has nowhere to go")
 
     s3_key = park_file_key(park_name, config.aws.s3_prefix)
     s3_access_key = os.getenv("S3_SYNC_ACCESS_KEY_ID", "")
