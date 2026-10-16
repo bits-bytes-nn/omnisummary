@@ -49,10 +49,6 @@ class RSSHubCollector(BaseCollector):
         self.run_meta: dict[str, int] = {}
 
     async def collect(self) -> list[CollectedItem]:
-        if not self.config.enabled:
-            logger.info("RSSHub collector is disabled, skipping")
-            return []
-
         parked = load_items_from_s3("rsshub_items.json", max_age_hours=self.config.park_max_age_hours)
         self.park_status = parked
         if parked.usable:

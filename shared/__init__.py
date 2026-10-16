@@ -13,7 +13,6 @@ from .constants import (
     VisualOrientation,
 )
 from .formatting import (
-    COUNTDOWN_SUFFIX_SEPARATOR,
     URL_RE,
     agi_countdown_intro,
     editorial_lead,
@@ -93,7 +92,6 @@ __all__ = [
     "BedrockCrossRegionModelHelper",
     "BedrockLanguageModelFactory",
     "DOMAIN_TO_SOURCE",
-    "COUNTDOWN_SUFFIX_SEPARATOR",
     "agi_countdown_intro",
     "editorial_lead",
     "place_countdown_intro",

@@ -58,18 +58,10 @@ collectors:
         queries:
           - "frontier AI model release GPT Claude Gemini Llama"
           - "LLM benchmark SOTA new results"
-        topic: news
       - name: industry
         queries:
           - "AI lab acquisition or major funding news"
           - "AI policy regulation open source"
-        topic: news
-      - name: tools_infra
-        queries:
-          - "ML inference optimization deployment tool"
-          - "AI developer tools framework release"
-        domains: ["arxiv.org", "github.com", "huggingface.co"]
-        topic: general
     max_results_per_query: 10
     lookback_hours: 72
     refine_model: "anthropic.claude-sonnet-5-5"
@@ -105,11 +97,6 @@ collectors:
 pipeline:
   top_n: 5
   min_score: 0.6
-  # Where the AGI-countdown gag sits in the lead. "prefix" opens with it: that does spend the
-  # Threads root's FIRST line — the only line most feed readers see — on the same fixed sentence
-  # every day, which is the point when the countdown IS the account's signature. "suffix" keeps the
-  # gag verbatim but moves it to a closing sign-off, so the first line is the day's actual angle.
-  agi_countdown_position: "prefix"
   # Any *_model / model_id takes a LanguageModelId value (shared/constants.py).
   ranking_model: "anthropic.claude-opus-5-5"
   digest_model: "anthropic.claude-sonnet-5-5"
@@ -144,10 +131,10 @@ pipeline:
 
   # --- Daily visual (values below are the code defaults) ---
   image_model: "gpt-image-2.5-sunburst"
-  # orientation -> gpt-image size; the default four-panel comic is `tall`, a vertical strip of four
-  # 4:3 panels (1:3 overall, longest edge kept at or under 2560, where larger sizes turn
-  # experimental). Only the SIZES are tunable: the keys are the brief's orientation vocabulary, and
-  # config load rejects a renamed or missing one.
+  # orientation -> gpt-image size; the default four-panel comic is the 2x2 `portrait` grid, and `tall`
+  # is the vertical strip the editor may pick instead (longest edge kept at or under 2560, where larger
+  # sizes turn experimental). Only the SIZES are tunable: the keys are the brief's orientation
+  # vocabulary, and config load rejects a renamed or missing one.
   image_sizes:
     tall: "848x2544"
     portrait: "1024x1536"

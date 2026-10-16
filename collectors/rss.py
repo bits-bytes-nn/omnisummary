@@ -13,6 +13,12 @@ from .base import (
     parse_feed_entries,
 )
 
+# A summary-only entry shorter than this is a teaser, not the post. Measured on the live feeds: the
+# thin primary-source summaries ran to a median of 19 (research.google) and 149 (openai.com) chars,
+# while Simon Willison's feed ships whole posts as the summary (median 1712), which the page text
+# would only replace with navigation and footer.
+THIN_SUMMARY_MAX_CHARS = 500
+
 
 class RSSCollector(BaseCollector):
     config: RSSCollectorConfig
@@ -56,7 +62,7 @@ class RSSCollector(BaseCollector):
         feeds (DeepMind, Google Research, Hugging Face) carry an empty or one-line description, and
         the ranker then scored a title alone: an empty "Gemini 4 Argon" post scored 0.84 and shipped
         as a one-sentence story. The feed text stays when the page reads shorter or not at all."""
-        thin = [it for it in items if it.metadata.get("summary_only")]
+        thin = [it for it in items if it.metadata.get("summary_only") and len(it.text) < THIN_SUMMARY_MAX_CHARS]
         if not thin:
             return items
         pages = await extract_pages(list(dict.fromkeys(it.url for it in thin)))

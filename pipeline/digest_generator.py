@@ -6,7 +6,6 @@ from langchain_core.output_parsers import StrOutputParser
 
 from pipeline.aggregator import normalize_url
 from shared import (
-    COUNTDOWN_SUFFIX_SEPARATOR,
     THREADS_MAX_POST_CHARS,
     BedrockLanguageModelFactory,
     CollectedItem,
@@ -138,9 +137,8 @@ class DigestGenerator:
 
         # Attach the AGI countdown to the lead at generation time, using the digest's own date
         # (the single KST clock for the run) so the day count is consistent with trend stamps and
-        # lands on every channel via the stored content — not just one renderer. Its end of the lead
-        # is config-driven (agi_countdown_position).
-        content.lead = place_countdown_intro(content.lead, intro, self.config.agi_countdown_position)
+        # lands on every channel via the stored content — not just one renderer.
+        content.lead = place_countdown_intro(content.lead, intro)
 
         digest_text = render_digest_text(content)
         logger.info("Digest generated successfully (%d items, %d characters)", len(content.items), len(digest_text))
@@ -169,13 +167,9 @@ class DigestGenerator:
 
     def _lead_budget(self, intro: str) -> int:
         """Characters the editor may spend on the lead. The lead IS the Threads root post, and the
-        code-owned countdown gag is appended to it afterwards, so the gag's own length (plus the
-        blank line before it in `suffix` position) is not the editor's to spend. An over-long lead
-        is trimmed by whole sentences at publish time — silently, until now."""
-        reserved = len(intro)
-        if intro and self.config.agi_countdown_position == "suffix":
-            reserved += len(COUNTDOWN_SUFFIX_SEPARATOR)
-        return max(0, THREADS_MAX_POST_CHARS - reserved)
+        code-owned countdown gag opens it afterwards, so the gag's own length is not the editor's to
+        spend. An over-long lead is trimmed by whole sentences at publish time."""
+        return max(0, THREADS_MAX_POST_CHARS - len(intro))
 
     @classmethod
     def _threads_meta_line(cls, item: CollectedItem) -> str:

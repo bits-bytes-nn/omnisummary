@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from langchain_core.runnables import RunnableLambda
 
 from lambda_handlers import comment_reply_handler
 from output import threads_handler
@@ -74,6 +75,18 @@ class TestPendingComments:
         assert [p.comment["id"] for p in _pending(conversation, max_per_commenter=2)] == ["other"]
         assert [p.comment["id"] for p in _pending(conversation, max_per_commenter=3)] == ["c3", "other"]
 
+    def test_the_cap_also_counts_the_answers_this_run_will_give(self):
+        conversation = [_c(f"c{i}", "root", user="bot") for i in range(6)]
+        assert len(_pending(conversation, max_per_commenter=3)) == 3
+
+    def test_a_comment_on_the_root_sees_the_story_replies(self):
+        conversation = [
+            _c("story1", "root", own=True, text="스토리 1 본문"),
+            _c("story2", "root", own=True, text="스토리 2 본문"),
+            _c("c1", "root"),
+        ]
+        assert [t["id"] for t in _pending(conversation)[0].thread] == ["root", "story1", "story2"]
+
 
 class TestCommentReplyLedger:
     def test_records_and_prunes_past_the_retention(self, tmp_path):
@@ -133,11 +146,42 @@ class TestCommentResponder:
         run, _ = await _run(responder, _patch_threads([_c("c1", "root")], publish=failing))
         assert run.failed == ["c1"] and responder.ledger.handled() == set()
 
+    async def test_a_reply_threads_rejects_is_recorded_and_a_server_error_is_retried(self, tmp_path):
+        def status_error(code):
+            request = httpx.Request("POST", "https://graph.threads.net/v1.0/uid/threads")
+            return httpx.HTTPStatusError("x", request=request, response=httpx.Response(code, request=request))
+
+        responder = _responder(tmp_path, [CommentReply(reply=True, text="a"), CommentReply(reply=True, text="b")])
+        publish = AsyncMock(side_effect=[status_error(400), status_error(503)])
+        conversation = [_c("rejected", "root", at="2026-10-16T09:00:00+0000"), _c("flaky", "root")]
+        run, _ = await _run(responder, _patch_threads(conversation, publish=publish))
+        assert run.failed == ["rejected", "flaky"]
+        assert responder.ledger.handled() == {"rejected"}
+
     async def test_the_run_cap_answers_the_oldest_first(self, tmp_path):
         responder = _responder(tmp_path, [CommentReply(reply=True, text="a")], max_per_run=1)
         conversation = [_c("newer", "root", at="2026-10-16T11:00:00+0000"), _c("older", "root")]
         run, _ = await _run(responder, _patch_threads(conversation))
         assert [r["comment_id"] for r in run.replied] == ["older"]
+
+    async def test_draft_reads_the_verdict_from_the_model(self, tmp_path):
+        responder = _responder(tmp_path, [])
+        del responder.draft
+        responder.llm = RunnableLambda(lambda _: CommentReply(reply=True, text="답글"))
+        found = _pending([_c("c1", "root")])
+        assert (await responder.draft(found[0])).text == "답글"
+
+    async def test_a_reply_verdict_without_text_is_a_decline(self, tmp_path):
+        responder = _responder(tmp_path, [CommentReply(reply=True, text="  ")])
+        run, publish = await _run(responder, _patch_threads([_c("c1", "root")]))
+        publish.assert_not_awaited()
+        assert run.declined == ["c1"]
+
+    async def test_a_failed_draft_stays_unrecorded(self, tmp_path):
+        responder = _responder(tmp_path, [ValueError("unparseable")])
+        run, publish = await _run(responder, _patch_threads([_c("c1", "root")]))
+        publish.assert_not_awaited()
+        assert run.failed == ["c1"] and responder.ledger.handled() == set()
 
     async def test_missing_credentials_raise(self, tmp_path):
         responder = _responder(tmp_path, [])

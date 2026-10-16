@@ -36,7 +36,7 @@ AWS 위에서 동작한다. Amazon Bedrock(Claude)과 Bedrock AgentCore Memory�
 - **에디토리얼 다이제스트.** Claude Sonnet 5.5가 일자 간 트렌드 연속성을 살려 한국어 산문을 쓰고, 그라운딩 패스가 구체적 주장을 원문과 대조한다
 - **데일리 만화.** 오너 페르소나 캐릭터(기준 시트 이미지로 모습을 고정)가 화자인 2x2 4컷 만화를 `gpt-image-2.5-sunburst`가 한국어 대사로 그린다
 - **Threads 전달.** 이미지 루트에 평면 답글 체인을 붙이고, 하루 한 번만 게시한다
-- **댓글 답글.** 한 시간마다 Claude Sonnet 5.5가 최근 일주일 게시물에 달린 새 댓글에 댓글의 언어로 답하고, 스팸이나 답할 거리가 없는 댓글은 건너뛴다
+- **댓글 답글.** 한 시간마다 Claude Sonnet 5.5가 최근 일주일 게시물에 달린 새 댓글(질문, 반론, 경험담)에 댓글의 언어로 답하고, 스팸과 무의미한 댓글(칭찬만, 이모지, 봇 같은 일반론)은 무시한다
 - **딥 리서치 CLI와 OpenClaw 스킬.** 단일 목적 도구 8개를 가진 자율 Strands 에이전트다. stdout에 JSON 계약, 디스크에 Markdown 리포트를 남긴다
 - **운영 안정성.** 소스별 헬스 보고(`OK`, `EMPTY`, `FAILED`, `STALE`, `DEGRADED`)를 SNS 이메일로 알리고, 상관 ID가 붙는 구조화된 JSON 로그와 CloudWatch 알람 10개를 둔다
 - **AWS 배포.** Lambda와 EventBridge 크론, Bedrock AgentCore Memory, ECS(RSSHub)를 모두 CDK로 정의한다
@@ -97,7 +97,7 @@ pipeline:
   source_slots: {web: 1, x: 1, rss: 1, reddit: 1, youtube: 1}
 ```
 
-모든 필드는 [design.md §3](docs/design.md#3-설정)에 설명되어 있다.
+필드 설명은 [design.md §3](docs/design.md#3-설정)에 있다.
 
 ### 시크릿
 
@@ -135,6 +135,7 @@ pipeline:
 | X/Twitter 항목 | RSSHub 컨테이너와 로컬 sync | 아래 참고 |
 | 데일리 만화 | `OPENAI_API_KEY` | `gpt-image-2.5-sunburst` |
 | Threads 전달 | `THREADS_ACCESS_TOKEN`, `THREADS_USER_ID`, `enable_threads_post: true` | 이미지와 텍스트가 한 게시 세트로 나가야 해서 Threads 게시는 데일리 비주얼 Lambda가 한다. 만화를 렌더하지 못하면 텍스트만 나간다 |
+| 댓글 답글 | Threads 자격증명과 `enable_comment_replies: true` | `uv run python scripts/sample_comment_replies.py`가 지금 달 답글 초안을 보여 주고 아무것도 게시하지 않는다 |
 
 ### RSSHub 컨테이너 (X/Twitter)
 
@@ -196,7 +197,7 @@ uv run python scripts/sync_to_s3.py youtube  # YouTube만
 |-----------|--------|--------|
 | `RedditCollector` | Reddit 공개 `.rss` | `r/A+B` 요청 한 번(top이면 `t=day`). 재시도를 붙여 직접 가져온다 |
 | `YouTubeCollector` | YouTube Data API v3 | AWS에서는 S3 park 파일, 그 외에는 라이브. 정규 영상 목록(`UULF`)을 읽어 Shorts가 채널 자리를 차지하지 않는다 |
-| `RSSCollector` | RSS/Atom | httpx와 feedparser, HTML 제거. 요약만 있는 엔트리는 Tavily extract로 페이지 본문을 받는다 |
+| `RSSCollector` | RSS/Atom | httpx와 feedparser, HTML 제거. 요약만 짧게 있는 엔트리는 Tavily extract로 페이지 본문을 받는다 |
 | `RSSHubCollector` | RSSHub 경유 X/Twitter | AWS에서는 S3 park 파일, 그 외에는 로컬 Docker |
 | `WebSearchCollector` | Tavily | 직접 호출, LLM 쿼리 정제, 콘텐츠 팜은 `exclude_domains`로 제외 |
 
@@ -301,9 +302,9 @@ uv run python scripts/put_inference_profiles.py  # 계정/스테이지당 1회, 
 | 리소스 | 용도 |
 |----------|---------|
 | **Lambda** (Docker) | 다이제스트 파이프라인, 15분 타임아웃, VPC 안(RSSHub 서비스에 닿는다) |
-| **Lambda** (Docker) | 데일리 만화와 Threads 게시, 15분 타임아웃. 비동기로 다이제스트 크리티컬 패스에서 벗어나 있고 VPC 밖이며, 유일한 Threads 게시 경로다 |
+| **Lambda** (Docker) | 데일리 만화와 Threads 게시, 15분 타임아웃. 비동기로 다이제스트 크리티컬 패스에서 벗어나 있고 VPC 밖이며, 다이제스트의 유일한 게시 경로다 |
 | **Lambda** (Docker) | Threads 토큰 갱신(약 50일 주기, 갱신된 60일 토큰을 SSM에 다시 기록) |
-| **Lambda** (Docker) | 댓글 답글, 5분 타임아웃, VPC 밖, `aws.comment_reply_interval_minutes`(60분)마다 실행. `pipeline.enable_comment_replies`가 꺼져 있으면 아무것도 하지 않는다 |
+| **Lambda** (Docker) | 댓글 답글, 10분 타임아웃, 동시 실행 1개, VPC 밖, `aws.comment_reply_interval_minutes`(60분)마다 실행. `pipeline.enable_comment_replies`가 꺼져 있으면 아무것도 하지 않는다 |
 | **EventBridge** | 데일리 다이제스트 크론(config의 시와 분, **UTC**)과 토큰 갱신, 댓글 답글 스케줄 |
 | **Bedrock AgentCore** | Memory(다이제스트 스냅샷, 날짜당 세션 하나) |
 | **ECS Fargate** | RSSHub 컨테이너. `aws.rsshub_desired_count`는 **기본 0**이다. 다이제스트가 S3 park 파일을 먼저 읽고 이 서비스에 닿지 않으니 상시 가동은 월 약 $40의 순수 비용이다. 태스크 정의는 그대로 배포되니 1로 올리면 AWS 폴백이 복구된다 |
@@ -332,7 +333,7 @@ X 세션 쿠키는 Fargate 태스크 정의의 `secrets` 블록으로 컨테이�
 | 단계 | 모델 |
 |-------|-------|
 | 랭킹 | Claude Opus 5.5 |
-| 다이제스트, 그라운딩, 만화 에디터와 아트 디렉터 | Claude Sonnet 5.5 |
+| 다이제스트, 그라운딩, 만화 에디터와 아트 디렉터, 댓글 답글 | Claude Sonnet 5.5 |
 | 딥 리서치 | Claude Opus 5.5 |
 | 트렌드, 쿼리 정제 | Claude Sonnet 5.5 |
 | 토큰 카운트 | Claude Sonnet 4.6(Opus 계열은 CountTokens를 지원하지 않는다) |
@@ -350,7 +351,7 @@ Opus 5.5는 effort 기본값이 `medium`이라 팩토리가 `high`로 고정한�
 
 ### Docker 이미지
 
-이미지는 `uv.lock`이 핀한 정확한 집합을 설치한다(`uv export`로 뽑아 `uv pip install --system`하고 프로젝트 자신은 `--no-deps`). 그래서 CI가 테스트한 적 없는 의존성 집합이 이미지에서 도는 일이 없다. 의존성은 소스 COPY보다 먼저 설치되니 코드만 바뀐 변경은 그 레이어를 재사용한다. non-root(uid 10001)로 돌고, `.dockerignore`가 `.env`와 `.venv`, `logs/`, `cdk.out`을 빌드 컨텍스트에서 제외한다. Lambda 세 개가 모두 이 이미지를 쓴다.
+이미지는 `uv.lock`이 핀한 정확한 집합을 설치한다(`uv export`로 뽑아 `uv pip install --system`하고 프로젝트 자신은 `--no-deps`). 그래서 CI가 테스트한 적 없는 의존성 집합이 이미지에서 도는 일이 없다. 의존성은 소스 COPY보다 먼저 설치되니 코드만 바뀐 변경은 그 레이어를 재사용한다. non-root(uid 10001)로 돌고, `.dockerignore`가 `.env`와 `.venv`, `logs/`, `cdk.out`을 빌드 컨텍스트에서 제외한다. Lambda 네 개가 모두 이 이미지를 쓴다.
 
 foundation 스택이 만든 ECR 리포지토리 `<account>.dkr.ecr.<region>.amazonaws.com/<project>-<stage>-agent`로 간다. 먼저 로그인해야 한다(Docker 크리덴셜은 만료되니 푸시가 401이면 다시 로그인).
 

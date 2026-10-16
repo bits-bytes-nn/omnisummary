@@ -36,7 +36,7 @@ There are two independent paths.
 - **Editorial digest** — Claude Sonnet 5.5 writes Korean prose with cross-day trend continuity, then a grounding pass checks every specific claim against the sources
 - **Daily comic** — a 2x2 four-panel comic narrated by the owner-persona character (kept on-model by a reference sheet), with Korean dialogue, rendered by `gpt-image-2.5-sunburst`
 - **Threads delivery** — image root + flat reply chain, idempotent per day
-- **Comment replies** — every hour Claude Sonnet 5.5 answers readers' new comments on the last week's posts, in the comment's language, or declines spam and empty ones
+- **Comment replies** — every hour Claude Sonnet 5.5 answers readers' new comments on the last week's posts (questions, objections, experiences) in the comment's language, and ignores spam and meaningless ones (bare praise, emoji, bot-style generic remarks)
 - **Deep-research CLI + OpenClaw skill** — an autonomous Strands agent with eight single-purpose tools; JSON contract on stdout, Markdown report on disk
 - **Operational excellence** — per-source health reporting (`OK` / `EMPTY` / `FAILED` / `STALE` / `DEGRADED`) into SNS email alerts, structured JSON logs with correlation IDs, 10 CloudWatch alarms
 - **AWS deployment** — Lambda + EventBridge cron + Bedrock AgentCore Memory + ECS (RSSHub), all in CDK
@@ -97,7 +97,7 @@ pipeline:
   source_slots: {web: 1, x: 1, rss: 1, reddit: 1, youtube: 1}
 ```
 
-Every field is documented in [design.md §3](docs/design.md#3-설정).
+[design.md §3](docs/design.md#3-설정) explains the fields.
 
 ### Secrets
 
@@ -136,6 +136,7 @@ Then add capabilities one at a time:
 | X/Twitter items | RSSHub container + the local sync | See below |
 | Daily comic | `OPENAI_API_KEY` | `gpt-image-2.5-sunburst` |
 | Threads delivery | `THREADS_ACCESS_TOKEN`, `THREADS_USER_ID`, `enable_threads_post: true` | The daily-visual Lambda is what posts to Threads, because the image and the text ship as one post set; the post goes out text-only when the comic can't be rendered |
+| Comment replies | The Threads credentials + `enable_comment_replies: true` | `uv run python scripts/sample_comment_replies.py` drafts what it would post now, posting nothing |
 
 ### RSSHub container (X/Twitter)
 
@@ -197,7 +198,7 @@ A summary of each stage. [design.md](docs/design.md) is the line-by-line referen
 |-----------|--------|--------|
 | `RedditCollector` | Reddit public `.rss` | One `r/A+B` request (`t=day` for top), fetched directly with retry |
 | `YouTubeCollector` | YouTube Data API v3 | S3 park file on AWS, live otherwise; reads the long-form uploads (`UULF`) so Shorts don't take the channel's slot |
-| `RSSCollector` | RSS/Atom | httpx + feedparser, HTML stripped; a summary-only entry gets its page text via Tavily extract |
+| `RSSCollector` | RSS/Atom | httpx + feedparser, HTML stripped; a short summary-only entry gets its page text via Tavily extract |
 | `RSSHubCollector` | X/Twitter via RSSHub | S3 park file on AWS, local Docker otherwise |
 | `WebSearchCollector` | Tavily | Direct, with LLM query refinement and `exclude_domains` for content farms |
 
@@ -302,9 +303,9 @@ On every later deploy only steps 3-4 apply: push the new image, then `deploy --a
 | Resource | Purpose |
 |----------|---------|
 | **Lambda** (Docker) | Digest pipeline, 15 min timeout, in the VPC (it can reach the RSSHub service) |
-| **Lambda** (Docker) | Daily comic + Threads publish, 15 min timeout. Async, off the digest critical path, outside the VPC, and the only Threads publish path |
+| **Lambda** (Docker) | Daily comic + Threads publish, 15 min timeout. Async, off the digest critical path, outside the VPC, and the only digest publish path |
 | **Lambda** (Docker) | Threads token refresh (~50-day schedule, writes the renewed 60-day token back to SSM) |
-| **Lambda** (Docker) | Comment replies, 5 min timeout, outside the VPC, every `aws.comment_reply_interval_minutes` (60). Does nothing unless `pipeline.enable_comment_replies` is on |
+| **Lambda** (Docker) | Comment replies, 10 min timeout, one run at a time, outside the VPC, every `aws.comment_reply_interval_minutes` (60). Does nothing unless `pipeline.enable_comment_replies` is on |
 | **EventBridge** | Daily digest cron (config-driven hour/minute, **UTC**) + the token-refresh and comment-reply schedules |
 | **Bedrock AgentCore** | Memory (digest snapshots, one session per date) |
 | **ECS Fargate** | RSSHub container. `aws.rsshub_desired_count` **defaults to 0**: the digest reads the S3 park file first and never reaches this service, so running it around the clock is ~$40/month of pure cost. The task definition is still deployed, so set it to 1 to restore the AWS fallback |
@@ -333,7 +334,7 @@ The X session cookies reach the RSSHub Fargate container through the task defini
 | Stage | Model |
 |-------|-------|
 | Ranking | Claude Opus 5.5 |
-| Digest, grounding, comic editor and art director | Claude Sonnet 5.5 |
+| Digest, grounding, comic editor and art director, comment replies | Claude Sonnet 5.5 |
 | Deep research | Claude Opus 5.5 |
 | Trends, query refinement | Claude Sonnet 5.5 |
 | Token counting | Claude Sonnet 4.6 (the Opus models don't expose CountTokens) |
@@ -351,7 +352,7 @@ Complementing this, every `get_model()` call takes a `stage=` and logs `LLM usag
 
 ### Docker image
 
-The image installs the **exact set `uv.lock` pins** (`uv export` → `uv pip install --system`, the project itself `--no-deps`), so it can never run a dependency set CI never tested. Dependencies install before the source is copied, so a code-only change reuses that layer. It runs **non-root** (uid 10001), and `.dockerignore` keeps `.env`, `.venv`, `logs/` and `cdk.out` out of the build context. All three Lambdas use it.
+The image installs the **exact set `uv.lock` pins** (`uv export` → `uv pip install --system`, the project itself `--no-deps`), so it can never run a dependency set CI never tested. Dependencies install before the source is copied, so a code-only change reuses that layer. It runs **non-root** (uid 10001), and `.dockerignore` keeps `.env`, `.venv`, `logs/` and `cdk.out` out of the build context. All four Lambdas use it.
 
 It goes to the ECR repository the **foundation stack** creates, `<account>.dkr.ecr.<region>.amazonaws.com/<project>-<stage>-agent`, so log in to it first (the Docker credential is short-lived; re-run the login when a push 401s).
 

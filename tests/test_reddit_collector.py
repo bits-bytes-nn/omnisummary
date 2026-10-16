@@ -169,7 +169,7 @@ class TestRedditCollect:
         with patch("collectors.base.fetch_feed", side_effect=fetch):
             await collector.collect()
         assert "/r/LocalLLaMA/top/.rss" in calls[0]
-        assert "limit=5" in calls[0]
+        assert "limit=100" in calls[0]
         assert "t=day" in calls[0]
 
     @pytest.mark.asyncio

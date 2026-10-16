@@ -8,7 +8,6 @@ from zoneinfo import ZoneInfo
 
 from shared import (
     DigestContent,
-    agi_countdown_intro,
     get_correlation_id,
     logger,
 )
@@ -138,9 +137,7 @@ class DigestPublisher:
             # posted >= expected false, so the "nothing to report" early-return can't swallow it.
             self.threads_outcome = Delivery(0, 1)
             return False
-        # Hand the countdown gag over so an over-long lead drops the fixed daily template rather
-        # than the sentence carrying the day's argument.
-        root_text, replies = render_threads_posts(content, self._countdown_intro(post_date))
+        root_text, replies = render_threads_posts(content)
 
         bucket = self.config.aws.state_bucket_name or os.environ.get("STATE_BUCKET", "")
         prefix = self.config.aws.s3_prefix.rstrip("/") + "/" if self.config.aws.s3_prefix else ""
@@ -196,14 +193,3 @@ class DigestPublisher:
             self.threads_ledger.unmark(post_date, run_id)
         except Exception:
             logger.warning("Failed to roll back Threads post marker (non-fatal)", exc_info=True)
-
-    def _countdown_intro(self, post_date: date) -> str:
-        """The AGI-countdown gag for this date, exactly as the digest generator computed it — the one
-        part of the lead CODE owns, so the renderer can identify (and drop) it if the lead
-        overflows."""
-        return agi_countdown_intro(
-            self.config.pipeline.agi_countdown_date,
-            self.config.pipeline.agi_countdown_template,
-            post_date,
-            self.config.pipeline.agi_countdown_after,
-        )

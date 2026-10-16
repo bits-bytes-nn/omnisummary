@@ -17,19 +17,13 @@ THREADS_API_BASE = "https://graph.threads.net/v1.0"
 # Meta processes the media container asynchronously; publishing too early fails.
 THREADS_MEDIA_PROCESS_WAIT_SEC = 30
 # After an image root is published it isn't immediately addressable as a reply target; replies
-# to it 400 with "media not found" until Meta finishes indexing (observed to take minutes for
-# image roots). Rather than blind-retry the expensive create-container write per reply (each a
-# wasted API call + sleep), POLL the root once with a cheap GET until it's readable, then post the
-# whole reply chain without indexing retries. Readiness is a property of the ROOT, shared by every
-# reply, so it's waited for ONCE up front — bounded by a single deadline so a never-indexing root
-# can't blow the 15-min Lambda timeout mid-chain.
-# Total time to wait for the image root to become addressable (~4.5 min). render (~4 min) + this
-# leaves margin under the 15-min Lambda timeout.
+# to it 400 with "media not found" (code 24) until Meta finishes indexing, which takes minutes for
+# image roots. Each reply retries against one shared deadline, so a never-indexing root can't blow
+# the 15-min Lambda timeout mid-chain. ~4.5 min: render (~4 min) + this leaves margin.
 THREADS_INDEXING_BUDGET_SEC = 270
-# Safety-net retry on a reply that fails AFTER the readiness poll said the root was up: either the
-# "media not found" eventual-consistency edge, or a transient container-processing 400/429/5xx (a
-# single such 400 dropped one story from a 2026-07-17 digest). Small — the poll already did the
-# real waiting; a genuine content rejection burns these attempts but is now logged with its body.
+# Retry cap on a reply's transient container-processing 400/429/5xx (a single such 400 dropped one
+# story from a 2026-07-17 digest). A genuine content rejection burns these attempts too, but is
+# logged with its body.
 THREADS_REPLY_RETRY_ATTEMPTS = 3
 THREADS_REPLY_RETRY_BACKOFF_SEC = 10
 # Seconds the publish path still needs AFTER the indexing wait: the media-processing sleep the root
@@ -153,7 +147,7 @@ def _is_transient_reply_error(exc: httpx.HTTPStatusError) -> bool:
     return status == 400 or status == 429 or status >= 500
 
 
-def _error_detail(exc: httpx.HTTPStatusError) -> str:
+def error_detail(exc: httpx.HTTPStatusError) -> str:
     """The Threads API response body, truncated — the only place Meta states WHY a post was
     rejected (subcode / message). Logged on reply failure so a text rejection is distinguishable
     from a transient processing error without re-running the pipeline."""
@@ -180,14 +174,10 @@ def _indexing_budget_sec(deadline: float | None) -> float:
 async def _publish_reply_with_retry(
     client: httpx.AsyncClient, user_id: str, token: str, text: str, reply_to_id: str, *, indexing_deadline: float = 0.0
 ) -> str:
-    """Publish one reply. The up-front GET poll can report the root addressable (GET 200) before
-    it's usable as a REPLY TARGET — so the first replies still 400 with code-24 'media not found'
-    (a 2026-07-25 digest dropped its Opus-5 headline + one more this way; each reply burned only its
-    3 short attempts, then the root finally indexed and the rest landed). Since the FIRST reply to
-    succeed proves the root is truly ready, keep retrying the code-24 case against the SHARED
-    indexing deadline instead of a fixed short cap; genuine transient 400/429/5xx still cap at
-    THREADS_REPLY_RETRY_ATTEMPTS. A non-transient error (e.g. auth) raises immediately. The response
-    body is logged on each retry so a genuine content rejection is identifiable."""
+    """Publish one reply. The code-24 'media not found' case is the root still indexing, so it keeps
+    retrying until the SHARED indexing deadline (the first reply to land proves the root is ready);
+    other transient 400/429/5xx errors cap at THREADS_REPLY_RETRY_ATTEMPTS, and a non-transient error
+    (e.g. auth) raises immediately. The response body is logged on each retry."""
     attempt = 0
     while True:
         attempt += 1
@@ -205,7 +195,7 @@ async def _publish_reply_with_retry(
                 "Reply attempt %d failed (%s), retrying: %s",
                 attempt,
                 e.response.status_code,
-                _error_detail(e),
+                error_detail(e),
             )
             await asyncio.sleep(THREADS_REPLY_RETRY_BACKOFF_SEC)
 
@@ -340,7 +330,7 @@ async def post_to_threads(
                         i,
                         len(posts),
                         e.response.status_code,
-                        _error_detail(e),
+                        error_detail(e),
                     )
                 except Exception as e:
                     logger.warning("Threads reply %d/%d failed, continuing: %s", i, len(posts), e)

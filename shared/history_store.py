@@ -215,8 +215,9 @@ class RollingLog:
 
 class CommentReplyLedger:
     """The comments the account has already dealt with, {comment_id: {"at", "action"}}, where action
-    is "replied" or "declined". A declined comment is not put to the model again every run, and a
-    reply that landed while its comment's thread lagged behind is not posted twice.
+    is "replied", "declined" or "failed" (Threads rejected the reply outright). A declined or
+    rejected comment is not put to the model again every run, and a reply that landed while its
+    comment's thread lagged behind is not posted twice.
 
     Reads RAISE on an unreadable store: an unknown history could answer every comment again."""
 
