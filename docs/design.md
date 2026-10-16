@@ -78,15 +78,15 @@ OpenClaw 스킬(`~/.openclaw/workspace/skills/omnisummary-research/SKILL.md`)이
 | 경로 | 책임 |
 |------|------|
 | `collectors/` | `BaseCollector` ABC와 공유 `load_items_from_s3`(로컬에서 S3로 올린 park 파일 로더), 그리고 RSS, Reddit(`.rss` 피드), RSSHub(X/Twitter), YouTube, WebSearch(Tavily) 구현 |
-| `pipeline/` | `ContentAggregator`, `ContentRanker`, `DigestGenerator`, `TrendTracker`, `DailyVisualMaker`, 그리고 오케스트레이션(`runner.py`: `run_collectors_with_health`, `run_pipeline`, `persist_digest`, `resolve_digest_window`) — CLI와 다이제스트 Lambda가 함께 타는 단일 경로 |
+| `pipeline/` | `ContentAggregator`, `ContentRanker`, `DigestGenerator`, `TrendTracker`, `DailyVisualMaker`, 댓글 답글 `CommentResponder`(`comment_replies.py`), 그리고 오케스트레이션(`runner.py`: `run_collectors_with_health`, `run_pipeline`, `persist_digest`, `resolve_digest_window`) — CLI와 다이제스트 Lambda가 함께 타는 단일 경로 |
 | `agent/` | 딥 리서치 Strands 에이전트(`research_agent.py`)와 도구 8개(`research_tools.py`), 실행별 인메모리 상태 `DigestStateManager`(`tool_state.py`), 데일리 비주얼이 쓰는 이미지 생성기 `VisualGenerator`(`visuals.py`) |
 | `research_cli.py` | 딥 리서치 로컬 CLI. JSON 한 개를 stdout에 쓰고 로그는 stderr로 보낸다 |
 | `recall_cli.py` | 다이제스트 메모리 조회 CLI(`digest [DATE]`, `trends`). 모델 호출 없는 무료 읽기 전용이고 JSON 한 개를 쓴다. 종료 코드 0/1/2이며, `failed`는 저장소를 못 읽었다는 뜻이고 `found: false`는 저장된 것이 없다는 뜻이다 |
-| `shared/` | config(공유 `KOREAN_STYLE_RULES` 포함), models, constants, utils(Bedrock 팩토리와 모델 레지스트리), logger, prompts, state_store, memory, history_store(cross-day dedup 원장과 롤링 로그), formatting, alerts, metrics, research(Tavily와 OpenAlex), media(OG 이미지 fetch) |
+| `shared/` | config(공유 `KOREAN_PROSE_RULES`와 말투까지 정한 `KOREAN_STYLE_RULES` 포함), models, constants, utils(Bedrock 팩토리와 모델 레지스트리), logger, prompts, state_store, memory, history_store(cross-day dedup 원장, 롤링 로그, 댓글 답글 원장), formatting, alerts, metrics, research(Tavily와 OpenAlex), media(OG 이미지 fetch) |
 | `output/` | 채널별 렌더러(`renderers.py`), 다이제스트 게시(`digest_delivery.py`: Threads 체인, 멱등 원장, 이미지 S3 호스팅), 리서치 리포트 전달(`delivery.py`), Threads API(`threads_handler.py`) |
-| `lambda_handlers/` | 다이제스트 핸들러, 데일리 비주얼 핸들러(`visual_handler`, 다이제스트 Lambda가 비동기로 호출한다), Threads 토큰 갱신 핸들러(`threads_refresh_handler`) |
+| `lambda_handlers/` | 다이제스트 핸들러, 데일리 비주얼 핸들러(`visual_handler`, 다이제스트 Lambda가 비동기로 호출한다), Threads 토큰 갱신 핸들러(`threads_refresh_handler`), 댓글 답글 핸들러(`comment_reply_handler`, 정해진 주기로 돈다) |
 | `infrastructure/` | CDK `foundation_stack`과 `application_stack` |
-| `scripts/` | `deploy.py`, `put_secrets.py`, `put_inference_profiles.py`, `ci_synth.py`, `sync_to_s3.py <rsshub\|youtube>`, `sync_all_to_s3.sh`(두 소스를 차례로 sync한다), `sample_digest.py`, `sample_visual_brief.py`, `render_excalidraw.mjs` |
+| `scripts/` | `deploy.py`, `put_secrets.py`, `put_inference_profiles.py`, `ci_synth.py`, `sync_to_s3.py <rsshub\|youtube>`, `sync_all_to_s3.sh`(두 소스를 차례로 sync한다), `sample_digest.py`, `sample_visual_brief.py`, `sample_comment_replies.py`(게시하지 않고 지금 달 답글 초안을 보여 준다), `render_excalidraw.mjs` |
 
 ## 3. 설정
 
@@ -1025,6 +1025,42 @@ addressable해지지 않았다"는 **0번**인 반면 reply 재시도는 25일�
 오류 문구에 요청 URL을 넣으므로, 실패는 상태 코드와 응답 앞부분만 로그에 남기고 URL 없는 예외를 `from None`으로 다시
 던진다. 그대로 `str(e)`를 남기면 첫 갱신 실패에서 장기 토큰이 CloudWatch에 적힌다.
 
+### 5.9 댓글 답글 (`pipeline/comment_replies.py`, `enable_comment_replies`)
+
+**흐름.** `lambda_handlers/comment_reply_handler.py`가 `aws.comment_reply_interval_minutes`(기본 60분)마다 돈다.
+최근 `comment_reply_lookback_days`(기본 7일) 동안의 자기 top-level 게시물을 `/me/threads`로 읽고, 게시물마다
+`/{id}/conversation`으로 모든 깊이의 답글을 받는다. 답할 댓글을 고른 뒤 댓글마다 모델을 한 번 부르고, 답하기로
+하면 그 댓글에 답글 하나를 단다.
+
+**답할 댓글.** 남이 쓴 댓글 중 계정 자신의 게시물(root, 스토리 reply, 앞서 단 답글)에 직접 단 것만 고른다. 독자끼리
+주고받는 대화에는 끼어들지 않는다. 숨김·가림 처리된 댓글(`hide_status`), 빈 댓글, 기간 밖 댓글, 이미 계정이 답한
+댓글은 뺀다. 한 게시물 아래에서 같은 사람에게는 `comment_reply_max_per_commenter`(3)번까지만 답한다. 모든 답글에
+다시 답하는 봇과 끝없이 주고받지 않기 위해서다. 한 번에 `comment_reply_max_per_run`(10)개까지 오래된 순서로
+처리하고, 나머지는 다음 실행으로 넘긴다.
+
+**원장.** `comment_replies.json`(`CommentReplyLedger`)에 답한 댓글과 거절한 댓글을 함께 기록한다. 거절한 댓글을
+매시간 모델에 다시 묻지 않기 위해서다. 이미 답한 댓글은 대화 안의 자기 답글로도 걸러지니, 원장 기록이 실패해도
+같은 댓글에 두 번 답하지 않는다. 원장을 못 읽으면 실행을 멈춘다. 모르는 이력으로 돌면 거절한 댓글을 모두 다시
+묻는다. 초안 작성이나 게시에 실패한 댓글은 기록하지 않아 다음 실행이 다시 시도하고, 핸들러는 나머지를 다 처리한
+뒤 예외를 던져 Errors 알람을 울린다.
+
+**모델과 출력.** `digest_model`(Sonnet 5.5)이 `CommentReplyPrompt`로 답글을 쓰거나(`reply: true`) 거절한다
+(스팸, 광고, 욕설, 게시물과 무관한 댓글, 답할 거리가 없는 댓글). 판정은 Bedrock의 JSON 스키마 제약 출력
+(`with_structured_output(..., method="json_schema")`)으로 받는다. Sonnet 5.5는 도구 호출을 강제할 수 없고, `auto`로
+둔 스키마 도구에는 영어 댓글 5개 중 4개를 평문으로 답해 답글과 거절을 구분할 수 없었다. 제약 출력에서는 실제 댓글
+4개가 모두 판정 형식을 지켰다. Haiku 5.5는 도구 호출을 강제할 수 있지만 영어 댓글에 한국어로 답했고 4개 중 3개를
+"맞아요"로 시작했다.
+
+**말투.** 다이제스트의 '~다' 칼럼체 대신 해요체를 쓴다. 칼럼 말투로 한 사람에게 답하면 훈계처럼 읽힌다. 그래서
+`KOREAN_STYLE_RULES`를 말투 규칙과 나머지 문장 규칙(`KOREAN_PROSE_RULES`)으로 나눴고, 답글 프롬프트는 뒤쪽만
+쓴다. 댓글의 언어로 답하고, 칭찬이나 동의로 시작하지 않으며, 독자가 말하지 않은 것 하나(결과, 긴장, 게시물의 구체적
+사실, 되물을 만한 질문)를 더한다. 사실은 스레드 안의 게시물이나 널리 알려진 맥락에서만 가져온다. 2026-10-16
+dry-run(`scripts/sample_comment_replies.py`)에서 실제 댓글 4개에 모두 답했다. 합성한 스팸, 이모지만 있는 댓글,
+비아냥 댓글은 거절했고, 인사에는 짧게 감사했다. 인사를 "답할 거리 없음"으로 거절하던 것은 프롬프트 한 줄로 고쳤다.
+
+**토큰.** 읽기 요청은 토큰을 쿼리 문자열이 아니라 `Authorization` 헤더로 보낸다(`threads_client`). httpx가 오류
+문구에 요청 URL을 넣기 때문이다. 페이지의 `next` 링크에도 토큰이 들어가지 않는다.
+
 ## 6. LLM 팩토리 (`shared/utils.py`)
 
 ### 의존성 경계
@@ -1757,9 +1793,9 @@ id는 서비스 경계를 넘어 전달된다. 다이제스트 Lambda는 비주�
 
 ### 알람
 
-CloudWatch 알람 8개가 모두 SNS 알림 토픽으로, 그리고 이메일로 라우팅된다(`_add_alarms`).
+CloudWatch 알람 10개가 모두 SNS 알림 토픽으로, 그리고 이메일로 라우팅된다(`_add_alarms`).
 
-- **Lambda별 Errors 3개와 Timeout 3개** — digest와 visual, threads-refresh 각각에 대해 예외(Errors)와 타임아웃
+- **Lambda별 Errors 4개와 Timeout 4개** — digest와 visual, threads-refresh, comment-replies 각각에 대해 예외(Errors)와 타임아웃
   임박(max Duration이 설정 타임아웃의 90% 이상) 알람을 둔다. 타임아웃은 Errors로 집계되지 않으니 별도가 필요하다.
 - **EmptyDigestAlarm** — EMF `OmniSummary/DigestItemsPublished`(실행당 한 번)에 대한 24시간 윈도 알람이다.
   CloudWatch가 `evaluation_periods × period ≤ 86400s`로 제한하니 그 이상은 배포 시 거부된다. 0건 게시와 그날

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from .logger import logger
@@ -24,6 +24,7 @@ def published_urls_from_snapshots(snapshots: list[dict[str, Any]]) -> set[str]:
 PUBLISHED_URLS_KEY = "published_urls.json"
 RECENT_LEADS_KEY = "recent_leads.json"
 THREADS_POSTED_KEY = "threads_posted.json"
+COMMENT_REPLIES_KEY = "comment_replies.json"
 
 
 class ThreadsPostLedger:
@@ -210,3 +211,28 @@ class RollingLog:
         # max_entries == 0 disables the window; log[-0:] is the WHOLE list, so the cap silently
         # became "keep everything" — the one setting meant to keep nothing grew without bound.
         self.store.write_json(self.key, log[-self.max_entries :] if self.max_entries > 0 else [])
+
+
+class CommentReplyLedger:
+    """The comments the account has already dealt with, {comment_id: {"at", "action"}}, where action
+    is "replied" or "declined". A declined comment is not put to the model again every run, and a
+    reply that landed while its comment's thread lagged behind is not posted twice.
+
+    Reads RAISE on an unreadable store: an unknown history could answer every comment again."""
+
+    def __init__(self, store: StateStore, retention: timedelta) -> None:
+        self.store = store
+        self.retention = retention
+
+    def _entries(self) -> dict[str, dict[str, str]]:
+        data = self.store.read_json(COMMENT_REPLIES_KEY, default={})
+        return data if isinstance(data, dict) else {}
+
+    def handled(self) -> set[str]:
+        return set(self._entries())
+
+    def record(self, comment_id: str, action: str, now: datetime) -> None:
+        cutoff = (now - self.retention).isoformat()
+        entries = {k: v for k, v in self._entries().items() if str((v or {}).get("at", "")) >= cutoff}
+        entries[comment_id] = {"at": now.isoformat(), "action": action}
+        self.store.write_json(COMMENT_REPLIES_KEY, entries)

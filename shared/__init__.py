@@ -1,5 +1,5 @@
 from .alerts import publish_alert
-from .config import KOREAN_STYLE_RULES, Config, get_config
+from .config import KOREAN_PROSE_RULES, KOREAN_STYLE_RULES, Config, get_config
 from .constants import (
     DOMAIN_TO_SOURCE,
     METRIC_NAMESPACE,
@@ -32,12 +32,19 @@ from .formatting import (
     threads_meta_line,
     truncate_at_word,
 )
-from .history_store import PublishedUrlLedger, RollingLog, ThreadsPostLedger, published_urls_from_snapshots
+from .history_store import (
+    CommentReplyLedger,
+    PublishedUrlLedger,
+    RollingLog,
+    ThreadsPostLedger,
+    published_urls_from_snapshots,
+)
 from .logger import get_correlation_id, is_running_in_aws, logger, set_correlation_id
 from .memory import AgentCoreMemoryStore, LocalMemoryStore, MemoryReadError, MemoryStore, create_memory_store
 from .metrics import emit_emf, metric_dimensions
 from .models import (
     CollectedItem,
+    CommentReply,
     DigestContent,
     DigestItem,
     DigestResult,
@@ -115,6 +122,7 @@ __all__ = [
     "Config",
     "coerce_bool",
     "get_config",
+    "KOREAN_PROSE_RULES",
     "KOREAN_STYLE_RULES",
     "DigestPrompt",
     "GroundingCheckPrompt",
@@ -122,6 +130,8 @@ __all__ = [
     "DigestItem",
     "DigestResult",
     "HealthReport",
+    "CommentReply",
+    "CommentReplyLedger",
     "ImageAsset",
     "SourceHealth",
     "SourceStatus",

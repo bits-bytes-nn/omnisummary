@@ -36,8 +36,9 @@ There are two independent paths.
 - **Editorial digest** — Claude Sonnet 5.5 writes Korean prose with cross-day trend continuity, then a grounding pass checks every specific claim against the sources
 - **Daily comic** — a 2x2 four-panel comic narrated by the owner-persona character (kept on-model by a reference sheet), with Korean dialogue, rendered by `gpt-image-2.5-sunburst`
 - **Threads delivery** — image root + flat reply chain, idempotent per day
+- **Comment replies** — every hour Claude Sonnet 5.5 answers readers' new comments on the last week's posts, in the comment's language, or declines spam and empty ones
 - **Deep-research CLI + OpenClaw skill** — an autonomous Strands agent with eight single-purpose tools; JSON contract on stdout, Markdown report on disk
-- **Operational excellence** — per-source health reporting (`OK` / `EMPTY` / `FAILED` / `STALE` / `DEGRADED`) into SNS email alerts, structured JSON logs with correlation IDs, 8 CloudWatch alarms
+- **Operational excellence** — per-source health reporting (`OK` / `EMPTY` / `FAILED` / `STALE` / `DEGRADED`) into SNS email alerts, structured JSON logs with correlation IDs, 10 CloudWatch alarms
 - **AWS deployment** — Lambda + EventBridge cron + Bedrock AgentCore Memory + ECS (RSSHub), all in CDK
 
 ## Quick Start
@@ -303,14 +304,15 @@ On every later deploy only steps 3-4 apply: push the new image, then `deploy --a
 | **Lambda** (Docker) | Digest pipeline, 15 min timeout, in the VPC (it can reach the RSSHub service) |
 | **Lambda** (Docker) | Daily comic + Threads publish, 15 min timeout. Async, off the digest critical path, outside the VPC, and the only Threads publish path |
 | **Lambda** (Docker) | Threads token refresh (~50-day schedule, writes the renewed 60-day token back to SSM) |
-| **EventBridge** | Daily digest cron (config-driven hour/minute, **UTC**) + the token-refresh schedule |
+| **Lambda** (Docker) | Comment replies, 5 min timeout, outside the VPC, every `aws.comment_reply_interval_minutes` (60). Does nothing unless `pipeline.enable_comment_replies` is on |
+| **EventBridge** | Daily digest cron (config-driven hour/minute, **UTC**) + the token-refresh and comment-reply schedules |
 | **Bedrock AgentCore** | Memory (digest snapshots, one session per date) |
 | **ECS Fargate** | RSSHub container. `aws.rsshub_desired_count` **defaults to 0**: the digest reads the S3 park file first and never reaches this service, so running it around the clock is ~$40/month of pure cost. The task definition is still deployed, so set it to 1 to restore the AWS fallback |
 | **SSM Parameter Store** | All secrets, as SecureStrings written out-of-band |
 | **S3** | Trends + park files + Threads image hosting. The role gets `GetObject`/`PutObject` on the project prefix plus `ListBucket`, nothing else |
-| **SQS** | Async DLQ for the digest and visual Lambdas. Every Lambda runs `retry_attempts=0`, because Threads has no idempotency key and a retry would double-post. The handlers re-raise, so digest and visual failures land here for replay; the token-refresh Lambda has no DLQ and raises into its Errors alarm |
+| **SQS** | Async DLQ for the digest and visual Lambdas. Every Lambda runs `retry_attempts=0`, because Threads has no idempotency key and a retry would double-post. The handlers re-raise, so digest and visual failures land here for replay; the token-refresh and comment-reply Lambdas have no DLQ and raise into their Errors alarms |
 | **SNS** | Alert topic (email) |
-| **CloudWatch** | Structured logs, one-month retention, and 8 alarms (per-Lambda Errors ×3 + Timeout ×3, EmptyDigest, async DLQ) |
+| **CloudWatch** | Structured logs, one-month retention, and 10 alarms (per-Lambda Errors ×4 + Timeout ×4, EmptyDigest, async DLQ) |
 | **ECR** | The Lambda image (amd64) |
 
 ### Secrets on AWS
@@ -393,11 +395,11 @@ omnisummary/
 ├── recall_cli.py            # Read back past digests and trends (JSON on stdout), used by the OpenClaw skill
 ├── Dockerfile               # Lambda image (amd64)
 ├── collectors/              # RSS, Reddit, RSSHub (X), YouTube, WebSearch + the S3 park loader
-├── pipeline/                # Aggregator, Ranker, DigestGenerator, TrendTracker, DailyVisualMaker, runner (orchestration)
+├── pipeline/                # Aggregator, Ranker, DigestGenerator, TrendTracker, DailyVisualMaker, CommentResponder, runner (orchestration)
 ├── agent/                   # Deep-research agent + its 8 tools, VisualGenerator, DigestStateManager
 ├── shared/                  # Config, models, prompts, state store, AgentCore memory, history, research, media
 ├── output/                  # Threads renderers + handler, digest publisher, research report delivery
-├── lambda_handlers/         # digest, daily visual, threads refresh
+├── lambda_handlers/         # digest, daily visual, threads refresh, comment replies
 ├── infrastructure/          # CDK stacks (foundation + application)
 ├── scripts/                 # deploy, put_secrets, put_inference_profiles, ci_synth, sync_to_s3, samplers
 ├── assets/                  # persona.jpg (the narrator's reference sheet)

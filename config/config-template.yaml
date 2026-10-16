@@ -135,6 +135,12 @@ pipeline:
   # --- Delivery (values below are the code defaults) ---
   # Threads is posted by the DAILY VISUAL Lambda (the image and the text ship as one post set).
   enable_threads_post: false
+  # Answer readers' comments on the last comment_reply_lookback_days of posts (the comment-reply
+  # Lambda, every aws.comment_reply_interval_minutes). The model may decline a comment.
+  enable_comment_replies: false
+  comment_reply_lookback_days: 7
+  comment_reply_max_per_run: 10
+  comment_reply_max_per_commenter: 3
 
   # --- Daily visual (values below are the code defaults) ---
   image_model: "gpt-image-2.5-sunburst"
@@ -181,3 +187,5 @@ aws:
   # S3 park file (refreshed by the local sync cron) and never reaches the service; raise to 1
   # to restore the in-AWS fallback. The task definition is deployed either way.
   rsshub_desired_count: 0
+  # How often the comment-reply Lambda looks for new comments.
+  comment_reply_interval_minutes: 60

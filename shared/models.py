@@ -128,6 +128,11 @@ class VisualBrief(BaseModel):
     )
 
 
+class CommentReply(BaseModel):
+    reply: bool = Field(description="False to leave the comment unanswered.")
+    text: str = Field(default="", description="The reply to post, when `reply` is true.")
+
+
 class ImageAsset(BaseModel):
     """A representative image downloaded from a source page (its og:image / twitter:image),
     carried through to Threads delivery. `source_url` is the article the image belongs
