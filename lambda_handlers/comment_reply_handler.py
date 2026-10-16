@@ -14,7 +14,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Scheduled: answer readers' new comments on the account's recent Threads posts.
 
     A comment that could not be answered is RE-RAISED as a failure once the rest are done, so the
-    Errors alarm fires; it stays unrecorded and the next run tries it again (retry_attempts=0)."""
+    Errors alarm fires; a transient failure stays unrecorded and the next run tries it again
+    (retry_attempts=0)."""
     set_correlation_id(getattr(context, "aws_request_id", "") or None)
     config = Config.load()
     if not config.pipeline.enable_comment_replies:

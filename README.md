@@ -80,7 +80,6 @@ collectors:
     trend_searches:
       - name: frontier_models
         queries: ["frontier AI model release GPT Claude Gemini Llama"]
-        topic: news
   rsshub:
     enabled: true
     base_url: "http://localhost:1200"

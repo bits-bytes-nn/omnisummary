@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from output import threads_handler
-from output.threads_handler import _is_media_not_found, post_to_threads
+from output.threads_handler import is_media_not_found, post_to_threads
 
 
 def _ctx(obj):
@@ -329,26 +329,26 @@ class TestPostToThreads:
         assert (ok.posted, ok.expected) == (3, 3)
         assert ok.partial is False
 
-    def test_is_media_not_found_detects_code_24(self):
+    def testis_media_not_found_detects_code_24(self):
         req = httpx.Request("POST", "https://x")
         resp = httpx.Response(400, request=req, json={"error": {"code": 24}})
-        assert _is_media_not_found(httpx.HTTPStatusError("e", request=req, response=resp))
+        assert is_media_not_found(httpx.HTTPStatusError("e", request=req, response=resp))
         other = httpx.Response(400, request=req, json={"error": {"code": 100}})
-        assert not _is_media_not_found(httpx.HTTPStatusError("e", request=req, response=other))
+        assert not is_media_not_found(httpx.HTTPStatusError("e", request=req, response=other))
 
-    def test_is_transient_reply_error_classification(self):
+    def testis_transient_reply_error_classification(self):
         req = httpx.Request("POST", "https://x")
 
         def err(status, body=None):
             resp = httpx.Response(status, request=req, json=body or {})
             return httpx.HTTPStatusError("e", request=req, response=resp)
 
-        assert threads_handler._is_transient_reply_error(err(400, {"error": {"code": 24}}))  # media-not-found
-        assert threads_handler._is_transient_reply_error(err(400, {"error": {"code": 100}}))  # processing
-        assert threads_handler._is_transient_reply_error(err(429))
-        assert threads_handler._is_transient_reply_error(err(503))
-        assert not threads_handler._is_transient_reply_error(err(401))  # auth: don't retry
-        assert not threads_handler._is_transient_reply_error(err(403))
+        assert threads_handler.is_transient_reply_error(err(400, {"error": {"code": 24}}))  # media-not-found
+        assert threads_handler.is_transient_reply_error(err(400, {"error": {"code": 100}}))  # processing
+        assert threads_handler.is_transient_reply_error(err(429))
+        assert threads_handler.is_transient_reply_error(err(503))
+        assert not threads_handler.is_transient_reply_error(err(401))  # auth: don't retry
+        assert not threads_handler.is_transient_reply_error(err(403))
 
 
 class TestPublishPost:

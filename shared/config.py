@@ -576,8 +576,9 @@ class AWSConfig(_StrictModel):
     digest_cron_minute: str = "0"
     # Threads long-lived tokens expire after 60 days; refresh comfortably inside that window.
     threads_token_refresh_days: int = Field(default=50, ge=1, le=59)
-    # How often the comment-reply Lambda looks for new comments.
-    comment_reply_interval_minutes: int = Field(default=60, ge=5)
+    # How often the comment-reply Lambda looks for new comments. At least its 10-minute timeout, so
+    # runs never queue behind the single concurrency slot.
+    comment_reply_interval_minutes: int = Field(default=60, ge=10)
     # Running tasks for the RSSHub Fargate service. 0 by default because the digest never reaches
     # it: RSSHubCollector reads the S3 park file FIRST and returns early when it is usable, and the
     # local sync cron refreshes that file before every run (verified in the digest logs — X items

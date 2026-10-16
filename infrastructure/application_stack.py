@@ -233,7 +233,7 @@ class OmniSummaryApplicationStack(Stack):
             role=foundation.lambda_role,
             # One run at a time: two runs reading the same conversation would both answer a comment.
             reserved_concurrent_executions=1,
-            # A failed comment stays unrecorded and the next scheduled run retries it.
+            # A transiently failed comment stays unrecorded and the next scheduled run retries it.
             retry_attempts=0,
             log_group=self._log_group("CommentReplyLambdaLogGroup", f"{project_name}-{stage}-comment-replies"),
             environment={

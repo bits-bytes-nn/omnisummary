@@ -297,6 +297,18 @@ class TestApplicationStack:
         names = {v["Properties"]["Name"] for v in params.values()}
         assert "/omnisummary/dev/openai-api-key" in names
 
+    def test_the_comment_reply_lambda_runs_one_at_a_time_inside_its_interval(self, templates):
+        # Two concurrent runs reading the same conversation would both answer a comment.
+        _, app = templates
+        config = Config.from_yaml(str(CONFIG_TEMPLATE))
+        fn = next(
+            r["Properties"]
+            for r in app.find_resources("AWS::Lambda::Function").values()
+            if r["Properties"].get("FunctionName", "").endswith("-comment-replies")
+        )
+        assert fn["ReservedConcurrentExecutions"] == 1
+        assert fn["Timeout"] <= config.aws.comment_reply_interval_minutes * 60
+
     def test_digest_lambda_has_alert_topic_env(self, templates):
         _, app = templates
         funcs = app.find_resources("AWS::Lambda::Function")

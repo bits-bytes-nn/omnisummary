@@ -216,7 +216,7 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | `timezone` | 다이제스트 날짜의 기준 TZ(예: `Asia/Seoul`) |
 | `digest_cron_hour` / `digest_cron_minute` | EventBridge 크론(UTC 기준) |
 | `threads_token_refresh_days` | Threads 장기 토큰(60일 만료)의 갱신 주기(기본 50일, 59 이하) |
-| `comment_reply_interval_minutes` | 댓글 답글 Lambda의 실행 주기(기본 60분, 5 이상) |
+| `comment_reply_interval_minutes` | 댓글 답글 Lambda의 실행 주기(기본 60분, Lambda 타임아웃인 10 이상) |
 | `rsshub_desired_count` | RSSHub Fargate 서비스의 태스크 수(기본 0, [§11](#foundation_stack) 참조) |
 | `vpc_id`, `subnet_ids`, `state_bucket_name`, `s3_prefix` | 네트워킹과 상태 버킷 |
 
@@ -1037,11 +1037,11 @@ addressable해지지 않았다"는 **0번**인 반면 reply 재시도는 25일�
 있으니, root에 단 댓글에는 root와 함께 계정의 스토리 reply를 모두 보여 준다. 두 실행이 같은 대화를 읽으면 둘 다
 답하므로 Lambda의 동시 실행은 1이다.
 
-**원장.** `comment_replies.json`(`CommentReplyLedger`)에 답한 댓글, 거절한 댓글, Threads가 답글을 거부한(4xx) 댓글을
-기록한다. 거절한 댓글을 매시간 모델에 다시 묻지 않고, 거부된 댓글로 일주일 내내 매시간 알람이 울리지 않게 하기
+**원장.** `comment_replies.json`(`CommentReplyLedger`)에 답한 댓글, 거절한 댓글, Threads가 답글을 영구히 거부한 댓글(지워진 댓글, 권한 오류 등 재시도해도 바뀌지 않는
+오류)을 기록한다. 거절한 댓글을 매시간 모델에 다시 묻지 않고, 거부된 댓글로 일주일 내내 매시간 알람이 울리지 않게 하기
 위해서다. 이미 답한 댓글은 대화 안의 자기 답글로도 걸러지니, 원장 기록이 실패해도 같은 댓글에 두 번 답하지 않는다.
-원장을 못 읽으면 실행을 멈춘다. 모르는 이력으로 돌면 거절한 댓글을 모두 다시 묻게 된다. 초안 작성 실패와 일시적
-게시 실패(429, 5xx)는 기록하지 않아 다음 실행이 다시 시도한다. 어느 실패든 핸들러는 나머지를 다 처리한 뒤 예외를
+원장을 못 읽으면 실행을 멈춘다. 모르는 이력으로 돌면 거절한 댓글을 모두 다시 묻게 된다. 초안 작성 실패와 일시적일 수
+있는 게시 실패(400, 429, 5xx)는 기록하지 않아 다음 실행이 다시 시도한다. 어느 실패든 핸들러는 나머지를 다 처리한 뒤 예외를
 던져 Errors 알람을 울린다.
 
 **모델과 출력.** `digest_model`(Sonnet 5.5)이 `CommentReplyPrompt`로 답글을 쓰거나(`reply: true`) 거절한다. 질문,
@@ -1829,7 +1829,7 @@ CloudWatch 알람 10개가 모두 SNS 알림 토픽으로, 그리고 이메일�
   네트워크 협력자만 스텁하고 원장과 롤링 로그, 집계는 임시 디렉터리 StateStore로 실제 실행한다.
 - **`StateStore`(`test_state_store.py`)** — `S3StateStore`의 키 prefix와 UTF-8 인코딩, NoSuchKey와 기타
   ClientError의 구분, `create_state_store`의 버킷 기반 선택(AWS 밖에서도 `STATE_BUCKET`이면 S3와 프로파일 세션).
-- **WebSearch `collect()`(`test_web_search.py`)** — 쿼리별 fan-out과 URL dedup, per-trend domains와 topic 전달,
+- **WebSearch `collect()`(`test_web_search.py`)** — 쿼리별 fan-out과 URL dedup, per-trend domains 전달,
   전면 실패 승격, 부분 실패 허용, LLM 정제 2단계와 그 실패의 non-fatal성.
 - 헬스 리포트와 logger.
 - 메모리 스토어(로컬과 AgentCore 모킹).

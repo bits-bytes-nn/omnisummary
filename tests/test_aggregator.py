@@ -222,3 +222,23 @@ def test_a_pinned_item_survives_title_dedup_against_an_earlier_copy():
 
     kept = ContentAggregator().aggregate([item("https://a.example/1"), item("https://b.example/2", pinned=True)])
     assert [k.url for k in kept] == ["https://b.example/2"]
+
+
+def test_two_pins_sharing_a_title_are_both_kept():
+    from datetime import UTC, datetime
+
+    from pipeline.aggregator import ContentAggregator
+    from shared import CollectedItem, SourceType
+
+    pins = [
+        CollectedItem(
+            source_type=SourceType.WEB,
+            url=url,
+            title="Same Headline",
+            text="body",
+            published_at=datetime(2026, 10, 16, tzinfo=UTC),
+            metadata={"pinned": True},
+        )
+        for url in ("https://a.example/1", "https://b.example/2")
+    ]
+    assert len(ContentAggregator().aggregate(pins)) == 2
