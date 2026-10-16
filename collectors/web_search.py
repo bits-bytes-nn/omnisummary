@@ -10,6 +10,7 @@ import httpx
 from langchain_core.output_parsers import StrOutputParser
 from tavily import AsyncTavilyClient
 from tavily.errors import TimeoutError as TavilyTimeoutError
+from tavily.errors import UsageLimitExceededError
 
 from shared import (
     DOMAIN_TO_SOURCE,
@@ -30,10 +31,16 @@ from .base import BaseCollector, collection_window_dates, gather_collector_resul
 from .youtube import YOUTUBE_API_BASE, fetch_youtube_transcript
 
 # Failures another attempt can plausibly fix: a hung request (asyncio's TimeoutError and Tavily's
-# own), and any transport-level error. Every other tavily.errors type — a missing/invalid key, a
-# 400, a 403, an exhausted usage limit — is a VERDICT, and retrying it only delays the DEGRADED
+# own), any transport-level error, and HTTP 429, Tavily's burst rate limit (the SDK raises it as
+# UsageLimitExceededError; an exhausted plan is a different code). Every other tavily.errors type —
+# a missing/invalid key, a 400, a 403 — is a VERDICT, and retrying it only delays the DEGRADED
 # report the health check owes the operator.
-_RETRIABLE_SEARCH_ERRORS: tuple[type[BaseException], ...] = (TimeoutError, TavilyTimeoutError, httpx.HTTPError)
+_RETRIABLE_SEARCH_ERRORS: tuple[type[BaseException], ...] = (
+    TimeoutError,
+    TavilyTimeoutError,
+    UsageLimitExceededError,
+    httpx.HTTPError,
+)
 
 
 class WebSearchCollector(BaseCollector):
@@ -47,12 +54,9 @@ class WebSearchCollector(BaseCollector):
 
     @property
     def _client(self) -> AsyncTavilyClient:
-        # The key is resolved once in collect() (env -> SSM); reuse it here so a single
-        # collect doesn't make repeated SSM round-trips.
+        # The key is resolved once in collect() (env -> SSM) before any search runs.
         if self._client_instance is None:
-            self._client_instance = AsyncTavilyClient(
-                api_key=self._api_key or resolve_secret("TAVILY_API_KEY", "tavily-api-key")
-            )
+            self._client_instance = AsyncTavilyClient(api_key=self._api_key)
         return self._client_instance
 
     async def collect(self) -> list[CollectedItem]:
@@ -81,7 +85,7 @@ class WebSearchCollector(BaseCollector):
                 )
 
         if not tasks:
-            logger.info("No web search queries or accounts configured, skipping")
+            logger.info("No web search queries configured, skipping")
             return []
 
         broad = await gather_collector_results(tasks, raise_if_all_failed=True)

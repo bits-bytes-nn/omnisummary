@@ -162,9 +162,8 @@ class RSSHubAccount(_StrictModel):
 class RSSHubCollectorConfig(BaseCollectorConfig):
     base_url: str = f"http://localhost:{RSSHUB_PORT}"
     accounts: list[RSSHubAccount] = Field(default_factory=list)
-    # How many account feeds may be fetched at once. Worst-case wall time is ceil(accounts / max_concurrency) * (request_timeout + retry_backoff_sec) *
-    # max_retries: with the shipped 41 accounts that is ~16 minutes, i.e. MORE than the digest
-    # Lambda's entire budget — hence collectors.collector_budget_sec, which bounds the source itself.
+    # How many account feeds the local sync fetches at once. Worst-case wall time is
+    # ceil(accounts / max_concurrency) * (request_timeout + retry_backoff_sec) * max_retries.
     max_concurrency: int = Field(default=5, ge=1)
 
 
@@ -181,9 +180,9 @@ class CollectorsConfig(_StrictModel):
     # could expire while its work was still queued behind another source's.
     thread_pool_max_workers: int = Field(default=16, ge=1)
     # Wall-clock budget for ONE source's whole collect(), enforced by the runner. The per-INPUT
-    # timeouts do not bound the SOURCE: 41 RSSHub account feeds at max_concurrency 5, each allowed
-    # (request_timeout + retry_backoff_sec) * max_retries = 105s, need ~16 minutes of serialized
-    # rounds — more than the digest Lambda's entire 15-minute budget. So a wedged-but-reachable
+    # timeouts do not bound the SOURCE: dozens of feeds at a bounded fan-out, each allowed
+    # (request_timeout + retry_backoff_sec) * max_retries, can need more than the digest Lambda's
+    # entire 15-minute budget. So a wedged-but-reachable
     # source used to kill the whole run instead of being reported FAILED while the other four
     # shipped; only YouTube had a budget, and only per channel. A timeout here raises, so it lands in
     # the runner's existing exception branch as that source FAILED. 0 disables the bound.

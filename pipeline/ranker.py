@@ -394,7 +394,7 @@ class ContentRanker:
 
         try:
             data = parse_json_from_llm_output(raw_output)
-            rankings = data.get("rankings", [])
+            rankings = data.get("rankings", []) if isinstance(data, dict) else []
         except (json.JSONDecodeError, KeyError) as exc:
             logger.error("Failed to parse ranking LLM output: '%s'", exc)
             logger.debug("Raw LLM output:\n%s", raw_output[:500])

@@ -109,7 +109,6 @@ pipeline:
 | `OPENAI_API_KEY` | 데일리 만화 렌더 |
 | `THREADS_ACCESS_TOKEN` / `THREADS_USER_ID` | Threads 전달(60일 토큰, AWS에서는 SSM으로 자동 갱신) |
 | `ALERT_EMAIL` | 소스 헬스 SNS 이메일 알림(AWS) |
-| `TWITTER_AUTH_TOKEN` / `TWITTER_CT0` | RSSHub 경유 X/Twitter. 본인 x.com 세션 쿠키 |
 | `S3_SYNC_ACCESS_KEY_ID` / `S3_SYNC_SECRET_ACCESS_KEY` | 로컬 → S3 sync 전용 자격증명(선택. 없으면 `AWS_PROFILE`) |
 
 > **시크릿은 CDK 스택을 통과하지 않는다.** CloudFormation 템플릿은 SecureString을 담을 수 없어서,
@@ -152,7 +151,7 @@ docker run -d --name rsshub --restart unless-stopped -p 1200:1200 \
 curl -s "http://localhost:1200/twitter/user/karpathy" | head   # 스모크 테스트
 ```
 
-쿠키 없이도 컨테이너는 뜨지만 X 피드가 비어서 돌아온다. 쿠키는 때때로 만료된다. RSSHub 실패율이 올라가면(경고로 로깅된다) 쿠키를 갱신하고 컨테이너를 다시 만든다. `--restart unless-stopped`는 명시적으로 멈춘 컨테이너를 다시 띄우지 않으니, `localhost:1200`이 응답하지 않으면 sync 스크립트가 컨테이너를 켠다. AWS에서는 같은 이미지를 ECS Fargate로 돌릴 수 있다.
+쿠키 없이도 컨테이너는 뜨지만 X 피드가 비어서 돌아온다. 쿠키는 때때로 만료된다. RSSHub 실패율이 올라가면(경고로 로깅된다) 쿠키를 갱신하고 컨테이너를 다시 만든다. `--restart unless-stopped`는 명시적으로 멈춘 컨테이너를 다시 띄우지 않으니, `localhost:1200`이 응답하지 않으면 sync 스크립트가 컨테이너를 켠다.
 
 ## 사용법
 

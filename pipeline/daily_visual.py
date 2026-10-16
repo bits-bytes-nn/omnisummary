@@ -273,8 +273,8 @@ class DailyVisualMaker:
         return 1, item.title, f"{item.title}\n\n{item.text}"
 
     def _countdown_intro(self, post_date: date) -> str:
-        """The AGI-countdown gag for this date, exactly as the digest generator computed it — the one
-        part of the lead CODE owns, so the renderer can identify (and drop) it if the lead overflows."""
+        """The AGI-countdown gag for this date, exactly as the digest generator computed it, so the
+        editorial take can be read without it."""
         return agi_countdown_intro(
             self.config.pipeline.agi_countdown_date,
             self.config.pipeline.agi_countdown_template,

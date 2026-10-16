@@ -10,7 +10,6 @@ from output.threads_handler import (
     error_detail,
     fetch_conversation,
     fetch_own_posts,
-    is_media_not_found,
     is_transient_reply_error,
     publish_reply,
     threads_client,
@@ -193,9 +192,9 @@ class CommentResponder:
                         "Could not answer comment %s (%s): %s", comment_id, e.response.status_code, error_detail(e)
                     )
                     run.failed.append(comment_id)
-                    # Only a verdict retrying cannot change (the comment is gone, auth, a permanent
-                    # rejection) is recorded; a 400 that may be transient is tried again next run.
-                    if (is_media_not_found(e) or not is_transient_reply_error(e)) and not dry_run:
+                    # Only a verdict retrying cannot change (auth, a permanent rejection) is recorded;
+                    # a 400 that may be transient is tried again next run.
+                    if not is_transient_reply_error(e) and not dry_run:
                         try:
                             self.ledger.record(comment_id, "failed", now)
                         except Exception:

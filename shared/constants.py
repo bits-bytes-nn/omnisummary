@@ -41,7 +41,7 @@ BROWSER_USER_AGENT: str = (
 # Platform aliases that RSSHub routes through its `twitter` namespace.
 TWITTER_PLATFORMS: tuple[str, ...] = ("x", "twitter")
 
-# Port the RSSHub service listens on (collector base URL + Fargate container/DNS).
+# Port the local RSSHub container listens on (the collector's base URL).
 # Single source of truth so config and infrastructure can't drift.
 RSSHUB_PORT: int = 1200
 
