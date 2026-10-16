@@ -35,7 +35,6 @@ class OmniSummaryApplicationStack(Stack):
 
         project_name = config.aws.project_name
         stage = config.aws.stage
-        bedrock_region = config.aws.bedrock_region
         state_prefix = f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state"
 
         Tags.of(self).add("Project", project_name)
@@ -108,7 +107,6 @@ class OmniSummaryApplicationStack(Stack):
             on_failure=destinations.SqsDestination(async_dlq),
             log_group=self._log_group("DailyVisualLambdaLogGroup", f"{project_name}-{stage}-visual"),
             environment={
-                "AWS_BEDROCK_REGION": bedrock_region,
                 "PROJECT_NAME": project_name,
                 "STAGE": stage,
                 "MEMORY_ID": foundation.memory_id,
@@ -147,7 +145,6 @@ class OmniSummaryApplicationStack(Stack):
                 "STATE_BUCKET": foundation.state_bucket.bucket_name,
                 "S3_PREFIX": state_prefix,
                 "RSSHUB_BASE_URL": foundation.rsshub_base_url,
-                "AWS_BEDROCK_REGION": bedrock_region,
                 "PROJECT_NAME": project_name,
                 "STAGE": stage,
                 "ALERT_SNS_TOPIC_ARN": foundation.alerts_topic.topic_arn,
@@ -229,14 +226,17 @@ class OmniSummaryApplicationStack(Stack):
                 tag_or_digest=digest_tag_or_digest,
                 cmd=["lambda_handlers.comment_reply_handler.handler"],
             ),
-            timeout=Duration.minutes(5),
+            # Up to comment_reply_max_per_run comments, each a model call plus a publish whose retry
+            # ladder alone can take 30s.
+            timeout=Duration.minutes(10),
             memory_size=512,
             role=foundation.lambda_role,
+            # One run at a time: two runs reading the same conversation would both answer a comment.
+            reserved_concurrent_executions=1,
             # A failed comment stays unrecorded and the next scheduled run retries it.
             retry_attempts=0,
             log_group=self._log_group("CommentReplyLambdaLogGroup", f"{project_name}-{stage}-comment-replies"),
             environment={
-                "AWS_BEDROCK_REGION": bedrock_region,
                 "PROJECT_NAME": project_name,
                 "STAGE": stage,
                 "STATE_BUCKET": foundation.state_bucket.bucket_name,
@@ -251,8 +251,7 @@ class OmniSummaryApplicationStack(Stack):
             targets=[targets.LambdaFunction(comment_reply_lambda)],
         )
 
-        # Alarm on ALL Lambdas (incl. visual + threads-refresh, which run best-effort and would
-        # otherwise fail silently). Created here so every Lambda already exists.
+        # Alarm on ALL Lambdas. Created here so every Lambda already exists.
         self._add_alarms(
             {
                 "Digest": digest_lambda,

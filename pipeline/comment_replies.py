@@ -4,7 +4,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from output.threads_handler import fetch_conversation, fetch_own_posts, publish_reply, threads_client
+import httpx
+
+from output.threads_handler import error_detail, fetch_conversation, fetch_own_posts, publish_reply, threads_client
 from shared import (
     KOREAN_PROSE_RULES,
     BedrockLanguageModelFactory,
@@ -85,12 +87,18 @@ def pending_comments(
         if replies_to.get(c.get("username", ""), 0) >= max_per_commenter:
             logger.info("Not answering @%s again under post %s: already answered", c.get("username"), post["id"])
             continue
-        thread: list[dict[str, Any]] = []
-        cursor = by_id.get(parent_id(c))
-        while cursor is not None and cursor not in thread:
-            thread.insert(0, cursor)
-            cursor = None if cursor is post else by_id.get(parent_id(cursor))
+        if parent_id(c) == post["id"]:
+            # A comment on the root may be about any story: the root only lists their titles.
+            thread = [post] + [s for s in conversation if s["id"] in own and parent_id(s) == post["id"]]
+        else:
+            thread = []
+            cursor = by_id.get(parent_id(c))
+            while cursor is not None and cursor not in thread:
+                thread.insert(0, cursor)
+                cursor = None if cursor is post else by_id.get(parent_id(cursor))
         pending.append(PendingComment(comment=c, thread=thread, own_ids=own))
+        user = c.get("username", "")
+        replies_to[user] = replies_to.get(user, 0) + 1
     return pending
 
 
@@ -125,13 +133,12 @@ class CommentResponder:
                 "comment": pending.comment.get("text", "").strip(),
             }
         )
-        if result is None:
-            raise ValueError(f"Comment reply model returned no {CommentReply.__name__} tool call")
         return CommentReply.model_validate(result)
 
     async def run(self, now: datetime, *, dry_run: bool = False) -> CommentReplyRun:
         """Answer what is pending. `dry_run` drafts the replies and posts and records nothing.
-        A comment whose draft or publish fails is not recorded, so the next run tries it again."""
+        A comment whose draft fails, or whose publish fails transiently, is not recorded, so the next
+        run tries it again; one Threads rejects outright is recorded as failed and left alone."""
         token = resolve_secret("THREADS_ACCESS_TOKEN", "threads-access-token", strict=True)
         user_id = resolve_secret("THREADS_USER_ID", "threads-user-id", strict=True)
         if not token or not user_id:
@@ -173,6 +180,13 @@ class CommentResponder:
                     run.replied.append(
                         {"comment_id": comment_id, "comment": item.comment.get("text", ""), "reply": text}
                     )
+                except httpx.HTTPStatusError as e:
+                    logger.warning(
+                        "Could not answer comment %s (%s): %s", comment_id, e.response.status_code, error_detail(e)
+                    )
+                    run.failed.append(comment_id)
+                    if e.response.status_code < 500 and e.response.status_code != 429:
+                        self.ledger.record(comment_id, "failed", now)
                 except Exception as e:
                     logger.warning("Could not answer comment %s: %s", comment_id, e)
                     run.failed.append(comment_id)

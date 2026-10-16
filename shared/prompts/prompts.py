@@ -368,7 +368,9 @@ reply. Korean replies use the friendly polite 해요체 throughout ('~해요', '
 '~다' column register or '~습니다', and:
 {language_rules}
 
-Decline spam, ads or self-promotion, abuse, a comment not addressed to the post, or one with \
-nothing to answer. A reader's kind word is not nothing: it gets a short, warm thank-you."""
+Answer only a reader who engages with the post: a question, an objection, their own experience or \
+a point of their own. Decline everything else: spam, ads or self-promotion, abuse, and the \
+meaningless ones, such as a lone emoji, bare praise or thanks, or a generic remark that restates the \
+post or would fit under any post on the topic (what engagement bots write)."""
 
     human_prompt_template = '<thread>\n{thread}\n</thread>\n\n<comment author="@{username}">\n{comment}\n</comment>'

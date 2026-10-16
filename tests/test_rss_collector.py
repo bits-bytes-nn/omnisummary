@@ -259,3 +259,17 @@ class TestSummaryOnlyEntries:
         ):
             items = await c.collect()
         assert items[0].text == "body"
+
+    @pytest.mark.asyncio
+    async def test_a_feed_that_ships_whole_posts_as_the_summary_is_not_fetched(self):
+        entry = _entry()
+        entry["summary"] = "a whole post. " * 60
+        c = RSSCollector(_config())
+        pages = AsyncMock(return_value={})
+        with (
+            patch("collectors.base.fetch_feed", return_value=_feed([entry])),
+            patch("collectors.rss.extract_pages", new=pages),
+        ):
+            items = await c.collect()
+        pages.assert_not_awaited()
+        assert items[0].text.startswith("a whole post.")

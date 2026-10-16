@@ -175,7 +175,8 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | 중복 | `published_url_ttl_days`(기본 6, 최소 2), `recent_leads_window`(기본 5) | cross-day dedup 원장 TTL과 최근 다이제스트 제목을 읽는 창, 반복 방지용 최근 lead 윈도. TTL이 최소 2인 것은 날짜만 있는 웹 결과가 이틀 연속 윈도에 들어가고([§4.7](#47-websearch-web_searchpy)) 두 번째 게시를 원장이 막기 때문이다 |
 | 트렌드 | `trend_retention_days`, `trend_cooling_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존과 냉각 기간, 증거와 active 캡, momentum 반감기 |
 | 전달 | `enable_threads_post`, `threads_topic_tag`(기본 `AI`) | Threads 게시 on/off. 코드 기본값은 off이고 배포 설정은 on이다. 데일리 비주얼 Lambda가 게시한다. 토픽 태그는 root 게시물에만 붙는다([§5.8](#58-threads-전달-outputthreads_handlerpy-enable_threads_post)) |
-| AGI 카운트다운 | `agi_countdown_date`(기본 `2029-01-01`), `agi_countdown_template`, `agi_countdown_after`, `agi_countdown_position`(`prefix`\|`suffix`, 코드 기본값과 배포 설정 모두 `prefix`) | 다이제스트 lead에 코드가 붙이는 "AGI N일 전" 인트로와, lead의 어느 쪽 끝에 붙일지([§5.7](#57-agi-카운트다운-인트로-sharedformattingpy-agi_countdown_intro) 참조) |
+| 댓글 답글 | `enable_comment_replies`, `comment_reply_lookback_days`(7), `comment_reply_max_per_run`(10), `comment_reply_max_per_commenter`(3) | 독자 댓글 자동 답글. 코드 기본값은 off이고 배포 설정은 on이다([§5.9](#59-댓글-답글-pipelinecomment_repliespy-enable_comment_replies)) |
+| AGI 카운트다운 | `agi_countdown_date`(기본 `2029-01-01`), `agi_countdown_template`, `agi_countdown_after` | 다이제스트 lead 맨 앞에 코드가 붙이는 "AGI N일 전" 인트로([§5.7](#57-agi-카운트다운-인트로-sharedformattingpy-agi_countdown_intro) 참조) |
 | 시각화 | `image_model`(`gpt-image-2.5-sunburst`), `image_sizes`, `visual_image_quality`(`xhigh`), `visual_editor_source_max_tokens`, `visual_synopsis_source_max_tokens`, `visual_image_timeout_sec`(기본 300)과 `visual_image_max_retries`(기본 0), `visual_character_enabled`, `visual_character_sheet`, `visual_character_reference`(`assets/persona.jpg`) | 이미지 모델과 품질 등급, orientation에서 size로 가는 딕셔너리(키는 `VisualOrientation` 어휘로 고정이고 값만 튜닝한다), 입력 상한, 이미지 HTTP 호출 상한. SDK 기본값 600초씩 2회는 비주얼 Lambda의 15분 예산을 넘길 수 있어서 config로 고정했다 |
 | 프롬프트 주입 | `digest_language_rules`, `digest_voice_guidance`, `ranking_audience_description`, `digest_audience_description`, `visual_audience_description`, `visual_on_image_language`, `visual_synopsis_style_guidance`, `visual_synopsis_style_aesthetic`, `visual_guardrails`, `visual_moderation_softening_instruction` | 언어 규칙과 대상 독자, 톤, 미감, 가드레일, 모더레이션 완화 문구. 하드코딩 대신 템플릿 변수로 주입한다. `digest_language_rules`는 한국어 규칙과 번역 용어집을 튜닝하는 자리이고 언어 스위치가 아니다. 한국어 전용이 의도한 제품이다. `digest_voice_guidance`는 Gruber 톤이며, 단일 냉소 프레임으로 기본 고정하지 말고 그날 사실이 정당화할 때만 각을 세우도록 쓰여 있다 |
 
@@ -215,6 +216,7 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | `timezone` | 다이제스트 날짜의 기준 TZ(예: `Asia/Seoul`) |
 | `digest_cron_hour` / `digest_cron_minute` | EventBridge 크론(UTC 기준) |
 | `threads_token_refresh_days` | Threads 장기 토큰(60일 만료)의 갱신 주기(기본 50일, 59 이하) |
+| `comment_reply_interval_minutes` | 댓글 답글 Lambda의 실행 주기(기본 60분, 5 이상) |
 | `rsshub_desired_count` | RSSHub Fargate 서비스의 태스크 수(기본 0, [§11](#foundation_stack) 참조) |
 | `vpc_id`, `subnet_ids`, `state_bucket_name`, `s3_prefix` | 네트워킹과 상태 버킷 |
 
@@ -367,8 +369,10 @@ Tavily의 X 프로필 쿼리처럼 결과가 대부분 프로필 페이지인 �
 Tavily extract(`shared.research.extract_pages`, 요청당 20개)로 페이지 본문을 받아 더 길 때만 바꾼다. DeepMind,
 Google Research, Hugging Face 피드는 설명이 비어 있거나 한 줄이고 OpenAI도 120~150자라서, 랭커가 제목만 보고
 점수를 매겼다. 2026-10-14에 본문 0자인 "Gemini 4 Argon" 글이 0.84를 받아 출고됐고, 근거 검증이 출처에 없는 주장을
-모두 지우자 한 문장짜리 스토리가 남았다. 하루 10건 안팎이다. 길이 기준이 아니라 엔트리 구조(`content` 유무)로
-고르고, 읽기 실패나 더 짧은 페이지는 피드 문구를 그대로 둔다.
+모두 지우자 한 문장짜리 스토리가 남았다. 하루 10건 안팎이다. 다만 `content` 없이 `summary`에 글 전체를 싣는
+피드도 있다(Simon Willison, 중앙값 1712자). 그 페이지를 받으면 깨끗한 본문이 내비게이션과 푸터가 섞인 텍스트로
+바뀌니, 요약이 500자(`THIN_SUMMARY_MAX_CHARS`) 미만일 때만 채운다. 얇은 피드의 중앙값은 19자(research.google)와
+149자(openai.com)였다. 읽기 실패나 더 짧은 페이지는 피드 문구를 그대로 둔다.
 
 **fan-out 상한(`max_concurrency`, 기본 5)이 필요한 이유.** 한 번에 도는 fetch 수를 묶어서 수집기의 최악
 wall time을 계산 가능하게 유지한다. 세마포어는 `collect()` 안에서, 다시 말해 실행 중인 루프에서 만든다
@@ -957,22 +961,15 @@ OpenAI 키가 없거나 에디터 호출이 실패하거나 에디터가 skip하
 `place_countdown_intro`) 그 실행의 KST `digest_date`로 계산한다. 인트로가 저장 콘텐츠의 일부가 되니 Threads
 root에 함께 나가고, 트렌드 재등장 수치와 같은 시계(같은 날짜)를 쓴다.
 
-**위치 노브(`agi_countdown_position`, 코드 기본값과 배포 설정 모두 `prefix`).** 접두로 두면 Threads root의 첫
-줄, 곧 피드 독자가 유일하게 보는 줄을 매일 같은 고정 문장이 차지한다. 실제로 연속 40개 게시물이 동일 문장으로
-시작했다. 그럼에도 `prefix`가 기본이고 배포 설정도 그대로다. 카운트다운은 이 계정의 서명이고, 소유자가 첫 줄
-도달률 논리보다 알아볼 수 있는 브랜딩을 위에 뒀다. 첫 줄을 그날의 각으로 열고 싶은 배포는 `suffix`로 두면
-개그를 문구 그대로 lead의 맺음말로 옮긴다. 위치만 노브로 두고 cadence나 "N일마다 생략", 랜덤은 두지 않는다.
-매직 넘버가 된다.
+**lead를 연다.** 개그는 lead 맨 앞에 붙는다(`place_countdown_intro`). Threads root의 첫 줄, 곧 피드 독자가 유일하게
+보는 줄을 매일 같은 고정 문장이 차지한다. 실제로 연속 40개 게시물이 동일 문장으로 시작했다. 그래도 카운트다운은 이
+계정의 서명이고, 소유자가 첫 줄 도달률 논리보다 알아볼 수 있는 브랜딩을 위에 뒀다. 맺음말로 옮기는 `suffix` 위치
+노브가 있었지만 어느 배포도 쓰지 않아 2026-10-16에 지웠다. 노브 하나가 렌더러, 생성기, 전달 경로에 분기를 남겼다.
 
-**양 끝에서 제거한다(`editorial_lead`).** 최근 lead 신선도 비교와 비주얼의 편집 관점 전달은 개그를 뺀 각만
-봐야 하니, 접두든 접미든 어느 쪽에 붙어 있어도 제거한다. 저장된 lead가 설정 변경 이전 것일 수 있다.
+**각만 볼 때는 뺀다(`editorial_lead`).** 최근 lead 신선도 비교와 비주얼의 편집 관점 전달은 개그를 뺀 각만 본다.
 
-**넘치면 개그가 먼저 나간다.** Threads root가 500자를 넘으면 `_fit_lead`가 코드 소유의 카운트다운 줄을 먼저
-버리고 에디터의 산문, 곧 그날의 논지를 지킨다. 개그를 버리는 조건은 마지막 줄이 그 개그임을 식별할 수 있을
-때뿐이다. 호출자(`output/digest_delivery.py`)가 계산한 인트로 문자열을 `render_threads_posts(content, countdown)`로 넘겨
-비교한다. 마지막 줄을 무조건 버리는 방식은 `prefix` 위치나 개그 비활성 상태에서 진짜 산문을 삭제하니 쓰지
-않는다. 식별되지 않으면 앞에서부터 온전한 문장만 남기니 접두 개그는 살아남는다. 트림이 발생하면 WARNING을
-남긴다. 에디터가 산문 예산을 넘겼다는 신호다.
+**넘치면 앞 문장부터 남긴다.** Threads root가 500자를 넘으면 `_fit_lead`가 앞에서부터 온전한 문장만 남기니 접두
+개그는 살아남는다. 트림이 발생하면 WARNING을 남긴다. 에디터가 산문 예산을 넘겼다는 신호다.
 
 ### 5.8 Threads 전달 (`output/threads_handler.py`, `enable_threads_post`)
 
@@ -1034,19 +1031,23 @@ addressable해지지 않았다"는 **0번**인 반면 reply 재시도는 25일�
 
 **답할 댓글.** 남이 쓴 댓글 중 계정 자신의 게시물(root, 스토리 reply, 앞서 단 답글)에 직접 단 것만 고른다. 독자끼리
 주고받는 대화에는 끼어들지 않는다. 숨김·가림 처리된 댓글(`hide_status`), 빈 댓글, 기간 밖 댓글, 이미 계정이 답한
-댓글은 뺀다. 한 게시물 아래에서 같은 사람에게는 `comment_reply_max_per_commenter`(3)번까지만 답한다. 모든 답글에
-다시 답하는 봇과 끝없이 주고받지 않기 위해서다. 한 번에 `comment_reply_max_per_run`(10)개까지 오래된 순서로
-처리하고, 나머지는 다음 실행으로 넘긴다.
+댓글은 뺀다. 한 게시물 아래에서 같은 사람에게는 `comment_reply_max_per_commenter`(3)번까지만 답하고, 이번 실행에서 답할
+댓글도 그 횟수에 센다. 모든 답글에 다시 답하는 봇과 끝없이 주고받지 않기 위해서다. 한 번에
+`comment_reply_max_per_run`(10)개까지 오래된 순서로 처리하고 나머지는 다음 실행으로 넘긴다. root에는 스토리 제목만
+있으니, root에 단 댓글에는 root와 함께 계정의 스토리 reply를 모두 보여 준다. 두 실행이 같은 대화를 읽으면 둘 다
+답하므로 Lambda의 동시 실행은 1이다.
 
-**원장.** `comment_replies.json`(`CommentReplyLedger`)에 답한 댓글과 거절한 댓글을 함께 기록한다. 거절한 댓글을
-매시간 모델에 다시 묻지 않기 위해서다. 이미 답한 댓글은 대화 안의 자기 답글로도 걸러지니, 원장 기록이 실패해도
-같은 댓글에 두 번 답하지 않는다. 원장을 못 읽으면 실행을 멈춘다. 모르는 이력으로 돌면 거절한 댓글을 모두 다시
-묻는다. 초안 작성이나 게시에 실패한 댓글은 기록하지 않아 다음 실행이 다시 시도하고, 핸들러는 나머지를 다 처리한
-뒤 예외를 던져 Errors 알람을 울린다.
+**원장.** `comment_replies.json`(`CommentReplyLedger`)에 답한 댓글, 거절한 댓글, Threads가 답글을 거부한(4xx) 댓글을
+기록한다. 거절한 댓글을 매시간 모델에 다시 묻지 않고, 거부된 댓글로 일주일 내내 매시간 알람이 울리지 않게 하기
+위해서다. 이미 답한 댓글은 대화 안의 자기 답글로도 걸러지니, 원장 기록이 실패해도 같은 댓글에 두 번 답하지 않는다.
+원장을 못 읽으면 실행을 멈춘다. 모르는 이력으로 돌면 거절한 댓글을 모두 다시 묻게 된다. 초안 작성 실패와 일시적
+게시 실패(429, 5xx)는 기록하지 않아 다음 실행이 다시 시도한다. 어느 실패든 핸들러는 나머지를 다 처리한 뒤 예외를
+던져 Errors 알람을 울린다.
 
-**모델과 출력.** `digest_model`(Sonnet 5.5)이 `CommentReplyPrompt`로 답글을 쓰거나(`reply: true`) 거절한다
-(스팸, 광고, 욕설, 게시물과 무관한 댓글, 답할 거리가 없는 댓글). 판정은 Bedrock의 JSON 스키마 제약 출력
-(`with_structured_output(..., method="json_schema")`)으로 받는다. Sonnet 5.5는 도구 호출을 강제할 수 없고, `auto`로
+**모델과 출력.** `digest_model`(Sonnet 5.5)이 `CommentReplyPrompt`로 답글을 쓰거나(`reply: true`) 거절한다. 질문,
+반론, 자기 경험이나 자기 논점처럼 게시물에 실제로 반응한 댓글에만 답한다. 스팸, 광고, 욕설과 무의미한 댓글(이모지만,
+칭찬이나 인사만, 게시물을 되풀이하거나 어느 글에나 붙을 일반론, 즉 참여 유도 봇이 쓰는 것)은 거절한다. 판정은
+Bedrock의 JSON 스키마 제약 출력(`with_structured_output(..., method="json_schema")`)으로 받는다. Sonnet 5.5는 도구 호출을 강제할 수 없고, `auto`로
 둔 스키마 도구에는 영어 댓글 5개 중 4개를 평문으로 답해 답글과 거절을 구분할 수 없었다. 제약 출력에서는 실제 댓글
 4개가 모두 판정 형식을 지켰다. Haiku 5.5는 도구 호출을 강제할 수 있지만 영어 댓글에 한국어로 답했고 4개 중 3개를
 "맞아요"로 시작했다.
@@ -1054,9 +1055,10 @@ addressable해지지 않았다"는 **0번**인 반면 reply 재시도는 25일�
 **말투.** 다이제스트의 '~다' 칼럼체 대신 해요체를 쓴다. 칼럼 말투로 한 사람에게 답하면 훈계처럼 읽힌다. 그래서
 `KOREAN_STYLE_RULES`를 말투 규칙과 나머지 문장 규칙(`KOREAN_PROSE_RULES`)으로 나눴고, 답글 프롬프트는 뒤쪽만
 쓴다. 댓글의 언어로 답하고, 칭찬이나 동의로 시작하지 않으며, 독자가 말하지 않은 것 하나(결과, 긴장, 게시물의 구체적
-사실, 되물을 만한 질문)를 더한다. 사실은 스레드 안의 게시물이나 널리 알려진 맥락에서만 가져온다. 2026-10-16
-dry-run(`scripts/sample_comment_replies.py`)에서 실제 댓글 4개에 모두 답했다. 합성한 스팸, 이모지만 있는 댓글,
-비아냥 댓글은 거절했고, 인사에는 짧게 감사했다. 인사를 "답할 거리 없음"으로 거절하던 것은 프롬프트 한 줄로 고쳤다.
+사실, 되물을 만한 질문)를 더한다. 사실은 스레드 안의 게시물이나 널리 알려진 맥락에서만 가져온다. 무의미한 댓글을
+무시하는 것은 운영자 결정이다. 2026-10-16 dry-run(`scripts/sample_comment_replies.py`)에서 실제 댓글 4개 가운데
+게시물을 되풀이한 영어 일반론 1개를 거절하고 3개에 답했다. 합성한 10개(스팸, 이모지, 칭찬, 인사, 영어 일반론, 봇
+같은 되풀이, 질문, 경험담, 반론, 비아냥)에서는 질문, 경험담, 반론에만 답했다.
 
 **토큰.** 읽기 요청은 토큰을 쿼리 문자열이 아니라 `Authorization` 헤더로 보낸다(`threads_client`). httpx가 오류
 문구에 요청 URL을 넣기 때문이다. 페이지의 `next` 링크에도 토큰이 들어가지 않는다.
@@ -1412,8 +1414,8 @@ correlation id다. 매 invoke마다 세팅되는 값이니 알림에 실어야 �
 
 ### 핸들러 예외 전파
 
-다이제스트와 비주얼, Threads 갱신 핸들러는 실패를 correlation id와 함께 로깅한 뒤 다시 raise한다. 500 body를
-반환하면 Lambda 입장에서는 정상 종료라서 Errors 알람도 비동기 DLQ도 울리지 않는다. 세 함수 모두
+다이제스트와 비주얼, Threads 갱신, 댓글 답글 핸들러는 실패를 correlation id와 함께 로깅한 뒤 다시 raise한다. 500
+body를 반환하면 Lambda 입장에서는 정상 종료라서 Errors 알람도 비동기 DLQ도 울리지 않는다. 네 함수 모두
 `retry_attempts=0`이니 재시도로 인한 이중 게시 위험은 없다.
 
 ### 게시량 메트릭과 날짜 전달 (다이제스트에서 비주얼 Lambda로)
@@ -1718,22 +1720,24 @@ S3-managed 암호화와 버저닝, 퍼블릭 차단, SSL 강제), ECS Fargate RS
 ### `application_stack`
 
 다이제스트 Lambda(DockerImage, VPC 안), 데일리 비주얼 Lambda(DockerImage, 비동기, VPC 밖), Threads 토큰 갱신
-Lambda(DockerImage), EventBridge 일일 다이제스트 크론(설정 기반 시와 분), EventBridge Threads 토큰 갱신
-스케줄(`threads_token_refresh_days` 기본 약 50일 주기로, 60일 만료 안쪽에서 토큰을 갱신해 SSM에 재기록한다),
-시크릿용 SSM 파라미터, 그리고 SNS로 향하는 CloudWatch 알람([§12](#12-관측성) 참조)을 만든다. 세 Lambda가 같은
-이미지를 쓰고 핸들러만 다르다.
+Lambda(DockerImage), 댓글 답글 Lambda(DockerImage, VPC 밖, 동시 실행 1), EventBridge 일일 다이제스트 크론(설정 기반
+시와 분), EventBridge Threads 토큰 갱신 스케줄(`threads_token_refresh_days` 기본 약 50일 주기로, 60일 만료 안쪽에서
+토큰을 갱신해 SSM에 재기록한다), EventBridge 댓글 답글 스케줄(`comment_reply_interval_minutes` 기본 60분), 시크릿용
+SSM 파라미터, 그리고 SNS로 향하는 CloudWatch 알람([§12](#12-관측성) 참조)을 만든다. 네 Lambda가 같은 이미지를 쓰고
+핸들러만 다르다.
 
 비주얼 Lambda가 VPC 밖인 이유는 부르는 것이 전부 공개 엔드포인트이기 때문이다(Bedrock, S3, AgentCore Memory,
-SNS, OpenAI, Threads). VPC는 Threads 게시의 유일한 경로에 ENI와 NAT 의존만 더했다. 다이제스트 Lambda는 RSSHub
+SNS, OpenAI, Threads). VPC는 다이제스트 게시의 유일한 경로에 ENI와 NAT 의존만 더했다. 다이제스트 Lambda는 RSSHub
 Fargate 서비스에 닿아야 하니 VPC 안에 남는다.
 
 **재시도와 DLQ.** 다이제스트와 비주얼 Lambda는 `retry_attempts=0`에 SQS
-DLQ(`foundation.async_dlq`로 `on_failure`)를 붙인다. Threads 갱신 Lambda도 `retry_attempts=0`인데, 명시값이
-없으면 비동기 재시도 2회가 기본이라 갱신 엔드포인트를 재호출한다. 파이프라인이 멱등이 아니고 Threads는
+DLQ(`foundation.async_dlq`로 `on_failure`)를 붙인다. Threads 갱신과 댓글 답글 Lambda도 `retry_attempts=0`이고 DLQ는 없다. 명시값이
+없으면 비동기 재시도 2회가 기본이라 갱신 엔드포인트를 재호출하거나 댓글에 다시 답한다. 실패한 댓글은 다음 정기 실행이
+다시 시도한다. 파이프라인이 멱등이 아니고 Threads는
 idempotency key가 없어서 재시도가 이중 게시를 일으키니, 자동 재시도 대신 실패 건을 DLQ에 남겨 점검과 수동
 리플레이를 한다. 핸들러는 [§8](#핸들러-예외-전파)처럼 raise해서 Errors 알람이 뜨게 한다.
 
-**로그 그룹은 선언한다.** 세 Lambda 모두 `log_group=logs.LogGroup(...)`(retention 30일, removal DESTROY)을
+**로그 그룹은 선언한다.** 네 Lambda 모두 `log_group=logs.LogGroup(...)`(retention 30일, removal DESTROY)을
 직접 받는다. deprecated된 `log_retention=` prop은 속성을 세우는 것이 아니라 함수마다 `Custom::LogRetention`
 Lambda를 하나씩 렌더하고, 그 각각이 자기 실행 역할에 `logs:PutRetentionPolicy`와 `logs:DeleteRetentionPolicy`를
 Resource `"*"`로 든다. 공유 계정에서는 아무 로그 그룹의 보존 기간이나 줄이거나 없앨 수 있는 권한이다.

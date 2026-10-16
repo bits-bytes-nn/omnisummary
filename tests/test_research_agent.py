@@ -258,8 +258,8 @@ class TestVoiceInjection:
 
 
 class TestAgentTemperatureGating:
-    def test_temperature_omitted_for_sonnet_5_default(self):
-        # config.agent.model_id defaults to Sonnet 5 (supports_temperature=False), which 400s on
+    def test_temperature_omitted_for_the_default_model(self):
+        # config.agent.model_id defaults to Opus 5.5 (supports_temperature=False), which 400s on
         # a non-default temperature. The agent must omit it, mirroring the Bedrock factory gate.
         captured = {}
 

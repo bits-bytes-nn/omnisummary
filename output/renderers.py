@@ -91,25 +91,13 @@ def _item_post_overflows(title: str, meta: str, body: str, implication: str, url
     return len(assembled) > THREADS_MAX_POST_CHARS
 
 
-def _fit_lead(lead: str, countdown: str = "") -> str:
-    """Fit the root text (the digest lead) into one Threads post.
-
-    An over-long lead loses the CODE-OWNED countdown gag first, and only then the editor's prose:
-    the gag is the same fixed template every day, while the sentence it was crowding out is the day's
-    actual argument. It is dropped only when the lead's final line can be IDENTIFIED as that gag by
-    comparing it to the countdown string the caller passes in — a blind "drop the last line" would
-    delete real prose whenever the gag sits at the front (agi_countdown_position="prefix") or is
-    disabled. Otherwise whole sentences are kept from the front, so a prefix gag survives.
-
-    Logged at WARNING because a trimmed lead means the editor's prose budget was overrun."""
+def _fit_lead(lead: str) -> str:
+    """Fit the root text (the digest lead) into one Threads post, keeping whole sentences from the
+    front, so the countdown gag that opens it survives. Logged at WARNING because a trimmed lead
+    means the editor's prose budget was overrun."""
     if len(lead) <= THREADS_MAX_POST_CHARS:
         return lead
     logger.warning("Threads lead is %d chars (cap %d); trimming prose", len(lead), THREADS_MAX_POST_CHARS)
-    head, sep, last_line = lead.rpartition("\n")
-    gag = countdown.strip()
-    if sep and gag and last_line.strip() == gag:
-        logger.warning("Dropping the countdown line from the Threads lead to keep the editor's prose")
-        return _pack_sentences(head.strip(), THREADS_MAX_POST_CHARS)
     return _pack_sentences(lead, THREADS_MAX_POST_CHARS)
 
 
@@ -121,18 +109,14 @@ def _pack_sentences(text: str, max_len: int) -> str:
     return " ".join(kept) if kept else truncate_at_word(text, max_len)
 
 
-def _with_story_index(lead: str, titles: list[str], countdown: str = "") -> str:
-    """The root text with the day's other story titles listed under the lead's prose (above a suffix
-    countdown sign-off). The story replies are read by 2-5% of the root's viewers, so without this a
-    feed reader never learned what else the digest carried. Titles that do not fit the cap are
-    dropped from the end; the lead itself is never trimmed for the list."""
-    head, sep, last_line = lead.rpartition("\n")
-    gag = countdown.strip()
-    sign_off = last_line.strip() if sep and gag and last_line.strip() == gag else ""
-    prose = head.strip() if sign_off else lead
+def _with_story_index(lead: str, titles: list[str]) -> str:
+    """The root text with the day's other story titles listed under the lead. The story replies are
+    read by 2-5% of the root's viewers, so without this a feed reader never learned what else the
+    digest carried. Titles that do not fit the cap are dropped from the end; the lead itself is never
+    trimmed for the list."""
     lines = [f"{STORY_INDEX_BULLET}{title.strip()}" for title in titles if title.strip()]
     for kept in range(len(lines), 0, -1):
-        root = THREADS_POST_SEPARATOR.join(p for p in (prose, "\n".join(lines[:kept]), sign_off) if p)
+        root = THREADS_POST_SEPARATOR.join((lead, "\n".join(lines[:kept])))
         if len(root) <= THREADS_MAX_POST_CHARS:
             if kept < len(lines):
                 logger.info(
@@ -142,17 +126,12 @@ def _with_story_index(lead: str, titles: list[str], countdown: str = "") -> str:
     return lead
 
 
-def render_threads_posts(content: DigestContent, countdown: str = "") -> tuple[str, list[str]]:
+def render_threads_posts(content: DigestContent) -> tuple[str, list[str]]:
     """Render DigestContent for Threads: a root text (the lead, then the other stories' titles) and a
     reply chain with EXACTLY ONE reply per item (title + source line + body + implication + URL). Each
     reply is trimmed to fit Threads' 500-char cap at a clean sentence boundary — never mid-word —
-    keeping the title, the source line and the URL. No markup (Threads renders none).
-
-    `countdown` is the code-owned AGI-countdown gag as the pipeline computed it, so an over-long
-    lead can drop THAT rather than the day's argument. Empty (the default) simply trims prose."""
-    lead = _with_story_index(
-        _fit_lead(content.lead.strip(), countdown), [item.title for item in content.items[1:]], countdown
-    )
+    keeping the title, the source line and the URL. No markup (Threads renders none)."""
+    lead = _with_story_index(_fit_lead(content.lead.strip()), [item.title for item in content.items[1:]])
     replies: list[str] = []
     trimmed = 0
     for item in content.items:

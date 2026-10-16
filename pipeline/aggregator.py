@@ -39,6 +39,7 @@ class ContentAggregator:
         # re-summarized days apart. Excluding here (before ranking) also saves ranker tokens.
         exclude = exclude_urls or set()
         cross_day_skipped = 0
+        url_dupes = 0
         seen_urls: dict[str, CollectedItem] = {}
 
         # Drop items missing a url or title up front. They can't be linked or rendered in the
@@ -64,6 +65,7 @@ class ContentAggregator:
             if key in seen_urls:
                 logger.debug("Duplicate URL skipped: '%s'", item.url)
                 seen_urls[key] = self._pick_survivor(seen_urls[key], item)
+                url_dupes += 1
             else:
                 seen_urls[key] = item
 
@@ -86,11 +88,8 @@ class ContentAggregator:
                 empty_norm += 1
                 deduplicated.append(item)
                 continue
-            # Pinned items (user-specified via --pin-url) bypass title dedup too — mirroring the
-            # URL-dedup bypass above. Otherwise a pin sharing a normalized title with an
-            # earlier-inserted story is dropped here, before the ranker's pin-recovery can see it,
-            # silently defeating the --pin-url force-inclusion guarantee.
-            if norm in seen_titles and not item.metadata.get("pinned"):
+            # A pinned duplicate is not lost here: _pick_survivor always keeps the pinned copy.
+            if norm in seen_titles:
                 prev = seen_titles[norm]
                 logger.debug(
                     "Duplicate title skipped: '%s' (same as '%s')",
@@ -115,7 +114,7 @@ class ContentAggregator:
             "Aggregated %d items → %d after deduplication (%d url, %d title)",
             len(items),
             len(deduplicated),
-            len(items) - len(url_deduped),
+            url_dupes,
             title_dupes,
         )
 

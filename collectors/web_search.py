@@ -4,7 +4,6 @@ import asyncio
 import re
 from datetime import UTC, datetime, timedelta, tzinfo
 from email.utils import parsedate_to_datetime
-from typing import Literal
 from urllib.parse import urlparse
 
 import httpx
@@ -57,10 +56,6 @@ class WebSearchCollector(BaseCollector):
         return self._client_instance
 
     async def collect(self) -> list[CollectedItem]:
-        if not self.config.enabled:
-            logger.info("Web search collector is disabled, skipping")
-            return []
-
         # strict=True: an SSM read that FAILS (denied, throttled, misconfigured) raises instead of
         # returning "", so the collector reports FAILED and alerts. It used to return [] — the same
         # answer as "no key configured" — and the digest simply lost its whole web-search source for
@@ -82,9 +77,7 @@ class WebSearchCollector(BaseCollector):
         for trend in self.config.trend_searches:
             for query in trend.queries:
                 tasks.append(
-                    asyncio.ensure_future(
-                        self._search_trend(query, trend.domains, trend.name, trend.topic, semaphore=semaphore)
-                    )
+                    asyncio.ensure_future(self._search_trend(query, trend.domains, trend.name, semaphore=semaphore))
                 )
 
         if not tasks:
@@ -170,11 +163,10 @@ class WebSearchCollector(BaseCollector):
         query: str,
         domains: list[str],
         trend_name: str,
-        topic: Literal["news", "general"] = "news",
         *,
         semaphore: asyncio.Semaphore | None = None,
     ) -> list[CollectedItem]:
-        logger.info("Searching trend '%s' with query: '%s' (topic='%s')", trend_name, query, topic)
+        logger.info("Searching trend '%s' with query: '%s'", trend_name, query)
         # The window Tavily is asked about is the run's OWN window, not a day count derived from it:
         # `days = lookback_hours // 24` truncated a 30-hour window to 1 day for the largest source,
         # and `days` is anchored to now, so a `--date` backfill searched today either way.
@@ -187,7 +179,8 @@ class WebSearchCollector(BaseCollector):
                     max_results=self.config.max_results_per_query,
                     include_domains=domains if domains else None,
                     exclude_domains=self.config.exclude_domains or None,
-                    topic=topic,
+                    # "news" is the topic that returns published_date, which every result needs.
+                    topic="news",
                     start_date=start_date,
                     end_date=end_date,
                 ),

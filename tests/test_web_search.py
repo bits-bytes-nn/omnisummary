@@ -112,7 +112,7 @@ def _search_collector(*, llm_factory=None, **kwargs) -> WebSearchCollector:
     cfg = WebSearchCollectorConfig(
         trend_searches=[
             TrendSearch(name="frontier", queries=["q1", "q2"]),
-            TrendSearch(name="infra", queries=["q3"], domains=["arxiv.org"], topic="general"),
+            TrendSearch(name="infra", queries=["q3"], domains=["arxiv.org"]),
         ],
         retry_backoff_sec=0,
         **kwargs,
@@ -147,13 +147,6 @@ class TestCollect:
             await c.collect()
 
     @pytest.mark.asyncio
-    async def test_disabled_collector_short_circuits(self):
-        c = _search_collector(enabled=False)
-        with patch("collectors.web_search.resolve_secret") as resolve:
-            assert await c.collect() == []
-        resolve.assert_not_called()  # a disabled source must not even resolve its key
-
-    @pytest.mark.asyncio
     async def test_no_queries_configured_short_circuits(self, monkeypatch):
         monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
         c = _collector(min_search_score=0.3)  # no trend_searches
@@ -176,9 +169,10 @@ class TestCollect:
         items = await c.collect()
         assert client.search.await_count == 3
         assert {i.url for i in items} == {"https://a.example/1", "https://b.example/2"}
-        # The per-trend include_domains/topic reach Tavily as configured.
+        # The per-trend include_domains reach Tavily; every search is a news search (the topic that
+        # returns published_date).
         last = client.search.await_args_list[-1].kwargs
-        assert last["include_domains"] == ["arxiv.org"] and last["topic"] == "general"
+        assert last["include_domains"] == ["arxiv.org"] and last["topic"] == "news"
         # The window Tavily is asked about is the run's own, anchored to reference_time.
         assert (last["start_date"], last["end_date"]) == ("2026-06-02", "2026-06-03")
 

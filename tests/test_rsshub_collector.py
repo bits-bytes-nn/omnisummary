@@ -417,13 +417,6 @@ class TestParkedItems:
         assert load.call_args.kwargs["max_age_hours"] == 72
 
     @pytest.mark.asyncio
-    async def test_disabled_collector_short_circuits(self):
-        c = RSSHubCollector(_config(enabled=False))
-        with patch("collectors.rsshub.load_items_from_s3") as load:
-            assert await c.collect() == []
-        load.assert_not_called()
-
-    @pytest.mark.asyncio
     async def test_no_accounts_configured_returns_empty(self):
         c = RSSHubCollector(_config(accounts=[]))
         with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()):

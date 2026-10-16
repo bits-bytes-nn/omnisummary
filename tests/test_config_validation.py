@@ -207,15 +207,6 @@ class TestCodeDefaultsMatchTheDeployedConfig:
     without a config.yaml (and every PipelineConfig() in a test) silently gets."""
 
     @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
-    def test_countdown_position_default_matches_every_config(self, config_path):
-        # The INVARIANT is what matters — a code default that disagrees with the deployed config is
-        # what a config-less deployment (and every PipelineConfig() in a test) silently gets. The
-        # VALUE is the owner's editorial call: the countdown is the account's signature, so it opens
-        # the lead today, but pinning the literal here would break this test on every such decision.
-        cfg = Config.from_yaml(str(config_path))
-        assert cfg.pipeline.agi_countdown_position == PipelineConfig().agi_countdown_position
-
-    @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
     def test_delivery_toggles_are_explicit_in_every_config(self, config_path):
         # Delivery routing must come from the file, never a code default: the visual Lambda is the
         # only Threads publish path, and enable_threads_post defaults to False in code.

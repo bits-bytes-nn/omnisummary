@@ -137,7 +137,6 @@ class TrendSearch(_StrictModel):
     name: str
     queries: list[str]
     domains: list[str] = Field(default_factory=list)
-    topic: Literal["news", "general"] = "news"
 
 
 class WebSearchCollectorConfig(BaseCollectorConfig):
@@ -163,10 +162,7 @@ class RSSHubAccount(_StrictModel):
 class RSSHubCollectorConfig(BaseCollectorConfig):
     base_url: str = f"http://localhost:{RSSHUB_PORT}"
     accounts: list[RSSHubAccount] = Field(default_factory=list)
-    # How many account feeds may be fetched at once. Each fetch parks a worker thread, so this
-    # stays at/below the default asyncio executor width (min(32, cpu+4) — 6 on a 2-vCPU Lambda);
-    # oversubscribing it made a feed's timeout expire while its parse was still queued. Worst-case
-    # wall time is ceil(accounts / max_concurrency) * (request_timeout + retry_backoff_sec) *
+    # How many account feeds may be fetched at once. Worst-case wall time is ceil(accounts / max_concurrency) * (request_timeout + retry_backoff_sec) *
     # max_retries: with the shipped 41 accounts that is ~16 minutes, i.e. MORE than the digest
     # Lambda's entire budget — hence collectors.collector_budget_sec, which bounds the source itself.
     max_concurrency: int = Field(default=5, ge=1)
@@ -327,15 +323,10 @@ class PipelineConfig(_StrictModel):
     # Before the D-day it counts down; on/after it, agi_countdown_after counts up (the prediction
     # blew past — a self-aware joke). Empty agi_countdown_date disables the intro entirely.
     agi_countdown_template: str = "AGI 등장 {days}일 전이다. "
+    # The gag OPENS the lead, which spends the root's first line (the one most feed readers see) on
+    # the same sentence every day. That is deliberate: the countdown is the account's signature, and
+    # the owner ranked recognisable branding above the first-line reach argument.
     agi_countdown_after: str = "AGI 등장 예정일 D+{days}일째, 아직이다. "
-    # Where the gag sits in the lead. "prefix" opens with it — which does spend the ROOT'S FIRST
-    # LINE, the one line most feed readers ever see, on the same fixed sentence every day (40
-    # consecutive posts opened with it). That is deliberate: the countdown is the account's
-    # SIGNATURE, and the owner ranked recognisable branding above the first-line reach argument.
-    # "suffix" keeps the gag verbatim but moves it to a closing sign-off, for a deployment that
-    # would rather open on the day's angle. Position only: no cadence/skip knobs, which would just
-    # be magic numbers.
-    agi_countdown_position: Literal["prefix", "suffix"] = "prefix"
     item_text_max_tokens: int = Field(default=8000, ge=1)
     ranking_batch_size: int = Field(default=40, ge=1)
     # How many ranking batches may be in flight against Bedrock at once. Unbounded fan-out threw

@@ -76,7 +76,9 @@ class RedditCollector(BaseCollector):
     def _feed_url(self) -> str:
         url = (
             f"{RSS_BASE}/r/{'+'.join(self.config.subreddits)}/{self.config.sort}/.rss"
-            f"?limit={min(_MAX_FEED_LIMIT, self.config.limit * len(self.config.subreddits))}"
+            # The most the feed returns, not limit x subreddits: a busy subreddit filling that many
+            # slots would leave nothing for a quiet one once the per-subreddit cap drops its surplus.
+            f"?limit={_MAX_FEED_LIMIT}"
         )
         if self.config.sort == "top":
             # Reddit's window is relative to the fetch and runs are a day apart. A wider bucket

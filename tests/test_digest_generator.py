@@ -294,10 +294,9 @@ class TestDerivedBudgets:
     def test_lead_budget_reserves_the_code_owned_countdown(self):
         from shared.constants import THREADS_MAX_POST_CHARS
 
-        gen = self._gen(agi_countdown_position="suffix")
+        gen = self._gen()
         intro = "AGI 등장 100일 전이다. "
-        # The gag plus the blank line before it are not the editor's to spend.
-        assert gen._lead_budget(intro) == THREADS_MAX_POST_CHARS - len(intro) - 2
+        assert gen._lead_budget(intro) == THREADS_MAX_POST_CHARS - len(intro)
         assert gen._lead_budget("") == THREADS_MAX_POST_CHARS
 
     def test_lead_budget_reaches_the_prompt(self):
@@ -606,11 +605,9 @@ class TestFormatSourceDetail:
         assert ":thumbsup:" not in result
 
 
-class TestCountdownPosition:
-    """The gag is kept verbatim, but as a PREFIX it spent the Threads root's first line — the one
-    line most feed readers see — on the same fixed sentence for 40 consecutive posts. Position is a
-    config knob; the strip helper must handle both ends in the same release, or recent-leads novelty
-    and the visual's editorial take start comparing boilerplate again."""
+class TestCountdownIntro:
+    """The gag opens the lead verbatim; the strip helper removes it so recent-leads novelty and the
+    visual's editorial take never compare boilerplate."""
 
     def test_prefix_places_the_intro_first(self):
         from shared import place_countdown_intro
@@ -620,52 +617,25 @@ class TestCountdownPosition:
             == "AGI 등장 870일 전이다. 오늘의 각도다."
         )
 
-    def test_suffix_places_the_intro_on_its_own_closing_line(self):
-        from shared import place_countdown_intro
-
-        out = place_countdown_intro("오늘의 각도다.", "AGI 등장 870일 전이다. ", "suffix")
-        assert out == "오늘의 각도다.\n\nAGI 등장 870일 전이다."
-        assert out.splitlines()[0] == "오늘의 각도다."  # the first line is the day's angle
-
-    def test_idempotent_at_either_end(self):
+    def test_idempotent(self):
         from shared import place_countdown_intro
 
         intro = "AGI 등장 870일 전이다. "
         prefixed = place_countdown_intro("각도다.", intro)
         assert place_countdown_intro(prefixed, intro) == prefixed
-        suffixed = place_countdown_intro("각도다.", intro, "suffix")
-        assert place_countdown_intro(suffixed, intro, "suffix") == suffixed
 
     def test_no_intro_or_no_lead_changes_nothing(self):
         from shared import place_countdown_intro
 
-        assert place_countdown_intro("각도다.", "", "suffix") == "각도다."
-        assert place_countdown_intro("", "AGI 등장 870일 전이다. ", "suffix") == ""
+        assert place_countdown_intro("각도다.", "") == "각도다."
+        assert place_countdown_intro("", "AGI 등장 870일 전이다. ") == ""
 
-    def test_editorial_lead_strips_either_end(self):
+    def test_editorial_lead_strips_the_gag(self):
         from shared import editorial_lead
 
         intro = "AGI 등장 870일 전이다. "
         assert editorial_lead("AGI 등장 870일 전이다. 각도다.", intro) == "각도다."
-        assert editorial_lead("각도다.\n\nAGI 등장 870일 전이다.", intro) == "각도다."
         assert editorial_lead("각도다.", intro) == "각도다."  # never attached
-
-    @pytest.mark.asyncio
-    async def test_generate_honours_the_configured_position(self):
-        from datetime import date
-
-        payload = json.dumps(
-            {"lead": "각도다.", "items": [{"title": "T", "url": "u", "body": "본문.", "implication": "시사점."}]}
-        )
-        gen = _generator(payload)
-        gen.config.enable_grounding_check = False
-        gen.config.agi_countdown_position = "suffix"
-        result = await gen.generate(_ranked(), [], today=date(2026, 8, 18))
-        assert result.content is not None
-        lead = result.content.lead
-        assert lead.splitlines()[0] == "각도다."  # the angle, not the countdown, opens the root
-        assert lead.splitlines()[-1].startswith("AGI 등장")
-        assert lead.rstrip().endswith("전이다.")  # the gag itself is unchanged
 
 
 class TestSourceMatchingByNormalizedUrl:

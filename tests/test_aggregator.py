@@ -202,3 +202,23 @@ class TestContentAggregator:
         assert len(result) == 1
         assert result[0].metadata["src"] == "rss"  # survivor's own value preserved
         assert result[0].metadata["extra"] == "x"  # missing key filled from the duplicate
+
+
+def test_a_pinned_item_survives_title_dedup_against_an_earlier_copy():
+    from datetime import UTC, datetime
+
+    from pipeline.aggregator import ContentAggregator
+    from shared import CollectedItem, SourceType
+
+    def item(url, **meta):
+        return CollectedItem(
+            source_type=SourceType.WEB,
+            url=url,
+            title="Same Headline",
+            text="body",
+            published_at=datetime(2026, 10, 16, tzinfo=UTC),
+            metadata=meta,
+        )
+
+    kept = ContentAggregator().aggregate([item("https://a.example/1"), item("https://b.example/2", pinned=True)])
+    assert [k.url for k in kept] == ["https://b.example/2"]

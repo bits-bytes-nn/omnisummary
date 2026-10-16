@@ -214,24 +214,12 @@ class TestThreadsPosts:
         assert len(root) <= THREADS_MAX_POST_CHARS
         assert not root.endswith("가나")  # cut on a space, never mid-word
 
-    def test_lead_trim_drops_the_countdown_gag_before_the_editors_prose(self):
-        # The countdown suffix is the same fixed template every day; the sentence it crowds out is
-        # the day's actual argument. When the caller identifies the gag, IT goes first.
-        gag = "AGI 등장 870일 전이다."
-        lead = "첫 문장이다. " + "가나다라마바사 이것은 문장이다. " * 40 + f"\n\n{gag}"
-        root, _ = render_threads_posts(_content(1, lead=lead), gag)
-        assert len(root) <= THREADS_MAX_POST_CHARS
-        assert gag not in root
-        assert root.startswith("첫 문장이다.")
-
-    def test_lead_trim_never_blind_drops_a_last_line_it_cannot_identify(self):
-        # With the gag in PREFIX position (or disabled), the last line is real prose — dropping it
-        # blind would delete the editor's closing sentence and keep the boilerplate.
+    def test_lead_trim_keeps_leading_sentences_so_the_gag_survives(self):
         gag = "AGI 등장 870일 전이다."
         lead = f"{gag} 첫 문장이다. " + "가나다라마바사 이것은 문장이다. " * 40 + "\n\n마지막 논평이다."
-        root, _ = render_threads_posts(_content(1, lead=lead), gag)
+        root, _ = render_threads_posts(_content(1, lead=lead))
         assert len(root) <= THREADS_MAX_POST_CHARS
-        assert root.startswith(gag)  # a prefix gag is inside the kept leading sentences
+        assert root.startswith(gag)
 
     def test_lead_trim_warns(self):
         # A trimmed lead means the editor overran its prose budget: visible, not silent.
@@ -256,11 +244,6 @@ class TestRootStoryIndex:
         lines = root.split("\n\n")[1].split("\n")
         assert lines == ["· 스토리 2", "· 스토리 3", "· 스토리 4", "· 스토리 5"]
         assert "스토리 1" not in root
-
-    def test_a_suffix_countdown_stays_the_last_line(self):
-        gag = "AGI 등장 870일 전이다."
-        root, _ = render_threads_posts(_content(2, lead=f"리드다.\n\n{gag}"), gag)
-        assert root == f"리드다.\n\n· 스토리 2\n\n{gag}"
 
     def test_titles_that_do_not_fit_drop_from_the_end_and_the_lead_is_kept(self):
         lead = "리드 문장이다. " * 53
