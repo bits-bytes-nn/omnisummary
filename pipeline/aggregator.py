@@ -88,8 +88,9 @@ class ContentAggregator:
                 empty_norm += 1
                 deduplicated.append(item)
                 continue
-            # A pinned duplicate is not lost here: _pick_survivor always keeps the pinned copy.
-            if norm in seen_titles:
+            # A pinned duplicate is not lost here: _pick_survivor always keeps the pinned copy. Two pins
+            # sharing a title are both kept, since each was asked for by URL.
+            if norm in seen_titles and not (item.metadata.get("pinned") and seen_titles[norm].metadata.get("pinned")):
                 prev = seen_titles[norm]
                 logger.debug(
                     "Duplicate title skipped: '%s' (same as '%s')",

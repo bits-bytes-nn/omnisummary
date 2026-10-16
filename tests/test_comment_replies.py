@@ -146,13 +146,13 @@ class TestCommentResponder:
         run, _ = await _run(responder, _patch_threads([_c("c1", "root")], publish=failing))
         assert run.failed == ["c1"] and responder.ledger.handled() == set()
 
-    async def test_a_reply_threads_rejects_is_recorded_and_a_server_error_is_retried(self, tmp_path):
+    async def test_a_permanent_rejection_is_recorded_and_a_possibly_transient_400_is_retried(self, tmp_path):
         def status_error(code):
             request = httpx.Request("POST", "https://graph.threads.net/v1.0/uid/threads")
             return httpx.HTTPStatusError("x", request=request, response=httpx.Response(code, request=request))
 
         responder = _responder(tmp_path, [CommentReply(reply=True, text="a"), CommentReply(reply=True, text="b")])
-        publish = AsyncMock(side_effect=[status_error(400), status_error(503)])
+        publish = AsyncMock(side_effect=[status_error(403), status_error(400)])
         conversation = [_c("rejected", "root", at="2026-10-16T09:00:00+0000"), _c("flaky", "root")]
         run, _ = await _run(responder, _patch_threads(conversation, publish=publish))
         assert run.failed == ["rejected", "flaky"]

@@ -6,7 +6,15 @@ from typing import Any
 
 import httpx
 
-from output.threads_handler import error_detail, fetch_conversation, fetch_own_posts, publish_reply, threads_client
+from output.threads_handler import (
+    error_detail,
+    fetch_conversation,
+    fetch_own_posts,
+    is_media_not_found,
+    is_transient_reply_error,
+    publish_reply,
+    threads_client,
+)
 from shared import (
     KOREAN_PROSE_RULES,
     BedrockLanguageModelFactory,
@@ -137,8 +145,8 @@ class CommentResponder:
 
     async def run(self, now: datetime, *, dry_run: bool = False) -> CommentReplyRun:
         """Answer what is pending. `dry_run` drafts the replies and posts and records nothing.
-        A comment whose draft fails, or whose publish fails transiently, is not recorded, so the next
-        run tries it again; one Threads rejects outright is recorded as failed and left alone."""
+        A comment whose draft fails, or whose publish may have failed transiently, is not recorded, so
+        the next run tries it again; one Threads rejects for good is recorded as failed and left alone."""
         token = resolve_secret("THREADS_ACCESS_TOKEN", "threads-access-token", strict=True)
         user_id = resolve_secret("THREADS_USER_ID", "threads-user-id", strict=True)
         if not token or not user_id:
@@ -185,8 +193,13 @@ class CommentResponder:
                         "Could not answer comment %s (%s): %s", comment_id, e.response.status_code, error_detail(e)
                     )
                     run.failed.append(comment_id)
-                    if e.response.status_code < 500 and e.response.status_code != 429:
-                        self.ledger.record(comment_id, "failed", now)
+                    # Only a verdict retrying cannot change (the comment is gone, auth, a permanent
+                    # rejection) is recorded; a 400 that may be transient is tried again next run.
+                    if (is_media_not_found(e) or not is_transient_reply_error(e)) and not dry_run:
+                        try:
+                            self.ledger.record(comment_id, "failed", now)
+                        except Exception:
+                            logger.warning("Could not record comment %s as failed", comment_id, exc_info=True)
                 except Exception as e:
                     logger.warning("Could not answer comment %s: %s", comment_id, e)
                     run.failed.append(comment_id)

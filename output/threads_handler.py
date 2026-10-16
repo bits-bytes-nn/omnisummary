@@ -125,7 +125,7 @@ async def _publish_post(
     return await _publish_container(client, user_id, token, creation_id)
 
 
-def _is_media_not_found(exc: httpx.HTTPStatusError) -> bool:
+def is_media_not_found(exc: httpx.HTTPStatusError) -> bool:
     # A just-published post isn't instantly addressable as a reply target — Meta returns
     # code 24 / subcode 4279009 ("media not found") until indexing completes.
     try:
@@ -135,13 +135,13 @@ def _is_media_not_found(exc: httpx.HTTPStatusError) -> bool:
         return False
 
 
-def _is_transient_reply_error(exc: httpx.HTTPStatusError) -> bool:
+def is_transient_reply_error(exc: httpx.HTTPStatusError) -> bool:
     """True if a reply failure is worth another attempt. Meta's container-publish endpoint returns
     transient 400s while it finishes processing a freshly-created container (distinct from the
     'media not found' indexing case), plus the usual 429/5xx. A single such 400 silently dropped
     one of five stories on 2026-07-17. Genuine content rejections also surface as 400 and will burn
     the retries, but they are now logged with the response body so the cause is identifiable."""
-    if _is_media_not_found(exc):
+    if is_media_not_found(exc):
         return True
     status = exc.response.status_code
     return status == 400 or status == 429 or status >= 500
@@ -187,8 +187,8 @@ async def _publish_reply_with_retry(
             # code-24 is pure root-indexing lag: ride the shared deadline (once one reply lands the
             # root is ready, so this only bites the first reply). Other transient errors keep the cap.
             budget_left = indexing_deadline - time.monotonic()
-            keep_for_indexing = _is_media_not_found(e) and budget_left > THREADS_REPLY_RETRY_BACKOFF_SEC
-            capped = not _is_transient_reply_error(e) or attempt >= THREADS_REPLY_RETRY_ATTEMPTS
+            keep_for_indexing = is_media_not_found(e) and budget_left > THREADS_REPLY_RETRY_BACKOFF_SEC
+            capped = not is_transient_reply_error(e) or attempt >= THREADS_REPLY_RETRY_ATTEMPTS
             if capped and not keep_for_indexing:
                 raise
             logger.info(
