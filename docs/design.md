@@ -428,7 +428,8 @@ HTTP 503은 세 번 시도하는데 그보다 회복 가능성이 높은 실패�
 ### 4.5 RSSHub (`rsshub.py`)
 
 로컬이나 컨테이너 RSSHub를 통해 X/Twitter 피드를 읽고, S3에 사전 동기화된 스냅샷(`rsshub_items.json`,
-`scripts/sync_to_s3.py rsshub`가 적재한다)이 있으면 공유 `load_items_from_s3`로 그것을 쓴다.
+`scripts/sync_to_s3.py rsshub`가 적재한다)이 있으면 공유 `load_items_from_s3`로 그것을 쓴다. AWS에서는 RSSHub를
+돌리지 않으니, park 파일을 쓸 수 없으면 라이브 수집을 시도하지 않고 원인과 함께 실패한다.
 
 계정별 fetch도 RSS와 같은 공용 `fetch_feed_with_retry`를 쓴다. httpx 타임아웃이 매달린 피드 호스트를 끊고,
 타임아웃은 빈 결과가 아니라 실패로 집계한다. 매 시도가 자기 `request_timeout`을 온전히 갖고, RSSHub 자신의
@@ -1688,7 +1689,8 @@ S3-managed 암호화와 버저닝, 퍼블릭 차단, SSL 강제), SNS 알림
 **AWS에서는 RSSHub를 돌리지 않고, 어느 Lambda도 VPC에 두지 않는다.** X 항목은 S3 park 파일에서만 온다.
 `RSSHubCollector`는 S3 park 파일을 먼저 읽고
 쓸 수 있으면 바로 리턴하며, 로컬 sync cron이 매 실행 30분 전에 그 파일을 갱신한다. park 파일을 쓸 수 없는 날
-Lambda의 RSSHub 수집은 `localhost`에 닿지 못해 FAILED로 보고되고, 그것이 로컬 sync를 확인하라는 신호다.
+Lambda의 RSSHub 수집은 RSSHub에 연결을 시도하지 않고 "X park file unusable, check the local sync"로 FAILED가
+된다.
 
 **IAM은 최소 권한으로 잡는다.**
 

@@ -103,6 +103,17 @@ def _fetch_by_username(mapping):
 
 class TestReachability:
     @pytest.mark.asyncio
+    async def test_in_aws_an_unusable_park_file_raises_without_probing(self):
+        # Nothing in AWS runs RSSHub, so a probe of localhost would only name the wrong cause.
+        c = RSSHubCollector(_config())
+        with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
+            with patch("collectors.rsshub.is_running_in_aws", return_value=True):
+                with patch("collectors.rsshub.httpx.AsyncClient") as client:
+                    with pytest.raises(RuntimeError, match="check the local sync"):
+                        await c.collect()
+        client.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_unreachable_service_raises(self, monkeypatch):
         monkeypatch.delenv("STATE_BUCKET", raising=False)
         c = RSSHubCollector(_config())
