@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime
 from typing import Any, NamedTuple
 
 import boto3
@@ -207,6 +208,53 @@ async def _publish_reply_with_retry(
                 _error_detail(e),
             )
             await asyncio.sleep(THREADS_REPLY_RETRY_BACKOFF_SEC)
+
+
+THREADS_CONVERSATION_FIELDS = "id,text,username,timestamp,replied_to,is_reply_owned_by_me,hide_status"
+
+
+def threads_client(token: str, request_timeout: int) -> httpx.AsyncClient:
+    """A client for the Graph API READS. The token rides in the Authorization header, never in the
+    query string, because httpx puts the request URL into its error text and the logs carry that."""
+    return httpx.AsyncClient(timeout=request_timeout, headers={"Authorization": f"Bearer {token}"})
+
+
+async def _get_all(client: httpx.AsyncClient, url: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+    data: list[dict[str, Any]] = []
+    next_url: str | None = url
+    while next_url:
+        resp = await client.get(next_url, params=params)
+        resp.raise_for_status()
+        body = resp.json()
+        data.extend(body.get("data") or [])
+        # The `next` link already carries the query; under header auth it holds no token.
+        next_url = (body.get("paging") or {}).get("next")
+        params = {}
+    return data
+
+
+async def fetch_own_posts(client: httpx.AsyncClient, since: datetime) -> list[dict[str, Any]]:
+    """The account's own top-level posts published at or after `since`."""
+    posts = await _get_all(
+        client,
+        f"{THREADS_API_BASE}/me/threads",
+        {"fields": "id,text,timestamp,is_reply", "since": int(since.timestamp()), "limit": 100},
+    )
+    return [p for p in posts if not p.get("is_reply")]
+
+
+async def fetch_conversation(client: httpx.AsyncClient, media_id: str) -> list[dict[str, Any]]:
+    """Every reply under a top-level post, at any depth, the account's own included."""
+    return await _get_all(
+        client,
+        f"{THREADS_API_BASE}/{media_id}/conversation",
+        {"fields": THREADS_CONVERSATION_FIELDS, "reverse": "false", "limit": 100},
+    )
+
+
+async def publish_reply(client: httpx.AsyncClient, user_id: str, token: str, text: str, reply_to_id: str) -> str:
+    """Publish one text reply to `reply_to_id`, with the reply chain's retry on a transient error."""
+    return await _publish_reply_with_retry(client, user_id, token, text[:THREADS_MAX_POST_CHARS], reply_to_id)
 
 
 async def post_to_threads(

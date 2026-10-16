@@ -36,8 +36,9 @@ AWS 위에서 동작한다. Amazon Bedrock(Claude)과 Bedrock AgentCore Memory�
 - **에디토리얼 다이제스트.** Claude Sonnet 5.5가 일자 간 트렌드 연속성을 살려 한국어 산문을 쓰고, 그라운딩 패스가 구체적 주장을 원문과 대조한다
 - **데일리 만화.** 오너 페르소나 캐릭터(기준 시트 이미지로 모습을 고정)가 화자인 2x2 4컷 만화를 `gpt-image-2.5-sunburst`가 한국어 대사로 그린다
 - **Threads 전달.** 이미지 루트에 평면 답글 체인을 붙이고, 하루 한 번만 게시한다
+- **댓글 답글.** 한 시간마다 Claude Sonnet 5.5가 최근 일주일 게시물에 달린 새 댓글에 댓글의 언어로 답하고, 스팸이나 답할 거리가 없는 댓글은 건너뛴다
 - **딥 리서치 CLI와 OpenClaw 스킬.** 단일 목적 도구 8개를 가진 자율 Strands 에이전트다. stdout에 JSON 계약, 디스크에 Markdown 리포트를 남긴다
-- **운영 안정성.** 소스별 헬스 보고(`OK`, `EMPTY`, `FAILED`, `STALE`, `DEGRADED`)를 SNS 이메일로 알리고, 상관 ID가 붙는 구조화된 JSON 로그와 CloudWatch 알람 8개를 둔다
+- **운영 안정성.** 소스별 헬스 보고(`OK`, `EMPTY`, `FAILED`, `STALE`, `DEGRADED`)를 SNS 이메일로 알리고, 상관 ID가 붙는 구조화된 JSON 로그와 CloudWatch 알람 10개를 둔다
 - **AWS 배포.** Lambda와 EventBridge 크론, Bedrock AgentCore Memory, ECS(RSSHub)를 모두 CDK로 정의한다
 
 ## 빠른 시작
@@ -302,14 +303,15 @@ uv run python scripts/put_inference_profiles.py  # 계정/스테이지당 1회, 
 | **Lambda** (Docker) | 다이제스트 파이프라인, 15분 타임아웃, VPC 안(RSSHub 서비스에 닿는다) |
 | **Lambda** (Docker) | 데일리 만화와 Threads 게시, 15분 타임아웃. 비동기로 다이제스트 크리티컬 패스에서 벗어나 있고 VPC 밖이며, 유일한 Threads 게시 경로다 |
 | **Lambda** (Docker) | Threads 토큰 갱신(약 50일 주기, 갱신된 60일 토큰을 SSM에 다시 기록) |
-| **EventBridge** | 데일리 다이제스트 크론(config의 시와 분, **UTC**)과 토큰 갱신 스케줄 |
+| **Lambda** (Docker) | 댓글 답글, 5분 타임아웃, VPC 밖, `aws.comment_reply_interval_minutes`(60분)마다 실행. `pipeline.enable_comment_replies`가 꺼져 있으면 아무것도 하지 않는다 |
+| **EventBridge** | 데일리 다이제스트 크론(config의 시와 분, **UTC**)과 토큰 갱신, 댓글 답글 스케줄 |
 | **Bedrock AgentCore** | Memory(다이제스트 스냅샷, 날짜당 세션 하나) |
 | **ECS Fargate** | RSSHub 컨테이너. `aws.rsshub_desired_count`는 **기본 0**이다. 다이제스트가 S3 park 파일을 먼저 읽고 이 서비스에 닿지 않으니 상시 가동은 월 약 $40의 순수 비용이다. 태스크 정의는 그대로 배포되니 1로 올리면 AWS 폴백이 복구된다 |
 | **SSM Parameter Store** | 모든 시크릿, out-of-band로 기록한 SecureString |
 | **S3** | 트렌드, park 파일, Threads 이미지 호스팅. 역할에는 프로젝트 prefix의 `GetObject`/`PutObject`와 `ListBucket`만 준다 |
-| **SQS** | 다이제스트와 비주얼 Lambda의 비동기 DLQ. 모든 Lambda가 `retry_attempts=0`이다. Threads에는 멱등 키가 없어서 재시도가 이중 게시가 되기 때문이다. 핸들러가 예외를 다시 던지니 다이제스트와 비주얼의 실패 건이 여기 쌓여 리플레이를 기다린다. 토큰 갱신 Lambda는 DLQ 없이 Errors 알람으로 올라간다 |
+| **SQS** | 다이제스트와 비주얼 Lambda의 비동기 DLQ. 모든 Lambda가 `retry_attempts=0`이다. Threads에는 멱등 키가 없어서 재시도가 이중 게시가 되기 때문이다. 핸들러가 예외를 다시 던지니 다이제스트와 비주얼의 실패 건이 여기 쌓여 리플레이를 기다린다. 토큰 갱신과 댓글 답글 Lambda는 DLQ 없이 Errors 알람으로 올라간다 |
 | **SNS** | 알림 토픽(이메일) |
-| **CloudWatch** | 구조화된 로그(1개월 보존)와 알람 8개(Lambda별 Errors ×3, Timeout ×3, EmptyDigest, 비동기 DLQ) |
+| **CloudWatch** | 구조화된 로그(1개월 보존)와 알람 10개(Lambda별 Errors ×4, Timeout ×4, EmptyDigest, 비동기 DLQ) |
 | **ECR** | Lambda 이미지(amd64) |
 
 ### AWS의 시크릿
@@ -392,11 +394,11 @@ omnisummary/
 ├── recall_cli.py            # 지난 다이제스트와 트렌드 조회 CLI(stdout에 JSON). OpenClaw 스킬이 쓴다
 ├── Dockerfile               # Lambda 이미지(amd64)
 ├── collectors/              # RSS, Reddit, RSSHub(X), YouTube, WebSearch와 S3 park 로더
-├── pipeline/                # Aggregator, Ranker, DigestGenerator, TrendTracker, DailyVisualMaker, runner(오케스트레이션)
+├── pipeline/                # Aggregator, Ranker, DigestGenerator, TrendTracker, DailyVisualMaker, CommentResponder, runner(오케스트레이션)
 ├── agent/                   # 딥 리서치 에이전트와 도구 8개, VisualGenerator, DigestStateManager
 ├── shared/                  # 설정, 모델, 프롬프트, 상태 저장소, AgentCore 메모리, 히스토리, 리서치, 미디어
 ├── output/                  # Threads 렌더러와 핸들러, 다이제스트 퍼블리셔, 리서치 리포트 전달
-├── lambda_handlers/         # digest, daily visual, threads refresh
+├── lambda_handlers/         # digest, daily visual, threads refresh, comment replies
 ├── infrastructure/          # CDK 스택(foundation과 application)
 ├── scripts/                 # deploy, put_secrets, put_inference_profiles, ci_synth, sync_to_s3, 샘플러
 ├── assets/                  # persona.jpg (화자 캐릭터 기준 시트)

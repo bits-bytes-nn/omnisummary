@@ -227,8 +227,9 @@ class TestNoPrivilegedNoOpBuildProject:
 class TestApplicationStack:
     def test_cloudwatch_alarms(self, templates):
         _, app = templates
-        # 3 lambdas (digest, visual, threads-refresh) × (errors + timeout) + empty-digest + async-DLQ = 8
-        app.resource_count_is("AWS::CloudWatch::Alarm", 8)
+        # 4 lambdas (digest, visual, threads-refresh, comment-replies) × (errors + timeout) + empty-digest
+        # + async-DLQ = 10
+        app.resource_count_is("AWS::CloudWatch::Alarm", 10)
         # the symptomless-failure alarms specifically exist (count alone wouldn't catch a swap)
         app.has_resource_properties("AWS::CloudWatch::Alarm", {"MetricName": "DigestItemsPublished"})
         app.has_resource_properties("AWS::CloudWatch::Alarm", {"MetricName": "ApproximateNumberOfMessagesVisible"})
@@ -324,7 +325,7 @@ class TestApplicationStack:
         # them (a retried digest re-posts, a retried refresh re-calls the Threads endpoint).
         _, app = templates
         configs = app.find_resources("AWS::Lambda::EventInvokeConfig")
-        assert len(configs) == 3  # digest, visual, threads-refresh
+        assert len(configs) == 4  # digest, visual, threads-refresh, comment-replies
         assert all(v["Properties"]["MaximumRetryAttempts"] == 0 for v in configs.values())
 
 
@@ -461,8 +462,8 @@ class TestThePushedImageDigestReachesEveryFunction:
 
     def test_every_lambda_image_uri_carries_the_digest(self, pinned_template):
         image_uris = self._image_uris(pinned_template)
-        # digest + visual + threads-refresh: each takes the pin separately.
-        assert len(image_uris) == 3, image_uris
+        # digest + visual + threads-refresh + comment-replies: each takes the pin separately.
+        assert len(image_uris) == 4, image_uris
         for logical_id, uri in image_uris.items():
             assert f"@{_PUSHED_DIGEST}" in uri, logical_id
             assert ":latest" not in uri, logical_id
@@ -470,6 +471,6 @@ class TestThePushedImageDigestReachesEveryFunction:
     def test_the_unpinned_stack_falls_back_to_the_latest_tag(self, templates):
         _, app = templates
         image_uris = self._image_uris(app)
-        assert len(image_uris) == 3, image_uris
+        assert len(image_uris) == 4, image_uris
         for logical_id, uri in image_uris.items():
             assert ":latest" in uri, logical_id

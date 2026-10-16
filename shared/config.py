@@ -33,14 +33,12 @@ class _StrictModel(BaseModel):
 # Kept in one place so the two features can't drift apart on register, anti-
 # translationese, or the colon-enumeration ban. Composed into digest_language_rules and the
 # research agent's <language> block.
-KOREAN_STYLE_RULES: str = (
+KOREAN_PROSE_RULES: str = (
     "- Write natural, idiomatic Korean — NOT translationese. Avoid stiff translated-English "
     "patterns: drop redundant pronouns (그것은/이것은), avoid overusing passive voice and "
     "'~에 대해/~에 의해/~을 통해', don't calque English connectives.\n"
     "- Say what IS, directly. Do not build a sentence on the 'A가 아니라 B' / 'A보다 B' contrast "
     "unless someone actually claimed A; it is the most worn formula in machine-written commentary.\n"
-    "- Use the plain declarative '~다' columnist register consistently (e.g. '~했다', '~이다'); "
-    "NEVER the honorific '~입니다/~습니다'. Do not mix the two registers.\n"
     "- Do NOT glue two complete sentences together with punctuation Korean does not use that way. "
     "Not with a colon to introduce an enumeration ('핵심은 세 가지다: ...'), and not with a comma "
     "after a finished predicate ('성립한다, 그 순간이 오지 않으면 ...' / '시대다, 토큰이 곧 ...'). "
@@ -48,6 +46,12 @@ KOREAN_STYLE_RULES: str = (
     "one ('핵심은 세 가지다. 첫째는 ...'), or restructure so the first clause connects properly "
     "('성립하는데', '~라면', '~이므로'). A comma is fine INSIDE one sentence. "
     "Keep colons out of mid-prose entirely."
+)
+# The columnist register of the digest and the research report. Kept out of KOREAN_PROSE_RULES
+# because a comment reply talks TO a person, where the '~다' column voice reads as a lecture.
+KOREAN_STYLE_RULES: str = (
+    KOREAN_PROSE_RULES + "\n- Use the plain declarative '~다' columnist register consistently (e.g. '~했다', '~이다'); "
+    "NEVER the honorific '~입니다/~습니다'. Do not mix the two registers."
 )
 
 
@@ -371,6 +375,17 @@ class PipelineConfig(_StrictModel):
     # The ONE topic tag a Threads post may carry (Meta: 1-50 chars, no "." or "&"); it puts the root
     # post into that topic's feed and tag search. Replies carry none. Empty disables it.
     threads_topic_tag: str = Field(default="AI", pattern=r"^[^.&]{0,50}$")
+    # Reply to readers' comments on the account's recent posts (the comment-reply Lambda, on its own
+    # schedule). Only comments that answer one of the account's posts are considered, and the model
+    # may decline one (spam, nothing to answer).
+    enable_comment_replies: bool = False
+    # Posts and comments older than this are left alone.
+    comment_reply_lookback_days: int = Field(default=7, ge=1)
+    # Bounds a burst (a spam wave, a first run over a backlog); the rest wait for the next run.
+    comment_reply_max_per_run: int = Field(default=10, ge=1)
+    # The account answers one commenter at most this many times under one post, so a bot that
+    # answers every reply cannot hold it in an endless exchange.
+    comment_reply_max_per_commenter: int = Field(default=3, ge=1)
     # Sunburst over flare: the same token price, and it draws brand logos correctly (docs/design.md).
     image_model: str = "gpt-image-2.5-sunburst"
     # orientation -> gpt-image size. The four-panel comic defaults to the 2x2 portrait grid; the
@@ -570,6 +585,8 @@ class AWSConfig(_StrictModel):
     digest_cron_minute: str = "0"
     # Threads long-lived tokens expire after 60 days; refresh comfortably inside that window.
     threads_token_refresh_days: int = Field(default=50, ge=1, le=59)
+    # How often the comment-reply Lambda looks for new comments.
+    comment_reply_interval_minutes: int = Field(default=60, ge=5)
     # Running tasks for the RSSHub Fargate service. 0 by default because the digest never reaches
     # it: RSSHubCollector reads the S3 park file FIRST and returns early when it is usable, and the
     # local sync cron refreshes that file before every run (verified in the digest logs — X items

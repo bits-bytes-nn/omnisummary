@@ -92,7 +92,7 @@ class OmniSummaryApplicationStack(Stack):
                 tag_or_digest=digest_tag_or_digest,
                 cmd=["lambda_handlers.visual_handler.handler"],
             ),
-            # gpt-image render, review and one correction + Threads root post + reply-indexing retries (an IMAGE
+            # gpt-image render + Threads root post + reply-indexing retries (an IMAGE
             # root isn't addressable as a reply target for several MINUTES) can exceed 10 min; 15
             # (the Lambda max) gives the flat reply chain room to finish so comments aren't cut off.
             timeout=Duration.minutes(15),
@@ -217,6 +217,40 @@ class OmniSummaryApplicationStack(Stack):
             targets=[targets.LambdaFunction(threads_refresh_lambda)],
         )
 
+        # Answers readers' comments on the account's recent posts. Outside the VPC like the visual
+        # Lambda: it calls only public endpoints (Threads, Bedrock, S3). One run handles at most
+        # pipeline.comment_reply_max_per_run comments, one model call and one post each.
+        comment_reply_lambda = lambda_.DockerImageFunction(
+            self,
+            "CommentReplyLambda",
+            function_name=f"{project_name}-{stage}-comment-replies",
+            code=lambda_.DockerImageCode.from_ecr(
+                foundation.ecr_repo,
+                tag_or_digest=digest_tag_or_digest,
+                cmd=["lambda_handlers.comment_reply_handler.handler"],
+            ),
+            timeout=Duration.minutes(5),
+            memory_size=512,
+            role=foundation.lambda_role,
+            # A failed comment stays unrecorded and the next scheduled run retries it.
+            retry_attempts=0,
+            log_group=self._log_group("CommentReplyLambdaLogGroup", f"{project_name}-{stage}-comment-replies"),
+            environment={
+                "AWS_BEDROCK_REGION": bedrock_region,
+                "PROJECT_NAME": project_name,
+                "STAGE": stage,
+                "STATE_BUCKET": foundation.state_bucket.bucket_name,
+                "S3_PREFIX": state_prefix,
+            },
+        )
+        events.Rule(
+            self,
+            "CommentReplyRule",
+            rule_name=f"{project_name}-{stage}-comment-replies",
+            schedule=events.Schedule.rate(Duration.minutes(config.aws.comment_reply_interval_minutes)),
+            targets=[targets.LambdaFunction(comment_reply_lambda)],
+        )
+
         # Alarm on ALL Lambdas (incl. visual + threads-refresh, which run best-effort and would
         # otherwise fail silently). Created here so every Lambda already exists.
         self._add_alarms(
@@ -224,6 +258,7 @@ class OmniSummaryApplicationStack(Stack):
                 "Digest": digest_lambda,
                 "Visual": visual_lambda,
                 "ThreadsRefresh": threads_refresh_lambda,
+                "CommentReply": comment_reply_lambda,
             },
             foundation,
             async_dlq,
