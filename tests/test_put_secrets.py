@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
-from shared.constants import ALL_SSM_SECRET_ENV_VARS, SSM_PLACEHOLDER
+from shared.constants import SSM_PLACEHOLDER, SSM_SECRET_ENV_VARS
 
 _SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "put_secrets.py"
 
@@ -42,8 +42,8 @@ class TestMidWayAbort:
     stopped working with nothing in the output to say so."""
 
     def test_type_change_rejection_recreates_the_placeholder_as_a_secure_string(self, put_secrets, monkeypatch, capsys):
-        names = list(ALL_SSM_SECRET_ENV_VARS)
-        for env_var in ALL_SSM_SECRET_ENV_VARS.values():
+        names = list(SSM_SECRET_ENV_VARS)
+        for env_var in SSM_SECRET_ENV_VARS.values():
             monkeypatch.setenv(env_var, "real-value")
         client = _ssm(put_side_effect=[_validation_error()] + [None] * (2 * len(names)))
         client.get_parameter.return_value = {"Parameter": {"Type": "String", "Value": SSM_PLACEHOLDER}}
@@ -67,8 +67,8 @@ class TestMidWayAbort:
         # The Threads token is rotated in place by the refresh Lambda, which cannot change the
         # parameter's type — so a String can hold a LIVE credential. Deleting it to encrypt it would
         # destroy the value; write it in place and say so instead.
-        names = list(ALL_SSM_SECRET_ENV_VARS)
-        for env_var in ALL_SSM_SECRET_ENV_VARS.values():
+        names = list(SSM_SECRET_ENV_VARS)
+        for env_var in SSM_SECRET_ENV_VARS.values():
             monkeypatch.setenv(env_var, "real-value")
         client = _ssm(put_side_effect=[_validation_error()] + [None] * (2 * len(names)))
         client.get_parameter.return_value = {"Parameter": {"Type": "String", "Value": "a-live-token"}}
@@ -88,8 +88,8 @@ class TestMidWayAbort:
     def test_a_deleted_parameter_that_cannot_be_rewritten_is_reported_as_failed(self, put_secrets, monkeypatch, capsys):
         # The one state worse than a plaintext secret: the placeholder is gone and nothing replaced
         # it. It must exit non-zero and print the exact command that restores the parameter.
-        names = list(ALL_SSM_SECRET_ENV_VARS)
-        for env_var in ALL_SSM_SECRET_ENV_VARS.values():
+        names = list(SSM_SECRET_ENV_VARS)
+        for env_var in SSM_SECRET_ENV_VARS.values():
             monkeypatch.setenv(env_var, "real-value")
         denied = ClientError({"Error": {"Code": "AccessDeniedException"}}, "PutParameter")
         client = _ssm(put_side_effect=[_validation_error(), denied] + [None] * (2 * len(names)))
@@ -107,8 +107,8 @@ class TestMidWayAbort:
         assert f"aws ssm put-parameter --name /omnisummary/dev/{names[0]} --type SecureString" in out
 
     def test_a_hard_put_failure_is_reported_and_the_loop_continues(self, put_secrets, monkeypatch, capsys):
-        names = list(ALL_SSM_SECRET_ENV_VARS)
-        for env_var in ALL_SSM_SECRET_ENV_VARS.values():
+        names = list(SSM_SECRET_ENV_VARS)
+        for env_var in SSM_SECRET_ENV_VARS.values():
             monkeypatch.setenv(env_var, "real-value")
         denied = ClientError({"Error": {"Code": "AccessDeniedException"}}, "PutParameter")
         client = _ssm(put_side_effect=[denied] + [None] * (2 * len(names)))

@@ -88,10 +88,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 async def _run() -> None:
     config = Config.load()
 
-    rsshub_url = os.environ.get("RSSHUB_BASE_URL")
-    if rsshub_url:
-        config.collectors.rsshub.base_url = rsshub_url
-
     digest_date, reference_time = resolve_digest_window(config)
     config.collectors.set_reference_time(reference_time)
 

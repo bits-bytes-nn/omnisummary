@@ -213,21 +213,6 @@ class TestRun:
         assert doc["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [["Project", "Stage"]]
         assert doc["Project"] == "omnisummary" and doc["Stage"] == "prod"
 
-    async def test_rsshub_base_url_override_from_env(self, monkeypatch):
-        monkeypatch.setenv("RSSHUB_BASE_URL", "http://example.local:1200")
-        config = _config()
-        health = HealthReport(sources=[SourceHealth(name="rss", item_count=0, status=SourceStatus.EMPTY)])
-        with patch("lambda_handlers.digest_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.digest_handler.boto3.Session"):
-                with patch("lambda_handlers.digest_handler.BedrockLanguageModelFactory"):
-                    with patch(
-                        "lambda_handlers.digest_handler.run_collectors_with_health",
-                        new=AsyncMock(return_value=([], health)),
-                    ):
-                        with patch("lambda_handlers.digest_handler._maybe_alert"):
-                            await digest_handler._run()
-        assert config.collectors.rsshub.base_url == "http://example.local:1200"
-
 
 class TestTriggerVisual:
     def test_no_function_name_skips(self, monkeypatch):

@@ -567,8 +567,6 @@ class AWSConfig(_StrictModel):
     project_name: str = "omnisummary"
     stage: str = "dev"
     timezone: str = "Asia/Seoul"
-    vpc_id: str = ""
-    subnet_ids: list[str] = Field(default_factory=list)
     state_bucket_name: str = ""
     s3_prefix: str = ""
     # EventBridge cron is UTC. 10:00 UTC = 19:00 KST (daily 7pm).
@@ -579,13 +577,6 @@ class AWSConfig(_StrictModel):
     # How often the comment-reply Lambda looks for new comments. At least its 10-minute timeout, so
     # runs never queue behind the single concurrency slot.
     comment_reply_interval_minutes: int = Field(default=60, ge=10)
-    # Running tasks for the RSSHub Fargate service. 0 by default because the digest never reaches
-    # it: RSSHubCollector reads the S3 park file FIRST and returns early when it is usable, and the
-    # local sync cron refreshes that file before every run (verified in the digest logs — X items
-    # are served from rsshub_items.json, and the service was the account's only Fargate task at
-    # ~$40/30d). The task definition is still deployed, so raising this to 1 restores the in-AWS
-    # fallback for a day when the local sync has stopped (which now reports the source as STALE).
-    rsshub_desired_count: int = Field(default=0, ge=0)
 
 
 class Config(_StrictModel):
@@ -674,8 +665,8 @@ def get_config() -> Config:
     tools, og-image). Config.load() re-reads and re-validates the whole YAML on every call, which
     a single research run did dozens of times — once per tool invocation.
 
-    Deliberately NOT used where the Config is MUTATED (main/handlers' set_reference_time, the CI
-    synth's vpc_id, the infra tests' bucket override): those callers need their own instance, and
+    Deliberately NOT used where the Config is MUTATED (main/handlers' set_reference_time, the infra
+    tests' bucket override): those callers need their own instance, and
     a shared cached object would leak their edits everywhere. Tests clear the cache via an autouse
     fixture in tests/conftest.py."""
     return Config.load()
