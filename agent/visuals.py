@@ -24,8 +24,7 @@ REFERENCE_NOTE = (
 
 
 def _image_file(index: int, data: bytes) -> tuple[str, bytes, str]:
-    """An upload tuple for images.edit, typed by the bytes' own signature (the reference sheet is a
-    JPEG, a rendered comic is a PNG)."""
+    """An upload tuple for images.edit, typed by the bytes' own signature (JPEG or PNG)."""
     if data[:2] == b"\xff\xd8":
         return f"input{index}.jpg", data, "image/jpeg"
     return f"input{index}.png", data, "image/png"
@@ -137,7 +136,7 @@ class VisualGenerator:
 
     def _call_images(self, prompt: str, size: str, inputs: Sequence[bytes], label: str) -> bytes:
         """images.generate, or images.edit when input images ride along (the narrator's reference
-        sheet, or the comic being corrected). `quality` is only sent when configured: OpenAI's "auto"
+        sheet). `quality` is only sent when configured: OpenAI's "auto"
         picks between tiers whose prices differ several-fold."""
         params: dict[str, Any] = {"model": self.image_model, "prompt": prompt, "size": size}
         if self.image_quality:

@@ -37,7 +37,7 @@ def _remaining_deadline(context: Any) -> float | None:
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Daily-visual Lambda, invoked asynchronously by the digest Lambda so visual
-    generation (LLM editor + Tavily + gpt-image, ~1-2 min) stays off the digest's
+    generation (LLM editor + art director + gpt-image, ~2-3 min) stays off the digest's
     critical path. Loads the digest snapshot for the requested date from AgentCore Memory
     and publishes the digest (image + text) to Threads.
 

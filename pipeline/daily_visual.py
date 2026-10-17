@@ -30,7 +30,7 @@ from shared import (
     resolve_secret,
 )
 from shared.config import Config
-from shared.history_store import ThreadsPostLedger
+from shared.history_store import RECENT_COMICS_KEY, RollingLog, ThreadsPostLedger
 from shared.state_store import StateStore
 
 if TYPE_CHECKING:
@@ -41,7 +41,7 @@ class DailyVisualMaker:
     """Renders the day's visual for the digest headline (normally a four-panel comic), then
     hands it to the digest publisher as an attachment.
 
-    Best-effort in BOTH directions: a visual failure (no OpenAI key, no fit, search/render error)
+    Best-effort in BOTH directions: a visual failure (no OpenAI key, an editor skip, a render error)
     is logged and the digest still publishes TEXT-ONLY, and a delivery failure never escapes into
     the pipeline. Publication itself belongs to `output.digest_delivery.DigestPublisher`, which takes
     the image as an OPTIONAL argument — so no failure on this side can cost the day's digest."""
@@ -59,6 +59,9 @@ class DailyVisualMaker:
             logger.error("State store unavailable (init failed); publishing without the Threads ledger", exc_info=True)
             store = None
         self.publisher = DigestPublisher(config, store)
+        # What the last few comics drew, shown to the editor so today's does not repeat their sets,
+        # props and gags (2026-10-13, -16 and -17 all locked a model in a glass case).
+        self.comic_log = RollingLog(store, RECENT_COMICS_KEY, config.pipeline.recent_leads_window) if store else None
         self.generator = VisualGenerator(
             llm_factory,
             config.pipeline.digest_model,
@@ -110,7 +113,7 @@ class DailyVisualMaker:
             logger.error("Daily visual ran past its deadline; publishing the digest text-only")
             image_bytes, brief = None, None
 
-        return await self.publisher.publish(
+        published = await self.publisher.publish(
             content,
             image_bytes=image_bytes,
             image_alt=brief.alt_text if image_bytes and brief else "",
@@ -118,6 +121,35 @@ class DailyVisualMaker:
             force_republish=force_republish,
             deadline=deadline,
         )
+        outcome = self.publisher.threads_outcome
+        if brief and outcome is not None and outcome.with_image:
+            self._record_comic(post_date, brief)
+        return published
+
+    def _record_comic(self, post_date: date, brief: VisualBrief) -> None:
+        if self.comic_log is None:
+            return
+        try:
+            self.comic_log.append(
+                {
+                    "date": post_date.isoformat(),
+                    "orientation": brief.orientation,
+                    "comic": brief.alt_text or brief.title,
+                },
+                dedup_key="date",
+            )
+        except Exception:
+            logger.warning("Failed to record the day's comic in the recent-comics log (non-fatal)", exc_info=True)
+
+    def _recent_comics(self, post_date: date) -> list[dict]:
+        """The logged comics of the days before `post_date`, oldest first. Best-effort: the history
+        only steers the editor, so a store that cannot be read must not cost the day's comic."""
+        try:
+            entries = self.comic_log.entries() if self.comic_log else []
+        except Exception:
+            logger.warning("Recent-comics log unreadable; writing the comic without it", exc_info=True)
+            return []
+        return [e for e in entries if isinstance(e, dict) and str(e.get("date", "")) < post_date.isoformat()]
 
     @property
     def threads_outcome(self) -> ThreadsDelivery | None:
@@ -153,70 +185,62 @@ class DailyVisualMaker:
             logger.info("OPENAI_API_KEY not set — publishing the digest text-only, without a visual")
             return None, None
 
-        # The visual MUST depict the digest's headline so the image and the lead stay in sync.
-        # content.headline_index is into the curated content.items (may be merged/reordered), so
-        # map it back to a ranked_items position by normalized URL.
-        headline_index = self._headline_ranked_index(content, ranked_items)
-        marker_index, headline_title, source = self._headline_brief(content, ranked_items, headline_index)
-        take = self._editorial_take(content, post_date)
         try:
-            plan = await self._pick_story(ranked_items, marker_index, headline_source=source, editorial_take=take)
+            plan, instruction, source = await self._compose(ranked_items, content, post_date)
         except Exception:
             # Best-effort: a visual failure must never block the digest, so catch broadly here.
             logger.warning("Daily visual editor failed; publishing the digest text-only", exc_info=True)
             return None, None
-
-        # coerce_bool, not truthiness: an editor that writes the STRING "false" here silently
-        # killed the day's visual, with no error anywhere.
-        if coerce_bool(plan.get("skip")):
+        if not instruction:
             logger.info("Daily visual: editor could not illustrate the headline; publishing the digest text-only")
             return None, None
-
-        instruction = self._build_instruction(plan, content, post_date, headline_title)
-        references = [self.character_reference] if self._features_character(plan) and self.character_reference else []
 
         image_bytes: bytes | None = None
         brief: VisualBrief | None = None
         try:
             image_bytes, brief = await self.generator.generate(
-                instruction, source, references=references, deadline=self._image_deadline(deadline)
+                instruction, source, references=self._references(plan), deadline=self._image_deadline(deadline)
             )
         except Exception:
             # The image is an optional attachment; its failure must NOT sink the Threads text
-            # digest, which stands on its own. Fall through with no image so _post_threads still
+            # digest, which stands on its own. Fall through with no image so the publisher still
             # posts the lead + per-story replies (text-only).
             logger.warning("Daily visual generation failed; posting Threads text-only", exc_info=True)
 
         return image_bytes, brief
 
-    def _build_instruction(
-        self, plan: dict, content: DigestContent | None, post_date: date, headline_title: str
-    ) -> str:
-        """The art-director instruction production actually sends.
+    async def _compose(
+        self,
+        ranked_items: list[RankedItem],
+        content: DigestContent | None,
+        post_date: date,
+        recent_comics: list[dict] | None = None,
+    ) -> tuple[dict, str, str]:
+        """(editor plan, art-director instruction, source material): everything the render is made
+        from, shared with scripts/sample_visual_brief.py so the sampler grades what production sends.
+        `recent_comics` defaults to the log's; the sampler passes its own to replay a past day. The
+        instruction is "" when the editor skips."""
+        headline_title, source = self._headline(content, ranked_items)
+        if recent_comics is None:
+            recent_comics = self._recent_comics(post_date)
+        plan = await self._write_synopsis(source, self._editorial_take(content, post_date), recent_comics)
+        # coerce_bool, not truthiness: an editor that writes the STRING "false" here silently
+        # killed the day's visual, with no error anywhere.
+        if coerce_bool(plan.get("skip")):
+            return plan, "", source
+        return plan, self._build_instruction(plan, headline_title), source
 
-        A PURE extraction from _make_visual — no I/O, no state — so scripts/sample_visual_brief.py
-        can grade the very string production sends, not the bare `plan["instruction"]` without the
-        editorial angle, the guardrails or the character sheet."""
+    def _build_instruction(self, plan: dict, headline_title: str) -> str:
+        """The editor's synopsis plus what the art director must keep: the guardrails and, when the
+        narrator appears, his sheet. The digest's angle is not repeated here: the editor already set
+        the comic's tone from it, and the art director only turns the synopsis into an image."""
         instruction = plan.get("instruction", "") or f"A 2x2 four-panel comic about: {headline_title}"
-
-        # The art director only ever saw the raw article, so it illustrates surface facts: the
-        # 2026-08-15 visual drew a four-way photo finish ("they all tied") for a story whose point
-        # was that RELEASE CADENCE, not model quality, explained the gap. Hand over the digest's own
-        # angle as INFORMATION, not a constraint — the image needn't match the lead's thesis, but it
-        # shouldn't be blind to it.
-        take = self._editorial_take(content, post_date)
-        if take:
-            instruction += (
-                "\n\nTHE DIGEST'S OWN ANGLE on this story (context you may use or ignore — "
-                f"the image does NOT have to argue this point):\n{take}"
-            )
         if self.config.pipeline.visual_guardrails:
             instruction += f"\n\nGUARDRAILS: {self.config.pipeline.visual_guardrails}"
-        # The narrator is the strip's viewpoint character unless the editor judged he'd get in the way.
         # The sheet is written into the brief; his exact look rides along as the reference image.
         if self._features_character(plan):
             instruction += (
-                "\n\nTHE NARRATOR is the viewpoint character, inside the scenes (not in a void): "
+                "\n\nTHE NARRATOR, in the panels the synopsis puts him in: "
                 f"{self.config.pipeline.visual_character_sheet}"
             )
         return instruction
@@ -224,13 +248,17 @@ class DailyVisualMaker:
     @staticmethod
     def _image_deadline(deadline: float | None) -> float | None:
         """When the image work must be done: the caller's deadline minus what the Threads publish
-        still needs afterwards, so a slow correction can never eat the day's post."""
+        still needs afterwards, so a slow render can never eat the day's post."""
         from output.threads_handler import THREADS_INDEXING_BUDGET_SEC, THREADS_PUBLISH_RESERVE_SEC
 
         return None if deadline is None else deadline - THREADS_INDEXING_BUDGET_SEC - THREADS_PUBLISH_RESERVE_SEC
 
     def _features_character(self, plan: dict) -> bool:
         return self.config.pipeline.visual_character_enabled and coerce_bool(plan.get("use_character"), default=True)
+
+    def _references(self, plan: dict) -> list[bytes]:
+        """The input images the render carries: the narrator's reference sheet when he appears."""
+        return [self.character_reference] if self._features_character(plan) and self.character_reference else []
 
     @staticmethod
     def _load_character_reference(config: Config) -> bytes | None:
@@ -252,25 +280,24 @@ class DailyVisualMaker:
         idx = content.headline_index if 1 <= content.headline_index <= len(content.items) else 1
         return content.items[idx - 1]
 
-    def _headline_brief(
-        self, content: DigestContent | None, ranked_items: list[RankedItem], headline_index: int
-    ) -> tuple[int, str, str]:
-        """(marker_index, title, source_text) for the story the visual must depict.
+    def _headline(self, content: DigestContent | None, ranked_items: list[RankedItem]) -> tuple[str, str]:
+        """(title, source text) of the story the visual must depict: the curated headline, read from
+        its ranked item (the full article) when one matches.
 
-        marker_index is the ranked position to flag as TODAY'S HEADLINE for the editor (0 = none).
-        When the curated headline has no matching ranked source, the CURATED story's own prose is
-        the source: the old `or 1` fallback briefed ranked #1 instead, i.e. a different story than
-        the lead — exactly the image/text desync this whole path exists to prevent."""
-        if headline_index:
-            item = ranked_items[headline_index - 1].item
-            return headline_index, item.title, f"{item.title}\n\n{item.text}"
+        Matched on the aggregator's normalize_url: the editor echoes the URL back, and a trailing
+        slash or a utm parameter is enough to miss an exact match. With no match the CURATED story's
+        own prose is the source; falling back to ranked #1 drew a different story than the lead."""
         curated = self._curated_headline(content)
-        if curated is not None:
-            body = "\n\n".join(p for p in (curated.body.strip(), curated.implication.strip()) if p)
-            return 0, curated.title, f"{curated.title}\n\n{body}"
-        # No structured content at all (visual-only run): the top-ranked story is the headline.
-        item = ranked_items[0].item
-        return 1, item.title, f"{item.title}\n\n{item.text}"
+        if curated is None:
+            # No structured content at all (visual-only run): the top-ranked story is the headline.
+            item = ranked_items[0].item
+            return item.title, f"{item.title}\n\n{item.text}"
+        url = normalize_url(curated.url)
+        for r in ranked_items:
+            if normalize_url(r.item.url) == url:
+                return r.item.title, f"{r.item.title}\n\n{r.item.text}"
+        body = "\n\n".join(p for p in (curated.body.strip(), curated.implication.strip()) if p)
+        return curated.title, f"{curated.title}\n\n{body}"
 
     def _countdown_intro(self, post_date: date) -> str:
         """The AGI-countdown gag for this date, exactly as the digest generator computed it, so the
@@ -283,80 +310,24 @@ class DailyVisualMaker:
         )
 
     def _editorial_take(self, content: DigestContent | None, post_date: date) -> str:
-        """The digest's angle on the headline story: its lead plus the headline item's closing
-        implication. The AGI-countdown prefix is dropped — it's the same fixed template every day
-        and carries no information about today's story. Empty when there is no structured content
-        (a visual can still be made; it just won't know the take)."""
+        """The digest's lead without the AGI-countdown prefix (the same template every day): the tone
+        the comic matches. The headline's implication is left out because it is a recommendation, and
+        on the 2026-10-15 story it came back as panel 4's moral in 4 of 8 synopses (1 of 8 without it).
+        Empty when there is no structured content."""
         if not content or not content.items:
             return ""
-        intro = self._countdown_intro(post_date)
-        idx = content.headline_index if 1 <= content.headline_index <= len(content.items) else 1
-        headline = content.items[idx - 1]
-        parts = [editorial_lead(content.lead, intro).strip(), headline.implication.strip()]
-        return "\n\n".join(p for p in parts if p)
+        return editorial_lead(content.lead, self._countdown_intro(post_date)).strip()
 
-    @staticmethod
-    def _headline_ranked_index(content: DigestContent | None, ranked_items: list[RankedItem]) -> int:
-        """Ranked position (1-based) of the curated headline, or 0 when it matches none.
-
-        Matched on the aggregator's normalize_url, not an exact string: the editor echoes the URL
-        back and a trailing slash / http→https / utm-param difference is enough to miss a match
-        that is obviously the same article. Already-identical URLs are unaffected."""
-        if not content or not content.items:
-            return 0
-        idx = content.headline_index
-        if not (1 <= idx <= len(content.items)):
-            return 0
-        url = normalize_url(content.items[idx - 1].url)
-        for i, r in enumerate(ranked_items, start=1):
-            if normalize_url(r.item.url) == url:
-                return i
-        return 0
-
-    def _editor_items_text(
-        self,
-        ranked_items: list[RankedItem],
-        headline_index: int,
-        headline_source: str,
-        editorial_take: str,
-    ) -> str:
-        """What the visual editor is shown: the day's stories as title rows, plus the HEADLINE story
-        in full and the digest's own angle on it.
-
-        The editor writes the comic, so it needs the headline's body, not just its title row. Handing
-        the headline over explicitly also closes the no-ranked-match case: with headline_index 0 NO row carried the marker the
-        prompt promises, so the editor's brief and the art director's source material described
-        different articles."""
-        rows = [
-            f"{i}. [{r.item.source_type.value}] {r.item.title}"
-            + (" ← TODAY'S HEADLINE — illustrate this one" if i == headline_index else "")
-            for i, r in enumerate(ranked_items, start=1)
-        ]
-        blocks = ["\n".join(rows)]
-        if headline_source.strip():
-            headline = self.llm_factory.truncate_to_tokens(
-                headline_source.strip(), self.config.pipeline.visual_editor_source_max_tokens
-            )
-            blocks.append(f"TODAY'S HEADLINE STORY IN FULL — this is the one to illustrate:\n{headline}")
-        if editorial_take:
-            blocks.append(f"THE DIGEST'S OWN ANGLE on it:\n{editorial_take}")
-        return "\n\n".join(blocks)
-
-    async def _pick_story(
-        self,
-        ranked_items: list[RankedItem],
-        headline_index: int = 0,
-        *,
-        headline_source: str = "",
-        editorial_take: str = "",
-    ) -> dict:
-        # The editor briefs the HEADLINE handed to it (it doesn't choose the story); the visual must
-        # match the lead, which is about this same headline.
-        items_text = self._editor_items_text(ranked_items, headline_index, headline_source, editorial_take)
+    async def _write_synopsis(self, headline_source: str, editorial_take: str, recent_comics: list[dict]) -> dict:
+        """The editor's plan for the comic about the headline (it does not choose the story)."""
         chain = VisualEditorPrompt.get_prompt() | self.llm | StrOutputParser()
         raw = await chain.ainvoke(
             {
-                "items_text": items_text,
+                "headline": self.llm_factory.truncate_to_tokens(
+                    headline_source.strip(), self.config.pipeline.visual_editor_source_max_tokens
+                ),
+                "angle": editorial_take or "(none)",
+                "recent_comics": _format_recent_comics(recent_comics),
                 "audience": self.config.pipeline.visual_audience_description,
                 "on_image_language": self.config.pipeline.visual_on_image_language,
             }
@@ -369,3 +340,10 @@ class DailyVisualMaker:
             # could read; skipping costs nothing extra (no second LLM call either).
             logger.warning("Daily visual editor returned unparseable JSON; skipping", exc_info=True)
             return {"skip": True}
+
+
+def _format_recent_comics(entries: list[dict]) -> str:
+    lines = [
+        f"- {e.get('date', '')} ({e.get('orientation', '')}): {e.get('comic', '')}" for e in entries if e.get("comic")
+    ]
+    return "\n".join(lines) or "(none yet)"

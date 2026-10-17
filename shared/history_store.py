@@ -23,6 +23,7 @@ def published_urls_from_snapshots(snapshots: list[dict[str, Any]]) -> set[str]:
 
 PUBLISHED_URLS_KEY = "published_urls.json"
 RECENT_LEADS_KEY = "recent_leads.json"
+RECENT_COMICS_KEY = "recent_comics.json"
 THREADS_POSTED_KEY = "threads_posted.json"
 COMMENT_REPLIES_KEY = "comment_replies.json"
 
@@ -172,8 +173,8 @@ class PublishedUrlLedger:
 
 
 class RollingLog:
-    """A capped, FIFO list of small records persisted as one JSON blob (the recent digest leads the
-    prompt is told not to reuse)."""
+    """A capped, FIFO list of small records persisted as one JSON blob (the recent digest leads and
+    comics the prompts are told not to reuse)."""
 
     def __init__(self, store: StateStore, key: str, max_entries: int) -> None:
         self.store = store

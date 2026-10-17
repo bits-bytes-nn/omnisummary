@@ -215,24 +215,26 @@ Rules:
 
 
 class VisualEditorPrompt(BasePrompt):
-    """Brief the daily visual for the marked HEADLINE story. The headline is chosen upstream
-    (the digest's lead is about it), so the editor doesn't pick the story — it writes the comic
-    for it. So image, lead, and headline stay in sync."""
+    """Write the daily comic for the HEADLINE story. The headline is chosen upstream (the digest's
+    lead is about it), so the editor doesn't pick the story; it writes the comic for it."""
 
-    input_variables = ["items_text", "audience", "on_image_language"]
+    input_variables = ["headline", "angle", "recent_comics", "audience", "on_image_language"]
 
     system_prompt_template = """\
-You are the cartoonist for {audience}. Today's visual is a comic about the HEADLINE story, given \
-below in full along with the digest's angle on it: match its tone, not its thesis, which the post already states. It is \
-told through the digest's narrator, a recurring character who is the strip's viewpoint: he takes \
-part in the scenes next to the real people and companies of the story. Aim for a strip a reader \
-who has NOT read the story understands at a glance, then finds funny: panel 1 says plainly what \
-happened (who did what, the key number) in a narration box; panels 2-3 show the story's real facts as \
-literal scenes with the real people and products (a number only when the LOGLINE rests on it), not an allegory; panel 4 SHOWS the payoff, a \
-sight gag that grows out of those facts, and its line reacts to it rather than stating a moral. Every line and every sign or label is plain {on_image_language} a non-specialist gets (names \
-of people, companies and products stay as written; no benchmark names, metrics or jargon); the humor \
-comes from the narrator's take \
-on the real facts.
+You are the cartoonist for {audience}. Today's comic is about the HEADLINE story, given below in full \
+along with the digest's angle on it: match the angle's tone, not its thesis, which the post already \
+states. It is told through the digest's narrator, a recurring character who is the strip's viewpoint: \
+in the panels he is in, he takes part next to the real people and companies of the story. Aim for a \
+strip a reader who has NOT read the story understands at a glance, then finds funny: panel 1 says \
+plainly what happened (who did what); panels 2-3 show the story's real facts as literal scenes with \
+the real people and products, not an allegory; panel 4 SHOWS the payoff, a sight gag that grows out \
+of those facts, and its line reacts to it rather than stating a moral. Every line and every sign or \
+label is plain {on_image_language} a non-specialist gets (names of people, companies and products \
+stay as written; a number only when the joke rests on it; no benchmark names, metrics or jargon); the \
+humor comes from the narrator's take on the real facts. Readers saw the recent comics on the last few \
+days: give today's a different setting, different props, a different way to draw what has no body (a \
+model, an agent) and a different kind of gag. The synopsis describes only today's comic, never what it \
+avoids.
 
 Produce ONLY a JSON object:
 ```json
@@ -244,16 +246,18 @@ Produce ONLY a JSON object:
 ```
 
 Rules:
-- Default composition: a 2x2 four-panel grid read left to right, top to bottom (setup, development, \
-turn, payoff). Choose another one (a vertical strip, a single frame, a wide panorama) only when \
-the story is clearly better told that way, and name it in the instruction.
+- The layout is a 2x2 grid read left to right, top to bottom, unless the story is clearly better told \
+another way (a single frame, a vertical strip); name it in COMPOSITION.
 - Keep every panel drawable: at most three characters acting in the foreground (a background crowd \
 is fine) and one clear action, on a plausible set.
 - Set `use_character` false only when the narrator would get in the way of the joke.
 - Return {{"skip": true}} only if the headline cannot be illustrated at all.
 - Output ONLY the JSON object."""
 
-    human_prompt_template = "Today's digest stories:\n\n{items_text}"
+    human_prompt_template = (
+        "<headline>\n{headline}\n</headline>\n\n<angle>\n{angle}\n</angle>\n\n"
+        "<recent_comics>\n{recent_comics}\n</recent_comics>"
+    )
 
 
 class VisualSynopsisPrompt(BasePrompt):
@@ -282,13 +286,13 @@ single frame takes whichever shape fits it.
 - prompt: a single rich English prompt for the image model: the full composition, each panel in \
 order, the characters, the exact on-image text, and the style — {style_aesthetic}
 
-Think like an editor BEFORE you describe pixels. A viewer should grasp the subject and the one \
-point within a few seconds:
+Think like an editor BEFORE you describe pixels. A viewer should grasp the subject and the joke \
+within a few seconds:
 1. SUBJECT — make it visually unmistakable with the real-world cues this story calls for: name each \
 real person and describe the features that make them recognizable at a glance (face shape, hairline, \
 glasses, build, signature clothing), identical in every panel; organization logos and brand colors; \
 recognizable products or settings.
-2. THE ONE POINT — the single idea or punchline that should land; every element serves it.
+2. THE JOKE — the requested visual's punchline; every element serves it.
 3. FIT — the whole composition fits the frame with no panel, bubble or line of text cut off; panel \
 borders and gutters are clean and every panel has a clear focal point.
 

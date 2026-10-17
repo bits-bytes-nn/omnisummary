@@ -58,65 +58,112 @@ def _items(n: int = 3) -> list[RankedItem]:
     ]
 
 
-class TestEditorialTakeReachesTheArtDirector:
-    """The brief used to see only the raw article, so the image illustrated surface facts: the
-    2026-08-15 visual drew a four-way photo finish ("they all tied") for a story whose point was
-    that release cadence explained the gap. The digest's angle must reach the art director — as
-    context, NOT as a constraint the image has to argue."""
+def _content(lead: str = "리드.", implication: str = "시사점이다.", url: str = "http://e.com/1"):
+    from shared.models import DigestContent, DigestItem
 
-    @staticmethod
-    def _instruction_for(content, **pipeline_overrides) -> str:
-        # Built through the same pure builder production sends (TestBuildInstructionIsWhatShips
-        # pins that equivalence end-to-end).
-        maker = _maker()
-        for key, value in pipeline_overrides.items():
-            setattr(maker.config.pipeline, key, value)
-        plan = {"skip": False, "instruction": "Draw the story."}
-        instruction = maker._build_instruction(plan, content, date(2026, 8, 15), "GLM-5.3")
-        return instruction
+    return DigestContent(
+        lead=lead,
+        headline_index=1,
+        items=[DigestItem(title="Story 1", url=url, body="본문이다.", implication=implication)],
+    )
 
-    def test_lead_and_implication_are_handed_over_without_the_countdown(self):
-        from shared.models import DigestContent, DigestItem
 
-        content = DigestContent(
-            lead="AGI 등장 870일 전이다. 격차의 원인은 모델 품질이 아니라 출시 주기다.",
-            headline_index=1,
-            items=[
-                DigestItem(
-                    title="GLM-5.3",
-                    url="http://e.com/1",
-                    body="본문.",
-                    implication="신중함에 값을 매기는 쪽이 시장에서 손해를 본다.",
-                )
-            ],
+class TestTheEditorialAngle:
+    """The editor matches the digest's TONE; the art director only turns the synopsis into an image."""
+
+    def test_the_angle_is_the_lead_without_the_countdown_or_the_implication(self):
+        # The implication is a recommendation: on the 2026-10-15 story it came back as panel 4's
+        # moral in 4 of 8 synopses ("새 기능은 나중에, 도장부터 찍자"), 1 of 8 without it.
+        content = _content(
+            lead="AGI 등장 870일 전이다. 격차의 원인은 출시 주기다.", implication="리뷰 단계가 새 기능보다 먼저다."
         )
-        instruction = self._instruction_for(content)
-        assert "격차의 원인은 모델 품질이 아니라 출시 주기다." in instruction
-        assert "신중함에 값을 매기는 쪽이 시장에서 손해를 본다." in instruction
-        # The fixed daily countdown template carries no information about the story.
-        assert "AGI 등장" not in instruction
-        # Handed over as context the art director may ignore — not a matching requirement.
-        assert "does NOT have to" in instruction
+        take = _maker()._editorial_take(content, date(2026, 8, 15))
+        assert take == "격차의 원인은 출시 주기다."
+        assert _maker()._editorial_take(None, date(2026, 8, 15)) == ""
 
-    def test_no_take_when_there_is_no_structured_content(self):
-        instruction = self._instruction_for(None)
-        assert "THE DIGEST'S OWN ANGLE" not in instruction
+    def test_the_art_director_instruction_does_not_repeat_the_angle(self):
+        instruction = _maker()._build_instruction({"instruction": "Draw the story."}, "GLM-5.3")
+        assert instruction.startswith("Draw the story.")
+        assert "ANGLE" not in instruction
 
     def test_guardrails_are_appended_and_are_config_driven(self):
-        # Handing the angle over as pure context is not always enough: a 2026-08-18 run turned a
-        # lead about circular vendor financing into a triumphal rocket-and-money poster — the
-        # opposite register. The guardrails say what the image must not DO — far weaker than the
-        # rejected "the image must argue the lead's thesis" rule. Depicting real people is
-        # explicitly ALLOWED (normal editorial-cartoon practice); what is barred is standing a
-        # company or country up as an ethnically-coded human, as a 2026-08-15 visual did.
-        instruction = self._instruction_for(None)
+        # Depicting real people is ALLOWED (normal editorial-cartoon practice); what is barred is
+        # standing a company or country up as an ethnically-coded human, as a 2026-08-15 visual did.
+        maker = _maker()
+        instruction = maker._build_instruction({"instruction": "x"}, "t")
         assert "GUARDRAILS:" in instruction
-        assert "must not read as celebratory" in instruction
         assert "Recognisable depictions of real people are fine" in instruction
         assert "ethnically-coded human" in instruction
+        maker.config.pipeline.visual_guardrails = ""
+        assert "GUARDRAILS:" not in maker._build_instruction({"instruction": "x"}, "t")
 
-    def test_empty_guardrails_config_appends_nothing(self):
-        assert "GUARDRAILS:" not in self._instruction_for(None, visual_guardrails="")
+
+class TestRecentComics:
+    """The editor saw no earlier comics, so a run of similar stories got the same comic: 2026-10-13,
+    -16 and -17 all locked a model behind glass. The posted comics are logged and shown to it."""
+
+    @staticmethod
+    async def _run(with_image: bool) -> DailyVisualMaker:
+        # The real publisher: whether the root carried the image is the Threads outcome's verdict.
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = True
+        maker.generator.generate = AsyncMock(
+            return_value=(b"PNG", VisualBrief(title="T", prompt="p", orientation="portrait", alt_text="1컷: 빵집."))
+        )
+        outcome = ThreadsDelivery(2, 2, with_image=with_image)
+        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"instruction": "draw"})):
+                with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=outcome)):
+                    await maker.run(_items(), _content(), today=date(2026, 10, 17))
+        return maker
+
+    @pytest.mark.asyncio
+    async def test_a_comic_that_reached_the_root_post_is_logged(self):
+        maker = await self._run(with_image=True)
+        assert maker.comic_log.entries() == [{"date": "2026-10-17", "orientation": "portrait", "comic": "1컷: 빵집."}]
+
+    @pytest.mark.asyncio
+    async def test_a_text_only_day_logs_nothing(self):
+        maker = await self._run(with_image=False)
+        assert maker.comic_log.entries() == []
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_log_costs_only_the_history(self):
+        maker = _maker()
+        maker.comic_log.entries = MagicMock(side_effect=ConnectionError("endpoint down"))
+        seen: list[str] = []
+        from langchain_core.messages import AIMessage
+        from langchain_core.runnables import RunnableLambda
+
+        maker.llm = RunnableLambda(
+            lambda prompt: seen.append(prompt.to_messages()[-1].content) or AIMessage(content='{"instruction": "x"}')
+        )
+        _plan, instruction, _source = await maker._compose(_items(), _content(), date(2026, 10, 17))
+        assert instruction.startswith("x")
+        assert "(none yet)" in seen[0]
+
+    @pytest.mark.asyncio
+    async def test_the_editor_sees_the_comics_of_earlier_days_only(self):
+        from langchain_core.messages import AIMessage
+        from langchain_core.runnables import RunnableLambda
+
+        maker = _maker()
+        for day, comic in (("2026-10-15", "교실 만화"), ("2026-10-16", "유리장 만화"), ("2026-10-17", "오늘 만화")):
+            maker.comic_log.append({"date": day, "orientation": "portrait", "comic": comic})
+        seen: list[str] = []
+        maker.llm = RunnableLambda(lambda prompt: seen.append(str(prompt)) or AIMessage(content='{"skip": true}'))
+        await maker._compose(_items(), _content(), date(2026, 10, 17))
+        assert "- 2026-10-15 (portrait): 교실 만화" in seen[0]
+        assert "유리장 만화" in seen[0]
+        assert "오늘 만화" not in seen[0]
+
+    def test_no_state_store_means_no_history(self):
+        config = Config()
+        factory = MagicMock()
+        with patch("pipeline.daily_visual.create_state_store", side_effect=RuntimeError("no bucket")):
+            maker = DailyVisualMaker(config, factory)
+        assert maker.comic_log is None
+        assert maker._recent_comics(date(2026, 10, 17)) == []
 
 
 class TestThePublishPathStandsOnItsOwn:
@@ -235,7 +282,7 @@ class TestVisualFailureNeverCostsTheDigest:
     async def test_editor_failure_still_publishes_the_text_digest(self):
         maker = self._threads_maker()
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(side_effect=RuntimeError("bedrock down"))):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(side_effect=RuntimeError("bedrock down"))):
                 with patch(
                     "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
                 ) as th:
@@ -248,7 +295,7 @@ class TestVisualFailureNeverCostsTheDigest:
     async def test_editor_skip_still_publishes_the_text_digest(self):
         maker = self._threads_maker()
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value={"skip": True})):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"skip": True})):
                 with patch(
                     "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
                 ) as th:
@@ -264,7 +311,7 @@ class TestVisualFailureNeverCostsTheDigest:
         maker.threads_ledger.mark(date(2026, 6, 10))
         maker.generator.generate = AsyncMock()
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock()) as pick:
+            with patch.object(maker, "_write_synopsis", new=AsyncMock()) as pick:
                 with patch("output.threads_handler.post_to_threads", new=AsyncMock()) as th:
                     assert await maker.run(_items(), self._content(), today=date(2026, 6, 10)) is False
         pick.assert_not_awaited()
@@ -282,7 +329,7 @@ class TestDailyVisualMaker:
         maker = _maker()
         maker.generator.generate = AsyncMock()
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value={"skip": True})):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"skip": True})):
                 # Threads is off in this default-config maker → nothing published.
                 assert await maker.run(_items()) is False
         maker.generator.generate.assert_not_awaited()
@@ -299,7 +346,7 @@ class TestDailyVisualMaker:
             lead="lead", headline_index=1, items=[DigestItem(title="t", url="http://e.com/2", body="b")]
         )  # headline maps to ranked Story 2 by URL
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(
                     return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
                 )
@@ -322,7 +369,7 @@ class TestDailyVisualMaker:
             items=[DigestItem(title="스토리", url="http://e.com/1", body="본문.")],
         )
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(
                     return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
                 )
@@ -353,7 +400,7 @@ class TestDailyVisualMaker:
         plan = {"skip": False, "instruction": "x"}
         empty = DigestContent(lead="리드만 남았다.", headline_index=1, items=[])
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(
                     return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
                 )
@@ -399,7 +446,7 @@ class TestDailyVisualMaker:
             lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
         )
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(
                     return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
                 )
@@ -426,7 +473,7 @@ class TestDailyVisualMaker:
         deadline = time.monotonic() + 900
         gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait")))
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = gen
                 with patch(
                     "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
@@ -460,7 +507,7 @@ class TestDailyVisualMaker:
 
         deadline = time.monotonic() + THREADS_INDEXING_BUDGET_SEC + THREADS_PUBLISH_RESERVE_SEC + 0.05
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=_hang):
+            with patch.object(maker, "_write_synopsis", new=_hang):
                 with patch(
                     "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
                 ) as th:
@@ -488,7 +535,9 @@ class TestDailyVisualMaker:
             return b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait")
 
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value={"skip": False, "instruction": "x"})):
+            with patch.object(
+                maker, "_write_synopsis", new=AsyncMock(return_value={"skip": False, "instruction": "x"})
+            ):
                 maker.generator.generate = _render_while_another_run_posts
                 with patch(
                     "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
@@ -511,7 +560,7 @@ class TestDailyVisualMaker:
             lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
         )
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(
                     return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
                 )
@@ -535,7 +584,7 @@ class TestDailyVisualMaker:
             lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
         )
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(
                     return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
                 )
@@ -561,7 +610,7 @@ class TestDailyVisualMaker:
             lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
         )
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(
                     return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
                 )
@@ -582,7 +631,7 @@ class TestDailyVisualMaker:
             lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
         )
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(
                     return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
                 )
@@ -604,7 +653,7 @@ class TestDailyVisualMaker:
             lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
         )
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(
                     return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
                 )
@@ -633,7 +682,7 @@ class TestDailyVisualMaker:
             return ThreadsDelivery(2, 2)
 
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(
                     return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
                 )
@@ -655,7 +704,7 @@ class TestDailyVisualMaker:
             lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
         )
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(
                     return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
                 )
@@ -671,7 +720,7 @@ class TestDailyVisualMaker:
         maker = _maker()
         plan = {"skip": False, "instruction": "x"}
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(
                     return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
                 )
@@ -686,7 +735,7 @@ class TestDailyVisualMaker:
         maker = _maker()
         plan = {"skip": False, "item_number": 1, "instruction": "draw"}
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(side_effect=RuntimeError("boom"))
                 assert await maker.run(_items()) is False
 
@@ -708,7 +757,7 @@ class TestDailyVisualMaker:
             items=[DigestItem(title="스토리", url="http://e.com/1", body="본문.")],
         )
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(side_effect=RuntimeError("billing hard limit"))
                 with patch(
                     "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
@@ -734,7 +783,7 @@ class TestDailyVisualMaker:
             lead="리드.", headline_index=1, items=[DigestItem(title="s", url="http://e.com/1", body="b")]
         )
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(
                     return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
                 )
@@ -742,42 +791,20 @@ class TestDailyVisualMaker:
                     result = await maker.run(_items(), content, today=date(2026, 6, 10))
         assert result is True
 
-    def test_headline_ranked_index_maps_by_url(self):
-        # content.headline_index is into the curated content.items; it must map back to the
-        # matching ranked_items position by URL, not be used directly as a ranked index.
-        from shared.models import DigestContent, DigestItem
+    def test_the_headline_source_is_its_ranked_article_matched_by_url(self):
+        # content.headline_index is into the curated content.items; its ranked article (the full text)
+        # is found by URL, not by using the index as a ranked position.
+        title, source = _maker()._headline(_content(url="http://e.com/3"), _items(3))
+        assert title == "Story 3" and source == "Story 3\n\nbody"
 
-        ranked = _items(3)  # urls http://e.com/1..3
-        content = DigestContent(
-            lead="l",
-            headline_index=1,  # first (and only) curated item ...
-            items=[DigestItem(title="t", url="http://e.com/3", body="b")],  # ... which is ranked #3
-        )
-        assert DailyVisualMaker._headline_ranked_index(content, ranked) == 3
+    def test_the_headline_matches_on_normalized_urls(self):
+        # Regression: an exact string compare made a trailing slash / http→https / utm param an
+        # "unmatched" headline.
+        title, _ = _maker()._headline(_content(url="https://www.e.com/2/?utm_source=x"), _items(3))
+        assert title == "Story 2"
 
-    def test_headline_ranked_index_zero_when_unmatched(self):
-        from shared.models import DigestContent, DigestItem
-
-        ranked = _items(2)
-        content = DigestContent(
-            lead="l", headline_index=1, items=[DigestItem(title="t", url="http://x/none", body="b")]
-        )
-        assert DailyVisualMaker._headline_ranked_index(content, ranked) == 0
-        assert DailyVisualMaker._headline_ranked_index(None, ranked) == 0
-
-    def test_headline_ranked_index_matches_on_normalized_urls(self):
-        # Regression: matching was an exact string compare, so a trailing slash / http→https /
-        # utm param made the headline "unmatched" and the visual drew ranked #1 — a DIFFERENT
-        # story than the lead.
-        from shared.models import DigestContent, DigestItem
-
-        ranked = _items(3)  # http://e.com/1..3
-        content = DigestContent(
-            lead="l",
-            headline_index=1,
-            items=[DigestItem(title="t", url="https://www.e.com/2/?utm_source=x", body="b")],
-        )
-        assert DailyVisualMaker._headline_ranked_index(content, ranked) == 2
+    def test_no_content_draws_the_top_ranked_story(self):
+        assert _maker()._headline(None, _items(3))[0] == "Story 1"
 
     @pytest.mark.asyncio
     async def test_unmatched_headline_briefs_the_curated_story_not_ranked_one(self):
@@ -802,81 +829,45 @@ class TestDailyVisualMaker:
         gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait")))
         plan = {"skip": False, "research": [], "instruction": ""}
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)) as pick:
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)) as write:
                 maker.generator.generate = gen
                 await maker.run(_items(), content, today=date(2026, 6, 10))
         source = gen.await_args.args[1]
         assert "합쳐진 헤드라인" in source and "합본 본문이다." in source
         assert "Story 1" not in source  # never the unrelated top-ranked story
-        # No headline marker is handed to the editor when nothing matched.
-        assert pick.await_args.args[1] == 0
+        assert write.await_args.args[0] == source  # the editor wrote the comic about the same story
 
     @pytest.mark.asyncio
-    async def test_the_editor_is_given_the_headline_body_and_the_digests_angle(self):
-        # The editor writes the joke, the format and the research queries, but it only ever saw
-        # `N. [source] title` rows — the headline's body, the lead and the implication reached the ART
-        # DIRECTOR later, so the decisions that shape the image were made from a title alone.
-        maker = _maker()
-        text = maker._editor_items_text(
-            _items(),
-            headline_index=2,
-            headline_source="헤드라인 제목\n\n본문 전문이 여기 있다.",
-            editorial_take="리드의 각.",
-        )
-        assert "2. [web] Story 2 ← TODAY'S HEADLINE" in text
-        assert "본문 전문이 여기 있다." in text
-        assert "리드의 각." in text
-
-    def test_the_headline_reaches_the_editor_even_with_no_ranked_match(self):
-        # headline_index 0 means NO row carries the marker the prompt promises, so the editor's brief
-        # and the art director's source material used to describe different articles.
-        maker = _maker()
-        text = maker._editor_items_text(
-            _items(), headline_index=0, headline_source="큐레이션된 헤드라인\n\n본문.", editorial_take=""
-        )
-        assert "TODAY'S HEADLINE" in text
-        assert "큐레이션된 헤드라인" in text
-
-    def test_the_headline_body_is_truncated_against_its_own_budget(self):
-        maker = _maker()
-        maker.config.pipeline.visual_editor_source_max_tokens = 7
-        maker._editor_items_text(_items(), headline_index=1, headline_source="본문", editorial_take="")
-        assert maker.llm_factory.truncate_to_tokens.call_args.args[1] == 7
-
-    @pytest.mark.asyncio
-    async def test_the_headline_body_and_take_ride_into_the_editor_call(self):
+    async def test_the_editor_is_given_the_headline_body_and_the_angle(self):
+        # The editor writes the comic, so it needs the headline's body, not just its title.
         from langchain_core.messages import AIMessage
         from langchain_core.runnables import RunnableLambda
 
-        from shared.models import DigestContent, DigestItem
-
         maker = _maker()
+        maker.config.pipeline.visual_editor_source_max_tokens = 7
         seen: list[str] = []
-        maker.llm = RunnableLambda(lambda prompt: seen.append(str(prompt)) or AIMessage(content='{"skip": true}'))
-        content = DigestContent(
-            lead="리드 문장이다.",
-            headline_index=1,
-            items=[
-                DigestItem(title="Story 1", url="http://e.com/1", body="본문이다.", implication="시사점이다."),
-            ],
+        maker.llm = RunnableLambda(
+            lambda prompt: seen.append(prompt.to_messages()[-1].content) or AIMessage(content='{"skip": true}')
         )
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            await maker._make_visual(_items(), content, date(2026, 6, 10))
-        assert seen and "시사점이다." in seen[0]
+        await maker._compose(_items(), _content(lead="리드 문장이다."), date(2026, 6, 10))
+        assert "<headline>\nStory 1\n\nbody\n</headline>" in seen[0]
+        assert "리드 문장이다." in seen[0]
+        assert "Story 2" not in seen[0]  # the rest of the candidate pool is not the editor's business
+        assert maker.llm_factory.truncate_to_tokens.call_args.args[1] == 7
 
     @pytest.mark.asyncio
-    async def test_pick_story_parses_prose_wrapped_json(self):
-        # Real path: the editor LLM returns prose-wrapped JSON; _pick_story must extract it.
+    async def test_write_synopsis_parses_prose_wrapped_json(self):
+        # Real path: the editor LLM returns prose-wrapped JSON; _write_synopsis must extract it.
         from langchain_core.messages import AIMessage
         from langchain_core.runnables import RunnableLambda
 
         maker = _maker()
         maker.llm = RunnableLambda(lambda _: AIMessage(content='Here:\n{"skip": false, "item_number": 1}\ndone'))
-        plan = await maker._pick_story(_items())
+        plan = await maker._write_synopsis("source", "", [])
         assert plan == {"skip": False, "item_number": 1}
 
     @pytest.mark.asyncio
-    async def test_pick_story_malformed_plan_becomes_skip(self):
+    async def test_write_synopsis_malformed_plan_becomes_skip(self):
         # An unparseable plan must read as a SKIP: returning {} let run() fall through to a
         # generic instruction and pay for a full gpt-image render off a plan nobody could read.
         from langchain_core.messages import AIMessage
@@ -884,7 +875,7 @@ class TestDailyVisualMaker:
 
         maker = _maker()
         maker.llm = RunnableLambda(lambda _: AIMessage(content="no json here at all"))
-        assert await maker._pick_story(_items()) == {"skip": True}
+        assert await maker._write_synopsis("source", "", []) == {"skip": True}
 
     @pytest.mark.asyncio
     async def test_a_stringly_typed_skip_flag_does_not_kill_the_visual(self):
@@ -900,7 +891,7 @@ class TestDailyVisualMaker:
         gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait")))
         plan = {"skip": "false", "research": [], "instruction": "draw it"}
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = gen
                 await maker.run(_items(), content, today=date(2026, 6, 10))
         gen.assert_awaited()
@@ -910,9 +901,7 @@ class TestDailyVisualMaker:
         # `bool(plan.get("use_character"))` on "false" injected the mascot sheet against the
         # editor's judgment.
         maker = _maker()
-        instruction = maker._build_instruction(
-            {"instruction": "draw", "use_character": "false"}, None, date(2026, 6, 10), "Headline"
-        )
+        instruction = maker._build_instruction({"instruction": "draw", "use_character": "false"}, "Headline")
         assert "THE NARRATOR" not in instruction
 
     @pytest.mark.asyncio
@@ -935,7 +924,7 @@ class TestCharacterInjection:
         maker.config.pipeline.visual_character_enabled = True
         plan = {"skip": False, "instruction": "draw it", "use_character": True}
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(
                     return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
                 )
@@ -950,7 +939,7 @@ class TestCharacterInjection:
         maker.config.pipeline.visual_character_enabled = False
         plan = {"skip": False, "instruction": "draw it", "use_character": True}
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(
                     return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
                 )
@@ -959,40 +948,23 @@ class TestCharacterInjection:
         assert "THE NARRATOR" not in instruction
 
 
-class TestBuildInstructionIsWhatShips:
-    """scripts/sample_visual_brief.py grades the art-director instruction, so it must be able to
-    build the EXACT string production sends. _build_instruction is that one builder."""
+class TestComposeIsWhatShips:
+    """scripts/sample_visual_brief.py grades the text from _compose, so it must be what production
+    renders from."""
 
     @pytest.mark.asyncio
     async def test_output_is_byte_identical_to_what_make_visual_sends(self):
-        from shared.models import DigestContent, DigestItem
-
-        content = DigestContent(
-            lead="AGI 등장 870일 전이다. 출시 주기가 격차를 만든다.",
-            headline_index=1,
-            items=[
-                DigestItem(title="GLM-5.3", url="http://e.com/1", body="본문.", implication="신중함이 손해를 본다.")
-            ],
-        )
-        plan = {
-            "skip": False,
-            "instruction": "Draw the story.",
-            "use_character": True,
-        }
+        plan = {"skip": False, "instruction": "Draw the story.", "use_character": True}
         post_date = date(2026, 8, 15)
         maker = _rendering_maker()
         maker.config.pipeline.enable_threads_post = False
         gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait")))
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = gen
-                await maker.run(_items(), content, today=post_date)
-        sent = str(gen.await_args.args[0])
-
-        ranked = _items()
-        headline_index = maker._headline_ranked_index(content, ranked)
-        _marker, headline_title, _source = maker._headline_brief(content, ranked, headline_index)
-        assert maker._build_instruction(plan, content, post_date, headline_title) == sent
+                await maker.run(_items(), _content(), today=post_date)
+                composed = await maker._compose(_items(), _content(), post_date)
+        assert composed == (plan, gen.await_args.args[0], gen.await_args.args[1])
 
 
 class TestStoryLessDayDoesNotPayForARender:
@@ -1005,7 +977,7 @@ class TestStoryLessDayDoesNotPayForARender:
         maker.config.pipeline.enable_threads_post = True
         gen = AsyncMock()
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock()) as pick:
+            with patch.object(maker, "_write_synopsis", new=AsyncMock()) as pick:
                 maker.generator.generate = gen
                 result = await maker.run(_items(), None, today=date(2026, 8, 18))
         assert result is False
@@ -1022,7 +994,7 @@ class TestStoryLessDayDoesNotPayForARender:
         plan = {"skip": False, "instruction": "Draw."}
         gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait")))
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))):
                     maker.generator.generate = gen
                     result = await maker.run(_items(), content, today=date(2026, 8, 18))
@@ -1042,7 +1014,7 @@ class TestCharacterReference:
         for use_character, expected in ((True, [b"SHEET"]), (False, [])):
             plan = {"skip": False, "instruction": "x", "use_character": use_character}
             with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-                with patch.object(maker, "_pick_story", new=AsyncMock(return_value=plan)):
+                with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                     await maker._make_visual(_items(), None, date(2026, 6, 10))
             assert gen.await_args.kwargs["references"] == expected
 
