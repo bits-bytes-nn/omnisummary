@@ -240,7 +240,7 @@ class PipelineConfig(_StrictModel):
     # a date-only web result falls inside two consecutive windows, and the ledger is what stops it
     # from shipping twice.
     published_url_ttl_days: int = Field(default=6, ge=2)
-    # How many recent digest leads to feed back into the prompt as "don't reuse these angles".
+    # How many recent digest leads (and daily comics) to feed back into the prompts as "don't reuse these".
     recent_leads_window: int = Field(default=5, ge=0)
     ranking_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_OPUS
     digest_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
@@ -378,9 +378,9 @@ class PipelineConfig(_StrictModel):
     comment_reply_max_per_commenter: int = Field(default=3, ge=1)
     # Sunburst over flare: the same token price, and it draws brand logos correctly (docs/design.md).
     image_model: str = "gpt-image-2.5-sunburst"
-    # orientation -> gpt-image size. The four-panel comic defaults to the 2x2 portrait grid; the
-    # editor picks another when the story needs it. The KEYS are not free-form: they are the VisualBrief
-    # orientation vocabulary, checked below.
+    # orientation -> gpt-image size. The four-panel comic defaults to the 2x2 portrait grid; the art
+    # director picks the frame the editor's layout needs. The KEYS are not free-form: they are the
+    # VisualBrief orientation vocabulary, checked below.
     image_sizes: dict[str, str] = Field(
         default_factory=lambda: {
             "tall": "848x2544",
@@ -401,8 +401,8 @@ class PipelineConfig(_StrictModel):
     visual_image_quality: Literal["", "low", "medium", "high", "xhigh", "max", "auto"] = "xhigh"
     visual_image_max_retries: int = Field(default=0, ge=0)
     visual_synopsis_source_max_tokens: int = Field(default=2000, ge=1)
-    # Budget for the HEADLINE story's body handed to the visual EDITOR, which writes the comic: from
-    # `N. [source] title` rows alone the decisions that shape the image were made from a title.
+    # Budget for the HEADLINE story's body handed to the visual EDITOR, which writes the comic: given
+    # only the title, the decisions that shape the image were made from a title.
     visual_editor_source_max_tokens: int = Field(default=2000, ge=1)
     # Audience/domain the visual prompts target. Configurable so the visual pipeline can
     # be reused across domains without forking the prompts.
@@ -428,20 +428,13 @@ class PipelineConfig(_StrictModel):
         "passing through anything else, natural anatomy with five-fingered hands, and a drawn face with "
         "eyes and an expression on every person, background figures included"
     )
-    # Guardrails appended to every visual instruction. Not style, not a thesis requirement: two
-    # things the image must not DO. (1) The digest's angle is handed over as context the art
-    # director may ignore, but a 2026-08-18 run turned a lead about circular vendor financing
-    # ("who is holding the risk won't be clear until the next downturn") into a triumphal
-    # rocket-and-money poster — the opposite register. Not-contradicting is far weaker than the
-    # "the image must argue the lead's thesis" rule that was rejected as over-constraining.
-    # (2) A 2026-08-15 visual cast the model race as four athletes whose ethnicity stood in for
-    # their lab's country. Depicting real, identifiable people IS allowed and wanted — recognising
-    # the figures is normal editorial-cartoon practice — but a company or a country is not a race.
-    # Empty disables either clause.
+    # Appended to every art-director instruction: something the image must not DO. A 2026-08-15
+    # visual cast the model race as four athletes whose ethnicity stood in for their lab's country.
+    # Depicting real, identifiable people IS allowed and wanted (normal editorial-cartoon practice),
+    # but a company or a country is not a race. The tone guardrail that once sat here went with the
+    # angle it guarded: the art director no longer gets the angle, the editor matches its tone.
+    # Empty disables it.
     visual_guardrails: str = (
-        "Do NOT contradict the editorial angle you were given: if the angle is skeptical or "
-        "cautionary, the image must not read as celebratory (and vice versa). You need not argue "
-        "the angle — just don't invert it. "
         "Recognisable depictions of real people are fine. Do NOT, however, personify a company or "
         "a country as an ethnically-coded human; use the real people involved, or the company's "
         "logo or product instead."
@@ -473,7 +466,7 @@ class PipelineConfig(_StrictModel):
         "visible. Keep him recognizable by just a FEW identity cues, drawn naturally: messy black "
         "hair with an upward cowlick; chunky rounded retro glasses worn normally ON HIS EYES; and a "
         "two-tone color-blocked knit cardigan (mustard + sage green) over a plain tee. Warm, bright, "
-        "charming — never a dark-room hacker. He takes part in today's story inside the scene (asks, "
+        "charming — never a dark-room hacker. Where he appears he takes part in the story (asks, "
         "tests, points out, intervenes) next to the real people, with an expression that fits the "
         "beat: wonder, a skeptical squint, fired-up conviction. Prefer a waist-up or medium shot so "
         "his face carries the moment; a full figure only when the composition needs it."
@@ -495,7 +488,7 @@ class PipelineConfig(_StrictModel):
     @model_validator(mode="after")
     def _image_sizes_match_the_orientation_vocabulary(self) -> "PipelineConfig":
         """image_sizes is advertised as overridable, but its KEYS are the VisualBrief orientation
-        vocabulary: the editor is offered `", ".join(image_sizes)` and the brief's orientation is
+        vocabulary: the art director is offered `", ".join(image_sizes)` and the brief's orientation is
         looked up in the same dict. A renamed or dropped key used to make every brief either fail
         validation or coerce to the default orientation, with no signal at all."""
         expected = set(VISUAL_ORIENTATIONS)
@@ -503,7 +496,7 @@ class PipelineConfig(_StrictModel):
         if actual != expected:
             raise ValueError(
                 "pipeline.image_sizes keys must be exactly the visual orientation vocabulary "
-                f"{sorted(expected)} (got {sorted(actual)}); the keys are what the visual editor is "
+                f"{sorted(expected)} (got {sorted(actual)}); the keys are what the art director is "
                 "offered and what VisualBrief.orientation is validated against, so only the SIZES "
                 "are tunable here"
             )

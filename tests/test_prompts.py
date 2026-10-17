@@ -33,7 +33,13 @@ _INPUTS = {
     },
     TrendClassifyPrompt: {"existing_trends": "e", "todays_digest": "d"},
     GroundingCheckPrompt: {"digest_text": "d", "sources": "s"},
-    VisualEditorPrompt: {"audience": "a", "items_text": "x", "on_image_language": "ko"},
+    VisualEditorPrompt: {
+        "audience": "a",
+        "headline": "h",
+        "angle": "g",
+        "recent_comics": "c",
+        "on_image_language": "ko",
+    },
 }
 
 

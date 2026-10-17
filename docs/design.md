@@ -86,7 +86,7 @@ OpenClaw 스킬(`~/.openclaw/workspace/skills/omnisummary-research/SKILL.md`)이
 | `output/` | 채널별 렌더러(`renderers.py`), 다이제스트 게시(`digest_delivery.py`: Threads 체인, 멱등 원장, 이미지 S3 호스팅), 리서치 리포트 전달(`delivery.py`), Threads API(`threads_handler.py`) |
 | `lambda_handlers/` | 다이제스트 핸들러, 데일리 비주얼 핸들러(`visual_handler`, 다이제스트 Lambda가 비동기로 호출한다), Threads 토큰 갱신 핸들러(`threads_refresh_handler`), 댓글 답글 핸들러(`comment_reply_handler`, 정해진 주기로 돈다) |
 | `infrastructure/` | CDK `foundation_stack`과 `application_stack` |
-| `scripts/` | `deploy.py`, `put_secrets.py`, `put_inference_profiles.py`, `ci_synth.py`, `sync_to_s3.py <rsshub\|youtube>`, `sync_all_to_s3.sh`(두 소스를 차례로 sync한다), `sample_digest.py`, `sample_visual_brief.py`, `sample_comment_replies.py`(게시하지 않고 지금 달 답글 초안을 보여 준다), `render_excalidraw.mjs` |
+| `scripts/` | `deploy.py`, `put_secrets.py`, `put_inference_profiles.py`, `ci_synth.py`, `sync_to_s3.py <rsshub\|youtube>`, `sync_all_to_s3.sh`(두 소스를 차례로 sync한다), `sample_digest.py`, `sample_visual_brief.py <날짜>`(저장된 스냅샷으로 그날 만화의 플랜과 브리프를 쓰고, `--render`면 그린다. 게시하지 않는다), `sample_comment_replies.py`(게시하지 않고 지금 달 답글 초안을 보여 준다), `render_excalidraw.mjs` |
 
 ## 3. 설정
 
@@ -172,7 +172,7 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | 모델 | `ranking_model`(Opus 5.5), `digest_model`(Sonnet 5.5, 그라운딩과 비주얼 편집기·아트 디렉터도 이 모델을 쓴다), `trend_model`(Sonnet 5.5) | 단계별 모델([§6](#모델-팩토리)) |
 | 랭킹 | `ranking_batch_size`(기본 40), `ranking_max_concurrency`(기본 4), `ranking_max_retries`(기본 3), `ranking_retry_backoff_sec`(기본 5), `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치, Bedrock fan-out 상한, 배치 재시도, 점수 루브릭 |
 | 후보 풀 | `top_n`(기본 5), `min_score`(기본 0.6), `digest_candidate_buffer`(기본 7), `source_slots`(소스마다 1), `max_per_origin`(기본 1) | 에디터에게 넘기는 후보는 `top_n + digest_candidate_buffer`개이고, 소스 슬롯과 origin 상한은 이 풀을 채우는 데만 쓴다. 실제로 나가는 `top_n`개는 에디터가 고른다([§5.2](#52-랭커-rankerpy)) |
-| 중복 | `published_url_ttl_days`(기본 6, 최소 2), `recent_leads_window`(기본 5) | cross-day dedup 원장 TTL과 최근 다이제스트 제목을 읽는 창, 반복 방지용 최근 lead 윈도. TTL이 최소 2인 것은 날짜만 있는 웹 결과가 이틀 연속 윈도에 들어가고([§4.7](#47-websearch-web_searchpy)) 두 번째 게시를 원장이 막기 때문이다 |
+| 중복 | `published_url_ttl_days`(기본 6, 최소 2), `recent_leads_window`(기본 5) | cross-day dedup 원장 TTL과 최근 다이제스트 제목을 읽는 창, 반복 방지용 최근 lead와 최근 만화의 윈도([§5.6](#56-데일리-비주얼-daily_visualpy)). TTL이 최소 2인 것은 날짜만 있는 웹 결과가 이틀 연속 윈도에 들어가고([§4.7](#47-websearch-web_searchpy)) 두 번째 게시를 원장이 막기 때문이다 |
 | 트렌드 | `trend_retention_days`, `trend_cooling_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존과 냉각 기간, 증거와 active 캡, momentum 반감기 |
 | 전달 | `enable_threads_post`, `threads_topic_tag`(기본 `AI`) | Threads 게시 on/off. 코드 기본값은 off이고 배포 설정은 on이다. 데일리 비주얼 Lambda가 게시한다. 토픽 태그는 root 게시물에만 붙는다([§5.8](#58-threads-전달-outputthreads_handlerpy-enable_threads_post)) |
 | 댓글 답글 | `enable_comment_replies`, `comment_reply_lookback_days`(7), `comment_reply_max_per_run`(10), `comment_reply_max_per_commenter`(3) | 독자 댓글 자동 답글. 코드 기본값은 off이고 배포 설정은 on이다([§5.9](#59-댓글-답글-pipelinecomment_repliespy-enable_comment_replies)) |
@@ -842,13 +842,24 @@ Markdown 마크업은 `strip_markup`으로 제거한다(`[label](url)`은 `label
 
 **형식은 화자가 이끄는 2x2 4컷이 기본이다.** `VisualEditorPrompt`는 왼쪽에서 오른쪽, 위에서 아래로 읽는 네 컷
 (setup, development, turn, payoff)과 컷마다 짧은 한국어 대사 또는 내레이션 한 줄을 요구한다. 이야기가 분명히
-다른 구성(세로 스트립, 단일 컷, 가로 파노라마)으로 더 잘 전달될 때만 바꾸고, 그 구성을 instruction에 적는다. 편집기
-출력은 `{skip, use_character, instruction}`이고, `instruction`은 시놉시스 틀을 따른다. LOGLINE(무슨 일이 있었고 그것이 어떤 웃긴 반전으로 이어지는지 한 문장. 기사나 관점의 나머지는 넣지 않는다), COMPOSITION, 그리고 컷마다 PANEL n(기승전결): 장소, 인물(실존 인물은 알아볼 특징과 함께, 화자는 외모를 쓰지 않는다. 기준 시트가 정한다), 행동, 대사 한 줄이다. 목표는 기사를 읽지 않은 독자가 한눈에 이해한 뒤 웃는 것이다. 1컷 내레이션이 무슨 일이 있었는지(누가, 무엇을, 핵심 숫자) 그대로 말하고, 2-3컷은 실제 인물·제품·숫자를 비유가 아닌 장면으로 보여 주고, 4컷은 그 사실에서 나온 시각 개그로 결말을 보여 준다. 4컷의 대사는 그 장면에 반응할 뿐 교훈을 말하지 않는다. 다이제스트 관점은 논지가 아니라 어조만 맞춘다. 논지는 root 글이 이미 말하고, LOGLINE이 "독자가 가져갈 주장"이던 때(2026-10-12~15)에는 네 편 중 두 편의 4컷이 lead의 논지를 대사로 되풀이했다("기능 추가는 나중에. 검사부터 하자."). 대사와 간판·라벨은 비전문가가 아는 한국어로 쓰고(인명·회사·제품명은 그대로), 벤치마크명·지표·전문용어는 넣지 않는다. 자유 서술 하나였을 때는 다이제스트 관점의 주장 두세 개가 모두 소품이 되어 3-4컷이 붐볐고, 비유(가중치 상자, GPU 마스코트)와 용어(acqui-hire, Pareto)가 많아 기사를 모르면 읽히지 않았다. 같은 헤드라인 세 개를 바꾼 뒤 다시 렌더하자 세 편 모두 한 줄 주장과 한국어 라벨로 정리됐다. 인물은 배경 인물까지 모두 눈과 표정이 있는 얼굴로 그린다(스타일 문구. 세 장 중 두 장에서 이름 없는 인물이 얼굴 없이 나왔다). 회사를 표현할 때는 실존 인물이나 그 회사의 로고·제품을 쓰고 마스코트로 의인화하지 않는다. 아트 디렉터(`VisualSynopsisPrompt`)는 세로 스트립을 `tall`
+다른 구성(단일 컷, 세로 스트립)으로 더 잘 전달될 때만 바꾸고, 그 구성을 COMPOSITION에 적는다. 편집기
+출력은 `{skip, use_character, instruction}`이고, `instruction`은 시놉시스 틀을 따른다. LOGLINE(무슨 일이 있었고 그것이 어떤 웃긴 반전으로 이어지는지 한 문장. 기사나 관점의 나머지는 넣지 않는다), COMPOSITION, 그리고 컷마다 PANEL n(기승전결): 장소, 인물(실존 인물은 알아볼 특징과 함께, 화자는 외모를 쓰지 않는다. 기준 시트가 정한다), 행동, 대사 한 줄이다. 목표는 기사를 읽지 않은 독자가 한눈에 이해한 뒤 웃는 것이다. 1컷은 무슨 일이 있었는지(누가 무엇을) 그대로 말하고(내레이션 상자로 정하지 않는다. 정했을 때는 여섯 편 모두 같은 상자로 열었다), 2-3컷은 실제 인물과 제품을 비유가 아닌 장면으로 보여 주고, 4컷은 그 사실에서 나온 시각 개그로 결말을 보여 준다. 4컷의 대사는 그 장면에 반응할 뿐 교훈을 말하지 않는다. 다이제스트 관점은 논지가 아니라 어조만 맞춘다. 논지는 root 글이 이미 말하고, LOGLINE이 "독자가 가져갈 주장"이던 때(2026-10-12~15)에는 네 편 중 두 편의 4컷이 lead의 논지를 대사로 되풀이했다("기능 추가는 나중에. 검사부터 하자."). 대사와 간판·라벨은 비전문가가 아는 한국어로 쓰고(인명·회사·제품명은 그대로, 숫자는 농담이 그 숫자에 기댈 때만), 벤치마크명·지표·전문용어는 넣지 않는다. 자유 서술 하나였을 때는 다이제스트 관점의 주장 두세 개가 모두 소품이 되어 3-4컷이 붐볐고, 비유(가중치 상자, GPU 마스코트)와 용어(acqui-hire, Pareto)가 많아 기사를 모르면 읽히지 않았다. 같은 헤드라인 세 개를 바꾼 뒤 다시 렌더하자 세 편 모두 한 줄 주장과 한국어 라벨로 정리됐다. 인물은 배경 인물까지 모두 눈과 표정이 있는 얼굴로 그린다(스타일 문구. 세 장 중 두 장에서 이름 없는 인물이 얼굴 없이 나왔다). 회사를 표현할 때는 실존 인물이나 그 회사의 로고·제품을 쓰고 마스코트로 의인화하지 않는다. 아트 디렉터(`VisualSynopsisPrompt`)는 세로 스트립을 `tall`
 (848x2544, 4:3 컷 네 개를 한 열로 쌓은 1:3. 2560을 넘는 해상도는 실험적이라 긴 변을 그 아래로 둔다)로, 2x2를
 `portrait`로 브리프한다. 2x2(1024x1536)의 컷 하나는 512x768로 세로 스트립(컷당 848x636)보다 작지만, 피드에서 네
 컷이 한 화면에 들어오는 쪽을 기본으로 골랐다(세로 스트립은 피드 미리보기에서 펀치라인 컷이 가려질 수 있다). Threads는 종횡비 10:1과 8MB까지 받는다. 날마다 형식과 방향을 돌리던 장치(형식 이력,
 최근 방향 넛지, 멀티패널·캐릭터 비율 넛지)는 두지 않는다(측정상 형식을 바꾸지 못했다. 요청한 방향과 실제
-방향이 28회 중 8회 일치). `VisualBrief.orientation`은 필수 필드라 브리프가 빠뜨린 값이 조용히 기본값이 되지 않는다.
+방향이 28회 중 8회 일치).
+
+**최근 만화를 에디터에게 보여 준다 (`recent_comics.json`, `recent_leads_window`).** 형식을 코드가 돌리는 것이
+아니라 내용이 반복되지 않게 하는 입력이다. 에디터는 지난 만화를 몰라서, 비슷한 기사가 이어지면 같은 만화를
+그렸다. 2026-10-12~17 여섯 편 중 세 편이 모델을 유리장과 자물쇠 뒤에 두었고, 세 편이 밝은 사무실이었고, 세 편이
+같은 흰 로봇으로 에이전트를 그렸다. 루트 게시물에 이미지가 실제로 실린 날만 그 만화의 alt text(컷마다 한 문장)를
+상태 저장소의 롤링 로그에 남기고(같은 날 재실행은 교체한다), 에디터는 오늘보다 앞선 날짜의 기록을 받아 다른
+장소, 다른 소품, 몸이 없는 것(모델, 에이전트)의 다른 표현, 다른 종류의 개그를 고른다. 시놉시스에는 오늘 만화만
+쓰고 피한 것은 쓰지 않는다. 그렇게 쓰지 않았을 때 다섯 브리프 중 세 개의 이미지 프롬프트에 "NOT an office, no
+trash cans" 같은 부정 목록이 들어갔다(그 문장 뒤 1/5). 10-13~17을 실제로 게시된 그 전 만화들과 함께 다시 돌리자
+열 개 시놉시스 중 사무실은 하나였고, 장소가 빵집, 교실, 거리 장터, 우체국, 주방으로 갈렸다. 모델이 상자로 남은
+것은 가중치를 공개한 두 기사뿐이었다. `VisualBrief.orientation`은 필수 필드라 브리프가 빠뜨린 값이 조용히 기본값이 되지 않는다.
 `VisualBrief.prompt`의 상한은 GPT 이미지 API 한도인 32000자이고 `title`에는 상한이 없다. 4컷 브리프는 4000자를
 넘기기도 해서, 그보다 낮은 상한은 좋은 브리프를 검증에서 떨어뜨려 그날 이미지를 잃게 한다(title은 로그 한 줄에만
 쓰인다).
@@ -885,7 +896,7 @@ $0.05)이기 때문이다. sunburst는 빈 벽을 지시하지 않은 영어 슬
 선반에 의자째 올라앉은 로봇, 허공에 걸린 표지판, 쥐지 않은 채 손에 붙은 소품, 거리와 맞지 않는 크기다. 그래서
 `visual_synopsis_style_aesthetic`은 화풍(깔끔한 한국 웹툰체) 다음에 구체적인 규칙을 둔다. 컷마다 눈높이와 바닥면은
 하나이고, 모든 인물과 물체는 표면 위에 있거나 실제로 쥐고 있으며, 크기는 거리와 맞고, 떠 있는 표지판이나 불가능한
-적층, 관통이 없고, 손가락은 다섯이며, 컷당 인물은 셋 이하에 동작은 하나다. 품질 등급은 `xhigh`다. 같은 브리프를
+적층, 관통이 없고, 손가락은 다섯이다(컷당 인물 셋 이하와 동작 하나는 에디터 프롬프트의 규칙이다). 품질 등급은 `xhigh`다. 같은 브리프를
 high, xhigh, 고해상도(1536x2304)로 렌더해 비교하자 xhigh가 손과 소품, 원근이 가장 일관됐다.
 
 **렌더 뒤 검수는 두지 않는다.** 이미지는 그린 그대로 게시한다. 결함을 고치는 `images.edit` 단계는 12번 중 4번만
@@ -893,17 +904,16 @@ high, xhigh, 고해상도(1536x2304)로 렌더해 비교하자 xhigh가 손과 �
 22건을 적었지만 대부분 프롬프트가 결함이 아니라고 한 연출 차이였고, 벤치마크명 간판, 세 번 반복된 라벨, 교훈형
 펀치라인처럼 중요한 결함은 하나도 잡지 못했으며, 그 로그를 쓰는 곳도 없었다. 만화의 품질은 시놉시스가 만든다.
 
-**편집 관점을 함께 넘긴다.** 다이제스트의 리드에서 카운트다운 접두를 제거한 것과 헤드라인 항목의
-`implication`을 instruction에 정보로 넘긴다. 아트 디렉터가 원본 기사만 보면 표면 사실만 그린다. 다만 일치를
-강제하지는 않는다. 이미지가 리드의 논지를 논증해야 한다는 제약은 과하다.
+**편집 관점은 에디터만 받는다.** 카운트다운 접두를 뗀 다이제스트 리드를 에디터에게 넘기고, 에디터는 그 어조만
+맞춘다. 헤드라인의 `implication`은 넘기지 않는다. 그것은 권고문이라("리뷰 단계가 새 기능보다 먼저다") 10-15 기사로
+시놉시스를 여덟 번 쓰게 하자 네 번 4컷 대사가 교훈이 됐고("새 기능은 나중에, 도장부터 찍자"), 리드만 넘기자
+여덟 번 중 한 번이었다. 아트 디렉터 instruction에는 관점을 다시 붙이지 않는다. 시놉시스가 이미 어조를 담고
+있고, 아트 디렉터는 그것을 이미지로 옮길 뿐이다.
 
-**가드레일 (`visual_guardrails`, 비우면 미적용).** 스타일 지시도 논지 요구도 아니라, 이미지가 하지 말아야 할
-두 가지다.
-
-1. 받은 편집 관점의 정서를 뒤집지 말 것. 회의적이거나 경고하는 관점을 축하하는 그림으로 그리지 않는다. "논지를
-   논증하라"보다 훨씬 약한 요구다.
-2. 기업이나 국가를 인종으로 코딩된 인물로 의인화하지 말 것. 반면 실존 인물을 알아보게 그리는 것은 허용한다.
-   시사만평의 표준 관행이다.
+**가드레일 (`visual_guardrails`, 비우면 미적용).** 아트 디렉터 instruction에 붙는, 이미지가 하지 말아야 할
+일 하나다. 기업이나 국가를 인종으로 코딩된 인물로 의인화하지 않는다(2026-08-15 만화가 모델 경쟁을 연구소 국가의
+인종으로 그린 네 선수로 그렸다). 실존 인물을 알아보게 그리는 것은 허용한다. 시사만평의 표준 관행이다. 관점의 정서를
+뒤집지 말라는 문구도 있었지만, 아트 디렉터가 관점을 받지 않게 되면서 함께 뺐다.
 
 이 문구의 인과 효과는 측정되지 않았다. 이미지 생성이 확률적이라 사례당 한 샘플로는 노이즈와 구분되지 않는다.
 비용이 0이고 config로 즉시 해제할 수 있다는 근거로 둔다.
@@ -927,9 +937,11 @@ OpenAI 키가 없거나 에디터 호출이 실패하거나 에디터가 skip하
 게시한다. OpenAI 키는 `strict=True`로 읽어서 미설정과 SSM 읽기 실패를 구분하되, `SecretUnavailableError`는
 `_make_visual` 안에서 잡는다. 엄격한 시크릿 읽기가 텍스트 다이제스트를 비용으로 삼는 일은 없어야 한다.
 
-**instruction 빌더는 하나뿐이다(`_build_instruction`).** 편집 관점과 가드레일, 캐릭터 시트를 붙여 최종 아트
-디렉터 instruction을 만드는 부분은 I/O 없는 순수 함수다. `scripts/sample_visual_brief.py`가 프로덕션이 실제로
-보내는 문자열을 채점할 수 있어야 하기 때문이고, 테스트가 두 경로의 출력이 같음을 고정한다.
+**렌더 재료는 한 곳에서 만든다(`_compose`).** 헤드라인 소스, 에디터 플랜, 가드레일과 캐릭터 시트를 붙인 아트
+디렉터 instruction을 `_compose`가 만들고, 프로덕션과 `scripts/sample_visual_brief.py`가 같이 쓴다. 샘플러는
+AgentCore Memory에 저장된 그날의 스냅샷을 날짜로 읽어(비주얼 Lambda와 같은 입력) 플랜과 브리프를 쓰고,
+`--render`면 이미지까지 그리며, 아무것도 게시하거나 기록하지 않는다. `--recent-comics`로 그날 이전의 만화 목록을
+넘기면 지난 날을 다시 돌려 볼 수 있다. 테스트가 `_compose`의 출력과 렌더가 받은 입력이 같음을 고정한다.
 
 **게시는 `output/digest_delivery.py`의 `DigestPublisher`가 한다.** Threads root와 reply 체인, 그 체인의 멱등
 원장, 이미지의 S3 호스팅이 모두 여기 있다. 게시기가 이미지를 **옵셔널 인자**로 받으니 렌더 실패는 구조적으로
@@ -1328,7 +1340,7 @@ append하고, `list_events`는 순서를 보장하지 않는다. `maxResults=1`�
 날(age 0)을 제외하니 같은 날 재실행이 자기 다이제스트를 재현할 수 있다. within-run 중복은
 집계기가 처리한다. `record()`가 발행 URL을 오늘로 스탬프해 병합하고 TTL 밖 항목을 prune한다.
 
-**`RollingLog`.** 한 JSON blob에 담는 capped FIFO다. 반복 방지용 최근 lead(`recent_leads.json`)에 쓴다. `append(record, dedup_key=...)`로 같은 키 값의 기존 항목을 교체할 수 있고,
+**`RollingLog`.** 한 JSON blob에 담는 capped FIFO다. 반복 방지용 최근 lead(`recent_leads.json`)와 최근 만화(`recent_comics.json`)에 쓴다. `append(record, dedup_key=...)`로 같은 키 값의 기존 항목을 교체할 수 있고,
 leads는 `date`로 dedup해서 `--force-republish` 재실행이 같은 날 lead를 중복 추가해 반복 방지 윈도를 잠식하지
 않게 한다.
 
