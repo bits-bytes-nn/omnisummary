@@ -68,23 +68,8 @@ def _content(lead: str = "리드.", implication: str = "시사점이다.", url: 
     )
 
 
-class TestTheEditorialAngle:
-    """The editor matches the digest's TONE; the art director only turns the synopsis into an image."""
-
-    def test_the_angle_is_the_lead_without_the_countdown_or_the_implication(self):
-        # The implication is a recommendation: on the 2026-10-15 story it came back as panel 4's
-        # moral in 4 of 8 synopses ("새 기능은 나중에, 도장부터 찍자"), 1 of 8 without it.
-        content = _content(
-            lead="AGI 등장 870일 전이다. 격차의 원인은 출시 주기다.", implication="리뷰 단계가 새 기능보다 먼저다."
-        )
-        take = _maker()._editorial_take(content, date(2026, 8, 15))
-        assert take == "격차의 원인은 출시 주기다."
-        assert _maker()._editorial_take(None, date(2026, 8, 15)) == ""
-
-    def test_the_art_director_instruction_does_not_repeat_the_angle(self):
-        instruction = _maker()._build_instruction({"instruction": "Draw the story."}, "GLM-5.3")
-        assert instruction.startswith("Draw the story.")
-        assert "ANGLE" not in instruction
+class TestTheArtDirectorInstruction:
+    """The synopsis plus what the art director must keep."""
 
     def test_guardrails_are_appended_and_are_config_driven(self):
         # Depicting real people is ALLOWED (normal editorial-cartoon practice); what is barred is
@@ -838,7 +823,7 @@ class TestDailyVisualMaker:
         assert write.await_args.args[0] == source  # the editor wrote the comic about the same story
 
     @pytest.mark.asyncio
-    async def test_the_editor_is_given_the_headline_body_and_the_angle(self):
+    async def test_the_editor_is_given_the_headline_body_and_not_the_lead(self):
         # The editor writes the comic, so it needs the headline's body, not just its title.
         from langchain_core.messages import AIMessage
         from langchain_core.runnables import RunnableLambda
@@ -851,7 +836,8 @@ class TestDailyVisualMaker:
         )
         await maker._compose(_items(), _content(lead="리드 문장이다."), date(2026, 6, 10))
         assert "<headline>\nStory 1\n\nbody\n</headline>" in seen[0]
-        assert "리드 문장이다." in seen[0]
+        # Given the lead, the editor drew its argument one sentence per panel (2026-10-18 to 10-21).
+        assert "리드 문장이다." not in seen[0]
         assert "Story 2" not in seen[0]  # the rest of the candidate pool is not the editor's business
         assert maker.llm_factory.truncate_to_tokens.call_args.args[1] == 7
 
@@ -863,7 +849,7 @@ class TestDailyVisualMaker:
 
         maker = _maker()
         maker.llm = RunnableLambda(lambda _: AIMessage(content='Here:\n{"skip": false, "item_number": 1}\ndone'))
-        plan = await maker._write_synopsis("source", "", [])
+        plan = await maker._write_synopsis("source", [])
         assert plan == {"skip": False, "item_number": 1}
 
     @pytest.mark.asyncio
@@ -875,7 +861,7 @@ class TestDailyVisualMaker:
 
         maker = _maker()
         maker.llm = RunnableLambda(lambda _: AIMessage(content="no json here at all"))
-        assert await maker._write_synopsis("source", "", []) == {"skip": True}
+        assert await maker._write_synopsis("source", []) == {"skip": True}
 
     @pytest.mark.asyncio
     async def test_a_stringly_typed_skip_flag_does_not_kill_the_visual(self):
