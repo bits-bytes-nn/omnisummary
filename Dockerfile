@@ -1,4 +1,6 @@
-FROM public.ecr.aws/docker/library/python:3.12-slim
+# CI passes a mirror: GitHub's shared runners hit public.ecr.aws's anonymous pull limit (429).
+ARG BASE_IMAGE=public.ecr.aws/docker/library/python:3.12-slim
+FROM ${BASE_IMAGE}
 
 WORKDIR /app
 
