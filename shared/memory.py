@@ -118,9 +118,6 @@ class AgentCoreMemoryStore(MemoryStore):
         self._client = (session or boto3).client("bedrock-agentcore", region_name=region_name or aws_region())
 
     MAX_EVENT_TEXT = 100_000
-    # Events read per digest session. A session only ever holds more than one event when the same
-    # date's pipeline was re-run.
-    EVENTS_PER_SESSION = 5
     # When even the ranked set overflows, cap each item's stored body. The digest snapshot
     # only needs enough text for cross-day dedup/recall, so a per-item cap loses nothing used.
     RANKED_TEXT_CAP = 12_000
@@ -184,21 +181,28 @@ class AgentCoreMemoryStore(MemoryStore):
         """The NEWEST snapshot stored in a session, or None when it holds none.
 
         A session normally carries exactly one event, but a same-day re-run appends another and
-        list_events does not promise an order — reading maxResults=1 could therefore serve the FIRST
-        (stale) attempt of a day that was re-run. Read a small page and keep the newest instead. An
+        list_events does not promise an order — reading one page could therefore serve a stale attempt
+        of a day that was re-run. Read every page and keep the newest instead. An
         event whose payload is unparseable is skipped; if that leaves nothing usable the error
         propagates, so get_digest reports an unreadable store rather than an empty day."""
-        events = self._client.list_events(
-            memoryId=self.memory_id,
-            actorId=self.actor_id,
-            sessionId=session_id,
-            maxResults=self.EVENTS_PER_SESSION,
-            includePayloads=True,
-        )
+        records: list[dict[str, Any]] = []
+        token: str | None = None
+        while True:
+            page = self._client.list_events(
+                memoryId=self.memory_id,
+                actorId=self.actor_id,
+                sessionId=session_id,
+                includePayloads=True,
+                **({"nextToken": token} if token else {}),
+            )
+            records.extend(page.get("events", []))
+            token = page.get("nextToken")
+            if not token:
+                break
         best_key: tuple[float, str] | None = None
         best: dict[str, Any] | None = None
         error: Exception | None = None
-        for record in events.get("events", []):
+        for record in records:
             text = self._extract_text(record)
             if not text:
                 continue
@@ -272,14 +276,17 @@ def digest_memory_name(project_name: str, stage: str) -> str:
 def _deployed_memory_id(config: Config, session: boto3.Session) -> str:
     """The stack's memory id, found by name. CDK sets MEMORY_ID only on the Lambdas, so a local run
     (main.py, research_cli.py) used to fall back to the local store and read none of the snapshots
-    production writes: cross-day dedup saw no yesterday and recall_digest found nothing."""
+    production writes: cross-day dedup saw no yesterday and recall_digest found nothing.
+
+    "" only when the listing succeeded and matched nothing. A lookup that FAILED (expired SSO, denied,
+    throttled) raises MemoryReadError: falling back to the local store then answered "nothing stored"
+    for a date production had written."""
     prefix = digest_memory_name(config.aws.project_name, config.aws.stage) + "-"
     try:
         pages = session.client("bedrock-agentcore-control").get_paginator("list_memories").paginate()
         return next((m["id"] for page in pages for m in page.get("memories", []) if m["id"].startswith(prefix)), "")
     except Exception as e:
-        logger.warning("Could not look up AgentCore memory '%s*' (%s)", prefix, e)
-        return ""
+        raise MemoryReadError(f"Could not look up AgentCore memory '{prefix}*': {e}") from e
 
 
 def create_memory_store(base_dir: Path | None = None) -> MemoryStore:

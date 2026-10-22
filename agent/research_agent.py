@@ -211,8 +211,8 @@ def _render_tools_block(tools: list[Any]) -> str:
     return "\n".join(lines)
 
 
-def create_research_agent(tools: list[Any] | None = None) -> Agent:
-    config = Config.load()
+def create_research_agent(config: Config | None = None, tools: list[Any] | None = None) -> Agent:
+    config = config or Config.load()
 
     # Ambient credentials by default, the configured profile only where it resolves.
     boto_session = boto3.Session(

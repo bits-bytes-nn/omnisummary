@@ -13,8 +13,8 @@ THREADS_REFRESH_URL = "https://graph.threads.net/refresh_access_token"
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Refresh the long-lived Threads access token before its 60-day expiry and write
-    the renewed value back to SSM. Scheduled well inside the window (e.g. every 50 days)
-    so the token is effectively permanent.
+    the renewed value back to SSM. Scheduled weekly, so a failed refresh is retried long before
+    the token expires and the token is effectively permanent.
 
     A failure is logged and RE-RAISED: a silent 500 body left the token quietly un-refreshed
     until Threads delivery broke 60 days later, because Lambda counts a returned error as a

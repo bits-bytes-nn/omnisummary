@@ -19,16 +19,9 @@ _META_IMAGE_KEYS = (
     ("name", "twitter:image"),
     ("name", "twitter:image:src"),
 )
-# Raster types Threads renders reliably. SVG and other vector/exotic types are excluded — Meta's
-# Threads fetcher doesn't handle them dependably.
-_RENDERABLE_IMAGE_TYPES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif"})
-# Map content-type → file extension for the Threads S3 key.
-_CONTENT_TYPE_EXT = {
-    "image/jpeg": "jpg",
-    "image/png": "png",
-    "image/webp": "webp",
-    "image/gif": "gif",
-}
+# The image types Meta documents as supported for Threads image posts.
+_CONTENT_TYPE_EXT = {"image/jpeg": "jpg", "image/png": "png"}
+_RENDERABLE_IMAGE_TYPES = frozenset(_CONTENT_TYPE_EXT)
 
 
 # These URLs come from a page the AGENT chose (and from that page's own og:image tag), so they are

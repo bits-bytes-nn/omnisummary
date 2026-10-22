@@ -1,6 +1,6 @@
 # The build context is sent to the Docker daemon in full, so without this file `.env` (real API
 # keys), the local virtualenv, months of logs and cdk.out all travel with every build. The
-# Dockerfiles COPY specific source directories, so nothing here is needed to build the image.
+# Dockerfile COPYs specific source directories, so nothing here is needed to build the image.
 .git
 .gitignore
 .github

@@ -329,14 +329,14 @@ class TestPostToThreads:
         assert (ok.posted, ok.expected) == (3, 3)
         assert ok.partial is False
 
-    def testis_media_not_found_detects_code_24(self):
+    def test_is_media_not_found_detects_code_24(self):
         req = httpx.Request("POST", "https://x")
         resp = httpx.Response(400, request=req, json={"error": {"code": 24}})
         assert is_media_not_found(httpx.HTTPStatusError("e", request=req, response=resp))
         other = httpx.Response(400, request=req, json={"error": {"code": 100}})
         assert not is_media_not_found(httpx.HTTPStatusError("e", request=req, response=other))
 
-    def testis_transient_reply_error_classification(self):
+    def test_is_transient_reply_error_classification(self):
         req = httpx.Request("POST", "https://x")
 
         def err(status, body=None):
@@ -490,7 +490,8 @@ class TestImageHosting:
     def test_uploads_with_content_type_and_presigns(self):
         s3 = MagicMock()
         s3.generate_presigned_url.return_value = "https://s3/presigned"
-        with patch.object(threads_handler.boto3, "client", return_value=s3):
+        with patch("shared.state_store.state_boto_session") as session:
+            session.return_value.client.return_value = s3
             url = threads_handler._upload_image_for_hosting(b"PNG", "bucket", "k/p.jpg", content_type="image/jpeg")
         assert url == "https://s3/presigned"
         assert s3.put_object.call_args.kwargs["ContentType"] == "image/jpeg"
@@ -508,6 +509,56 @@ class TestImageHosting:
                     )
         assert ok.published is True
         assert pub.await_args_list[0].kwargs["image_url"] == ""
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_image_root_is_posted_text_only(self):
+        # Meta refusing the image (unfetchable URL, unsupported media) used to lose the whole post set.
+        rejected = httpx.HTTPStatusError(
+            "bad",
+            request=httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads"),
+            response=httpx.Response(400, json={"error": {}}),
+        )
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_upload_image_for_hosting", return_value="https://s3/x"):
+                with patch.object(
+                    threads_handler, "_publish_post", new=AsyncMock(side_effect=[rejected, "rid", "r1"])
+                ) as pub:
+                    with patch.object(threads_handler, "_publish_reply_with_retry", new=AsyncMock()):
+                        outcome = await post_to_threads(
+                            root_text="R", replies=["a"], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
+                        )
+        assert outcome.published is True and outcome.with_image is False
+        assert [c.kwargs["image_url"] for c in pub.await_args_list[:2]] == ["https://s3/x", ""]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_image_publish_step_is_not_retried_as_text(self):
+        # The publish step can fail for a post that went live; a text retry would be a second root.
+        failed = httpx.HTTPStatusError(
+            "bad",
+            request=httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads_publish"),
+            response=httpx.Response(500, json={"error": {}}),
+        )
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_upload_image_for_hosting", return_value="https://s3/x"):
+                with patch.object(threads_handler, "_publish_post", new=AsyncMock(side_effect=[failed])) as pub:
+                    outcome = await post_to_threads(
+                        root_text="R", replies=["a"], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
+                    )
+        assert outcome.posted == 0
+        assert outcome.uncertain is True  # the root may be live: the caller keeps the date marked
+        assert pub.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_container_is_known_to_have_posted_nothing(self):
+        rejected = httpx.HTTPStatusError(
+            "bad",
+            request=httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads"),
+            response=httpx.Response(400, json={"error": {}}),
+        )
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_publish_post", new=AsyncMock(side_effect=[rejected])):
+                outcome = await post_to_threads(root_text="R", replies=["a"])
+        assert outcome.posted == 0 and outcome.uncertain is False
 
     @pytest.mark.asyncio
     async def test_the_outcome_records_whether_the_root_carried_the_image(self):

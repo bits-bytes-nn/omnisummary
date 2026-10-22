@@ -292,7 +292,7 @@ class TestParkedSourceTripwires:
 class TestLoadNeverSilentlyShipsAnEmptyConfig:
     """`if not config_path.exists(): return cls()` was silent and wrong.
 
-    config/config.yaml is gitignored and both Dockerfiles COPY config/, so a clean-checkout image —
+    config/config.yaml is gitignored and the Dockerfile COPYs config/, so a clean-checkout image —
     which is exactly what CI builds and validates — resolved to bare code defaults: empty
     rss/reddit/youtube lists and region us-east-1. Nothing raised; the first sign was a digest with
     no stories."""

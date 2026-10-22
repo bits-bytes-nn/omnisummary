@@ -105,11 +105,11 @@ Secrets go in `.env` locally (see `.env.template`) and in SSM Parameter Store on
 | Variable | Needed for |
 |----------|-----------|
 | `TAVILY_API_KEY` | The `web_search` collector + the research CLI's web/community/news search |
-| `YOUTUBE_API_KEY` | YouTube collector (without it: RSS fallback, no transcripts) |
+| `YOUTUBE_API_KEY` | YouTube collector (without it: the channel RSS feeds instead of the Data API) |
 | `OPENAI_API_KEY` | The daily comic render |
 | `THREADS_ACCESS_TOKEN` / `THREADS_USER_ID` | Threads delivery (60-day token, auto-refreshed into SSM on AWS) |
-| `ALERT_EMAIL` | Source-health SNS email alerts (AWS) |
-| `S3_SYNC_ACCESS_KEY_ID` / `S3_SYNC_SECRET_ACCESS_KEY` | Optional dedicated creds for the local→S3 sync (otherwise `AWS_PROFILE`) |
+| `ALERT_EMAIL` | SNS email alerts (AWS). Required to deploy: a deploy without it removes the subscription |
+| `S3_SYNC_ACCESS_KEY_ID` / `S3_SYNC_SECRET_ACCESS_KEY` | Optional dedicated creds for the local→S3 sync (otherwise `aws.profile` from the config) |
 
 > **Secrets never pass through the CDK stack.** A CloudFormation template can't hold a SecureString, so
 > handing values to the stack would publish them in plaintext into `cdk.out`, the staging bucket, and
@@ -130,7 +130,7 @@ Then add capabilities one at a time:
 
 | Want… | Set | Notes |
 |-------|-----|-------|
-| YouTube items **with transcripts** | `YOUTUBE_API_KEY` + the local sync | Transcripts only fetch from a residential IP |
+| YouTube items **with transcripts** | The local sync (`YOUTUBE_API_KEY` optional) | Transcripts only fetch from a residential IP |
 | X/Twitter items | RSSHub container + the local sync | See below |
 | Daily comic | `OPENAI_API_KEY` | `gpt-image-2.5-sunburst` |
 | Threads delivery | `THREADS_ACCESS_TOKEN`, `THREADS_USER_ID`, `enable_threads_post: true` | The daily-visual Lambda is what posts to Threads, because the image and the text ship as one post set; the post goes out text-only when the comic can't be rendered |
@@ -302,7 +302,7 @@ On every later deploy only steps 3-4 apply: push the new image, then `deploy --a
 |----------|---------|
 | **Lambda** (Docker) | Digest pipeline, 15 min timeout. X items come from the S3 park file the local sync writes |
 | **Lambda** (Docker) | Daily comic + Threads publish, 15 min timeout. Async, off the digest critical path, and the only digest publish path |
-| **Lambda** (Docker) | Threads token refresh (~50-day schedule, writes the renewed 60-day token back to SSM) |
+| **Lambda** (Docker) | Threads token refresh (weekly, `threads_token_refresh_days`; writes the renewed 60-day token back to SSM) |
 | **Lambda** (Docker) | Comment replies, 10 min timeout, one run at a time, every `aws.comment_reply_interval_minutes` (60). Does nothing unless `pipeline.enable_comment_replies` is on |
 | **EventBridge** | Daily digest cron (config-driven hour/minute, **UTC**) + the token-refresh and comment-reply schedules |
 | **Bedrock AgentCore** | Memory (digest snapshots, one session per date) |
@@ -371,7 +371,7 @@ crontab -e
 30 18 * * * /path/to/omnisummary/scripts/sync_all_to_s3.sh >> /tmp/omnisummary-sync.log 2>&1
 ```
 
-`sync_all_to_s3.sh` defaults `AWS_PROFILE=research`, prepends the usual `uv` install dirs to `PATH` (cron runs with a minimal one), and starts the `rsshub` container if `localhost:1200` doesn't answer. The X sync needs RSSHub; the YouTube sync needs `YOUTUBE_API_KEY`. The two are independent, so RSSHub being down never blocks YouTube.
+`sync_all_to_s3.sh` defaults `AWS_PROFILE=research`, prepends the usual `uv` install dirs to `PATH` (cron runs with a minimal one), and starts the `rsshub` container if `localhost:1200` doesn't answer. The X sync needs RSSHub. The two are independent, so RSSHub being down never blocks YouTube.
 
 ### External services
 
@@ -399,7 +399,7 @@ omnisummary/
 ├── output/                  # Threads renderers + handler, digest publisher, research report delivery
 ├── lambda_handlers/         # digest, daily visual, threads refresh, comment replies
 ├── infrastructure/          # CDK stacks (foundation + application)
-├── scripts/                 # deploy, put_secrets, put_inference_profiles, ci_synth, sync_to_s3, samplers
+├── scripts/                 # deploy, put_secrets, put_inference_profiles, ci_synth, sync_to_s3 + sync_all_to_s3.sh, samplers, render_excalidraw.mjs
 ├── assets/                  # persona.jpg (the narrator's reference sheet)
 ├── config/                  # YAML configuration
 ├── tests/                   # Unit + CDK assertion tests

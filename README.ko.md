@@ -105,11 +105,11 @@ pipeline:
 | 변수 | 필요한 곳 |
 |----------|-----------|
 | `TAVILY_API_KEY` | `web_search` 수집기와 리서치 CLI의 웹·커뮤니티·뉴스 검색 |
-| `YOUTUBE_API_KEY` | YouTube 수집기(없으면 RSS 폴백, 자막 없음) |
+| `YOUTUBE_API_KEY` | YouTube 수집기(없으면 Data API 대신 채널 RSS 피드를 쓴다) |
 | `OPENAI_API_KEY` | 데일리 만화 렌더 |
 | `THREADS_ACCESS_TOKEN` / `THREADS_USER_ID` | Threads 전달(60일 토큰, AWS에서는 SSM으로 자동 갱신) |
-| `ALERT_EMAIL` | 소스 헬스 SNS 이메일 알림(AWS) |
-| `S3_SYNC_ACCESS_KEY_ID` / `S3_SYNC_SECRET_ACCESS_KEY` | 로컬 → S3 sync 전용 자격증명(선택. 없으면 `AWS_PROFILE`) |
+| `ALERT_EMAIL` | SNS 이메일 알림(AWS). 배포에 필요하다. 없이 배포하면 구독이 지워진다 |
+| `S3_SYNC_ACCESS_KEY_ID` / `S3_SYNC_SECRET_ACCESS_KEY` | 로컬 → S3 sync 전용 자격증명(선택. 없으면 config의 `aws.profile`) |
 
 > **시크릿은 CDK 스택을 통과하지 않는다.** CloudFormation 템플릿은 SecureString을 담을 수 없어서,
 > 값을 스택에 넘기면 `cdk.out`과 스테이징 버킷, 모든 `GetTemplate` 응답에 평문으로 남는다. 스택은
@@ -129,7 +129,7 @@ pipeline:
 
 | 원하는 것 | 설정 | 비고 |
 |-------|-----|-------|
-| 자막이 붙은 YouTube 항목 | `YOUTUBE_API_KEY`와 로컬 sync | 자막은 거주용 IP에서만 받아진다 |
+| 자막이 붙은 YouTube 항목 | 로컬 sync(`YOUTUBE_API_KEY`는 선택) | 자막은 거주용 IP에서만 받아진다 |
 | X/Twitter 항목 | RSSHub 컨테이너와 로컬 sync | 아래 참고 |
 | 데일리 만화 | `OPENAI_API_KEY` | `gpt-image-2.5-sunburst` |
 | Threads 전달 | `THREADS_ACCESS_TOKEN`, `THREADS_USER_ID`, `enable_threads_post: true` | 이미지와 텍스트가 한 게시 세트로 나가야 해서 Threads 게시는 데일리 비주얼 Lambda가 한다. 만화를 렌더하지 못하면 텍스트만 나간다 |
@@ -301,7 +301,7 @@ uv run python scripts/put_inference_profiles.py  # 계정/스테이지당 1회, 
 |----------|---------|
 | **Lambda** (Docker) | 다이제스트 파이프라인, 15분 타임아웃. X 항목은 로컬 sync가 쓴 S3 park 파일에서 읽는다 |
 | **Lambda** (Docker) | 데일리 만화와 Threads 게시, 15분 타임아웃. 비동기로 다이제스트 크리티컬 패스에서 벗어나 있고, 다이제스트의 유일한 게시 경로다 |
-| **Lambda** (Docker) | Threads 토큰 갱신(약 50일 주기, 갱신된 60일 토큰을 SSM에 다시 기록) |
+| **Lambda** (Docker) | Threads 토큰 갱신(매주, `threads_token_refresh_days`. 갱신된 60일 토큰을 SSM에 다시 기록) |
 | **Lambda** (Docker) | 댓글 답글, 10분 타임아웃, 동시 실행 1개, `aws.comment_reply_interval_minutes`(60분)마다 실행. `pipeline.enable_comment_replies`가 꺼져 있으면 아무것도 하지 않는다 |
 | **EventBridge** | 데일리 다이제스트 크론(config의 시와 분, **UTC**)과 토큰 갱신, 댓글 답글 스케줄 |
 | **Bedrock AgentCore** | Memory(다이제스트 스냅샷, 날짜당 세션 하나) |
@@ -370,7 +370,7 @@ crontab -e
 30 18 * * * /path/to/omnisummary/scripts/sync_all_to_s3.sh >> /tmp/omnisummary-sync.log 2>&1
 ```
 
-`sync_all_to_s3.sh`는 `AWS_PROFILE=research`를 기본값으로 두고, 크론이 최소한의 PATH로 도니 흔한 `uv` 설치 경로를 `PATH` 앞에 붙이며, `localhost:1200`이 응답하지 않으면 `rsshub` 컨테이너를 켠다. X sync는 RSSHub가 필요하고 YouTube sync는 `YOUTUBE_API_KEY`가 필요하다. 두 sync는 독립적이라 RSSHub가 죽어도 YouTube를 막지 않는다.
+`sync_all_to_s3.sh`는 `AWS_PROFILE=research`를 기본값으로 두고, 크론이 최소한의 PATH로 도니 흔한 `uv` 설치 경로를 `PATH` 앞에 붙이며, `localhost:1200`이 응답하지 않으면 `rsshub` 컨테이너를 켠다. X sync는 RSSHub가 필요하다. 두 sync는 독립적이라 RSSHub가 죽어도 YouTube를 막지 않는다.
 
 ### 외부 서비스
 
@@ -398,7 +398,7 @@ omnisummary/
 ├── output/                  # Threads 렌더러와 핸들러, 다이제스트 퍼블리셔, 리서치 리포트 전달
 ├── lambda_handlers/         # digest, daily visual, threads refresh, comment replies
 ├── infrastructure/          # CDK 스택(foundation과 application)
-├── scripts/                 # deploy, put_secrets, put_inference_profiles, ci_synth, sync_to_s3, 샘플러
+├── scripts/                 # deploy, put_secrets, put_inference_profiles, ci_synth, sync_to_s3와 sync_all_to_s3.sh, 샘플러, render_excalidraw.mjs
 ├── assets/                  # persona.jpg (화자 캐릭터 기준 시트)
 ├── config/                  # YAML 설정
 ├── tests/                   # 단위 테스트와 CDK assertion 테스트

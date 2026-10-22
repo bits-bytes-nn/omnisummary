@@ -157,8 +157,8 @@ class TestFetchOgImage:
 class TestExtensionFor:
     def test_known_types(self):
         assert og_image.extension_for("image/jpeg") == "jpg"
-        assert og_image.extension_for("image/webp") == "webp"
-        assert og_image.extension_for("image/gif") == "gif"
+        # Meta documents only JPEG and PNG for Threads image posts.
+        assert "image/webp" not in og_image._RENDERABLE_IMAGE_TYPES
 
     def test_unknown_defaults_png(self):
         assert og_image.extension_for("application/octet-stream") == "png"

@@ -52,20 +52,12 @@ class DigestGenerator:
     async def generate(
         self,
         ranked_items: list[RankedItem],
-        all_items: list[CollectedItem],
+        *,
+        today: date,
         trends_context: str = "",
-        today: date | None = None,
         recent_leads: list[str] | None = None,
         recent_titles: list[str] | None = None,
     ) -> DigestResult:
-        if not ranked_items:
-            logger.warning("No ranked items to generate digest from")
-            return DigestResult(
-                digest_text="No notable content collected today.",
-                ranked_items=[],
-                generated_at=datetime.now(UTC),
-            )
-
         # The ranker hands over top_n + buffer candidates; the editor picks the strongest
         # target_count distinct stories, merging same-event items.
         target_count = min(self.config.top_n, len(ranked_items))
@@ -89,7 +81,7 @@ class DigestGenerator:
         intro = agi_countdown_intro(
             self.config.agi_countdown_date,
             self.config.agi_countdown_template,
-            today or datetime.now(UTC).date(),
+            today,
             self.config.agi_countdown_after,
         )
 
@@ -110,17 +102,18 @@ class DigestGenerator:
 
         async def _ask_editor() -> tuple[DigestContent, list[CollectedItem]]:
             content = self._parse_content(await chain.ainvoke(prompt_vars))
-            # Hard upper-bound: the prompt asks for EXACTLY target_count, but a model can over-emit.
-            # Trim deterministically so the digest never exceeds the target (fewer is allowed when
-            # the editor genuinely found fewer distinct stories). headline_index is pinned to 1, so
-            # the headline is always retained. Pinned URLs are kept even if they'd fall past the
-            # cutoff, so a user-pinned story the editor ranked low isn't trimmed out of the digest.
-            if len(content.items) > target_count:
-                logger.info("Digest emitted %d items; trimming to target %d", len(content.items), target_count)
-                content.items = self._trim_keeping_pinned(content.items, target_count, ranked_items)
             # Inside the retry on purpose: an unmatched HEADLINE raises DigestContentError, and a
             # re-ask is exactly the remedy (the lead and the visual are both written about items[0]).
+            # Matched BEFORE the trim, so a mangled URL cannot take a slot from a valid story.
             sources = self._fill_source_metadata(content, ranked_items)
+            # Hard upper-bound: the prompt asks for EXACTLY target_count, but a model can over-emit.
+            # Trim deterministically (fewer is allowed when the editor genuinely found fewer distinct
+            # stories), keeping the headline and any user-pinned story.
+            if len(content.items) > target_count:
+                logger.info("Digest emitted %d items; trimming to target %d", len(content.items), target_count)
+                source_of = {id(it): src for it, src in zip(content.items, sources, strict=True)}
+                content.items = self._trim_keeping_pinned(content.items, target_count, ranked_items)
+                sources = [source_of[id(it)] for it in content.items]
             return content, sources
 
         # Re-ask on a malformed emission (or a transient Bedrock error) instead of degrading.
@@ -221,9 +214,8 @@ class DigestGenerator:
             lead = data.get("lead")
             if not isinstance(lead, str) or not lead.strip():
                 raise ValueError("Digest content is missing a usable 'lead'")
-            # The prompt makes items[0] the headline (lead + image are about it); pin the index
-            # to 1 so a stray LLM value can't point the lead and the visual at different stories.
-            content = DigestContent(lead=lead, headline_index=1, items=items)
+            # The prompt makes items[0] the headline (lead + image are about it).
+            content = DigestContent(lead=lead, items=items)
         except Exception as e:
             # Log the offending output: without it the 08-17 root cause was only recoverable by
             # dumping the stored memory snapshot days later.
@@ -243,7 +235,7 @@ class DigestGenerator:
         needed by pinned items still ahead."""
         if len(items) <= target_count:
             return items[:target_count]
-        pinned_urls = {r.item.url for r in ranked_items if r.item.metadata.get("pinned")}
+        pinned_urls = {normalize_url(r.item.url) for r in ranked_items if r.item.metadata.get("pinned")}
         # Always retain the headline; fill the rest from items[1:] preserving pins.
         kept: list = items[:1]
         rest = items[1:]
@@ -251,11 +243,13 @@ class DigestGenerator:
             if len(kept) >= target_count:
                 break
             remaining_pinned = sum(
-                1 for later in rest[i:] if later.url in pinned_urls and later not in kept and later is not it
+                1
+                for later in rest[i:]
+                if normalize_url(later.url) in pinned_urls and later not in kept and later is not it
             )
             slots_left = target_count - len(kept)
             # Skip this non-pinned item only if keeping it would crowd out a pinned item still ahead.
-            if it.url not in pinned_urls and slots_left <= remaining_pinned:
+            if normalize_url(it.url) not in pinned_urls and slots_left <= remaining_pinned:
                 continue
             kept.append(it)
         return kept
@@ -280,13 +274,20 @@ class DigestGenerator:
         kept: list[DigestItem] = []
         sources: list[CollectedItem] = []
         unmatched: list[str] = []
+        shipped: set[str] = set()
         for i, item in enumerate(content.items):
-            src = by_url.get(normalize_url(item.url))
+            key = normalize_url(item.url)
+            src = by_url.get(key)
             if src is None:
                 if i == 0:
                     raise DigestContentError(f"Headline item '{item.url}' matches no ranked candidate")
                 unmatched.append(item.url)
                 continue
+            if key in shipped:
+                # Two items resolving to one candidate would post the same story twice.
+                unmatched.append(item.url)
+                continue
+            shipped.add(key)
             item.source_tag, item.metrics = self._source_tag_and_metrics(src)
             kept.append(item)
             sources.append(src)
@@ -294,7 +295,7 @@ class DigestGenerator:
             # ERROR: the digest that follows looks entirely normal, so a story invented out of
             # nothing (or with a mangled URL) is otherwise invisible until a reader clicks it.
             logger.error(
-                "Dropping %d digest item(s) that match no ranked candidate: %s",
+                "Dropping %d digest item(s) that match no ranked candidate or repeat one: %s",
                 len(unmatched),
                 unmatched,
             )
@@ -457,11 +458,11 @@ def render_digest_text(content: DigestContent) -> str:
 
 
 def _grounding_payload(content: DigestContent) -> str:
-    """Serialize the prose fields (lead + each item's body/implication) as labelled lines for
-    the grounding check. Only prose the LLM authored is checked — titles/urls/source tags are
-    code-owned and excluded so they can't be altered."""
+    """Serialize the prose the editor wrote (lead + each item's title/body/implication) as labelled
+    lines for the grounding check. URLs and source tags are code-owned and excluded."""
     lines = [f"LEAD: {content.lead}"]
     for i, item in enumerate(content.items):
+        lines.append(f"ITEM {i} TITLE: {item.title}")
         lines.append(f"ITEM {i} BODY: {item.body}")
         if item.implication:
             lines.append(f"ITEM {i} IMPLICATION: {item.implication}")
@@ -471,7 +472,8 @@ def _grounding_payload(content: DigestContent) -> str:
 def _apply_grounding_payload(content: DigestContent, corrected: str) -> DigestContent:
     """Parse the corrected labelled lines back onto the content. A field whose marker is missing
     OR empty keeps its original value (an empty marker would otherwise ship a blank field); a
-    malformed payload leaves content unchanged."""
+    malformed payload leaves content unchanged, and so does one carrying a label that was never sent
+    (a renumbered ITEM 1..5 would write item 0's text onto item 1)."""
     updated = content.model_copy(deep=True)
     current_key: tuple[str, int | None] | None = None
     buffers: dict[tuple[str, int | None], list[str]] = {}
@@ -483,9 +485,14 @@ def _apply_grounding_payload(content: DigestContent, corrected: str) -> DigestCo
         elif current_key is not None:
             buffers[current_key].append(line)
     text = {key: "\n".join(lines).strip() for key, lines in buffers.items()}
+    sent = {key for line in _grounding_payload(content).splitlines() if (key := _match_grounding_marker(line)[0])}
+    if not text or not text.keys() <= sent:
+        logger.error("Grounding correction labels do not match the draft's; keeping the original content")
+        return content
 
     updated.lead = text.get(("LEAD", None)) or updated.lead
     for i, item in enumerate(updated.items):
+        item.title = text.get(("TITLE", i)) or item.title
         item.body = text.get(("BODY", i)) or item.body
         item.implication = text.get(("IMPLICATION", i)) or item.implication
     return updated
@@ -502,7 +509,7 @@ def _match_grounding_marker(line: str) -> tuple[tuple[str, int | None] | None, s
                 len(tokens) == 3
                 and tokens[0] == "ITEM"
                 and tokens[1].isdigit()
-                and tokens[2] in ("BODY", "IMPLICATION")
+                and tokens[2] in ("TITLE", "BODY", "IMPLICATION")
             ):
                 return (tokens[2], int(tokens[1])), tokens[2], rest.strip()
     return None, "", ""

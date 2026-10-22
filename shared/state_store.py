@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from .logger import logger
 
@@ -115,6 +115,11 @@ class S3StateStore(StateStore):
             # and returning None for the second one let the next write persist an empty ledger.
             logger.error("Failed to read 's3://%s/%s': %s", self.bucket, s3_key, e)
             raise StateReadError(f"Failed to read 's3://{self.bucket}/{s3_key}': {e}") from e
+        except BotoCoreError as e:
+            # Connection/timeout/streaming errors: just as unreadable, and every caller catches only
+            # StateReadError.
+            logger.error("Failed to read 's3://%s/%s': %s", self.bucket, s3_key, e)
+            raise StateReadError(f"Failed to read 's3://{self.bucket}/{s3_key}': {e}") from e
 
     def write(self, key: str, content: str) -> None:
         s3_key = self._key(key)
@@ -122,8 +127,8 @@ class S3StateStore(StateStore):
         logger.debug("Wrote state to 's3://%s/%s' (%d chars)", self.bucket, s3_key, len(content))
 
 
-def _boto_session(config: Config | None):
-    """A session for the S3 store: ambient credentials, with the configured profile honoured only
+def state_boto_session(config: Config | None):
+    """A session for the state bucket (the S3 store, the hosted Threads images): ambient credentials, with the configured profile honoured only
     where it actually resolves.
 
     Gated on is_running_in_aws() this took the named-profile branch in any runtime that sets none of
@@ -153,8 +158,8 @@ def create_state_store(config: Config | None = None) -> StateStore:
         # S3_PREFIX is the digest-state prefix itself (set by the CDK Lambda env), unlike the
         # config's s3_prefix, which is the bucket ROOT and gets '/digest_state' appended.
         prefix = os.environ.get("S3_PREFIX", "digest_state")
-        return S3StateStore(_boto_session(config), env_bucket, prefix=prefix)
+        return S3StateStore(state_boto_session(config), env_bucket, prefix=prefix)
     if config and config.aws.state_bucket_name:
         prefix = f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state"
-        return S3StateStore(_boto_session(config), config.aws.state_bucket_name, prefix=prefix)
+        return S3StateStore(state_boto_session(config), config.aws.state_bucket_name, prefix=prefix)
     return LocalStateStore(Path(LocalPaths.DIGEST_STATE_DIR.value))

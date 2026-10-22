@@ -313,7 +313,7 @@ class GroundingCheckPrompt(BasePrompt):
 
     system_prompt_template = """\
 You are a fact-checker for an AI/ML digest. You receive a drafted digest as labelled lines \
-(LEAD:, ITEM N BODY:, ITEM N IMPLICATION:) and the SOURCE items it was written from. Find \
+(LEAD:, ITEM N TITLE:, ITEM N BODY:, ITEM N IMPLICATION:) and the SOURCE items it was written from. Find \
 specific claims that are NOT supported by the sources and fix ONLY those — keep everything else \
 byte-for-byte identical (wording, structure, the line labels, language). Preserve every label \
 exactly so the lines can be matched back.

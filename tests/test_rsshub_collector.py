@@ -249,8 +249,6 @@ class TestAccountRetries:
 
 
 class TestFailureHint:
-    """The cookie hint used to be asserted unconditionally, sending ops to a Twitter container
-    setting even when the failing feeds were on another platform."""
 
     @pytest.mark.asyncio
     async def test_hint_names_twitter_cookies_when_x_feeds_fail(self, monkeypatch):
@@ -263,22 +261,6 @@ class TestFailureHint:
                 with patch("collectors.base.fetch_feed", side_effect=fetch):
                     await c.collect()
         assert "TWITTER_AUTH_TOKEN" in c.degraded_detail
-
-    @pytest.mark.asyncio
-    async def test_no_twitter_hint_when_the_failing_feeds_are_another_platform(self, monkeypatch):
-        monkeypatch.delenv("STATE_BUCKET", raising=False)
-        accounts = [
-            RSSHubAccount(username="a", platform="mastodon"),
-            RSSHubAccount(username="b", platform="mastodon"),
-        ]
-        c = RSSHubCollector(_config(accounts=accounts, error_rate_threshold=40.0))
-        fetch = _fetch_by_username({"a": _feed([_entry()]), "b": RuntimeError("feed down")})
-        with patch("collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
-            with _reachable():
-                with patch("collectors.base.fetch_feed", side_effect=fetch):
-                    await c.collect()
-        assert "1/2 account feeds failed" in c.degraded_detail
-        assert "TWITTER" not in c.degraded_detail
 
 
 class TestFanOutBound:
@@ -338,26 +320,6 @@ class TestFeedParsing:
     async def test_entry_outside_the_window_is_dropped(self):
         old = _entry(published="Mon, 01 Jun 2026 00:00:00 GMT")  # reference 2026-06-03, lookback 24h
         assert await self._collect_one(_feed([old])) == []
-
-    @pytest.mark.asyncio
-    async def test_mastodon_account_is_a_web_item(self):
-        items = await self._collect_one(
-            _feed([_entry()]), accounts=[RSSHubAccount(username="someone", platform="mastodon")]
-        )
-        assert items[0].source_type == SourceType.WEB
-
-
-class TestFeedRouting:
-    def test_twitter_platforms_map_to_the_twitter_route(self):
-        assert RSSHubCollector._build_feed_path("karpathy", "x") == "twitter/user/karpathy"
-        assert RSSHubCollector._build_feed_path("karpathy", "Twitter") == "twitter/user/karpathy"
-
-    def test_other_platform_keeps_its_own_route(self):
-        assert RSSHubCollector._build_feed_path("someone", "Mastodon") == "mastodon/user/someone"
-
-    def test_source_type_is_x_only_for_twitter_platforms(self):
-        assert RSSHubCollector._detect_source_type("x") == SourceType.X
-        assert RSSHubCollector._detect_source_type("mastodon") == SourceType.WEB
 
 
 class TestParkedItems:

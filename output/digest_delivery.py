@@ -91,10 +91,10 @@ class DigestPublisher:
     def _nothing_left_to_publish(self, post_date: date, force_republish: bool) -> bool:
         """True when the day is provably done: Threads is the only channel, and either it is off or
         it already carries this date's digest."""
-        if force_republish:
-            return False
         if not self.config.pipeline.enable_threads_post:
             return True
+        if force_republish:
+            return False
         return bool(self.threads_ledger and self.threads_ledger.already_posted(post_date))
 
     async def _post_threads(
@@ -156,7 +156,8 @@ class DigestPublisher:
             try:
                 self.threads_ledger.mark(post_date, run_id)
             except Exception:
-                logger.warning("Failed to record Threads post marker (non-fatal)", exc_info=True)
+                # ERROR: without the marker nothing stops a replay of a failed day from posting again.
+                logger.error("Failed to record the Threads post marker; a replay is not protected", exc_info=True)
 
         try:
             outcome = await post_to_threads(
@@ -182,7 +183,10 @@ class DigestPublisher:
         # Branch on .published explicitly — the outcome tuple itself is ALWAYS truthy, so `if
         # outcome:` would treat a 0-of-6 post as a success and skip the ledger rollback.
         self.threads_outcome = outcome
-        if not outcome.published and not was_marked:
+        # Released only when NOTHING went up. A root whose replies all failed is live on the account,
+        # and so may be one whose publish step failed ambiguously: a re-run for the date would post a
+        # second root next to it. The caller still alerts.
+        if outcome.posted == 0 and not outcome.uncertain and not was_marked:
             self._release_threads_marker(post_date, run_id)
         return outcome.published
 
@@ -192,4 +196,5 @@ class DigestPublisher:
         try:
             self.threads_ledger.unmark(post_date, run_id)
         except Exception:
-            logger.warning("Failed to roll back Threads post marker (non-fatal)", exc_info=True)
+            # ERROR: the date stays marked, so a replay of this failed day skips without posting.
+            logger.error("Failed to roll back the Threads post marker; a replay will skip this date", exc_info=True)

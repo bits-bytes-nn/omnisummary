@@ -74,7 +74,7 @@ class BaseCollectorConfig(_StrictModel):
     # Age budget for a source's S3 park file (written by the local sync scripts). Beyond it the
     # items are still used — stale beats empty — but the source is reported STALE so a stopped
     # local cron is visible instead of looking like a healthy run.
-    park_max_age_hours: int = Field(default=36, ge=1)
+    park_max_age_hours: int = Field(default=24, ge=1)
     # Whether the park file is this source's PRIMARY path in AWS. When it is, an ABSENT file is a
     # DEGRADED source rather than a quiet fall-through: YouTube transcripts cannot be fetched from a
     # datacenter IP, so live collection still yields items (metadata only) and a wrong S3_PREFIX, a
@@ -156,7 +156,8 @@ class WebSearchCollectorConfig(BaseCollectorConfig):
 
 class RSSHubAccount(_StrictModel):
     username: str
-    platform: str
+    # X only: every configured account is X, and the routes for other platforms were never verified.
+    platform: Literal["x", "twitter"] = "x"
 
 
 class RSSHubCollectorConfig(BaseCollectorConfig):
@@ -564,8 +565,10 @@ class AWSConfig(_StrictModel):
     # EventBridge cron is UTC. 10:00 UTC = 19:00 KST (daily 7pm).
     digest_cron_hour: str = "10"
     digest_cron_minute: str = "0"
-    # Threads long-lived tokens expire after 60 days; refresh comfortably inside that window.
-    threads_token_refresh_days: int = Field(default=50, ge=1, le=59)
+    # Threads long-lived tokens expire after 60 days and can be refreshed once a day old. Weekly, so a
+    # failed refresh is retried well inside the window: at 50 days one failure left the token to die
+    # before the next attempt, and the rate counts from the rule's creation, not the token's issue.
+    threads_token_refresh_days: int = Field(default=7, ge=1, le=59)
     # How often the comment-reply Lambda looks for new comments. At least its 10-minute timeout, so
     # runs never queue behind the single concurrency slot.
     comment_reply_interval_minutes: int = Field(default=60, ge=10)
@@ -624,7 +627,7 @@ class Config(_StrictModel):
         """The deployed config: `config/config.yaml`, falling back to the tracked template.
 
         Returning bare code defaults for a missing file was silent and wrong. config.yaml is
-        gitignored, both Dockerfiles COPY config/, so a clean-checkout image — which is exactly what
+        gitignored, the Dockerfile COPYs config/, so a clean-checkout image — which is exactly what
         CI builds and validates — resolved to empty rss/reddit/youtube lists and region us-east-1 and
         started up perfectly happily. The first sign was a digest with no stories.
 

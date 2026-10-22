@@ -4,6 +4,9 @@ article-quality workflow can evaluate real output of the current DigestPrompt ag
 fixed, cached candidate set. Reuses a cached collected-items snapshot when present so
 each round only varies the prompt, not the upstream data.
 
+The digest comes from run_pipeline(dry_run=True), the production path: the editor sees the
+same cross-day exclusions, recent titles and recent leads a real run for today would.
+
 Usage: uv run python scripts/sample_digest.py <out_path> [cache_path]
 """
 
@@ -18,8 +21,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import boto3
 
-from pipeline import ContentAggregator, ContentRanker, DigestGenerator, TrendTracker
-from shared import BedrockLanguageModelFactory, CollectedItem, Config, create_state_store, logger
+from pipeline.runner import resolve_digest_window, run_pipeline
+from shared import BedrockLanguageModelFactory, CollectedItem, Config, logger
 
 
 async def _collect(config, factory) -> list[CollectedItem]:
@@ -52,15 +55,14 @@ async def main() -> None:
             )
             logger.info("Cached %d collected items to %s", len(collected), cache_path)
 
-    items = ContentAggregator().aggregate(collected)
-    ranked = await ContentRanker(config.pipeline, factory).rank(
-        items, select_count=config.pipeline.top_n + config.pipeline.digest_candidate_buffer
-    )
-    trends = TrendTracker(config.pipeline, factory, create_state_store(config)).get_trends_context()
-    digest = await DigestGenerator(config.pipeline, factory).generate(ranked, items, trends_context=trends)
+    digest_date, _ = resolve_digest_window(config)
+    _, _, digest = await run_pipeline(config, factory, collected, digest_date=digest_date, dry_run=True)
+    if digest is None:
+        raise SystemExit("No digest: nothing survived aggregation and ranking")
 
     out_path.write_text(digest.digest_text, encoding="utf-8")
-    logger.info("Wrote digest (%d chars, %d items) to %s", len(digest.digest_text), len(ranked), out_path)
+    stories = len(digest.content.items) if digest.content else 0
+    logger.info("Wrote digest (%d chars, %d stories) to %s", len(digest.digest_text), stories, out_path)
 
 
 if __name__ == "__main__":
