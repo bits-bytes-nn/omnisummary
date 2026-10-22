@@ -137,7 +137,7 @@ jobs:
       # can actually be RUN — a build alone never executes an import, so a missing COPY or a
       # module that only resolves on the developer's machine still shipped green.
       - name: Build digest image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile
