@@ -132,7 +132,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # load: true (single platform, native amd64) so the built image is in the local daemon and
       # can actually be RUN — a build alone never executes an import, so a missing COPY or a
       # module that only resolves on the developer's machine still shipped green.
