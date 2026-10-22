@@ -109,6 +109,15 @@ class TestS3StateStore:
         with pytest.raises(StateReadError):
             store.read_json("trends.json", default={})
 
+    def test_a_network_error_is_an_unreadable_store_too(self):
+        from botocore.exceptions import EndpointConnectionError
+
+        client = MagicMock()
+        client.get_object.side_effect = EndpointConnectionError(endpoint_url="https://s3.example")
+        store = S3StateStore(_s3_session(client), "bkt")
+        with pytest.raises(StateReadError):
+            store.read("published_urls.json")
+
     def test_read_json_parses_stored_json(self):
         client = MagicMock()
         client.get_object.return_value = _body(b'{"trends": []}')

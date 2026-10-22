@@ -1,4 +1,5 @@
 import json
+from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -46,7 +47,6 @@ def _sources():
 def _content(lead="정확히 $7B 투자.", body="본문.", implication="시사점."):
     return DigestContent(
         lead=lead,
-        headline_index=1,
         items=[DigestItem(title="T", url="u", body=body, implication=implication)],
     )
 
@@ -127,7 +127,7 @@ class TestParseContent:
         # inside string values, which strict json.loads rejected → 0-item fallback → Threads
         # got only the lead. The lenient parse must recover all items.
         raw = (
-            '{"lead": "리드 문장.", "headline_index": 1, "items": ['
+            '{"lead": "리드 문장.", "items": ['
             '{"title": "T1", "url": "u1", "body": "본문 첫 줄.\n둘째 줄.", "implication": "시사점\t들여쓰기."},'
             '{"title": "T2", "url": "u2", "body": "다른 본문.", "implication": "또 다른 시사점."}'
             "]}"
@@ -136,17 +136,13 @@ class TestParseContent:
         assert len(content.items) == 2
         assert content.items[0].body == "본문 첫 줄.\n둘째 줄."
         assert content.items[0].implication == "시사점\t들여쓰기."
-        assert content.headline_index == 1
 
     def test_parses_items_first_lead_last_key_order(self):
         # The prompt now asks for `items` BEFORE `lead`: the lead is written after the stories
         # exist, so it comments on them instead of re-narrating the headline (measured: the
         # lead/headline-reply word overlap fell from ~0.34 to ~0.11 across five sampled days).
         # Parsing must not depend on key order.
-        raw = (
-            '{"items": [{"title": "T0", "url": "u0", "body": "b0", "implication": "i0"}], '
-            '"headline_index": 1, "lead": "오늘의 논평."}'
-        )
+        raw = '{"items": [{"title": "T0", "url": "u0", "body": "b0", "implication": "i0"}], ' '"lead": "오늘의 논평."}'
         content = _generator("")._parse_content(raw)
         assert content.lead == "오늘의 논평."
         assert [it.url for it in content.items] == ["u0"]
@@ -161,13 +157,13 @@ class TestParseContent:
 
     def test_stray_bracket_after_lead_raises(self):
         # The exact production emission: a valid lead string closed with an extra `]`.
-        raw = '{"lead": "오늘의 리드."], "headline_index": 1, "items": [{"title": "T", "url": "u", "body": "b"}]}'
+        raw = '{"lead": "오늘의 리드."], "items": [{"title": "T", "url": "u", "body": "b"}]}'
         with pytest.raises(DigestContentError):
             _generator("")._parse_content(raw)
 
     def test_valid_json_with_zero_items_raises(self):
         # Well-formed JSON is not enough: an empty items array is the same broken outcome.
-        raw = json.dumps({"lead": "리드 문장.", "headline_index": 1, "items": []})
+        raw = json.dumps({"lead": "리드 문장.", "items": []})
         with pytest.raises(DigestContentError):
             _generator("")._parse_content(raw)
 
@@ -232,7 +228,6 @@ class TestProseBudgetReachesTheEditor:
 
         emitted = {
             "items": [{"title": "T", "url": "u", "body": "본문.", "implication": "시사점."}],
-            "headline_index": 1,
             "lead": "리드.",
         }
         seen: list[str] = []
@@ -248,7 +243,7 @@ class TestProseBudgetReachesTheEditor:
         ranked = [
             RankedItem(item=CollectedItem(item_id="i", source_type=SourceType.RSS, title="T", url="u"), score=0.8)
         ]
-        await gen.generate(ranked, [r.item for r in ranked], today=date(2030, 1, 1))
+        await gen.generate(ranked, today=date(2030, 1, 1))
         budget = gen._item_prose_budget(ranked[0].item)
         assert any(f"{budget} characters" in s for s in seen)
 
@@ -314,7 +309,7 @@ class TestDerivedBudgets:
         ranked = [
             RankedItem(item=CollectedItem(item_id="i", source_type=SourceType.RSS, title="T", url="u"), score=0.8)
         ]
-        asyncio.run(gen.generate(ranked, [r.item for r in ranked], today=date(2030, 1, 1)))
+        asyncio.run(gen.generate(ranked, today=date(2030, 1, 1)))
         assert any("under 500 characters" in s for s in seen)
 
 
@@ -328,7 +323,6 @@ class TestReAskOnUnparseableEmission:
         return json.dumps(
             {
                 "lead": "리드.",
-                "headline_index": 1,
                 "items": [
                     {"title": f"T{i}", "url": f"u{i}", "body": "본문.", "implication": "시사점."} for i in range(n)
                 ],
@@ -363,7 +357,7 @@ class TestReAskOnUnparseableEmission:
         gen = DigestGenerator(PipelineConfig(enable_grounding_check=False), factory)
         ranked = self._ranked()
 
-        result = await gen.generate(ranked, [r.item for r in ranked], today=date(2030, 1, 1))
+        result = await gen.generate(ranked, today=date(2030, 1, 1))
         assert calls["n"] == 2  # asked again instead of degrading
         assert len(result.content.items) == 2
 
@@ -380,7 +374,7 @@ class TestReAskOnUnparseableEmission:
         # A failed run is the correct outcome: the Lambda reports the error (alarm fires) and no
         # broken digest reaches AgentCore Memory or Threads.
         with pytest.raises(DigestContentError):
-            await gen.generate(ranked, [r.item for r in ranked], today=date(2030, 1, 1))
+            await gen.generate(ranked, today=date(2030, 1, 1))
 
 
 class TestTargetCountTrim:
@@ -392,7 +386,6 @@ class TestTargetCountTrim:
         # trim deterministically to 3 (headline retained) rather than trusting prompt compliance.
         emitted = {
             "lead": "리드.",
-            "headline_index": 1,
             "items": [{"title": f"T{i}", "url": f"u{i}", "body": "본문.", "implication": "시사점."} for i in range(5)],
         }
         config = PipelineConfig(enable_grounding_check=False, top_n=3)
@@ -405,8 +398,43 @@ class TestTargetCountTrim:
             )
             for i in range(5)
         ]
-        result = await gen.generate(ranked, [r.item for r in ranked], today=date(2030, 1, 1))
+        result = await gen.generate(ranked, today=date(2030, 1, 1))
         assert len(result.content.items) == 3  # trimmed to top_n
+
+    @pytest.mark.asyncio
+    async def test_an_unmatched_or_repeated_item_does_not_take_a_valid_storys_slot(self):
+        from datetime import date
+
+        # Five emitted, top_n=3: #2 has an invented URL and #3 repeats #1. Matching runs BEFORE the
+        # trim, so the valid #4 ships instead of the digest coming out one story short.
+        urls = [
+            "https://e.com/0",
+            "https://e.com/1",
+            "https://invented.example/x",
+            "https://e.com/1/",
+            "https://e.com/4",
+        ]
+        emitted = {
+            "lead": "리드.",
+            "items": [
+                {"title": f"T{i}", "url": u, "body": "본문.", "implication": "시사점."} for i, u in enumerate(urls)
+            ],
+        }
+        config = PipelineConfig(enable_grounding_check=False, top_n=3)
+        factory = MagicMock()
+        factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content=json.dumps(emitted)))
+        gen = DigestGenerator(config, factory)
+        ranked = [
+            RankedItem(
+                item=CollectedItem(
+                    item_id=f"i{i}", source_type=SourceType.RSS, title=f"T{i}", url=f"https://e.com/{i}"
+                ),
+                score=0.8,
+            )
+            for i in (0, 1, 4)
+        ]
+        result = await gen.generate(ranked, today=date(2030, 1, 1))
+        assert [it.url for it in result.content.items] == ["https://e.com/0", "https://e.com/1", "https://e.com/4"]
 
     @pytest.mark.asyncio
     async def test_pins_exceeding_top_n_all_survive_with_headline(self):
@@ -416,7 +444,6 @@ class TestTargetCountTrim:
         # must survive — the target is raised to fit them rather than dropping a pin or the headline.
         emitted = {
             "lead": "리드.",
-            "headline_index": 1,
             "items": [{"title": f"T{i}", "url": f"u{i}", "body": "본문.", "implication": "시사점."} for i in range(5)],
         }
         config = PipelineConfig(enable_grounding_check=False, top_n=3)
@@ -436,7 +463,7 @@ class TestTargetCountTrim:
             )
             for i in range(5)
         ]
-        result = await gen.generate(ranked, [r.item for r in ranked], today=date(2030, 1, 1))
+        result = await gen.generate(ranked, today=date(2030, 1, 1))
         urls = [it.url for it in result.content.items]
         assert urls[0] == "u0"  # headline preserved at front
         for pin in ("u1", "u2", "u3", "u4"):
@@ -450,7 +477,6 @@ class TestTargetCountTrim:
         # pinned URL must survive the trim.
         emitted = {
             "lead": "리드.",
-            "headline_index": 1,
             "items": [{"title": f"T{i}", "url": f"u{i}", "body": "본문.", "implication": "시사점."} for i in range(5)],
         }
         config = PipelineConfig(enable_grounding_check=False, top_n=3)
@@ -470,7 +496,7 @@ class TestTargetCountTrim:
             )
             for i in range(5)
         ]
-        result = await gen.generate(ranked, [r.item for r in ranked], today=date(2030, 1, 1))
+        result = await gen.generate(ranked, today=date(2030, 1, 1))
         urls = [it.url for it in result.content.items]
         assert len(urls) == 3
         assert "u4" in urls  # pinned survived
@@ -660,25 +686,19 @@ class TestSourceMatchingByNormalizedUrl:
 
     def test_trailing_slash_and_scheme_variants_still_match(self):
         gen, ranked = self._generator_with("http://www.interconnects.ai/p/x/")
-        content = DigestContent(
-            lead="l", headline_index=1, items=[DigestItem(title="T", url="https://interconnects.ai/p/x", body="b")]
-        )
+        content = DigestContent(lead="l", items=[DigestItem(title="T", url="https://interconnects.ai/p/x", body="b")])
         gen._fill_source_metadata(content, ranked)
         assert content.items[0].source_tag == "Interconnects"
 
     def test_identical_urls_are_unaffected(self):
         gen, ranked = self._generator_with("https://interconnects.ai/p/x")
-        content = DigestContent(
-            lead="l", headline_index=1, items=[DigestItem(title="T", url="https://interconnects.ai/p/x", body="b")]
-        )
+        content = DigestContent(lead="l", items=[DigestItem(title="T", url="https://interconnects.ai/p/x", body="b")])
         gen._fill_source_metadata(content, ranked)
         assert content.items[0].source_tag == "Interconnects"
 
     def test_the_match_map_is_returned_for_the_grounding_check(self):
         gen, ranked = self._generator_with("https://interconnects.ai/p/x")
-        content = DigestContent(
-            lead="l", headline_index=1, items=[DigestItem(title="T", url="https://interconnects.ai/p/x", body="b")]
-        )
+        content = DigestContent(lead="l", items=[DigestItem(title="T", url="https://interconnects.ai/p/x", body="b")])
         assert gen._fill_source_metadata(content, ranked) == [ranked[0].item]
 
 
@@ -708,7 +728,6 @@ class TestUnmatchedItemsNeverShip:
         ranked = self._ranked_two()
         content = DigestContent(
             lead="l",
-            headline_index=1,
             items=[
                 DigestItem(title="T1", url="https://interconnects.ai/p/1", body="b"),
                 DigestItem(title="Invented", url="https://www.newsite.com/a/b", body="b"),
@@ -724,7 +743,6 @@ class TestUnmatchedItemsNeverShip:
         gen = _generator("{}")
         content = DigestContent(
             lead="l",
-            headline_index=1,
             items=[
                 DigestItem(title="Invented", url="https://www.newsite.com/a/b", body="b"),
                 DigestItem(title="T1", url="https://interconnects.ai/p/1", body="b"),
@@ -745,7 +763,7 @@ class TestUnmatchedItemsNeverShip:
         gen = DigestGenerator(
             PipelineConfig(enable_grounding_check=False, digest_max_retries=2, digest_retry_backoff_sec=0), factory
         )
-        result = await gen.generate(_ranked(), [])
+        result = await gen.generate(_ranked(), today=date(2030, 1, 1))
         assert result.content is not None
         assert [it.url for it in result.content.items] == ["u"]
         assert outputs == []  # the first emission was re-asked, not shipped
@@ -774,7 +792,7 @@ class TestUnmatchedItemsNeverShip:
         factory.get_model.return_value = RunnableLambda(_respond)
         factory.truncate_to_tokens.side_effect = lambda text, max_tokens: text
         gen = DigestGenerator(PipelineConfig(enable_grounding_check=True, top_n=1), factory)
-        await gen.generate([shipped, dropped], [])
+        await gen.generate([shipped, dropped], today=date(2030, 1, 1))
         assert "kept body" in seen[1]
         assert "unused body" not in seen[1]
 
@@ -845,3 +863,29 @@ def test_grounding_corrections_land_on_the_right_fields_and_leave_the_input_alon
     assert out.items[1].implication == "고친 시사점 1."
     assert out.items[0].implication == "시사점 0."  # an empty marker keeps the original
     assert original.items[1].body == "본문 1."  # the input is not mutated
+
+
+def test_grounding_corrections_with_labels_never_sent_are_not_applied():
+    # A model that renumbered ITEM 0..1 as 1..2 would have written item 0's text onto item 1.
+    from pipeline.digest_generator import _apply_grounding_payload
+    from shared import DigestContent, DigestItem
+
+    original = DigestContent(
+        lead="리드.",
+        items=[
+            DigestItem(title="A", url="u0", body="본문 0.", implication="시사점 0."),
+            DigestItem(title="B", url="u1", body="본문 1.", implication="시사점 1."),
+        ],
+    )
+    corrected = "LEAD: 리드.\nITEM 1 BODY: 고친 본문 0.\nITEM 2 BODY: 본문 1."
+    assert _apply_grounding_payload(original, corrected) is original
+
+
+def test_grounding_checks_and_corrects_the_editors_titles():
+    from pipeline.digest_generator import _apply_grounding_payload, _grounding_payload
+    from shared import DigestContent, DigestItem
+
+    original = DigestContent(lead="리드.", items=[DigestItem(title="72% 향상", url="u0", body="본문.")])
+    assert "ITEM 0 TITLE: 72% 향상" in _grounding_payload(original)
+    out = _apply_grounding_payload(original, "LEAD: 리드.\nITEM 0 TITLE: 27% 향상\nITEM 0 BODY: 본문.")
+    assert out.items[0].title == "27% 향상"

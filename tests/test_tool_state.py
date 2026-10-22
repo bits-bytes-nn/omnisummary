@@ -51,14 +51,12 @@ def test_export_state_does_not_double_store_ranked_items():
     # level) — re-embedding doubled the snapshot and tripped the AgentCore 100k cap.
     mgr = DigestStateManager()
     ranked = [RankedItem(item=_item("a"), score=0.7)]
-    content = DigestContent(
-        lead="lead", headline_index=1, items=[DigestItem(title="t", url="http://e.com/a", body="b")]
-    )
+    content = DigestContent(lead="lead", items=[DigestItem(title="t", url="http://e.com/a", body="b")])
     mgr.store_digest(ranked, DigestResult(digest_text="d", ranked_items=ranked, content=content))
 
     state = mgr.export_state()
     assert state["digest_result"].get("ranked_items") in (None, [])  # excluded from the embed
-    assert state["digest_result"]["content"]["headline_index"] == 1  # but content survives
+    assert state["digest_result"]["content"]["lead"] == "lead"  # but content survives
 
     restored = DigestStateManager.load_from_dict(state)
     assert restored.get_content().lead == "lead"  # content round-trips

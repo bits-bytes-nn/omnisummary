@@ -227,10 +227,9 @@ async def run_pipeline(
     exclude_urls = ledger.recent_urls(digest_date)
     snapshots: list[dict] = []
     try:
-        # Seed the same TTL window the ledger uses: the ttl days BEFORE today (today's own snapshot
-        # is excluded so a same-day re-run keeps its stories, and a story that legitimately recurs
-        # past the window isn't suppressed by a stale snapshot).
-        snapshots = create_memory_store().get_recent_digests(digest_date, config.pipeline.published_url_ttl_days)
+        # Seed the same window the ledger excludes: ages 1..ttl-1 (today's own snapshot is excluded
+        # so a same-day re-run keeps its stories, and a story back on the TTL day is allowed again).
+        snapshots = create_memory_store().get_recent_digests(digest_date, config.pipeline.published_url_ttl_days - 1)
         exclude_urls |= {normalize_url(u) for u in published_urls_from_snapshots(snapshots)}
     except Exception:
         logger.warning("Could not seed cross-day dedup from memory snapshots (non-fatal)", exc_info=True)
@@ -261,7 +260,6 @@ async def run_pipeline(
     generator = DigestGenerator(config.pipeline, llm_factory)
     digest = await generator.generate(
         ranked_items,
-        items,
         trends_context=trends_context,
         today=digest_date,
         recent_leads=recent_leads,
@@ -288,7 +286,11 @@ async def run_pipeline(
         logger.info("DRY RUN - Digest output:\n%s", digest.digest_text)
         return items, ranked_items, digest
 
-    await trend_tracker.update_trends(digest.digest_text, digest_date.isoformat())
+    try:
+        # Trends only feed tomorrow's lead: a failed update must not cost today's post.
+        await trend_tracker.update_trends(digest.digest_text, digest_date.isoformat())
+    except Exception:
+        logger.error("Trend update failed (non-fatal; today's digest still ships)", exc_info=True)
 
     # Record the stories that became TODAY'S digest of record so future runs don't re-publish
     # them, and remember the lead so the next digest avoids repeating the same opening angle.
@@ -310,6 +312,9 @@ async def run_pipeline(
     # locally we run it inline so `uv run python main.py` still produces the visual.
     # The visual step also fans out to Threads (when enabled), so it carries the digest text.
     if not is_running_in_aws():
+        # Persisted BEFORE the inline post: a store that fails after the post went up would leave the
+        # day's posted digest stored nowhere, and a re-run would record a different one.
+        persist_digest(ranked_items, digest, digest_date, base_dir=Path(LocalPaths.DIGEST_STATE_DIR.value))
         try:
             from .daily_visual import DailyVisualMaker
 
@@ -320,14 +325,12 @@ async def run_pipeline(
         except Exception:
             logger.warning("Daily visual step failed (non-fatal)", exc_info=True)
 
-    if not is_running_in_aws():
-        persist_digest(ranked_items, digest, digest_date, base_dir=Path(LocalPaths.DIGEST_STATE_DIR.value))
     return items, ranked_items, digest
 
 
 def _recent_story_titles(snapshots: list[dict]) -> list[str]:
-    """Story titles from every snapshot the cross-day dedup seed already fetched (the
-    published_url_ttl_days window, newest first), so the editor sees what recent digests ran. One
+    """Story titles from every snapshot the cross-day dedup seed already fetched (the ledger's
+    window, ages 1..published_url_ttl_days-1, newest first), so the editor sees what recent digests ran. One
     day was not enough: a weekly roundup brings a story back under a NEW URL the ledger cannot
     match, and on 2026-10-11 three of five stories had run 1-4 days earlier. The ranker reads it for
     Novelty and the editor for selection; it is information, not a filter."""

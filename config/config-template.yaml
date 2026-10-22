@@ -24,8 +24,8 @@ collectors:
     # YouTube/X items are collected locally (residential IP) and parked in S3; beyond this age the
     # parked items are still used but the source is reported STALE, so a stopped local cron alerts
     # instead of looking healthy. Every collector inherits this key. Keep it INSIDE one sync cadence
-    # (the local cron runs daily): at the code default of 36 a completely skipped sync day still read
-    # FRESH/OK, which is the very thing this budget exists to catch.
+    # (the local cron runs daily): at 36 a completely skipped sync day still read FRESH/OK, which is
+    # the very thing this budget exists to catch.
     park_max_age_hours: 24
     # In AWS this file is the ONLY transcript-carrying path (a datacenter IP cannot fetch
     # transcripts), so an absent one is a DEGRADED source, not a quiet fall-through to live

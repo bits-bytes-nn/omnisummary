@@ -18,6 +18,12 @@ LEAKY_ENV_VARS = (
     "MEMORY_ID",
     "ALERT_SNS_TOPIC_ARN",
     "VISUAL_FUNCTION_NAME",
+    # research_cli / recall_cli call load_dotenv() at import, i.e. during collection.
+    "PROJECT_NAME",
+    "STAGE",
+    "LOG_LEVEL",
+    "S3_SYNC_ACCESS_KEY_ID",
+    "S3_SYNC_SECRET_ACCESS_KEY",
 )
 
 

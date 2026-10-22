@@ -88,6 +88,7 @@ class TestMaybeAlert:
         sns.publish.side_effect = Exception("network down")
         with patch("lambda_handlers.digest_handler.boto3.client", return_value=sns):
             digest_handler._maybe_alert(_report_with_failure())
+        sns.publish.assert_called_once()  # attempted, and its failure did not escape
 
 
 class TestEmptySourceAlert:

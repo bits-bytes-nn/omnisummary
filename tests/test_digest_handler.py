@@ -65,9 +65,7 @@ class TestRun:
         items = [MagicMock()]
         health = HealthReport(sources=[SourceHealth(name="rss", item_count=1, status=SourceStatus.OK)])
         digest = MagicMock()
-        digest.content = DigestContent(
-            lead="리드.", headline_index=1, items=[DigestItem(title="t", url="http://e/1", body="b")]
-        )
+        digest.content = DigestContent(lead="리드.", items=[DigestItem(title="t", url="http://e/1", body="b")])
         ranked = [MagicMock(), MagicMock(), MagicMock()]
         result = (items, ranked, digest)
         with patch("lambda_handlers.digest_handler.Config.load", return_value=config):
@@ -92,29 +90,6 @@ class TestRun:
         assert persist.call_args.kwargs["base_dir"] is None  # AgentCore-backed store in AWS
         trigger.assert_called_once_with(today)
 
-    async def test_full_flow_persists_and_triggers_visual(self):
-        config = _config()
-        items = [MagicMock()]
-        health = HealthReport(sources=[SourceHealth(name="rss", item_count=1, status=SourceStatus.OK)])
-        result = (items, [MagicMock()], MagicMock())
-        with patch("lambda_handlers.digest_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.digest_handler.boto3.Session"):
-                with patch("lambda_handlers.digest_handler.BedrockLanguageModelFactory"):
-                    with patch(
-                        "lambda_handlers.digest_handler.run_collectors_with_health",
-                        new=AsyncMock(return_value=(items, health)),
-                    ):
-                        with patch("lambda_handlers.digest_handler._maybe_alert"):
-                            with patch(
-                                "lambda_handlers.digest_handler.run_pipeline",
-                                new=AsyncMock(return_value=result),
-                            ):
-                                with patch("lambda_handlers.digest_handler.persist_digest") as persist:
-                                    with patch("lambda_handlers.digest_handler._trigger_visual") as trigger:
-                                        await digest_handler._run()
-        persist.assert_called_once()
-        trigger.assert_called_once()
-
     async def test_metric_counts_digest_stories_not_ranker_candidates(self):
         # Regression (2026-08-13 / 08-17): the digest shipped ZERO stories while this metric
         # reported the full ranker candidate count, so the EmptyDigestAlarm never fired.
@@ -124,9 +99,7 @@ class TestRun:
         items = [MagicMock()]
         health = HealthReport(sources=[SourceHealth(name="rss", item_count=1, status=SourceStatus.OK)])
         digest = MagicMock()
-        digest.content = DigestContent(
-            lead="l", headline_index=1, items=[DigestItem(title="t", url="http://e/1", body="b")]
-        )
+        digest.content = DigestContent(lead="l", items=[DigestItem(title="t", url="http://e/1", body="b")])
         result = (items, [MagicMock() for _ in range(8)], digest)  # 8 ranked candidates, 1 story
         with patch("lambda_handlers.digest_handler.Config.load", return_value=config):
             with patch("lambda_handlers.digest_handler.boto3.Session"):

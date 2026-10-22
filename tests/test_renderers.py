@@ -11,7 +11,6 @@ from shared.models import CollectedItem, DigestContent, DigestItem
 def _content(n_items: int = 2, lead: str = "오늘의 리드.") -> DigestContent:
     return DigestContent(
         lead=lead,
-        headline_index=1,
         items=[
             DigestItem(
                 title=f"스토리 {i}",
@@ -45,7 +44,6 @@ class TestThreadsPosts:
         long_body = "이것은 한 문장이다. " * 80  # ~1000+ chars
         content = DigestContent(
             lead="리드.",
-            headline_index=1,
             items=[DigestItem(title="긴 스토리", url="http://e.com/long", body=long_body, implication="시사점이다.")],
         )
         _, replies = render_threads_posts(content)
@@ -66,7 +64,6 @@ class TestThreadsPosts:
 
         content = DigestContent(
             lead="리드.",
-            headline_index=1,
             items=[
                 DigestItem(
                     title="스토리",
@@ -94,7 +91,6 @@ class TestThreadsPosts:
         # one more clause of body.
         content = DigestContent(
             lead="리드.",
-            headline_index=1,
             items=[
                 DigestItem(
                     title="스토리",
@@ -113,7 +109,6 @@ class TestThreadsPosts:
     def test_missing_source_metadata_adds_no_blank_line(self):
         content = DigestContent(
             lead="리드.",
-            headline_index=1,
             items=[DigestItem(title="스토리", url="http://e.com/x", body="본문이다.", implication="시사점이다.")],
         )
         _, replies = render_threads_posts(content)
@@ -132,7 +127,6 @@ class TestThreadsPosts:
         long_body = "이것은 긴 본문 문장이다. " * 40  # ~600+ chars
         content = DigestContent(
             lead="리드.",
-            headline_index=1,
             items=[
                 DigestItem(title="스토리", url="http://e.com/x", body=long_body, implication="이것이 핵심 시사점이다.")
             ],
@@ -149,7 +143,6 @@ class TestThreadsPosts:
         body = "이것은 아주 긴 한 문장이다 " * 40 + "끝난다."
         content = DigestContent(
             lead="리드.",
-            headline_index=1,
             items=[DigestItem(title="스토리", url="http://e.com/x", body=body, implication="시사점이다.")],
         )
         _, replies = render_threads_posts(content)
@@ -162,7 +155,6 @@ class TestThreadsPosts:
         # that is left — never down to a bare title + URL.
         content = DigestContent(
             lead="리드.",
-            headline_index=1,
             items=[
                 DigestItem(
                     title="스토리",
@@ -183,7 +175,6 @@ class TestThreadsPosts:
         # reader can still reach the story.
         content = DigestContent(
             lead="리드.",
-            headline_index=1,
             items=[DigestItem(title="아주 긴 제목 " * 80, url="http://e.com/x", body="", implication="")],
         )
         _, replies = render_threads_posts(content)
@@ -198,7 +189,6 @@ class TestThreadsPosts:
         body = "가나다 " * 300  # ~1200 chars, no sentence-ending punctuation
         content = DigestContent(
             lead="리드.",
-            headline_index=1,
             items=[DigestItem(title="스토리", url="http://e.com/x", body=body)],
         )
         _, replies = render_threads_posts(content)
@@ -472,7 +462,6 @@ class TestThreadsItemOverhead:
         body = "가" * (budget - len(title) - len(implication))
         content = DigestContent(
             lead="리드.",
-            headline_index=1,
             items=[
                 DigestItem(
                     title=title, url=url, source_tag="src1", metrics="👍 +10", body=body, implication=implication
@@ -489,7 +478,6 @@ class TestThreadsItemOverhead:
         # Counts only, never the text: a trimmed item means the prose budget was overrun.
         content = DigestContent(
             lead="리드.",
-            headline_index=1,
             items=[
                 DigestItem(title="스토리", url="http://e.com/x", body="긴 본문이다. " * 80, implication="시사점이다."),
                 DigestItem(title="짧은 스토리", url="http://e.com/y", body="짧다.", implication="끝."),

@@ -33,7 +33,6 @@ def _ranked(items: list[CollectedItem]) -> list[RankedItem]:
 def _digest(items: list[CollectedItem], lead: str = "리드 문장이다.") -> DigestResult:
     content = DigestContent(
         lead=lead,
-        headline_index=1,
         items=[DigestItem(title=it.title, url=it.url, body="본문") for it in items],
     )
     return DigestResult(digest_text="digest body", ranked_items=_ranked(items), content=content)
@@ -63,7 +62,7 @@ class _Pipeline:
         async def rank(items, select_count=None, recent_titles=()):
             return ranked if ranked is not None else _ranked(items)
 
-        async def generate(ranked_items, items, **kwargs):
+        async def generate(ranked_items, **kwargs):
             self.generate_kwargs = kwargs
             return digest if digest is not None else _digest([r.item for r in ranked_items])
 
@@ -136,6 +135,19 @@ class TestRunPipelineHappyPath:
         assert p.tracker.update_trends.await_args.args[1] == DIGEST_DATE.isoformat()
 
     @pytest.mark.asyncio
+    async def test_a_failed_trend_update_does_not_cost_the_days_digest(self):
+        # Trends only feed tomorrow's lead; a throttled Sonnet call there used to raise after the
+        # digest was paid for, and nothing was persisted or posted that day.
+        items = [_item("https://a.example/1", "A")]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with _Pipeline(tmpdir) as p:
+                p.tracker.update_trends.side_effect = RuntimeError("throttled")
+                _, _, digest = await _run(p, _config(), items)
+                ledger = p.store.read_json(PUBLISHED_URLS_KEY)
+        assert digest is not None
+        assert set(ledger) == {"https://a.example/1"}
+
+    @pytest.mark.asyncio
     async def test_recent_leads_are_fed_back_to_the_generator(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
@@ -197,8 +209,8 @@ class TestRunPipelineDedup:
                     p, _config(), [_item("https://old.example/1"), _item("https://new.example/2")]
                 )
         assert [it.url for it in collected] == ["https://new.example/2"]
-        # The ledger's TTL window before today (today's own snapshot is excluded by the store).
-        assert p.memory.get_recent_digests.call_args.args == (DIGEST_DATE, 6)
+        # The ledger's window: ages 1..ttl-1, so a story is allowed back on the TTL day by both.
+        assert p.memory.get_recent_digests.call_args.args == (DIGEST_DATE, 5)
 
     @pytest.mark.asyncio
     async def test_memory_failure_is_non_fatal(self):

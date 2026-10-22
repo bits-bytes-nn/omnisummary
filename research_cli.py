@@ -28,7 +28,14 @@ logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 from agent.research_agent import create_research_agent, research_run_limits  # noqa: E402
 from agent.research_tools import DeliveryContext, request_context  # noqa: E402
 from output.delivery import MARKDOWN, THREADS  # noqa: E402
-from shared import Config, extract_urls, logger, normalize_citation_url  # noqa: E402
+from shared import (  # noqa: E402
+    Config,
+    SecretUnavailableError,
+    extract_urls,
+    logger,
+    normalize_citation_url,
+    resolve_secret,
+)
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "reports"
 
@@ -130,29 +137,50 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
     allowed = "ALLOWED" if delivery.publish_threads else "NOT allowed"
     prompt = f"{topic}\n\n[DELIVERY] Threads publishing: {allowed}."
 
+    try:
+        tavily_key = resolve_secret("TAVILY_API_KEY", "tavily-api-key", strict=True)
+    except SecretUnavailableError as e:
+        result["error"] = f"TAVILY_API_KEY could not be read: {e}"
+        return result, EXIT_FAILED
+    if not tavily_key:
+        # Web search, page reads and community search all go through Tavily: without it the agent
+        # wrote from background knowledge and the run still reported success.
+        result["error"] = "TAVILY_API_KEY is not configured (env or SSM)."
+        return result, EXIT_FAILED
+
     warnings: list[str] = result["warnings"]
+    run_error: str | None = None
+    markdown = ""
     with request_context(delivery):
         try:
-            agent = create_research_agent()
+            agent = create_research_agent(config)
             run_result = agent(prompt, limits=research_run_limits(config))
         except Exception as e:
+            # Still report what already happened: a thread posted before the failure is live, and a
+            # caller that can't see it re-runs and posts it twice.
             logger.error("Research run failed: %s", e, exc_info=True)
-            result["error"] = f"{type(e).__name__}: {e}"
-            return result, EXIT_FAILED
+            run_error = f"{type(e).__name__}: {e}"
+            markdown = delivery.report if MARKDOWN in delivery.delivered_channels else ""
+        else:
+            result["usage"] = _usage(run_result)
+            result["stop_reason"] = str(getattr(run_result, "stop_reason", "") or "")
+            markdown = delivery.report
+            if MARKDOWN not in delivery.delivered_channels:
+                # The agent answered without submitting through deliver_report, so its citations were
+                # never checked against what the tools returned. Use the answer, and say so.
+                markdown = str(run_result).strip()
+                if result["stop_reason"].startswith("limit_"):
+                    run_error = (
+                        f"The run stopped at its budget cap ({result['stop_reason']}) before submitting a report."
+                    )
+                warnings.append(
+                    "The agent did not submit the report through deliver_report; its citations are unchecked."
+                )
+                unverified = [u for u in extract_urls(markdown) if normalize_citation_url(u) not in delivery.seen_urls]
+                if unverified:
+                    warnings.append(f"URLs no tool returned: {', '.join(dict.fromkeys(unverified))}")
 
-        result["usage"] = _usage(run_result)
-        result["stop_reason"] = str(getattr(run_result, "stop_reason", "") or "")
-        markdown = delivery.report
-        if MARKDOWN not in delivery.delivered_channels:
-            # The agent answered without submitting through deliver_report, so its citations were
-            # never checked against what the tools returned. Use the answer, and say so.
-            markdown = str(run_result).strip()
-            warnings.append("The agent did not submit the report through deliver_report; its citations are unchecked.")
-            unverified = [u for u in extract_urls(markdown) if normalize_citation_url(u) not in delivery.seen_urls]
-            if unverified:
-                warnings.append(f"URLs no tool returned: {', '.join(dict.fromkeys(unverified))}")
-
-    if result["stop_reason"].startswith("limit_"):
+    if result["stop_reason"].startswith("limit_") and run_error is None:
         warnings.append(f"The run stopped at its budget cap ({result['stop_reason']}); the report may be partial.")
     result["threads"] = _threads_result(delivery)
     result["images"] = [
@@ -160,15 +188,17 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
         for a in delivery.staged_images
     ]
     if not markdown:
-        result["error"] = "The agent produced no report."
+        result["error"] = run_error or "The agent produced no report."
         return result, EXIT_FAILED
-
     result.update(
         title=_title(markdown),
         markdown=markdown,
         markdown_path=str(_save(markdown, topic, args.output_dir, config.aws.timezone)),
         sources=list(dict.fromkeys(extract_urls(markdown))),
     )
+    if run_error:
+        result["error"] = run_error
+        return result, EXIT_FAILED
     threads = result["threads"]
     if threads is not None and not threads["published"]:
         result["error"] = "Threads publishing was requested but did not complete."

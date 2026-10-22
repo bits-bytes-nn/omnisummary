@@ -12,7 +12,6 @@ def _snapshot() -> dict:
             "ranked_items": [],
             "content": {
                 "lead": "리드.",
-                "headline_index": 1,
                 "items": [{"title": "스토리", "url": "http://e.com/1", "body": "본문.", "implication": "함의."}],
             },
         },

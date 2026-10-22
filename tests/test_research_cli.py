@@ -31,13 +31,20 @@ class _Result:
 
 
 def _run(
-    argv, *, submit: str | None = "# 제목\n\n본문 https://real.example/a", final="done", stop="end_turn", raises=None
+    argv,
+    *,
+    submit: str | None = "# 제목\n\n본문 https://real.example/a",
+    final="done",
+    stop="end_turn",
+    raises=None,
+    raises_after_submit=None,
+    tavily_key="key",
 ):
     """Run the CLI with a fake agent. `submit` is what the agent hands to deliver_report("markdown");
-    None means it answered without submitting."""
+    None means it answered without submitting. `raises_after_submit` fails the run after delivery."""
     captured: dict = {}
 
-    def fake_create():
+    def fake_create(*_):
         def call(prompt, **kwargs):
             captured["prompt"] = prompt
             captured["kwargs"] = kwargs
@@ -49,11 +56,17 @@ def _run(
             if submit is not None:
                 delivery.report = submit
                 delivery.delivered_channels.add("markdown")
+            if raises_after_submit:
+                delivery.delivered_channels.add("threads")
+                raise raises_after_submit
             return _Result(final, stop)
 
         return call
 
-    with patch.object(research_cli, "create_research_agent", side_effect=fake_create) as create:
+    with (
+        patch.object(research_cli, "create_research_agent", side_effect=fake_create) as create,
+        patch.object(research_cli, "resolve_secret", return_value=tavily_key),
+    ):
         result, code = research_cli.run(argv)
     captured["create"] = create
     return result, code, captured
@@ -121,6 +134,31 @@ class TestResult:
         assert code == research_cli.EXIT_FAILED
         assert result["status"] == "failed"
         assert "bedrock down" in result["error"]
+
+    def test_a_failure_after_publishing_still_reports_the_thread_and_the_report(self, tmp_path):
+        # A thread that went out before the failure is live: a caller that can't see it re-runs.
+        result, code, _ = _run(
+            ["주제", "--publish", "threads", "--output-dir", str(tmp_path)],
+            raises_after_submit=RuntimeError("throttled"),
+        )
+        assert code == research_cli.EXIT_FAILED
+        assert "throttled" in result["error"]
+        assert result["threads"]["published"] is True
+        assert Path(result["markdown_path"]).exists()
+
+    def test_a_budget_stop_without_a_submitted_report_fails_but_keeps_the_fragment(self, tmp_path):
+        result, code, _ = _run(
+            ["주제", "--output-dir", str(tmp_path)], submit=None, final="이제 검색하겠습니다", stop="limit_turns"
+        )
+        assert code == research_cli.EXIT_FAILED
+        assert "budget cap" in result["error"]
+        assert result["markdown"] == "이제 검색하겠습니다"
+
+    def test_a_missing_tavily_key_fails_before_the_agent_runs(self, tmp_path):
+        result, code, captured = _run(["주제", "--output-dir", str(tmp_path)], tavily_key="")
+        assert code == research_cli.EXIT_FAILED
+        assert "TAVILY_API_KEY" in result["error"]
+        assert not captured["create"].called
 
     def test_no_report_at_all_fails(self, tmp_path):
         result, code, _ = _run(["주제", "--output-dir", str(tmp_path)], submit=None, final="   ")

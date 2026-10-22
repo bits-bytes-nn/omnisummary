@@ -71,7 +71,7 @@ def format_alarm(
 
 def agi_countdown_intro(date_str: str, template: str, today: date, after_template: str = "") -> str:
     """The tongue-in-cheek AGI-countdown intro, computed in code (never the LLM) from a fixed D-day
-    so it's accurate and ticks daily. Applied at POST time so it lands on every channel and run.
+    so it's accurate and ticks daily. Prefixed onto the lead when the digest is generated.
     Before the D-day: counts DOWN via `template` ({days} = days remaining). On/after the D-day:
     counts UP via `after_template` ({days} = days since), a self-aware nod that the prediction blew
     past. Returns "" when disabled/malformed, or after the D-day if no after_template is set."""
@@ -270,7 +270,7 @@ def format_origin_label(item: CollectedItem) -> str:
 
 
 def source_tag_and_metrics(item: CollectedItem) -> tuple[str, str]:
-    """(source_tag, metrics) for an item: a plain source label and a ' · '-joined emoji metric
+    """(source_tag, metrics) for an item: a plain source label and a ' · '-joined metric
     string. Code owns this — the LLM never writes source markup. The tag falls back to the host for
     the same reason the origin key does: an item whose source metadata is missing still has to tell
     the reader where it came from."""

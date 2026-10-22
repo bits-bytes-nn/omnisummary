@@ -24,7 +24,7 @@ class TestFitToLimit:
         big = "x" * 200_000
         state = {
             "ranked_items": [{"item": {"item_id": f"i{n}", "text": big}, "score": 0.5} for n in range(20)],
-            "digest_result": {"digest_text": big, "content": {"lead": big, "headline_index": 1, "items": []}},
+            "digest_result": {"digest_text": big, "content": {"lead": big, "items": []}},
         }
         out = store._fit_to_limit(state)
         parsed = json.loads(out)  # must be valid JSON (never byte-sliced)
@@ -43,7 +43,6 @@ class TestFitToLimit:
                 "digest_text": "d",
                 "content": {
                     "lead": "리드.",
-                    "headline_index": 1,
                     "items": [{"title": f"스토리 {n}", "url": f"u{n}", "body": "b"} for n in range(5)],
                 },
             },
@@ -92,6 +91,16 @@ class TestCreateMemoryStore:
         with patch("shared.memory._deployed_memory_id", return_value=""):
             store = create_memory_store(tmp_path)
         assert isinstance(store, LocalMemoryStore)
+
+    def test_a_failed_lookup_raises_instead_of_reading_the_local_store(self, monkeypatch, tmp_path):
+        # Expired credentials fell back to the local store, so recall answered "nothing stored"
+        # for a date production had written.
+        monkeypatch.delenv("MEMORY_ID", raising=False)
+        session = MagicMock()
+        session.client.return_value.get_paginator.return_value.paginate.side_effect = RuntimeError("expired token")
+        with patch("shared.memory.boto3.Session", return_value=session):
+            with pytest.raises(MemoryReadError, match="expired token"):
+                create_memory_store(tmp_path)
 
     def test_a_local_run_finds_the_stacks_memory_by_name(self, monkeypatch):
         # Without MEMORY_ID (set only on the Lambdas) a local run read none of production's
@@ -228,10 +237,17 @@ class TestNewestEventWithinASession:
             "events": [self._event('{"attempt": 1}', old), self._event('{"attempt": 2}', new)]
         }
         assert store.get_digest("2026-08-17") == {"attempt": 2}
-        # More than one event per session is read, but only a few — get_recent_digests pays this
-        # per date, so the page size stays small.
-        assert client.list_events.call_args.kwargs["maxResults"] == AgentCoreMemoryStore.EVENTS_PER_SESSION
-        assert AgentCoreMemoryStore.EVENTS_PER_SESSION <= 10
+
+    def test_reads_every_page_of_a_re_run_session(self):
+        store, client = self._store()
+        old = datetime(2026, 8, 17, 10, 0, tzinfo=UTC)
+        new = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
+        client.list_events.side_effect = [
+            {"events": [self._event('{"attempt": 1}', old)], "nextToken": "t"},
+            {"events": [self._event('{"attempt": 2}', new)]},
+        ]
+        assert store.get_digest("2026-08-17") == {"attempt": 2}
+        assert client.list_events.call_args.kwargs["nextToken"] == "t"
 
     def test_payload_generated_at_breaks_a_timestamp_tie_and_is_optional(self):
         store, client = self._store()

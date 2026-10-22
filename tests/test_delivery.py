@@ -52,17 +52,17 @@ class TestMarkdownReport:
 class TestDeliverThreads:
     @pytest.mark.asyncio
     async def test_passes_first_image_with_content_type_and_key(self):
-        d = DeliveryContext(publish_threads=True, staged_images=[_img("image/webp"), _img("image/png")])
+        d = DeliveryContext(publish_threads=True, staged_images=[_img("image/jpeg"), _img("image/png")])
         with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(1, 1))) as pt:
             with patch.object(dlv, "get_config") as cfg:
                 _threads_config(cfg, bucket="bkt", prefix="omni")
                 ok = await dlv.deliver_research_report("리드 문장이다.", channel="threads", delivery=d)
         assert ok is dlv.DeliveryOutcome.POSTED
         kw = pt.await_args.kwargs
-        assert kw["image_content_type"] == "image/webp"  # the FIRST staged image
+        assert kw["image_content_type"] == "image/jpeg"  # the FIRST staged image
         assert kw["image_bucket"] == "bkt"
         assert kw["image_key"].startswith("omni/threads/research_")
-        assert kw["image_key"].endswith(".webp")  # extension derived from content_type
+        assert kw["image_key"].endswith(".jpg")  # extension derived from content_type
 
     @pytest.mark.asyncio
     async def test_empty_report_skips_threads_api(self):
@@ -139,6 +139,21 @@ class TestARootThatLandedAloneIsNotAPlainFailure:
         assert pt.await_count == 1
         assert d.partial_channels == {"threads"}
         assert d.delivered_channels == set()
+
+    @pytest.mark.asyncio
+    async def test_a_root_that_may_be_live_spends_the_channel(self):
+        # A publish step that failed ambiguously may have posted: a second call would be a second root.
+        d = DeliveryContext(publish_threads=True)
+        report = "\n---\n".join(f"{i}/10 소제목\n\n본문 {i}이다." for i in range(10))
+        outcome = ThreadsDelivery(0, 8, uncertain=True)
+        with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=outcome)) as pt:
+            with patch.object(dlv, "get_config") as cfg:
+                _threads_config(cfg)
+                await dlv.deliver_research_report(report, channel="threads", delivery=d)
+                again = await dlv.deliver_research_report(report, channel="threads", delivery=d)
+        assert again is dlv.DeliveryOutcome.NOT_POSTED
+        assert pt.await_count == 1
+        assert d.partial_channels == {"threads"}
 
     @pytest.mark.asyncio
     async def test_a_delivery_where_nothing_landed_is_still_a_failure(self):

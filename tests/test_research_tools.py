@@ -107,7 +107,6 @@ class TestRecallDigest:
                 "digest_text": "t",
                 "content": {
                     "lead": "\uc624\ub298\uc758 \ub9ac\ub4dc.",
-                    "headline_index": 1,
                     "items": [{"title": "\uc2a4\ud1a0\ub9ac 1", "url": "u1", "body": "b"}],
                 },
             },

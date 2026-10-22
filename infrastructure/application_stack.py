@@ -264,8 +264,8 @@ class OmniSummaryApplicationStack(Stack):
                 treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
             )
             errors.add_alarm_action(alarm_action)
-            # Timeouts don't count as Errors, so also alarm when max Duration nears the configured
-            # timeout (90%). Catches the visual-Lambda "ran out of time mid Threads post" case.
+            # Also alarm when max Duration nears the configured timeout (90%): an early warning that a
+            # run is close to the visual-Lambda "ran out of time mid Threads post" case.
             timeout_ms = fn.timeout.to_milliseconds() if fn.timeout else 0
             if timeout_ms:
                 duration = fn.metric_duration(period=Duration.minutes(5), statistic="Maximum").create_alarm(

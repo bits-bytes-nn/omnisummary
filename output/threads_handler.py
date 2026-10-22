@@ -5,7 +5,6 @@ import time
 from datetime import datetime
 from typing import Any, NamedTuple
 
-import boto3
 import httpx
 
 from shared import THREADS_MAX_POST_CHARS, logger, resolve_secret
@@ -51,9 +50,13 @@ class ThreadsDelivery(NamedTuple):
     expected: int
     # Whether the root that went up actually carried the day's image. Defaults to False so every
     # existing construction (a failure verdict, a research report) is unchanged; the visual Lambda
-    # emits it as a metric, because "posted 6/6" says nothing about a text-only fallback that
+    # alerts on it, because "posted 6/6" says nothing about a text-only fallback that
     # silently dropped the visual.
     with_image: bool = False
+    # Nothing is KNOWN to have posted, but the root may be live: its publish step failed in a way
+    # that can come back for a post that went up (an error status, a timeout). Callers keep the
+    # date's marker so a replay cannot post a second root.
+    uncertain: bool = False
 
     @property
     def published(self) -> bool:
@@ -73,8 +76,13 @@ class ThreadsDelivery(NamedTuple):
 def _upload_image_for_hosting(image_bytes: bytes, bucket: str, key: str, content_type: str = "image/png") -> str:
     """Threads can only fetch images from a public URL (no byte upload), so host the image on
     S3 and hand back a short-lived presigned URL Meta can cURL once. The ContentType must match
-    the real image type or Meta may reject/mis-render it."""
-    s3 = boto3.client("s3")
+    the real image type or Meta may reject/mis-render it. The client is on the state store's session
+    (configured profile + region): a local shell's inherited AWS_PROFILE / AWS_REGION may be another
+    account, or sign the URL for a region Meta cannot fetch from."""
+    from shared.config import get_config
+    from shared.state_store import state_boto_session
+
+    s3 = state_boto_session(get_config()).client("s3")
     s3.put_object(Bucket=bucket, Key=key, Body=image_bytes, ContentType=content_type)
     return s3.generate_presigned_url(
         "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=THREADS_IMAGE_URL_TTL_SEC
@@ -294,15 +302,24 @@ async def post_to_threads(
 
     try:
         async with httpx.AsyncClient(timeout=request_timeout) as client:
-            root_id = await _publish_post(
-                client,
-                user_id,
-                token,
-                text=root_text[:THREADS_MAX_POST_CHARS],
-                image_url=image_url,
-                image_alt=image_alt,
-                topic_tag=topic_tag,
-            )
+            root = {"text": root_text[:THREADS_MAX_POST_CHARS], "topic_tag": topic_tag}
+            try:
+                root_id = await _publish_post(client, user_id, token, image_url=image_url, image_alt=image_alt, **root)
+            except httpx.HTTPStatusError as e:
+                if not image_url or e.request.url.path.endswith("/threads_publish"):
+                    # Only a rejected CONTAINER is safe to redo: an error from the publish step may
+                    # come back for a post that went live, and a second root would be a duplicate.
+                    raise
+                # Meta rejected the IMAGE container (unfetchable URL, unsupported media): nothing is
+                # live, and the text stands on its own, so post it without the image rather than
+                # losing the whole post set.
+                logger.warning(
+                    "Threads image root rejected (%s: %s); posting the root text-only",
+                    e.response.status_code,
+                    error_detail(e),
+                )
+                image_url = ""
+                root_id = await _publish_post(client, user_id, token, image_url="", image_alt="", **root)
             logger.info("Posted Threads root '%s'", root_id)
             # An image root needs time to become addressable as a reply target, so every reply
             # carries this deadline and retries its own create-container against it. A root-readiness
@@ -343,7 +360,7 @@ async def post_to_threads(
             logger.info("Posted Threads root '%s' with no replies", root_id)
         elif not outcome.published:
             # Every reply failed (e.g. the image root never indexed within the budget): a lone
-            # image with no stories. The caller's ledger rollback keeps the day retryable.
+            # image with no stories. The root is live, so the caller keeps the date marked.
             logger.error("Threads root '%s' posted but ALL %d reply posts failed", root_id, len(posts))
         elif outcome.partial:
             logger.error("Threads digest posted PARTIALLY: %s (reply chain is incomplete)", outcome.summary())
@@ -352,7 +369,17 @@ async def post_to_threads(
         return outcome
     except httpx.HTTPStatusError as e:
         logger.warning("Threads API error: %s — %s", e.response.status_code, e.response.text[:300])
-        return ThreadsDelivery(0, expected)
+        return ThreadsDelivery(0, expected, uncertain=_root_may_be_live(e))
     except Exception as e:
         logger.warning("Unexpected error posting to Threads: %s", e)
-        return ThreadsDelivery(0, expected)
+        return ThreadsDelivery(0, expected, uncertain=_root_may_be_live(e))
+
+
+def _root_may_be_live(exc: Exception) -> bool:
+    """False only when the root failed at CONTAINER creation, which posts nothing. A failure at or
+    after the publish step, or one whose request is unknown, may have left the root live."""
+    try:
+        request = exc.request if isinstance(exc, httpx.HTTPStatusError | httpx.RequestError) else None
+    except RuntimeError:
+        request = None
+    return request is None or request.url.path.endswith("/threads_publish")

@@ -153,6 +153,24 @@ class TestVisualRun:
         # No caller deadline → None, so the publish path behaves exactly as it did before.
         assert kwargs["deadline"] is None
 
+    async def test_a_delivery_that_posted_nothing_raises_for_the_alarm_and_dlq(self):
+        config = MagicMock()
+        config.aws.timezone = "Asia/Seoul"
+        store = MagicMock()
+        store.get_digest.return_value = {"some": "state"}
+        maker_instance = MagicMock()
+        maker_instance.run = AsyncMock(return_value=False)
+        maker_instance.threads_outcome = ThreadsDelivery(0, 6)
+        with patch("lambda_handlers.visual_handler.Config.load", return_value=config):
+            with patch("lambda_handlers.visual_handler.create_memory_store", return_value=store):
+                with patch("lambda_handlers.visual_handler.DigestStateManager.load_from_dict"):
+                    with patch("lambda_handlers.visual_handler.boto3.Session"):
+                        with patch("lambda_handlers.visual_handler.BedrockLanguageModelFactory"):
+                            with patch("lambda_handlers.visual_handler.DailyVisualMaker", return_value=maker_instance):
+                                with patch("lambda_handlers.visual_handler._maybe_alert_threads_outcome"):
+                                    with pytest.raises(RuntimeError, match="posted nothing"):
+                                        await visual_handler._run({"digest_date": "2026-08-18"})
+
 
 class TestRemainingDeadline:
     """The Lambda's remaining time is converted to a plain monotonic float HERE; the context object
@@ -189,6 +207,20 @@ class TestThreadsOutcomeAlert:
         with patch("lambda_handlers.visual_handler.boto3.client", return_value=sns):
             visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(0, 6), date(2026, 8, 18))
         assert "FAILED" in sns.publish.call_args.kwargs["Subject"]
+
+    def test_a_live_root_without_replies_warns_against_a_force_republish(self, monkeypatch):
+        monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
+        sns = MagicMock()
+        with patch("lambda_handlers.visual_handler.boto3.client", return_value=sns):
+            visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(1, 6), date(2026, 8, 18))
+        assert "do NOT --force-republish" in sns.publish.call_args.kwargs["Message"]
+
+    def test_an_ambiguous_failure_says_the_root_may_be_live(self, monkeypatch):
+        monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
+        sns = MagicMock()
+        with patch("lambda_handlers.visual_handler.boto3.client", return_value=sns):
+            visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(0, 6, uncertain=True), date(2026, 8, 18))
+        assert "MAY be live" in sns.publish.call_args.kwargs["Message"]
 
     def test_silent_on_a_complete_post(self, monkeypatch):
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")

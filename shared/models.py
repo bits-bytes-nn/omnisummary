@@ -55,11 +55,10 @@ class DigestItem(BaseModel):
 
 class DigestContent(BaseModel):
     """Structured digest the digest LLM returns. `lead` is the columnist take connecting
-    the headline to its trend arc; `headline_index` (1-based into items) is the story the
-    lead is about and the one the daily visual depicts."""
+    the headline to its trend arc; the headline is items[0], the story the lead is about and the
+    one the daily visual depicts."""
 
     lead: str
-    headline_index: int = 1
     items: list[DigestItem] = Field(default_factory=list)
 
 

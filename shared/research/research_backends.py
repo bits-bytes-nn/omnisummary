@@ -66,7 +66,9 @@ async def tavily_search(
         return _format_search_results(results, agent_config.search_content_preview_chars)
     except Exception as e:
         logger.warning("Tavily search failed: %s", e)
-        return f"Search failed: {e}"
+        # The exception text is logged, not returned: it can carry the request URL, which the agent
+        # would then be allowed to cite.
+        return f"Search failed ({type(e).__name__})."
     finally:
         await client.close()
 
@@ -163,7 +165,7 @@ async def paper_search(query: str) -> str:
             )
         except httpx.HTTPError as e:
             logger.warning("OpenAlex paper search failed: %s", e)
-            return f"Search failed: paper search unavailable ({e})."
+            return f"Search failed: paper search unavailable ({type(e).__name__})."
 
         if response.status_code != 200:
             logger.warning("OpenAlex returned status %d", response.status_code)

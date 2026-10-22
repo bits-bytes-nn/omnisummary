@@ -28,6 +28,8 @@ class DeliveryStats:
 
     rendered: int = 0
     delivered: int = 0
+    # The root may be live although nothing is known to have landed (its publish step failed).
+    uncertain: bool = False
     dropped: int = 0
     trimmed: int = 0
 
@@ -118,6 +120,7 @@ async def _deliver_threads(report: str, delivery: DeliveryContext) -> bool:
     image_bucket = ""
     image_key = ""
     image_content_type = "image/png"
+    image_alt = ""
     if delivery.staged_images:
         config = get_config()
         bucket = config.aws.state_bucket_name or os.environ.get("STATE_BUCKET", "")
@@ -127,6 +130,7 @@ async def _deliver_threads(report: str, delivery: DeliveryContext) -> bool:
             image = delivery.staged_images[0]
             image_bytes = image.data
             image_content_type = image.content_type
+            image_alt = image.alt
             image_bucket = bucket
             prefix = config.aws.s3_prefix.rstrip("/") + "/" if config.aws.s3_prefix else ""
             ext = extension_for(image_content_type)
@@ -139,12 +143,14 @@ async def _deliver_threads(report: str, delivery: DeliveryContext) -> bool:
         image_bucket=image_bucket,
         image_key=image_key,
         image_content_type=image_content_type,
+        image_alt=image_alt,
         topic_tag=get_config().pipeline.threads_topic_tag,
     )
     # Explicitly read the counts: the outcome is a NamedTuple and therefore always truthy, so
     # `return outcome` would report a 0-of-8 post as a success.
     delivery.threads_stats.rendered = outcome.expected
     delivery.threads_stats.delivered = outcome.posted
+    delivery.threads_stats.uncertain = outcome.uncertain
     return outcome.published
 
 
@@ -173,9 +179,10 @@ async def deliver_research_report(report: str, *, channel: str, delivery: Delive
         if not delivery.threads_stats.complete:
             logger.warning("Research report delivered INCOMPLETE to %s: %s", channel, delivery.threads_stats.summary())
         return DeliveryOutcome.POSTED
-    if delivery.threads_stats.delivered > 0:
-        # Not usable as a delivery (a Threads root whose replies all failed), but posts DID land on a
-        # public account. Re-sending would duplicate them, so the channel is spent.
+    if delivery.threads_stats.delivered > 0 or delivery.threads_stats.uncertain:
+        # Not usable as a delivery (a Threads root whose replies all failed, or one whose publish step
+        # failed and may be live), but posts did or may have landed on a public account. Re-sending
+        # would duplicate them, so the channel is spent.
         delivery.partial_channels.add(channel)
         logger.warning("Research report delivered INCOMPLETE to %s: %s", channel, delivery.threads_stats.summary())
         return DeliveryOutcome.POSTED

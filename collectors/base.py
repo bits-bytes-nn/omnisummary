@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from enum import Enum
-from http.client import HTTPException
 from typing import Any
 
 import boto3
@@ -34,11 +34,6 @@ from shared.constants import BROWSER_USER_AGENT
 # cannot change. Lives here so every collector classifies a status the same way.
 RETRIABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
-# Exception types feedparser reports for a TRANSPORT failure rather than a malformed document.
-# OSError covers urllib's URLError, socket.timeout/TimeoutError, ConnectionResetError and ssl.SSLError;
-# HTTPException covers a truncated/aborted response (IncompleteRead, RemoteDisconnected).
-_TRANSPORT_EXCEPTIONS = (OSError, HTTPException)
-
 
 class TransientStatusError(RuntimeError):
     """A response that should be retried (429 / 5xx, or a transport-level fetch failure). A
@@ -57,15 +52,9 @@ FEED_FETCH_HEADERS = {"User-Agent": BROWSER_USER_AGENT}
 
 
 def feed_parse_failure(description: str, bozo_exception: object) -> Exception:
-    """The exception for a feed that yielded no entries.
-
-    feedparser does NOT raise on a connection error: it returns a feed with no `status` and the
-    transport exception in `bozo_exception`. Classifying that as a permanent parse error meant a DNS
-    hiccup lost the feed for the whole day while an HTTP 503 on the same feed got three attempts."""
-    message = f"Failed to parse {description}: {bozo_exception}"
-    if isinstance(bozo_exception, _TRANSPORT_EXCEPTIONS):
-        return TransientStatusError(message)
-    return RuntimeError(message)
+    """The exception for a downloaded feed that yielded no entries: a malformed document, which a
+    retry cannot change. Transport failures never reach here; httpx raised them during the fetch."""
+    return RuntimeError(f"Failed to parse {description}: {bozo_exception}")
 
 
 # ClientError codes that mean "the park file simply isn't there" — an expected state (first run,
@@ -526,13 +515,14 @@ async def fetch_feed(url: str, *, description: str, timeout: float) -> Any:
     except httpx.TimeoutException as e:
         raise TransientStatusError(f"{description} timed out after {timeout}s") from e
     except httpx.HTTPError as e:
-        # A transport failure (DNS, reset, TLS) is transient, exactly as feedparser's transport-level
-        # bozo_exception is: a DNS hiccup used to lose the feed for the whole day.
+        # A transport failure (DNS, reset, TLS) is transient: a DNS hiccup used to lose the feed for
+        # the whole day.
         raise TransientStatusError(f"{description} fetch failed: {e}") from e
 
     if response.status_code >= 400:
         raise feed_status_failure(description, response.status_code)
-    feed = feedparser.parse(response.content)
+    # A BytesIO, not the bytes: feedparser tries a bytes argument as a local file path first.
+    feed = feedparser.parse(io.BytesIO(response.content))
     if feed.bozo and not feed.entries:
         raise feed_parse_failure(description, feed.get("bozo_exception"))
     return feed

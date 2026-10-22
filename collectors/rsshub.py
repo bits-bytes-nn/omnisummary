@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
 
 import httpx
 
 from shared import CollectedItem, SourceType, is_running_in_aws, logger, retry_async
 from shared.config import RSSHubCollectorConfig
-from shared.constants import TWITTER_PLATFORMS
 
 from .base import (
     PARK_META_ACCOUNTS_EMPTY,
@@ -32,13 +30,8 @@ __all__ = [
 _INPUT_LABEL = "account feeds"
 
 
-def _failure_hint(platforms: Iterable[str]) -> str:
-    """The actionable hint for the platforms that actually failed. Expired Twitter cookies are the
-    usual cause of RSSHub failures HERE, but the collector also serves mastodon/other routes, and
-    asserting the Twitter cause unconditionally sent ops to the wrong container setting."""
-    if any(platform.lower() in TWITTER_PLATFORMS for platform in platforms):
-        return "Twitter cookies may have expired — update TWITTER_AUTH_TOKEN and TWITTER_CT0 in the RSSHub container"
-    return ""
+# Expired Twitter cookies are the usual cause of RSSHub feed failures.
+_FAILURE_HINT = "Twitter cookies may have expired — update TWITTER_AUTH_TOKEN and TWITTER_CT0 in the RSSHub container"
 
 
 class RSSHubCollector(BaseCollector):
@@ -52,12 +45,10 @@ class RSSHubCollector(BaseCollector):
         parked = load_items_from_s3("rsshub_items.json", max_age_hours=self.config.park_max_age_hours)
         self.park_status = parked
         if parked.usable:
-            # The park file records HOW MANY inputs failed, never which ones, so the hint is derived
-            # from the platforms this deployment actually configures.
             self.flag_degraded_park(
                 parked,
                 what=_INPUT_LABEL,
-                hint=_failure_hint(a.platform for a in self.config.accounts),
+                hint=_FAILURE_HINT,
             )
             # Through the SAME window the live branch applies below: the park file can be stale (its
             # items older than lookback) and a --date backfill must not ingest today's parked posts.
@@ -84,21 +75,17 @@ class RSSHubCollector(BaseCollector):
         # Bounded fan-out against one local RSSHub instance. Created on the running loop, never at
         # import/__init__.
         semaphore = asyncio.Semaphore(self.config.max_concurrency)
-        coros = [
-            self._collect_account(account.username, account.platform, semaphore) for account in self.config.accounts
-        ]
-        labels = [f"{a.platform}/{a.username}" for a in self.config.accounts]
+        coros = [self._collect_account(account.username, semaphore) for account in self.config.accounts]
+        labels = [f"x/{a.username}" for a in self.config.accounts]
         results = await asyncio.gather(*coros, return_exceptions=True)
 
         items: list[CollectedItem] = []
         failed_accounts: list[str] = []
-        failed_platforms: list[str] = []
         empty_accounts: list[str] = []
-        for account, label, result in zip(self.config.accounts, labels, results, strict=True):
+        for label, result in zip(labels, results, strict=True):
             if isinstance(result, BaseException):
                 logger.warning("RSSHub task '%s' failed: %s", label, result)
                 failed_accounts.append(label)
-                failed_platforms.append(account.platform)
             elif result:
                 items.extend(result)
             else:
@@ -114,7 +101,7 @@ class RSSHubCollector(BaseCollector):
             failed=len(failed_accounts),
             empty=len(empty_accounts),
             what=_INPUT_LABEL,
-            hint=_failure_hint(failed_platforms if failed_accounts else [a.platform for a in self.config.accounts]),
+            hint=_FAILURE_HINT,
         )
         logger.info(
             "RSSHub collector gathered %d items from %d/%d accounts (%d failed, %d empty)",
@@ -166,8 +153,8 @@ class RSSHubCollector(BaseCollector):
         except Exception as e:
             raise RuntimeError(f"RSSHub unreachable at {base}: {e}") from e
 
-    async def _collect_account(self, username: str, platform: str, semaphore: asyncio.Semaphore) -> list[CollectedItem]:
-        feed_path = self._build_feed_path(username, platform)
+    async def _collect_account(self, username: str, semaphore: asyncio.Semaphore) -> list[CollectedItem]:
+        feed_path = f"twitter/user/{username}"
         feed_url = f"{self.config.base_url.rstrip('/')}/{feed_path}"
         async with semaphore:
             logger.info("Collecting RSSHub feed: '%s'", feed_url)
@@ -184,29 +171,10 @@ class RSSHubCollector(BaseCollector):
             )
             return parse_feed_entries(
                 feed,
-                source_type=self._detect_source_type(platform),
+                source_type=SourceType.X,
                 lookback_hours=self.config.lookback_hours,
                 reference_time=self.config.reference_time,
                 description=f"RSSHub feed '{feed_url}'",
-                metadata={"rsshub_feed": feed_url, "platform": platform},
+                metadata={"rsshub_feed": feed_url, "platform": "x"},
                 author=username,
             )
-
-    @staticmethod
-    def _build_feed_path(username: str, platform: str) -> str:
-        """Build the RSSHub route path for an account.
-
-        Twitter/X accounts map to `twitter/user/{username}`; any other platform maps
-        to `{platform}/user/{username}`.
-        """
-        platform_lower = platform.lower()
-        if platform_lower in TWITTER_PLATFORMS:
-            return f"twitter/user/{username}"
-        return f"{platform_lower}/user/{username}"
-
-    @staticmethod
-    def _detect_source_type(platform: str) -> SourceType:
-        platform_lower = platform.lower()
-        if platform_lower in TWITTER_PLATFORMS:
-            return SourceType.X
-        return SourceType.WEB

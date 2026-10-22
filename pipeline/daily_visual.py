@@ -218,20 +218,22 @@ class DailyVisualMaker:
         from, shared with scripts/sample_visual_brief.py so the sampler grades what production sends.
         `recent_comics` defaults to the log's; the sampler passes its own to replay a past day. The
         instruction is "" when the editor skips."""
-        headline_title, source = self._headline(content, ranked_items)
+        source = self._headline(content, ranked_items)
         if recent_comics is None:
             recent_comics = self._recent_comics(post_date)
         plan = await self._write_synopsis(source, recent_comics)
         # coerce_bool, not truthiness: an editor that writes the STRING "false" here silently
         # killed the day's visual, with no error anywhere.
-        if coerce_bool(plan.get("skip")):
+        if coerce_bool(plan.get("skip")) or not str(plan.get("instruction") or "").strip():
+            # A plan with no synopsis is skipped like an unparseable one: rendering a generic
+            # "comic about <title>" paid for an image nobody wrote.
             return plan, "", source
-        return plan, self._build_instruction(plan, headline_title), source
+        return plan, self._build_instruction(plan), source
 
-    def _build_instruction(self, plan: dict, headline_title: str) -> str:
+    def _build_instruction(self, plan: dict) -> str:
         """The editor's synopsis plus what the art director must keep: the guardrails and, when the
         narrator appears, his sheet."""
-        instruction = plan.get("instruction", "") or f"A 2x2 four-panel comic about: {headline_title}"
+        instruction = plan["instruction"]
         if self.config.pipeline.visual_guardrails:
             instruction += f"\n\nGUARDRAILS: {self.config.pipeline.visual_guardrails}"
         # The sheet is written into the brief; his exact look rides along as the reference image.
@@ -271,14 +273,11 @@ class DailyVisualMaker:
 
     @staticmethod
     def _curated_headline(content: DigestContent | None) -> DigestItem | None:
-        """The curated story the lead is about (content.items[headline_index]), or None."""
-        if not content or not content.items:
-            return None
-        idx = content.headline_index if 1 <= content.headline_index <= len(content.items) else 1
-        return content.items[idx - 1]
+        """The curated story the lead is about (content.items[0]), or None."""
+        return content.items[0] if content and content.items else None
 
-    def _headline(self, content: DigestContent | None, ranked_items: list[RankedItem]) -> tuple[str, str]:
-        """(title, source text) of the story the visual must depict: the curated headline, read from
+    def _headline(self, content: DigestContent | None, ranked_items: list[RankedItem]) -> str:
+        """The source text (title, then body) of the story the visual must depict: the curated headline, read from
         its ranked item (the full article) when one matches.
 
         Matched on the aggregator's normalize_url: the editor echoes the URL back, and a trailing
@@ -288,13 +287,13 @@ class DailyVisualMaker:
         if curated is None:
             # No structured content at all (visual-only run): the top-ranked story is the headline.
             item = ranked_items[0].item
-            return item.title, f"{item.title}\n\n{item.text}"
+            return f"{item.title}\n\n{item.text}"
         url = normalize_url(curated.url)
         for r in ranked_items:
             if normalize_url(r.item.url) == url:
-                return r.item.title, f"{r.item.title}\n\n{r.item.text}"
+                return f"{r.item.title}\n\n{r.item.text}"
         body = "\n\n".join(p for p in (curated.body.strip(), curated.implication.strip()) if p)
-        return curated.title, f"{curated.title}\n\n{body}"
+        return f"{curated.title}\n\n{body}"
 
     async def _write_synopsis(self, headline_source: str, recent_comics: list[dict]) -> dict:
         """The editor's plan for the comic about the headline (it does not choose the story). It does not

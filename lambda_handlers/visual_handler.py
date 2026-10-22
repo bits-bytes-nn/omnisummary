@@ -105,11 +105,7 @@ def _maybe_alert_threads_outcome(outcome: ThreadsDelivery | None, digest_date: d
             {
                 "Digest date": digest_date.isoformat(),
                 "Delivered": outcome.summary(),
-                "Detail": (
-                    "reply chain incomplete — some stories are missing from the thread"
-                    if outcome.published
-                    else "the digest was NOT published to Threads"
-                ),
+                "Detail": _shortfall_detail(outcome),
             },
         )
         return
@@ -126,6 +122,20 @@ def _maybe_alert_threads_outcome(outcome: ThreadsDelivery | None, digest_date: d
                 "Detail": "published TEXT-ONLY — the day's visual never reached the root post",
             },
         )
+
+
+def _shortfall_detail(outcome: ThreadsDelivery) -> str:
+    """What the operator should know about a post set that did not fully land."""
+    if outcome.published:
+        return "reply chain incomplete — some stories are missing from the thread"
+    if outcome.posted:
+        return "the root is live but every story reply failed — do NOT --force-republish (a second root)"
+    if outcome.uncertain:
+        return (
+            "the root MAY be live (its publish step failed); a replay skips this date — if nothing is live, "
+            "re-post with main.py --date <date> --force-republish"
+        )
+    return "the digest was NOT published to Threads"
 
 
 async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = None) -> None:
@@ -157,3 +167,8 @@ async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = 
     logger.info("Daily visual %s for %s", "posted" if posted else "skipped", digest_date)
     outcome = maker.threads_outcome
     _maybe_alert_threads_outcome(outcome, digest_date)
+    if outcome is not None and outcome.posted == 0:
+        # Nothing is known to have gone up: raise so the Errors alarm fires and the invoke lands in the
+        # DLQ, instead of the Lambda reporting success. A replay is safe either way: the marker was
+        # released only when nothing can be live, and is kept (the replay skips) when the root may be.
+        raise RuntimeError(f"Threads delivery for {digest_date} posted nothing ({outcome.summary()})")
