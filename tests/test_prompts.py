@@ -36,7 +36,6 @@ _INPUTS = {
     VisualEditorPrompt: {
         "audience": "a",
         "headline": "h",
-        "angle": "g",
         "recent_comics": "c",
         "on_image_language": "ko",
     },

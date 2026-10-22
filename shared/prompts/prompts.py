@@ -218,22 +218,20 @@ class VisualEditorPrompt(BasePrompt):
     """Write the daily comic for the HEADLINE story. The headline is chosen upstream (the digest's
     lead is about it), so the editor doesn't pick the story; it writes the comic for it."""
 
-    input_variables = ["headline", "angle", "recent_comics", "audience", "on_image_language"]
+    input_variables = ["headline", "recent_comics", "audience", "on_image_language"]
 
     system_prompt_template = """\
-You are the cartoonist for {audience}. Today's comic is about the HEADLINE story, given below in full \
-along with the digest's angle on it: match the angle's tone, not its thesis, which the post already \
-states. It is told through the digest's narrator, a recurring character who is the strip's viewpoint: \
-in the panels he is in, he takes part next to the real people and companies of the story. Aim for a \
-strip a reader who has NOT read the story understands at a glance, then finds funny: panel 1 says \
-plainly what happened (who did what); panels 2-3 show the story's real facts as literal scenes with \
-the real people and products, not an allegory; panel 4 SHOWS the payoff, a sight gag that grows out \
-of those facts, and its line reacts to it rather than stating a moral. Every line and every sign or \
-label is plain {on_image_language} a non-specialist gets (names of people, companies and products \
-stay as written; a number only when the joke rests on it; no benchmark names, metrics or jargon); the \
-humor comes from the narrator's take on the real facts. Readers saw the recent comics on the last few \
-days: give today's a different setting, different props, a different way to draw what has no body (a \
-model, an agent) and a different kind of gag. The synopsis describes only today's comic, never what it \
+You are the cartoonist for {audience}. Today's comic is about the HEADLINE story given below in full. \
+It is told through the digest's narrator, a recurring character who is the strip's viewpoint: in the \
+panels he is in, he takes part next to the real people and companies of the story. A reader who has \
+NOT read the story must get the strip at a glance, then find it funny, so it carries ONE fact and ONE \
+joke about it: the single most surprising thing the story says, with everything else left out (other \
+companies and stories, numbers, how it works). Panel 1 says plainly what happened (who did what); \
+panels 2-3 build up that one fact; panel 4 SHOWS the payoff, a sight gag, and its line reacts to it \
+rather than stating a moral. All four panels share one setting. Every line and every sign or label is \
+plain {on_image_language} a non-specialist gets (names of people, companies and products stay as \
+written; no benchmark names, metrics or jargon). Readers saw the recent comics on the last few days: \
+don't reuse their setting or their gag. The synopsis describes only today's comic, never what it \
 avoids.
 
 Produce ONLY a JSON object:
@@ -241,7 +239,7 @@ Produce ONLY a JSON object:
 {{
   "skip": false,
   "use_character": true,
-  "instruction": "the comic as a synopsis in this shape. LOGLINE: what happened and the one funny turn it leads to, in one sentence; nothing else from the story or the angle goes in. COMPOSITION: the layout. Then one entry per panel, PANEL n (setup / development / turn / punchline): where it is, who is in it (real people named, with the features that make them recognizable; the narrator is just 'the narrator', his look is fixed elsewhere), what they do, and its ONE short line of dialogue or narration in {on_image_language}. Each panel follows from the one before and sets up the next; together they set up panel 4's payoff."
+  "instruction": "the comic as a synopsis in this shape. LOGLINE: what happened and the one funny turn it leads to, in one sentence. COMPOSITION: the layout. Then one entry per panel, PANEL n (setup / development / turn / punchline): where it is, who is in it (real people named, with the features that make them recognizable; the narrator is just 'the narrator', his look is fixed elsewhere), what they do, and its ONE short line of dialogue or narration in {on_image_language}. Each panel follows from the one before and sets up the next; together they set up panel 4's payoff."
 }}
 ```
 
@@ -254,10 +252,7 @@ is fine) and one clear action, on a plausible set.
 - Return {{"skip": true}} only if the headline cannot be illustrated at all.
 - Output ONLY the JSON object."""
 
-    human_prompt_template = (
-        "<headline>\n{headline}\n</headline>\n\n<angle>\n{angle}\n</angle>\n\n"
-        "<recent_comics>\n{recent_comics}\n</recent_comics>"
-    )
+    human_prompt_template = "<headline>\n{headline}\n</headline>\n\n<recent_comics>\n{recent_comics}\n</recent_comics>"
 
 
 class VisualSynopsisPrompt(BasePrompt):

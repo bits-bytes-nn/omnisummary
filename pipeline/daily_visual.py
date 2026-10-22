@@ -21,10 +21,8 @@ from shared import (
     SecretUnavailableError,
     VisualBrief,
     VisualEditorPrompt,
-    agi_countdown_intro,
     coerce_bool,
     create_state_store,
-    editorial_lead,
     logger,
     parse_json_from_llm_output,
     resolve_secret,
@@ -223,7 +221,7 @@ class DailyVisualMaker:
         headline_title, source = self._headline(content, ranked_items)
         if recent_comics is None:
             recent_comics = self._recent_comics(post_date)
-        plan = await self._write_synopsis(source, self._editorial_take(content, post_date), recent_comics)
+        plan = await self._write_synopsis(source, recent_comics)
         # coerce_bool, not truthiness: an editor that writes the STRING "false" here silently
         # killed the day's visual, with no error anywhere.
         if coerce_bool(plan.get("skip")):
@@ -232,8 +230,7 @@ class DailyVisualMaker:
 
     def _build_instruction(self, plan: dict, headline_title: str) -> str:
         """The editor's synopsis plus what the art director must keep: the guardrails and, when the
-        narrator appears, his sheet. The digest's angle is not repeated here: the editor already set
-        the comic's tone from it, and the art director only turns the synopsis into an image."""
+        narrator appears, his sheet."""
         instruction = plan.get("instruction", "") or f"A 2x2 four-panel comic about: {headline_title}"
         if self.config.pipeline.visual_guardrails:
             instruction += f"\n\nGUARDRAILS: {self.config.pipeline.visual_guardrails}"
@@ -299,34 +296,16 @@ class DailyVisualMaker:
         body = "\n\n".join(p for p in (curated.body.strip(), curated.implication.strip()) if p)
         return curated.title, f"{curated.title}\n\n{body}"
 
-    def _countdown_intro(self, post_date: date) -> str:
-        """The AGI-countdown gag for this date, exactly as the digest generator computed it, so the
-        editorial take can be read without it."""
-        return agi_countdown_intro(
-            self.config.pipeline.agi_countdown_date,
-            self.config.pipeline.agi_countdown_template,
-            post_date,
-            self.config.pipeline.agi_countdown_after,
-        )
-
-    def _editorial_take(self, content: DigestContent | None, post_date: date) -> str:
-        """The digest's lead without the AGI-countdown prefix (the same template every day): the tone
-        the comic matches. The headline's implication is left out because it is a recommendation, and
-        on the 2026-10-15 story it came back as panel 4's moral in 4 of 8 synopses (1 of 8 without it).
-        Empty when there is no structured content."""
-        if not content or not content.items:
-            return ""
-        return editorial_lead(content.lead, self._countdown_intro(post_date)).strip()
-
-    async def _write_synopsis(self, headline_source: str, editorial_take: str, recent_comics: list[dict]) -> dict:
-        """The editor's plan for the comic about the headline (it does not choose the story)."""
+    async def _write_synopsis(self, headline_source: str, recent_comics: list[dict]) -> dict:
+        """The editor's plan for the comic about the headline (it does not choose the story). It does not
+        see the digest's lead: given the lead, it drew the lead's argument one sentence per panel (four
+        comics, 2026-10-18 to 10-21), each panel adding a fact, a company and a new set."""
         chain = VisualEditorPrompt.get_prompt() | self.llm | StrOutputParser()
         raw = await chain.ainvoke(
             {
                 "headline": self.llm_factory.truncate_to_tokens(
                     headline_source.strip(), self.config.pipeline.visual_editor_source_max_tokens
                 ),
-                "angle": editorial_take or "(none)",
                 "recent_comics": _format_recent_comics(recent_comics),
                 "audience": self.config.pipeline.visual_audience_description,
                 "on_image_language": self.config.pipeline.visual_on_image_language,
