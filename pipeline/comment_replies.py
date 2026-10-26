@@ -180,7 +180,12 @@ class CommentResponder:
                         continue
                     if not dry_run:
                         reply_id = await publish_reply(client, user_id, token, text, comment_id)
-                        self.ledger.record(comment_id, "replied", now)
+                        try:
+                            self.ledger.record(comment_id, "replied", now)
+                        except Exception:
+                            # The reply is live: counting it as failed would raise the alarm for a
+                            # comment that was answered.
+                            logger.error("Replied to comment %s but could not record it", comment_id, exc_info=True)
                         logger.info(
                             "Replied %s to comment %s by @%s", reply_id, comment_id, item.comment.get("username")
                         )

@@ -518,6 +518,11 @@ class TestThreadsResearchNumbering:
         assert root.startswith("1/3  소제목 1")
         assert replies[-1].startswith("3/3  소제목 3")
 
+    def test_a_title_that_looks_like_a_fraction_is_not_an_index(self):
+        report = "24/7 에이전트 시대\n\n본문이다.\n---\n결론\n\n마무리다."
+        root, *_ = render_threads_research(report, max_posts=10)
+        assert root.startswith("1/2  24/7 에이전트 시대")
+
     def test_an_unnumbered_report_still_gets_indices(self):
         # The prompt no longer asks the model to number Threads posts at all.
         report = "도입 소제목\n\n본문이다.\n---\n결론 소제목\n\n마무리다."

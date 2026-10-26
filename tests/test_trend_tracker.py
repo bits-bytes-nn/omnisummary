@@ -135,12 +135,21 @@ class TestUpdateTrends:
         assert same_date[0].summary == "completely different wording"
 
     @pytest.mark.asyncio
-    async def test_malformed_llm_output_no_crash(self, monkeypatch):
+    async def test_json_without_an_observations_list_raises_too(self, monkeypatch):
+        store = _FakeStore()
+        tracker = _patched_tracker(store, '{"trends": []}', monkeypatch)
+        with pytest.raises(ValueError):
+            await tracker.update_trends("d", "2026-06-05")
+        assert TRENDS_KEY not in store.data
+
+    @pytest.mark.asyncio
+    async def test_malformed_llm_output_raises_and_writes_nothing(self, monkeypatch):
+        # Persisting [] here deleted the day's trends on a same-day re-run.
         store = _FakeStore()
         tracker = _patched_tracker(store, "not json at all", monkeypatch)
-        await tracker.update_trends("d", "2026-06-05")
-        memory = TrendMemory.model_validate_json(store.data[TRENDS_KEY])
-        assert memory.trends == []
+        with pytest.raises(ValueError):
+            await tracker.update_trends("d", "2026-06-05")
+        assert TRENDS_KEY not in store.data
 
 
 class TestLifecycle:

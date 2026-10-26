@@ -5,7 +5,7 @@ import unicodedata
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from typing import NamedTuple
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from .constants import THREADS_POST_SEPARATOR, SourceType
 from .logger import logger
@@ -104,11 +104,14 @@ def place_countdown_intro(lead: str, intro: str) -> str:
 
 def editorial_lead(lead: str, intro: str) -> str:
     """The lead without the AGI-countdown gag that opens it, leaving only the editorial angle.
-    Callers that reason about the ANGLE (recent-leads novelty, the visual's take) want this rather
+    Callers that reason about the ANGLE (recent-leads novelty) want this rather
     than the raw lead, which opens with the same fixed daily template every single day."""
     if intro and lead.startswith(intro):
         return lead[len(intro) :].lstrip()
     return lead
+
+
+RETWEET_PREFIX = re.compile(r"^\s*RT\s+[^:]{1,60}:\s*")
 
 
 def normalize_title(title: str) -> str:
@@ -117,7 +120,7 @@ def normalize_title(title: str) -> str:
     punctuation, collapse whitespace."""
     title = unicodedata.normalize("NFKC", title)
     title = re.sub(r"<[^>]+>", "", title)
-    title = re.sub(r"^\s*RT\s+[^:]{1,60}:\s*", "", title)
+    title = RETWEET_PREFIX.sub("", title)
     title = re.sub(r"[^\w\s]", "", title.lower())
     return re.sub(r"\s+", " ", title).strip()
 
@@ -281,12 +284,13 @@ def source_tag_and_metrics(item: CollectedItem) -> tuple[str, str]:
 # Sentence-ending boundaries: Korean '다.' plus the usual terminators. Splitting AFTER a boundary
 # (never on a fixed stride) is what lets a post be trimmed at a clean sentence.
 _SENTENCE_END = ("다.", "다!", "다?", ". ", "。", "! ", "? ", "…")
-# A bare http(s) URL run. Public so the renderers can protect/extract citation URLs with the same
-# pattern strip_markup uses, instead of re-declaring it.
-URL_RE = re.compile(r"https?://\S+")
+# A bare URL run: http(s) in any case, or a www. host. Public so the renderers can protect/extract
+# citation URLs with the same pattern strip_markup uses. "HTTPS://" and "www." links passed the
+# research citation check unseen, and a reader's client links both.
+URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
 # Punctuation a URL can pick up from the prose around it (a closing paren, a sentence period, the
 # '>' of an autolink). Trimmed from the right by both the URL extractor and the citation normalizer.
-_URL_TRAILING_PUNCT = "').,;:\"]>"
+_URL_TRAILING_PUNCT = "').,;:\"]>*`\u3002\u3001\u201d\u2019\u300d\u300f\uff09\u300b\u3009\uff0c\u2026\u200b"
 
 
 def _trim_url(url: str) -> str:
@@ -320,10 +324,19 @@ def normalize_citation_url(url: str) -> str:
     quoted inside parentheses. The query string is kept — it is what distinguishes one video or
     search result from another."""
     trimmed = _trim_url(url)
-    parsed = urlparse(trimmed if "//" in trimmed else f"//{trimmed}")
-    host = parsed.netloc.removeprefix("www.").lower()
-    path = parsed.path.rstrip("/")
-    query = f"?{parsed.query}" if parsed.query else ""
+    try:
+        parsed = urlparse(trimmed if "//" in trimmed else f"//{trimmed}")
+    except ValueError:
+        # An unbalanced "[" reads as a broken IPv6 host: no real citation, so it matches nothing.
+        return f"!{trimmed}"
+    if "@" in parsed.netloc or "%" in parsed.netloc:
+        # A host hidden behind userinfo or an escape ("openai.com%23@evil.example") is another site
+        # than the one it spells: such a URL matches nothing, so it can never pass as a seen one.
+        return f"!{trimmed}"
+    host = parsed.netloc.lower().removeprefix("www.")
+    # Only the path and query are unescaped, so a decoded and an encoded Korean path compare equal.
+    path = unquote(parsed.path).rstrip("/")
+    query = f"?{unquote(parsed.query)}" if parsed.query else ""
     return f"{host}{path}{query}"
 
 
@@ -372,9 +385,9 @@ def strip_markup(text: str) -> str:
     structure is preserved."""
     # The URL may carry balanced parentheses (Wikipedia 'Foo_(bar)', DOIs); stopping at the first ')'
     # would truncate the citation and leave a stray ')' in the prose.
-    url = r"https?://(?:[^()\s]|\([^()\s]*\))+"
+    url = r"(?i:https?://)(?:[^()\s]|\([^()\s]*\))+"
     text = re.sub(rf"!?\[([^\]]*)\]\(({url})\)", lambda m: f"{m.group(1)} ({m.group(2)})".lstrip(), text)
-    text = re.sub(r"<(https?://[^>\s]+)>", r"\1", text)
+    text = re.sub(r"<((?i:https?://)[^>\s]+)>", r"\1", text)
 
     # Stash URLs so the [*_`] strip below can't corrupt them, then restore verbatim.
     urls: list[str] = []

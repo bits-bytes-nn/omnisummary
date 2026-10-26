@@ -26,14 +26,13 @@ load_dotenv()
 logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
 from agent.research_agent import create_research_agent, research_run_limits  # noqa: E402
-from agent.research_tools import DeliveryContext, request_context  # noqa: E402
+from agent.research_tools import DeliveryContext, _citation_key, request_context  # noqa: E402
 from output.delivery import MARKDOWN, THREADS  # noqa: E402
 from shared import (  # noqa: E402
     Config,
     SecretUnavailableError,
     extract_urls,
     logger,
-    normalize_citation_url,
     resolve_secret,
 )
 
@@ -42,8 +41,20 @@ DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "reports"
 EXIT_OK, EXIT_FAILED, EXIT_REJECTED = 0, 1, 2
 
 
+class _ArgumentError(ValueError):
+    pass
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message: str):  # type: ignore[override]
+        # argparse would print usage to stderr and exit 2 with nothing on stdout, breaking the
+        # one-JSON-object contract; the caller gets a "rejected" result instead.
+        raise _ArgumentError(message)
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="OmniSummary deep research (prints one JSON object)")
+    # No -h: argparse prints help to stdout and exits, which is not the one JSON object callers parse.
+    parser = _Parser(description="OmniSummary deep research (prints one JSON object)", add_help=False)
     parser.add_argument("topic", help="The AI/ML topic or question to research")
     parser.add_argument(
         "--publish",
@@ -105,8 +116,12 @@ def _threads_result(delivery: DeliveryContext) -> dict[str, Any] | None:
 
 
 def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
-    args = _parse_args(argv)
-    topic = args.topic.strip()
+    try:
+        args = _parse_args(argv)
+        parse_error = ""
+    except _ArgumentError as e:
+        args, parse_error = None, str(e)
+    topic = args.topic.strip() if args else ""
     result: dict[str, Any] = {
         "status": "failed",
         "topic": topic,
@@ -122,6 +137,9 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
         "warnings": [],
         "error": None,
     }
+    if args is None:
+        result.update(status="rejected", error=f"Invalid arguments: {parse_error}")
+        return result, EXIT_REJECTED
     if not topic:
         result.update(status="rejected", error="The topic is empty.")
         return result, EXIT_REJECTED
@@ -176,7 +194,7 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
                 warnings.append(
                     "The agent did not submit the report through deliver_report; its citations are unchecked."
                 )
-                unverified = [u for u in extract_urls(markdown) if normalize_citation_url(u) not in delivery.seen_urls]
+                unverified = [u for u in extract_urls(markdown) if _citation_key(u, delivery.seen_urls) is None]
                 if unverified:
                     warnings.append(f"URLs no tool returned: {', '.join(dict.fromkeys(unverified))}")
 
@@ -193,15 +211,24 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
     result.update(
         title=_title(markdown),
         markdown=markdown,
-        markdown_path=str(_save(markdown, topic, args.output_dir, config.aws.timezone)),
         sources=list(dict.fromkeys(extract_urls(markdown))),
     )
+    try:
+        result["markdown_path"] = str(_save(markdown, topic, args.output_dir, config.aws.timezone))
+    except OSError as e:
+        # The thread may already be live: the caller must still get the JSON that says so.
+        warnings.append(f"Could not save the report file: {type(e).__name__}")
+        result["markdown_path"] = None
     if run_error:
         result["error"] = run_error
         return result, EXIT_FAILED
     threads = result["threads"]
     if threads is not None and not threads["published"]:
         result["error"] = "Threads publishing was requested but did not complete."
+        if not delivery.threads_attempted and delivery.last_refusal:
+            warnings.append(
+                f"Nothing was posted: the thread was sent back ({delivery.last_refusal}) and never resubmitted."
+            )
         return result, EXIT_FAILED
     if threads is not None and threads["posts_delivered"] < threads["posts_rendered"]:
         warnings.append("Some Threads posts did not land.")

@@ -123,17 +123,20 @@ because the lead is a comment on stories you have already written:
     {{
       "title": "the Korean display title for this story",
       "url": "the item's URL exactly as provided",
-      "body": "As few tight Korean sentences as the story needs (often two): what this is, why it matters, the key detail. Keep it compact and self-contained so the whole item reads as ONE short social post.{prose_budget_rule} Every sentence must end completely (no trailing fragments).",
-      "implication": "ONE Korean sentence that takes a stance on THIS story a reader could disagree with, not a general truth about the industry. State the stance flatly, as the whole sentence; caveats, 'unverified' and 'self-reported' included, belong in the body. Provocation is in the angle, never in invented facts."
+      "body": "Korean sentences that explain this story the way you would to a smart friend outside the field, using the room its PROSE BUDGET leaves: the context they need (who this is, what problem it is about), what happened, and why it matters. Self-contained, so the whole item reads as ONE social post.{prose_budget_rule} Every sentence must end completely (no trailing fragments).",
+      "implication": "ONE short Korean sentence that takes a stance on THIS story a reader could disagree with and adds what the source itself does not say, not a general truth about the industry. State the stance flatly, as the whole sentence; caveats, 'unverified' and 'self-reported' included, belong in the body. Provocation is in the angle, never in invented facts."
     }}
   ],
-  "lead": "3-4 concrete sentences, a standalone opening under {lead_budget} characters about items[0], the headline the image depicts: name that story in ONE assertive sentence a stranger could follow (the actual company / model / event — no label, no emoji), then land ONE thesis that items[0]'s implication does not already make: the wider arc it belongs to, when the trend ammunition below supports one. The reader sees items[0] directly beneath, so ADD to it rather than re-telling it — no replay of its sequence and no repeat of its numbers."
+  "lead": "3-4 plain, concrete sentences, a standalone opening under {lead_budget} characters about items[0], the headline the image depicts: name that story in ONE assertive sentence a stranger could follow (the actual company / model / event — no label, no emoji), then land ONE thesis that items[0]'s implication does not already make: the wider arc it belongs to, when the trend ammunition below supports one. The reader sees items[0] directly beneath, so ADD to it rather than re-telling it — no replay of its sequence and no repeat of its numbers."
 }}
 ```
 
 Rules:
 - `items[0]` is today's HEADLINE, the story the lead and the image are about: the most important \
 story, with visual expressibility only breaking a tie. Order the rest by importance.
+- Write every item for a reader outside the field: at most two numbers in a body, the ones the story \
+rests on, and no technical term, benchmark name or acronym unless the story needs it, then glossed in a \
+few plain words where it first appears.
 - Pick the {target_count} strongest distinct stories from the candidates. If two are the SAME \
 underlying story (same companies/event), MERGE them into one item (keep the most informative URL). \
 Emit fewer only when no distinct candidate is left — never pad with a near-identical take.
@@ -222,16 +225,20 @@ class VisualEditorPrompt(BasePrompt):
 
     system_prompt_template = """\
 You are the cartoonist for {audience}. Today's comic is about the HEADLINE story given below in full. \
-It is told through the digest's narrator, a recurring character who is the strip's viewpoint: in the \
-panels he is in, he takes part next to the real people and companies of the story. A reader who has \
-NOT read the story must get the strip at a glance, then find it funny, so it carries ONE fact and ONE \
-joke about it: the single most surprising thing the story says, with everything else left out (other \
-companies and stories, numbers, how it works). Panel 1 says plainly what happened (who did what); \
-panels 2-3 build up that one fact; panel 4 SHOWS the payoff, a sight gag, and its line reacts to it \
-rather than stating a moral. All four panels share one setting. Every line and every sign or label is \
+A reader who has NOT read the story should get from the strip, at a glance, what happened, then an \
+insight or a laugh about it. So it carries ONE fact, the single most surprising thing the story says, \
+with everything else left out (other companies and stories, numbers, how it works), said in everyday \
+{on_image_language} that names what the thing really is, never a code word or a stand-in for it. It is \
+told through the digest's narrator, a recurring character who is the strip's viewpoint: in the panels \
+he is in, he takes part next to the real people and companies of the story. Panel 1 says plainly what \
+happened (who did what); panels 2-3 build up that one fact as literal scenes with the real people and \
+products, where the story actually happens, not an allegory; panel 4 SHOWS the story's own twist (its \
+irony, its catch, or what it means for someone) as a sight gag, and its line, said by a character in \
+that panel, reacts to what is drawn there rather than restating the setup or stating a moral. Apart \
+from that one gag, everything behaves as it would in real life. Every line and every sign or label is \
 plain {on_image_language} a non-specialist gets (names of people, companies and products stay as \
 written; no benchmark names, metrics or jargon). Readers saw the recent comics on the last few days: \
-don't reuse their setting or their gag. The synopsis describes only today's comic, never what it \
+don't reuse their gag or their props. The synopsis describes only today's comic, never what it \
 avoids.
 
 Produce ONLY a JSON object:
@@ -338,6 +345,29 @@ Return ONLY this JSON:
 If there are no violations, return an empty violations list and the digest unchanged."""
 
     human_prompt_template = "DRAFT DIGEST:\n{digest_text}\n\nSOURCE ITEMS:\n{sources}"
+
+
+class ThreadFactCheckPrompt(BasePrompt):
+    """A research thread checked against the sources it cites, before it goes public. The research
+    agent shipped a claim the reverse of its source (a model "more expensive" where the source has it
+    cheaper) in each of two measured runs; its prompt rules did not prevent it."""
+
+    input_variables = ["thread", "sources"]
+
+    system_prompt_template = """\
+You are a fact-checker for a Threads thread written from research sources. You receive the posts \
+(POST n:) and the text of the SOURCES they cite. Find each claim that CONTRADICTS a source or states \
+more than the source supports: a comparison made stronger or reversed, a number attached to the wrong \
+thing, a trend or a recommendation the source does not report. The thread's own reading, presented as \
+its reading, is not a violation; neither is a claim no given source covers.
+
+Return ONLY this JSON:
+```json
+{{"issues": [{{"post": 1, "claim": "the exact phrase", "source_says": "what the source actually says"}}]}}
+```
+Return an empty list when every claim holds."""
+
+    human_prompt_template = "THREAD:\n{thread}\n\nSOURCES:\n{sources}"
 
 
 class CommentReplyPrompt(BasePrompt):

@@ -277,7 +277,7 @@ class PipelineConfig(_StrictModel):
     # Audience/domain the ranking and digest prompts target. Configurable so the pipeline can
     # be reused across domains without forking the prompts.
     ranking_audience_description: str = "a daily digest aimed at practicing ML engineers"
-    digest_audience_description: str = "ML engineers"
+    digest_audience_description: str = "Korean readers who follow AI news, engineers and curious non-specialists alike"
     # Editorial voice for the digest lead/implications: a recurring narrator persona (a singularity-
     # believing, science-geek/sci-fi technologist) written in a dry Gruber register — opinionated,
     # evidence-obsessed, watching who captures AI's upside; critiques ideas/decisions, never a
@@ -301,10 +301,6 @@ class PipelineConfig(_StrictModel):
         "curiosity, never scorn, and never punch down at a person. A bot hyped every day, angry "
         "every day, or neutral every day is equally boring; the edge is a clear stance, not a fixed "
         "mood — and not every item is a debunking.\n"
-        "OPTIONAL SEASONING (each at most once per digest, only if it lands naturally — skip when "
-        "forced): a one-line statement of the creed on a genuinely huge day; a wry scientific or "
-        "sci-fi aside on an ordinary detail; a brief first-person flash of candor or conviction. "
-        "These are rare spices, never the main course; most lines carry none.\n"
         "CRAFT — Spice is in the FRAMING, never the facts: sharpen the angle and contrast, but never "
         "state an inference as a reported fact. Critique ideas, decisions, "
         "incentives — never a person. Plain words over "
@@ -407,14 +403,16 @@ class PipelineConfig(_StrictModel):
     visual_editor_source_max_tokens: int = Field(default=2000, ge=1)
     # Audience/domain the visual prompts target. Configurable so the visual pipeline can
     # be reused across domains without forking the prompts.
-    visual_audience_description: str = "a daily AI/ML digest aimed at practicing ML engineers"
+    visual_audience_description: str = "a daily AI news digest read by engineers and curious non-specialists alike"
     # The language of every line rendered INSIDE the image.
     visual_on_image_language: str = "short, natural Korean"
     # Style/humor guidance injected into the visual synopsis prompt. Configurable so the
     # visual pipeline's tone can be retuned (or reused for non-AI domains) without forking.
     visual_synopsis_style_guidance: str = (
         "Multi-panel: the same characters, outfits and art style in every panel; each panel "
-        "follows from the previous so the sequence reads in order without explanation."
+        "follows from the previous so the sequence reads in order without explanation. Every other character looks "
+        "clearly different from the narrator (hair, glasses, clothes), and every speech bubble's tail points at the "
+        "character who says it."
     )
     # Default aesthetic injected into the image-generation prompt. Configurable so the visual
     # pipeline's look can be retuned (or reused for non-AI domains) without editing the prompt.

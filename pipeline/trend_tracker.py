@@ -193,11 +193,13 @@ class TrendTracker:
         try:
             data = parse_json_from_llm_output(raw)
         except (json.JSONDecodeError, ValueError) as e:
-            logger.warning("Failed to parse trend classifier output: %s", e)
-            return []
-        items = data.get("observations", []) if isinstance(data, dict) else data
+            # Raise, not []: an empty list is persisted as "no trends today", and on a same-day re-run
+            # (today's evidence already stripped) it deletes the day's trends. The runner logs it and
+            # skips the write.
+            raise ValueError(f"Unparseable trend classifier output: {e}") from e
+        items = data.get("observations") if isinstance(data, dict) else data
         if not isinstance(items, list):
-            return []
+            raise ValueError("Trend classifier output has no observations list")
         observations: list[dict[str, str]] = []
         for item in items:
             if not isinstance(item, dict):

@@ -308,13 +308,14 @@ class TestDailyVisualMaker:
 
     @pytest.mark.asyncio
     async def test_no_image_rendered_when_the_editor_skips(self):
-        maker = _maker()
+        maker = _rendering_maker()
         maker.generator.generate = AsyncMock()
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"skip": True})):
-                # Threads is off in this default-config maker → nothing published.
-                assert await maker.run(_items()) is False
+            plan = {"skip": True, "instruction": "draw"}  # a skip wins over a written synopsis
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+                await maker.run(_items())
         maker.generator.generate.assert_not_awaited()
+        assert maker.publisher.publish.await_args.kwargs["image_bytes"] is None
 
     @pytest.mark.asyncio
     async def test_visual_draws_the_headline_not_editor_pick(self):
@@ -540,6 +541,24 @@ class TestDailyVisualMaker:
         th.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_date_claimed_by_another_run_after_the_first_check_is_not_posted(self):
+        from datetime import date
+
+        from shared.models import DigestContent, DigestItem
+
+        maker = _maker()
+        maker.config.pipeline.enable_threads_post = True
+        maker.publisher.has_a_destination = MagicMock(return_value=True)
+        maker.threads_ledger.already_posted = MagicMock(side_effect=[False, True])
+        content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"skip": True})):
+            with patch(
+                "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
+            ) as th:
+                await maker.run(_items(), content, today=date(2026, 6, 10))
+        th.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_threads_force_republish_bypasses_guard(self):
         from datetime import date
 
@@ -744,13 +763,15 @@ class TestDailyVisualMaker:
         th.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_generation_failure_returns_false(self):
-        maker = _maker()
+    async def test_a_render_failure_publishes_text_only(self):
+        maker = _rendering_maker()
         plan = {"skip": False, "item_number": 1, "instruction": "draw"}
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
             with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 maker.generator.generate = AsyncMock(side_effect=RuntimeError("boom"))
-                assert await maker.run(_items()) is False
+                await maker.run(_items())
+        maker.generator.generate.assert_awaited_once()
+        assert maker.publisher.publish.await_args.kwargs["image_bytes"] is None
 
     @pytest.mark.asyncio
     async def test_image_failure_still_posts_threads_text(self):
@@ -842,6 +863,7 @@ class TestDailyVisualMaker:
         source = gen.await_args.args[1]
         assert "합쳐진 헤드라인" in source and "합본 본문이다." in source
         assert "Story 1" not in source  # never the unrelated top-ranked story
+        assert "시사점이다." not in source  # nor the implication, which turned panel 4 into a moral
         assert write.await_args.args[0] == source  # the editor wrote the comic about the same story
 
     @pytest.mark.asyncio
@@ -915,12 +937,15 @@ class TestDailyVisualMaker:
         from langchain_core.messages import AIMessage
         from langchain_core.runnables import RunnableLambda
 
-        maker = _maker()
-        maker.llm = RunnableLambda(lambda _: AIMessage(content="not json"))
+        maker = _rendering_maker()
+        calls = []
+        maker.llm = RunnableLambda(lambda _: calls.append(1) or AIMessage(content="not json"))
         maker.generator.generate = AsyncMock()
         with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            assert await maker.run(_items()) is False
-        maker.generator.generate.assert_not_awaited()  # no wasted render, and no retry LLM call
+            await maker.run(_items())
+        maker.generator.generate.assert_not_awaited()  # no wasted render
+        assert len(calls) == 1  # and no retry LLM call
+        assert maker.publisher.publish.await_args.kwargs["image_bytes"] is None
 
 
 class TestCharacterInjection:

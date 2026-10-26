@@ -412,6 +412,19 @@ def available_boto_profile(profile: str) -> str | None:
     return None
 
 
+def _ssm_client():
+    """SSM on the configured profile and region where that profile exists (a developer laptop, whose
+    shell may carry AWS_PROFILE/AWS_REGION for another account or the model region: the lookup then
+    answered ParameterNotFound), else ambient credentials in the runtime's own region."""
+    from .config import get_config
+
+    config = get_config()
+    profile = available_boto_profile(config.aws.profile)
+    if profile:
+        return boto3.Session(profile_name=profile, region_name=config.aws.region or None).client("ssm")
+    return boto3.client("ssm", region_name=aws_region())
+
+
 class SecretUnavailableError(RuntimeError):
     """SSM could not be read (outage, throttle, denied) — as opposed to the secret being unset.
     Only raised for callers that opt into strict=True; every other caller keeps the ""-degrades
@@ -436,7 +449,7 @@ def resolve_secret(env_var: str, ssm_suffix: str, *, strict: bool = False) -> st
     project = os.getenv("PROJECT_NAME", "omnisummary")
     stage = os.getenv("STAGE", "dev")
     try:
-        ssm = boto3.client("ssm", region_name=aws_region())
+        ssm = _ssm_client()
         resolved = ssm.get_parameter(Name=f"/{project}/{stage}/{ssm_suffix}", WithDecryption=True)["Parameter"]["Value"]
     except Exception as e:
         if strict and not _is_parameter_not_found(e):

@@ -270,3 +270,16 @@ class TestFetchGuards:
         # Best-effort contract: even an exploding resolver yields None.
         with patch.object(og_image, "_resolve_addresses", side_effect=RuntimeError("resolver blew up")):
             assert await og_image.fetch_og_image("https://example.com/post") is None
+
+
+class TestPublicAddress:
+    @pytest.mark.parametrize(
+        "addr",
+        ["10.0.0.1", "127.0.0.1", "169.254.169.254", "100.64.1.2", "100.100.100.100", "::ffff:127.0.0.1", "fd00::1"],
+    )
+    def test_non_public_addresses_are_refused(self, addr):
+        # 100.64.0.0/10 (carrier-grade NAT, Tailscale's MagicDNS) slipped past the old flag list.
+        assert og_image._is_public_address(addr) is False
+
+    def test_a_public_address_is_allowed(self):
+        assert og_image._is_public_address("8.8.8.8") is True

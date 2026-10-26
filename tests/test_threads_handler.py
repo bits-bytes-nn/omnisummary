@@ -262,6 +262,25 @@ class TestPostToThreads:
         assert calls["n"] == 2  # failed once, retried once, then succeeded
 
     @pytest.mark.asyncio
+    async def test_a_reply_whose_publish_step_5xx_is_not_posted_again(self, monkeypatch):
+        # Driven through the real container/publish calls: a 5xx from threads_publish may be a live
+        # reply, and a retry would create a second container and post the story twice.
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 0)
+        hits = {"create": 0, "publish": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/threads_publish"):
+                hits["publish"] += 1
+                return httpx.Response(500, json={"error": {"code": 2}})
+            hits["create"] += 1
+            return httpx.Response(200, json={"id": "c1"})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(httpx.HTTPStatusError):
+                await threads_handler._publish_reply_with_retry(client, "u", "tok", "story", "root")
+        assert hits == {"create": 1, "publish": 1}
+
+    @pytest.mark.asyncio
     async def test_reply_does_not_retry_on_auth_error(self, monkeypatch):
         # A non-transient error (401 auth) must raise immediately — retrying wastes the budget and
         # a bad token won't heal. The reply is dropped (best-effort) without burning 3 attempts.
@@ -531,6 +550,27 @@ class TestImageHosting:
         assert [c.kwargs["image_url"] for c in pub.await_args_list[:2]] == ["https://s3/x", ""]
 
     @pytest.mark.asyncio
+    async def test_an_image_root_rejected_at_the_publish_step_posts_as_text(self):
+        # Code 24 at threads_publish names the container as not found: nothing is live, so the text can
+        # still go out. Other publish-step 400s stay "may be live" (test below the next one).
+        rejected = httpx.HTTPStatusError(
+            "bad",
+            request=httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads_publish"),
+            response=httpx.Response(400, json={"error": {"code": 24, "error_subcode": 4279009}}),
+        )
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_upload_image_for_hosting", return_value="https://s3/x"):
+                with patch.object(
+                    threads_handler, "_publish_post", new=AsyncMock(side_effect=[rejected, "rid"])
+                ) as pub:
+                    with patch.object(threads_handler, "_publish_reply_with_retry", new=AsyncMock(return_value="r1")):
+                        outcome = await post_to_threads(
+                            root_text="R", replies=["a"], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
+                        )
+        assert outcome.published is True and outcome.with_image is False
+        assert [c.kwargs["image_url"] for c in pub.await_args_list] == ["https://s3/x", ""]
+
+    @pytest.mark.asyncio
     async def test_a_failed_image_publish_step_is_not_retried_as_text(self):
         # The publish step can fail for a post that went live; a text retry would be a second root.
         failed = httpx.HTTPStatusError(
@@ -547,6 +587,44 @@ class TestImageHosting:
         assert outcome.posted == 0
         assert outcome.uncertain is True  # the root may be live: the caller keeps the date marked
         assert pub.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_publish_step_container_not_found_posted_nothing(self):
+        # Code 24 names the container being published as not found: nothing went live, so the date
+        # must be released for a replay instead of being kept marked as "may be live".
+        not_ready = httpx.HTTPStatusError(
+            "bad",
+            request=httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads_publish"),
+            response=httpx.Response(400, json={"error": {"code": 24, "error_subcode": 4279009}}),
+        )
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_publish_post", new=AsyncMock(side_effect=[not_ready])):
+                outcome = await post_to_threads(root_text="R", replies=["a"])
+        assert outcome.posted == 0 and outcome.uncertain is False
+
+    @pytest.mark.asyncio
+    async def test_a_rate_limited_publish_step_posted_nothing(self):
+        limited = httpx.HTTPStatusError(
+            "bad",
+            request=httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads_publish"),
+            response=httpx.Response(429, json={"error": {"code": 4}}),
+        )
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_publish_post", new=AsyncMock(side_effect=[limited])):
+                outcome = await post_to_threads(root_text="R", replies=["a"])
+        assert outcome.posted == 0 and outcome.uncertain is False
+
+    @pytest.mark.asyncio
+    async def test_another_publish_step_400_may_be_live(self):
+        temporary = httpx.HTTPStatusError(
+            "bad",
+            request=httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads_publish"),
+            response=httpx.Response(400, json={"error": {"code": 2, "is_transient": True}}),
+        )
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_publish_post", new=AsyncMock(side_effect=[temporary])):
+                outcome = await post_to_threads(root_text="R", replies=["a"])
+        assert outcome.posted == 0 and outcome.uncertain is True
 
     @pytest.mark.asyncio
     async def test_a_rejected_container_is_known_to_have_posted_nothing(self):

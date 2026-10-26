@@ -73,6 +73,13 @@ def _run(
 
 
 class TestInputAndPublishing:
+    @pytest.mark.parametrize("argv", [["주제", "--publish", "slack"], ["-h"], []])
+    def test_invalid_arguments_are_a_whole_rejected_json_result(self, argv):
+        # argparse used to print usage (or help, to stdout) and exit with no JSON at all.
+        result, code = research_cli.run(argv)
+        assert code == research_cli.EXIT_REJECTED and result["status"] == "rejected"
+        assert {"warnings", "threads", "markdown_path"} <= result.keys()
+
     def test_an_empty_topic_is_rejected_without_running_the_agent(self, tmp_path):
         result, code, cap = _run(["   ", "--output-dir", str(tmp_path)])
         assert code == research_cli.EXIT_REJECTED
@@ -91,11 +98,6 @@ class TestInputAndPublishing:
         assert cap["delivery"].publish_threads is True
         assert cap["prompt"].startswith("쓰레드 알고리즘 변화")
         assert "[DELIVERY] Threads publishing: ALLOWED." in cap["prompt"]
-
-    def test_an_unknown_publish_target_is_an_argparse_rejection(self):
-        with pytest.raises(SystemExit) as exc:
-            research_cli.run(["주제", "--publish", "slack"])
-        assert exc.value.code == research_cli.EXIT_REJECTED
 
 
 class TestResult:

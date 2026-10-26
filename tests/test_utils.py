@@ -64,7 +64,7 @@ class TestResolveSecret:
         monkeypatch.delenv("MY_SECRET", raising=False)
         monkeypatch.setenv("PROJECT_NAME", "proj")
         monkeypatch.setenv("STAGE", "dev")
-        ssm = patch("shared.utils.boto3.client").start()
+        ssm = patch("shared.utils._ssm_client").start()
         ssm.return_value.get_parameter.return_value = {"Parameter": {"Value": "from-ssm"}}
         try:
             assert resolve_secret("MY_SECRET", "my-secret") == "from-ssm"
@@ -74,7 +74,7 @@ class TestResolveSecret:
 
     def test_returns_empty_on_failure(self, monkeypatch):
         monkeypatch.delenv("MY_SECRET", raising=False)
-        with patch("shared.utils.boto3.client", side_effect=Exception("no ssm")):
+        with patch("shared.utils._ssm_client", side_effect=Exception("no ssm")):
             assert resolve_secret("MY_SECRET", "my-secret") == ""
 
     def test_strict_distinguishes_an_ssm_outage_from_an_unset_secret(self, monkeypatch):
@@ -86,15 +86,43 @@ class TestResolveSecret:
         from shared.utils import SecretUnavailableError
 
         monkeypatch.delenv("MY_SECRET", raising=False)
-        with patch("shared.utils.boto3.client", side_effect=Exception("no ssm")):
+        with patch("shared.utils._ssm_client", side_effect=Exception("no ssm")):
             with pytest.raises(SecretUnavailableError):
                 resolve_secret("MY_SECRET", "my-secret", strict=True)
 
         # A parameter that genuinely does not exist is still just "unset", even in strict mode.
         client = MagicMock()
         client.get_parameter.side_effect = ClientError({"Error": {"Code": "ParameterNotFound"}}, "GetParameter")
-        with patch("shared.utils.boto3.client", return_value=client):
+        with patch("shared.utils._ssm_client", return_value=client):
             assert resolve_secret("MY_SECRET", "my-secret", strict=True) == ""
+
+
+# Captured at import, before the conftest stubs it, so these tests exercise the real factory.
+from shared.utils import _ssm_client as _REAL_SSM_CLIENT  # noqa: E402
+
+
+class TestSsmClient:
+    def test_a_resolvable_profile_reads_ssm_on_it_in_the_configured_region(self, monkeypatch):
+        # A laptop shell may carry AWS_PROFILE/AWS_REGION for another account or the model region.
+        from shared import utils
+
+        config = MagicMock()
+        config.aws.profile, config.aws.region = "research", "ap-northeast-2"
+        with patch("shared.config.get_config", return_value=config):
+            with patch.object(utils, "available_boto_profile", return_value="research"):
+                with patch.object(utils.boto3, "Session") as session:
+                    _REAL_SSM_CLIENT()
+        assert session.call_args.kwargs == {"profile_name": "research", "region_name": "ap-northeast-2"}
+        session.return_value.client.assert_called_once_with("ssm")
+
+    def test_without_a_profile_it_is_the_runtimes_own_client_as_before(self, monkeypatch):
+        from shared import utils
+
+        monkeypatch.setenv("AWS_REGION", "ap-northeast-2")
+        with patch.object(utils, "available_boto_profile", return_value=None):
+            with patch.object(utils.boto3, "client") as client:
+                _REAL_SSM_CLIENT()
+        client.assert_called_once_with("ssm", region_name="ap-northeast-2")
 
 
 class TestGenerateItemId:

@@ -68,3 +68,8 @@ def hermetic_env(monkeypatch):
         raise RuntimeError("AWS access is disabled in tests; patch boto3.client to opt in")
 
     monkeypatch.setattr("shared.utils.boto3.client", _aws_disabled)
+    # The SSM client is built on the configured profile where it exists (a developer laptop), which
+    # boto3.client does not cover: stub its factory too, so no test reads a real secret.
+    monkeypatch.setattr("shared.utils._ssm_client", _aws_disabled)
+    # The research thread fact check builds a Bedrock model: a test reaching it must not call out.
+    monkeypatch.setattr("agent.research_tools._fact_check_factory", _aws_disabled)

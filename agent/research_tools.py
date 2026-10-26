@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Literal
 
 from strands import tool
@@ -8,7 +9,9 @@ from strands import tool
 # DeliveryContext + request scoping live in the delivery layer (output/), which owns the
 # delivery contract; re-exported here for the agent entrypoints and tools that bind them.
 from output.delivery import DeliveryContext, current_delivery_context, request_context
+from output.renderers import research_post_budget
 from shared import extract_urls, get_config, logger, normalize_citation_url
+from shared.formatting import _trim_url
 from shared.media import fetch_og_image
 from shared.research import extract_url, paper_search, tavily_search
 
@@ -27,6 +30,12 @@ __all__ = [
 ]
 
 
+# A Korean particle glued to a URL: a Hangul run at its end, not one right after a dot (a host part).
+_TRAILING_PARTICLE = re.compile(r"(?<![.\u3002\uff0e\uff61])[\uac00-\ud7a3]+$")
+# The line every search and paper result carries for its own URL (shared/research/research_backends.py).
+_RESULT_URL = re.compile(r"^\s*URL: (\S+)", re.MULTILINE)
+
+
 def _record_seen_urls(text: str, *extra: str) -> str:
     """Remember every URL a tool actually surfaced, then return the text unchanged.
 
@@ -35,7 +44,14 @@ def _record_seen_urls(text: str, *extra: str) -> str:
     research backends: the backends are shared with the digest pipeline, which has no delivery
     context, and the tool result is exactly what the model got to read."""
     delivery = current_delivery_context()
-    delivery.seen_urls.update(normalize_citation_url(url) for url in extract_urls(text))
+    # Each result's own "URL:" line only. A link inside a snippet or an abstract is text anyone can
+    # write (Reddit and X snippets are full of them): recording it let a planted URL pass the citation
+    # and image checks.
+    for block in text.split("\n\n"):
+        for url in _RESULT_URL.findall(block):
+            key = normalize_citation_url(url)
+            delivery.seen_urls.add(key)
+            delivery.source_texts.setdefault(key, block)
     delivery.seen_urls.update(normalize_citation_url(url) for url in extra if url)
     return text
 
@@ -50,9 +66,22 @@ def _uncited_urls(report: str) -> list[str]:
     seen = current_delivery_context().seen_urls
     unknown: list[str] = []
     for url in extract_urls(report):
-        if normalize_citation_url(url) not in seen and url not in unknown:
+        if _citation_key(url, seen) is None and url not in unknown:
             unknown.append(url)
     return unknown
+
+
+def _citation_key(url: str, seen: set[str]) -> str | None:
+    """The seen key this cited URL stands for, or None. Korean prose glues its particle to the URL
+    ("...com/a에서", "[label](url)에 따르면"), and the URL pattern cannot stop at Hangul, which a decoded
+    Korean path legitimately contains, so the URL without that particle is tried too, re-trimmed of the
+    punctuation it exposes. Only when a path is left: "openai.com/가짜" stripped to the bare host would
+    pass on any homepage hit."""
+    key = normalize_citation_url(url)
+    if key in seen:
+        return key
+    bare = normalize_citation_url(_trim_url(_TRAILING_PARTICLE.sub("", url)))
+    return bare if "/" in bare.rstrip("/") and bare in seen else None
 
 
 @tool
@@ -105,8 +134,11 @@ async def read_url(url: str) -> str:
         # A page that could not be read is not a source: recording it would let an invented URL
         # pass deliver_report's citation check after one failed read.
         return f"Could not read {url}; it is not a source you can cite."
-    # The page URL itself counts as surfaced: the agent read it, so citing it is grounded.
-    return _record_seen_urls(text, url)
+    # Only the page itself counts as surfaced. A link inside it is the page's text, which anyone can
+    # write: recording it let a planted URL pass the citation and image checks. Reading it makes it one.
+    _record_seen_urls("", url)
+    current_delivery_context().source_texts[normalize_citation_url(url)] = text
+    return text
 
 
 @tool
@@ -216,6 +248,12 @@ async def attach_image(source_url: str) -> str:
         source_url: The article/source URL whose representative image to attach.
     """
     delivery = current_delivery_context()
+    if normalize_citation_url(source_url) not in delivery.seen_urls:
+        # The image rides a public post, so it must come from a search hit or a page the agent read.
+        return (
+            f"NOT attached: {source_url} was not a search hit or a page you read. read_url it first, or attach "
+            "an image from a source you found."
+        )
     limit = get_config().agent.research_max_staged_images
     if len(delivery.staged_images) >= limit:
         return f"Already staged the maximum of {limit} images; not attaching more."
@@ -236,7 +274,7 @@ async def deliver_report(report: str, channel: Literal["markdown", "threads"] = 
         report: The final report. For "markdown" use Markdown; for "threads" use plain text.
         channel: "markdown" (default) or "threads".
     """
-    from output.delivery import THREADS, DeliveryOutcome, deliver_research_report
+    from output.delivery import THREADS, deliver_research_report
 
     delivery = current_delivery_context()
     target = channel
@@ -259,14 +297,49 @@ async def deliver_report(report: str, channel: Literal["markdown", "threads"] = 
     if uncited:
         logger.error("Refusing to deliver a report citing %d unverifiable URL(s): %s", len(uncited), uncited)
         return (
-            f"NOT delivered. These URLs appear in your report but in NO tool result, so they cannot be "
-            f"published as sources: {', '.join(uncited)}. Remove them, or replace them with a URL a "
-            "search/read tool actually returned, then call deliver_report again."
+            f"NOT delivered. These URLs in your report were not a search hit or a page you read, so they "
+            f"cannot be published as sources: {', '.join(uncited)}. read_url them first, remove them, or "
+            "replace them with a URL a search returned, then call deliver_report again."
         )
 
-    outcome = await deliver_research_report(report, channel=target, delivery=delivery)
     if target != THREADS:
+        await deliver_research_report(report, channel=target, delivery=delivery)
         return "Recorded the Markdown report."
+    async with delivery.threads_lock:
+        return await _deliver_thread(report, delivery)
+
+
+async def _deliver_thread(report: str, delivery: DeliveryContext) -> str:
+    """The Threads half of deliver_report, run under the context's Threads lock."""
+    from output.delivery import THREADS, DeliveryOutcome, deliver_research_report, sends_back_as_too_long
+
+    target = THREADS
+    already = delivery.delivered_channels | delivery.partial_channels | delivery.in_flight
+    # Not for a thread already live, nor one about to be sent back as too long: the check costs a model
+    # call over every cited source, and its verdict would be on text that never posts.
+    if (
+        target not in already
+        and delivery.refused_for_facts in (None, _same_text(report))
+        and not sends_back_as_too_long(report, delivery)
+    ):
+        # The same text sent back once is sent back with the same verdict, not re-judged: the check is
+        # not deterministic, so asking again could wave it through.
+        issues = delivery.fact_issues if delivery.refused_for_facts else await _check_thread_facts(report, delivery)
+        if issues:
+            delivery.refused_for_facts = _same_text(report)
+            delivery.fact_issues = issues
+            delivery.last_refusal = "claims its sources do not support"
+            logger.warning("Research thread sent back: %d claim(s) its sources do not support", len(issues))
+            listed = "\n".join(
+                f"- post {i.get('post', '?')}: \"{i.get('claim', '')}\" (the source says: {i.get('source_says', '')})"
+                for i in issues
+            )
+            return (
+                "NOT posted: these claims do not match the sources they cite:\n"
+                f"{listed}\nCorrect or drop them, then call deliver_report again; that call is published as it is."
+            )
+
+    outcome = await deliver_research_report(report, channel=target, delivery=delivery)
     # Report what the reader actually got: half a thread dropped over the channel cap is not
     # "delivered", and the agent's final answer must not say it was.
     stats = delivery.threads_stats
@@ -277,6 +350,14 @@ async def deliver_report(report: str, channel: Literal["markdown", "threads"] = 
             f"NOT posted: {target} already carries this run's report, so the text you just passed was "
             "never published. Do not call deliver_report for it again; say so in your final answer."
         )
+    if outcome is DeliveryOutcome.TOO_LONG:
+        max_posts = get_config().agent.research_max_threads_posts
+        return (
+            f"NOT posted: as written the thread would lose text to the channel's limits ({stats.summary()}). "
+            f"Rewrite it as at most {max_posts} posts of at most {research_post_budget(max_posts)} characters "
+            "each, then "
+            "call deliver_report again; that call is published as it is."
+        )
     if outcome is DeliveryOutcome.FAILED:
         return f"Failed to deliver the report to {target} ({stats.summary()})."
     if not stats.complete:
@@ -285,3 +366,56 @@ async def deliver_report(report: str, channel: Literal["markdown", "threads"] = 
             "Do not re-send it (that would duplicate what did land); say so in your final answer."
         )
     return f"Delivered the report to {target} ({stats.summary()})."
+
+
+def _same_text(report: str) -> str:
+    """The report with whitespace collapsed: a resubmission that differs only in a trailing newline is
+    the same text, not a rewrite."""
+    return " ".join(report.split())
+
+
+def _fact_check_factory():
+    """A Bedrock factory on the configured profile where it resolves, else ambient credentials."""
+    import boto3
+
+    from shared import BedrockLanguageModelFactory
+    from shared.utils import available_boto_profile
+
+    config = get_config()
+    session = boto3.Session(
+        region_name=config.aws.bedrock_region, profile_name=available_boto_profile(config.aws.profile)
+    )
+    return BedrockLanguageModelFactory(boto_session=session, region_name=config.aws.bedrock_region)
+
+
+async def _check_thread_facts(report: str, delivery: DeliveryContext) -> list[dict]:
+    """Claims in the thread that contradict or overstate the sources it cites, read from what the
+    tools returned for those URLs. Best-effort: a failed check returns [] and the thread posts as
+    before, since the check must not be able to stop publishing on its own."""
+    from langchain_core.output_parsers import StrOutputParser
+
+    from output.renderers import render_threads_research
+    from shared import ThreadFactCheckPrompt, parse_json_from_llm_output
+
+    keys = (_citation_key(url, delivery.seen_urls) for url in extract_urls(report))
+    cited = [delivery.source_texts[key] for key in dict.fromkeys(keys) if key in delivery.source_texts]
+    if not cited:
+        return []
+    try:
+        config = get_config()
+        root, replies, _, _ = render_threads_research(report, max_posts=config.agent.research_max_threads_posts)
+        thread = "\n\n".join(f"POST {n}:\n{post}" for n, post in enumerate([root, *replies], start=1))
+        # Cut by characters, not CountTokens: a character is at most about one token, so this bounds the
+        # call, while token counting cost about 17 blocking round trips per long page.
+        sources = "\n\n".join(
+            f"[{n}]\n{text[: config.pipeline.item_text_max_tokens]}" for n, text in enumerate(cited, start=1)
+        )
+        llm = _fact_check_factory().get_model(config.pipeline.digest_model, stage="research-fact-check")
+        raw = await (ThreadFactCheckPrompt.get_prompt() | llm | StrOutputParser()).ainvoke(
+            {"thread": thread, "sources": sources}
+        )
+        issues = parse_json_from_llm_output(raw).get("issues", [])
+        return [i for i in issues if isinstance(i, dict) and i.get("claim")]
+    except Exception:
+        logger.warning("Thread fact check failed; posting without it", exc_info=True)
+        return []
