@@ -360,7 +360,7 @@ def load_items_from_s3(filename: str, max_age_hours: int) -> ParkedItems:
 
     Sources that YouTube/X block from datacenter (Lambda) IPs are collected locally on a
     residential IP and parked in S3; in AWS the collector reads that file instead of fetching
-    live. The S3 key mirrors trends.json: the prefix's parent + filename (S3_PREFIX is
+    live. The S3 key is the prefix's parent + filename (S3_PREFIX is
     '<root>/digest_state', the items live one level up at '<root>/'), computed by the same
     park_file_key() the sync scripts write with.
 

@@ -21,6 +21,7 @@ STORY_INDEX_BULLET = "· "
 __all__ = [
     "render_threads_posts",
     "render_threads_research",
+    "research_post_budget",
 ]
 
 
@@ -180,9 +181,23 @@ _THREADS_LEADING_DELIMITER = re.compile(r"^\s*---\s*\n")
 # model has written its numbers: a capped report went out publicly as "1/8 ... 6/8" and stopped
 # mid-argument, telling every reader two posts were missing. Any index the model still writes is
 # stripped and replaced from the FINAL post count.
-_THREADS_POST_INDEX = re.compile(r"^\s*\d+\s*/\s*\d+[.:)]?\s*")
+_THREADS_POST_INDEX = re.compile(r"^\s*(\d+)\s*/\s*(\d+)[.:)]?\s*")
 # Separator between the index and the post's own 소제목.
 _THREADS_INDEX_SEPARATOR = "  "
+
+
+def research_post_budget(max_posts: int) -> int:
+    """Characters the agent may write per research post: the renderer prepends the "N/M" index after
+    the agent has counted, so ten compliant 498-character posts were all trimmed."""
+    return THREADS_MAX_POST_CHARS - len(f"{max_posts}/{max_posts}{_THREADS_INDEX_SEPARATOR}")
+
+
+def _strip_post_index(head: str) -> str:
+    """The head without a model-written "N/M" index. N > M is not an index: "24/7 에이전트" is a title."""
+    match = _THREADS_POST_INDEX.match(head)
+    if match and int(match.group(1)) <= int(match.group(2)):
+        return head[match.end() :]
+    return head
 
 
 def _renumber_threads_posts(posts: list[str]) -> list[str]:
@@ -195,7 +210,7 @@ def _renumber_threads_posts(posts: list[str]) -> list[str]:
     renumbered: list[str] = []
     for index, post in enumerate(posts, start=1):
         head, separator, rest = post.partition("\n")
-        subheading = _THREADS_POST_INDEX.sub("", head).strip()
+        subheading = _strip_post_index(head).strip()
         prefix = f"{index}/{total}"
         head = f"{prefix}{_THREADS_INDEX_SEPARATOR}{subheading}" if subheading else prefix
         renumbered.append(head + separator + rest)

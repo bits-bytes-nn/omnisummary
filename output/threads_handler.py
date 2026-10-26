@@ -196,8 +196,12 @@ async def _publish_reply_with_retry(
             # root is ready, so this only bites the first reply). Other transient errors keep the cap.
             budget_left = indexing_deadline - time.monotonic()
             keep_for_indexing = is_media_not_found(e) and budget_left > THREADS_REPLY_RETRY_BACKOFF_SEC
-            capped = not is_transient_reply_error(e) or attempt >= THREADS_REPLY_RETRY_ATTEMPTS
-            if capped and not keep_for_indexing:
+            # A 5xx from the publish step may come back for a reply that went live, and a retry
+            # creates a new container: the same story would post twice. A 4xx there is retried as it
+            # long was (all 80 threads checked on 2026-10-27 carry five replies, none twice).
+            maybe_live = e.request.url.path.endswith("/threads_publish") and e.response.status_code >= 500
+            capped = maybe_live or not is_transient_reply_error(e) or attempt >= THREADS_REPLY_RETRY_ATTEMPTS
+            if maybe_live or (capped and not keep_for_indexing):
                 raise
             logger.info(
                 "Reply attempt %d failed (%s), retrying: %s",
@@ -306,9 +310,9 @@ async def post_to_threads(
             try:
                 root_id = await _publish_post(client, user_id, token, image_url=image_url, image_alt=image_alt, **root)
             except httpx.HTTPStatusError as e:
-                if not image_url or e.request.url.path.endswith("/threads_publish"):
-                    # Only a rejected CONTAINER is safe to redo: an error from the publish step may
-                    # come back for a post that went live, and a second root would be a duplicate.
+                if not image_url or _root_may_be_live(e):
+                    # Only a root known to have posted nothing is safe to redo: a 5xx from the publish
+                    # step may come back for a post that went live, and a second root is a duplicate.
                     raise
                 # Meta rejected the IMAGE container (unfetchable URL, unsupported media): nothing is
                 # live, and the text stands on its own, so post it without the image rather than
@@ -376,10 +380,20 @@ async def post_to_threads(
 
 
 def _root_may_be_live(exc: Exception) -> bool:
-    """False only when the root failed at CONTAINER creation, which posts nothing. A failure at or
-    after the publish step, or one whose request is unknown, may have left the root live."""
+    """False when the root is known to have posted nothing: it failed at CONTAINER creation, or the
+    publish step was rate-limited (429) or answered code 24, which names the container being published
+    as not found. Replies have retried code 24 77+ times, and all 80 digest threads checked on
+    2026-10-27 carry exactly five story replies with no duplicate. The root is held to that evidence and
+    no further, deliberately stricter than the replies' long-standing 4xx retry: a wrong guess here is a
+    second public root. Any other publish-step failure, or one whose request is unknown, may be live."""
     try:
         request = exc.request if isinstance(exc, httpx.HTTPStatusError | httpx.RequestError) else None
     except RuntimeError:
         request = None
+    if (
+        isinstance(exc, httpx.HTTPStatusError)
+        and exc.response.status_code < 500
+        and (is_media_not_found(exc) or exc.response.status_code == 429)
+    ):
+        return False
     return request is None or request.url.path.endswith("/threads_publish")

@@ -292,8 +292,8 @@ class DailyVisualMaker:
         for r in ranked_items:
             if normalize_url(r.item.url) == url:
                 return f"{r.item.title}\n\n{r.item.text}"
-        body = "\n\n".join(p for p in (curated.body.strip(), curated.implication.strip()) if p)
-        return f"{curated.title}\n\n{body}"
+        # Not the implication: it is a recommendation, and given it the editor's panel 4 turned into a moral.
+        return f"{curated.title}\n\n{curated.body.strip()}"
 
     async def _write_synopsis(self, headline_source: str, recent_comics: list[dict]) -> dict:
         """The editor's plan for the comic about the headline (it does not choose the story). It does not

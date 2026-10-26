@@ -26,11 +26,26 @@ def _format_search_results(results: list[dict], preview_chars: int) -> str:
     # The published date is kept when Tavily has one (news results carry it): "latest" questions are
     # the agent's main use, and without it every result read as undated.
     return "\n\n".join(
-        f"- {r.get('title') or 'N/A'}\n  URL: {r.get('url') or ''}\n"
-        + (f"  Published: {r['published_date']}\n" if r.get("published_date") else "")
-        + f"  Content: {(r.get('content') or '')[:preview_chars]}"
+        _result_block(
+            r.get("title") or "N/A",
+            r.get("url") or "",
+            [("Published", r.get("published_date") or ""), ("Content", (r.get("content") or "")[:preview_chars])],
+        )
         for r in results
     )
+
+
+def _result_block(heading: str, url: str, fields: list[tuple[str, str]]) -> str:
+    """One search or paper result. Every field is put on one line and the URL is its first token, so
+    only this code can start a line with "URL:": a snippet, an author name or a date carrying its own
+    "\nURL: ..." line read as a result's URL and passed the research agent's citation check."""
+    lines = [f"- {_one_line(heading)}", f"  URL: {(url.split() or [''])[0]}"]
+    lines += [f"  {label}: {_one_line(value)}" for label, value in fields if value]
+    return "\n".join(lines)
+
+
+def _one_line(text: str) -> str:
+    return " ".join(str(text).split())
 
 
 async def tavily_search(
@@ -188,11 +203,10 @@ async def paper_search(query: str) -> str:
             abstract = _openalex_abstract(w.get("abstract_inverted_index"))[
                 : agent_config.search_paper_abstract_max_chars
             ]
-            results.append(
-                f"- {w.get('title') or 'N/A'} ({w.get('publication_date') or 'n.d.'}; cited by "
-                f"{w.get('cited_by_count', 0)}) by {authors or 'unknown'}\n"
-                f"  URL: {url}\n"
-                f"  Abstract: {abstract}"
+            heading = (
+                f"{w.get('title') or 'N/A'} ({w.get('publication_date') or 'n.d.'}; cited by "
+                f"{w.get('cited_by_count', 0)}) by {authors or 'unknown'}"
             )
+            results.append(_result_block(heading, url, [("Abstract", abstract)]))
         logger.info("Found %d papers for query '%s'", len(works), query)
         return "\n\n".join(results)

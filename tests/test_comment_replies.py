@@ -158,6 +158,20 @@ class TestCommentResponder:
         assert run.failed == ["rejected", "flaky"]
         assert responder.ledger.handled() == {"rejected"}
 
+    async def test_a_live_reply_whose_ledger_write_fails_still_counts_as_replied(self, tmp_path):
+        responder = _responder(tmp_path, [CommentReply(reply=True, text="답글")])
+        with patch.object(responder.ledger, "record", side_effect=RuntimeError("s3 down")):
+            run, publish = await _run(responder, _patch_threads([_c("c1", "root")]))
+        publish.assert_awaited_once()
+        assert [r["comment_id"] for r in run.replied] == ["c1"] and run.failed == []
+
+    def test_the_verdict_is_asked_for_as_a_json_schema(self, tmp_path):
+        # Under "auto" the schema tool got plain prose for 4 of 5 English comments.
+        factory = MagicMock()
+        CommentResponder(Config(), factory, LocalStateStore(tmp_path))
+        llm = factory.get_model.return_value
+        assert llm.with_structured_output.call_args.kwargs["method"] == "json_schema"
+
     async def test_the_run_cap_answers_the_oldest_first(self, tmp_path):
         responder = _responder(tmp_path, [CommentReply(reply=True, text="a")], max_per_run=1)
         conversation = [_c("newer", "root", at="2026-10-16T11:00:00+0000"), _c("older", "root")]

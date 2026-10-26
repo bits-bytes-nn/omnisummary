@@ -152,6 +152,9 @@ class DigestPublisher:
         # concurrent invocation's failure can't erase the marker of one that succeeded.
         run_id = get_correlation_id() or ""
         was_marked = bool(self.threads_ledger and self.threads_ledger.already_posted(post_date))
+        if was_marked and not force_republish:
+            logger.info("Threads digest for %s was claimed by another run meanwhile, skipping", post_date)
+            return False
         if self.threads_ledger and not was_marked:
             try:
                 self.threads_ledger.mark(post_date, run_id)

@@ -128,7 +128,7 @@ class TestARootThatLandedAloneIsNotAPlainFailure:
     @pytest.mark.asyncio
     async def test_a_lone_root_spends_the_channel(self):
         d = DeliveryContext(publish_threads=True)
-        report = "\n---\n".join(f"{i}/10 소제목\n\n본문 {i}이다." for i in range(10))
+        report = "\n---\n".join(f"{i}/6 소제목\n\n본문 {i}이다." for i in range(6))
         with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(1, 8))) as pt:
             with patch.object(dlv, "get_config") as cfg:
                 _threads_config(cfg)
@@ -144,7 +144,7 @@ class TestARootThatLandedAloneIsNotAPlainFailure:
     async def test_a_root_that_may_be_live_spends_the_channel(self):
         # A publish step that failed ambiguously may have posted: a second call would be a second root.
         d = DeliveryContext(publish_threads=True)
-        report = "\n---\n".join(f"{i}/10 소제목\n\n본문 {i}이다." for i in range(10))
+        report = "\n---\n".join(f"{i}/6 소제목\n\n본문 {i}이다." for i in range(6))
         outcome = ThreadsDelivery(0, 8, uncertain=True)
         with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=outcome)) as pt:
             with patch.object(dlv, "get_config") as cfg:
@@ -175,10 +175,36 @@ class TestIncompleteDeliveryIsReported:
     async def test_dropped_posts_count_as_incomplete_even_when_all_land(self):
         d = DeliveryContext(publish_threads=True)
         report = "\n---\n".join(f"{i}/20 소제목\n\n본문 {i}이다." for i in range(20))
-        with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(4, 4))):
+        with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(4, 4))) as pt:
             with patch.object(dlv, "get_config") as cfg:
                 _threads_config(cfg, max_posts=4)
-                ok = await dlv.deliver_research_report(report, channel="threads", delivery=d)
-        assert ok is dlv.DeliveryOutcome.POSTED
-        assert d.threads_stats.dropped == 16
+                first = await dlv.deliver_research_report(report, channel="threads", delivery=d)
+                again = await dlv.deliver_research_report(report, channel="threads", delivery=d)
+                ok = await dlv.deliver_research_report(report + "\n---\n덧붙임", channel="threads", delivery=d)
+        assert first is again is dlv.DeliveryOutcome.TOO_LONG  # the same text, before anything is public
+        assert ok is dlv.DeliveryOutcome.POSTED and pt.await_count == 1  # a rewrite posts as it is
+        assert d.threads_stats.dropped == 17  # the rewrite added a post
         assert not d.threads_stats.complete
+
+
+class TestNothingIsPostedTwice:
+    @pytest.mark.asyncio
+    async def test_two_threads_deliveries_in_one_turn_post_once(self):
+        # Strands runs one turn's tool calls concurrently; both used to pass the "already posted" check.
+        import asyncio
+
+        d = DeliveryContext(publish_threads=True)
+
+        async def slow_post(**_):
+            await asyncio.sleep(0.01)
+            return ThreadsDelivery(1, 1)
+
+        with patch("output.threads_handler.post_to_threads", new=AsyncMock(side_effect=slow_post)) as pt:
+            with patch.object(dlv, "get_config") as cfg:
+                _threads_config(cfg)
+                outcomes = await asyncio.gather(
+                    dlv.deliver_research_report("리드다.", channel="threads", delivery=d),
+                    dlv.deliver_research_report("리드다.", channel="threads", delivery=d),
+                )
+        assert sorted(o.name for o in outcomes) == ["NOT_POSTED", "POSTED"]
+        assert pt.await_count == 1

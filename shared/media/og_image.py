@@ -45,14 +45,9 @@ def _is_public_address(addr: str) -> bool:
         return False
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
-    return not (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local  # incl. 169.254.169.254, the instance metadata service
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified
-    )
+    # is_global also refuses the shared/carrier-grade range 100.64.0.0/10 (Tailscale's MagicDNS among
+    # it), which none of the is_private/is_loopback/is_link_local flags cover.
+    return ip.is_global and not ip.is_multicast
 
 
 async def _is_fetchable(url: str) -> bool:

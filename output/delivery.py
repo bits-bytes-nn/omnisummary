@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 from contextlib import contextmanager
@@ -55,6 +56,8 @@ class DeliveryOutcome(Enum):
     POSTED = auto()
     NOT_POSTED = auto()
     FAILED = auto()
+    # Nothing was posted: the thread would have lost posts to the channel's limits. Returned once.
+    TOO_LONG = auto()
 
 
 @dataclass
@@ -74,10 +77,29 @@ class DeliveryContext:
     # deliver_report refuses a report citing a URL that appeared in no tool result — the
     # deterministic guard against a fabricated citation reaching the requester or a public post.
     seen_urls: set[str] = field(default_factory=set)
+    # What each surfaced URL's tool result said (a search hit's snippet, or the page read in full), so
+    # a thread can be checked against the sources it cites before it goes public.
+    source_texts: dict[str, str] = field(default_factory=dict)
+    # The thread last sent back for claims its sources do not support; same rule as refused_report.
+    refused_for_facts: str | None = None
+    fact_issues: list[dict] = field(default_factory=list)
+    # Why the last Threads attempt was sent back, for the CLI's warning when nothing was resubmitted.
+    last_refusal: str = ""
+    # Held across a Threads delivery, its fact check included: two identical calls in one turn each ran
+    # the (non-deterministic) check, and one passing posted the text the other refused.
+    threads_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # The Markdown report the agent submitted (the latest one: a revision replaces it).
     report: str = ""
     # What the Threads delivery put in front of the reader (MARKDOWN has nothing to count).
     threads_stats: DeliveryStats = field(default_factory=DeliveryStats)
+    # A Threads delivery under way. Strands runs one turn's tool calls concurrently, so two
+    # deliver_report calls both passed the "already posted" check and both posted.
+    in_flight: set[str] = field(default_factory=set)
+    # The over-long thread last sent back, whitespace collapsed. The same text is refused again, so an
+    # identical second call in the same turn cannot slip through; a rewritten one posts as it is.
+    refused_report: str | None = None
+    # Whether a Threads post was actually attempted this run.
+    threads_attempted: bool = False
 
     @property
     def allowed_channels(self) -> set[str]:
@@ -154,6 +176,16 @@ async def _deliver_threads(report: str, delivery: DeliveryContext) -> bool:
     return outcome.published
 
 
+def sends_back_as_too_long(report: str, delivery: DeliveryContext, *, dropped: int = -1, trimmed: int = 0) -> bool:
+    """Whether this thread will be refused for losing text to the channel's limits: it does, and it is
+    the first such text or the same one again (whitespace aside). A rewrite posts as it is."""
+    if dropped < 0:
+        _, _, dropped, trimmed = render_threads_research(
+            report, max_posts=get_config().agent.research_max_threads_posts
+        )
+    return bool(dropped or trimmed) and delivery.refused_report in (None, " ".join(report.split()))
+
+
 async def deliver_research_report(report: str, *, channel: str, delivery: DeliveryContext) -> DeliveryOutcome:
     """Hand a finished report to `channel`.
 
@@ -168,12 +200,28 @@ async def deliver_research_report(report: str, *, channel: str, delivery: Delive
         delivery.delivered_channels.add(MARKDOWN)
         return DeliveryOutcome.POSTED
 
-    if channel in delivery.delivered_channels or channel in delivery.partial_channels:
+    if channel in delivery.delivered_channels | delivery.partial_channels | delivery.in_flight:
         logger.warning("Report already posted to '%s'; the text of this call was NOT published", channel)
         return DeliveryOutcome.NOT_POSTED
+    root_text, replies, dropped, trimmed = render_threads_research(
+        report, max_posts=get_config().agent.research_max_threads_posts
+    )
+    if sends_back_as_too_long(report, delivery, dropped=dropped, trimmed=trimmed):
+        # Refuse before anything is public: the dropped tail is the conclusion and its sources, and
+        # telling the agent after the post could only say "incomplete".
+        delivery.refused_report = " ".join(report.split())
+        delivery.last_refusal = "too long"
+        delivery.threads_stats = DeliveryStats(rendered=len(replies) + 1, dropped=dropped, trimmed=trimmed)
+        logger.warning("Research thread too long for Threads; sent back: %s", delivery.threads_stats.summary())
+        return DeliveryOutcome.TOO_LONG
     # Reset before dispatch so the verdict below reads THIS attempt's counts, never a previous one's.
     delivery.threads_stats = DeliveryStats()
-    ok = await _deliver_threads(report, delivery)
+    delivery.in_flight.add(channel)
+    delivery.threads_attempted = True
+    try:
+        ok = await _deliver_threads(report, delivery)
+    finally:
+        delivery.in_flight.discard(channel)
     if ok:
         delivery.delivered_channels.add(channel)
         if not delivery.threads_stats.complete:
