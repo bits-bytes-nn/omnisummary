@@ -361,6 +361,19 @@ class TestParkedItems:
         assert [i.item_id for i in items] == ["fresh"]
 
     @pytest.mark.asyncio
+    async def test_after_a_skipped_sync_the_read_reaches_back_to_the_previous_one(self):
+        # Reference 06-03 00:00, lookback 30h: a post from 06-01 13:00 is older than the window, but the
+        # previous sync ran at 06-01 09:00, so no digest has read it yet.
+        c = RSSHubCollector(_config(lookback_hours=30, park_max_age_hours=24))
+        missed = _item("missed")
+        missed.published_at = datetime(2026, 6, 1, 13, tzinfo=UTC)
+        meta = {"previous_sync_at": "2026-06-01T09:00:00+00:00"}
+        for parked_meta, expected in (({}, []), (meta, ["missed"])):
+            parked = ParkedItems(outcome=ParkOutcome.FRESH, items=[missed], meta=parked_meta)
+            with patch("collectors.rsshub.load_items_from_s3", return_value=parked):
+                assert [i.item_id for i in await c.collect()] == expected
+
+    @pytest.mark.asyncio
     async def test_a_backfill_run_does_not_ingest_todays_parked_items(self):
         # `--date` moves reference_time to midnight at the END of the requested day, so a post from
         # after it belongs to a LATER digest. The park path ignored reference_time entirely.

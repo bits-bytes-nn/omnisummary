@@ -36,6 +36,7 @@ from shared import (
     RollingLog,
     SourceHealth,
     SourceStatus,
+    ThreadsPostLedger,
     agi_countdown_intro,
     create_memory_store,
     create_state_store,
@@ -208,6 +209,23 @@ async def run_collectors_with_health(
     return items, report
 
 
+class PublishIncomplete(RuntimeError):
+    """A local run's Threads post failed or did not fully land. The digest is already persisted."""
+
+
+def already_published(config: Config, digest_date: date) -> bool:
+    """True when the date's digest is already on Threads. A second run for it (a duplicate invoke, a
+    local run) still persisted its own snapshot, leads and ledger entries before the post step skipped,
+    so the record of the day became a digest nobody saw. With Threads posting off nothing can post, so a
+    re-run is how a day's record is rebuilt."""
+    if config.pipeline.enable_threads_post and ThreadsPostLedger(create_state_store(config)).already_posted(
+        digest_date
+    ):
+        logger.warning("The %s digest is already on Threads; this run persists and posts nothing", digest_date)
+        return True
+    return False
+
+
 async def run_pipeline(
     config: Config,
     llm_factory: BedrockLanguageModelFactory,
@@ -224,7 +242,8 @@ async def run_pipeline(
     # self-heals from existing history (and survives a lost/empty ledger) rather than only
     # suppressing dupes for runs after the ledger is first populated. URLs are normalized to the
     # ledger's canonical form so http/https + trailing-slash variants of a past story still match.
-    exclude_urls = ledger.recent_urls(digest_date)
+    # Re-normalized on read: a key written under an older normalize_url must still match.
+    exclude_urls = {normalize_url(u) for u in ledger.recent_urls(digest_date)}
     snapshots: list[dict] = []
     try:
         # Seed the same window the ledger excludes: ages 1..ttl-1 (today's own snapshot is excluded
@@ -271,11 +290,11 @@ async def run_pipeline(
     digest.ranking_health = ranker.health
     stories = len(digest.content.items) if digest.content else 0
     if stories < config.pipeline.top_n:
-        # WARNING, not ERROR: merging same-event items legitimately shortens the digest, and the
+        # WARNING, not ERROR: keeping one of two same-event items legitimately shortens the digest, and the
         # generator is explicitly allowed to emit fewer than the target. It still must not pass
         # unremarked — a day that quietly halves is the same shape as a broken one.
         logger.warning(
-            "Digest carries %d stories, fewer than the target %d (a same-event merge can do this)",
+            "Digest carries %d stories, fewer than the target %d (dropping a same-event duplicate can do this)",
             stories,
             config.pipeline.top_n,
         )
@@ -315,15 +334,24 @@ async def run_pipeline(
         # Persisted BEFORE the inline post: a store that fails after the post went up would leave the
         # day's posted digest stored nowhere, and a re-run would record a different one.
         persist_digest(ranked_items, digest, digest_date, base_dir=Path(LocalPaths.DIGEST_STATE_DIR.value))
-        try:
-            from .daily_visual import DailyVisualMaker
+        from output.threads_handler import ThreadsDelivery
 
-            posted = await DailyVisualMaker(config, llm_factory).run(
-                ranked_items, digest.content, today=digest_date, force_republish=force_republish
+        from .daily_visual import DailyVisualMaker
+
+        maker = DailyVisualMaker(config, llm_factory)
+        try:
+            posted = await maker.run(ranked_items, digest.content, today=digest_date, force_republish=force_republish)
+        except Exception as e:
+            logger.error("Daily visual step failed", exc_info=True)
+            raise PublishIncomplete(f"The {digest_date} visual/Threads step failed: {e}") from e
+        logger.info("Daily visual %s", "posted" if posted else "skipped")
+        outcome = maker.threads_outcome
+        # Locally there is no alert: the exit code is the only place an incomplete post can show.
+        if isinstance(outcome, ThreadsDelivery) and outcome.posted < outcome.expected:
+            raise PublishIncomplete(
+                f"The {digest_date} Threads post did not fully land ({outcome.summary()}); root {outcome.root_id or '-'}"
+                + (f", standalone {', '.join(outcome.detached)}" if outcome.detached else "")
             )
-            logger.info("Daily visual %s", "posted" if posted else "skipped")
-        except Exception:
-            logger.warning("Daily visual step failed (non-fatal)", exc_info=True)
 
     return items, ranked_items, digest
 

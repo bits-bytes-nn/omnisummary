@@ -354,21 +354,38 @@ class TestSearchRecordsOnlyEachResultsOwnUrl:
 
 class TestThreadFactCheck:
     @pytest.mark.asyncio
-    async def test_a_contradicted_claim_sends_the_thread_back_once(self):
-        delivery = DeliveryContext(publish_threads=True)
+    async def test_a_contradicted_claim_sends_the_thread_back_until_a_rewrite_passes(self):
+        delivery = _threads_delivery()
         issues = [{"post": 5, "claim": "더 비싼 값", "source_says": "Muse is cheaper per task"}]
-        check = AsyncMock(return_value=issues)
+        new_claim = [{"post": 2, "claim": "1조원에 인수", "source_says": "no acquisition"}]
+        check = AsyncMock(side_effect=[issues, new_claim, []])
         post = AsyncMock(return_value=DeliveryOutcome.POSTED)
         with request_context(delivery):
             with patch.object(rt, "_check_thread_facts", new=check):
                 with patch("output.delivery.deliver_research_report", new=post):
-                    first = await rt.deliver_report._tool_func("스레드 본문", channel="threads")
-                    again = await rt.deliver_report._tool_func("스레드 본문\n", channel="threads")
-                    fixed = await rt.deliver_report._tool_func("고친 스레드 본문", channel="threads")
+                    first = await rt.deliver_report._tool_func(THREAD, channel="threads")
+                    again = await rt.deliver_report._tool_func(THREAD + "\n", channel="threads")
+                    rewrite = await rt.deliver_report._tool_func(THREAD + " 1조원에 인수", channel="threads")
+                    fixed = await rt.deliver_report._tool_func(THREAD + " 고침", channel="threads")
         assert first.startswith("NOT posted") and "더 비싼 값" in first and "cheaper" in first
-        assert again.startswith("NOT posted")  # whitespace alone is not a rewrite
-        assert post.await_count == 1 and "Delivered" in fixed  # the rewrite posts as it is
-        assert check.await_count == 1  # the resubmission reuses the verdict and the rewrite is not checked
+        assert again.startswith("NOT posted")  # whitespace alone is not a rewrite, and is not re-judged
+        # A rewrite used to post unchecked, so a claim added after the first refusal went out.
+        assert rewrite.startswith("NOT posted") and "1조원에 인수" in rewrite
+        assert post.await_count == 1 and "Delivered" in fixed
+        assert check.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_a_thread_citing_nothing_is_sent_back(self):
+        # With no cited source the fact check had nothing to read and passed the thread.
+        check = AsyncMock(return_value=[])
+        post = AsyncMock(return_value=DeliveryOutcome.POSTED)
+        with request_context(_threads_delivery()):
+            with patch.object(rt, "_check_thread_facts", new=check):
+                with patch("output.delivery.deliver_research_report", new=post):
+                    msg = await rt.deliver_report._tool_func("출처 없는 주장이다.", channel="threads")
+        assert msg.startswith("NOT posted") and "cites no source" in msg
+        post.assert_not_awaited()
+        check.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_failed_check_does_not_stop_publishing(self):
@@ -474,6 +491,15 @@ class TestAttachImage:
         assert msg.startswith("NOT attached") and delivery.staged_images == []
 
 
+THREAD = "본문이다.\nhttps://a.example/1"
+
+
+def _threads_delivery() -> DeliveryContext:
+    delivery = DeliveryContext(publish_threads=True)
+    delivery.seen_urls.add(rt.normalize_citation_url("https://a.example/1"))
+    return delivery
+
+
 class TestDeliverReport:
     @pytest.mark.asyncio
     async def test_markdown_is_the_default_channel(self):
@@ -488,17 +514,17 @@ class TestDeliverReport:
 
     @pytest.mark.asyncio
     async def test_routes_to_threads_when_the_run_allows_it(self):
-        delivery = DeliveryContext(publish_threads=True)
+        delivery = _threads_delivery()
         with request_context(delivery):
             with patch(
                 "output.delivery.deliver_research_report", new=AsyncMock(return_value=DeliveryOutcome.POSTED)
             ) as deliver:
-                await rt.deliver_report._tool_func("body", channel="threads")
+                await rt.deliver_report._tool_func(THREAD, channel="threads")
         assert deliver.await_args.kwargs["channel"] == "threads"
 
     @pytest.mark.asyncio
     async def test_unknown_channel_returns_error_without_delivering(self):
-        delivery = DeliveryContext(publish_threads=True)
+        delivery = _threads_delivery()
         with request_context(delivery):
             with patch(
                 "output.delivery.deliver_research_report", new=AsyncMock(return_value=DeliveryOutcome.POSTED)
@@ -520,7 +546,7 @@ class TestDeliverReport:
             with patch(
                 "output.delivery.deliver_research_report", new=AsyncMock(return_value=DeliveryOutcome.POSTED)
             ) as deliver:
-                msg = await rt.deliver_report._tool_func("body", channel="threads")
+                msg = await rt.deliver_report._tool_func(THREAD, channel="threads")
         deliver.assert_not_awaited()
         assert "NOT delivered" in msg and "markdown" in msg
 
@@ -528,21 +554,21 @@ class TestDeliverReport:
     async def test_a_repeat_call_is_reported_as_not_posted(self):
         # The likeliest reason for a second call is a REVISED report. Reporting it as "Delivered"
         # told the requester a correction had gone out while the reader still had the old text.
-        delivery = DeliveryContext(publish_threads=True)
+        delivery = _threads_delivery()
         with request_context(delivery):
             with patch(
                 "output.delivery.deliver_research_report", new=AsyncMock(return_value=DeliveryOutcome.NOT_POSTED)
             ):
-                msg = await rt.deliver_report._tool_func("revised body", channel="threads")
+                msg = await rt.deliver_report._tool_func(THREAD + " 고침", channel="threads")
         assert "NOT posted" in msg
         assert "Delivered" not in msg
 
     @pytest.mark.asyncio
     async def test_failed_delivery_reports_failure(self):
-        delivery = DeliveryContext(publish_threads=True)
+        delivery = _threads_delivery()
         with request_context(delivery):
             with patch("output.delivery.deliver_research_report", new=AsyncMock(return_value=DeliveryOutcome.FAILED)):
-                msg = await rt.deliver_report._tool_func("body", channel="threads")
+                msg = await rt.deliver_report._tool_func(THREAD, channel="threads")
         assert "Failed to deliver" in msg
 
     @pytest.mark.asyncio
@@ -552,7 +578,7 @@ class TestDeliverReport:
         # a complete delivery in its final answer.
         from output.delivery import DeliveryStats
 
-        delivery = DeliveryContext(publish_threads=True)
+        delivery = _threads_delivery()
 
         async def _deliver(report, *, channel, delivery):
             delivery.threads_stats = DeliveryStats(rendered=8, delivered=6, dropped=3, trimmed=1)
@@ -560,7 +586,7 @@ class TestDeliverReport:
 
         with request_context(delivery):
             with patch("output.delivery.deliver_research_report", new=_deliver):
-                msg = await rt.deliver_report._tool_func("body", channel="threads")
+                msg = await rt.deliver_report._tool_func(THREAD, channel="threads")
         assert "INCOMPLETELY" in msg
         assert "6/8 posts delivered" in msg
         assert "3 post(s) DROPPED" in msg
@@ -571,7 +597,7 @@ class TestDeliverReport:
     async def test_an_over_long_thread_is_sent_back_to_be_rewritten(self):
         from output.delivery import DeliveryStats
 
-        delivery = DeliveryContext(publish_threads=True)
+        delivery = _threads_delivery()
 
         async def _deliver(report, *, channel, delivery):
             delivery.threads_stats = DeliveryStats(rendered=8, dropped=21)
@@ -579,14 +605,14 @@ class TestDeliverReport:
 
         with request_context(delivery):
             with patch("output.delivery.deliver_research_report", new=_deliver):
-                msg = await rt.deliver_report._tool_func("body", channel="threads")
+                msg = await rt.deliver_report._tool_func(THREAD, channel="threads")
         assert msg.startswith("NOT posted") and "21 post(s) DROPPED" in msg and "call deliver_report again" in msg
 
     @pytest.mark.asyncio
     async def test_complete_delivery_states_the_counts(self):
         from output.delivery import DeliveryStats
 
-        delivery = DeliveryContext(publish_threads=True)
+        delivery = _threads_delivery()
 
         async def _deliver(report, *, channel, delivery):
             delivery.threads_stats = DeliveryStats(rendered=6, delivered=6)
@@ -594,7 +620,7 @@ class TestDeliverReport:
 
         with request_context(delivery):
             with patch("output.delivery.deliver_research_report", new=_deliver):
-                msg = await rt.deliver_report._tool_func("body", channel="threads")
+                msg = await rt.deliver_report._tool_func(THREAD, channel="threads")
         assert "INCOMPLETE" not in msg
         assert "6/6 posts delivered" in msg
 

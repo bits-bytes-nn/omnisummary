@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import recall_cli
 from shared.models import Trend, TrendEvidence, TrendMemory
 
@@ -66,3 +68,13 @@ class TestTrends:
         assert code == recall_cli.EXIT_OK
         assert [t["title"] for t in result["trends"]] == ["New", "Old"]
         assert result["trends"][0]["latest"] == "s"
+
+
+class TestBadArgumentsAreRejectedAsJson:
+    # Plain argparse exited 2 with an empty stdout (usage on stderr), and -h printed help to stdout.
+    @pytest.mark.parametrize("argv", [[], ["bogus"], ["trends", "extra"], ["-h"], ["digest", "2026-10-26", "x"]])
+    def test_bad_arguments_come_back_rejected(self, argv, capsys):
+        result, code = recall_cli.run(argv)
+        assert (result["status"], code) == ("rejected", recall_cli.EXIT_REJECTED)
+        assert result["error"]
+        assert capsys.readouterr().out == ""

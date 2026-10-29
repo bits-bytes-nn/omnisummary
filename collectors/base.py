@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import math
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
@@ -27,7 +28,7 @@ from shared import (
     retry_async,
 )
 from shared.config import BaseCollectorConfig
-from shared.constants import BROWSER_USER_AGENT
+from shared.constants import BROWSER_USER_AGENT, DIGEST_PERIOD_HOURS
 
 # HTTP statuses worth another attempt: rate limiting and server-side faults. Everything else —
 # notably 403 (quota exhausted / revoked key) and 404 (unknown resource) — is a verdict retrying
@@ -68,6 +69,10 @@ _ABSENT_ERROR_CODES = frozenset({"NoSuchKey", "NoSuchBucket", "404"})
 PARK_META_ACCOUNTS_TOTAL = "accounts_total"
 PARK_META_ACCOUNTS_FAILED = "accounts_failed"
 PARK_META_ACCOUNTS_EMPTY = "accounts_empty"
+# When the sync BEFORE this file's ran. The previous digest could read no further than that sync's
+# file, so a reader reaches back to it when it is older than the lookback: a skipped sync otherwise
+# lost everything between its predecessor and the next sync's window for good.
+PARK_META_PREVIOUS_SYNC_AT = "previous_sync_at"
 
 
 class ParkOutcome(str, Enum):
@@ -285,6 +290,21 @@ def in_collection_window(
     if published < _as_aware_utc(cutoff_datetime(lookback_hours, reference_time)):
         return False
     return reference_time is None or published <= _as_aware_utc(reference_time)
+
+
+def park_read_lookback_hours(parked: ParkedItems, *, lookback_hours: int, reference_time: datetime | None) -> int:
+    """The lookback a park file is read with: the source's own, widened back to the previous sync
+    when that is older (bounded by the window the sync parks, lookback + one digest period)."""
+    raw = parked.meta.get(PARK_META_PREVIOUS_SYNC_AT)
+    try:
+        previous = _as_aware_utc(datetime.fromisoformat(raw)) if isinstance(raw, str) else None
+    except ValueError:
+        previous = None
+    if previous is None:
+        return lookback_hours
+    reference = _as_aware_utc(reference_time) if reference_time is not None else datetime.now(UTC)
+    gap = math.ceil((reference - previous).total_seconds() / 3600)
+    return min(max(lookback_hours, gap), lookback_hours + DIGEST_PERIOD_HOURS)
 
 
 def parked_items_in_window(
@@ -521,8 +541,12 @@ async def fetch_feed(url: str, *, description: str, timeout: float) -> Any:
 
     if response.status_code >= 400:
         raise feed_status_failure(description, response.status_code)
-    # A BytesIO, not the bytes: feedparser tries a bytes argument as a local file path first.
-    feed = feedparser.parse(io.BytesIO(response.content))
+    # A BytesIO, not the bytes: feedparser tries a bytes argument as a local file path first. A stream
+    # carries no URL or headers, so pass them: content-location is the base relative entry links
+    # resolve against, and content-type carries the charset.
+    headers = {k.lower(): v for k, v in response.headers.items()}
+    headers["content-location"] = str(response.url)
+    feed = feedparser.parse(io.BytesIO(response.content), response_headers=headers)
     if feed.bozo and not feed.entries:
         raise feed_parse_failure(description, feed.get("bozo_exception"))
     return feed

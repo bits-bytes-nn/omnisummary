@@ -1,3 +1,5 @@
+import pytest
+
 from pipeline.aggregator import ContentAggregator
 from shared.constants import SourceType
 from shared.models import CollectedItem
@@ -109,6 +111,50 @@ class TestContentAggregator:
         assert len(result) == 1
         assert result[0].item_id == "id1"  # first wins
 
+    @pytest.mark.parametrize(
+        "canonical, variant",
+        [
+            ("https://x.com/karpathy/status/185", "https://twitter.com/karpathy/status/185?s=20&t=abc"),
+            ("https://x.com/karpathy/status/185", "https://mobile.twitter.com/karpathy/status/185"),
+            ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "https://youtu.be/dQw4w9WgXcQ?si=XYZ"),
+            ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "https://m.youtube.com/watch?v=dQw4w9WgXcQ&feature=share"),
+            (
+                "https://www.reddit.com/r/LocalLLaMA/comments/1abcde/t/",
+                "https://old.reddit.com/r/LocalLLaMA/comments/1abcde/t",
+            ),
+        ],
+    )
+    def test_share_link_variants_of_one_item_normalize_alike(self, canonical, variant):
+        from pipeline.aggregator import normalize_url
+
+        assert normalize_url(variant) == normalize_url(canonical)
+
+    def test_distinct_items_stay_distinct_after_normalization(self):
+        from pipeline.aggregator import normalize_url
+
+        # An arXiv version is a different document, and `feature`/`si` mean something off YouTube.
+        assert normalize_url("https://arxiv.org/abs/2410.01234v2") != normalize_url("https://arxiv.org/abs/2410.01234")
+        assert normalize_url("https://a.com/docs?feature=gpu") != normalize_url("https://a.com/docs?feature=cpu")
+
+    @pytest.mark.parametrize(
+        ("a", "b"),
+        [
+            ("https://x.com/Karpathy/status/123", "https://x.com/karpathy/status/123"),
+            ("https://x.com/i/status/123", "https://twitter.com/karpathy/status/123?s=20"),
+            ("https://youtube.com/shorts/abc", "https://www.youtube.com/watch?v=abc"),
+            ("https://youtube.com/live/abc", "https://youtu.be/abc"),
+        ],
+    )
+    def test_other_spellings_of_one_post_or_video_normalize_alike(self, a, b):
+        from pipeline.aggregator import normalize_url
+
+        assert normalize_url(a) == normalize_url(b)
+
+    def test_a_timestamped_share_of_a_video_is_the_same_item(self):
+        from pipeline.aggregator import normalize_url
+
+        assert normalize_url("https://youtu.be/abc?t=30") == normalize_url("https://www.youtube.com/watch?v=abc")
+
     def test_dedup_preserves_meaningful_query_params(self):
         items = [
             _item(item_id="id1", url="https://a.com/watch?v=abc", title="V1"),
@@ -126,6 +172,18 @@ class TestContentAggregator:
         assert len(result) == 1
         assert result[0].metadata["key1"] == "val1"
         assert result[0].metadata["key2"] == "val2"
+
+    def test_two_stories_sharing_an_item_id_both_keep_a_unique_one(self):
+        # A non-permalink RSS GUID ("1234") from two feeds: the ranker keys scores by item_id, so the
+        # second story was merged into the first and vanished.
+        items = [
+            _item(item_id="1234", url="https://a.example/p/1234", title="Feed A launch"),
+            _item(item_id="1234", url="https://b.example/p/1234", title="Feed B story"),
+        ]
+        result = ContentAggregator().aggregate(items)
+        assert [i.url for i in result] == ["https://a.example/p/1234", "https://b.example/p/1234"]
+        assert result[0].item_id == "1234"
+        assert len({i.item_id for i in result}) == 2
 
     def test_empty_input(self):
         result = ContentAggregator().aggregate([])

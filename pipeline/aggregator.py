@@ -1,16 +1,28 @@
 from __future__ import annotations
 
+import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from shared import CollectedItem, SourceType, logger, normalize_title
+from shared import CollectedItem, SourceType, generate_item_id, logger, normalize_title
 from shared.formatting import RETWEET_PREFIX
 
 _TRACKING_PARAM_PREFIXES = ("utm_",)
 _TRACKING_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src", "ref_url"}
+# Share-link hosts mapped to the canonical one, and params that mark only a share or a position on one
+# host: a video shared at 0:30 is still the same story.
+_HOST_ALIASES = {
+    "twitter.com": "x.com",
+    "mobile.twitter.com": "x.com",
+    "old.reddit.com": "reddit.com",
+    "m.youtube.com": "youtube.com",
+}
+_YOUTUBE_VIDEO_PATH = re.compile(r"^/(?:shorts|live)/([\w-]+)$")
+_X_STATUS_PATH = re.compile(r"^/(?:i/web|[^/]+)/status/(\d+)")
+_HOST_TRACKING_PARAMS = {"x.com": {"s", "t"}, "youtube.com": {"si", "feature", "t"}}
 
 
 def normalize_url(url: str) -> str:
-    # Collapse trivial variants (scheme, host case, trailing slash, tracking
+    # Collapse trivial variants (scheme, host case and aliases, trailing slash, tracking
     # params, fragment) so the same article from two sources — or the same article
     # seen on different days — dedups on URL.
     if not url:
@@ -22,11 +34,19 @@ def normalize_url(url: str) -> str:
     if not parts.netloc:
         return url.strip()
     host = parts.netloc.lower().removeprefix("www.")
+    host = _HOST_ALIASES.get(host, host)
     path = parts.path.rstrip("/") or "/"
+    params = parse_qsl(parts.query, keep_blank_values=True)
+    if host == "youtu.be" and path != "/":
+        host, path, params = "youtube.com", "/watch", [("v", path.lstrip("/")), *params]
+    if host == "youtube.com" and (video := _YOUTUBE_VIDEO_PATH.match(path)):
+        path, params = "/watch", [("v", video.group(1)), *params]
+    if host == "x.com" and (status := _X_STATUS_PATH.match(path)):
+        # Handles are case-insensitive and /i/status/ID is the same post as /<user>/status/ID.
+        path = f"/i/status/{status.group(1)}"
+    dropped = _TRACKING_PARAMS | _HOST_TRACKING_PARAMS.get(host, set())
     kept = [
-        (k, v)
-        for k, v in parse_qsl(parts.query, keep_blank_values=True)
-        if not k.lower().startswith(_TRACKING_PARAM_PREFIXES) and k.lower() not in _TRACKING_PARAMS
+        (k, v) for k, v in params if not k.lower().startswith(_TRACKING_PARAM_PREFIXES) and k.lower() not in dropped
     ]
     query = urlencode(sorted(kept))
     return urlunsplit(("https", host, path, query, ""))
@@ -115,6 +135,14 @@ class ContentAggregator:
 
         if empty_norm:
             logger.info("Kept %d item(s) whose title normalizes to empty out of title dedup", empty_norm)
+
+        # The ranker keys its scores by item_id, so two different stories sharing one (a bare RSS GUID
+        # like "1234" from two feeds) would collapse into one and the other vanish silently.
+        seen_ids: set[str] = set()
+        for item in deduplicated:
+            if item.item_id in seen_ids:
+                item.item_id = generate_item_id(normalize_url(item.url))
+            seen_ids.add(item.item_id)
 
         logger.info(
             "Aggregated %d items → %d after deduplication (%d url, %d title)",

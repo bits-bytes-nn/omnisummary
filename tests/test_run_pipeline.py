@@ -259,14 +259,28 @@ class TestRunPipelineDelivery:
         p.visual.run.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_visual_failure_is_non_fatal(self):
+    async def test_a_failed_local_publish_is_reported_after_the_digest_is_persisted(self):
+        # Locally there is no alert: a swallowed failure ended main.py with exit 0 and "completed".
         items = [_item("https://a.example/1")]
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
                 p.visual.run.side_effect = RuntimeError("openai down")
                 with patch.object(runner, "is_running_in_aws", return_value=False):
-                    collected, ranked, digest = await _run(p, _config(), items)
-        assert collected and ranked and digest  # the digest itself already shipped
+                    with pytest.raises(runner.PublishIncomplete, match="openai down"):
+                        await _run(p, _config(), items)
+        assert p.persist_digest.called  # the digest itself is stored first
+
+    @pytest.mark.asyncio
+    async def test_an_incomplete_local_post_is_reported(self):
+        from output.threads_handler import ThreadsDelivery
+
+        items = [_item("https://a.example/1")]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with _Pipeline(tmpdir) as p:
+                p.visual.threads_outcome = ThreadsDelivery(5, 6, root_id="r", detached=("s",))
+                with patch.object(runner, "is_running_in_aws", return_value=False):
+                    with pytest.raises(runner.PublishIncomplete, match="5/6 posts.*standalone s"):
+                        await _run(p, _config(), items)
 
     @pytest.mark.asyncio
     async def test_local_run_persists_the_snapshot(self):
@@ -424,3 +438,20 @@ class TestBoundedExecutor:
         executor = asyncio.get_running_loop()._default_executor
         assert executor is not None
         assert executor._max_workers == 9
+
+
+class TestAlreadyPublished:
+    def test_reads_the_threads_ledger_for_the_date(self):
+        from shared.history_store import ThreadsPostLedger
+        from shared.state_store import LocalStateStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = LocalStateStore(tmp)
+            ThreadsPostLedger(store).mark(date(2026, 10, 26), "run-1")
+            config = Config()
+            config.pipeline.enable_threads_post = True
+            with patch.object(runner, "create_state_store", return_value=store):
+                assert runner.already_published(config, date(2026, 10, 26)) is True
+                assert runner.already_published(config, date(2026, 10, 27)) is False
+                config.pipeline.enable_threads_post = False  # nothing can post: a re-run rebuilds the record
+                assert runner.already_published(config, date(2026, 10, 26)) is False

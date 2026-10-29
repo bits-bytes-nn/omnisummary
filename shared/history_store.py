@@ -50,9 +50,8 @@ class ThreadsPostLedger:
         self.store = store
 
     def _marks(self) -> dict[str, str] | None:
-        """Return {iso_date: owner_run_id}, tolerating the legacy list-of-dates format.
-        None when the store could not be READ — the caller must then treat the ledger as unknown
-        and write nothing (a blind write would erase every recorded date)."""
+        """Return {iso_date: owner_run_id}. None when the store could not be READ — the caller must
+        then treat the ledger as unknown and write nothing (a blind write would erase every date)."""
         try:
             data = self.store.read_json(THREADS_POSTED_KEY, default={})
         except StateReadError as e:
@@ -60,8 +59,6 @@ class ThreadsPostLedger:
             return None
         if isinstance(data, dict):
             return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
-        if isinstance(data, list):  # legacy: bare ISO dates, no owner
-            return {d: "" for d in data if isinstance(d, str)}
         return {}
 
     def _write(self, marks: dict[str, str]) -> None:
@@ -159,7 +156,7 @@ class PublishedUrlLedger:
             return
         today_iso = today.isoformat()
         for url in urls:
-            if url:
+            if url and not _is_later(ledger.get(url), today):
                 ledger[url] = today_iso
         pruned = {}
         for url, iso in ledger.items():
@@ -170,6 +167,15 @@ class PublishedUrlLedger:
                 continue
         self.store.write_json(PUBLISHED_URLS_KEY, pruned)
         logger.info("Published-URL ledger: +%d new, %d retained", len(urls), len(pruned))
+
+
+def _is_later(iso: object, day: date) -> bool:
+    """Whether a stored stamp is a valid date after `day`: a --date backfill of an older day must not
+    restamp a newer publish with the older date, which ages it out of the window early."""
+    try:
+        return isinstance(iso, str) and date.fromisoformat(iso) > day
+    except ValueError:
+        return False
 
 
 class RollingLog:
@@ -218,23 +224,34 @@ class CommentReplyLedger:
     """The comments the account has already dealt with, {comment_id: {"at", "action"}}, where action
     is "replied", "declined" or "failed" (Threads rejected the reply outright). A declined or
     rejected comment is not put to the model again every run, and a reply that landed while its
-    comment's thread lagged behind is not posted twice.
+    comment's thread lagged behind is not posted twice. A comment whose attempt failed in a way that
+    may be transient is "retrying" until MAX_ATTEMPTS runs have failed on it: kept unrecorded, the same
+    oldest-first comments that always failed held every slot of every run for the whole lookback.
 
     Reads RAISE on an unreadable store: an unknown history could answer every comment again."""
+
+    MAX_ATTEMPTS = 3
 
     def __init__(self, store: StateStore, retention: timedelta) -> None:
         self.store = store
         self.retention = retention
 
-    def _entries(self) -> dict[str, dict[str, str]]:
+    def _entries(self) -> dict[str, dict[str, Any]]:
         data = self.store.read_json(COMMENT_REPLIES_KEY, default={})
         return data if isinstance(data, dict) else {}
 
     def handled(self) -> set[str]:
-        return set(self._entries())
+        return {k for k, v in self._entries().items() if (v or {}).get("action") != "retrying"}
 
-    def record(self, comment_id: str, action: str, now: datetime) -> None:
+    def record(self, comment_id: str, action: str, now: datetime, **extra: int) -> None:
         cutoff = (now - self.retention).isoformat()
         entries = {k: v for k, v in self._entries().items() if str((v or {}).get("at", "")) >= cutoff}
-        entries[comment_id] = {"at": now.isoformat(), "action": action}
+        entries[comment_id] = {"at": now.isoformat(), "action": action, **extra}
         self.store.write_json(COMMENT_REPLIES_KEY, entries)
+
+    def record_failed_attempt(self, comment_id: str, now: datetime) -> None:
+        attempts = int((self._entries().get(comment_id) or {}).get("attempts", 0)) + 1
+        if attempts >= self.MAX_ATTEMPTS:
+            self.record(comment_id, "failed", now)
+        else:
+            self.record(comment_id, "retrying", now, attempts=attempts)

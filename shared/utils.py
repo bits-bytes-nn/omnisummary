@@ -7,7 +7,7 @@ from calendar import timegm
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -20,7 +20,8 @@ from .logger import logger
 
 # Model used for the Bedrock CountTokens API. Only some base models expose CountTokens
 # (Sonnet does; Opus 4.8 does not), but the Claude family shares a tokenizer, so counting
-# with a supported model is accurate for all of them and avoids per-model failures.
+# with a supported model is accurate for all of them and avoids per-model failures. GPT models expose
+# no CountTokens either; for them the count is a close estimate, which is all a truncation budget needs.
 TOKEN_COUNT_MODEL = LanguageModelId.CLAUDE_V4_6_SONNET
 
 
@@ -36,12 +37,26 @@ class LanguageModelInfo(BaseModel):
     - Opus 5.5 and Haiku 5.5 default to effort "medium" where every other model defaults to "high";
       `effort` pins it so swapping a stage's model does not silently lower its reasoning depth.
     - Fable 5.1 is not registered: Bedrock rejects it under the account's default data-retention mode
-      ("data retention mode 'default' is not available for this model")."""
+      ("data retention mode 'default' is not available for this model").
+    - The GPT-6.1 models run on the same Converse API through their global profiles. They accept a
+      forced tool_choice, but langchain-aws infers () for any non-Claude id, and with_structured_output
+      then got plain prose back and parsed it as None. They take effort as `reasoning.effort` (they
+      reject `output_config`) and default to a lower effort than "high". They reject a Converse
+      `cachePoint`; their prompt caching is implicit."""
 
+    provider: Literal["anthropic", "openai"] = "anthropic"
     max_output_tokens: int
     supports_temperature: bool = False
     supports_forced_tool_choice: bool = True
     effort: str | None = None
+
+    def request_fields(self) -> dict[str, Any]:
+        """The provider-specific Converse `additionalModelRequestFields` that pin the effort."""
+        if not self.effort:
+            return {}
+        if self.provider == "openai":
+            return {"reasoning": {"effort": self.effort}}
+        return {"output_config": {"effort": self.effort}}
 
 
 # 64000, not the 128K ceiling: every pipeline call is a non-streaming ainvoke, and a higher cap would
@@ -56,6 +71,8 @@ LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
     LanguageModelId.CLAUDE_V5_5_OPUS: LanguageModelInfo(
         max_output_tokens=64000, supports_forced_tool_choice=False, effort="high"
     ),
+    LanguageModelId.GPT_V6_1_TERRA: LanguageModelInfo(provider="openai", max_output_tokens=64000, effort="high"),
+    LanguageModelId.GPT_V6_1_SOL: LanguageModelInfo(provider="openai", max_output_tokens=64000, effort="high"),
 }
 
 
@@ -311,7 +328,7 @@ class BedrockLanguageModelFactory:
         self, model_info: LanguageModelInfo, resolved_model_id: str, **kwargs: Any
     ) -> dict[str, Any]:
         final_max_tokens = self._validate_max_tokens(kwargs.get("max_tokens"), model_info)
-        config = self._build_base_config(resolved_model_id, **kwargs)
+        config = self._build_base_config(resolved_model_id, model_info.provider, **kwargs)
         # Telemetry sits with the rest of the config, not bolted on afterwards. The base config
         # takes `callbacks` from kwargs, which is None when the caller passed none, so build the list.
         config["callbacks"] = [
@@ -321,15 +338,21 @@ class BedrockLanguageModelFactory:
         config["max_tokens"] = final_max_tokens
         if model_info.supports_temperature:
             config["temperature"] = kwargs.get("temperature", self.DEFAULT_TEMPERATURE)
-        # "auto" only: with_structured_output then binds the schema tool without a tool_choice
-        # instead of forcing it, whether the resolved id is a global profile or an opaque ARN.
-        if not model_info.supports_forced_tool_choice:
-            config["supports_tool_choice_values"] = ("auto",)
+        # Stated, never inferred: langchain-aws guesses from the id, and its guess is wrong for an
+        # opaque application-profile ARN and for every GPT id. "auto" only makes with_structured_output
+        # bind the schema tool without forcing it.
+        config["supports_tool_choice_values"] = (
+            ("auto", "any", "tool") if model_info.supports_forced_tool_choice else ("auto",)
+        )
         if model_info.effort:
-            config["additional_model_request_fields"] = {"output_config": {"effort": model_info.effort}}
+            config["additional_model_request_fields"] = model_info.request_fields()
+        if model_info.provider != "anthropic":
+            # Every call here is a non-streaming ainvoke; stated, langchain-aws stops warning on every
+            # GPT model build that it has not verified the provider's streaming.
+            config["disable_streaming"] = True
         return config
 
-    def _build_base_config(self, resolved_model_id: str, **kwargs: Any) -> dict[str, Any]:
+    def _build_base_config(self, resolved_model_id: str, provider: str, **kwargs: Any) -> dict[str, Any]:
         config: dict[str, Any] = {
             "model_id": resolved_model_id,
             "region_name": self.region_name,
@@ -338,10 +361,9 @@ class BedrockLanguageModelFactory:
         }
         # An application-inference-profile ARN carries no model family in its id, so
         # ChatBedrockConverse refuses it ("Model provider should be supplied when passing a model ARN
-        # as model_id"). Every model in this registry is Anthropic, and the ARN path only appears
-        # when the cost-attribution profile resolved, so name the provider explicitly.
+        # as model_id"). The registry knows the provider, so name it.
         if resolved_model_id.startswith("arn:"):
-            config["provider"] = "anthropic"
+            config["provider"] = provider
         if self.boto_session.profile_name and self.boto_session.profile_name != "default":
             config["credentials_profile_name"] = self.boto_session.profile_name
         return config

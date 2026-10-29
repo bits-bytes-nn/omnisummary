@@ -30,6 +30,7 @@ _RENDERABLE_IMAGE_TYPES = frozenset(_CONTENT_TYPE_EXT)
 # 302s to http://169.254.169.254/ would otherwise reach the instance metadata service.
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
 _MAX_REDIRECT_HOPS = 5
+_IPV4_EMBEDDING_NETS = (ipaddress.ip_network("::/96"), ipaddress.ip_network("64:ff9b::/96"))
 
 
 def _resolve_addresses(host: str) -> list[str]:
@@ -43,8 +44,13 @@ def _is_public_address(addr: str) -> bool:
         ip = ipaddress.ip_address(addr)
     except ValueError:
         return False
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    if isinstance(ip, ipaddress.IPv6Address):
+        # An IPv6 form that carries an IPv4 address reaches that address: ::ffff:a.b.c.d, the
+        # deprecated ::a.b.c.d and NAT64's 64:ff9b::a.b.c.d. is_global judged the last two as IPv6.
+        embedded = ip.ipv4_mapped
+        if embedded is None and any(ip in net for net in _IPV4_EMBEDDING_NETS):
+            embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        ip = embedded or ip
     # is_global also refuses the shared/carrier-grade range 100.64.0.0/10 (Tailscale's MagicDNS among
     # it), which none of the is_private/is_loopback/is_link_local flags cover.
     return ip.is_global and not ip.is_multicast
@@ -109,52 +115,67 @@ def _extract_image_url(html: str, page_url: str) -> tuple[str, str]:
 async def fetch_og_image(url: str, *, timeout: int | None = None, max_bytes: int | None = None) -> ImageAsset | None:
     """Fetch a page's representative image (og:image / twitter:image) and download its bytes.
     Best-effort: any network error, missing tag, non-image content-type, or oversize image
-    returns None. Never raises to the caller."""
+    returns None. Never raises to the caller. `timeout` bounds the page fetch and the image download
+    EACH as a whole: httpx's timeout is per read, so a server trickling a byte at a time held the
+    agent's tool call indefinitely."""
     cfg = get_config().agent
     timeout = timeout if timeout is not None else cfg.og_image_timeout_sec
     max_bytes = max_bytes if max_bytes is not None else cfg.og_image_max_bytes
 
     try:
-        # Redirects are followed MANUALLY (bounded by _MAX_REDIRECT_HOPS) so every hop passes
-        # _is_fetchable — httpx's own follow_redirects would chase a public URL into a private one.
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, headers=_BROWSER_HEADERS) as client:
-            page = await _get_guarded(client, url)
-            if page is None:
-                return None
-            page.raise_for_status()
-            image_url, alt = _extract_image_url(page.text, str(page.url))
-            if not image_url:
-                logger.info("No og:image found for '%s'", url)
-                return None
-
-            downloaded = await _download_image(client, image_url, source_url=url, max_bytes=max_bytes)
-            if downloaded is None:
-                return None
-            data, content_type = downloaded
-
-            return ImageAsset(
-                data=data,
-                source_url=url,
-                image_url=image_url,
-                content_type=content_type,
-                alt=alt,
-            )
+        return await _fetch(url, timeout=timeout, max_bytes=max_bytes)
     except Exception as e:
-        logger.info("Failed to fetch og:image for '%s': %s", url, e)
+        logger.info("Failed to fetch og:image for '%s': %s", url, str(e) or type(e).__name__)
         return None
 
 
-async def _get_guarded(client: httpx.AsyncClient, url: str) -> httpx.Response | None:
-    """GET `url`, following redirects manually and re-checking each hop. None when a hop is not
-    fetchable or the hop budget is exhausted."""
+async def _fetch(url: str, *, timeout: int, max_bytes: int) -> ImageAsset | None:
+    # Redirects are followed MANUALLY (bounded by _MAX_REDIRECT_HOPS) so every hop passes
+    # _is_fetchable — httpx's own follow_redirects would chase a public URL into a private one.
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, headers=_BROWSER_HEADERS) as client:
+        async with asyncio.timeout(timeout):
+            page = await _get_guarded(client, url, max_bytes=max_bytes)
+        if page is None:
+            return None
+        html, page_url = page
+        image_url, alt = _extract_image_url(html, page_url)
+        if not image_url:
+            logger.info("No og:image found for '%s'", url)
+            return None
+
+        async with asyncio.timeout(timeout):
+            downloaded = await _download_image(client, image_url, source_url=url, max_bytes=max_bytes)
+        if downloaded is None:
+            return None
+        data, content_type = downloaded
+
+        return ImageAsset(
+            data=data,
+            source_url=url,
+            image_url=image_url,
+            content_type=content_type,
+            alt=alt,
+        )
+
+
+async def _get_guarded(client: httpx.AsyncClient, url: str, *, max_bytes: int) -> tuple[str, str] | None:
+    """(html, final url) of `url`, following redirects manually and re-checking each hop. None when
+    a hop is not fetchable, the hop budget is exhausted or the page outgrows `max_bytes`."""
     current = url
     for _ in range(_MAX_REDIRECT_HOPS + 1):
         if not await _is_fetchable(current):
             return None
-        resp = await client.get(current)
-        location = resp.headers.get("location", "") if resp.is_redirect else ""
-        if not location:
-            return resp
+        async with client.stream("GET", current) as resp:
+            location = resp.headers.get("location", "") if resp.is_redirect else ""
+            if not location:
+                resp.raise_for_status()
+                body = bytearray()
+                async for chunk in resp.aiter_bytes():
+                    body += chunk
+                    if len(body) > max_bytes:
+                        logger.info("Page '%s' exceeded %d bytes, aborting", url, max_bytes)
+                        return None
+                return bytes(body).decode(resp.encoding or "utf-8", errors="replace"), str(resp.url)
         current = urljoin(current, location)
     logger.info("Refusing to fetch '%s': more than %d redirects", url, _MAX_REDIRECT_HOPS)
     return None

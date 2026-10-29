@@ -11,7 +11,7 @@ from strands import tool
 from output.delivery import DeliveryContext, current_delivery_context, request_context
 from output.renderers import research_post_budget
 from shared import extract_urls, get_config, logger, normalize_citation_url
-from shared.formatting import _trim_url
+from shared.formatting import citation_key
 from shared.media import fetch_og_image
 from shared.research import extract_url, paper_search, tavily_search
 
@@ -30,8 +30,6 @@ __all__ = [
 ]
 
 
-# A Korean particle glued to a URL: a Hangul run at its end, not one right after a dot (a host part).
-_TRAILING_PARTICLE = re.compile(r"(?<![.\u3002\uff0e\uff61])[\uac00-\ud7a3]+$")
 # The line every search and paper result carries for its own URL (shared/research/research_backends.py).
 _RESULT_URL = re.compile(r"^\s*URL: (\S+)", re.MULTILINE)
 
@@ -66,22 +64,9 @@ def _uncited_urls(report: str) -> list[str]:
     seen = current_delivery_context().seen_urls
     unknown: list[str] = []
     for url in extract_urls(report):
-        if _citation_key(url, seen) is None and url not in unknown:
+        if citation_key(url, seen) is None and url not in unknown:
             unknown.append(url)
     return unknown
-
-
-def _citation_key(url: str, seen: set[str]) -> str | None:
-    """The seen key this cited URL stands for, or None. Korean prose glues its particle to the URL
-    ("...com/a에서", "[label](url)에 따르면"), and the URL pattern cannot stop at Hangul, which a decoded
-    Korean path legitimately contains, so the URL without that particle is tried too, re-trimmed of the
-    punctuation it exposes. Only when a path is left: "openai.com/가짜" stripped to the bare host would
-    pass on any homepage hit."""
-    key = normalize_citation_url(url)
-    if key in seen:
-        return key
-    bare = normalize_citation_url(_trim_url(_TRAILING_PARTICLE.sub("", url)))
-    return bare if "/" in bare.rstrip("/") and bare in seen else None
 
 
 @tool
@@ -242,7 +227,8 @@ async def recall_digest(digest_date: str) -> str:
 
 @tool
 async def attach_image(source_url: str) -> str:
-    """Stage a source page's representative image (og:image) for the delivered report.
+    """Stage a source page's representative image (og:image) for the delivered report. A Threads
+    delivery posts the first staged image whose page the thread cites.
 
     Args:
         source_url: The article/source URL whose representative image to attach.
@@ -314,17 +300,21 @@ async def _deliver_thread(report: str, delivery: DeliveryContext) -> str:
     from output.delivery import THREADS, DeliveryOutcome, deliver_research_report, sends_back_as_too_long
 
     target = THREADS
-    already = delivery.delivered_channels | delivery.partial_channels | delivery.in_flight
+    already = delivery.delivered_channels | delivery.partial_channels
     # Not for a thread already live, nor one about to be sent back as too long: the check costs a model
     # call over every cited source, and its verdict would be on text that never posts.
-    if (
-        target not in already
-        and delivery.refused_for_facts in (None, _same_text(report))
-        and not sends_back_as_too_long(report, delivery)
-    ):
+    if target not in already and not sends_back_as_too_long(report, delivery):
+        if not extract_urls(report):
+            delivery.last_refusal = "no cited source"
+            return (
+                "NOT posted: the thread cites no source, so nothing in it can be checked. Cite the URL "
+                "each claim comes from, then call deliver_report again."
+            )
         # The same text sent back once is sent back with the same verdict, not re-judged: the check is
-        # not deterministic, so asking again could wave it through.
-        issues = delivery.fact_issues if delivery.refused_for_facts else await _check_thread_facts(report, delivery)
+        # not deterministic, so asking again could wave it through. A rewrite is checked like the first
+        # text: it posted unchecked before, new claims included.
+        same = delivery.refused_for_facts == _same_text(report)
+        issues = delivery.fact_issues if same else await _check_thread_facts(report, delivery)
         if issues:
             delivery.refused_for_facts = _same_text(report)
             delivery.fact_issues = issues
@@ -336,7 +326,7 @@ async def _deliver_thread(report: str, delivery: DeliveryContext) -> str:
             )
             return (
                 "NOT posted: these claims do not match the sources they cite:\n"
-                f"{listed}\nCorrect or drop them, then call deliver_report again; that call is published as it is."
+                f"{listed}\nCorrect or drop them, then call deliver_report again; the new text is checked the same way."
             )
 
     outcome = await deliver_research_report(report, channel=target, delivery=delivery)
@@ -355,8 +345,7 @@ async def _deliver_thread(report: str, delivery: DeliveryContext) -> str:
         return (
             f"NOT posted: as written the thread would lose text to the channel's limits ({stats.summary()}). "
             f"Rewrite it as at most {max_posts} posts of at most {research_post_budget(max_posts)} characters "
-            "each, then "
-            "call deliver_report again; that call is published as it is."
+            "each, then call deliver_report again; the new text is checked again before it posts."
         )
     if outcome is DeliveryOutcome.FAILED:
         return f"Failed to deliver the report to {target} ({stats.summary()})."
@@ -397,7 +386,7 @@ async def _check_thread_facts(report: str, delivery: DeliveryContext) -> list[di
     from output.renderers import render_threads_research
     from shared import ThreadFactCheckPrompt, parse_json_from_llm_output
 
-    keys = (_citation_key(url, delivery.seen_urls) for url in extract_urls(report))
+    keys = (citation_key(url, delivery.seen_urls) for url in extract_urls(report))
     cited = [delivery.source_texts[key] for key in dict.fromkeys(keys) if key in delivery.source_texts]
     if not cited:
         return []

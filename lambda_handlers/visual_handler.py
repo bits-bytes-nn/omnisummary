@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import time
 from datetime import date, datetime
 from typing import Any
@@ -72,6 +74,14 @@ def _requested_correlation_id(event: dict[str, Any]) -> str:
     return str(_invoke_payload(event, "correlation_id").get("correlation_id", "") or "")
 
 
+def _requested_force(event: dict[str, Any]) -> bool:
+    """An operator's re-post of a date whose marker was kept because its root MAY have been live
+    (only after checking the account): the stored digest goes out again despite the marker."""
+    # Top level only: a DLQ envelope of a forced replay that failed again keeps force_republish, and a
+    # re-run of that message could post a second root.
+    return event.get("force_republish") is True
+
+
 def _requested_date(event: dict[str, Any], tz: ZoneInfo) -> tuple[date, bool]:
     """(digest date this invocation must publish, whether the invoke NAMED that date).
 
@@ -91,7 +101,9 @@ def _requested_date(event: dict[str, Any], tz: ZoneInfo) -> tuple[date, bool]:
     return datetime.now(tz).date(), False
 
 
-def _maybe_alert_threads_outcome(outcome: ThreadsDelivery | None, digest_date: date) -> None:
+def _maybe_alert_threads_outcome(
+    outcome: ThreadsDelivery | None, digest_date: date, *, marker_kept: bool = False
+) -> None:
     """SNS notice when the Threads post did not fully land: a partial reply chain (the reader sees
     a digest whose stories stop mid-way), a total delivery failure, or a day that published without
     the visual. Silent on a complete delivery; publish_alert itself is a no-op without
@@ -99,15 +111,19 @@ def _maybe_alert_threads_outcome(outcome: ThreadsDelivery | None, digest_date: d
     if outcome is None:
         return
     if outcome.posted < outcome.expected:
-        publish_alert(
-            "Threads Delivery",
-            "ALERT" if outcome.published else "FAILED",
-            {
-                "Digest date": digest_date.isoformat(),
-                "Delivered": outcome.summary(),
-                "Detail": _shortfall_detail(outcome),
-            },
-        )
+        fields = {
+            "Digest date": digest_date.isoformat(),
+            "Delivered": outcome.summary(),
+            "Detail": _shortfall_detail(outcome, digest_date, marker_kept=marker_kept),
+        }
+        if outcome.root_id:
+            fields["Root post"] = outcome.root_id
+        if outcome.detached:
+            fields["Standalone posts"] = (
+                f"{', '.join(outcome.detached)} — Threads published these replies as their own posts, not under "
+                "the root: delete them in the app, then reply those stories under the root by hand"
+            )
+        publish_alert("Threads Delivery", "ALERT" if outcome.published else "FAILED", fields)
         return
     if outcome.published and not outcome.with_image:
         # `expected` counts posts only, so a text-only day was complete success by that measure and
@@ -124,18 +140,48 @@ def _maybe_alert_threads_outcome(outcome: ThreadsDelivery | None, digest_date: d
         )
 
 
-def _shortfall_detail(outcome: ThreadsDelivery) -> str:
-    """What the operator should know about a post set that did not fully land."""
+def _replay_command(digest_date: date, *, force: bool) -> str:
+    """The command that re-posts the date's STORED digest through this function (the same text and
+    stories; a new comic). main.py --force-republish instead re-collects and writes a different one."""
+    payload = {"digest_date": digest_date.isoformat(), **({"force_republish": True} if force else {})}
+    function = os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "<visual function>")
+    region = os.environ.get("AWS_REGION", "<region>")
+    return (
+        f"aws lambda invoke --region {region} --function-name {function} --invocation-type Event "
+        f"--cli-binary-format raw-in-base64-out --payload '{json.dumps(payload)}' /dev/null"
+    )
+
+
+def _shortfall_detail(outcome: ThreadsDelivery, digest_date: date, *, marker_kept: bool = False) -> str:
+    """What the operator should know about a post set that did not fully land, and what to run."""
     if outcome.published:
-        return "reply chain incomplete — some stories are missing from the thread"
+        return (
+            "reply chain incomplete — some stories are missing from the thread. Do NOT re-post the day (a second "
+            "root); reply the missing stories under the root by hand"
+        )
     if outcome.posted:
-        return "the root is live but every story reply failed — do NOT --force-republish (a second root)"
+        return (
+            "the root is live but no story reply landed under it (failed, or went up standalone) — do NOT "
+            "re-post the day (a second root)"
+        )
     if outcome.uncertain:
         return (
-            "the root MAY be live (its publish step failed); a replay skips this date — if nothing is live, "
-            "re-post with main.py --date <date> --force-republish"
+            "the root MAY be live (its publish step failed). Check the account: if NOTHING is live, re-post the "
+            f"stored digest with: {_replay_command(digest_date, force=True)}"
         )
-    return "the digest was NOT published to Threads"
+    if outcome.expected == 1:
+        # The publisher's verdict on a stored digest with no stories: replaying it posts nothing again.
+        return (
+            "the stored digest has NO stories, so nothing was posted and a replay would do the same. Write a new "
+            f"one locally with: uv run python main.py --date {digest_date.isoformat()} --force-republish"
+        )
+    if marker_kept:
+        # The date stays marked (an earlier ambiguous attempt, or the release failed): a plain replay skips.
+        return (
+            "the digest was NOT published, but the date is still marked as posted. Check the account: if NOTHING "
+            f"is live, re-post the stored digest with: {_replay_command(digest_date, force=True)}"
+        )
+    return f"the digest was NOT published to Threads. Re-post the stored digest with: {_replay_command(digest_date, force=False)}"
 
 
 async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = None) -> None:
@@ -163,10 +209,14 @@ async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = 
     factory = BedrockLanguageModelFactory(boto_session=session, region_name=config.aws.bedrock_region)
 
     maker = DailyVisualMaker(config, factory)
-    posted = await maker.run(ranked_items, content, today=digest_date, deadline=deadline)
+    posted = await maker.run(
+        ranked_items, content, today=digest_date, force_republish=_requested_force(event or {}), deadline=deadline
+    )
     logger.info("Daily visual %s for %s", "posted" if posted else "skipped", digest_date)
     outcome = maker.threads_outcome
-    _maybe_alert_threads_outcome(outcome, digest_date)
+    ledger = maker.threads_ledger
+    marker_kept = bool(outcome is not None and outcome.posted == 0 and ledger and ledger.already_posted(digest_date))
+    _maybe_alert_threads_outcome(outcome, digest_date, marker_kept=marker_kept)
     if outcome is not None and outcome.posted == 0:
         # Nothing is known to have gone up: raise so the Errors alarm fires and the invoke lands in the
         # DLQ, instead of the Lambda reporting success. A replay is safe either way: the marker was

@@ -101,15 +101,29 @@ class TestRequestGating:
         cfg = _factory()._build_model_config(LANGUAGE_MODEL_INFO[model], resolved_id)
         assert cfg["supports_tool_choice_values"] == ("auto",)
 
-    def test_models_that_accept_forced_tool_choice_keep_langchains_inference(self):
-        for model in (LanguageModelId.CLAUDE_V5_SONNET, LanguageModelId.CLAUDE_V5_5_HAIKU):
-            cfg = _factory()._build_model_config(LANGUAGE_MODEL_INFO[model], f"global.{model.value}")
-            assert "supports_tool_choice_values" not in cfg
+    @pytest.mark.parametrize("resolved", ["global", "arn"])
+    @pytest.mark.parametrize(
+        "model",
+        [LanguageModelId.CLAUDE_V5_SONNET, LanguageModelId.CLAUDE_V5_5_HAIKU, LanguageModelId.GPT_V6_1_SOL],
+        ids=lambda m: m.name,
+    )
+    def test_models_that_accept_forced_tool_choice_say_so_for_any_resolved_id(self, model, resolved):
+        # langchain-aws infers () for an ARN and for every GPT id: structured output then went unforced
+        # and GPT answered in prose, which parsed as None.
+        resolved_id = PROFILE_ARN if resolved == "arn" else f"global.{model.value}"
+        cfg = _factory()._build_model_config(LANGUAGE_MODEL_INFO[model], resolved_id)
+        assert cfg["supports_tool_choice_values"] == ("auto", "any", "tool")
 
     @pytest.mark.parametrize("model", [LanguageModelId.CLAUDE_V5_5_OPUS, LanguageModelId.CLAUDE_V5_5_HAIKU])
     def test_a_medium_default_effort_is_pinned_to_high(self, model):
         cfg = _factory()._build_model_config(LANGUAGE_MODEL_INFO[model], f"global.{model.value}")
         assert cfg["additional_model_request_fields"] == {"output_config": {"effort": "high"}}
+
+    @pytest.mark.parametrize("model", [LanguageModelId.GPT_V6_1_SOL, LanguageModelId.GPT_V6_1_TERRA])
+    def test_gpt_effort_goes_in_its_own_field(self, model):
+        # GPT rejects output_config ("Unknown parameter: 'output_config'").
+        cfg = _factory()._build_model_config(LANGUAGE_MODEL_INFO[model], f"global.{model.value}")
+        assert cfg["additional_model_request_fields"] == {"reasoning": {"effort": "high"}}
 
     @pytest.mark.parametrize("model", [LanguageModelId.CLAUDE_V5_SONNET, LanguageModelId.CLAUDE_V5_5_SONNET])
     def test_a_high_default_effort_sends_nothing(self, model):
@@ -164,14 +178,12 @@ class TestStructuredOutputRequest:
         assert "toolChoice" not in request["toolConfig"]
         assert [t["toolSpec"]["name"] for t in request["toolConfig"]["tools"]] == ["VisualBrief"]
         assert "temperature" not in request["inferenceConfig"]
-        effort = LANGUAGE_MODEL_INFO[model].effort
-        assert request.get("additionalModelRequestFields") == (
-            {"output_config": {"effort": effort}} if effort else None
-        )
+        assert request.get("additionalModelRequestFields") == (LANGUAGE_MODEL_INFO[model].request_fields() or None)
 
-    def test_a_model_that_accepts_forced_tool_choice_still_gets_it(self):
-        # Pins the unchanged path for the current default (Sonnet 5 on a global id).
-        request = self._converse_request(LanguageModelId.CLAUDE_V5_SONNET, "global.anthropic.claude-sonnet-5")
+    @pytest.mark.parametrize("resolved", ["global", "arn"])
+    @pytest.mark.parametrize("model", [LanguageModelId.CLAUDE_V5_SONNET, LanguageModelId.GPT_V6_1_SOL])
+    def test_a_model_that_accepts_forced_tool_choice_gets_it(self, model, resolved):
+        request = self._converse_request(model, PROFILE_ARN if resolved == "arn" else f"global.{model.value}")
         assert request["toolConfig"]["toolChoice"] == {"tool": {"name": "VisualBrief"}}
 
 
@@ -338,6 +350,8 @@ class TestApplicationProfileResolution:
         cfg = f._build_model_config(info, "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc")
         assert cfg["provider"] == "anthropic"
         assert "provider" not in f._build_model_config(info, "global.anthropic.claude-sonnet-5")
+        gpt = LANGUAGE_MODEL_INFO[LanguageModelId.GPT_V6_1_SOL]
+        assert f._build_model_config(gpt, PROFILE_ARN)["provider"] == "openai"
 
 
 def _resolution_client(*available: str) -> MagicMock:

@@ -330,7 +330,8 @@ async def _fetch_youtube_pinned(url: str, video_id: str) -> CollectedItem | None
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
                 f"{YOUTUBE_API_BASE}/videos",
-                params={"part": "snippet", "id": video_id, "key": api_key},
+                params={"part": "snippet", "id": video_id},
+                headers={"X-Goog-Api-Key": api_key},
             )
         if resp.status_code != 200:
             logger.warning("YouTube Data API returned %d for pinned '%s'", resp.status_code, url)

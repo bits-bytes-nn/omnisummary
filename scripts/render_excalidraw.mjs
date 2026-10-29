@@ -13,7 +13,12 @@ import { resolve } from "path";
 import { execFileSync } from "child_process";
 import { createRequire } from "module";
 
-const TOOL_DIR = "/Users/youngmki/Projects/tools/excalidraw-to-png";
+// The excalidraw-to-png checkout (with playwright installed), e.g. EXCALIDRAW_TO_PNG=~/tools/excalidraw-to-png.
+if (!process.env.EXCALIDRAW_TO_PNG) {
+  console.error("Set EXCALIDRAW_TO_PNG to the excalidraw-to-png checkout");
+  process.exit(2);
+}
+const TOOL_DIR = resolve(process.env.EXCALIDRAW_TO_PNG);
 const TOOL = `${TOOL_DIR}/cli.mjs`;
 const require = createRequire(`${TOOL_DIR}/`);
 const { chromium } = require("playwright");

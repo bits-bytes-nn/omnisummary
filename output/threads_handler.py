@@ -57,6 +57,10 @@ class ThreadsDelivery(NamedTuple):
     # that can come back for a post that went up (an error status, a timeout). Callers keep the
     # date's marker so a replay cannot post a second root.
     uncertain: bool = False
+    # The live root, and replies Threads published as standalone posts instead (2026-10-27): the
+    # operator's alert names them, because only they can delete one or reply the story by hand.
+    root_id: str = ""
+    detached: tuple[str, ...] = ()
 
     @property
     def published(self) -> bool:
@@ -133,6 +137,20 @@ async def _publish_post(
     return await _publish_container(client, user_id, token, creation_id)
 
 
+def publish_may_be_live(exc: Exception) -> bool:
+    """True when a failure came back from the PUBLISH step in a way that can answer a post that went
+    live: a 5xx or a timeout. Retrying it creates a new container, so the same text could post twice."""
+    try:
+        request = exc.request if isinstance(exc, httpx.HTTPStatusError | httpx.TimeoutException) else None
+    except RuntimeError:
+        return False
+    if request is None or not request.url.path.endswith("/threads_publish"):
+        return False
+    return isinstance(exc, httpx.TimeoutException) or (
+        isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500
+    )
+
+
 def is_media_not_found(exc: httpx.HTTPStatusError) -> bool:
     # A just-published post isn't instantly addressable as a reply target — Meta returns
     # code 24 / subcode 4279009 ("media not found") until indexing completes.
@@ -199,8 +217,16 @@ async def _publish_reply_with_retry(
             # A 5xx from the publish step may come back for a reply that went live, and a retry
             # creates a new container: the same story would post twice. A 4xx there is retried as it
             # long was (all 80 threads checked on 2026-10-27 carry five replies, none twice).
-            maybe_live = e.request.url.path.endswith("/threads_publish") and e.response.status_code >= 500
-            capped = maybe_live or not is_transient_reply_error(e) or attempt >= THREADS_REPLY_RETRY_ATTEMPTS
+            maybe_live = publish_may_be_live(e)
+            # Past a digest's indexing deadline a code 24 is the root that never indexed: every further
+            # retry only pushes the chain past the Lambda's time.
+            indexing_over = indexing_deadline > 0 and is_media_not_found(e) and not keep_for_indexing
+            capped = (
+                maybe_live
+                or indexing_over
+                or not is_transient_reply_error(e)
+                or attempt >= THREADS_REPLY_RETRY_ATTEMPTS
+            )
             if maybe_live or (capped and not keep_for_indexing):
                 raise
             logger.info(
@@ -254,9 +280,69 @@ async def fetch_conversation(client: httpx.AsyncClient, media_id: str) -> list[d
     )
 
 
+async def _landed_detached(client: httpx.AsyncClient, token: str, media_id: str) -> bool:
+    """True only when Threads says the post is NOT a reply. Any failure to ask answers False: the check
+    reports a detached reply, it must never be able to fail a reply that did land. The token rides in a
+    header, never the URL (httpx puts the URL into its error text)."""
+    try:
+        resp = await client.get(
+            f"{THREADS_API_BASE}/{media_id}",
+            params={"fields": "is_reply"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        return resp.status_code == 200 and resp.json().get("is_reply") is False
+    except Exception:
+        logger.debug("Could not read back reply '%s'", media_id, exc_info=True)
+        return False
+
+
 async def publish_reply(client: httpx.AsyncClient, user_id: str, token: str, text: str, reply_to_id: str) -> str:
     """Publish one text reply to `reply_to_id`, with the reply chain's retry on a transient error."""
-    return await _publish_reply_with_retry(client, user_id, token, text[:THREADS_MAX_POST_CHARS], reply_to_id)
+    return await _publish_reply_with_retry(client, user_id, token, text, reply_to_id)
+
+
+async def _publish_root(
+    client: httpx.AsyncClient,
+    user_id: str,
+    token: str,
+    *,
+    text: str,
+    topic_tag: str,
+    image_url: str,
+    image_alt: str,
+    deadline: float | None = None,
+) -> tuple[str, str]:
+    """(root id, the image url it carries). Only a root known to have posted nothing is redone: a 5xx
+    from the publish step may come back for a post that went live, and a second root is a duplicate.
+    A rate limit, code 24 (the container still processing) or a 5xx at container creation is retried
+    up to THREADS_REPLY_RETRY_ATTEMPTS times; without the retry one such answer cost the day's comic,
+    or the whole day when the root was text. Any other rejection of the IMAGE root (unfetchable URL,
+    unsupported media) posts the text without it, since the text stands on its own. A retry is only
+    started while `deadline` still leaves the reply chain its THREADS_PUBLISH_RESERVE_SEC."""
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            root_id = await _publish_post(
+                client, user_id, token, text=text, topic_tag=topic_tag, image_url=image_url, image_alt=image_alt
+            )
+            return root_id, image_url
+        except httpx.HTTPStatusError as e:
+            if _root_may_be_live(e):
+                raise
+            status = e.response.status_code
+            retryable = is_media_not_found(e) or status == 429 or status >= 500
+            # Room for one more attempt too, or the retry itself eats the reply chain's reserve.
+            attempt_cost = THREADS_REPLY_RETRY_BACKOFF_SEC + (THREADS_MEDIA_PROCESS_WAIT_SEC if image_url else 0)
+            time_left = deadline is None or deadline - time.monotonic() > THREADS_PUBLISH_RESERVE_SEC + attempt_cost
+            if retryable and attempt < THREADS_REPLY_RETRY_ATTEMPTS and time_left:
+                logger.info("Threads root attempt %d failed (%s), retrying: %s", attempt, status, error_detail(e))
+                await asyncio.sleep(THREADS_REPLY_RETRY_BACKOFF_SEC)
+                continue
+            if not image_url:
+                raise
+            logger.warning("Threads image root rejected (%s: %s); posting the root text-only", status, error_detail(e))
+            image_url, image_alt, attempt = "", "", 0
 
 
 async def post_to_threads(
@@ -273,12 +359,13 @@ async def post_to_threads(
     deadline: float | None = None,
 ) -> ThreadsDelivery:
     """Post a digest to Threads as a root post (image + lead) followed by a reply chain — one
-    pre-rendered reply per story. Each reply is re-split here as a safety net so nothing exceeds
-    the 500-char cap. Best-effort: missing credentials or any API failure is logged and skipped,
-    never raising to the caller.
+    pre-rendered reply per story; `_publish_post` hard-caps every text at the 500-char limit.
+    Best-effort: missing credentials or any API failure is logged and skipped, never raising to the
+    caller.
 
     `deadline` is an optional monotonic timestamp bounding this call (the visual Lambda's remaining
-    time); it only ever SHORTENS the root-indexing wait, and None behaves exactly as before.
+    time); it only ever SHORTENS the root-indexing wait and stops a root retry that would eat the reply
+    chain's reserve; None behaves exactly as before.
 
     Returns a ThreadsDelivery (posted, expected) count — NOT a bool, so a partial reply chain is
     distinguishable from a complete post. Branch on `.published`, never on the value itself."""
@@ -306,24 +393,16 @@ async def post_to_threads(
 
     try:
         async with httpx.AsyncClient(timeout=request_timeout) as client:
-            root = {"text": root_text[:THREADS_MAX_POST_CHARS], "topic_tag": topic_tag}
-            try:
-                root_id = await _publish_post(client, user_id, token, image_url=image_url, image_alt=image_alt, **root)
-            except httpx.HTTPStatusError as e:
-                if not image_url or _root_may_be_live(e):
-                    # Only a root known to have posted nothing is safe to redo: a 5xx from the publish
-                    # step may come back for a post that went live, and a second root is a duplicate.
-                    raise
-                # Meta rejected the IMAGE container (unfetchable URL, unsupported media): nothing is
-                # live, and the text stands on its own, so post it without the image rather than
-                # losing the whole post set.
-                logger.warning(
-                    "Threads image root rejected (%s: %s); posting the root text-only",
-                    e.response.status_code,
-                    error_detail(e),
-                )
-                image_url = ""
-                root_id = await _publish_post(client, user_id, token, image_url="", image_alt="", **root)
+            root_id, image_url = await _publish_root(
+                client,
+                user_id,
+                token,
+                text=root_text[:THREADS_MAX_POST_CHARS],
+                topic_tag=topic_tag,
+                image_url=image_url,
+                image_alt=image_alt,
+                deadline=deadline,
+            )
             logger.info("Posted Threads root '%s'", root_id)
             # An image root needs time to become addressable as a reply target, so every reply
             # carries this deadline and retries its own create-container against it. A root-readiness
@@ -338,11 +417,23 @@ async def post_to_threads(
             # best-effort: a single failure must not abandon the rest, so the digest never posts a
             # half-finished comment chain ("댓글이 달리다 말았다").
             posted = 0
+            detached: list[str] = []
             for i, post in enumerate(posts, start=1):
                 try:
-                    await _publish_reply_with_retry(
+                    reply_id = await _publish_reply_with_retry(
                         client, user_id, token, post, root_id, indexing_deadline=indexing_deadline
                     )
+                    if await _landed_detached(client, token, reply_id):
+                        # 2026-10-27: a reply retried after code 24 published as a standalone post although
+                        # Meta answered success, and the day logged "5/5 replies" with no alert.
+                        logger.error(
+                            "Threads reply %d/%d published as a STANDALONE post '%s', not under the root",
+                            i,
+                            len(posts),
+                            reply_id,
+                        )
+                        detached.append(reply_id)
+                        continue
                     posted += 1
                     logger.debug("Posted Threads reply %d/%d", i, len(posts))
                 except httpx.HTTPStatusError as e:
@@ -355,7 +446,9 @@ async def post_to_threads(
                     )
                 except Exception as e:
                     logger.warning("Threads reply %d/%d failed, continuing: %s", i, len(posts), e)
-        outcome = ThreadsDelivery(1 + posted, expected, with_image=bool(image_url))
+        outcome = ThreadsDelivery(
+            1 + posted, expected, with_image=bool(image_url), root_id=root_id, detached=tuple(detached)
+        )
         # Say what actually happened. "Successfully posted digest ... (0/0 reply posts)" was logged
         # on the two days the digest shipped with no stories at all, so the logs read green while
         # the post was broken. A reply-less root is legitimate for a single research report, but it

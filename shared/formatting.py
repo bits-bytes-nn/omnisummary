@@ -304,6 +304,23 @@ def _trim_url(url: str) -> str:
     return url
 
 
+# A Korean particle glued to a URL: a Hangul run at its end, not one right after a dot (a host part).
+_TRAILING_PARTICLE = re.compile(r"(?<![.\u3002\uff0e\uff61])[\uac00-\ud7a3]+$")
+
+
+def citation_key(url: str, seen: set[str]) -> str | None:
+    """The seen key this cited URL stands for, or None. Korean prose glues its particle to the URL
+    ("...com/a에서", "[label](url)에 따르면"), and the URL pattern cannot stop at Hangul, which a decoded
+    Korean path legitimately contains, so the URL without that particle is tried too, re-trimmed of the
+    punctuation it exposes. Only when a path is left: "openai.com/가짜" stripped to the bare host would
+    pass on any homepage hit."""
+    key = normalize_citation_url(url)
+    if key in seen:
+        return key
+    bare = normalize_citation_url(_trim_url(_TRAILING_PARTICLE.sub("", url)))
+    return bare if "/" in bare.rstrip("/") and bare in seen else None
+
+
 def extract_urls(text: str) -> list[str]:
     """Every http(s) URL in `text`, in order of appearance, with Markdown links unwrapped first and
     trailing prose punctuation trimmed.

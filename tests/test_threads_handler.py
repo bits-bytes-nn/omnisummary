@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from output import threads_handler
+from output.threads_handler import _landed_detached as real_landed_detached  # before conftest stubs it
 from output.threads_handler import is_media_not_found, post_to_threads
 
 
@@ -550,10 +551,11 @@ class TestImageHosting:
         assert [c.kwargs["image_url"] for c in pub.await_args_list[:2]] == ["https://s3/x", ""]
 
     @pytest.mark.asyncio
-    async def test_an_image_root_rejected_at_the_publish_step_posts_as_text(self):
-        # Code 24 at threads_publish names the container as not found: nothing is live, so the text can
-        # still go out. Other publish-step 400s stay "may be live" (test below the next one).
-        rejected = httpx.HTTPStatusError(
+    async def test_an_image_root_not_ready_at_the_publish_step_is_retried_with_its_image(self, monkeypatch):
+        # Code 24 at threads_publish names the container as not found: nothing is live. It used to post
+        # text-only at once, and the day lost its comic to a container that was still processing.
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 0)
+        not_ready = httpx.HTTPStatusError(
             "bad",
             request=httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads_publish"),
             response=httpx.Response(400, json={"error": {"code": 24, "error_subcode": 4279009}}),
@@ -561,14 +563,50 @@ class TestImageHosting:
         with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
             with patch.object(threads_handler, "_upload_image_for_hosting", return_value="https://s3/x"):
                 with patch.object(
-                    threads_handler, "_publish_post", new=AsyncMock(side_effect=[rejected, "rid"])
+                    threads_handler, "_publish_post", new=AsyncMock(side_effect=[not_ready, "rid"])
+                ) as pub:
+                    with patch.object(threads_handler, "_publish_reply_with_retry", new=AsyncMock(return_value="r1")):
+                        outcome = await post_to_threads(
+                            root_text="R", replies=["a"], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
+                        )
+        assert outcome.published is True and outcome.with_image is True
+        assert [c.kwargs["image_url"] for c in pub.await_args_list] == ["https://s3/x", "https://s3/x"]
+
+    @pytest.mark.asyncio
+    async def test_a_root_is_not_retried_into_the_reply_chains_time(self, monkeypatch):
+        # The retry itself costs a backoff: started with only the reserve left, it ate the replies' time.
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 10)
+        limited = httpx.HTTPStatusError(
+            "bad",
+            request=httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads_publish"),
+            response=httpx.Response(429, json={"error": {"code": 4}}),
+        )
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_publish_post", new=AsyncMock(side_effect=[limited, "rid"])) as pub:
+                deadline = time.monotonic() + threads_handler.THREADS_PUBLISH_RESERVE_SEC + 9
+                outcome = await post_to_threads(root_text="R", replies=["a"], deadline=deadline)
+        assert outcome.posted == 0 and pub.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_an_image_root_that_never_gets_ready_posts_as_text(self, monkeypatch):
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 0)
+        not_ready = httpx.HTTPStatusError(
+            "bad",
+            request=httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads_publish"),
+            response=httpx.Response(400, json={"error": {"code": 24, "error_subcode": 4279009}}),
+        )
+        attempts = threads_handler.THREADS_REPLY_RETRY_ATTEMPTS
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_upload_image_for_hosting", return_value="https://s3/x"):
+                with patch.object(
+                    threads_handler, "_publish_post", new=AsyncMock(side_effect=[not_ready] * attempts + ["rid"])
                 ) as pub:
                     with patch.object(threads_handler, "_publish_reply_with_retry", new=AsyncMock(return_value="r1")):
                         outcome = await post_to_threads(
                             root_text="R", replies=["a"], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
                         )
         assert outcome.published is True and outcome.with_image is False
-        assert [c.kwargs["image_url"] for c in pub.await_args_list] == ["https://s3/x", ""]
+        assert [c.kwargs["image_url"] for c in pub.await_args_list] == ["https://s3/x"] * attempts + [""]
 
     @pytest.mark.asyncio
     async def test_a_failed_image_publish_step_is_not_retried_as_text(self):
@@ -589,7 +627,8 @@ class TestImageHosting:
         assert pub.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_a_publish_step_container_not_found_posted_nothing(self):
+    async def test_a_publish_step_container_not_found_posted_nothing(self, monkeypatch):
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 0)
         # Code 24 names the container being published as not found: nothing went live, so the date
         # must be released for a replay instead of being kept marked as "may be live".
         not_ready = httpx.HTTPStatusError(
@@ -598,21 +637,24 @@ class TestImageHosting:
             response=httpx.Response(400, json={"error": {"code": 24, "error_subcode": 4279009}}),
         )
         with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
-            with patch.object(threads_handler, "_publish_post", new=AsyncMock(side_effect=[not_ready])):
+            with patch.object(threads_handler, "_publish_post", new=AsyncMock(side_effect=[not_ready] * 3)) as pub:
                 outcome = await post_to_threads(root_text="R", replies=["a"])
         assert outcome.posted == 0 and outcome.uncertain is False
+        assert pub.await_count == threads_handler.THREADS_REPLY_RETRY_ATTEMPTS  # retried: nothing was live
 
     @pytest.mark.asyncio
-    async def test_a_rate_limited_publish_step_posted_nothing(self):
+    async def test_a_rate_limited_text_root_is_retried(self, monkeypatch):
+        monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 0)
         limited = httpx.HTTPStatusError(
             "bad",
             request=httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads_publish"),
             response=httpx.Response(429, json={"error": {"code": 4}}),
         )
         with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
-            with patch.object(threads_handler, "_publish_post", new=AsyncMock(side_effect=[limited])):
-                outcome = await post_to_threads(root_text="R", replies=["a"])
-        assert outcome.posted == 0 and outcome.uncertain is False
+            with patch.object(threads_handler, "_publish_post", new=AsyncMock(side_effect=[limited, "rid"])):
+                with patch.object(threads_handler, "_publish_reply_with_retry", new=AsyncMock(return_value="r1")):
+                    outcome = await post_to_threads(root_text="R", replies=["a"])
+        assert outcome.published is True  # a rate-limited text root used to fail the whole day
 
     @pytest.mark.asyncio
     async def test_another_publish_step_400_may_be_live(self):
@@ -687,3 +729,95 @@ class TestIndexingBudget:
 
     def test_expired_deadline_waits_not_at_all(self):
         assert threads_handler._indexing_budget_sec(time.monotonic() - 5) == 0.0
+
+
+async def test_past_the_indexing_deadline_a_code_24_reply_is_not_retried(monkeypatch):
+    # The root never indexed: each further retry only pushed the chain past the Lambda's time.
+    monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 0)
+    req = httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads")
+    resp = httpx.Response(400, request=req, json={"error": {"code": 24, "error_subcode": 4279009}})
+    publish = AsyncMock(side_effect=httpx.HTTPStatusError("media not found", request=req, response=resp))
+    with patch.object(threads_handler, "_publish_post", new=publish):
+        with pytest.raises(httpx.HTTPStatusError):
+            await threads_handler._publish_reply_with_retry(
+                MagicMock(), "u", "t", "text", "root", indexing_deadline=time.monotonic() - 1
+            )
+    assert publish.await_count == 1
+
+
+class TestAReplyThatLandsDetachedIsNotCounted:
+    """2026-10-27: a reply retried after code 24 published as a standalone post while Meta answered
+    success, so the day logged "5/5 replies" and nothing alerted."""
+
+    async def test_the_read_back_asks_threads_with_the_token_in_a_header(self):
+        seen = []
+
+        def handler(request):
+            seen.append(request)
+            reply = {"m-detached": False, "m-ok": True}.get(request.url.path.rsplit("/", 1)[-1])
+            return httpx.Response(200 if reply is not None else 500, json={"is_reply": reply})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            assert await real_landed_detached(client, "tok", "m-detached") is True
+            assert await real_landed_detached(client, "tok", "m-ok") is False
+            assert await real_landed_detached(client, "tok", "m-error") is False  # unknown never fails a reply
+        assert "tok" not in str(seen[0].url) and seen[0].headers["Authorization"] == "Bearer tok"
+
+    async def test_a_detached_reply_makes_the_chain_partial(self):
+        detached = AsyncMock(side_effect=[False, True, False])
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_publish_post", new=AsyncMock(return_value="rid")):
+                with patch.object(threads_handler, "_publish_reply_with_retry", new=AsyncMock(return_value="r")):
+                    with patch.object(threads_handler, "_landed_detached", new=detached):
+                        outcome = await post_to_threads(root_text="R", replies=["a", "b", "c"])
+        assert (outcome.posted, outcome.expected) == (3, 4)
+        assert outcome.partial
+
+
+async def test_e2e_a_retried_reply_that_lands_standalone_is_counted_and_named(monkeypatch):
+    # 2026-10-27 end to end against a fake Graph API: reply 1 hits code 24 once, reply 2 is published
+    # but reads back as a standalone post. The outcome must say 2/3 with that id, and the alert name it.
+    from datetime import date
+
+    from lambda_handlers import visual_handler
+
+    monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 0)
+    monkeypatch.setattr(threads_handler, "_landed_detached", real_landed_detached)
+    state = {"containers": 0, "code24": 1}
+    media = {}
+
+    def graph(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "POST" and path.endswith("/threads"):
+            body = dict(parse_qs(request.content.decode()))
+            if body.get("reply_to_id") and state["code24"]:
+                state["code24"] -= 1
+                return httpx.Response(400, json={"error": {"code": 24, "error_subcode": 4279009}})
+            state["containers"] += 1
+            return httpx.Response(200, json={"id": f"c{state['containers']}"})
+        if request.method == "POST" and path.endswith("/threads_publish"):
+            media_id = f"m{len(media)}"
+            media[media_id] = len(media) != 2  # root m0, reply m1 ok, reply m2 lands standalone
+            return httpx.Response(200, json={"id": media_id})
+        if request.method == "GET":
+            return httpx.Response(200, json={"is_reply": media[path.rsplit("/", 1)[-1]]})
+        return httpx.Response(404)
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        threads_handler.httpx,
+        "AsyncClient",
+        lambda **kw: real_client(
+            transport=httpx.MockTransport(graph), **{k: v for k, v in kw.items() if k == "timeout"}
+        ),
+    )
+    with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+        outcome = await post_to_threads(root_text="R", replies=["story 1", "story 2"])
+    assert (outcome.posted, outcome.expected, outcome.root_id, outcome.detached) == (2, 3, "m0", ("m2",))
+
+    monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
+    sns = MagicMock()
+    with patch("lambda_handlers.visual_handler.boto3.client", return_value=sns):
+        visual_handler._maybe_alert_threads_outcome(outcome, date(2026, 10, 27))
+    message = sns.publish.call_args.kwargs["Message"]
+    assert "m0" in message and "m2" in message and "2/3 posts" in message

@@ -41,6 +41,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from shared import Config  # noqa: E402
 from shared.constants import SSM_PLACEHOLDER, SSM_SECRET_ENV_VARS  # noqa: E402
 
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "config.yaml"
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -59,6 +61,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # Same guard as scripts/deploy.py: Config.load()'s template fallback names the template's
+    # project/stage, so the secrets would land under parameter paths the deployed stack never reads.
+    if not CONFIG_PATH.exists():
+        raise SystemExit(f"{CONFIG_PATH} is missing: the secrets would be written under the template's paths")
     config = Config.load()
     project, stage = config.aws.project_name, config.aws.stage
     ssm = boto3.client("ssm", region_name=config.aws.region)

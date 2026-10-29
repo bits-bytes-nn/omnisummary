@@ -36,6 +36,24 @@ def _config() -> MagicMock:
 
 
 class TestRun:
+    @pytest.fixture(autouse=True)
+    def _not_yet_published(self):
+        with patch("lambda_handlers.digest_handler.already_published", return_value=False):
+            yield
+
+    async def test_a_date_already_on_threads_runs_nothing(self):
+        # A duplicate invoke used to persist its own snapshot over the posted digest's record.
+        with patch("lambda_handlers.digest_handler.Config.load", return_value=_config()):
+            with patch("lambda_handlers.digest_handler.already_published", return_value=True):
+                with patch("lambda_handlers.digest_handler.run_collectors_with_health", new=AsyncMock()) as collect:
+                    with patch("lambda_handlers.digest_handler.persist_digest") as persist:
+                        with patch("lambda_handlers.digest_handler._stored_story_count", return_value=5):
+                            with patch("lambda_handlers.digest_handler._emit_digest_items_metric") as metric:
+                                await digest_handler._run()
+        collect.assert_not_awaited()
+        persist.assert_not_called()
+        metric.assert_called_once_with(5)  # missing data is BREACHING for the EmptyDigest alarm
+
     async def test_exits_early_when_no_items(self):
         config = _config()
         health = HealthReport(sources=[SourceHealth(name="rss", item_count=0, status=SourceStatus.EMPTY)])
@@ -57,9 +75,12 @@ class TestRun:
         # and non-empty digest content — and the date the visual is fired for. A story-less digest
         # that still triggered the visual is exactly how 2026-08-13/08-17 published a broken post.
         from datetime import datetime
-        from zoneinfo import ZoneInfo
 
         from shared.models import DigestContent, DigestItem
+
+        # Frozen: a "today" read after the run disagreed with the run's own date across KST midnight.
+        digest_date = date(2026, 1, 15)
+        window = (digest_date, datetime(2026, 1, 16))
 
         config = _config()
         items = [MagicMock()]
@@ -81,14 +102,17 @@ class TestRun:
                             ):
                                 with patch("lambda_handlers.digest_handler.persist_digest") as persist:
                                     with patch("lambda_handlers.digest_handler._trigger_visual") as trigger:
-                                        await digest_handler._run()
-        today = datetime.now(ZoneInfo("Asia/Seoul")).date()
+                                        with patch(
+                                            "lambda_handlers.digest_handler.resolve_digest_window",
+                                            return_value=window,
+                                        ):
+                                            await digest_handler._run()
         persisted_ranked, persisted_digest, persisted_date = persist.call_args.args
         assert len(persisted_ranked) == 3
         assert persisted_digest.content.items  # the stories actually reach the snapshot
-        assert persisted_date == today
+        assert persisted_date == digest_date
         assert persist.call_args.kwargs["base_dir"] is None  # AgentCore-backed store in AWS
-        trigger.assert_called_once_with(today)
+        trigger.assert_called_once_with(digest_date)
 
     async def test_metric_counts_digest_stories_not_ranker_candidates(self):
         # Regression (2026-08-13 / 08-17): the digest shipped ZERO stories while this metric

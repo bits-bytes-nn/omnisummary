@@ -8,23 +8,16 @@ from shared import CollectedItem, SourceType, is_running_in_aws, logger, retry_a
 from shared.config import RSSHubCollectorConfig
 
 from .base import (
-    PARK_META_ACCOUNTS_EMPTY,
-    PARK_META_ACCOUNTS_FAILED,
-    PARK_META_ACCOUNTS_TOTAL,
     BaseCollector,
     TransientStatusError,
     fetch_feed_with_retry,
     load_items_from_s3,
+    park_read_lookback_hours,
     parked_items_in_window,
     parse_feed_entries,
 )
 
-__all__ = [
-    "PARK_META_ACCOUNTS_EMPTY",
-    "PARK_META_ACCOUNTS_FAILED",
-    "PARK_META_ACCOUNTS_TOTAL",
-    "RSSHubCollector",
-]
+__all__ = ["RSSHubCollector"]
 
 # What the source's inputs are called in the degraded/park reports.
 _INPUT_LABEL = "account feeds"
@@ -39,7 +32,6 @@ class RSSHubCollector(BaseCollector):
 
     def __init__(self, config: RSSHubCollectorConfig):
         self.config = config
-        self.run_meta: dict[str, int] = {}
 
     async def collect(self) -> list[CollectedItem]:
         parked = load_items_from_s3("rsshub_items.json", max_age_hours=self.config.park_max_age_hours)
@@ -54,7 +46,11 @@ class RSSHubCollector(BaseCollector):
             # items older than lookback) and a --date backfill must not ingest today's parked posts.
             return parked_items_in_window(
                 parked.items,
-                lookback_hours=self.config.lookback_hours,
+                lookback_hours=park_read_lookback_hours(
+                    parked,
+                    lookback_hours=self.config.lookback_hours,
+                    reference_time=self.config.reference_time,
+                ),
                 reference_time=self.config.reference_time,
                 description="RSSHub park file",
             )

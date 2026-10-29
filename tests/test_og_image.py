@@ -30,9 +30,13 @@ def _stub_dns():
         yield
 
 
-def _stream_response(content_type="image/jpeg", body=b"\xff\xd8\xff\xff", content_length=None, chunk=8, location=""):
-    """A streaming image response: an async context manager exposing headers + aiter_bytes()."""
+def _stream_response(
+    content_type="image/jpeg", body=b"\xff\xd8\xff\xff", content_length=None, chunk=8, location="", url=""
+):
+    """A streaming response: an async context manager exposing headers + aiter_bytes()."""
     resp = MagicMock()
+    resp.url = url
+    resp.encoding = "utf-8"
     resp.raise_for_status = MagicMock()
     headers = {"content-type": content_type}
     if content_length is not None:
@@ -54,19 +58,12 @@ def _stream_response(content_type="image/jpeg", body=b"\xff\xd8\xff\xff", conten
 
 
 def _page_response(html, url="https://example.com/post", location=""):
-    resp = MagicMock()
-    resp.raise_for_status = MagicMock()
-    resp.text = html
-    resp.url = url
-    resp.headers = {"location": location} if location else {}
-    resp.is_redirect = bool(location)
-    return resp
+    return _stream_response(content_type="text/html", body=html.encode(), location=location, url=url)
 
 
 def _client_with(page_resp, stream_ctx):
     client = MagicMock()
-    client.get = AsyncMock(return_value=page_resp)
-    client.stream = MagicMock(return_value=stream_ctx)
+    client.stream = MagicMock(side_effect=[page_resp, stream_ctx])
     ctx = MagicMock()
     ctx.__aenter__ = AsyncMock(return_value=client)
     ctx.__aexit__ = AsyncMock(return_value=False)
@@ -145,13 +142,40 @@ class TestFetchOgImage:
     @pytest.mark.asyncio
     async def test_network_error_returns_none(self):
         client = MagicMock()
-        client.get = AsyncMock(side_effect=RuntimeError("boom"))
+        client.stream = MagicMock(side_effect=RuntimeError("boom"))
         ctx = MagicMock()
         ctx.__aenter__ = AsyncMock(return_value=client)
         ctx.__aexit__ = AsyncMock(return_value=False)
         with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
             asset = await og_image.fetch_og_image("https://example.com/post")
         assert asset is None
+
+
+class TestTheWholeFetchIsBounded:
+    @pytest.mark.asyncio
+    async def test_an_oversize_page_is_abandoned(self):
+        ctx, client = _client_with(_page_response(_PAGE_WITH_OG + "x" * 50_000), _stream_response())
+        with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
+            assert await og_image.fetch_og_image("https://example.com/post", max_bytes=10_000) is None
+        assert client.stream.call_count == 1  # the image was never requested
+
+    @pytest.mark.asyncio
+    async def test_a_trickling_server_cannot_hold_the_call(self):
+        # httpx's timeout is per read, so a byte every few seconds never tripped it.
+        import asyncio
+
+        slow = _page_response(_PAGE_WITH_OG)
+        resp = await slow.__aenter__()
+
+        async def _trickle():
+            while True:
+                await asyncio.sleep(0.05)
+                yield b"x"
+
+        resp.aiter_bytes = _trickle
+        ctx, _ = _client_with(slow, _stream_response())
+        with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
+            assert await asyncio.wait_for(og_image.fetch_og_image("https://example.com/post", timeout=0.3), 5) is None
 
 
 class TestExtensionFor:
@@ -168,15 +192,11 @@ class TestExtensionFor:
 class TestFetchGuards:
     @pytest.mark.asyncio
     async def test_private_host_is_not_fetched(self):
-        client = MagicMock()
-        client.get = AsyncMock(return_value=_page_response(_PAGE_WITH_OG))
-        ctx = MagicMock()
-        ctx.__aenter__ = AsyncMock(return_value=client)
-        ctx.__aexit__ = AsyncMock(return_value=False)
+        ctx, client = _client_with(_page_response(_PAGE_WITH_OG), _stream_response())
         with patch.object(og_image, "_resolve_addresses", return_value=["127.0.0.1"]):
             with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
                 assert await og_image.fetch_og_image("http://localhost/post") is None
-        client.get.assert_not_called()  # rejected before any request left the process
+        client.stream.assert_not_called()  # rejected before any request left the process
 
     @pytest.mark.asyncio
     async def test_link_local_metadata_address_is_not_fetched(self):
@@ -208,11 +228,9 @@ class TestFetchGuards:
     async def test_redirect_into_a_private_host_is_refused(self):
         # The first hop is public and 302s to a private address — the classic bypass httpx's own
         # follow_redirects would have chased.
-        client = MagicMock()
-        client.get = AsyncMock(return_value=_page_response("", location="http://169.254.169.254/latest/meta-data/"))
-        ctx = MagicMock()
-        ctx.__aenter__ = AsyncMock(return_value=client)
-        ctx.__aexit__ = AsyncMock(return_value=False)
+        ctx, client = _client_with(
+            _page_response("", location="http://169.254.169.254/latest/meta-data/"), _stream_response()
+        )
 
         def _resolve(host):
             return ["93.184.216.34"] if host == "example.com" else ["169.254.169.254"]
@@ -220,18 +238,18 @@ class TestFetchGuards:
         with patch.object(og_image, "_resolve_addresses", side_effect=_resolve):
             with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
                 assert await og_image.fetch_og_image("https://example.com/post") is None
-        assert client.get.await_count == 1  # the private hop was never requested
+        assert client.stream.call_count == 1  # the private hop was never requested
 
     @pytest.mark.asyncio
     async def test_redirect_loop_is_bounded(self):
         client = MagicMock()
-        client.get = AsyncMock(return_value=_page_response("", location="https://example.com/post"))
+        client.stream = MagicMock(return_value=_page_response("", location="https://example.com/post"))
         ctx = MagicMock()
         ctx.__aenter__ = AsyncMock(return_value=client)
         ctx.__aexit__ = AsyncMock(return_value=False)
         with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
             assert await og_image.fetch_og_image("https://example.com/post") is None
-        assert client.get.await_count == og_image._MAX_REDIRECT_HOPS + 1
+        assert client.stream.call_count == og_image._MAX_REDIRECT_HOPS + 1
 
     @pytest.mark.asyncio
     async def test_public_redirect_is_followed(self):
@@ -240,8 +258,7 @@ class TestFetchGuards:
             _page_response(_PAGE_WITH_OG, url="https://example.com/final"),
         ]
         client = MagicMock()
-        client.get = AsyncMock(side_effect=pages)
-        client.stream = MagicMock(return_value=_stream_response())
+        client.stream = MagicMock(side_effect=[*pages, _stream_response()])
         ctx = MagicMock()
         ctx.__aenter__ = AsyncMock(return_value=client)
         ctx.__aexit__ = AsyncMock(return_value=False)
@@ -251,12 +268,7 @@ class TestFetchGuards:
 
     @pytest.mark.asyncio
     async def test_image_redirect_into_a_private_host_is_refused(self):
-        client = MagicMock()
-        client.get = AsyncMock(return_value=_page_response(_PAGE_WITH_OG))
-        client.stream = MagicMock(return_value=_stream_response(location="http://10.0.0.9/pic.jpg"))
-        ctx = MagicMock()
-        ctx.__aenter__ = AsyncMock(return_value=client)
-        ctx.__aexit__ = AsyncMock(return_value=False)
+        ctx, _ = _client_with(_page_response(_PAGE_WITH_OG), _stream_response(location="http://10.0.0.9/pic.jpg"))
 
         def _resolve(host):
             return ["10.0.0.9"] if host == "10.0.0.9" else ["93.184.216.34"]
@@ -275,7 +287,19 @@ class TestFetchGuards:
 class TestPublicAddress:
     @pytest.mark.parametrize(
         "addr",
-        ["10.0.0.1", "127.0.0.1", "169.254.169.254", "100.64.1.2", "100.100.100.100", "::ffff:127.0.0.1", "fd00::1"],
+        [
+            "10.0.0.1",
+            "127.0.0.1",
+            "169.254.169.254",
+            "100.64.1.2",
+            "100.100.100.100",
+            "::ffff:127.0.0.1",
+            "fd00::1",
+            # IPv6 forms that carry a private IPv4 address: deprecated compatible, NAT64, 6to4.
+            "::169.254.169.254",
+            "64:ff9b::a9fe:a9fe",
+            "2002:a9fe:a9fe::1",
+        ],
     )
     def test_non_public_addresses_are_refused(self, addr):
         # 100.64.0.0/10 (carrier-grade NAT, Tailscale's MagicDNS) slipped past the old flag list.

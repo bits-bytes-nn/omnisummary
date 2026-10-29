@@ -2,6 +2,7 @@ import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from collectors.base import ParkedItems, ParkOutcome
@@ -493,6 +494,24 @@ class TestS3Preload:
         assert collector.park_status is not None and collector.park_status.degraded is True
 
     @pytest.mark.asyncio
+    async def test_after_a_skipped_sync_the_read_reaches_back_to_the_previous_one(self, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config())
+        collector.config.lookback_hours, collector.config.park_max_age_hours = 24, 24
+        missed = CollectedItem(
+            item_id="vMissed",
+            source_type=SourceType.YOUTUBE,
+            title="missed",
+            url="https://y/missed",
+            published_at=datetime(2026, 6, 1, 13, tzinfo=UTC),
+        )
+        meta = {"previous_sync_at": "2026-06-01T09:00:00+00:00"}
+        for parked_meta, expected in (({}, []), (meta, ["vMissed"])):
+            parked = ParkedItems(outcome=ParkOutcome.FRESH, items=[missed], meta=parked_meta)
+            with patch("collectors.youtube.load_items_from_s3", return_value=parked):
+                assert [i.item_id for i in await collector.collect()] == expected
+
+    @pytest.mark.asyncio
     async def test_parked_items_outside_the_lookback_window_are_dropped(self, monkeypatch):
         # Both live branches drop entries published before the cutoff; the park branch returned the
         # file's items verbatim, so a stale park file re-ingested days-old videos every run.
@@ -870,3 +889,20 @@ class TestLifecycle:
         assert collector._sync_client_instance is None
         collector.__del__()  # no client created → must not raise
         assert collector._sync_client_instance is None
+
+
+async def test_the_api_key_rides_in_a_header_not_the_url():
+    # httpx puts the request URL into its error text and INFO logs, so a key in the query string would
+    # reach CloudWatch and alert bodies the first time a call raised.
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"items": []})
+
+    collector = YouTubeCollector(_config())
+    collector.api_key = "secret-key"
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await collector._get_api(client, "channels", {"part": "id"}, description="d")
+    assert "secret-key" not in str(seen[0].url)
+    assert seen[0].headers["X-Goog-Api-Key"] == "secret-key"

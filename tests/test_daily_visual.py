@@ -832,6 +832,13 @@ class TestDailyVisualMaker:
         source = _maker()._headline(_content(url="https://www.e.com/2/?utm_source=x"), _items(3))
         assert source.startswith("Story 2")
 
+    def test_a_ranked_article_stored_without_its_text_yields_to_the_curated_prose(self):
+        # An oversize snapshot keeps the ranked items without text, and the editor got a bare title.
+        items = _items(3)
+        for r in items:
+            r.item.text = ""
+        assert _maker()._headline(_content(url="http://e.com/1"), items) == "Story 1\n\n본문이다."
+
     def test_no_content_draws_the_top_ranked_story(self):
         assert _maker()._headline(None, _items(3)).startswith("Story 1")
 

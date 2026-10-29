@@ -26,7 +26,7 @@ collectors:
     # instead of looking healthy. Every collector inherits this key. Keep it INSIDE one sync cadence
     # (the local cron runs daily): at 36 a completely skipped sync day still read FRESH/OK, which is
     # the very thing this budget exists to catch.
-    park_max_age_hours: 24
+    park_max_age_hours: 12
     # In AWS this file is the ONLY transcript-carrying path (a datacenter IP cannot fetch
     # transcripts), so an absent one is a DEGRADED source, not a quiet fall-through to live
     # metadata-only collection.
@@ -76,7 +76,7 @@ collectors:
       #   platform: x
     lookback_hours: 72
     max_concurrency: 5
-    park_max_age_hours: 24
+    park_max_age_hours: 12
     # Expired X session cookies make every account feed answer 200 with NO entries: no failure rate
     # trips, and as long as one account still had a post the source reported a clean OK. Percent of
     # inputs that may come back empty before the source is DEGRADED. Set per source — many RSS blogs
@@ -97,7 +97,8 @@ collectors:
 pipeline:
   top_n: 5
   min_score: 0.6
-  # Any *_model / model_id takes a LanguageModelId value (shared/constants.py).
+  # Any *_model / model_id takes a LanguageModelId value (shared/constants.py): Claude
+  # ("anthropic.claude-...") or GPT ("openai.gpt-6.1-sol", "openai.gpt-6.1-terra"), all on Bedrock.
   ranking_model: "anthropic.claude-opus-5-5"
   digest_model: "anthropic.claude-sonnet-5-5"
   item_text_max_tokens: 10000
@@ -166,7 +167,7 @@ aws:
   profile: ""
   project_name: "omnisummary"
   stage: "dev"
-  state_bucket_name: ""    # Leave empty to create new S3 bucket
+  state_bucket_name: ""    # Set BEFORE the first deploy if X/YouTube will ever be synced, and never change it after: empty makes the stack create <project>-<stage>-state, which a later value deletes on a non-prod stage
   s3_prefix: ""            # S3 key prefix (e.g., "omnisummary")
   # How often the comment-reply Lambda looks for new comments.
   comment_reply_interval_minutes: 60

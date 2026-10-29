@@ -89,9 +89,6 @@ class DailyVisualMaker:
         timestamp (time.monotonic() + seconds left) that bounds the render + publish path when the
         caller runs under a hard timeout — the visual Lambda passes its remaining time. None (local
         runs, main.py) means unbounded, exactly as before."""
-        if not ranked_items:
-            return False
-
         post_date = today or datetime.now(ZoneInfo(self.config.aws.timezone)).date()
         # Asked BEFORE the render: a day with nothing left to publish must not pay for an LLM editor
         # pass plus a gpt-image render it can never deliver.
@@ -290,7 +287,9 @@ class DailyVisualMaker:
             return f"{item.title}\n\n{item.text}"
         url = normalize_url(curated.url)
         for r in ranked_items:
-            if normalize_url(r.item.url) == url:
+            # A snapshot over the store's size limit keeps ranked items without their text; the
+            # curated prose then beats a bare title.
+            if normalize_url(r.item.url) == url and (r.item.text or "").strip():
                 return f"{r.item.title}\n\n{r.item.text}"
         # Not the implication: it is a recommendation, and given it the editor's panel 4 turned into a moral.
         return f"{curated.title}\n\n{curated.body.strip()}"

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -11,6 +13,7 @@ from output.threads_handler import (
     fetch_conversation,
     fetch_own_posts,
     is_transient_reply_error,
+    publish_may_be_live,
     publish_reply,
     threads_client,
 )
@@ -24,6 +27,7 @@ from shared import (
     logger,
     resolve_secret,
 )
+from shared.formatting import URL_RE
 from shared.prompts import CommentReplyPrompt
 
 # Meta's moderation states a reader still sees; a HIDDEN, COVERED or BLOCKED comment is left alone.
@@ -109,11 +113,47 @@ def pending_comments(
     return pending
 
 
+# A reply the account publishes on its own, with no human in the loop, must not carry anything a
+# commenter could have planted: a link or a domain, someone else's handle, a hashtag. The prompt asks for
+# none of these, so a reply that has one followed instructions written into the comment.
+# Any name.tld, including a shortener (lnkd.in, youtu.be) and the spelled-out or bracketed dot ("evil 닷
+# com", "evil[.]com", "evil . com"; a space only AFTER a dot is a sentence end). The text is NFKC-normalized
+# first, so a full-width or ideographic dot is a dot, and the TLD may be followed by a Korean particle
+# ("evil.com으로"): Hangul is a word character, so \b found no boundary there.
+# Its cost is declining a reply that names a file or library ("node.js"): the account then stays silent.
+_BARE_DOMAIN = re.compile(r"(?i)[\w-]+(?:\.|\s+\.\s*|\s*(?:\[\.\]|\(dot\)|닷|\bdot\b)\s*)[a-z]{2,}(?![a-z0-9-])")
+_ZERO_WIDTH = re.compile("[\u200b-\u200f\u2060\ufeff]")
+_HANDLE = re.compile(r"(?<![\w@])@([A-Za-z0-9._]+)")
+_HASHTAG = re.compile(r"(?<![\w#&])#[^\W\d_]")
+
+
+def unsafe_reply_reason(text: str, commenter: str) -> str:
+    """Why `text` must not be published as the account's reply to `commenter`; "" when it may."""
+    text = _ZERO_WIDTH.sub("", unicodedata.normalize("NFKC", text)).replace("。", ".")
+    if URL_RE.search(text) or _BARE_DOMAIN.search(text):
+        return "it carries a link or a domain"
+    if any(handle.rstrip(".").lower() != commenter.lower() for handle in _HANDLE.findall(text)):
+        return "it names another account"
+    if _HASHTAG.search(text):
+        return "it carries a hashtag"
+    return ""
+
+
+def _reader_text(text: str) -> str:
+    """Reader-written text with the prompt's own markers defused, so a comment cannot close the
+    <comment> block or pass itself off as the account's words."""
+    return text.replace("<", "‹").replace(">", "›").replace("[YOU]", "[you]")
+
+
 def _thread_text(pending: PendingComment) -> str:
     def author(item: dict[str, Any]) -> str:
         return "YOU" if item["id"] in pending.own_ids else f"@{item.get('username', 'reader')}"
 
-    return "\n\n".join(f"[{author(item)}]\n{(item.get('text') or '').strip()}" for item in pending.thread)
+    def text(item: dict[str, Any]) -> str:
+        raw = (item.get("text") or "").strip()
+        return raw if item["id"] in pending.own_ids else _reader_text(raw)
+
+    return "\n\n".join(f"[{author(item)}]\n{text(item)}" for item in pending.thread)
 
 
 class CommentResponder:
@@ -136,16 +176,25 @@ class CommentResponder:
                 "audience": self.config.digest_audience_description,
                 "language_rules": KOREAN_PROSE_RULES,
                 "thread": _thread_text(pending),
-                "username": pending.comment.get("username", "reader"),
-                "comment": pending.comment.get("text", "").strip(),
+                "username": _reader_text(pending.comment.get("username", "reader")),
+                "comment": _reader_text(pending.comment.get("text", "").strip()),
             }
         )
         return CommentReply.model_validate(result)
 
+    def _record_failure(self, comment_id: str, now: datetime, *, final: bool) -> None:
+        try:
+            if final:
+                self.ledger.record(comment_id, "failed", now)
+            else:
+                self.ledger.record_failed_attempt(comment_id, now)
+        except Exception:
+            logger.warning("Could not record the failure on comment %s", comment_id, exc_info=True)
+
     async def run(self, now: datetime, *, dry_run: bool = False) -> CommentReplyRun:
         """Answer what is pending. `dry_run` drafts the replies and posts and records nothing.
-        A comment whose draft fails, or whose publish may have failed transiently, is not recorded, so
-        the next run tries it again; one Threads rejects for good is recorded as failed and left alone."""
+        A comment whose draft fails is tried again next run; one whose publish may have failed transiently
+        is tried again up to the ledger's MAX_ATTEMPTS; one Threads rejects for good is recorded as failed."""
         token = resolve_secret("THREADS_ACCESS_TOKEN", "threads-access-token", strict=True)
         user_id = resolve_secret("THREADS_USER_ID", "threads-user-id", strict=True)
         if not token or not user_id:
@@ -172,7 +221,10 @@ class CommentResponder:
                 try:
                     decision = await self.draft(item)
                     text = decision.text.strip()
-                    if not decision.reply or not text:
+                    unsafe = unsafe_reply_reason(text, item.comment.get("username", "")) if decision.reply else ""
+                    if unsafe:
+                        logger.warning("Not posting the reply to comment %s: %s", comment_id, unsafe)
+                    if not decision.reply or not text or unsafe:
                         logger.info("Declined comment %s by @%s", comment_id, item.comment.get("username"))
                         run.declined.append(comment_id)
                         if not dry_run:
@@ -197,16 +249,25 @@ class CommentResponder:
                         "Could not answer comment %s (%s): %s", comment_id, e.response.status_code, error_detail(e)
                     )
                     run.failed.append(comment_id)
-                    # Only a verdict retrying cannot change (auth, a permanent rejection) is recorded;
-                    # a 400 that may be transient is tried again next run.
-                    if not is_transient_reply_error(e) and not dry_run:
-                        try:
-                            self.ledger.record(comment_id, "failed", now)
-                        except Exception:
-                            logger.warning("Could not record comment %s as failed", comment_id, exc_info=True)
+                    # A verdict retrying cannot change (auth, a permanent rejection) is final, and so is a
+                    # 5xx from the publish step: that reply may be live, and the next run would post a second
+                    # one whenever the conversation lags. A 400 that may be transient is tried again.
+                    if not dry_run:
+                        self._record_failure(
+                            comment_id, now, final=publish_may_be_live(e) or not is_transient_reply_error(e)
+                        )
                 except Exception as e:
                     logger.warning("Could not answer comment %s: %s", comment_id, e)
                     run.failed.append(comment_id)
+                    # Only a failure that repeats on this comment counts (the answer failed validation or
+                    # parsing, both ValueErrors): uncounted, such a comment held a slot and raised the alarm
+                    # for the whole lookback. A throttle, timeout or outage fails every comment alike, and
+                    # counting it retired comments that were never answered.
+                    if not dry_run and publish_may_be_live(e):
+                        # Like a publish-step 5xx: the reply may be live, and answering again could post twice.
+                        self._record_failure(comment_id, now, final=True)
+                    elif isinstance(e, ValueError) and not dry_run:
+                        self._record_failure(comment_id, now, final=False)
         logger.info(
             "Comment replies: %d replied, %d declined, %d failed", len(run.replied), len(run.declined), len(run.failed)
         )

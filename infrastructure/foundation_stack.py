@@ -53,7 +53,8 @@ class OmniSummaryFoundationStack(Stack):
             "AgentEcrRepo",
             repository_name=f"{project_name}-{stage}-agent",
             removal_policy=RemovalPolicy.DESTROY,
-            lifecycle_rules=[ecr.LifecycleRule(max_image_count=10)],
+            # Headroom over the pushes between deploys: an expired image is the digest the Lambdas run on.
+            lifecycle_rules=[ecr.LifecycleRule(max_image_count=30)],
         )
 
         ssm_read_statement = iam.PolicyStatement(
@@ -171,6 +172,8 @@ class OmniSummaryFoundationStack(Stack):
             event_expiry_duration=90,
             description="OmniSummary digest snapshot state",
         )
+        # dev IS the live deployment: a stack delete or replacement must not take 90 days of snapshots.
+        self.memory.apply_removal_policy(RemovalPolicy.RETAIN)
         self.memory_id = self.memory.attr_memory_id
 
         # Scoped to THIS stack's memory instead of memory/* — otherwise the role could read and write

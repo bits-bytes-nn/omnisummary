@@ -74,10 +74,11 @@ class TestNoSecretsInTheTemplate:
         foundation, application = templates
         for template in (foundation, application):
             for logical_id, resource in template.find_resources("AWS::SSM::Parameter").items():
-                # Tags are stack-wide and already deployed; everything else is pinned.
-                assert set(resource["Properties"]) <= {"Name", "Type", "Value", "Tags"}, logical_id
-                assert {"Name", "Type", "Value"} <= set(resource["Properties"]), logical_id
+                assert set(resource["Properties"]) == {"Name", "Type", "Value", "Tags"}, logical_id
                 assert resource["Properties"]["Type"] == "String", logical_id
+                # Tags render from the stack-wide Tags.of(...).add onto every one of these, so a new or
+                # changed stack tag is a property change on each secret. Pinned to the deployed values.
+                assert resource["Properties"]["Tags"] == {"Project": "omnisummary", "Stage": "dev"}, logical_id
 
 
 class TestFoundationStack:
@@ -164,6 +165,13 @@ class TestFoundationStack:
     def test_agentcore_memory_resource(self, templates):
         foundation, _ = templates
         foundation.resource_count_is("AWS::BedrockAgentCore::Memory", 1)
+
+    def test_agentcore_memory_survives_a_stack_delete_or_replacement(self, templates):
+        # stage dev is the live deployment: the memory holds 90 days of digest snapshots.
+        foundation, _ = templates
+        for logical_id, memory in foundation.find_resources("AWS::BedrockAgentCore::Memory").items():
+            assert memory.get("DeletionPolicy") == "Retain", logical_id
+            assert memory.get("UpdateReplacePolicy") == "Retain", logical_id
 
     def test_memory_data_plane_permissions(self, templates):
         foundation, _ = templates
@@ -283,6 +291,17 @@ class TestApplicationStack:
         )
         assert fn["ReservedConcurrentExecutions"] == 1
         assert fn["Timeout"] <= config.aws.comment_reply_interval_minutes * 60
+
+    def test_the_visual_lambda_runs_one_at_a_time(self, templates):
+        # The post ledger is a read-modify-write: a duplicate async delivery running alongside the first
+        # could pass its check and post the day twice.
+        _, app = templates
+        fn = next(
+            r["Properties"]
+            for r in app.find_resources("AWS::Lambda::Function").values()
+            if r["Properties"].get("FunctionName") == "omnisummary-dev-visual"
+        )
+        assert fn["ReservedConcurrentExecutions"] == 1
 
     def test_digest_lambda_has_alert_topic_env(self, templates):
         _, app = templates
