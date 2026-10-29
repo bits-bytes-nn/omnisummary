@@ -278,12 +278,39 @@ class TestStripMarkup:
 
 
 class TestThreadsResearch:
-    def test_root_and_replies_under_cap(self):
+    def test_an_undelimited_report_is_one_post_trimmed_to_fit(self):
+        # It is reported as trimmed, so the agent is sent back to split it with "---".
         report = "\n\n".join(["문장 하나다. " * 20 for _ in range(4)])
-        root, replies, *_ = render_threads_research(report)
-        assert len(root) <= THREADS_MAX_POST_CHARS
-        assert all(len(r) <= THREADS_MAX_POST_CHARS for r in replies)
-        assert len(replies) >= 1
+        render = render_threads_research(report)
+        assert len(render.root) <= THREADS_MAX_POST_CHARS
+        assert render.replies == [] and render.trimmed == 1
+
+    def test_a_heading_stays_with_its_body_without_delimiters(self):
+        # Packing by sentence closed a post at every blank line, so the bare 소제목 went out as the root.
+        render = render_threads_research("핵심 요약\n\nOpenAI가 새 모델을 냈다.\nhttps://seen.com/a")
+        assert render.root.startswith("핵심 요약") and "OpenAI가 새 모델을 냈다." in render.root
+        assert render.replies == []
+
+    def test_back_to_back_delimiters_publish_no_literal_dashes(self):
+        render = render_threads_research("a\n---\n---\nb\n---\n\n---\nc")
+        assert "---" not in render.root + "".join(render.replies)
+        assert len(render.replies) == 2
+
+    def test_a_closing_delimiter_is_not_published(self):
+        render = render_threads_research("첫째\n\n본문1.\n---\n둘째\n\n본문2.\nhttps://seen.com/a\n---\n")
+        assert render.replies[-1].endswith("https://seen.com/a")
+        assert "---" not in render.root + "".join(render.replies)
+
+    def test_a_single_overlong_line_keeps_a_citation_that_ends_in_a_paren(self):
+        url = "https://en.wikipedia.org/wiki/Mamba_(deep_learning)"
+        render = render_threads_research("이것은 아주 긴 문장이다 " * 40 + url)
+        assert render.root.endswith(url) and len(render.root) <= THREADS_MAX_POST_CHARS
+
+    def test_trimming_keeps_a_citation_that_ends_in_a_paren(self):
+        url = "https://en.wikipedia.org/wiki/Mamba_(deep_learning)"
+        report = "1/2 소제목\n\n" + "이것은 아주 긴 문장이다. " * 40 + url + "\n---\n2/2 끝."
+        render = render_threads_research(report, max_posts=8)
+        assert render.root.endswith(url) and len(render.root) <= THREADS_MAX_POST_CHARS
 
     def test_strips_markdown_for_threads(self):
         root, replies, *_ = render_threads_research("리드 **굵게** 본문이다. [링크](https://x.com) 참고하라.")
@@ -297,7 +324,7 @@ class TestThreadsResearch:
         # "Delivered the report". The counts now ride back with the render.
         report = "\n---\n".join(f"{i}/30 소제목\n\n섹션 {i} 문장이다." for i in range(30))
         render = render_threads_research(report, max_posts=8)
-        assert render.rendered == 8
+        assert 1 + len(render.replies) == 8
         assert render.dropped == 22
         assert render.trimmed == 0
 
@@ -309,16 +336,16 @@ class TestThreadsResearch:
     def test_complete_render_reports_nothing_lost(self):
         render = render_threads_research("1/2 소제목\n\n본문이다.\n---\n2/2 마무리다.", max_posts=8)
         assert (render.dropped, render.trimmed) == (0, 0)
-        assert render.rendered == 2
+        assert 1 + len(render.replies) == 2
 
     def test_max_posts_caps_total_count(self):
         # A long report must not fan out past the cap (root + replies <= max_posts).
-        report = "\n\n".join(f"섹션 {i} 문장이다. " * 8 for i in range(30))
+        report = "\n---\n".join(f"섹션 {i} 문장이다. " * 8 for i in range(30))
         root, replies, *_ = render_threads_research(report, max_posts=8)
         assert 1 + len(replies) <= 8
 
     def test_no_cap_when_max_posts_zero(self):
-        report = "\n\n".join(f"섹션 {i} 문장이다. " * 8 for i in range(30))
+        report = "\n---\n".join(f"섹션 {i} 문장이다. " * 8 for i in range(30))
         _, replies, *_ = render_threads_research(report, max_posts=0)
         assert 1 + len(replies) > 8  # uncapped
 
@@ -332,14 +359,6 @@ class TestThreadsResearch:
         root, replies, *_ = render_threads_research("짧은 보고서다.")
         assert root == "짧은 보고서다."
         assert replies == []
-
-    def test_long_sections_stay_separate(self):
-        # Two substantial sections (each above the root-merge threshold) stay as separate posts.
-        a = "첫째 문단이다. " * 10
-        b = "둘째 문단이다. " * 10
-        root, replies, *_ = render_threads_research(f"{a}\n\n{b}")
-        assert root.startswith("첫째")
-        assert any(r.startswith("둘째") for r in replies)
 
     def test_agent_delimiters_define_posts(self):
         # When the agent marks boundaries with '---', each block is ONE post — number + heading +

@@ -8,12 +8,13 @@ from typing import Any
 
 import boto3
 
-from pipeline import persist_digest, resolve_digest_window, run_collectors_with_health, run_pipeline
+from pipeline import already_published, persist_digest, resolve_digest_window, run_collectors_with_health, run_pipeline
 from shared import (
     BedrockLanguageModelFactory,
     Config,
     DigestResult,
     HealthReport,
+    create_memory_store,
     emit_emf,
     get_correlation_id,
     is_running_in_aws,
@@ -90,6 +91,10 @@ async def _run() -> None:
 
     digest_date, reference_time = resolve_digest_window(config)
     config.collectors.set_reference_time(reference_time)
+    if already_published(config, digest_date):
+        # The EmptyDigest alarm reads a missing metric as a failed day.
+        _emit_digest_items_metric(_stored_story_count(digest_date))
+        return
 
     boto_session = boto3.Session(region_name=config.aws.bedrock_region)
     llm_factory = BedrockLanguageModelFactory(
@@ -136,6 +141,19 @@ async def _run() -> None:
         _trigger_visual(digest_date)
 
     logger.info("Digest pipeline completed for %s", digest_date)
+
+
+def _stored_story_count(digest_date: date) -> int:
+    """How many stories the date's stored digest carries; 0 when it can't be read."""
+    from agent.tool_state import DigestStateManager
+
+    try:
+        data = create_memory_store().get_digest(digest_date.isoformat())
+        content = DigestStateManager.load_from_dict(data).get_content() if data else None
+    except Exception:
+        logger.warning("Could not read the stored digest for %s", digest_date, exc_info=True)
+        return 0
+    return len(content.items) if content else 0
 
 
 def _trigger_visual(digest_date: date) -> None:

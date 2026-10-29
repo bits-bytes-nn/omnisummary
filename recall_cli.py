@@ -28,12 +28,24 @@ from shared import TRENDS_KEY, Config, TrendMemory, create_memory_store, create_
 EXIT_OK, EXIT_FAILED, EXIT_REJECTED = 0, 1, 2
 
 
+class _ArgumentError(ValueError):
+    pass
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message: str):  # type: ignore[override]
+        # argparse would print usage to stderr and exit 2 with nothing on stdout, breaking the
+        # one-JSON-object contract; the caller gets a "rejected" result instead.
+        raise _ArgumentError(message)
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Read back the OmniSummary digest memory (prints one JSON object)")
+    # No -h: argparse prints help to stdout and exits, which is not the one JSON object callers parse.
+    parser = _Parser(description="Read back the OmniSummary digest memory (prints one JSON object)", add_help=False)
     sub = parser.add_subparsers(dest="kind", required=True)
-    digest = sub.add_parser("digest", help="What one day's digest carried")
+    digest = sub.add_parser("digest", add_help=False)
     digest.add_argument("date", nargs="?", default="", help="YYYY-MM-DD (default: today in the digest timezone)")
-    sub.add_parser("trends", help="The cross-day trends the digest tracks, strongest first")
+    sub.add_parser("trends", add_help=False)
     return parser.parse_args(argv)
 
 
@@ -69,7 +81,10 @@ def _trends(config: Config, today: date) -> list[dict[str, Any]]:
 
 
 def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
-    args = _parse_args(argv)
+    try:
+        args = _parse_args(argv)
+    except _ArgumentError as e:
+        return {"status": "rejected", "kind": "", "error": str(e)}, EXIT_REJECTED
     result: dict[str, Any] = {"status": "failed", "kind": args.kind, "error": None}
     try:
         config = Config.load()

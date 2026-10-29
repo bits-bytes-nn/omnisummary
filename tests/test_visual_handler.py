@@ -152,6 +152,7 @@ class TestVisualRun:
         assert kwargs["today"] == date(2026, 8, 18)
         # No caller deadline → None, so the publish path behaves exactly as it did before.
         assert kwargs["deadline"] is None
+        assert kwargs["force_republish"] is False
 
     async def test_a_delivery_that_posted_nothing_raises_for_the_alarm_and_dlq(self):
         config = MagicMock()
@@ -213,7 +214,7 @@ class TestThreadsOutcomeAlert:
         sns = MagicMock()
         with patch("lambda_handlers.visual_handler.boto3.client", return_value=sns):
             visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(1, 6), date(2026, 8, 18))
-        assert "do NOT --force-republish" in sns.publish.call_args.kwargs["Message"]
+        assert "do NOT re-post the day" in sns.publish.call_args.kwargs["Message"]
 
     def test_an_ambiguous_failure_says_the_root_may_be_live(self, monkeypatch):
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
@@ -221,6 +222,53 @@ class TestThreadsOutcomeAlert:
         with patch("lambda_handlers.visual_handler.boto3.client", return_value=sns):
             visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(0, 6, uncertain=True), date(2026, 8, 18))
         assert "MAY be live" in sns.publish.call_args.kwargs["Message"]
+
+    def test_a_day_that_posted_nothing_names_the_command_that_re_posts_its_stored_digest(self, monkeypatch):
+        # main.py --force-republish re-collected and wrote a DIFFERENT digest; the stored one is replayed
+        # through this function, and the alert carries the exact command with the real date.
+        monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
+        monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "omnisummary-dev-visual")
+        sns = MagicMock()
+        with patch("lambda_handlers.visual_handler.boto3.client", return_value=sns):
+            visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(0, 6, uncertain=True), date(2026, 8, 18))
+        message = sns.publish.call_args.kwargs["Message"]
+        assert "--function-name omnisummary-dev-visual" in message
+        assert '"digest_date": "2026-08-18", "force_republish": true' in message
+        assert "<date>" not in message
+
+    def test_a_failed_day_whose_marker_is_still_held_gets_the_forced_command(self, monkeypatch):
+        # A plain replay of a marked date skips silently: the alert must not hand out that command.
+        monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
+        monkeypatch.setenv("AWS_REGION", "ap-northeast-2")
+        sns = MagicMock()
+        with patch("lambda_handlers.visual_handler.boto3.client", return_value=sns):
+            visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(0, 6), date(2026, 8, 18), marker_kept=True)
+        message = sns.publish.call_args.kwargs["Message"]
+        assert '"force_republish": true' in message and "--region ap-northeast-2" in message
+
+    def test_a_story_less_snapshot_is_not_sent_to_a_futile_replay(self, monkeypatch):
+        monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
+        sns = MagicMock()
+        with patch("lambda_handlers.visual_handler.boto3.client", return_value=sns):
+            visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(0, 1), date(2026, 8, 18))
+        message = sns.publish.call_args.kwargs["Message"]
+        assert "main.py --date 2026-08-18 --force-republish" in message and "aws lambda invoke" not in message
+
+    def test_a_detached_reply_is_named_with_the_root(self, monkeypatch):
+        # 2026-10-27: a reply went up as its own post and the alert could only say "incomplete".
+        monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
+        sns = MagicMock()
+        outcome = ThreadsDelivery(5, 6, True, root_id="root-1", detached=("stray-4",))
+        with patch("lambda_handlers.visual_handler.boto3.client", return_value=sns):
+            visual_handler._maybe_alert_threads_outcome(outcome, date(2026, 10, 27))
+        message = sns.publish.call_args.kwargs["Message"]
+        assert "root-1" in message and "stray-4" in message and "delete" in message
+
+    def test_a_replay_can_force_a_date_whose_marker_was_kept(self):
+        assert visual_handler._requested_force({"digest_date": "2026-08-18", "force_republish": True}) is True
+        assert visual_handler._requested_force({"requestPayload": {"force_republish": True}}) is False  # DLQ
+        assert visual_handler._requested_force({"digest_date": "2026-08-18"}) is False
+        assert visual_handler._requested_force({"force_republish": "yes"}) is False
 
     def test_silent_on_a_complete_post(self, monkeypatch):
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")

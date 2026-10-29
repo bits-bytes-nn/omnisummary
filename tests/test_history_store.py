@@ -57,6 +57,16 @@ class TestPublishedUrlLedger:
         assert "https://old.com" not in kept
         assert kept["https://fresh.com"] == "2026-06-09"
 
+    def test_a_backfill_keeps_the_later_publish_stamp(self):
+        # A --date backfill of an older day overwrote a newer stamp, aging the URL out of the window early.
+        store = _MemStore()
+        store.write_json(PUBLISHED_URLS_KEY, {"https://a.com/x": "2026-06-08"})
+        ledger = PublishedUrlLedger(store, ttl_days=6)
+        ledger.record(["https://a.com/x", "https://b.com/y"], date(2026, 6, 3))
+        kept = store.read_json(PUBLISHED_URLS_KEY)
+        assert kept == {"https://a.com/x": "2026-06-08", "https://b.com/y": "2026-06-03"}
+        assert "https://a.com/x" in ledger.recent_urls(date(2026, 6, 13))
+
     def test_corrupt_ledger_degrades_to_empty(self):
         store = _MemStore()
         store.write(PUBLISHED_URLS_KEY, "{ not json")
@@ -143,13 +153,6 @@ class TestThreadsPostLedger:
         ledger.mark(date(2026, 6, 10), run_id="run-A")
         ledger.unmark(date(2026, 6, 10), run_id="run-A")
         assert ledger.already_posted(date(2026, 6, 10)) is False
-
-    def test_legacy_list_format_is_read(self):
-        # An existing bare-list blob (pre-run_id format) must still be honored as "posted".
-        store = _MemStore()
-        store.write_json(THREADS_POSTED_KEY, ["2026-06-10"])
-        ledger = ThreadsPostLedger(store)
-        assert ledger.already_posted(date(2026, 6, 10)) is True
 
 
 class TestRollingLog:

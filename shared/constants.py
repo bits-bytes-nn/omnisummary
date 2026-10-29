@@ -18,6 +18,8 @@ class LanguageModelId(str, Enum):
     CLAUDE_V5_5_HAIKU = "anthropic.claude-haiku-5-5"
     CLAUDE_V5_5_SONNET = "anthropic.claude-sonnet-5-5"
     CLAUDE_V5_5_OPUS = "anthropic.claude-opus-5-5"
+    GPT_V6_1_TERRA = "openai.gpt-6.1-terra"
+    GPT_V6_1_SOL = "openai.gpt-6.1-sol"
 
 
 class LocalPaths(str, Enum):
@@ -102,3 +104,6 @@ THREADS_POST_SEPARATOR: str = "\n\n"
 # now fails config load instead of silently making every brief coerce to the default orientation.
 VisualOrientation = Literal["tall", "portrait", "square", "landscape"]
 VISUAL_ORIENTATIONS: tuple[str, ...] = get_args(VisualOrientation)
+
+# The digest runs once a day (the EventBridge cron). One skipped local park sync is one period behind.
+DIGEST_PERIOD_HOURS = 24

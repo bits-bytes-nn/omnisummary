@@ -167,9 +167,10 @@ class AgentCoreMemoryStore(MemoryStore):
             return payload_text
 
         # Still over: shed whole keys (never byte-slice — a truncated string is invalid JSON
-        # and would crash json.loads on read). Drop the digest_result, then the ranked list.
-        logger.warning("Minimal digest state still over limit; dropping digest_result")
-        minimal["digest_result"] = None
+        # and would crash json.loads on read). Drop the ranked list first: the digest_result is what
+        # the visual Lambda publishes, and the candidate list only feeds the comic's source text.
+        logger.warning("Minimal digest state still over limit; dropping the ranked items")
+        minimal["ranked_items"] = []
         payload_text = json.dumps(minimal, ensure_ascii=False)
         if len(payload_text) <= self.MAX_EVENT_TEXT:
             return payload_text

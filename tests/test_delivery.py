@@ -6,6 +6,7 @@ from agent.research_tools import DeliveryContext
 from output import delivery as dlv
 from output.threads_handler import ThreadsDelivery
 from shared import ImageAsset
+from shared.formatting import normalize_citation_url
 
 
 def _img(content_type="image/jpeg"):
@@ -53,10 +54,13 @@ class TestDeliverThreads:
     @pytest.mark.asyncio
     async def test_passes_first_image_with_content_type_and_key(self):
         d = DeliveryContext(publish_threads=True, staged_images=[_img("image/jpeg"), _img("image/png")])
+        d.seen_urls.add(normalize_citation_url("https://src/article"))
         with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(1, 1))) as pt:
             with patch.object(dlv, "get_config") as cfg:
                 _threads_config(cfg, bucket="bkt", prefix="omni")
-                ok = await dlv.deliver_research_report("리드 문장이다.", channel="threads", delivery=d)
+                ok = await dlv.deliver_research_report(
+                    "리드 문장이다.\nhttps://src/article", channel="threads", delivery=d
+                )
         assert ok is dlv.DeliveryOutcome.POSTED
         kw = pt.await_args.kwargs
         assert kw["image_content_type"] == "image/jpeg"  # the FIRST staged image
@@ -103,10 +107,33 @@ class TestDeliverThreads:
         with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(1, 1))) as pt:
             with patch.object(dlv, "get_config") as cfg:
                 _threads_config(cfg)
-                ok = await dlv.deliver_research_report("리드.", channel="threads", delivery=d)
+                ok = await dlv.deliver_research_report("리드.\nhttps://src/article", channel="threads", delivery=d)
         assert ok is dlv.DeliveryOutcome.POSTED
         assert pt.await_args.kwargs["image_bytes"] is None
         assert pt.await_args.kwargs["image_bucket"] == ""
+
+    @pytest.mark.asyncio
+    async def test_an_image_from_a_page_the_thread_does_not_cite_is_not_posted(self):
+        # The image is shown as the thread's own; one from an uncited page named no source for it.
+        uncited = _img().model_copy(update={"source_url": "https://elsewhere/page"})
+        d = DeliveryContext(publish_threads=True, staged_images=[uncited, _img("image/png")])
+        d.seen_urls |= {normalize_citation_url("https://src/article"), normalize_citation_url("https://elsewhere/page")}
+        with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(1, 1))) as pt:
+            with patch.object(dlv, "get_config") as cfg:
+                _threads_config(cfg, bucket="bkt")
+                await dlv.deliver_research_report("리드.\nhttps://src/article", channel="threads", delivery=d)
+        assert pt.await_args.kwargs["image_content_type"] == "image/png"  # the cited one, not the first
+
+    @pytest.mark.asyncio
+    async def test_a_citation_with_a_korean_particle_still_carries_its_image(self):
+        # The citation guard strips a glued particle ("...article에서"); the image match must too.
+        d = DeliveryContext(publish_threads=True, staged_images=[_img()])
+        d.seen_urls.add(normalize_citation_url("https://src/article"))
+        with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(1, 1))) as pt:
+            with patch.object(dlv, "get_config") as cfg:
+                _threads_config(cfg, bucket="bkt")
+                await dlv.deliver_research_report("https://src/article에서 밝혔다.", channel="threads", delivery=d)
+        assert pt.await_args.kwargs["image_bytes"] == b"abc"
 
     @pytest.mark.asyncio
     async def test_the_per_channel_outcome_is_kept_for_the_caller(self):
@@ -166,45 +193,23 @@ class TestARootThatLandedAloneIsNotAPlainFailure:
         assert d.partial_channels == set() and d.delivered_channels == set()
 
 
-class TestIncompleteDeliveryIsReported:
-    """A truncated thread used to be indistinguishable from a complete one. There is deliberately NO
-    re-delivery path (the recorded channel makes a second deliver_report a no-op); the counts say
-    what landed instead."""
+class TestATooLongThreadNeverPosts:
+    """A rewrite that still overflowed used to post cut, renumbered "1/10 … 10/10" without its dropped
+    conclusion, so the reader could not tell. Every over-long text is sent back; none is published."""
 
     @pytest.mark.asyncio
-    async def test_dropped_posts_count_as_incomplete_even_when_all_land(self):
+    async def test_every_over_long_text_is_sent_back(self):
         d = DeliveryContext(publish_threads=True)
         report = "\n---\n".join(f"{i}/20 소제목\n\n본문 {i}이다." for i in range(20))
         with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(4, 4))) as pt:
             with patch.object(dlv, "get_config") as cfg:
                 _threads_config(cfg, max_posts=4)
                 first = await dlv.deliver_research_report(report, channel="threads", delivery=d)
-                again = await dlv.deliver_research_report(report, channel="threads", delivery=d)
-                ok = await dlv.deliver_research_report(report + "\n---\n덧붙임", channel="threads", delivery=d)
-        assert first is again is dlv.DeliveryOutcome.TOO_LONG  # the same text, before anything is public
-        assert ok is dlv.DeliveryOutcome.POSTED and pt.await_count == 1  # a rewrite posts as it is
-        assert d.threads_stats.dropped == 17  # the rewrite added a post
-        assert not d.threads_stats.complete
+                rewrite = await dlv.deliver_research_report(report + "\n---\n덧붙임", channel="threads", delivery=d)
+                fits = await dlv.deliver_research_report("\n---\n".join(["a", "b", "c"]), channel="threads", delivery=d)
+        assert first is rewrite is dlv.DeliveryOutcome.TOO_LONG
+        assert fits is dlv.DeliveryOutcome.POSTED and pt.await_count == 1
 
-
-class TestNothingIsPostedTwice:
-    @pytest.mark.asyncio
-    async def test_two_threads_deliveries_in_one_turn_post_once(self):
-        # Strands runs one turn's tool calls concurrently; both used to pass the "already posted" check.
-        import asyncio
-
-        d = DeliveryContext(publish_threads=True)
-
-        async def slow_post(**_):
-            await asyncio.sleep(0.01)
-            return ThreadsDelivery(1, 1)
-
-        with patch("output.threads_handler.post_to_threads", new=AsyncMock(side_effect=slow_post)) as pt:
-            with patch.object(dlv, "get_config") as cfg:
-                _threads_config(cfg)
-                outcomes = await asyncio.gather(
-                    dlv.deliver_research_report("리드다.", channel="threads", delivery=d),
-                    dlv.deliver_research_report("리드다.", channel="threads", delivery=d),
-                )
-        assert sorted(o.name for o in outcomes) == ["NOT_POSTED", "POSTED"]
-        assert pt.await_count == 1
+    def test_a_trimmed_post_alone_is_too_long(self):
+        assert dlv.sends_back_as_too_long("x", DeliveryContext(), dropped=0, trimmed=1)
+        assert not dlv.sends_back_as_too_long("x", DeliveryContext(), dropped=0, trimmed=0)

@@ -341,6 +341,7 @@ class TestAgentClaude55Request:
             LanguageModelId.CLAUDE_V5_5_OPUS,
             LanguageModelId.CLAUDE_V5_5_SONNET,
             LanguageModelId.CLAUDE_V5_5_HAIKU,
+            LanguageModelId.GPT_V6_1_SOL,
         ],
         ids=lambda m: m.name,
     )
@@ -379,10 +380,10 @@ class TestAgentClaude55Request:
         )
         assert "temperature" not in request["inferenceConfig"]
         assert request["toolConfig"]["toolChoice"] == {"auto": {}}
-        effort = LANGUAGE_MODEL_INFO[model_id].effort
-        assert request.get("additionalModelRequestFields") == (
-            {"output_config": {"effort": effort}} if effort else None
-        )
+        assert request.get("additionalModelRequestFields") == (LANGUAGE_MODEL_INFO[model_id].request_fields() or None)
+        # GPT rejects a Converse cachePoint; Claude keeps the explicit strategy.
+        anthropic = LANGUAGE_MODEL_INFO[model_id].provider == "anthropic"
+        assert ("cache_config" in captured) is anthropic
 
 
 class TestAgentCredentialSelection:

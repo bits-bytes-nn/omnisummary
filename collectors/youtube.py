@@ -22,6 +22,7 @@ from .base import (
     gather_collector_results,
     in_collection_window,
     load_items_from_s3,
+    park_read_lookback_hours,
     parked_items_in_window,
     parse_feed_entries,
 )
@@ -135,7 +136,11 @@ class YouTubeCollector(BaseCollector):
             # videos older than lookback into ranking, and a --date backfill ingested today's.
             return parked_items_in_window(
                 parked.items,
-                lookback_hours=self.config.lookback_hours,
+                lookback_hours=park_read_lookback_hours(
+                    parked,
+                    lookback_hours=self.config.lookback_hours,
+                    reference_time=self.config.reference_time,
+                ),
                 reference_time=self.config.reference_time,
                 description="YouTube park file",
             )
@@ -224,7 +229,6 @@ class YouTubeCollector(BaseCollector):
                         "part": "snippet",
                         "playlistId": f"{prefix}{channel_id[2:]}",
                         "maxResults": _CHANNEL_FETCH_DEPTH,
-                        "key": self.api_key,
                     },
                     description=f"YouTube playlistItems for '{channel_url}'",
                 )
@@ -257,7 +261,6 @@ class YouTubeCollector(BaseCollector):
                 {
                     "part": "snippet,statistics",
                     "id": ",".join(video_ids),
-                    "key": self.api_key,
                 },
                 description=f"YouTube videos details for '{channel_url}'",
             )
@@ -383,7 +386,7 @@ class YouTubeCollector(BaseCollector):
             resp = await self._get_api(
                 client,
                 "channels",
-                {"part": "id", "forHandle": handle, "key": self.api_key},
+                {"part": "id", "forHandle": handle},
                 description=f"YouTube channels forHandle '{handle}'",
             )
             if resp.status_code != 200:
@@ -406,7 +409,10 @@ class YouTubeCollector(BaseCollector):
         so the caller fails the channel immediately instead of retrying a verdict."""
 
         async def _call() -> httpx.Response:
-            resp = await client.get(f"{YOUTUBE_API_BASE}/{path}", params=params)
+            # The key rides in a header: httpx puts the request URL into its error text and INFO logs.
+            resp = await client.get(
+                f"{YOUTUBE_API_BASE}/{path}", params=params, headers={"X-Goog-Api-Key": self.api_key}
+            )
             if resp.status_code in RETRIABLE_STATUS_CODES:
                 delay = _retry_after_delay(resp, self.config.request_timeout)
                 if delay:

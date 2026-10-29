@@ -24,6 +24,12 @@ def put_secrets():
     return _load_module()
 
 
+@pytest.fixture(autouse=True)
+def _config_yaml_present(put_secrets, monkeypatch):
+    # config/config.yaml is gitignored, so CI has none; main() refuses to run without it.
+    monkeypatch.setattr(put_secrets, "CONFIG_PATH", _SCRIPT)
+
+
 def _ssm(*, get_side_effect=None, put_side_effect=None) -> MagicMock:
     client = MagicMock()
     client.exceptions.ParameterNotFound = ClientError
@@ -153,3 +159,17 @@ class TestVerify:
         assert rc == 1
         assert "PLAINTEXT" in out
         client.put_parameter.assert_not_called()
+
+
+class TestConfigGuard:
+    def test_refuses_to_run_without_config_yaml(self, put_secrets, monkeypatch, tmp_path):
+        # Config.load() falls back to the tracked template, whose project/stage name parameter paths
+        # the deployed stack may never read.
+        monkeypatch.setattr(put_secrets, "CONFIG_PATH", tmp_path / "config.yaml")
+        with patch.object(put_secrets, "Config") as cfg:
+            with patch.object(put_secrets.boto3, "client") as client:
+                with patch.object(sys, "argv", ["put_secrets.py"]):
+                    with pytest.raises(SystemExit, match="config.yaml is missing"):
+                        put_secrets.main()
+        cfg.load.assert_not_called()
+        client.assert_not_called()

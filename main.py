@@ -1,10 +1,20 @@
 import argparse
 import asyncio
+import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import boto3
 
-from pipeline import resolve_digest_window, run_collectors_with_health, run_pipeline
+from pipeline import (
+    PublishIncomplete,
+    already_published,
+    resolve_digest_window,
+    run_collectors_with_health,
+    run_pipeline,
+)
 from shared import BedrockLanguageModelFactory, Config, logger
+from shared.constants import COLLECTOR_NAMES
 
 
 def _positive_int(value: str) -> int:
@@ -16,9 +26,11 @@ def _positive_int(value: str) -> int:
     return ivalue
 
 
-async def main() -> None:
+async def main() -> int:
+    """Exit code: 0 when the run did what it was asked, 1 when nothing was collected, no digest was
+    produced or the Threads post did not fully land (locally there is no alert to say so)."""
     parser = argparse.ArgumentParser(description="OmniSummary - Daily AI Digest")
-    parser.add_argument("--sources", nargs="+", help="Specific sources to collect from")
+    parser.add_argument("--sources", nargs="+", choices=COLLECTOR_NAMES, help="Specific sources to collect from")
     parser.add_argument("--dry-run", action="store_true", help="Run without publishing or persisting")
     parser.add_argument("--top-n", type=_positive_int, help="Override top_n from config (>= 1)")
     parser.add_argument("--date", type=str, help="Digest date (YYYY-MM-DD). Defaults to today")
@@ -41,6 +53,9 @@ async def main() -> None:
         config.pipeline.top_n = args.top_n
 
     digest_date, reference_time = resolve_digest_window(config, args.date)
+    if digest_date > datetime.now(ZoneInfo(config.aws.timezone)).date():
+        # A typo'd future date stored that day's snapshot and post marker, and the real run then skipped.
+        parser.error(f"--date {digest_date} is in the future")
     config.collectors.set_reference_time(reference_time)
 
     logger.info(
@@ -48,6 +63,9 @@ async def main() -> None:
         digest_date,
         reference_time.isoformat(),
     )
+
+    if not args.dry_run and not args.force_republish and already_published(config, digest_date):
+        return 0
 
     boto_session = boto3.Session(
         profile_name=config.aws.profile or None,
@@ -70,19 +88,27 @@ async def main() -> None:
         collected_items = pinned + collected_items
 
     if not collected_items:
-        logger.warning("No items collected. Exiting.")
-        return
+        logger.error("No items collected. Exiting.")
+        return 1
 
-    await run_pipeline(
-        config,
-        llm_factory,
-        collected_items,
-        digest_date=digest_date,
-        dry_run=args.dry_run,
-        force_republish=args.force_republish,
-    )
+    try:
+        _, _, digest = await run_pipeline(
+            config,
+            llm_factory,
+            collected_items,
+            digest_date=digest_date,
+            dry_run=args.dry_run,
+            force_republish=args.force_republish,
+        )
+    except PublishIncomplete as e:
+        logger.error("%s", e)
+        return 1
+    if digest is None:
+        logger.error("No digest was produced")
+        return 1
     logger.info("OmniSummary pipeline completed")
+    return 0
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))

@@ -24,6 +24,15 @@ LEAKY_ENV_VARS = (
     "LOG_LEVEL",
     "S3_SYNC_ACCESS_KEY_ID",
     "S3_SYNC_SECRET_ACCESS_KEY",
+    # Ambient AWS credentials sent ChatBedrockConverse down its own session path (12 failures), and
+    # tracing variables from .env would ship prompts to LangSmith.
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "LANGCHAIN_TRACING_V2",
+    "LANGSMITH_TRACING",
+    "LANGCHAIN_API_KEY",
+    "LANGSMITH_API_KEY",
 )
 
 
@@ -44,6 +53,17 @@ def clear_model_resolution_cache():
     BedrockCrossRegionModelHelper._resolution_cache.clear()
     yield
     BedrockCrossRegionModelHelper._resolution_cache.clear()
+
+
+class _DisabledSession:
+    """A class, not a function: libraries evaluate `boto3.Session | None` in signatures at import."""
+
+    def __init__(self, *args, **kwargs):
+        raise RuntimeError("AWS access is disabled in tests; patch boto3.Session to opt in")
+
+
+async def _never_detached(*args, **kwargs) -> bool:
+    return False
 
 
 @pytest.fixture(autouse=True)
@@ -71,5 +91,13 @@ def hermetic_env(monkeypatch):
     # The SSM client is built on the configured profile where it exists (a developer laptop), which
     # boto3.client does not cover: stub its factory too, so no test reads a real secret.
     monkeypatch.setattr("shared.utils._ssm_client", _aws_disabled)
+    # boto3.client alone left boto3.Session(...).client() open: the state store and AgentCore memory
+    # build their clients from a session, and on 2026-10-28 a test reached real S3 that way.
+    monkeypatch.setattr("boto3.Session", _DisabledSession)
     # The research thread fact check builds a Bedrock model: a test reaching it must not call out.
     monkeypatch.setattr("agent.research_tools._fact_check_factory", _aws_disabled)
+    # The reply read-back GETs graph.threads.net on whatever client the test handed in: a real one
+    # would go to the network. Tests of the read-back itself call `real_landed_detached`.
+    from output import threads_handler
+
+    monkeypatch.setattr(threads_handler, "_landed_detached", _never_detached)

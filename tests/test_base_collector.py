@@ -233,8 +233,10 @@ def _client_factory(outcome):
     return lambda **kwargs: _FakeClient(outcome, **kwargs)
 
 
-def _response(status: int = 200, content: bytes = RSS_BODY) -> httpx.Response:
-    return httpx.Response(status_code=status, content=content)
+def _response(
+    status: int = 200, content: bytes = RSS_BODY, url: str = "https://example.com/feed", headers: dict | None = None
+) -> httpx.Response:
+    return httpx.Response(status_code=status, content=content, headers=headers, request=httpx.Request("GET", url))
 
 
 class TestFetchFeed:
@@ -249,6 +251,24 @@ class TestFetchFeed:
         assert [e.get("title") for e in feed.entries] == ["Post"]
         assert _FakeClient.constructed[0]["timeout"] == 7
         assert _FakeClient.constructed[0]["headers"] == FEED_FETCH_HEADERS
+
+    @pytest.mark.asyncio
+    async def test_relative_entry_links_resolve_against_the_final_url_and_the_charset_passes_through(self):
+        # A stream carries no URL: a relative <link> stayed relative, and a Latin-1 feed whose only
+        # charset was the HTTP header lost its entries.
+        body = (
+            "<?xml version='1.0'?><rss version='2.0'><channel><title>T</title>"
+            "<item><title>Caf\xe9 model</title><link>/blog/post-a</link></item></channel></rss>"
+        ).encode("latin-1")
+        response = _response(
+            content=body,
+            url="https://blog.example/feeds/rss.xml",
+            headers={"Content-Type": "application/rss+xml; charset=ISO-8859-1"},
+        )
+        with patch("collectors.base.httpx.AsyncClient", _client_factory(response)):
+            feed = await fetch_feed("https://old.example/feed", description="RSS feed", timeout=5)
+        assert feed.entries[0].link == "https://blog.example/blog/post-a"
+        assert feed.entries[0].title == "Caf\xe9 model"
 
     @pytest.mark.asyncio
     async def test_a_timeout_is_transient(self):
@@ -571,6 +591,21 @@ class TestLoadItemsFromS3:
         with patch("collectors.base.boto3.client", return_value=_s3_client_returning(body)):
             parked = load_items_from_s3("youtube_items.json", max_age_hours=72)
         assert parked.outcome == ParkOutcome.FRESH  # 48h is inside a 72h budget
+
+    def test_a_file_from_a_stray_daytime_sync_reads_stale_by_default(self, monkeypatch):
+        # 2026-10-28: the 18:30 X sync failed, and a file parked at 00:30 (18.5h old) read FRESH under a
+        # 24h budget, so health said OK while about 17h of posts were missing.
+        from shared.config import RSSHubCollectorConfig
+
+        monkeypatch.setenv("STATE_BUCKET", "b")
+        monkeypatch.setenv("S3_PREFIX", "omnisummary/digest_state")
+        old = (datetime.now(UTC) - timedelta(hours=18.5)).isoformat()
+        body = json.dumps(
+            {"generated_at": old, "items": [{"item_id": "x1", "source_type": "x", "title": "T", "url": "u"}]}
+        ).encode("utf-8")
+        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(body)):
+            parked = load_items_from_s3("rsshub_items.json", max_age_hours=RSSHubCollectorConfig().park_max_age_hours)
+        assert parked.outcome == ParkOutcome.STALE
 
     def test_stale_empty_envelope_is_treated_as_absent(self, monkeypatch):
         # A park file that is BOTH empty and stale means the local sync stopped producing; falling

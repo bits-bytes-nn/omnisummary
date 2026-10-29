@@ -20,11 +20,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import boto3
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "config.yaml"
 
 from shared import Config  # noqa: E402
 from shared.constants import LanguageModelId  # noqa: E402
@@ -47,12 +49,25 @@ def _configured_models(config: Config) -> dict[LanguageModelId, str]:
     return {model: ", ".join(settings) for model, settings in wanted.items()}
 
 
+def _copy_from_arn(source: str, model: LanguageModelId, region: str, account: Callable[[], str]) -> str:
+    """The `copyFrom` ARN for what the resolver returned: an ARN as is, a system-defined profile id
+    (`global.`/`us.`/`apac.` + model id), or the bare model id it falls back to, which is a
+    foundation model and has no account in its ARN."""
+    if source.startswith("arn:"):
+        return source
+    if source == model.value:
+        return f"arn:aws:bedrock:{region}::foundation-model/{source}"
+    return f"arn:aws:bedrock:{region}:{account()}:inference-profile/{source}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="report what would change, write nothing")
     parser.add_argument("--delete", action="store_true", help="delete this project's profiles instead")
     args = parser.parse_args()
 
+    if not CONFIG_PATH.exists():
+        raise SystemExit(f"{CONFIG_PATH} is missing: the profiles would be named after the template's project/stage")
     config = Config.load()
     region = config.aws.bedrock_region
     session = boto3.Session(region_name=region, profile_name=config.aws.profile or None)
@@ -88,10 +103,8 @@ def main() -> int:
         # copyFrom takes the SYSTEM-DEFINED cross-region profile the runtime would otherwise use, so
         # the application profile inherits the same routing rather than pinning one region.
         source = BedrockCrossRegionModelHelper._resolve(session, model, region)
-        source_arn = (
-            source
-            if source.startswith("arn:")
-            else f"arn:aws:bedrock:{region}:{session.client('sts').get_caller_identity()['Account']}:inference-profile/{source}"
+        source_arn = _copy_from_arn(
+            source, model, region, lambda: session.client("sts").get_caller_identity()["Account"]
         )
         if args.dry_run:
             print(f"  would create: {name}  from {source}  ({settings})")

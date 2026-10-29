@@ -59,7 +59,7 @@ class DigestGenerator:
         recent_titles: list[str] | None = None,
     ) -> DigestResult:
         # The ranker hands over top_n + buffer candidates; the editor picks the strongest
-        # target_count distinct stories, merging same-event items.
+        # target_count distinct stories, keeping one of any same-event pair.
         target_count = min(self.config.top_n, len(ranked_items))
         # A user can pin more URLs than top_n. Both the headline (items[0]) and every pinned item
         # must survive the trim, so raise the target to fit them all rather than silently dropping
@@ -358,9 +358,7 @@ class DigestGenerator:
             # A pinned item (user-requested via --pin-url) must appear in the digest regardless
             # of its score, so flag it for the editor; code also protects it from the trim below.
             if item.metadata.get("pinned"):
-                fields.insert(
-                    0, ("MUST INCLUDE", "user-pinned — keep this item in the digest, do not drop or merge it away")
-                )
+                fields.insert(0, ("MUST INCLUDE", "user-pinned — keep this item in the digest, do not drop it"))
             # This item's OWN prose budget, code-owned like MUST INCLUDE: the fixed parts of a Threads
             # post differ per item, so one worst-case number for the whole pool charged every
             # short-URL item for the longest URL in it.

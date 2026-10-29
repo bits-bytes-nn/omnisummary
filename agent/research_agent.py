@@ -245,23 +245,21 @@ def create_research_agent(config: Config | None = None, tools: list[Any] | None 
         "model_id": resolved_model_id,
         "max_tokens": model_info.max_output_tokens,
         "streaming": True,
-        # "anthropic", not "auto": Strands decides "auto" by substring-matching the model id for
-        # "claude"/"anthropic", and an application inference profile ARN
-        # (arn:...:application-inference-profile/<opaque-id>) contains neither — so it silently
-        # concluded the model could not cache and dropped every cache point, on the exact path the
-        # cost-attribution profiles introduced. A research turn re-sends the system prompt plus all
-        # accumulated tool results, so that is the most expensive thing to lose quietly. Every model
-        # in this registry is Anthropic (the Bedrock factory asserts the same by setting
-        # provider="anthropic" for ARN ids), so state it rather than letting a string sniff guess.
-        "cache_config": CacheConfig(strategy="anthropic"),
     }
+    # "anthropic", not "auto": Strands decides "auto" by substring-matching the model id for
+    # "claude"/"anthropic", and an application inference profile ARN contains neither, so it silently
+    # dropped every cache point on the cost-attribution path. A research turn re-sends the system
+    # prompt plus all accumulated tool results, so that is the most expensive thing to lose quietly.
+    # GPT models reject a Converse cachePoint ("Cache point cannot be inserted") and cache implicitly.
+    if model_info.provider == "anthropic":
+        model_kwargs["cache_config"] = CacheConfig(strategy="anthropic")
     # Same gates as the Bedrock factory (shared.utils.LanguageModelInfo). No tool_choice is set: the
     # Strands loop sends "auto", which every registered model accepts; only Strands structured output
     # forces "any", and this agent does not use it.
     if model_info.supports_temperature:
         model_kwargs["temperature"] = 0.0
     if model_info.effort:
-        model_kwargs["additional_request_fields"] = {"output_config": {"effort": model_info.effort}}
+        model_kwargs["additional_request_fields"] = model_info.request_fields()
     bedrock_model = BedrockModel(**model_kwargs)
 
     if tools is None:

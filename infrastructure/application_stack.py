@@ -100,6 +100,10 @@ class OmniSummaryApplicationStack(Stack):
             # and retry_attempts=0 avoids re-running the costly gpt-image render on failure.
             # Failures go to the DLQ for manual replay instead.
             retry_attempts=0,
+            # One run at a time: the post ledger is a read-modify-write, so a duplicate async delivery
+            # of the same event running alongside could pass its check and post the day twice. A
+            # throttled async event waits in Lambda's queue and then finds the date marked.
+            reserved_concurrent_executions=1,
             on_failure=destinations.SqsDestination(async_dlq),
             log_group=self._log_group("DailyVisualLambdaLogGroup", f"{project_name}-{stage}-visual"),
             environment={
@@ -205,7 +209,7 @@ class OmniSummaryApplicationStack(Stack):
             role=foundation.lambda_role,
             # One run at a time: two runs reading the same conversation would both answer a comment.
             reserved_concurrent_executions=1,
-            # A transiently failed comment stays unrecorded and the next scheduled run retries it.
+            # A transiently failed comment is retried by the next scheduled runs (see CommentReplyLedger).
             retry_attempts=0,
             log_group=self._log_group("CommentReplyLambdaLogGroup", f"{project_name}-{stage}-comment-replies"),
             environment={

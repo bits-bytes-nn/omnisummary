@@ -14,6 +14,7 @@ from shared import (
     threads_meta_line,
     truncate_at_word,
 )
+from shared.formatting import _trim_url
 
 # Marks each of the other stories' titles in the root post.
 STORY_INDEX_BULLET = "· "
@@ -162,7 +163,7 @@ def _trim_long_sentence(sentence: str, max_len: int) -> str:
     urls = URL_RE.findall(sentence)
     if not urls:
         return truncate_at_word(sentence, max_len)
-    tail = urls[-1].rstrip(").,")
+    tail = _trim_url(urls[-1])
     if len(tail) >= max_len:  # the URL alone overflows — nothing useful to keep but the URL
         return tail[:max_len]
     prose = sentence[: sentence.rfind(tail)].rstrip(" (")
@@ -172,11 +173,9 @@ def _trim_long_sentence(sentence: str, max_len: int) -> str:
 
 # The agent separates Threads posts with a line containing only this delimiter, so post
 # boundaries are the AGENT's choice (number + heading + body stay in ONE post) rather than
-# the renderer guessing from blank lines.
-_THREADS_POST_DELIMITER = re.compile(r"\n\s*---\s*\n")
-# A delimiter line at the very START of the report (no preceding newline) the split regex can't
-# see — strip it so a leading "---" never contaminates the first post as literal text.
-_THREADS_LEADING_DELIMITER = re.compile(r"^\s*---\s*\n")
+# the renderer guessing from blank lines. A delimiter at the very start or end of the report counts too,
+# so it never rides into a post as literal text.
+_THREADS_POST_DELIMITER = re.compile(r"(?m)^[ \t]*---[ \t]*\r?$")
 # The "N/M" index at the head of a post. The RENDERER owns it, because max_posts is applied AFTER the
 # model has written its numbers: a capped report went out publicly as "1/8 ... 6/8" and stopped
 # mid-argument, telling every reader two posts were missing. Any index the model still writes is
@@ -217,34 +216,6 @@ def _renumber_threads_posts(posts: list[str]) -> list[str]:
     return renumbered
 
 
-def _pack_by_sentence(text: str) -> list[str]:
-    """Fallback packer when the agent gave no explicit post delimiters: greedily pack sentences
-    into <=500-char posts at sentence boundaries (never mid-word)."""
-    posts: list[str] = []
-    current = ""
-    for section in [s.strip() for s in text.split("\n\n") if s.strip()]:
-        for sentence in split_sentences(section) or [section]:
-            sentence = sentence.strip()
-            if not sentence:
-                continue
-            if len(sentence) > THREADS_MAX_POST_CHARS:
-                if current:
-                    posts.append(current.strip())
-                    current = ""
-                posts.append(_trim_long_sentence(sentence, THREADS_MAX_POST_CHARS))
-                continue
-            candidate = f"{current} {sentence}".strip() if current else sentence
-            if len(candidate) > THREADS_MAX_POST_CHARS and current:
-                posts.append(current.strip())
-                current = sentence
-            else:
-                current = candidate
-        if current:
-            posts.append(current.strip())
-            current = ""
-    return posts
-
-
 def _trim_oversize_post(post: str) -> str:
     """Safety net: a single agent-delimited post over 500 chars is TRIMMED down to ONE post, not
     fanned out into several. Fanning out (the old behavior) flushed on the blank line under the
@@ -266,14 +237,14 @@ def _trim_oversize_post(post: str) -> str:
     # A research post ends in a citation URL; reserve room for it so trimming the prose from the
     # end never drops the source. Keep leading sentences that fit, then re-append the citation.
     body_urls = URL_RE.findall(body)
-    citation = body_urls[-1].rstrip(").,") if body_urls else ""
+    citation = _trim_url(body_urls[-1]) if body_urls else ""
     prose_room = room - (len(citation) + 1) if citation else room
     sentences = split_sentences(body) or [body]
     kept: list[str] = []
     for sentence in sentences:
         # Don't double-count the citation: a sentence that is just the trailing URL is folded in
         # via `citation` below, not packed here.
-        if citation and sentence.strip().rstrip(").,") == citation:
+        if citation and _trim_url(sentence) == citation:
             continue
         candidate = " ".join(kept + [sentence])
         if len(candidate) > prose_room and kept:
@@ -302,10 +273,6 @@ class ThreadsResearchRender(NamedTuple):
     dropped: int = 0
     trimmed: int = 0
 
-    @property
-    def rendered(self) -> int:
-        return (1 if self.root else 0) + len(self.replies)
-
 
 def render_threads_research(report: str, *, max_posts: int = 0) -> ThreadsResearchRender:
     """Render a Threads research report into a root post + flat reply chain, each <=500 chars.
@@ -318,15 +285,10 @@ def render_threads_research(report: str, *, max_posts: int = 0) -> ThreadsResear
     fan out into dozens of public posts; excess posts are dropped. Returns the render plus the
     dropped/trimmed counts, so the caller can report an incomplete report as incomplete."""
     plain = strip_markup(report).strip()
-    # A leading "---" (delimiter as the report's first line) isn't matched by the split regex,
-    # which requires a preceding newline; drop it so it can't ride into the first post as text.
-    plain = _THREADS_LEADING_DELIMITER.sub("", plain).strip()
-
-    delimited = bool(_THREADS_POST_DELIMITER.search(plain))
-    # Each agent-delimited block is exactly ONE post: the heading and body stay together.
-    raw_posts = [p.strip() for p in _THREADS_POST_DELIMITER.split(plain) if p.strip()] if delimited else []
-    if not delimited:
-        raw_posts = _pack_by_sentence(plain)
+    # Each agent-delimited block is exactly ONE post: the heading and body stay together. A report with
+    # no delimiter is one post: packing it by sentence closed a post at every blank line, so a lone
+    # 소제목 went out as the public root.
+    raw_posts = [p.strip() for p in _THREADS_POST_DELIMITER.split(plain) if p.strip()]
 
     if not raw_posts:
         # Empty/whitespace report → no post (caller skips delivery). Returning ("", []) here would
@@ -338,7 +300,7 @@ def render_threads_research(report: str, *, max_posts: int = 0) -> ThreadsResear
         logger.warning("Threads research: dropping %d post(s) over the cap of %d", dropped, max_posts)
         raw_posts = raw_posts[:max_posts]
     # Number AFTER the cap, so the published indices describe the thread the reader actually gets.
-    if delimited:
+    if len(raw_posts) > 1:
         raw_posts = _renumber_threads_posts(raw_posts)
     # Trim LAST, so the index the renderer just added is inside the 500-char guarantee.
     posts = [_trim_oversize_post(p) for p in raw_posts]

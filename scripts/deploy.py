@@ -44,6 +44,20 @@ def main():
         env=env,
     )
 
+    image_ref = os.getenv("DIGEST_IMAGE_REF", "")
+    if os.getenv("FOUNDATION_ONLY") == "1":
+        # Bootstrap and a fresh account's first deploy, before any image exists. Never for an update of a
+        # deployed account: the foundation alone drops the exports the live application stack imports.
+        app.synth()
+        return
+    if not image_ref.startswith("sha256:"):
+        # Unpinned, the Lambdas would reference `:latest`, and a deploy that changed anything else on a
+        # function moved it to whatever was pushed last.
+        raise SystemExit(
+            f"DIGEST_IMAGE_REF is unset or not a sha256 digest ({image_ref!r}): export the pushed image's digest (README, Deploying to AWS), or set "
+            "FOUNDATION_ONLY=1 for bootstrap and a fresh account's first foundation deploy."
+        )
+
     OmniSummaryApplicationStack(
         app,
         f"{config.aws.project_name}-{config.aws.stage}-application",
@@ -53,20 +67,11 @@ def main():
         # values would land in plaintext in cdk.out, the CDK staging bucket and GetTemplate. The
         # stack creates the parameters holding a placeholder; run scripts/put_secrets.py after the
         # deploy to write the real values as SecureStrings.
-        digest_image_ref=_digest_image_ref(),
+        digest_image_ref=image_ref,
         env=env,
     )
 
     app.synth()
-
-
-def _digest_image_ref() -> str:
-    """The pushed image digest to pin. Without it the Lambdas reference `:latest`, and CloudFormation
-    sees an unchanged image string and redeploys nothing."""
-    ref = os.getenv("DIGEST_IMAGE_REF", "")
-    if not ref:
-        print("WARNING: DIGEST_IMAGE_REF is not set; the Lambdas keep their current image", file=sys.stderr)
-    return ref
 
 
 if __name__ == "__main__":

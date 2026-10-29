@@ -73,8 +73,10 @@ class BaseCollectorConfig(_StrictModel):
     retry_backoff_sec: int = Field(default=5, ge=0)
     # Age budget for a source's S3 park file (written by the local sync scripts). Beyond it the
     # items are still used — stale beats empty — but the source is reported STALE so a stopped
-    # local cron is visible instead of looking like a healthy run.
-    park_max_age_hours: int = Field(default=24, ge=1)
+    # local cron is visible instead of looking like a healthy run. A healthy park is about half an hour
+    # old at the digest (18:30 sync, 19:00 run); at 24h a stray daytime sync made the next day's FAILED
+    # 18:30 sync read FRESH (2026-10-28: X lost about 17h of posts with health OK).
+    park_max_age_hours: int = Field(default=12, ge=1)
     # Whether the park file is this source's PRIMARY path in AWS. When it is, an ABSENT file is a
     # DEGRADED source rather than a quiet fall-through: YouTube transcripts cannot be fetched from a
     # datacenter IP, so live collection still yields items (metadata only) and a wrong S3_PREFIX, a

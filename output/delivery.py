@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 
 from shared import THREADS_MAX_POST_CHARS, ImageAsset, get_config, logger
+from shared.formatting import citation_key, extract_urls, normalize_citation_url
 from shared.media import extension_for
 
 from .renderers import render_threads_research
@@ -80,7 +81,8 @@ class DeliveryContext:
     # What each surfaced URL's tool result said (a search hit's snippet, or the page read in full), so
     # a thread can be checked against the sources it cites before it goes public.
     source_texts: dict[str, str] = field(default_factory=dict)
-    # The thread last sent back for claims its sources do not support; same rule as refused_report.
+    # The thread last sent back for claims its sources do not support, whitespace collapsed: the same
+    # text gets the same verdict instead of a second, non-deterministic check.
     refused_for_facts: str | None = None
     fact_issues: list[dict] = field(default_factory=list)
     # Why the last Threads attempt was sent back, for the CLI's warning when nothing was resubmitted.
@@ -92,12 +94,6 @@ class DeliveryContext:
     report: str = ""
     # What the Threads delivery put in front of the reader (MARKDOWN has nothing to count).
     threads_stats: DeliveryStats = field(default_factory=DeliveryStats)
-    # A Threads delivery under way. Strands runs one turn's tool calls concurrently, so two
-    # deliver_report calls both passed the "already posted" check and both posted.
-    in_flight: set[str] = field(default_factory=set)
-    # The over-long thread last sent back, whitespace collapsed. The same text is refused again, so an
-    # identical second call in the same turn cannot slip through; a rewritten one posts as it is.
-    refused_report: str | None = None
     # Whether a Threads post was actually attempted this run.
     threads_attempted: bool = False
 
@@ -143,13 +139,19 @@ async def _deliver_threads(report: str, delivery: DeliveryContext) -> bool:
     image_key = ""
     image_content_type = "image/png"
     image_alt = ""
-    if delivery.staged_images:
+    # Only an image from a page the thread cites: one from an uncited page put a source in front of the
+    # reader that the thread never names.
+    keys = (citation_key(url, delivery.seen_urls) for post in (root_text, *replies) for url in extract_urls(post))
+    cited = {key for key in keys if key}
+    image = next((i for i in delivery.staged_images if normalize_citation_url(i.source_url) in cited), None)
+    if delivery.staged_images and image is None:
+        logger.warning("No staged image comes from a page the thread cites; posting text-only")
+    if image is not None:
         config = get_config()
         bucket = config.aws.state_bucket_name or os.environ.get("STATE_BUCKET", "")
         if not bucket:
             logger.warning("No state bucket configured; Threads image will be skipped (text-only post)")
         else:
-            image = delivery.staged_images[0]
             image_bytes = image.data
             image_content_type = image.content_type
             image_alt = image.alt
@@ -177,13 +179,14 @@ async def _deliver_threads(report: str, delivery: DeliveryContext) -> bool:
 
 
 def sends_back_as_too_long(report: str, delivery: DeliveryContext, *, dropped: int = -1, trimmed: int = 0) -> bool:
-    """Whether this thread will be refused for losing text to the channel's limits: it does, and it is
-    the first such text or the same one again (whitespace aside). A rewrite posts as it is."""
+    """Whether this thread will be refused for losing text to the channel's limits. Every such text is,
+    rewrites included: a rewrite that still overflowed went out cut, numbered "1/10 … 10/10" without the
+    conclusion that was dropped, and read as complete. Not posting is the worst case now."""
     if dropped < 0:
         _, _, dropped, trimmed = render_threads_research(
             report, max_posts=get_config().agent.research_max_threads_posts
         )
-    return bool(dropped or trimmed) and delivery.refused_report in (None, " ".join(report.split()))
+    return bool(dropped or trimmed)
 
 
 async def deliver_research_report(report: str, *, channel: str, delivery: DeliveryContext) -> DeliveryOutcome:
@@ -200,7 +203,7 @@ async def deliver_research_report(report: str, *, channel: str, delivery: Delive
         delivery.delivered_channels.add(MARKDOWN)
         return DeliveryOutcome.POSTED
 
-    if channel in delivery.delivered_channels | delivery.partial_channels | delivery.in_flight:
+    if channel in delivery.delivered_channels | delivery.partial_channels:
         logger.warning("Report already posted to '%s'; the text of this call was NOT published", channel)
         return DeliveryOutcome.NOT_POSTED
     root_text, replies, dropped, trimmed = render_threads_research(
@@ -209,19 +212,14 @@ async def deliver_research_report(report: str, *, channel: str, delivery: Delive
     if sends_back_as_too_long(report, delivery, dropped=dropped, trimmed=trimmed):
         # Refuse before anything is public: the dropped tail is the conclusion and its sources, and
         # telling the agent after the post could only say "incomplete".
-        delivery.refused_report = " ".join(report.split())
         delivery.last_refusal = "too long"
         delivery.threads_stats = DeliveryStats(rendered=len(replies) + 1, dropped=dropped, trimmed=trimmed)
         logger.warning("Research thread too long for Threads; sent back: %s", delivery.threads_stats.summary())
         return DeliveryOutcome.TOO_LONG
     # Reset before dispatch so the verdict below reads THIS attempt's counts, never a previous one's.
     delivery.threads_stats = DeliveryStats()
-    delivery.in_flight.add(channel)
     delivery.threads_attempted = True
-    try:
-        ok = await _deliver_threads(report, delivery)
-    finally:
-        delivery.in_flight.discard(channel)
+    ok = await _deliver_threads(report, delivery)
     if ok:
         delivery.delivered_channels.add(channel)
         if not delivery.threads_stats.complete:

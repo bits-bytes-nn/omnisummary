@@ -26,7 +26,7 @@ load_dotenv()
 logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
 from agent.research_agent import create_research_agent, research_run_limits  # noqa: E402
-from agent.research_tools import DeliveryContext, _citation_key, request_context  # noqa: E402
+from agent.research_tools import DeliveryContext, request_context  # noqa: E402
 from output.delivery import MARKDOWN, THREADS  # noqa: E402
 from shared import (  # noqa: E402
     Config,
@@ -35,6 +35,7 @@ from shared import (  # noqa: E402
     logger,
     resolve_secret,
 )
+from shared.formatting import citation_key  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "reports"
 
@@ -194,7 +195,7 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
                 warnings.append(
                     "The agent did not submit the report through deliver_report; its citations are unchecked."
                 )
-                unverified = [u for u in extract_urls(markdown) if _citation_key(u, delivery.seen_urls) is None]
+                unverified = [u for u in extract_urls(markdown) if citation_key(u, delivery.seen_urls) is None]
                 if unverified:
                     warnings.append(f"URLs no tool returned: {', '.join(dict.fromkeys(unverified))}")
 
@@ -227,7 +228,7 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
         result["error"] = "Threads publishing was requested but did not complete."
         if not delivery.threads_attempted and delivery.last_refusal:
             warnings.append(
-                f"Nothing was posted: the thread was sent back ({delivery.last_refusal}) and never resubmitted."
+                f"Nothing was posted: every submission of the thread was sent back (last: {delivery.last_refusal})."
             )
         return result, EXIT_FAILED
     if threads is not None and threads["posts_delivered"] < threads["posts_rendered"]:

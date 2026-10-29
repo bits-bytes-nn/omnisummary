@@ -31,6 +31,17 @@ class TestFitToLimit:
         assert len(out) <= store.MAX_EVENT_TEXT
         assert "ranked_items" in parsed  # still a well-formed snapshot dict
 
+    def test_the_last_resort_sheds_the_candidates_before_the_published_digest(self):
+        # digest_result is what the visual Lambda publishes; it used to go first.
+        store = _store()
+        state = {
+            "ranked_items": [{"item": {"item_id": f"i{n}", "title": "t" * 2_000}, "score": 0.5} for n in range(60)],
+            "digest_result": {"digest_text": "d", "content": {"lead": "리드.", "items": [{"title": "s"}]}},
+        }
+        parsed = json.loads(store._fit_to_limit(state))
+        assert parsed["digest_result"]["content"]["lead"] == "리드."
+        assert parsed["ranked_items"] == []
+
     def test_shedding_keeps_every_story_and_the_digest_content(self):
         # The visual Lambda publishes off THIS payload, so what survives the trim decides whether
         # the day has a digest. Assert the surviving SHAPE by parsing it (story count, content items
@@ -88,7 +99,7 @@ def store_region() -> str:
 class TestCreateMemoryStore:
     def test_local_when_no_memory_is_deployed(self, monkeypatch, tmp_path):
         monkeypatch.delenv("MEMORY_ID", raising=False)
-        with patch("shared.memory._deployed_memory_id", return_value=""):
+        with patch("shared.memory._deployed_memory_id", return_value=""), patch("shared.memory.boto3.Session"):
             store = create_memory_store(tmp_path)
         assert isinstance(store, LocalMemoryStore)
 
