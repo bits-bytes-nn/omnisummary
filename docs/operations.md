@@ -6,9 +6,8 @@
 아래 명령은 `research` 프로필 계정과 ap-northeast-2 기준이다. 다른 계정이면 `--profile`과 `--region`을 바꾼다. 셸이 다른 계정의
 `AWS_PROFILE`·`AWS_REGION`을 물려받을 수 있으니 AWS CLI에는 항상 둘을 명시한다.
 
-```bash
-P="--profile research --region ap-northeast-2"
-```
+아래 명령은 프로필과 리전을 직접 적는다. zsh는 `P="--profile ..."`처럼 담은 변수를 단어로 나누지 않아 `$P`가
+옵션 하나로 넘어간다.
 
 ## 하루의 흐름
 
@@ -33,7 +32,7 @@ uv run python recall_cli.py digest 2026-10-28 # 특정 날짜
 알림 메일 제목에는 프로젝트, 스테이지, 이벤트, 상태가 들어가고, 본문 끝의 correlation id로 그 실행의 로그를 찾을 수 있다.
 
 ```bash
-aws logs filter-log-events $P --log-group-name /aws/lambda/omnisummary-dev-visual \
+aws logs filter-log-events --profile research --region ap-northeast-2 --log-group-name /aws/lambda/omnisummary-dev-visual \
   --filter-pattern '"<correlation id>"' --query 'events[].message' --output text
 ```
 
@@ -86,7 +85,7 @@ aws logs filter-log-events $P --log-group-name /aws/lambda/omnisummary-dev-visua
 글과 같은 기사가 나가고, 만화는 새로 그린다. Threads Delivery 알림에 날짜가 채워진 이 명령이 그대로 적혀 온다.
 
 ```bash
-aws lambda invoke $P --function-name omnisummary-dev-visual --invocation-type Event \
+aws lambda invoke --profile research --region ap-northeast-2 --function-name omnisummary-dev-visual --invocation-type Event \
   --cli-binary-format raw-in-base64-out --payload '{"digest_date": "2026-10-28"}' /dev/null
 ```
 
@@ -94,7 +93,7 @@ aws lambda invoke $P --function-name omnisummary-dev-visual --invocation-type Ev
 `"force_republish": true`를 더해 다시 부른다.
 
 ```bash
-aws lambda invoke $P --function-name omnisummary-dev-visual --invocation-type Event \
+aws lambda invoke --profile research --region ap-northeast-2 --function-name omnisummary-dev-visual --invocation-type Event \
   --cli-binary-format raw-in-base64-out --payload '{"digest_date": "2026-10-28", "force_republish": true}' /dev/null
 ```
 
@@ -104,9 +103,9 @@ aws lambda invoke $P --function-name omnisummary-dev-visual --invocation-type Ev
 DLQ에 쌓인 메시지는 확인한 뒤 지운다.
 
 ```bash
-Q=$(aws sqs get-queue-url $P --queue-name omnisummary-dev-async-dlq --query QueueUrl --output text)
-aws sqs receive-message $P --queue-url "$Q" --max-number-of-messages 10
-aws sqs purge-queue $P --queue-url "$Q"   # 다시 올린 뒤에만
+Q=$(aws sqs get-queue-url --profile research --region ap-northeast-2 --queue-name omnisummary-dev-async-dlq --query QueueUrl --output text)
+aws sqs receive-message --profile research --region ap-northeast-2 --queue-url "$Q" --max-number-of-messages 10
+aws sqs purge-queue --profile research --region ap-northeast-2 --queue-url "$Q"   # 다시 올린 뒤에만
 ```
 
 ## 자주 하는 점검
