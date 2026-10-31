@@ -21,7 +21,7 @@ from shared.config import Config
 
 
 class DailyVisualMaker:
-    """Renders the day's visual for the digest headline (normally a four-panel comic), then
+    """Renders the day's visual for the digest headline (the daily comic), then
     hands it to the digest publisher as an attachment.
 
     Best-effort in BOTH directions: a visual failure (no OpenAI key, an editor skip, a render error)
@@ -218,7 +218,8 @@ class DailyVisualMaker:
         if self._features_character(plan):
             instruction += (
                 "\n\nTHE NARRATOR, in the panels the synopsis puts him in: "
-                f"{self.config.pipeline.visual_character_sheet}"
+                f"{self.config.pipeline.visual_character_sheet} Every other character looks clearly different "
+                "from him (hair, glasses, clothes)."
             )
         return instruction
 

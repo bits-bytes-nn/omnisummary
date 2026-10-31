@@ -126,8 +126,8 @@ pipeline:
 
   # --- Daily visual (values below are the code defaults) ---
   image_model: "gpt-image-2.5-sunburst"
-  # orientation -> gpt-image size; the default four-panel comic is the 2x2 `portrait` grid, and `tall`
-  # is the vertical strip the editor may pick instead (longest edge kept at or under 2560, where larger
+  # orientation -> gpt-image size; a panel grid is `portrait` and `tall` is a stacked vertical strip
+  # (longest edge kept at or under 2560, where larger
   # sizes turn experimental). Only the SIZES are tunable: the keys are the brief's orientation
   # vocabulary, and config load rejects a renamed or missing one.
   image_sizes:

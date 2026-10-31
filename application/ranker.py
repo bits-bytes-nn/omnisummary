@@ -164,7 +164,7 @@ class ContentRanker:
     async def _rank_batch(
         self, items: list[CollectedItem], semaphore: asyncio.Semaphore, recent_titles: str
     ) -> list[RankedItem]:
-        """Score one batch and reconcile its COVERAGE: an LLM that quietly omits item ids returns a
+        """Score one batch and reconcile its COVERAGE: an LLM that quietly omits items returns a
         perfectly valid response, so those candidates used to vanish from the day's pool without a
         trace. Any omitted items get ONE extra re-ask covering exactly them (never more). A failed or
         still-short re-ask leaves the original outcome untouched — it can never fail the batch."""
@@ -368,8 +368,11 @@ class ContentRanker:
         duplicates: list[int] = []
         for entry in rankings:
             try:
-                number = int(entry["item"])
-                if not 1 <= number <= len(items):
+                number = entry["item"]
+                if isinstance(number, str) and number.isdigit():
+                    number = int(number)
+                # A bool or a fraction is not an item number (int(True) and int(2.7) would map silently).
+                if type(number) is not int or not 1 <= number <= len(items):
                     logger.warning("Unknown item number in ranking response: %s", entry["item"])
                     continue
                 if number in seen:

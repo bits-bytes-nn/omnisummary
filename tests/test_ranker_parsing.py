@@ -96,6 +96,12 @@ class TestParseRankings:
         assert result[0].score == 0.9
         assert result[0].reasoning == "first"
 
+    def test_a_bool_or_fraction_is_not_an_item_number(self):
+        raw = json.dumps(
+            {"rankings": [{"item": True, "score": 0.9}, {"item": 2.7, "score": 0.8}, {"item": "3", "score": 0.7}]}
+        )
+        assert [r.item.item_id for r in self._parse(raw)] == ["item_3"]
+
     def test_invalid_json_returns_empty(self):
         result = self._parse("not valid json at all")
         assert result == []

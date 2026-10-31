@@ -37,7 +37,7 @@ OmniSummary는 능동형(proactive) AI/ML 일일 다이제스트 시스템이다
 **첫째는 스케줄 다이제스트다.** EventBridge 크론이 다이제스트 Lambda를 깨우면 다섯 계열의 소스에서 콘텐츠를
 수집해 중복을 제거하고, LLM으로 후보 풀을 고른 다음 한국어 에디토리얼 다이제스트를 구조화된 `DigestContent`로
 생성한다. 상태는 Bedrock AgentCore Memory에 저장하고, 소스별 헬스는 SNS 이메일로 보고한다. 게시는 **데일리
-비주얼 Lambda**가 한다. Threads 게시물은 4컷 만화 이미지 루트와 스토리 답글 체인이 한 세트로 나가야 하니,
+비주얼 Lambda**가 한다. Threads 게시물은 만화 이미지 루트와 스토리 답글 체인이 한 세트로 나가야 하니,
 이미지를 만든 쪽이 텍스트까지 함께 보낸다.
 
 **둘째는 로컬 딥 리서치다.** `research_cli.py`가 Strands 에이전트를 로컬에서 실행한다. 에이전트는 자유형 토픽을
@@ -55,7 +55,7 @@ OpenClaw 스킬(`~/.openclaw/workspace/skills/omnisummary-research/SKILL.md`)이
    → 다이제스트 생성기 (Claude Sonnet 5.5, 후보 풀에서 가장 강한 5개를 골라 한국어 DigestContent 작성)
    → AgentCore Memory (다이제스트 스냅샷)
    → 데일리 비주얼 Lambda 비동기 트리거
-        └→ 4컷 한글 만화 (gpt-image-2.5-sunburst) + Threads root/reply 체인 게시 (enable_threads_post)
+        └→ 한글 만화 (gpt-image-2.5-sunburst) + Threads root/reply 체인 게시 (enable_threads_post)
    → FAILED, STALE, DEGRADED 소스(그리고 `alert_on_empty` 소스의 EMPTY)가 있으면 SNS 알림
 
 [OpenClaw 스킬 / 터미널] → research_cli.py (로컬)
@@ -539,8 +539,6 @@ cutoff와 비교하면 TypeError가 나고, 그 예외는 결과를 조용히 �
 당일 뉴스가 하루 늦게 실린다. RFC 2822 폴백에서 `-0000`처럼 시간대가 없는 값은 호스트 로컬 시간이 아니라
 UTC로 읽는다.
 
-`_deduplicate`는 aggregator와 중복처럼 보이지만 역할이 다르다. 쿼리 정제 LLM 호출 전에 broad 결과를 줄인다.
-
 정제 프롬프트는 오늘 날짜(`reference_time` 기준)를 받고, broad 결과 제목이 아직 다루지 않은 지난 하루의 주요
 AI/ML 소식을 찾는 쿼리를 만든다. "이미 찾은 기사를 보완하라"와 "고유명사를 쓰라"였던 이전 지시는 받은 제목을 그대로
 되풀이하거나("Reflection AI …"가 사흘 연속) 사전지식의 철 지난 버전과 연도("OpenAI new model release December
@@ -925,9 +923,9 @@ reply 하나를 만든다. 500자 이하로 문장 경계에서 트림하며 tit
 만들었다(아래 2026-11-01 평가). 인물은 배경 인물까지 모두 눈과 표정이 있는 얼굴로 그린다(스타일 문구. 세 장 중 두 장에서 이름
 없는 인물이 얼굴 없이 나왔다). 회사를 표현할 때는 실존 인물이나 그 회사의 로고·제품을 쓰고 마스코트로 의인화하지 않는다.
 아트 디렉터(`VisualSynopsisPrompt`)는 세로 스트립을 `tall`
-(848x2544, 4:3 컷을 한 열로 쌓은 1:3. 2560을 넘는 해상도는 실험적이라 긴 변을 그 아래로 둔다)로, 2x2를
-`portrait`로, 단일 컷과 해설은 맞는 모양으로 브리프한다. 2x2(1024x1536)의 컷 하나는 512x768로 세로 스트립(컷당 848x636)보다 작지만, 피드에서 네
-컷이 한 화면에 들어오는 쪽을 기본으로 골랐다(세로 스트립은 피드 미리보기에서 펀치라인 컷이 가려질 수 있다). Threads는 종횡비 10:1과 8MB까지 받는다. 날마다 형식과 방향을 돌리던 장치(형식 이력,
+(848x2544, 같은 크기의 컷을 한 열로 쌓은 1:3. 2560을 넘는 해상도는 실험적이라 긴 변을 그 아래로 둔다)로, 2x2를
+`portrait`로, 단일 컷과 해설은 맞는 모양으로 브리프한다. 2x2(1024x1536)의 컷 하나는 512x768로 네 컷 세로 스트립(컷당 848x636)보다 작지만, 피드에서 모든
+컷이 한 화면에 들어온다(세로 스트립은 피드 미리보기에서 펀치라인 컷이 가려질 수 있다). Threads는 종횡비 10:1과 8MB까지 받는다. 날마다 형식과 방향을 돌리던 장치(형식 이력,
 최근 방향 넛지, 멀티패널·캐릭터 비율 넛지)는 두지 않는다(측정상 형식을 바꾸지 못했다. 요청한 방향과 실제
 방향이 28회 중 8회 일치).
 
@@ -1066,7 +1064,7 @@ Lambda가 "다시 올리지 말라"는 Threads Delivery 알림을 보낸다.
 원문으로 쓴다. 랭킹 1위로 떨어뜨리지 않으니 이미지와 텍스트가 같은 스토리를 다룬다. 본문 없는 랭킹 항목은 한도를
 넘은 스냅샷이 본문을 덜어낸 경우다([§7.2](#72-다이제스트-스냅샷--agentcore-memory-adaptersmemorypy)). 그때 제목만
 넘기는 것보다 큐레이션 본문이 낫다. 같은 이유로 랭킹 항목이 하나도 없어도 비주얼을 건너뛰지 않는다. implication은
-넘기지 않는다(위 '만화는 사실 하나와 개그 하나만 싣는다').
+넘기지 않는다(위 '만화는 아이디어 하나를 싣는다').
 
 전체적으로 best-effort다. 파이프라인을 막지 않으며 실패는 항상 로깅된다.
 
@@ -1080,7 +1078,7 @@ Lambda가 "다시 올리지 말라"는 Threads Delivery 알림을 보낸다.
 
 **언제 붙는가.** 다이제스트 생성 시점에 `content.lead`에 붙이며(`digest_generator.generate` →
 `place_countdown_intro`) 그 실행의 KST `digest_date`로 계산한다. 인트로가 저장 콘텐츠의 일부가 되니 Threads
-root에 함께 나가고, 트렌드 재등장 수치와 같은 시계(같은 날짜)를 쓴다.
+root에 함께 나가고, 트렌드 증거와 같은 시계(같은 날짜)를 쓴다.
 
 **lead를 연다.** 개그는 lead 맨 앞에 붙는다(`place_countdown_intro`). Threads root의 첫 줄, 곧 피드 독자가 유일하게
 보는 줄을 매일 같은 고정 문장이 차지한다. 실제로 연속 40개 게시물이 동일 문장으로 시작했다. 그래도 카운트다운은 이
@@ -1446,8 +1444,7 @@ TTL의 원장이다.
   않아 되살아날 수 없었다).
 - momentum은 recency 감쇠다. `0.5^(age/half_life)`이고 `trend_momentum_half_life_days` 기본값은 7일이다.
 - 트렌드당 증거는 `trend_max_evidence`로 캡한다.
-- `trend_max_active_trends`는 **읽는 쪽에만** 캡을 건다(`get_trends_context`). 저장된 status를 이 캡으로
-  바꾸지는 않는다. 캡 때문에 숨긴 트렌드는 분류기도 못 보게 되어 연장될 수 없고 새 id로 다시 생성된다.
+- `trend_max_active_trends`는 **읽는 쪽에만** 캡을 건다(`get_trends_context`). 분류기 쪽은 캡하지 않는다. 캡 때문에 숨긴 트렌드는 분류기도 못 보게 되어 연장될 수 없고 새 id로 다시 생성된다.
 - 동일 날짜 재실행은 멱등이다. 그날 증거를 교체한다. 오늘 증거는 분류기용 목록을 렌더하기 **전에** 걷어내서,
   분류기가 첫 실행의 스토리를 기존 트렌드로 보지 않는다. 다이제스트용 블록도 다이제스트 날짜 **이전** 증거만
   쓴다. 그렇지 않으면 19:00 실행의 스토리가 19:25 재실행에 "최근 며칠의 트렌드"로 되돌아갔다.
@@ -1466,8 +1463,8 @@ N일 재등장 같은 수치를 붙이던 때에는 모델이 그 숫자를 리�
 그것을 다시 금지하는 문장을 달고 있었다. 숫자를 넣지 않으니 금지 문장도 함께 뺐다.
 
 다이제스트용 블록만 `trend_max_active_trends`로 캡한다. 새 노브를 만들지 않고 기존 active 캡을 재사용했다.
-`visible`에는 cooling도 들어가서 20줄을 넘길 수 있고 대부분은 에디터가 쓰지 않는 끊긴 흐름이다. 반면 분류기용
-`_render_existing`은 캡하지 않는다. 거기서 cooling 트렌드를 숨기면 그 실이 고아가 되고 모델이 같은 주제에
+`visible`에는 오래 끊긴 흐름도 들어가서 20줄을 넘길 수 있고 대부분은 에디터가 쓰지 않는다. 반면 분류기용
+`_render_existing`은 캡하지 않는다. 거기서 끊긴 트렌드를 숨기면 그 실이 고아가 되고 모델이 같은 주제에
 중복 id를 새로 만든다.
 
 ### 7.2 다이제스트 스냅샷 — AgentCore Memory (`adapters/memory.py`)
@@ -1704,14 +1701,16 @@ no-op이다.
 ### 9.1 CLI 계약 (`research_cli.py`)과 OpenClaw 스킬
 
 ```bash
-uv --directory ~/Projects/omnisummary run python research_cli.py "<토픽>" [--publish threads] [--output-dir PATH]
+uv --directory ~/Projects/omnisummary run python research_cli.py "<토픽>" [--publish threads|threads-preview] [--output-dir PATH]
 ```
 
 **stdout에는 JSON 객체 하나만 쓴다.** 로그는 전부 stderr로 간다. 필드는 `status`(`succeeded`, `failed`,
 `rejected`), `topic`, `title`, `markdown_path`, `markdown`, `sources`(리포트가 인용한 URL), `images`(stage된 OG
 이미지), `threads`, `model`, `stop_reason`, `usage`(입력·출력·캐시 읽기·쓰기 토큰, 사이클 수, 도구별 호출 수),
-`warnings`, `error`다. `--publish threads`를 준 실행만 `threads`가
-`{published, partial, posts_delivered, posts_rendered, dropped, trimmed}`이고, 나머지는 `null`이다. 리포트는
+`warnings`, `error`다. `--publish`를 준 실행만 `threads`가
+`{published, partial, posts_delivered, posts_rendered, dropped, trimmed}`이고, 나머지는 `null`이다.
+`threads-preview`는 게시하지 않는 퍼블리셔(`ThreadsPreview`)로 스레드를 쓰고 `preview`, `posts`, `with_image`를 더 싣는다.
+평가 하네스용이다. 이때 `published`는 미리보기가 끝났다는 뜻이다. 리포트는
 `reports/`(gitignore 대상, `--output-dir`로 변경)에 `YYYY-MM-DD-HHMMSS-<토픽 해시>.md`로 저장된다.
 
 **종료 코드.** `0` 성공, `1` 실패(리포트 없음, 실행 오류, 요청한 Threads 게시가 완료되지 않음), `2` 입력
@@ -1776,7 +1775,7 @@ spec에서 이름과 인자, 한 줄 요약을 뽑아 `<tools>` 블록을 만든
   담은 채 길이만 줄이라고 하면 사실을 의미 있게 만드는 설명이 먼저 버려져 주장 목록처럼 읽힌다.
 - **`<language>`, `<formatting>`, `<citations>`** — 한국어 규칙(공유 `KOREAN_STYLE_RULES` 주입), Markdown
   리포트(`# 제목`, `## N. 섹션`)와 Threads 평문의 차이, 구체적 사실(수치, 날짜, 출시, 인용)마다 그것을 준 도구 결과의 링크를 달고 출처를 댈 수 없으면 배경지식으로 표시하거나
-  빼는 규칙(실측 리포트에서 수치 76개 중 약 12개가 출처 없이 실렸다), 출처 구분(검증과 주장, 추론)과 날조 금지.
+  빼는 규칙(실측 리포트에서 수치 76개 중 약 12개가 출처 없이 실렸다), 출처 구분(검증과 주장, 추론). 도구가 돌려주지 않은 URL은 코드의 인용 검사가 돌려보낸다.
 
 ### 도구 (`adapters/research_tools.py`)
 

@@ -99,7 +99,7 @@ class TrendTracker:
     def get_trends_context(self, today: date | None = None) -> str:
         """The DIGEST-facing trend context: the highest-momentum visible trends, each with its latest note.
 
-        Capped at trend_max_active_trends (cooling trends are visible too). The CLASSIFIER's view
+        Capped at trend_max_active_trends. The CLASSIFIER's view
         (_render_existing) is deliberately NOT capped: hiding a trend there would make the model coin
         a duplicate id for the same thread.
 
@@ -227,10 +227,9 @@ class TrendTracker:
         trend.evidence.append(TrendEvidence(date=today_date, summary=obs["summary"]))
 
     def _run_lifecycle(self, memory: TrendMemory, today_date: str) -> None:
-        """Cap evidence, derive last_seen FROM the evidence, then drop trends past retention and
-        mark the rest active/cooling. last_seen is derived rather than stamped on append: a same-day
+        """Cap evidence, derive last_seen FROM the evidence, then drop trends past retention. last_seen is derived rather than stamped on append: a same-day
         re-run strips today's evidence first, and a stamped value kept a trend the second pass did
-        not re-emit at today's date — ACTIVE, with its retention clock restarted. A trend past
+        not re-emit at today's date, with its retention clock restarted. A trend past
         retention is dropped outright."""
         today = date.fromisoformat(today_date)
         for trend in memory.trends:

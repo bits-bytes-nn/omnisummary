@@ -117,8 +117,8 @@ class DigestResult(BaseModel):
 
 
 class VisualBrief(BaseModel):
-    # No max_length: the title only feeds a log line, so a cap could only cost the day's visual.
-    title: str = Field(min_length=1)
+    # Optional: the title only feeds a log line, so requiring it could only cost the day's visual.
+    title: str = ""
     # The Images API limit for the GPT image models (4000 is dall-e-3's): a four-panel brief overran it.
     prompt: str = Field(min_length=1, max_length=32000)
     # Required, no default: a default let a brief that left the field out silently become portrait,

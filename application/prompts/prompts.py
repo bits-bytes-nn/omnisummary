@@ -126,7 +126,7 @@ because the lead is a comment on stories you have already written:
       "implication": "ONE short Korean sentence that takes a stance on THIS story a reader could disagree with and adds what the source itself does not say, not a general truth about the industry. State the stance flatly, as the whole sentence; caveats, 'unverified' and 'self-reported' included, belong in the body. Provocation is in the angle, never in invented facts."
     }}
   ],
-  "lead": "3-4 plain, concrete sentences, a standalone opening under {lead_budget} characters about items[0], the headline the image depicts: name that story in ONE assertive sentence a stranger could follow (the actual company / model / event — no label, no emoji), then land ONE thesis that items[0]'s implication does not already make: the wider arc it belongs to, when the trend ammunition below supports one. The reader sees items[0] directly beneath, so ADD to it rather than re-telling it — no replay of its sequence and no repeat of its numbers."
+  "lead": "3-4 plain, concrete sentences, a standalone opening under {lead_budget} characters about items[0], the headline the image depicts: name that story in ONE assertive sentence a stranger could follow (the actual company / model / event — no label, no emoji), then land ONE thesis that items[0]'s implication does not already make: the wider arc it belongs to, when the trend context below supports one. The reader sees items[0] directly beneath, so ADD to it rather than re-telling it — no replay of its sequence and no repeat of its numbers."
 }}
 ```
 
@@ -140,7 +140,7 @@ underlying story (same companies/event), keep only the more informative one and 
 its text alone. Emit fewer only when no distinct candidate is left — never pad with a near-identical take.
 
 *Trends*
-The recurrence ammunition is there so the lead can place today's story in the arc it belongs to: name \
+The trend context is there so the lead can place today's story in the arc it belongs to: name \
 what the pattern IS and what follows from it, in the argument's own words. That connection is the one \
 thing today's items cannot supply on their own, so make it.
 No separate list of trends. With no trend data, draw continuity from today's items alone and never \
@@ -227,8 +227,8 @@ then get a laugh or an insight from it. So it carries ONE idea, the thing the re
 line, sign and label is plain {on_image_language} a non-specialist gets, naming what the thing really \
 is (names of people, companies and products stay as written; no code words, benchmark names, metrics \
 or jargon). The cast is the real people, companies and products of the story, acting where the story \
-actually happens, as literal scenes rather than an allegory; the digest's narrator, a recurring character, joins them only when he adds \
-something they can't. Choose the form the story needs: a single cartoon, a strip of two to six \
+actually happens, as literal scenes rather than an allegory. The digest's narrator, a recurring \
+character, joins them (`use_character` true) only when he adds something they can't. Choose the form the story needs: a single cartoon, a strip of two to six \
 panels, or an illustrated explainer. Each frame follows from the one before, and the last one SHOWS \
 the story's own twist (its irony or its catch); its line, said by a character there, reacts to what \
 is drawn rather than restating the setup or stating a moral. Apart from that twist, everything \
@@ -254,7 +254,7 @@ is fine) and one clear action, on a plausible set.
 
 class VisualSynopsisPrompt(BasePrompt):
     """Free-form synopsis -> image brief. The caller describes WHAT it wants in natural
-    language (normally a four-panel comic); this turns it + the source material into a single
+    language (normally the daily comic); this turns it + the source material into a single
     image-generation brief."""
 
     input_variables = [
@@ -271,7 +271,7 @@ model can render in one image, honoring the requested format.
 
 Fill these fields:
 - orientation: the frame the composition needs. A grid of panels is \
-`portrait`; a vertical strip is `tall` (equal 4:3 panels stacked top to bottom in one column); a \
+`portrait`; a vertical strip is `tall` (equal panels stacked top to bottom in one column); a \
 single frame or an explainer takes whichever shape fits it.
 - prompt: a single rich English prompt for the image model: the full composition, each panel in \
 order, the characters, the exact on-image text, and the style — {style_aesthetic}

@@ -38,7 +38,7 @@ class StateStore(ABC):
 
     Distinct from MemoryStore by design — and NOT replaceable by it.
     trends.json is a deliberately time-varying document with explicit code-managed
-    merge/cooling/archive of topic threads. AgentCore's managed strategies extract STABLE
+    merge and retention of topic threads. AgentCore's managed strategies extract STABLE
     records (semantic facts, user preferences) or per-session summaries; even
     customMemoryStrategy can only *append to* those built-in prompts, not implement
     trend-thread maintenance. So trends.json stays the system of record for trends;
