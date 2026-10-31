@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 import research_cli
-from output.delivery import current_delivery_context
+from application.research import ResearchPorts, current_delivery_context
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -66,6 +66,7 @@ def _run(
     with (
         patch.object(research_cli, "create_research_agent", side_effect=fake_create) as create,
         patch.object(research_cli, "resolve_secret", return_value=tavily_key),
+        patch.object(research_cli.bootstrap, "research_ports", return_value=ResearchPorts()),
     ):
         result, code = research_cli.run(argv)
     captured["create"] = create
@@ -186,7 +187,7 @@ class TestEveryInvocationIsBudgeted:
     agent carries the shared limits."""
 
     def test_the_cli_passes_the_shared_limits(self, tmp_path):
-        from agent.research_agent import research_run_limits
+        from adapters.research_agent import research_run_limits
 
         _, _, cap = _run(["주제", "--output-dir", str(tmp_path)])
         assert cap["kwargs"]["limits"] == research_run_limits()
@@ -203,3 +204,19 @@ class TestEveryInvocationIsBudgeted:
         assert calls
         for call in calls:
             assert "limits" in {kw.arg for kw in call.keywords}, f"line {call.lineno} invokes the agent without limits"
+
+
+def test_the_run_reaches_out_only_through_the_ports_the_bootstrap_built(tmp_path):
+    ports = ResearchPorts()
+    seen = []
+
+    def agent(*_args, **_kwargs):
+        seen.append(current_delivery_context().ports)
+        return _Result("done")
+
+    with patch.object(research_cli.bootstrap, "research_ports", return_value=ports):
+        with patch.object(research_cli, "resolve_secret", return_value="key"):
+            with patch.object(research_cli, "create_research_agent") as create:
+                create.return_value.side_effect = agent
+                research_cli.run(["주제", "--output-dir", str(tmp_path)])
+    assert seen == [ports]

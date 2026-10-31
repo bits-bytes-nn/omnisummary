@@ -5,7 +5,8 @@ import asyncio
 import httpx
 from tavily import AsyncTavilyClient
 
-from shared import get_config, logger, resolve_secret, retry_async
+from adapters.og_image import fetch_og_image
+from shared import ImageAsset, get_config, logger, resolve_secret, retry_async
 
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 
@@ -210,3 +211,27 @@ async def paper_search(query: str) -> str:
             results.append(_result_block(heading, url, [("Abstract", abstract)]))
         logger.info("Found %d papers for query '%s'", len(works), query)
         return "\n\n".join(results)
+
+
+class WebResearchSources:
+    """The research agent's reading: Tavily for the web and community search and page reads, OpenAlex
+    for papers, and a source page's og:image."""
+
+    async def web_search(
+        self,
+        query: str,
+        *,
+        topic: str | None = None,
+        time_range: str | None = None,
+        include_domains: list[str] | None = None,
+    ) -> str:
+        return await tavily_search(query, topic=topic, time_range=time_range, include_domains=include_domains)
+
+    async def paper_search(self, query: str) -> str:
+        return await paper_search(query)
+
+    async def read_page(self, url: str) -> str:
+        return await extract_url(url)
+
+    async def fetch_image(self, url: str) -> ImageAsset | None:
+        return await fetch_og_image(url)

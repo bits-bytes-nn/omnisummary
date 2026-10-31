@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from shared.media import og_image
+from adapters import og_image
 
 _PAGE_WITH_OG = """
 <html><head>

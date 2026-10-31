@@ -57,3 +57,13 @@ def fake_models() -> MagicMock:
     models = MagicMock()
     models.truncate_to_tokens.side_effect = lambda text, max_tokens: text
     return models
+
+
+class FakeSources:
+    """ResearchSources answering canned text; each method is an AsyncMock to assert on."""
+
+    def __init__(self, *, search: str = "", papers: str = "", page: str = "", image=None) -> None:
+        self.web_search = AsyncMock(return_value=search)
+        self.paper_search = AsyncMock(return_value=papers)
+        self.read_page = AsyncMock(return_value=page)
+        self.fetch_image = AsyncMock(return_value=image)

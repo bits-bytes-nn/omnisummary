@@ -2,11 +2,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agent.research_tools import DeliveryContext
-from output import delivery as dlv
+from application import research as dlv
+from application.research import DeliveryContext
 from shared import ImageAsset
 from shared.formatting import normalize_citation_url
 from shared.models import ThreadsDelivery
+from tests.fakes import FakeThreads
 
 
 def _img(content_type="image/jpeg"):
@@ -29,8 +30,10 @@ class TestMarkdownReport:
     @pytest.mark.asyncio
     async def test_the_report_is_recorded_and_publishes_nothing(self):
         d = DeliveryContext()
-        with patch("adapters.threads.post_to_threads", new=AsyncMock()) as pt:
-            ok = await dlv.deliver_research_report("# 제목\n\n본문이다.", channel="markdown", delivery=d)
+        d.ports.threads = FakeThreads()
+        d.ports.threads.post_thread = AsyncMock()
+        pt = d.ports.threads.post_thread
+        ok = await dlv.deliver_research_report("# 제목\n\n본문이다.", channel="markdown", delivery=d)
         assert ok is dlv.DeliveryOutcome.POSTED
         assert d.report == "# 제목\n\n본문이다."
         assert d.delivered_channels == {"markdown"}
@@ -55,27 +58,28 @@ class TestDeliverThreads:
     async def test_passes_first_image_with_content_type_and_key(self):
         d = DeliveryContext(publish_threads=True, staged_images=[_img("image/jpeg"), _img("image/png")])
         d.seen_urls.add(normalize_citation_url("https://src/article"))
-        with patch("adapters.threads.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(1, 1))) as pt:
-            with patch.object(dlv, "get_config") as cfg:
-                _threads_config(cfg, bucket="bkt", prefix="omni")
-                ok = await dlv.deliver_research_report(
-                    "리드 문장이다.\nhttps://src/article", channel="threads", delivery=d
-                )
+        d.ports.threads = FakeThreads()
+        d.ports.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(1, 1))
+        pt = d.ports.threads.post_thread
+        with patch.object(dlv, "get_config") as cfg:
+            _threads_config(cfg, bucket="bkt", prefix="omni")
+            ok = await dlv.deliver_research_report("리드 문장이다.\nhttps://src/article", channel="threads", delivery=d)
         assert ok is dlv.DeliveryOutcome.POSTED
         kw = pt.await_args.kwargs
         assert kw["image_content_type"] == "image/jpeg"  # the FIRST staged image
-        assert kw["image_bucket"] == "bkt"
-        assert kw["image_key"].startswith("omni/threads/research_")
-        assert kw["image_key"].endswith(".jpg")  # extension derived from content_type
+        assert kw["image_bytes"] == b"abc"
+        assert kw["image_key_prefix"] == "research_"
 
     @pytest.mark.asyncio
     async def test_empty_report_skips_threads_api(self):
         # An empty report must not call post_to_threads (an empty root 400s the Threads API).
         d = DeliveryContext(publish_threads=True)
-        with patch("adapters.threads.post_to_threads", new=AsyncMock()) as pt:
-            with patch.object(dlv, "get_config") as cfg:
-                _threads_config(cfg, max_posts=6)
-                ok = await dlv.deliver_research_report("   \n\n ", channel="threads", delivery=d)
+        d.ports.threads = FakeThreads()
+        d.ports.threads.post_thread = AsyncMock()
+        pt = d.ports.threads.post_thread
+        with patch.object(dlv, "get_config") as cfg:
+            _threads_config(cfg, max_posts=6)
+            ok = await dlv.deliver_research_report("   \n\n ", channel="threads", delivery=d)
         assert ok is dlv.DeliveryOutcome.FAILED
         pt.assert_not_awaited()
         assert "threads" not in d.delivered_channels
@@ -83,8 +87,10 @@ class TestDeliverThreads:
     @pytest.mark.asyncio
     async def test_no_images_text_only(self):
         d = DeliveryContext(publish_threads=True)
-        with patch("adapters.threads.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(1, 1))) as pt:
-            await dlv.deliver_research_report("리드.", channel="threads", delivery=d)
+        d.ports.threads = FakeThreads()
+        d.ports.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(1, 1))
+        pt = d.ports.threads.post_thread
+        await dlv.deliver_research_report("리드.", channel="threads", delivery=d)
         assert pt.await_args.kwargs["image_bytes"] is None
 
     @pytest.mark.asyncio
@@ -92,25 +98,14 @@ class TestDeliverThreads:
         # The likely reason for a second call is a REVISED report; announcing it as delivered told
         # the requester a correction had gone out that never did.
         d = DeliveryContext(publish_threads=True)
-        with patch("adapters.threads.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(1, 1))) as pt:
-            first = await dlv.deliver_research_report("첫 보고서다.", channel="threads", delivery=d)
-            second = await dlv.deliver_research_report("고친 보고서다.", channel="threads", delivery=d)
+        d.ports.threads = FakeThreads()
+        d.ports.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(1, 1))
+        pt = d.ports.threads.post_thread
+        first = await dlv.deliver_research_report("첫 보고서다.", channel="threads", delivery=d)
+        second = await dlv.deliver_research_report("고친 보고서다.", channel="threads", delivery=d)
         assert first is dlv.DeliveryOutcome.POSTED
         assert second is dlv.DeliveryOutcome.NOT_POSTED
         assert pt.await_count == 1
-
-    @pytest.mark.asyncio
-    async def test_no_bucket_posts_text_only(self, monkeypatch):
-        # Staged image but no state bucket → text-only post, no image bytes passed.
-        monkeypatch.delenv("STATE_BUCKET", raising=False)
-        d = DeliveryContext(publish_threads=True, staged_images=[_img()])
-        with patch("adapters.threads.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(1, 1))) as pt:
-            with patch.object(dlv, "get_config") as cfg:
-                _threads_config(cfg)
-                ok = await dlv.deliver_research_report("리드.\nhttps://src/article", channel="threads", delivery=d)
-        assert ok is dlv.DeliveryOutcome.POSTED
-        assert pt.await_args.kwargs["image_bytes"] is None
-        assert pt.await_args.kwargs["image_bucket"] == ""
 
     @pytest.mark.asyncio
     async def test_an_image_from_a_page_the_thread_does_not_cite_is_not_posted(self):
@@ -118,10 +113,12 @@ class TestDeliverThreads:
         uncited = _img().model_copy(update={"source_url": "https://elsewhere/page"})
         d = DeliveryContext(publish_threads=True, staged_images=[uncited, _img("image/png")])
         d.seen_urls |= {normalize_citation_url("https://src/article"), normalize_citation_url("https://elsewhere/page")}
-        with patch("adapters.threads.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(1, 1))) as pt:
-            with patch.object(dlv, "get_config") as cfg:
-                _threads_config(cfg, bucket="bkt")
-                await dlv.deliver_research_report("리드.\nhttps://src/article", channel="threads", delivery=d)
+        d.ports.threads = FakeThreads()
+        d.ports.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(1, 1))
+        pt = d.ports.threads.post_thread
+        with patch.object(dlv, "get_config") as cfg:
+            _threads_config(cfg, bucket="bkt")
+            await dlv.deliver_research_report("리드.\nhttps://src/article", channel="threads", delivery=d)
         assert pt.await_args.kwargs["image_content_type"] == "image/png"  # the cited one, not the first
 
     @pytest.mark.asyncio
@@ -129,19 +126,22 @@ class TestDeliverThreads:
         # The citation guard strips a glued particle ("...article에서"); the image match must too.
         d = DeliveryContext(publish_threads=True, staged_images=[_img()])
         d.seen_urls.add(normalize_citation_url("https://src/article"))
-        with patch("adapters.threads.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(1, 1))) as pt:
-            with patch.object(dlv, "get_config") as cfg:
-                _threads_config(cfg, bucket="bkt")
-                await dlv.deliver_research_report("https://src/article에서 밝혔다.", channel="threads", delivery=d)
+        d.ports.threads = FakeThreads()
+        d.ports.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(1, 1))
+        pt = d.ports.threads.post_thread
+        with patch.object(dlv, "get_config") as cfg:
+            _threads_config(cfg, bucket="bkt")
+            await dlv.deliver_research_report("https://src/article에서 밝혔다.", channel="threads", delivery=d)
         assert pt.await_args.kwargs["image_bytes"] == b"abc"
 
     @pytest.mark.asyncio
     async def test_the_per_channel_outcome_is_kept_for_the_caller(self):
         d = DeliveryContext(publish_threads=True)
-        with patch("adapters.threads.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(4, 6))):
-            with patch.object(dlv, "get_config") as cfg:
-                _threads_config(cfg)
-                await dlv.deliver_research_report("리드다.", channel="threads", delivery=d)
+        d.ports.threads = FakeThreads()
+        d.ports.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(4, 6))
+        with patch.object(dlv, "get_config") as cfg:
+            _threads_config(cfg)
+            await dlv.deliver_research_report("리드다.", channel="threads", delivery=d)
         await dlv.deliver_research_report("# 보고서", channel="markdown", delivery=d)
         stats = d.threads_stats
         assert (stats.delivered, stats.rendered) == (4, 6)
@@ -156,11 +156,13 @@ class TestARootThatLandedAloneIsNotAPlainFailure:
     async def test_a_lone_root_spends_the_channel(self):
         d = DeliveryContext(publish_threads=True)
         report = "\n---\n".join(f"{i}/6 소제목\n\n본문 {i}이다." for i in range(6))
-        with patch("adapters.threads.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(1, 8))) as pt:
-            with patch.object(dlv, "get_config") as cfg:
-                _threads_config(cfg)
-                ok = await dlv.deliver_research_report(report, channel="threads", delivery=d)
-                again = await dlv.deliver_research_report(report, channel="threads", delivery=d)
+        d.ports.threads = FakeThreads()
+        d.ports.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(1, 8))
+        pt = d.ports.threads.post_thread
+        with patch.object(dlv, "get_config") as cfg:
+            _threads_config(cfg)
+            ok = await dlv.deliver_research_report(report, channel="threads", delivery=d)
+            again = await dlv.deliver_research_report(report, channel="threads", delivery=d)
         assert ok is dlv.DeliveryOutcome.POSTED
         assert again is dlv.DeliveryOutcome.NOT_POSTED
         assert pt.await_count == 1
@@ -173,11 +175,13 @@ class TestARootThatLandedAloneIsNotAPlainFailure:
         d = DeliveryContext(publish_threads=True)
         report = "\n---\n".join(f"{i}/6 소제목\n\n본문 {i}이다." for i in range(6))
         outcome = ThreadsDelivery(0, 8, uncertain=True)
-        with patch("adapters.threads.post_to_threads", new=AsyncMock(return_value=outcome)) as pt:
-            with patch.object(dlv, "get_config") as cfg:
-                _threads_config(cfg)
-                await dlv.deliver_research_report(report, channel="threads", delivery=d)
-                again = await dlv.deliver_research_report(report, channel="threads", delivery=d)
+        d.ports.threads = FakeThreads()
+        d.ports.threads.post_thread = AsyncMock(return_value=outcome)
+        pt = d.ports.threads.post_thread
+        with patch.object(dlv, "get_config") as cfg:
+            _threads_config(cfg)
+            await dlv.deliver_research_report(report, channel="threads", delivery=d)
+            again = await dlv.deliver_research_report(report, channel="threads", delivery=d)
         assert again is dlv.DeliveryOutcome.NOT_POSTED
         assert pt.await_count == 1
         assert d.partial_channels == {"threads"}
@@ -185,10 +189,11 @@ class TestARootThatLandedAloneIsNotAPlainFailure:
     @pytest.mark.asyncio
     async def test_a_delivery_where_nothing_landed_is_still_a_failure(self):
         d = DeliveryContext(publish_threads=True)
-        with patch("adapters.threads.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(0, 8))):
-            with patch.object(dlv, "get_config") as cfg:
-                _threads_config(cfg)
-                ok = await dlv.deliver_research_report("리드다.", channel="threads", delivery=d)
+        d.ports.threads = FakeThreads()
+        d.ports.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(0, 8))
+        with patch.object(dlv, "get_config") as cfg:
+            _threads_config(cfg)
+            ok = await dlv.deliver_research_report("리드다.", channel="threads", delivery=d)
         assert ok is dlv.DeliveryOutcome.FAILED
         assert d.partial_channels == set() and d.delivered_channels == set()
 
@@ -201,12 +206,14 @@ class TestATooLongThreadNeverPosts:
     async def test_every_over_long_text_is_sent_back(self):
         d = DeliveryContext(publish_threads=True)
         report = "\n---\n".join(f"{i}/20 소제목\n\n본문 {i}이다." for i in range(20))
-        with patch("adapters.threads.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(4, 4))) as pt:
-            with patch.object(dlv, "get_config") as cfg:
-                _threads_config(cfg, max_posts=4)
-                first = await dlv.deliver_research_report(report, channel="threads", delivery=d)
-                rewrite = await dlv.deliver_research_report(report + "\n---\n덧붙임", channel="threads", delivery=d)
-                fits = await dlv.deliver_research_report("\n---\n".join(["a", "b", "c"]), channel="threads", delivery=d)
+        d.ports.threads = FakeThreads()
+        d.ports.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(4, 4))
+        pt = d.ports.threads.post_thread
+        with patch.object(dlv, "get_config") as cfg:
+            _threads_config(cfg, max_posts=4)
+            first = await dlv.deliver_research_report(report, channel="threads", delivery=d)
+            rewrite = await dlv.deliver_research_report(report + "\n---\n덧붙임", channel="threads", delivery=d)
+            fits = await dlv.deliver_research_report("\n---\n".join(["a", "b", "c"]), channel="threads", delivery=d)
         assert first is rewrite is dlv.DeliveryOutcome.TOO_LONG
         assert fits is dlv.DeliveryOutcome.POSTED and pt.await_count == 1
 

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 
+from adapters.research_backends import extract_pages
 from shared import CollectedItem, SourceType, logger
 from shared.config import RSSCollectorConfig
-from shared.research import extract_pages
 
 from .base import (
     BaseCollector,

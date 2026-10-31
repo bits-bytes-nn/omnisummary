@@ -24,15 +24,15 @@ class TestAgentPromptCaching:
             return MagicMock()
 
         with (
-            patch("agent.research_agent.BedrockModel", side_effect=fake_bedrock_model),
-            patch("agent.research_agent.Agent", return_value=MagicMock(tool_names=["t"])),
-            patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
+            patch("adapters.research_agent.BedrockModel", side_effect=fake_bedrock_model),
+            patch("adapters.research_agent.Agent", return_value=MagicMock(tool_names=["t"])),
+            patch("adapters.research_agent.boto3.Session", return_value=MagicMock()),
             patch(
-                "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
+                "adapters.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
                 return_value=resolved_model_id,
             ),
         ):
-            from agent.research_agent import create_research_agent
+            from adapters.research_agent import create_research_agent
 
             create_research_agent()
         return captured
@@ -68,15 +68,15 @@ class TestAgentToolInjection:
 
         sentinel_tools = [object()]
         with (
-            patch("agent.research_agent.BedrockModel", return_value=MagicMock()),
-            patch("agent.research_agent.Agent", side_effect=fake_agent),
-            patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
+            patch("adapters.research_agent.BedrockModel", return_value=MagicMock()),
+            patch("adapters.research_agent.Agent", side_effect=fake_agent),
+            patch("adapters.research_agent.boto3.Session", return_value=MagicMock()),
             patch(
-                "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
+                "adapters.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
                 return_value="global.anthropic.claude-sonnet-5",
             ),
         ):
-            from agent.research_agent import create_research_agent
+            from adapters.research_agent import create_research_agent
 
             create_research_agent(tools=sentinel_tools)
 
@@ -90,20 +90,20 @@ class TestAgentToolInjection:
             return MagicMock(tool_names=["t"])
 
         with (
-            patch("agent.research_agent.BedrockModel", return_value=MagicMock()),
-            patch("agent.research_agent.Agent", side_effect=fake_agent),
-            patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
+            patch("adapters.research_agent.BedrockModel", return_value=MagicMock()),
+            patch("adapters.research_agent.Agent", side_effect=fake_agent),
+            patch("adapters.research_agent.boto3.Session", return_value=MagicMock()),
             patch(
-                "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
+                "adapters.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
                 return_value="global.anthropic.claude-sonnet-5",
             ),
         ):
-            from agent.research_agent import create_research_agent
+            from adapters.research_agent import create_research_agent
 
             create_research_agent()
 
         # Assert tool IDENTITIES, not a magic count — a 1-for-1 wrong swap would pass a count check.
-        from agent.research_tools import (
+        from adapters.research_tools import (
             attach_image,
             community_search,
             deliver_report,
@@ -136,15 +136,15 @@ class TestVoiceInjection:
             return MagicMock(tool_names=["t"])
 
         with (
-            patch("agent.research_agent.BedrockModel", return_value=MagicMock()),
-            patch("agent.research_agent.Agent", side_effect=fake_agent),
-            patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
+            patch("adapters.research_agent.BedrockModel", return_value=MagicMock()),
+            patch("adapters.research_agent.Agent", side_effect=fake_agent),
+            patch("adapters.research_agent.boto3.Session", return_value=MagicMock()),
             patch(
-                "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
+                "adapters.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
                 return_value="global.anthropic.claude-sonnet-5",
             ),
         ):
-            from agent.research_agent import create_research_agent
+            from adapters.research_agent import create_research_agent
             from shared import Config
 
             create_research_agent()
@@ -164,7 +164,7 @@ class TestVoiceInjection:
         # The prompt used to spell the per-post limit as a literal "500" while the renderer enforced
         # THREADS_MAX_POST_CHARS, so raising the channel's cap in one place left the other behind and
         # the agent wrote to a budget the renderer no longer used.
-        from agent.research_agent import SYSTEM_PROMPT_TEMPLATE
+        from adapters.research_agent import SYSTEM_PROMPT_TEMPLATE
 
         assert "{threads_max_post_chars}" in SYSTEM_PROMPT_TEMPLATE
         assert "500" not in SYSTEM_PROMPT_TEMPLATE
@@ -183,15 +183,15 @@ class TestVoiceInjection:
             return MagicMock(tool_names=["t"])
 
         with (
-            patch("agent.research_agent.BedrockModel", return_value=MagicMock()),
-            patch("agent.research_agent.Agent", side_effect=fake_agent),
-            patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
+            patch("adapters.research_agent.BedrockModel", return_value=MagicMock()),
+            patch("adapters.research_agent.Agent", side_effect=fake_agent),
+            patch("adapters.research_agent.boto3.Session", return_value=MagicMock()),
             patch(
-                "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
+                "adapters.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
                 return_value="global.anthropic.claude-sonnet-5",
             ),
         ):
-            from agent.research_agent import create_research_agent
+            from adapters.research_agent import create_research_agent
             from shared import Config
 
             create_research_agent()
@@ -208,8 +208,8 @@ class TestVoiceInjection:
         # list in create_research_agent, with nothing keeping them in agreement: a renamed, added or
         # dropped tool left the model reading a menu it could no longer call. Every bound tool must
         # appear, with its real arguments, and nothing else may.
-        from agent.research_agent import _render_tools_block
-        from agent.research_tools import (
+        from adapters.research_agent import _render_tools_block
+        from adapters.research_tools import (
             attach_image,
             community_search,
             deliver_report,
@@ -241,15 +241,15 @@ class TestVoiceInjection:
 
     def test_a_renamed_tool_changes_the_menu(self):
         # The point of deriving the block: dropping a tool must remove it, with no edit anywhere.
-        from agent.research_agent import _render_tools_block
-        from agent.research_tools import web_search
+        from adapters.research_agent import _render_tools_block
+        from adapters.research_tools import web_search
 
         assert "deliver_report" not in _render_tools_block([web_search])
 
     def test_shares_korean_style_rules_with_digest(self):
         # The same KOREAN_STYLE_RULES block must back BOTH the research prompt and the digest
         # language rules, so the two features can't drift on register / colon-ban / translationese.
-        from agent.research_agent import SYSTEM_PROMPT_TEMPLATE
+        from adapters.research_agent import SYSTEM_PROMPT_TEMPLATE
         from shared import KOREAN_STYLE_RULES, Config
 
         cfg = Config.load()
@@ -268,15 +268,15 @@ class TestAgentTemperatureGating:
             return MagicMock()
 
         with (
-            patch("agent.research_agent.BedrockModel", side_effect=fake_bedrock_model),
-            patch("agent.research_agent.Agent", return_value=MagicMock(tool_names=["t"])),
-            patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
+            patch("adapters.research_agent.BedrockModel", side_effect=fake_bedrock_model),
+            patch("adapters.research_agent.Agent", return_value=MagicMock(tool_names=["t"])),
+            patch("adapters.research_agent.boto3.Session", return_value=MagicMock()),
             patch(
-                "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
+                "adapters.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
                 return_value="global.anthropic.claude-sonnet-5",
             ),
         ):
-            from agent.research_agent import create_research_agent
+            from adapters.research_agent import create_research_agent
 
             create_research_agent()
 
@@ -293,15 +293,15 @@ class TestAgentTemperatureGating:
 
         temp_ok = LanguageModelInfo(max_output_tokens=64000, supports_temperature=True)
         with (
-            patch("agent.research_agent.BedrockModel", side_effect=fake_bedrock_model),
-            patch("agent.research_agent.Agent", return_value=MagicMock(tool_names=["t"])),
-            patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
+            patch("adapters.research_agent.BedrockModel", side_effect=fake_bedrock_model),
+            patch("adapters.research_agent.Agent", return_value=MagicMock(tool_names=["t"])),
+            patch("adapters.research_agent.boto3.Session", return_value=MagicMock()),
             patch(
-                "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
+                "adapters.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
                 return_value="global.anthropic.claude-sonnet-4-6",
             ),
         ):
-            import agent.research_agent as ra
+            import adapters.research_agent as ra
             from shared.config import Config
 
             model_id = Config.load().agent.model_id
@@ -316,15 +316,15 @@ class TestAgentTemperatureGating:
         # The CLI's stdout carries exactly one JSON object; Strands' default callback prints the
         # streamed text there.
         with (
-            patch("agent.research_agent.BedrockModel", return_value=MagicMock()),
-            patch("agent.research_agent.Agent", return_value=MagicMock(tool_names=["t"])) as agent_cls,
-            patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
+            patch("adapters.research_agent.BedrockModel", return_value=MagicMock()),
+            patch("adapters.research_agent.Agent", return_value=MagicMock(tool_names=["t"])) as agent_cls,
+            patch("adapters.research_agent.boto3.Session", return_value=MagicMock()),
             patch(
-                "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
+                "adapters.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
                 return_value="global.anthropic.claude-sonnet-5",
             ),
         ):
-            from agent.research_agent import create_research_agent
+            from adapters.research_agent import create_research_agent
 
             create_research_agent()
         assert agent_cls.call_args.kwargs["callback_handler"] is None
@@ -359,16 +359,16 @@ class TestAgentClaude55Request:
             return MagicMock()
 
         with (
-            patch("agent.research_agent.Config.load", return_value=cfg),
-            patch("agent.research_agent.BedrockModel", side_effect=fake_bedrock_model),
-            patch("agent.research_agent.Agent", return_value=MagicMock(tool_names=["t"])),
-            patch("agent.research_agent.boto3.Session", return_value=MagicMock()),
+            patch("adapters.research_agent.Config.load", return_value=cfg),
+            patch("adapters.research_agent.BedrockModel", side_effect=fake_bedrock_model),
+            patch("adapters.research_agent.Agent", return_value=MagicMock(tool_names=["t"])),
+            patch("adapters.research_agent.boto3.Session", return_value=MagicMock()),
             patch(
-                "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
+                "adapters.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
                 return_value=f"global.{model_id.value}",
             ),
         ):
-            from agent.research_agent import create_research_agent
+            from adapters.research_agent import create_research_agent
 
             create_research_agent()
 
@@ -393,16 +393,16 @@ class TestAgentCredentialSelection:
 
     def _session_kwargs(self, *, resolved_profile):
         with (
-            patch("agent.research_agent.BedrockModel", return_value=MagicMock()),
-            patch("agent.research_agent.Agent", return_value=MagicMock(tool_names=["t"])),
-            patch("agent.research_agent.available_boto_profile", return_value=resolved_profile),
-            patch("agent.research_agent.boto3.Session", return_value=MagicMock()) as session,
+            patch("adapters.research_agent.BedrockModel", return_value=MagicMock()),
+            patch("adapters.research_agent.Agent", return_value=MagicMock(tool_names=["t"])),
+            patch("adapters.research_agent.available_boto_profile", return_value=resolved_profile),
+            patch("adapters.research_agent.boto3.Session", return_value=MagicMock()) as session,
             patch(
-                "agent.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
+                "adapters.research_agent.BedrockCrossRegionModelHelper.get_cross_region_model_id",
                 return_value="global.anthropic.claude-sonnet-5",
             ),
         ):
-            from agent.research_agent import create_research_agent
+            from adapters.research_agent import create_research_agent
 
             create_research_agent()
         return session.call_args.kwargs
