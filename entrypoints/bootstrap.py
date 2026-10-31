@@ -14,10 +14,12 @@ import boto3
 
 from adapters.memory import create_memory_store
 from adapters.openai_images import OpenAIImageRenderer
+from adapters.research_backends import WebResearchSources
 from adapters.state_store import create_state_store
 from adapters.threads import ThreadsGateway
 from application.daily_visual import DailyVisualMaker
 from application.ports import ContentSource, LanguageModels, MemoryStore, StateStore
+from application.research import ResearchPorts
 from collectors import RedditCollector, RSSCollector, RSSHubCollector, WebSearchCollector, YouTubeCollector
 from shared import BedrockLanguageModelFactory, Config, available_boto_profile, logger
 
@@ -109,4 +111,16 @@ def daily_visual_maker(config: Config, models: BedrockLanguageModelFactory | Non
         optional_state_store(config),
         threads(config),
         image_renderer(config),
+    )
+
+
+def research_ports(config: Config) -> ResearchPorts:
+    """A research run's reading, its Threads account, the fact check's model and the read-only stores
+    its recall tools use. The models are built here, the stores on first use."""
+    return ResearchPorts(
+        sources=WebResearchSources(),
+        threads=threads(config),
+        models=language_models(config),
+        state_store=lambda: state_store(config),
+        memory_store=memory_store,
     )

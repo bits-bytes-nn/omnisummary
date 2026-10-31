@@ -148,16 +148,14 @@ class TestSourceDescriptorRegistry:
 
 
 class TestPublicPackageBoundaries:
-    """Two boundary violations kept biting refactors: `shared.research` and `shared` exported
-    UNDERSCORE names as their cross-package contract, and the pipeline's prose budget imported an
+    """Two boundary violations kept biting refactors: `shared` exported UNDERSCORE names as its
+    cross-package contract, and the pipeline's prose budget imported an
     output channel's private helpers. Both are now public names in shared/."""
 
     def test_shared_exports_no_underscore_names(self):
         import shared
-        import shared.research
 
         assert not [name for name in shared.__all__ if name.startswith("_")]
-        assert not [name for name in shared.research.__all__ if name.startswith("_")]
 
     def test_the_digest_generator_does_not_import_from_the_output_layer(self):
         # Its Threads-aware prose budget used to depend on output.renderers' PRIVATE helpers, so

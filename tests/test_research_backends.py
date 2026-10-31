@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from shared.research import research_backends as rb
+from adapters import research_backends as rb
 
 
 class TestFormatSearchResults:

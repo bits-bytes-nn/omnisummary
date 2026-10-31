@@ -25,9 +25,9 @@ load_dotenv()
 # the app's own logger (shared.logger), which has its own stderr handler.
 logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
-from agent.research_agent import create_research_agent, research_run_limits  # noqa: E402
-from agent.research_tools import DeliveryContext, request_context  # noqa: E402
-from output.delivery import MARKDOWN, THREADS  # noqa: E402
+from adapters.research_agent import create_research_agent, research_run_limits  # noqa: E402
+from application.research import MARKDOWN, THREADS, DeliveryContext, request_context  # noqa: E402
+from entrypoints import bootstrap  # noqa: E402
 from shared import (  # noqa: E402
     Config,
     SecretUnavailableError,
@@ -152,7 +152,7 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
         result["error"] = f"Config could not be loaded: {type(e).__name__}: {e}"
         return result, EXIT_FAILED
     result["model"] = config.agent.model_id.value
-    delivery = DeliveryContext(publish_threads=args.publish == THREADS)
+    delivery = DeliveryContext(publish_threads=args.publish == THREADS, ports=bootstrap.research_ports(config))
     allowed = "ALLOWED" if delivery.publish_threads else "NOT allowed"
     prompt = f"{topic}\n\n[DELIVERY] Threads publishing: {allowed}."
 

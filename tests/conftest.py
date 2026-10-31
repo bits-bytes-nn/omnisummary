@@ -94,8 +94,6 @@ def hermetic_env(monkeypatch):
     # boto3.client alone left boto3.Session(...).client() open: the state store and AgentCore memory
     # build their clients from a session, and on 2026-10-28 a test reached real S3 that way.
     monkeypatch.setattr("boto3.Session", _DisabledSession)
-    # The research thread fact check builds a Bedrock model: a test reaching it must not call out.
-    monkeypatch.setattr("agent.research_tools._fact_check_factory", _aws_disabled)
     # The reply read-back GETs graph.threads.net on whatever client the test handed in: a real one
     # would go to the network. Tests of the read-back itself call `real_landed_detached`.
     from adapters import threads

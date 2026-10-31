@@ -84,3 +84,17 @@ class TestCollectors:
         assert built["web_search"]._llm is models.get_model.return_value
         models.get_model.assert_called_once()
         assert models.get_model.call_args.kwargs["stage"] == "query-refine"
+
+
+class TestResearchPorts:
+    def test_a_research_run_gets_every_port_and_builds_the_stores_only_when_asked(self):
+        from adapters.research_backends import WebResearchSources
+
+        config = Config()
+        with patch.object(bootstrap, "language_models") as models, patch.object(bootstrap, "state_store") as store:
+            ports = bootstrap.research_ports(config)
+        assert isinstance(ports.sources, WebResearchSources)
+        assert isinstance(ports.threads, ThreadsGateway)
+        assert ports.models is models.return_value
+        store.assert_not_called()  # the trend store is built on first use
+        assert ports.memory_store is bootstrap.memory_store

@@ -11,6 +11,7 @@ from strands.models import BedrockModel
 from strands.models.bedrock import CacheConfig
 from strands.types.agent import Limits
 
+from adapters.research_tools import RESEARCH_TOOLS
 from output.renderers import research_post_budget
 from shared import (
     KOREAN_STYLE_RULES,
@@ -19,17 +20,6 @@ from shared import (
     Config,
     available_boto_profile,
     logger,
-)
-
-from .research_tools import (
-    attach_image,
-    community_search,
-    deliver_report,
-    read_url,
-    recall_digest,
-    recall_trends,
-    search_papers,
-    web_search,
 )
 
 
@@ -263,16 +253,7 @@ def create_research_agent(config: Config | None = None, tools: list[Any] | None 
     bedrock_model = BedrockModel(**model_kwargs)
 
     if tools is None:
-        tools = [
-            web_search,
-            community_search,
-            search_papers,
-            read_url,
-            recall_trends,
-            recall_digest,
-            attach_image,
-            deliver_report,
-        ]
+        tools = list(RESEARCH_TOOLS)
 
     agent = Agent(
         model=bedrock_model,

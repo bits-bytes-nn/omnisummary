@@ -11,10 +11,10 @@ from typing import Any
 
 import httpx
 
+from adapters.og_image import extension_for
 from application.ports import PublishError
 from shared import THREADS_MAX_POST_CHARS, logger, resolve_secret
 from shared.config import Config
-from shared.media import extension_for
 from shared.models import ThreadsDelivery
 
 # Meta's cap on an image post's alt_text.
