@@ -233,3 +233,30 @@ def test_ports_that_cannot_be_built_still_answer_with_json(tmp_path):
 def test_the_run_carries_the_config_the_cli_loaded(tmp_path):
     _, _, cap = _run(["주제", "--output-dir", str(tmp_path)])
     assert cap["delivery"].config is cap["create"].call_args.args[0]
+
+
+def test_a_threads_preview_returns_the_thread_and_posts_nothing(tmp_path):
+    import asyncio
+
+    from adapters.threads import ThreadsPreview
+    from application import research
+
+    seen = {}
+
+    def agent(*_args, **_kwargs):
+        delivery = current_delivery_context()
+        seen["threads"] = delivery.ports.threads
+        delivery.seen_urls.add("real.example/a")
+        asyncio.run(research.deliver_report("# 제목\n\n본문 https://real.example/a"))
+        asyncio.run(research.deliver_report("소제목\n\n본문이다.\nhttps://real.example/a", "threads"))
+        return _Result("done")
+
+    with patch.object(research_cli.bootstrap, "research_ports", return_value=ResearchPorts()):
+        with patch.object(research_cli, "resolve_secret", return_value="key"):
+            with patch.object(research_cli, "create_research_agent") as create:
+                create.return_value.side_effect = agent
+                result, code = research_cli.run(["주제", "--publish", "threads-preview", "--output-dir", str(tmp_path)])
+    assert isinstance(seen["threads"], ThreadsPreview)  # the run never held a real publisher
+    assert code == research_cli.EXIT_OK
+    assert result["threads"]["preview"] is True
+    assert result["threads"]["posts"] == ["소제목\n\n본문이다.\nhttps://real.example/a"]

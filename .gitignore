@@ -218,3 +218,6 @@ references/
 reports/
 cdk.context.json
 assets/.$*.bkp
+
+# Evaluation runs (scripts/eval_harness.py)
+evals/
