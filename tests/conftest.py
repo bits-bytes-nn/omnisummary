@@ -1,7 +1,7 @@
 import pytest
 
+from adapters.bedrock import BedrockCrossRegionModelHelper
 from shared.config import get_config
-from shared.utils import BedrockCrossRegionModelHelper
 
 # Env vars a developer's shell or `.env` supplies in real runs. Any of them leaking into a test
 # changes behavior: a real OPENAI_API_KEY makes a "no key configured" path take the key branch,
@@ -87,10 +87,10 @@ def hermetic_env(monkeypatch):
     def _aws_disabled(*args, **kwargs):
         raise RuntimeError("AWS access is disabled in tests; patch boto3.client to opt in")
 
-    monkeypatch.setattr("shared.utils.boto3.client", _aws_disabled)
+    monkeypatch.setattr("adapters.aws.boto3.client", _aws_disabled)
     # The SSM client is built on the configured profile where it exists (a developer laptop), which
     # boto3.client does not cover: stub its factory too, so no test reads a real secret.
-    monkeypatch.setattr("shared.utils._ssm_client", _aws_disabled)
+    monkeypatch.setattr("adapters.aws._ssm_client", _aws_disabled)
     # boto3.client alone left boto3.Session(...).client() open: the state store and AgentCore memory
     # build their clients from a session, and on 2026-10-28 a test reached real S3 that way.
     monkeypatch.setattr("boto3.Session", _DisabledSession)

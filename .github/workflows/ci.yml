@@ -57,6 +57,10 @@ jobs:
       # and scripts/ unchecked.
       - name: Mypy type-check
         run: uv run mypy .
+      # The ports-and-adapters dependency direction ([tool.importlinter] in pyproject): the core may not
+      # import an adapter or an outside system's client, directly or through another module.
+      - name: Import contracts
+        run: uv run lint-imports
 
   test:
     name: Tests & coverage

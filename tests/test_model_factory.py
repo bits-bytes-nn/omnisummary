@@ -3,12 +3,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from adapters.bedrock import LANGUAGE_MODEL_INFO, TOKEN_COUNT_MODEL, BedrockLanguageModelFactory
 from shared.constants import LanguageModelId
-from shared.utils import LANGUAGE_MODEL_INFO, TOKEN_COUNT_MODEL, BedrockLanguageModelFactory
 
 
 def _factory(client=None):
-    with patch("shared.utils.boto3.Session") as session:
+    with patch("adapters.bedrock.boto3.Session") as session:
         session.return_value.client.return_value = client or MagicMock()
         session.return_value.region_name = "us-west-2"
         session.return_value.profile_name = None
@@ -157,8 +157,8 @@ class TestStructuredOutputRequest:
     }
 
     def _converse_request(self, model: LanguageModelId, resolved: str) -> dict:
+        from adapters.bedrock import BedrockCrossRegionModelHelper as H
         from shared.models import VisualBrief
-        from shared.utils import BedrockCrossRegionModelHelper as H
 
         client = MagicMock()
         # A fresh copy per call: the response parser pops keys off the dict it is given.
@@ -233,7 +233,7 @@ class TestTokenUsageAttribution:
     its stage; telemetry must never be able to fail a generation."""
 
     def test_stage_tagged_usage_logger_is_attached(self):
-        from shared.utils import _TokenUsageLogger
+        from adapters.bedrock import _TokenUsageLogger
 
         f = _factory()
         info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
@@ -243,7 +243,7 @@ class TestTokenUsageAttribution:
         assert loggers[0].model_id == "global.anthropic.claude-sonnet-5"
 
     def test_untagged_call_is_labelled_rather_than_dropped(self):
-        from shared.utils import _TokenUsageLogger
+        from adapters.bedrock import _TokenUsageLogger
 
         f = _factory()
         info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
@@ -251,7 +251,7 @@ class TestTokenUsageAttribution:
         assert [c.stage for c in cfg["callbacks"] if isinstance(c, _TokenUsageLogger)] == ["unattributed"]
 
     def test_a_caller_supplied_callback_is_kept(self):
-        from shared.utils import _TokenUsageLogger
+        from adapters.bedrock import _TokenUsageLogger
 
         mine = MagicMock()
         f = _factory()
@@ -261,7 +261,7 @@ class TestTokenUsageAttribution:
         assert any(isinstance(c, _TokenUsageLogger) for c in cfg["callbacks"])
 
     def test_a_response_without_usage_metadata_is_survivable(self):
-        from shared.utils import _TokenUsageLogger
+        from adapters.bedrock import _TokenUsageLogger
 
         handler = _TokenUsageLogger("digest", "global.anthropic.claude-sonnet-5")
         handler.on_llm_end(MagicMock(generations=[], llm_output=None))  # must not raise
@@ -275,7 +275,7 @@ class TestApplicationProfileResolution:
     it. It must degrade silently: cost reporting may never stop a generation."""
 
     def test_profile_name_is_deterministic_and_slugged(self):
-        from shared.utils import BedrockCrossRegionModelHelper as H
+        from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
         name = H.application_profile_name(LanguageModelId.CLAUDE_V4_8_OPUS, "omnisummary", "dev")
         assert name == "omnisummary-dev-anthropic-claude-opus-4-8"
@@ -286,7 +286,7 @@ class TestApplicationProfileResolution:
     def test_the_resolver_looks_up_the_name_the_script_creates(self, monkeypatch):
         # put_inference_profiles names profiles from config; the Lambda resolver from the env CDK
         # sets from the same config. A prod Lambda must look for the prod-named profile.
-        from shared.utils import BedrockCrossRegionModelHelper as H
+        from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
         monkeypatch.setenv("PROJECT_NAME", "omnisummary")
         monkeypatch.setenv("STAGE", "prod")
@@ -300,7 +300,7 @@ class TestApplicationProfileResolution:
         assert H._application_profile_arn(session, LanguageModelId.CLAUDE_V5_5_OPUS, "us-west-2", "fb") == "arn:prod"
 
     def test_matching_profile_is_preferred(self, monkeypatch):
-        from shared.utils import BedrockCrossRegionModelHelper as H
+        from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
         monkeypatch.setenv("PROJECT_NAME", "omnisummary")
         monkeypatch.setenv("STAGE", "dev")
@@ -320,7 +320,7 @@ class TestApplicationProfileResolution:
         assert got == arn
 
     def test_absent_profile_keeps_the_system_defined_id(self, monkeypatch):
-        from shared.utils import BedrockCrossRegionModelHelper as H
+        from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
         monkeypatch.setenv("PROJECT_NAME", "omnisummary")
         client = MagicMock()
@@ -333,7 +333,7 @@ class TestApplicationProfileResolution:
         )
 
     def test_a_denied_lookup_keeps_the_system_defined_id(self):
-        from shared.utils import BedrockCrossRegionModelHelper as H
+        from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
         session = MagicMock()
         session.client.side_effect = RuntimeError("AccessDenied")
@@ -379,13 +379,13 @@ class TestCrossRegionResolution:
     MODEL = LanguageModelId.CLAUDE_V5_SONNET
 
     def test_a_global_profile_wins(self):
-        from shared.utils import BedrockCrossRegionModelHelper as H
+        from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
         client = _resolution_client(f"global.{self.MODEL.value}", f"us.{self.MODEL.value}")
         assert H.get_cross_region_model_id(_session(client), self.MODEL, "us-west-2") == f"global.{self.MODEL.value}"
 
     def test_the_regional_profile_is_the_second_choice(self):
-        from shared.utils import BedrockCrossRegionModelHelper as H
+        from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
         client = _resolution_client(f"us.{self.MODEL.value}")
         assert H.get_cross_region_model_id(_session(client), self.MODEL, "us-west-2") == f"us.{self.MODEL.value}"
@@ -393,19 +393,19 @@ class TestCrossRegionResolution:
     def test_asia_pacific_regions_use_the_apac_prefix(self):
         # ap-northeast-2's profiles are named apac.*, not ap.* — the one region family whose prefix
         # is not the first two characters of its name.
-        from shared.utils import BedrockCrossRegionModelHelper as H
+        from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
         client = _resolution_client(f"apac.{self.MODEL.value}")
         assert H.get_cross_region_model_id(_session(client), self.MODEL, "ap-northeast-2") == f"apac.{self.MODEL.value}"
 
     def test_other_regions_use_their_two_letter_prefix(self):
-        from shared.utils import BedrockCrossRegionModelHelper as H
+        from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
         client = _resolution_client(f"eu.{self.MODEL.value}")
         assert H.get_cross_region_model_id(_session(client), self.MODEL, "eu-west-1") == f"eu.{self.MODEL.value}"
 
     def test_no_cross_region_profile_falls_back_to_the_standard_id(self):
-        from shared.utils import BedrockCrossRegionModelHelper as H
+        from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
         client = _resolution_client()
         assert H.get_cross_region_model_id(_session(client), self.MODEL, "us-west-2") == self.MODEL.value
@@ -413,7 +413,7 @@ class TestCrossRegionResolution:
     def test_a_denied_listing_falls_back_to_the_standard_id(self):
         # ListInferenceProfiles is denied / throttled: the digest must still run against the plain
         # model id rather than fail at model construction.
-        from shared.utils import BedrockCrossRegionModelHelper as H
+        from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
         client = MagicMock()
         client.list_inference_profiles.side_effect = RuntimeError("AccessDenied")
@@ -423,7 +423,7 @@ class TestCrossRegionResolution:
     def test_resolution_is_cached_per_model_and_region(self):
         # ranker/digest/trend/refine each build a model; without the cache every build pays the
         # round-trip (and re-risks the AccessDenied path).
-        from shared.utils import BedrockCrossRegionModelHelper as H
+        from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
         client = _resolution_client(f"global.{self.MODEL.value}")
         session = _session(client)
@@ -440,7 +440,7 @@ class TestGetModel:
 
     @staticmethod
     def _built(model_id: LanguageModelId, resolved: str, **kwargs):
-        from shared.utils import BedrockCrossRegionModelHelper as H
+        from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
         f = _factory()
         with patch.object(H, "get_cross_region_model_id", return_value=resolved):
@@ -458,7 +458,7 @@ class TestGetModel:
     def test_the_stage_reaches_the_usage_logger(self):
         # The bill is per MODEL and several stages share one, so the stage tag is the only way a
         # token total is attributable at all.
-        from shared.utils import _TokenUsageLogger
+        from adapters.bedrock import _TokenUsageLogger
 
         model = self._built(LanguageModelId.CLAUDE_V5_SONNET, "global.anthropic.claude-sonnet-5", stage="ranking")
         loggers = [c for c in (model.callbacks or []) if isinstance(c, _TokenUsageLogger)]

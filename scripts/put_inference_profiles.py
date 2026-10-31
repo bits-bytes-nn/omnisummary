@@ -28,9 +28,9 @@ import boto3
 sys.path.insert(0, str(Path(__file__).parent.parent))
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "config.yaml"
 
+from adapters.bedrock import BedrockCrossRegionModelHelper  # noqa: E402
 from shared import Config  # noqa: E402
 from shared.constants import LanguageModelId  # noqa: E402
-from shared.utils import BedrockCrossRegionModelHelper  # noqa: E402
 
 
 def _configured_models(config: Config) -> dict[LanguageModelId, str]:

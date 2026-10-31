@@ -11,16 +11,11 @@ from strands.models import BedrockModel
 from strands.models.bedrock import CacheConfig
 from strands.types.agent import Limits
 
+from adapters.aws import available_boto_profile
+from adapters.bedrock import LANGUAGE_MODEL_INFO, BedrockCrossRegionModelHelper
 from adapters.research_tools import RESEARCH_TOOLS
 from output.renderers import research_post_budget
-from shared import (
-    KOREAN_STYLE_RULES,
-    LANGUAGE_MODEL_INFO,
-    BedrockCrossRegionModelHelper,
-    Config,
-    available_boto_profile,
-    logger,
-)
+from shared import KOREAN_STYLE_RULES, Config, logger
 
 
 def research_run_limits(config: Config | None = None) -> Limits:

@@ -394,7 +394,7 @@ class TestRendererReadiness:
             assert _renderer().ready() is False
 
     def test_an_unreadable_secret_is_not_ready_and_does_not_raise(self):
-        from shared import SecretUnavailableError
+        from adapters.aws import SecretUnavailableError
 
         with patch("adapters.openai_images.resolve_secret", side_effect=SecretUnavailableError("AccessDenied")):
             assert _renderer().ready() is False

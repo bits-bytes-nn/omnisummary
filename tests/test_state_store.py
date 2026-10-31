@@ -142,7 +142,7 @@ class TestCreateStateStore:
         config = Config()
         config.aws.profile = "research"
         config.aws.region = "ap-northeast-2"
-        with patch("shared.utils.available_boto_profile", return_value="research"):
+        with patch("adapters.aws.available_boto_profile", return_value="research"):
             with patch("boto3.Session") as session:
                 store = create_state_store(config)
         assert isinstance(store, S3StateStore)
@@ -160,7 +160,7 @@ class TestCreateStateStore:
         config = Config()
         config.aws.profile = "research"
         config.aws.region = "ap-northeast-2"
-        with patch("shared.utils.available_boto_profile", return_value=None):
+        with patch("adapters.aws.available_boto_profile", return_value=None):
             with patch("boto3.Session") as session:
                 store = create_state_store(config)
         assert isinstance(store, S3StateStore)

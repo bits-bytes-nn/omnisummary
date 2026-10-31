@@ -12,6 +12,7 @@ from tavily import AsyncTavilyClient
 from tavily.errors import TimeoutError as TavilyTimeoutError
 from tavily.errors import UsageLimitExceededError
 
+from adapters.aws import resolve_secret
 from application.ports import LanguageModels
 from shared import (
     DOMAIN_TO_SOURCE,
@@ -22,7 +23,6 @@ from shared import (
     get_config,
     logger,
     parse_json_from_llm_output,
-    resolve_secret,
     retry_async,
 )
 from shared.config import WebSearchCollectorConfig
