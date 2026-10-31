@@ -290,13 +290,6 @@ park 경로가 이 한 정의를 쓰므로, `--date`로 과거 날짜를 다시 
 `published_at`이 없는 항목은 윈도 **안**으로 본다. 날짜가 없다는 것이 범위 밖이라는 증거는
 아니고, 그것으로 떨어뜨리면 메타데이터 결손 때문에 소스가 조용히 줄어든다.
 
-수집기 하나의 `collect()` 전체는 `collectors.collector_budget_sec`(기본 600초)로 묶인다. 입력별 타임아웃은
-소스를 묶지 못한다. RSSHub 계정 피드 41개를 `max_concurrency` 5로, 각각 `(request_timeout +
-retry_backoff_sec) * max_retries = 105초`까지 허용하면 직렬 라운드로 약 16분이 필요하고, 이는 다이제스트
-Lambda의 15분 예산 전체보다 길다. 소스 하나가 막히면 실행 전체가 죽는다는 뜻이다. 이 예산의 타임아웃은
-raise되어 `run_collectors_with_health`의 예외 분기로 들어가고, 그 소스는 **부분 결과 없이** FAILED로 보고된다. 0이면 비활성이고,
-그때의 유일한 상한은 다시 Lambda 예산이다.
-
 ### 4.2 S3 park 파일 로더
 
 `adapters/collectors/base.py`의 `load_items_from_s3(filename, max_age_hours)`가 담당한다. X와 YouTube는 데이터센터
@@ -443,10 +436,8 @@ HTTP 503은 세 번 시도하는데 그보다 회복 가능성이 높은 실패�
 
 **최악 wall time.** 피드당 `max_retries * request_timeout + 선형 backoff`이므로 기본값에서
 `3*30s + (5s+10s)` = 105초다. 피드는 `max_concurrency`개씩 도니 수집기 전체는
-`ceil(feeds / max_concurrency) * 105s`다. 피드 수는 config가 정하니 여기에 숫자를 박지 않는다. 실제 상한은
-`collectors.collector_budget_sec`(기본 600초)이고 Lambda의 15분 예산이 아니다([§4.1](#41-공통-계약)). 이 곱이
-600초를 넘기면 소스는 **부분 결과 없이** FAILED로 보고되니, `max_concurrency`를 올리거나 피드를 줄여야
-한다는 뜻이다.
+`ceil(feeds / max_concurrency) * 105s`다. 피드 수는 config가 정하니 여기에 숫자를 박지 않는다. 이 곱은 다이제스트
+Lambda의 15분 예산 안에 넉넉히 들어가야 한다. 넘칠 만큼 피드가 늘면 `max_concurrency`를 올린다.
 
 **실패 신호.** 죽은 피드(HTTP 4xx/5xx, entries 없는 bozo)와 재시도를 소진한 타임아웃은 빈 결과가 아니라
 예외로 올린다. `gather_collector_results(raise_if_all_failed=True)`가 전 피드 실패일 때만 이를 승격시키니,
@@ -491,8 +482,7 @@ HTTP 상태도 분류한다. 429와 5xx는 재시도하고 그 밖의 4xx와 파
 늘 Twitter 쿠키 만료를 가리킨다.
 
 **팬아웃 상한.** 계정 수가 40개를 넘으니 한 번에 모두 띄우면 상류에 대한 버스트가 된다. 그래서 `collect()`
-안에서 `asyncio.Semaphore(max_concurrency)`를 만들고, 소스 전체는 `collectors.collector_budget_sec`가
-묶는다([§4.1](#41-공통-계약)).
+안에서 `asyncio.Semaphore(max_concurrency)`를 만든다.
 
 **헬스.** 실패한 계정과 빈 계정을 자체 추적하며 `error_rate_threshold`를 갖는다. 서비스
 도달성(`_check_reachable`)은 OK인데 모든 계정이 실패하면 RuntimeError로 올려 FAILED로 알린다. 조용한 날과
@@ -582,12 +572,6 @@ FAILED로 분류되게 한다. 부분 실패는 그대로 허용한다.
 
 `application.digest_pipeline.run_collectors_with_health(config, sources)`는 진입점이 `bootstrap.collectors`로 만든 (이름, 수집기) 쌍을 동시에 돌리고 `HealthReport`([§8](#8-헬스-체크와-알림)
 참조)를 반환한다.
-
-**공유 스레드 풀은 하나다.** 이 함수가 시작할 때 `collectors.thread_pool_max_workers`(기본 16) 크기의
-`ThreadPoolExecutor`를 루프의 기본 executor로 설치한다. 수집기별 `max_concurrency`는 자기 fan-out만 묶는데
-`asyncio.to_thread` 호출은 전부 같은 기본 executor로 들어가니, 그 풀을 명시하지 않으면 실효 상한이 stdlib 기본값
-(2 vCPU Lambda에서 6개)이 된다. 그러면 한 소스의 작업이 다른 소스 뒤에 큐잉된 채로 자기 타임아웃을 소진한다.
-`asyncio.run`이 루프와 함께 풀을 정리한다.
 
 **수집 윈도는 순수 함수가 소유한다.** `application.digest_pipeline.resolve_digest_window(config, date_arg)`가 다이제스트
 날짜와 reference time을 함께 돌려준다. reference time은 `config.aws.timezone` 기준으로 다이제스트 날짜

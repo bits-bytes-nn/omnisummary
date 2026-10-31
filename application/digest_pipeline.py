@@ -5,8 +5,7 @@ CLI (main.py) and the digest Lambda. The entrypoints hand in the sources, the mo
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -45,45 +44,11 @@ def resolve_digest_window(config: Config, date_arg: str | None = None) -> tuple[
     return digest_date, datetime(next_day.year, next_day.month, next_day.day, tzinfo=tz)
 
 
-def _install_bounded_executor(config: Config) -> None:
-    """Install ONE bounded thread pool as the running loop's default executor.
-
-    Each collector's max_concurrency bounds only its own fan-out, but every asyncio.to_thread call
-    in the process lands in the SAME default executor — min(32, cpu+4), i.e. 6 threads on a 2-vCPU
-    Lambda — so the per-collector bounds the docstrings rely on did not hold globally: a source's
-    timeout could expire while its work was still queued behind another source's. Sized by
-    collectors.thread_pool_max_workers; asyncio.run shuts the pool down with the loop."""
-    executor = ThreadPoolExecutor(
-        max_workers=config.collectors.thread_pool_max_workers, thread_name_prefix="omnisummary"
-    )
-    asyncio.get_running_loop().set_default_executor(executor)
-
-
-async def _collect_within_budget(
-    task: Awaitable[list[CollectedItem]], label: str, budget_sec: float
-) -> list[CollectedItem]:
-    """Run ONE collector under a wall-clock budget so a wedged source is reported FAILED instead of
-    taking the run with it. Only YouTube bounded itself, and only per channel; the per-input timeouts
-    leave the SOURCE unbounded, and a source whose worst case exceeds the Lambda's own budget kills
-    every other source's results along with it.
-
-    Raises rather than returning [] so the caller's existing exception branch records a FAILURE — a
-    silent empty result would read as a legitimately quiet day."""
-    if budget_sec <= 0:
-        return await task
-    try:
-        return await asyncio.wait_for(task, timeout=budget_sec)
-    except TimeoutError as e:
-        logger.warning("Collector '%s' exceeded its %ss budget", label, budget_sec)
-        raise RuntimeError(f"Collector '{label}' exceeded its {budget_sec}s wall-clock budget") from e
-
-
 async def run_collectors_with_health(
     config: Config, sources: list[tuple[str, ContentSource]]
 ) -> tuple[list[CollectedItem], HealthReport]:
-    """Run every (name, source) at once, each under the configured wall-clock budget, and report each
-    one's health: a stalled or unreadable park file reads STALE, a fraction of inputs DEGRADED."""
-    _install_bounded_executor(config)
+    """Run every (name, source) at once and report each one's health: a failure reads FAILED, a stalled
+    or unreadable park file STALE, a fraction of inputs DEGRADED."""
     if not sources:
         logger.warning("No active collectors")
         return [], HealthReport()
@@ -93,11 +58,7 @@ async def run_collectors_with_health(
         logger.info("Starting collector: '%s'", label)
     tasks = [collector.collect() for collector in collectors]
 
-    budget_sec = config.collectors.collector_budget_sec
-    results = await asyncio.gather(
-        *(_collect_within_budget(task, label, budget_sec) for task, label in zip(tasks, labels, strict=True)),
-        return_exceptions=True,
-    )
+    results = await asyncio.gather(*tasks, return_exceptions=True)
     items: list[CollectedItem] = []
     health: list[SourceHealth] = []
     for label, collector, result in zip(labels, collectors, results, strict=True):

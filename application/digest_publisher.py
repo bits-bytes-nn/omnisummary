@@ -56,6 +56,15 @@ class DigestPublisher:
             return False
         return True
 
+    def _nothing_left_to_publish(self, post_date: date, force_republish: bool) -> bool:
+        """True when the day is provably done: Threads is the only channel, and either it is off or
+        it already carries this date's digest."""
+        if not self.config.pipeline.enable_threads_post:
+            return True
+        if force_republish:
+            return False
+        return bool(self.threads_ledger and self.threads_ledger.already_posted(post_date))
+
     async def publish(
         self,
         content: DigestContent | None,
@@ -67,44 +76,10 @@ class DigestPublisher:
         deadline: float | None = None,
     ) -> bool:
         """Publish the digest to Threads, with the image (and its alt text) when there is one."""
-        post_date = today or datetime.now(ZoneInfo(self.config.aws.timezone)).date()
-        return await self._post_threads(
-            image_bytes,
-            content,
-            image_alt=image_alt,
-            today=post_date,
-            force_republish=force_republish,
-            deadline=deadline,
-        )
 
-    def _nothing_left_to_publish(self, post_date: date, force_republish: bool) -> bool:
-        """True when the day is provably done: Threads is the only channel, and either it is off or
-        it already carries this date's digest."""
-        if not self.config.pipeline.enable_threads_post:
-            return True
-        if force_republish:
-            return False
-        return bool(self.threads_ledger and self.threads_ledger.already_posted(post_date))
-
-    async def _post_threads(
-        self,
-        image_bytes: bytes | None,
-        content: DigestContent | None,
-        *,
-        image_alt: str = "",
-        today: date | None = None,
-        force_republish: bool = False,
-        deadline: float | None = None,
-    ) -> bool:
         if not self.config.pipeline.enable_threads_post:
             return False
-        # Idempotency: a same-day re-run (manual `main.py`) or an automatic async retry of the
-        # visual Lambda after a timeout would otherwise post the whole root+replies set again.
-        # Skip if today's digest already went to Threads, unless explicitly forced.
         post_date = today or datetime.now(ZoneInfo(self.config.aws.timezone)).date()
-        if self.threads_ledger and not force_republish and self.threads_ledger.already_posted(post_date):
-            logger.info("Threads digest for %s already posted, skipping (use force to re-publish)", post_date)
-            return False
 
         # Root = the digest lead (which already carries the AGI-countdown intro, prepended at digest
         # generation) plus the visual when there is one; replies = one per story.
@@ -124,9 +99,10 @@ class DigestPublisher:
             return False
         root_text, replies = render_threads_posts(content)
 
-        # Claim the date BEFORE the multi-minute post so concurrent invocations (e.g. a client
-        # that retried a timed-out invoke) see it already taken and skip, instead of all passing
-        # the already_posted() check above and each posting. Roll back if the post fails so a
+        # Idempotency: a same-day re-run (manual `main.py`) or a replay of the visual Lambda must not
+        # post the whole root+replies set again, so a date already on the ledger is skipped unless
+        # forced. The date is claimed BEFORE the multi-minute post so a concurrent invocation (a
+        # client that retried a timed-out invoke) sees it taken and skips. Roll back if the post fails so a
         # genuine failure stays retryable — but only if WE added the mark, so a force-republish
         # failure doesn't wipe out a prior day's successful-post record.
         # run_id scopes marker ownership: a rollback only releases the marker THIS run wrote, so a
@@ -134,7 +110,7 @@ class DigestPublisher:
         run_id = get_correlation_id() or ""
         was_marked = bool(self.threads_ledger and self.threads_ledger.already_posted(post_date))
         if was_marked and not force_republish:
-            logger.info("Threads digest for %s was claimed by another run meanwhile, skipping", post_date)
+            logger.info("Threads digest for %s already posted, skipping (use force to re-publish)", post_date)
             return False
         if self.threads_ledger and not was_marked:
             try:

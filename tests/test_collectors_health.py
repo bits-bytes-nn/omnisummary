@@ -218,38 +218,3 @@ async def test_stale_wins_over_degraded():
     )
 
     assert report.sources[0].status == SourceStatus.STALE
-
-
-@pytest.mark.asyncio
-async def test_a_collector_over_its_wall_clock_budget_is_reported_failed():
-    # Only YouTube bounded itself, and only per channel: the per-input timeouts leave the SOURCE
-    # unbounded, and with the shipped RSSHub fan-out the worst case exceeds the digest Lambda's own
-    # budget — so one wedged source killed the run instead of failing alone. The timeout must land as
-    # FAILED, never as a silent EMPTY (which reads as a legitimately quiet day).
-    import asyncio
-
-    from application import digest_pipeline as runner
-
-    async def wedged():
-        await asyncio.sleep(60)
-        return []
-
-    with pytest.raises(RuntimeError, match="budget"):
-        await runner._collect_within_budget(wedged(), "rsshub", budget_sec=0.01)
-
-
-@pytest.mark.asyncio
-async def test_the_budget_comes_from_config_and_zero_leaves_collectors_unbounded():
-    from application import digest_pipeline as runner
-
-    async def fine():
-        return [_item("http://a.com")]
-
-    config = Config()
-    config.collectors.collector_budget_sec = 0
-    with patch.object(runner, "_collect_within_budget", wraps=runner._collect_within_budget) as bounded:
-        items, report = await runner.run_collectors_with_health(config, _sources([fine()], ["rss"], [_Collector()]))
-
-    assert bounded.call_args.args[2] == 0
-    assert report.sources[0].status == SourceStatus.OK
-    assert len(items) == 1

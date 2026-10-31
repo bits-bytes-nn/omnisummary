@@ -130,8 +130,7 @@ class RedditCollectorConfig(BaseCollectorConfig):
 class RSSCollectorConfig(BaseCollectorConfig):
     feeds: list[str] = Field(default_factory=list)
     # How many feeds may be fetched at once. Worst-case wall time is
-    # ceil(feeds / max_concurrency) * (request_timeout + retry_backoff_sec) * max_retries, which is
-    # why the source as a whole is bounded by collectors.collector_budget_sec.
+    # ceil(feeds / max_concurrency) * (request_timeout + retry_backoff_sec) * max_retries.
     max_concurrency: int = Field(default=5, ge=1)
 
 
@@ -176,20 +175,6 @@ class CollectorsConfig(_StrictModel):
     rss: RSSCollectorConfig = Field(default_factory=RSSCollectorConfig)
     web_search: WebSearchCollectorConfig = Field(default_factory=WebSearchCollectorConfig)
     rsshub: RSSHubCollectorConfig = Field(default_factory=RSSHubCollectorConfig)
-    # Width of the ONE thread pool the whole run shares (installed as the event loop's default
-    # executor). Each collector's max_concurrency bounds only its OWN fan-out, but every
-    # asyncio.to_thread call lands in the same default executor — min(32, cpu+4), i.e. 6 threads on
-    # a 2-vCPU Lambda — so the per-collector bounds did not hold globally and a source's timeout
-    # could expire while its work was still queued behind another source's.
-    thread_pool_max_workers: int = Field(default=16, ge=1)
-    # Wall-clock budget for ONE source's whole collect(), enforced by run_collectors_with_health. The per-INPUT
-    # timeouts do not bound the SOURCE: dozens of feeds at a bounded fan-out, each allowed
-    # (request_timeout + retry_backoff_sec) * max_retries, can need more than the digest Lambda's
-    # entire 15-minute budget. So a wedged-but-reachable
-    # source used to kill the whole run instead of being reported FAILED while the other four
-    # shipped; only YouTube had a budget, and only per channel. A timeout here raises, so it lands in
-    # run_collectors_with_health's exception branch as that source FAILED. 0 disables the bound.
-    collector_budget_sec: int = Field(default=600, ge=0)
     # Sources whose EMPTY result is an INCIDENT worth an alert, by collector name (e.g.
     # ["rss", "web_search"]). A dark source produces no items, no exception and no stale park file,
     # so nothing else notices it; but reddit/x are legitimately quiet on many days, which is why
