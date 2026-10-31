@@ -464,16 +464,15 @@ class PipelineConfig(_StrictModel):
     @model_validator(mode="after")
     def _image_sizes_match_the_orientation_vocabulary(self) -> "PipelineConfig":
         """image_sizes is advertised as overridable, but its KEYS are the VisualBrief orientation
-        vocabulary: the art director is offered `", ".join(image_sizes)` and the brief's orientation is
-        looked up in the same dict. A renamed or dropped key used to make every brief either fail
+        vocabulary: the brief's orientation (a VisualOrientation) is looked up in this dict. A renamed or dropped key used to make every brief either fail
         validation or coerce to the default orientation, with no signal at all."""
         expected = set(VISUAL_ORIENTATIONS)
         actual = set(self.image_sizes)
         if actual != expected:
             raise ValueError(
                 "pipeline.image_sizes keys must be exactly the visual orientation vocabulary "
-                f"{sorted(expected)} (got {sorted(actual)}); the keys are what the art director is "
-                "offered and what VisualBrief.orientation is validated against, so only the SIZES "
+                f"{sorted(expected)} (got {sorted(actual)}); the keys are what "
+                "VisualBrief.orientation is validated against, so only the SIZES "
                 "are tunable here"
             )
         bad_sizes = sorted(size for size in self.image_sizes.values() if not _IMAGE_SIZE_RE.fullmatch(size))

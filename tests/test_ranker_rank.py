@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -19,13 +20,39 @@ def _mock_factory() -> MagicMock:
     return factory
 
 
+def _numbered(llm):
+    """The stand-in LLMs answer by fixture id; the ranker reads the `=== Item N ===` number. Map each
+    id to the number this batch's prompt showed it under (an id the batch does not hold is dropped,
+    as the model can only number what it was shown)."""
+
+    def translate(prompt_value, message):
+        numbers = {
+            m[2]: int(m[1]) for m in re.finditer(r"=== Item (\d+) ===\nTitle: t-(\S+)", prompt_value.to_string())
+        }
+        try:
+            data = json.loads(message.content)
+        except (TypeError, ValueError):
+            return message
+        data["rankings"] = [
+            {**{k: v for k, v in e.items() if k != "item_id"}, "item": numbers[e["item_id"]]}
+            for e in data.get("rankings", [])
+            if e.get("item_id") in numbers
+        ]
+        return AIMessage(content=json.dumps(data))
+
+    async def atranslate(prompt_value):
+        return translate(prompt_value, await llm.ainvoke(prompt_value))
+
+    return RunnableLambda(func=lambda p: translate(p, llm.invoke(p)), afunc=atranslate)
+
+
 def _ranker(raw_output: str, **overrides) -> ContentRanker:
     config = PipelineConfig(**overrides)
     factory = _mock_factory()
     # The ranker builds: RankingPrompt.get_prompt() | self.llm | StrOutputParser().
     # A RunnableLambda standing in for the LLM returns an AIMessage that the
     # StrOutputParser unwraps to raw_output, exercising the real rank() path.
-    factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content=raw_output))
+    factory.get_model.return_value = _numbered(RunnableLambda(lambda _: AIMessage(content=raw_output)))
     return ContentRanker(config, factory)
 
 
@@ -248,10 +275,10 @@ class TestRankEndToEnd:
         # so a correct merge yields all 10 (4 batches: 3+3+3+1).
         def score_batch(prompt_value):
             text = str(prompt_value)
-            ids = re.findall(r"ID: (i\d+)", text)
+            ids = re.findall(r"Title: t-(i\d+)", text)
             return AIMessage(content=_rankings(dict.fromkeys(ids, 0.8)))
 
-        factory.get_model.return_value = RunnableLambda(score_batch)
+        factory.get_model.return_value = _numbered(RunnableLambda(score_batch))
         ranker = ContentRanker(config, factory)
         result = await ranker.rank(items)
         assert {r.item.item_id for r in result} == {f"i{n}" for n in range(10)}
@@ -270,7 +297,7 @@ class TestRankEndToEnd:
             return AIMessage(content=_rankings({"a": 0.9}))
 
         factory = _mock_factory()
-        factory.get_model.return_value = RunnableLambda(flaky)
+        factory.get_model.return_value = _numbered(RunnableLambda(flaky))
         config = PipelineConfig(
             top_n=5, min_score=0.6, source_slots={}, ranking_max_retries=3, ranking_retry_backoff_sec=0
         )
@@ -284,7 +311,9 @@ class TestRankEndToEnd:
         # instead of publishing an empty digest.
         items = _items([(f"i{n}", SourceType.RSS) for n in range(4)])
         factory = _mock_factory()
-        factory.get_model.return_value = RunnableLambda(lambda _: (_ for _ in ()).throw(RuntimeError("bedrock down")))
+        factory.get_model.return_value = _numbered(
+            RunnableLambda(lambda _: (_ for _ in ()).throw(RuntimeError("bedrock down")))
+        )
         config = PipelineConfig(
             top_n=5, min_score=0.6, source_slots={}, ranking_batch_size=2, ranking_retry_backoff_sec=0
         )
@@ -298,13 +327,13 @@ class TestRankEndToEnd:
         items = _items([(f"i{n}", SourceType.RSS) for n in range(4)])
 
         def score_or_die(prompt_value):
-            ids = re.findall(r"ID: (i\d+)", str(prompt_value))
+            ids = re.findall(r"Title: t-(i\d+)", str(prompt_value))
             if "i0" in ids:  # the first batch never recovers
                 raise RuntimeError("ThrottlingException")
             return AIMessage(content=_rankings(dict.fromkeys(ids, 0.8)))
 
         factory = _mock_factory()
-        factory.get_model.return_value = RunnableLambda(score_or_die)
+        factory.get_model.return_value = _numbered(RunnableLambda(score_or_die))
         config = PipelineConfig(
             top_n=5, min_score=0.6, source_slots={}, ranking_batch_size=2, ranking_retry_backoff_sec=0
         )
@@ -325,11 +354,11 @@ class TestRankEndToEnd:
             state["peak"] = max(state["peak"], state["active"])
             await asyncio.sleep(0.01)
             state["active"] -= 1
-            ids = re.findall(r"ID: (i\d+)", str(prompt_value))
+            ids = re.findall(r"Title: t-(i\d+)", str(prompt_value))
             return AIMessage(content=_rankings(dict.fromkeys(ids, 0.8)))
 
         factory = _mock_factory()
-        factory.get_model.return_value = RunnableLambda(func=lambda _: None, afunc=score)
+        factory.get_model.return_value = _numbered(RunnableLambda(func=lambda _: None, afunc=score))
         config = PipelineConfig(
             top_n=20, min_score=0.6, source_slots={}, ranking_batch_size=1, ranking_max_concurrency=2
         )
@@ -374,7 +403,7 @@ def _ranker_with_outputs(outputs: list[str], **overrides) -> tuple[ContentRanker
         seen.append(str(prompt_value))
         return AIMessage(content=outputs[min(len(seen) - 1, len(outputs) - 1)])
 
-    factory.get_model.return_value = RunnableLambda(_respond)
+    factory.get_model.return_value = _numbered(RunnableLambda(_respond))
     return ContentRanker(config, factory), seen
 
 
@@ -418,7 +447,7 @@ class TestRankingCoverage:
         result = await ranker.rank(items)
         assert ids[-1] in {r.item.item_id for r in result}
         assert len(seen) == 2
-        assert f"ID: {ids[-1]}" in seen[1] and f"ID: {ids[0]}" not in seen[1]
+        assert f"t-{ids[-1]}\\n" in seen[1] and f"t-{ids[0]}\\n" not in seen[1]
 
     @pytest.mark.asyncio
     async def test_failed_reask_keeps_the_partially_scored_batch(self):
@@ -433,7 +462,7 @@ class TestRankingCoverage:
                 return AIMessage(content=_rankings({"a": 0.9}))
             raise RuntimeError("ThrottlingException")
 
-        factory.get_model.return_value = RunnableLambda(_respond)
+        factory.get_model.return_value = _numbered(RunnableLambda(_respond))
         result = await ContentRanker(config, factory).rank(items)
         # No raise, no lost items: the first pass's outcome survives untouched.
         assert {r.item.item_id for r in result} == {"a"}
@@ -509,7 +538,7 @@ class TestRankingHealthVerdict:
         def _respond(prompt_value):
             return AIMessage(content="garbage not json" if "t-b" in str(prompt_value) else _rankings({"a": 0.9}))
 
-        factory.get_model.return_value = RunnableLambda(_respond)
+        factory.get_model.return_value = _numbered(RunnableLambda(_respond))
         ranker = ContentRanker(config, factory)
         result = await ranker.rank(items)
 

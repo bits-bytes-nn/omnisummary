@@ -38,8 +38,6 @@ class TestContentAggregator:
         ]
         assert len(ContentAggregator().aggregate(items)) == 2
 
-
-
     def test_a_short_title_ending_in_an_ellipsis_elsewhere_is_not_a_clip(self):
         # A Reddit "Introducing..." is the author's own title, not RSSHub's fixed-length clip.
         items = [

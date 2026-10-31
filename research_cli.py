@@ -27,12 +27,12 @@ logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
 from adapters.aws import SecretUnavailableError, resolve_secret  # noqa: E402
 from adapters.research_agent import create_research_agent, research_run_limits  # noqa: E402
+from adapters.threads import ThreadsPreview  # noqa: E402
 from application.research import MARKDOWN, THREADS, DeliveryContext, request_context  # noqa: E402
 from domain.formatting import (
     citation_key,  # noqa: E402
     extract_urls,  # noqa: E402
 )
-from adapters.threads import ThreadsPreview  # noqa: E402
 from entrypoints import bootstrap  # noqa: E402
 from shared import Config, logger  # noqa: E402
 

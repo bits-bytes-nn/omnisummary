@@ -97,8 +97,7 @@ class TrendTracker:
         return TrendMemory(trends=recovered), lost
 
     def get_trends_context(self, today: date | None = None) -> str:
-        """The DIGEST-facing trend ammunition: the highest-momentum visible trends, with the
-        recurrence facts the lead reasons from.
+        """The DIGEST-facing trend context: the highest-momentum visible trends, each with its latest note.
 
         Capped at trend_max_active_trends (cooling trends are visible too). The CLASSIFIER's view
         (_render_existing) is deliberately NOT capped: hiding a trend there would make the model coin
@@ -106,8 +105,8 @@ class TrendTracker:
 
         Only evidence dated BEFORE today counts: on a same-day re-run the first run's stories are
         already in trends.json, and showing them as "recent days" fed today's news back in as history."""
-        # The run's digest date (KST) is the single clock, so the recurrence facts agree with the
-        # KST-stamped evidence; date.today() would be UTC and off by a day at the 19:00-KST boundary.
+        # The run's digest date (KST) is the single clock, matching the KST-stamped evidence;
+        # date.today() would be UTC and off by a day at the 19:00-KST boundary.
         today = today or date.today()
         cutoff = today.isoformat()
         visible = []
@@ -125,28 +124,15 @@ class TrendTracker:
                 len(capped),
                 len(visible),
             )
-        return self._render_ammunition(capped, today)
+        return self._render_ammunition(capped)
 
     @staticmethod
-    def _render_ammunition(trends: list[Trend], today: date) -> str:
-        """Render visible trends with the recurrence facts the digest lead uses for sharp,
-        grounded criticism: days the trend has been running, how many distinct days it has
-        recurred, and its most recent note. Computed in code from evidence — never invented."""
+    def _render_ammunition(trends: list[Trend]) -> str:
+        """Each visible trend with its most recent note."""
         lines: list[str] = []
         for t in trends:
-            dates = sorted({ev.date for ev in t.evidence})
-            facts: list[str] = []
-            try:
-                first = date.fromisoformat(t.first_seen) if t.first_seen else None
-            except ValueError:
-                first = None
-            if first is not None:
-                facts.append(f"{(today - first).days + 1}일째 추적 중")
-            if len(dates) > 1:
-                facts.append(f"최근 {len(dates)}개 다른 날 재등장")
             gist = t.evidence[-1].summary if t.evidence else ""
-            fact_str = f" [{', '.join(facts)}]" if facts else ""
-            lines.append(f"- {t.title}{fact_str}: {gist}" if gist else f"- {t.title}{fact_str}")
+            lines.append(f"- {t.title}: {gist}" if gist else f"- {t.title}")
         return "\n".join(lines)
 
     async def update_trends(self, digest_text: str, today_date: str) -> None:

@@ -74,12 +74,12 @@ count; identical items must get the same score regardless of what else is in thi
 {recent_titles}
 
 *Output*
-Return JSON with ALL items.
+Return JSON with ALL items, each named by its `=== Item N ===` number.
 ```json
 {{
   "rankings": [
     {{
-      "item_id": "...",
+      "item": 1,
       "score": 0.85,
       "reasoning": "the ONE thing that decided this score, as a short phrase (not a sentence)"
     }}
@@ -105,9 +105,8 @@ class DigestPrompt(BasePrompt):
     ]
 
     system_prompt_template = """\
-You are a daily digest editor for {audience}. You return STRUCTURED CONTENT as JSON — never \
-markup, headings, or formatting characters. Downstream code renders it per channel, so \
-write clean prose only; do not add *bold*, _italic_, backticks, bullets, or links yourself.
+You are a daily digest editor for {audience}. You return STRUCTURED CONTENT as JSON — clean \
+prose only, never markup, headings, or formatting characters.
 
 *Voice*
 {voice_guidance}
@@ -123,7 +122,7 @@ because the lead is a comment on stories you have already written:
     {{
       "title": "the Korean display title for this story",
       "url": "the item's URL exactly as provided",
-      "body": "Korean sentences that explain this story the way you would to a smart friend outside the field, using the room its PROSE BUDGET leaves: the context they need (who this is, what problem it is about), what happened, and why it matters. Self-contained, so the whole item reads as ONE social post.{prose_budget_rule} Every sentence must end completely (no trailing fragments).",
+      "body": "Korean sentences that explain this story the way you would to a smart friend outside the field, using the room its PROSE BUDGET leaves: the context they need (who this is, what problem it is about), what happened, and why it matters. Self-contained, so the whole item reads as ONE social post.{prose_budget_rule}",
       "implication": "ONE short Korean sentence that takes a stance on THIS story a reader could disagree with and adds what the source itself does not say, not a general truth about the industry. State the stance flatly, as the whole sentence; caveats, 'unverified' and 'self-reported' included, belong in the body. Provocation is in the angle, never in invented facts."
     }}
   ],
@@ -134,8 +133,7 @@ because the lead is a comment on stories you have already written:
 Rules:
 - `items[0]` is today's HEADLINE, the story the lead and the image are about: the most important \
 story, with visual expressibility only breaking a tie. Order the rest by importance.
-- Write every item for a reader outside the field: at most two numbers in a body, the ones the story \
-rests on, and no technical term, benchmark name or acronym unless the story needs it, then glossed in a \
+- At most two numbers in a body, the ones the story rests on, and no technical term, benchmark name or acronym unless the story needs it, then glossed in a \
 few plain words where it first appears.
 - Pick the {target_count} strongest distinct stories from the candidates. If two are the SAME \
 underlying story (same companies/event), keep only the more informative one and write the item from \
@@ -145,9 +143,8 @@ its text alone. Emit fewer only when no distinct candidate is left — never pad
 The recurrence ammunition is there so the lead can place today's story in the arc it belongs to: name \
 what the pattern IS and what follows from it, in the argument's own words. That connection is the one \
 thing today's items cannot supply on their own, so make it.
-Keep the TRACKER out, not the connection: no mention of tracking, no streak or day count, no metric \
-about a trend, and no separate list of trends — a figure earns its place only when that number IS the \
-point. With no trend data, draw continuity from today's items alone and never invent history.
+No separate list of trends. With no trend data, draw continuity from today's items alone and never \
+invent history.
 
 *Recent angles (avoid repeating)*
 These are the opening lines / theses from the last few days. Do NOT reuse the same framing, \
@@ -196,8 +193,7 @@ Rules:
 - Extend an EXISTING trend (set trend_id to its id) when today's digest continues it; only \
 create a new trend when no existing one fits.
 - One observation per distinct trend. Skip stories that do not form or continue a recurring trend.
-- summary is ONE English sentence of evidence — do NOT include dates, status, momentum, or counts.
-- Output ONLY the JSON object."""
+- summary is ONE English sentence of evidence."""
 
     human_prompt_template = "Existing trends:\n{existing_trends}\n\nToday's digest:\n{todays_digest}"
 
@@ -251,8 +247,7 @@ Produce ONLY a JSON object:
 Rules:
 - Keep every frame drawable: at most three characters acting in the foreground (a background crowd \
 is fine) and one clear action, on a plausible set.
-- Return {{"skip": true}} only if the headline cannot be illustrated at all.
-- Output ONLY the JSON object."""
+- Return {{"skip": true}} only if the headline cannot be illustrated at all."""
 
     human_prompt_template = "<headline>\n{headline}\n</headline>\n\n<recent_comics>\n{recent_comics}\n</recent_comics>"
 
@@ -265,7 +260,6 @@ class VisualSynopsisPrompt(BasePrompt):
     input_variables = [
         "instruction",
         "source",
-        "orientations",
         "on_image_language",
         "style_guidance",
         "style_aesthetic",
@@ -276,8 +270,7 @@ You are an art director. Turn the requested visual into a single, concrete brief
 model can render in one image, honoring the requested format.
 
 Fill these fields:
-- title: a short working title
-- orientation: one of {orientations} — the frame the composition needs. A grid of panels is \
+- orientation: the frame the composition needs. A grid of panels is \
 `portrait`; a vertical strip is `tall` (equal 4:3 panels stacked top to bottom in one column); a \
 single frame or an explainer takes whichever shape fits it.
 - prompt: a single rich English prompt for the image model: the full composition, each panel in \
@@ -287,7 +280,7 @@ Think like an editor BEFORE you describe pixels. A viewer should grasp the subje
 within a few seconds:
 1. SUBJECT — make it visually unmistakable with the real-world cues this story calls for: name each \
 real person and describe the features that make them recognizable at a glance (face shape, hairline, \
-glasses, build, signature clothing), identical in every panel; organization logos and brand colors; \
+glasses, build, signature clothing); organization logos and brand colors; \
 recognizable products or settings.
 2. THE JOKE — the requested visual's punchline; every element serves it.
 3. FIT — the whole composition fits the frame with no panel, bubble or line of text cut off; panel \
@@ -325,8 +318,7 @@ a named product/protocol/system/benchmark/paper title, or a simultaneity/causati
 sources do not state. General framing, opinion, and the columnist voice are NOT violations — do \
 not flatten them.
 
-For each unsupported claim, MINIMALLY revise: drop the unsupported specific. Never introduce NEW \
-facts. Never rewrite supported sentences.
+For each unsupported claim, MINIMALLY revise: drop the unsupported specific.
 
 Return ONLY this JSON:
 ```json
@@ -336,8 +328,7 @@ Return ONLY this JSON:
   ],
   "corrected_digest": "the full labelled digest text with only the unsupported claims revised; identical elsewhere, every label preserved"
 }}
-```
-If there are no violations, return an empty violations list and the digest unchanged."""
+```"""
 
     human_prompt_template = "DRAFT DIGEST:\n{digest_text}\n\nSOURCE ITEMS:\n{sources}"
 
