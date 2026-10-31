@@ -4,10 +4,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pipeline.trend_tracker import TRENDS_KEY, TrendTracker
+from application.ports import StateReadError
+from application.trend_tracker import TRENDS_KEY, TrendTracker
 from shared.config import PipelineConfig
 from shared.models import Trend, TrendEvidence, TrendMemory, TrendStatus
-from shared.state_store import StateReadError
 
 
 class _FakeStore:
@@ -35,7 +35,7 @@ def _patched_tracker(store, observations, monkeypatch, **overrides) -> TrendTrac
         async def ainvoke(self, _inputs):
             return payload
 
-    monkeypatch.setattr("pipeline.trend_tracker.TrendClassifyPrompt.get_prompt", lambda: _Chain())
+    monkeypatch.setattr("application.trend_tracker.TrendClassifyPrompt.get_prompt", lambda: _Chain())
     return tracker
 
 

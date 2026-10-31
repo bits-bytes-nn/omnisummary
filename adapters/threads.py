@@ -51,8 +51,8 @@ def _upload_image_for_hosting(image_bytes: bytes, bucket: str, key: str, content
     the real image type or Meta may reject/mis-render it. The client is on the state store's session
     (configured profile + region): a local shell's inherited AWS_PROFILE / AWS_REGION may be another
     account, or sign the URL for a region Meta cannot fetch from."""
+    from adapters.state_store import state_boto_session
     from shared.config import get_config
-    from shared.state_store import state_boto_session
 
     s3 = state_boto_session(get_config()).client("s3")
     s3.put_object(Bucket=bucket, Key=key, Body=image_bytes, ContentType=content_type)

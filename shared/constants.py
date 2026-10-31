@@ -68,7 +68,7 @@ SSM_SECRET_ENV_VARS: dict[str, str] = {
 # (logged, feature skipped) rather than sending the literal placeholder to an API as a token.
 SSM_PLACEHOLDER: str = "PLACEHOLDER-run-scripts/put_secrets.py"
 
-# The collector names the pipeline knows: the keys of pipeline/runner.py's collector registry, the
+# The collector names the pipeline knows: the keys of entrypoints/bootstrap.py's collector registry, the
 # per-source fields of CollectorsConfig, and the vocabulary `collectors.alert_on_empty` is validated
 # against. ONE definition, because a typo'd alert_on_empty entry never matches a source name — the
 # dark source it was meant to watch simply stays dark, with no signal anywhere.

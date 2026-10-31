@@ -6,15 +6,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from application.ports import LanguageModels, PublishError, ThreadsPublisher
-from shared import (
-    KOREAN_PROSE_RULES,
-    CommentReply,
-    CommentReplyLedger,
-    Config,
-    StateStore,
-    logger,
-)
+from application.history import CommentReplyLedger
+from application.ports import LanguageModels, PublishError, StateStore, ThreadsPublisher
+from shared import KOREAN_PROSE_RULES, CommentReply, Config, logger
 from shared.formatting import URL_RE
 from shared.prompts import CommentReplyPrompt
 

@@ -1,23 +1,22 @@
-"""Orchestration tests for pipeline.runner.run_pipeline — the single path both the CLI and the digest Lambda
-take from collected items to a delivered digest. Only the LLM/network collaborators (ranker, digest
-generator, trend tracker, delivery) are stubbed; the aggregation, cross-day dedup, ledger, leads log
-and state-store wiring under test run for real against a temp-dir state store."""
+"""Orchestration tests for application.digest_pipeline — the single path both the CLI and the digest
+Lambda take from collected items to a stored digest. Only the LLM collaborators (ranker, digest
+generator, trend tracker) are stubbed; the aggregation, cross-day dedup, ledger, leads log and
+state-store wiring under test run for real against a temp-dir state store."""
 
 from __future__ import annotations
 
 import tempfile
 from datetime import date
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from pipeline import runner
+from adapters.state_store import LocalStateStore
+from application import digest_pipeline as runner
+from application.history import PUBLISHED_URLS_KEY, RECENT_LEADS_KEY
 from shared.config import Config
 from shared.constants import SourceType
-from shared.history_store import PUBLISHED_URLS_KEY, RECENT_LEADS_KEY
 from shared.models import CollectedItem, DigestContent, DigestItem, DigestResult, RankedItem
-from shared.state_store import LocalStateStore
 
 DIGEST_DATE = date(2026, 6, 3)
 
@@ -52,8 +51,6 @@ class _Pipeline:
         self.tracker.update_trends = AsyncMock()
         self.memory = MagicMock()
         self.memory.get_recent_digests.return_value = []
-        self.visual = MagicMock()
-        self.visual.run = AsyncMock(return_value=True)
 
     def __enter__(self):
         ranked = self.ranked
@@ -69,16 +66,12 @@ class _Pipeline:
         self.ranker.rank = AsyncMock(side_effect=rank)
         self.generator.generate = AsyncMock(side_effect=generate)
         self._patches = [
-            patch.object(runner, "create_state_store", return_value=self.store),
-            patch.object(runner, "create_memory_store", return_value=self.memory),
             patch.object(runner, "ContentRanker", return_value=self.ranker),
             patch.object(runner, "DigestGenerator", return_value=self.generator),
             patch.object(runner, "TrendTracker", return_value=self.tracker),
-            patch.object(runner, "persist_digest"),
-            patch("entrypoints.bootstrap.daily_visual_maker", return_value=self.visual),
         ]
-        started = [p.start() for p in self._patches]
-        self.persist_digest = started[5]
+        for patcher in self._patches:
+            patcher.start()
         return self
 
     def __exit__(self, *exc):
@@ -96,7 +89,15 @@ def _config(**pipeline_overrides) -> Config:
 
 
 async def _run(pipeline: _Pipeline, config: Config, items: list[CollectedItem], **kwargs):
-    return await runner.run_pipeline(config, MagicMock(), items, digest_date=DIGEST_DATE, **kwargs)
+    return await runner.run_pipeline(
+        config,
+        MagicMock(),
+        items,
+        DIGEST_DATE,
+        state_store=pipeline.store,
+        memory_store=lambda: pipeline.memory,
+        **kwargs,
+    )
 
 
 class TestRunPipelineShortCircuits:
@@ -223,7 +224,7 @@ class TestRunPipelineDedup:
 
 class TestRunPipelineDryRun:
     @pytest.mark.asyncio
-    async def test_dry_run_writes_no_state_and_delivers_nothing(self):
+    async def test_dry_run_writes_no_state(self):
         items = [_item("https://a.example/1")]
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
@@ -232,68 +233,48 @@ class TestRunPipelineDryRun:
                 assert p.store.read_json(RECENT_LEADS_KEY) is None
         assert collected and ranked and digest
         p.tracker.update_trends.assert_not_awaited()
-        p.visual.run.assert_not_awaited()
 
 
-class TestRunPipelineDelivery:
+class TestPublishInline:
+    """The local run's visual and Threads post. In AWS the digest Lambda fires the visual Lambda
+    instead, so this is main.py's path only, and its exit code is the only alert."""
+
+    @staticmethod
+    def _maker(outcome=None, error=None):
+        maker = MagicMock()
+        maker.run = AsyncMock(return_value=True, side_effect=error)
+        maker.threads_outcome = outcome
+        return maker
+
     @pytest.mark.asyncio
-    async def test_visual_runs_inline_outside_aws_and_carries_force_republish(self):
-        # In AWS the digest Lambda fires a separate visual Lambda; locally it must run inline so
-        # `uv run python main.py` still produces the visual (and the Threads fan-out it owns).
+    async def test_the_visual_runs_for_the_date_and_carries_force_republish(self):
         items = [_item("https://a.example/1")]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with _Pipeline(tmpdir) as p:
-                with patch.object(runner, "is_running_in_aws", return_value=False):
-                    await _run(p, _config(), items, force_republish=True)
-        p.visual.run.assert_awaited_once()
-        assert p.visual.run.await_args.kwargs["force_republish"] is True
-        assert p.visual.run.await_args.kwargs["today"] == DIGEST_DATE
+        maker = self._maker()
+        await runner.publish_inline(maker, _ranked(items), _digest(items), DIGEST_DATE, force_republish=True)
+        maker.run.assert_awaited_once()
+        assert maker.run.await_args.kwargs["force_republish"] is True
+        assert maker.run.await_args.kwargs["today"] == DIGEST_DATE
 
     @pytest.mark.asyncio
-    async def test_visual_is_not_run_inline_in_aws(self):
-        items = [_item("https://a.example/1")]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with _Pipeline(tmpdir) as p:
-                with patch.object(runner, "is_running_in_aws", return_value=True):
-                    await _run(p, _config(), items)
-        p.visual.run.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_a_failed_local_publish_is_reported_after_the_digest_is_persisted(self):
+    async def test_a_failed_publish_is_reported(self):
         # Locally there is no alert: a swallowed failure ended main.py with exit 0 and "completed".
         items = [_item("https://a.example/1")]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with _Pipeline(tmpdir) as p:
-                p.visual.run.side_effect = RuntimeError("openai down")
-                with patch.object(runner, "is_running_in_aws", return_value=False):
-                    with pytest.raises(runner.PublishIncomplete, match="openai down"):
-                        await _run(p, _config(), items)
-        assert p.persist_digest.called  # the digest itself is stored first
+        with pytest.raises(runner.PublishIncomplete, match="openai down"):
+            await runner.publish_inline(
+                self._maker(error=RuntimeError("openai down")), _ranked(items), _digest(items), DIGEST_DATE
+            )
 
     @pytest.mark.asyncio
-    async def test_an_incomplete_local_post_is_reported(self):
+    async def test_an_incomplete_post_is_reported(self):
         from shared.models import ThreadsDelivery
 
         items = [_item("https://a.example/1")]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with _Pipeline(tmpdir) as p:
-                p.visual.threads_outcome = ThreadsDelivery(5, 6, root_id="r", detached=("s",))
-                with patch.object(runner, "is_running_in_aws", return_value=False):
-                    with pytest.raises(runner.PublishIncomplete, match="5/6 posts.*standalone s"):
-                        await _run(p, _config(), items)
+        maker = self._maker(ThreadsDelivery(5, 6, root_id="r", detached=("s",)))
+        with pytest.raises(runner.PublishIncomplete, match="5/6 posts.*standalone s"):
+            await runner.publish_inline(maker, _ranked(items), _digest(items), DIGEST_DATE)
 
-    @pytest.mark.asyncio
-    async def test_local_run_persists_the_snapshot(self):
-        items = [_item("https://a.example/1")]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with _Pipeline(tmpdir) as p:
-                with patch.object(runner, "is_running_in_aws", return_value=False):
-                    await _run(p, _config(), items)
-        # persist_digest is stubbed by _Pipeline; assert the local branch called it with the
-        # on-disk fallback dir (in AWS the handler passes base_dir=None for AgentCore Memory).
-        assert p.persist_digest.called
-        assert p.persist_digest.call_args.kwargs["base_dir"] == Path("digest_state")
 
+class TestRunPipelineHistory:
     @pytest.mark.asyncio
     async def test_history_write_failure_is_non_fatal(self):
         items = [_item("https://a.example/1")]
@@ -360,69 +341,6 @@ class TestResolveDigestWindow:
         assert reference_time.astimezone(UTC) == datetime(2026, 6, 4, 4, 0, tzinfo=UTC)
 
 
-class TestBuildCollectorTasks:
-    """Patched out by every other caller, so none of these branches ever executed: the --sources
-    override, the unknown-source warning, the disabled-source skip, and llm_factory being passed to
-    web_search alone."""
-
-    @staticmethod
-    def _config() -> Config:
-        config = Config()
-        for cfg in (
-            config.collectors.rss,
-            config.collectors.reddit,
-            config.collectors.youtube,
-            config.collectors.web_search,
-        ):
-            cfg.enabled = True
-        config.collectors.rsshub.enabled = False
-        return config
-
-    @staticmethod
-    def _close(tasks) -> None:
-        # The coroutines are never awaited here; close them so pytest reports no un-awaited warning.
-        for task in tasks:
-            task.close()
-
-    def test_enabled_sources_are_collected_when_no_override_is_given(self):
-        tasks, labels, collectors = runner._build_collector_tasks(self._config(), MagicMock())
-        self._close(tasks)
-        assert labels == ["reddit", "rss", "web_search", "youtube"]  # rsshub is disabled
-        assert len(collectors) == len(labels) == len(tasks)
-
-    def test_sources_override_selects_exactly_what_was_asked_for(self):
-        tasks, labels, _ = runner._build_collector_tasks(self._config(), MagicMock(), ["rss", "reddit"])
-        self._close(tasks)
-        assert labels == ["rss", "reddit"]  # the caller's order, not the map's
-
-    def test_an_unknown_source_is_warned_about_and_skipped(self):
-        with patch.object(runner, "logger") as log:
-            tasks, labels, _ = runner._build_collector_tasks(self._config(), MagicMock(), ["rss", "nope"])
-        self._close(tasks)
-        assert labels == ["rss"]
-        assert any("Unknown source" in str(c.args) for c in log.warning.call_args_list)
-
-    def test_an_explicitly_requested_but_disabled_source_is_skipped(self):
-        # --sources rsshub on a deployment where rsshub is disabled must NOT start it.
-        tasks, labels, _ = runner._build_collector_tasks(self._config(), MagicMock(), ["rsshub", "rss"])
-        self._close(tasks)
-        assert labels == ["rss"]
-
-    def test_only_web_search_receives_the_llm_factory(self):
-        from collectors.web_search import WebSearchCollector
-
-        factory = MagicMock()
-        tasks, labels, collectors = runner._build_collector_tasks(self._config(), factory, ["web_search", "rss"])
-        self._close(tasks)
-        web = collectors[labels.index("web_search")]
-        assert isinstance(web, WebSearchCollector)
-        # The factory is only ever used to build the query-refine model; without it, web_search
-        # silently loses query refinement.
-        assert web._llm is factory.get_model.return_value
-        factory.get_model.assert_called_once()
-        assert factory.get_model.call_args.kwargs["stage"] == "query-refine"
-
-
 class TestBoundedExecutor:
     @pytest.mark.asyncio
     async def test_one_bounded_pool_is_installed_from_config(self):
@@ -433,8 +351,7 @@ class TestBoundedExecutor:
 
         config = Config()
         config.collectors.thread_pool_max_workers = 9
-        with patch.object(runner, "_build_collector_tasks", return_value=([], [], [])):
-            await runner.run_collectors_with_health(config=config, llm_factory=None)
+        await runner.run_collectors_with_health(config, [])
         executor = asyncio.get_running_loop()._default_executor
         assert executor is not None
         assert executor._max_workers == 9
@@ -442,16 +359,15 @@ class TestBoundedExecutor:
 
 class TestAlreadyPublished:
     def test_reads_the_threads_ledger_for_the_date(self):
-        from shared.history_store import ThreadsPostLedger
-        from shared.state_store import LocalStateStore
+        from adapters.state_store import LocalStateStore
+        from application.history import ThreadsPostLedger
 
         with tempfile.TemporaryDirectory() as tmp:
             store = LocalStateStore(tmp)
             ThreadsPostLedger(store).mark(date(2026, 10, 26), "run-1")
             config = Config()
             config.pipeline.enable_threads_post = True
-            with patch.object(runner, "create_state_store", return_value=store):
-                assert runner.already_published(config, date(2026, 10, 26)) is True
-                assert runner.already_published(config, date(2026, 10, 27)) is False
-                config.pipeline.enable_threads_post = False  # nothing can post: a re-run rebuilds the record
-                assert runner.already_published(config, date(2026, 10, 26)) is False
+            assert runner.already_published(config, date(2026, 10, 26), store) is True
+            assert runner.already_published(config, date(2026, 10, 27), store) is False
+            config.pipeline.enable_threads_post = False  # nothing can post: a re-run rebuilds the record
+            assert runner.already_published(config, date(2026, 10, 26), store) is False

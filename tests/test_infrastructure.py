@@ -9,7 +9,7 @@ from infrastructure.application_stack import OmniSummaryApplicationStack
 from infrastructure.foundation_stack import OmniSummaryFoundationStack
 from shared import Config
 from shared.constants import METRIC_NAMESPACE, SSM_PLACEHOLDER, SSM_SECRET_ENV_VARS
-from shared.metrics import metric_dimensions
+from shared.naming import metric_dimensions
 
 # The TRACKED config, matching what scripts/ci_synth.py synths: config/config.yaml is gitignored,
 # so asserting against Config.load() checked a different stack locally than in CI (where it fell

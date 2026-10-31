@@ -2,18 +2,20 @@ import argparse
 import asyncio
 import sys
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import boto3
-
-from pipeline import (
+from application.digest_pipeline import (
     PublishIncomplete,
     already_published,
+    persist_digest,
+    publish_inline,
     resolve_digest_window,
     run_collectors_with_health,
     run_pipeline,
 )
-from shared import BedrockLanguageModelFactory, Config, logger
+from entrypoints import bootstrap
+from shared import Config, LocalPaths, logger
 from shared.constants import COLLECTOR_NAMES
 
 
@@ -64,19 +66,14 @@ async def main() -> int:
         reference_time.isoformat(),
     )
 
-    if not args.dry_run and not args.force_republish and already_published(config, digest_date):
+    state_store = bootstrap.state_store(config)
+    if not args.dry_run and not args.force_republish and already_published(config, digest_date, state_store):
         return 0
 
-    boto_session = boto3.Session(
-        profile_name=config.aws.profile or None,
-        region_name=config.aws.region,
+    models = bootstrap.language_models(config)
+    collected_items, health = await run_collectors_with_health(
+        config, bootstrap.collectors(config, models, args.sources)
     )
-    llm_factory = BedrockLanguageModelFactory(
-        boto_session=boto_session,
-        region_name=config.aws.bedrock_region,
-    )
-
-    collected_items, health = await run_collectors_with_health(config, llm_factory, args.sources)
     logger.info("Collected %d total items", len(collected_items))
     logger.info("Source health report:\n%s", health.summary())
 
@@ -91,21 +88,35 @@ async def main() -> int:
         logger.error("No items collected. Exiting.")
         return 1
 
-    try:
-        _, _, digest = await run_pipeline(
-            config,
-            llm_factory,
-            collected_items,
-            digest_date=digest_date,
-            dry_run=args.dry_run,
-            force_republish=args.force_republish,
-        )
-    except PublishIncomplete as e:
-        logger.error("%s", e)
-        return 1
-    if digest is None:
+    _, ranked_items, digest = await run_pipeline(
+        config,
+        models,
+        collected_items,
+        digest_date,
+        state_store=state_store,
+        memory_store=bootstrap.memory_store,
+        dry_run=args.dry_run,
+    )
+    if digest is None or ranked_items is None:
         logger.error("No digest was produced")
         return 1
+    if not args.dry_run:
+        # Persisted BEFORE the post: a store that fails after the post went up would leave the day's
+        # posted digest stored nowhere, and a re-run would record a different one.
+        persist_digest(
+            ranked_items, digest, digest_date, bootstrap.memory_store(Path(LocalPaths.DIGEST_STATE_DIR.value))
+        )
+        try:
+            await publish_inline(
+                bootstrap.daily_visual_maker(config, models),
+                ranked_items,
+                digest,
+                digest_date,
+                force_republish=args.force_republish,
+            )
+        except PublishIncomplete as e:
+            logger.error("%s", e)
+            return 1
     logger.info("OmniSummary pipeline completed")
     return 0
 

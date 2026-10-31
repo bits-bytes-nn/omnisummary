@@ -16,13 +16,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from application.comment_replies import CommentResponder
 from entrypoints import bootstrap
-from shared import Config, create_state_store
+from shared import Config
 
 
 async def main() -> None:
     config = Config.load()
     responder = CommentResponder(
-        config, bootstrap.language_models(config), create_state_store(config), bootstrap.threads(config)
+        config, bootstrap.language_models(config), bootstrap.state_store(config), bootstrap.threads(config)
     )
     run = await responder.run(datetime.now(UTC), dry_run=True)
     print(json.dumps(asdict(run), ensure_ascii=False, indent=2))

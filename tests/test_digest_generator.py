@@ -6,7 +6,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
-from pipeline.digest_generator import DigestContentError, DigestGenerator
+from application.digest_generator import DigestContentError, DigestGenerator
 from shared.config import PipelineConfig
 from shared.constants import SourceType
 from shared.models import CollectedItem, DigestContent, DigestItem, RankedItem
@@ -217,7 +217,7 @@ class TestProseBudgetReachesTheEditor:
     def test_the_budget_clause_points_at_the_items_own_number(self):
         # One number for the whole digest charged every short-URL item for the longest URL in the
         # pool, so the clause defers to the PROSE BUDGET stated with each candidate.
-        from pipeline.digest_generator import _PROSE_BUDGET_RULE
+        from application.digest_generator import _PROSE_BUDGET_RULE
 
         assert "PROSE BUDGET" in _PROSE_BUDGET_RULE
         assert "implication" in _PROSE_BUDGET_RULE
@@ -539,13 +539,13 @@ class TestTargetCountTrim:
 
 class TestFormatRecentLeads:
     def test_bullets_recent_leads(self):
-        from pipeline.digest_generator import _format_recent_leads
+        from application.digest_generator import _format_recent_leads
 
         out = _format_recent_leads(["어제 리드.", "그제 리드."])
         assert out == "- 어제 리드.\n- 그제 리드."
 
     def test_empty_when_none(self):
-        from pipeline.digest_generator import _format_recent_leads
+        from application.digest_generator import _format_recent_leads
 
         assert "No recent digests" in _format_recent_leads([])
         assert "No recent digests" in _format_recent_leads(["", "  "])
@@ -553,7 +553,7 @@ class TestFormatRecentLeads:
     def test_only_the_thesis_sentence_of_each_lead_is_shown(self):
         # The lead names its story first and lands its thesis last; the thesis is what must not
         # repeat, and the first sentence never carried one.
-        from pipeline.digest_generator import _format_recent_leads
+        from application.digest_generator import _format_recent_leads
 
         stored = "오픈AI가 또 모델을 냈다. 두 번째 문장이다. 결국 이득은 플랫폼이 챙긴다."
         out = _format_recent_leads([stored])
@@ -561,7 +561,7 @@ class TestFormatRecentLeads:
 
     def test_long_leads_are_truncated_in_code_not_by_a_prompt_rule(self):
         # Five full leads crowded the prompt with prose the editor is not being asked to compare.
-        from pipeline.digest_generator import RECENT_LEAD_PREVIEW_CHARS, _format_recent_leads
+        from application.digest_generator import RECENT_LEAD_PREVIEW_CHARS, _format_recent_leads
 
         out = _format_recent_leads(["가" * (RECENT_LEAD_PREVIEW_CHARS + 50)])
         assert out.startswith("- " + "가" * RECENT_LEAD_PREVIEW_CHARS)
@@ -574,12 +574,12 @@ class TestFormatRecentTitles:
     only — the URL ledger stays the mechanism that suppresses a repeat."""
 
     def test_bullets_the_titles(self):
-        from pipeline.digest_generator import format_recent_titles
+        from application.digest_generator import format_recent_titles
 
         assert format_recent_titles(["첫 스토리", "둘째 스토리"]) == "- 첫 스토리\n- 둘째 스토리"
 
     def test_states_when_there_is_no_recent_digest(self):
-        from pipeline.digest_generator import format_recent_titles
+        from application.digest_generator import format_recent_titles
 
         assert "No recent digest" in format_recent_titles([])
         assert "No recent digest" in format_recent_titles(None)
@@ -813,14 +813,14 @@ class TestDroppedStoryIsAnError:
                 ],
             }
         )
-        with patch("pipeline.digest_generator.logger.error") as err:
+        with patch("application.digest_generator.logger.error") as err:
             content = _generator("")._parse_content(raw)
         assert len(content.items) == 1
         assert err.called
 
     def test_a_complete_emission_logs_no_error(self):
         raw = json.dumps({"lead": "리드 문장.", "items": [{"title": "T0", "url": "u0", "body": "b0"}]})
-        with patch("pipeline.digest_generator.logger.error") as err:
+        with patch("application.digest_generator.logger.error") as err:
             _generator("")._parse_content(raw)
         assert not err.called
 
@@ -837,7 +837,7 @@ class TestGroundingStageAttribution:
 
 
 def test_grounding_corrections_land_on_the_right_fields_and_leave_the_input_alone():
-    from pipeline.digest_generator import _apply_grounding_payload
+    from application.digest_generator import _apply_grounding_payload
     from shared import DigestContent, DigestItem
 
     original = DigestContent(
@@ -867,7 +867,7 @@ def test_grounding_corrections_land_on_the_right_fields_and_leave_the_input_alon
 
 def test_grounding_corrections_with_labels_never_sent_are_not_applied():
     # A model that renumbered ITEM 0..1 as 1..2 would have written item 0's text onto item 1.
-    from pipeline.digest_generator import _apply_grounding_payload
+    from application.digest_generator import _apply_grounding_payload
     from shared import DigestContent, DigestItem
 
     original = DigestContent(
@@ -882,7 +882,7 @@ def test_grounding_corrections_with_labels_never_sent_are_not_applied():
 
 
 def test_grounding_checks_and_corrects_the_editors_titles():
-    from pipeline.digest_generator import _apply_grounding_payload, _grounding_payload
+    from application.digest_generator import _apply_grounding_payload, _grounding_payload
     from shared import DigestContent, DigestItem
 
     original = DigestContent(lead="리드.", items=[DigestItem(title="72% 향상", url="u0", body="본문.")])

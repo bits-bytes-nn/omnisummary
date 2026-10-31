@@ -35,3 +35,52 @@ class TestLanguageModels:
         profile.assert_called_once_with(config.aws.profile)
         session.assert_called_once_with(profile_name=None, region_name=config.aws.bedrock_region)
         assert factory.call_args.kwargs["region_name"] == config.aws.bedrock_region
+
+
+class TestCollectors:
+    """The --sources override, the unknown-source warning, the disabled-source skip, and the language
+    models reaching web_search alone."""
+
+    @staticmethod
+    def _config() -> Config:
+        config = Config()
+        for cfg in (
+            config.collectors.rss,
+            config.collectors.reddit,
+            config.collectors.youtube,
+            config.collectors.web_search,
+        ):
+            cfg.enabled = True
+        config.collectors.rsshub.enabled = False
+        return config
+
+    def test_enabled_sources_are_collected_when_no_override_is_given(self):
+        labels = [name for name, _ in bootstrap.collectors(self._config(), MagicMock())]
+        assert labels == ["reddit", "rss", "web_search", "youtube"]  # rsshub is disabled
+
+    def test_sources_override_selects_exactly_what_was_asked_for(self):
+        labels = [name for name, _ in bootstrap.collectors(self._config(), MagicMock(), ["rss", "reddit"])]
+        assert labels == ["rss", "reddit"]  # the caller's order, not the map's
+
+    def test_an_unknown_source_is_warned_about_and_skipped(self):
+        with patch.object(bootstrap, "logger") as log:
+            labels = [name for name, _ in bootstrap.collectors(self._config(), MagicMock(), ["rss", "nope"])]
+        assert labels == ["rss"]
+        assert any("Unknown source" in str(c.args) for c in log.warning.call_args_list)
+
+    def test_an_explicitly_requested_but_disabled_source_is_skipped(self):
+        # --sources rsshub on a deployment where rsshub is disabled must NOT start it.
+        labels = [name for name, _ in bootstrap.collectors(self._config(), MagicMock(), ["rsshub", "rss"])]
+        assert labels == ["rss"]
+
+    def test_only_web_search_receives_the_language_models(self):
+        from collectors.web_search import WebSearchCollector
+
+        models = MagicMock()
+        built = dict(bootstrap.collectors(self._config(), models, ["web_search", "rss"]))
+        assert isinstance(built["web_search"], WebSearchCollector)
+        # The models are only ever used to build the query-refine model; without them, web_search
+        # silently loses query refinement.
+        assert built["web_search"]._llm is models.get_model.return_value
+        models.get_model.assert_called_once()
+        assert models.get_model.call_args.kwargs["stage"] == "query-refine"

@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pipeline.ranker import ContentRanker
+from application.ranker import ContentRanker
 from shared.config import PipelineConfig
 from shared.constants import SourceType
 from shared.models import CollectedItem

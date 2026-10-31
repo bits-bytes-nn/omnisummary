@@ -10,7 +10,8 @@ from zoneinfo import ZoneInfo
 from langchain_core.output_parsers import StrOutputParser
 
 from application.digest_publisher import DigestPublisher
-from application.ports import ImageRenderer, LanguageModels, ThreadsPublisher
+from application.history import RECENT_COMICS_KEY, RollingLog, ThreadsPostLedger
+from application.ports import ImageRenderer, LanguageModels, StateStore, ThreadsPublisher
 from application.visual_generator import VisualGenerator
 from pipeline.aggregator import normalize_url
 from shared import (
@@ -24,9 +25,7 @@ from shared import (
     parse_json_from_llm_output,
 )
 from shared.config import Config
-from shared.history_store import RECENT_COMICS_KEY, RollingLog, ThreadsPostLedger
 from shared.models import ThreadsDelivery
-from shared.state_store import StateStore
 
 
 class DailyVisualMaker:

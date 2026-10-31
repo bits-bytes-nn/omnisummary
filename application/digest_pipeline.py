@@ -1,10 +1,6 @@
-"""Digest orchestration: the single path from collected items to a delivered digest, taken by
-both the CLI (main.py) and the digest Lambda.
-
-It lives in the pipeline package rather than in main.py so the Lambda entry point does not import
-the argparse CLI module (and its whole import graph) to reach `run_pipeline`, and so the repo's
-one-directional layering — handlers depend on pipeline, never the reverse — holds at its most
-important consumer too."""
+"""Digest orchestration: the single path from collected items to a stored digest, taken by both the
+CLI (main.py) and the digest Lambda. The entrypoints hand in the sources, the models and the stores
+(entrypoints/bootstrap.py); this module builds none of them."""
 
 from __future__ import annotations
 
@@ -12,45 +8,36 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from collectors import (
-    BaseCollector,
-    RedditCollector,
-    RSSCollector,
-    RSSHubCollector,
-    WebSearchCollector,
-    YouTubeCollector,
+from application.digest_generator import DigestGenerator
+from application.history import (
+    RECENT_LEADS_KEY,
+    PublishedUrlLedger,
+    RollingLog,
+    ThreadsPostLedger,
+    published_urls_from_snapshots,
 )
+from application.ports import ContentSource, LanguageModels, MemoryStore, StateStore
+from application.ranker import ContentRanker
+from application.trend_tracker import TrendTracker
+from pipeline.aggregator import ContentAggregator, normalize_url
 from shared import (
-    BedrockLanguageModelFactory,
     CollectedItem,
     Config,
     DigestResult,
     HealthReport,
-    LocalPaths,
-    PublishedUrlLedger,
     RankedItem,
-    RollingLog,
     SourceHealth,
     SourceStatus,
-    ThreadsPostLedger,
     agi_countdown_intro,
-    create_memory_store,
-    create_state_store,
     editorial_lead,
-    is_running_in_aws,
     logger,
-    published_urls_from_snapshots,
 )
-from shared.history_store import RECENT_LEADS_KEY
 
-from .aggregator import ContentAggregator, normalize_url
-from .digest_generator import DigestGenerator
-from .ranker import ContentRanker
-from .trend_tracker import TrendTracker
+if TYPE_CHECKING:
+    from application.daily_visual import DailyVisualMaker
 
 
 def resolve_digest_window(config: Config, date_arg: str | None = None) -> tuple[date, datetime]:
@@ -64,57 +51,6 @@ def resolve_digest_window(config: Config, date_arg: str | None = None) -> tuple[
     digest_date = date.fromisoformat(date_arg) if date_arg else datetime.now(tz).date()
     next_day = digest_date + timedelta(days=1)
     return digest_date, datetime(next_day.year, next_day.month, next_day.day, tzinfo=tz)
-
-
-def collector_registry(
-    config: Config, llm_factory: BedrockLanguageModelFactory
-) -> dict[str, tuple[Callable[..., BaseCollector], Any, dict[str, Any]]]:
-    """collector name -> (class, its config, extra constructor kwargs).
-
-    The keys are COLLECTOR_NAMES, which is also what `collectors.alert_on_empty` is validated
-    against — a source this registry names but that vocabulary doesn't could never be watched for
-    going dark."""
-    return {
-        "reddit": (RedditCollector, config.collectors.reddit, {}),
-        "rsshub": (RSSHubCollector, config.collectors.rsshub, {}),
-        "rss": (RSSCollector, config.collectors.rss, {}),
-        "web_search": (WebSearchCollector, config.collectors.web_search, {"llm_factory": llm_factory}),
-        "youtube": (YouTubeCollector, config.collectors.youtube, {}),
-    }
-
-
-def _build_collector_tasks(
-    config: Config,
-    llm_factory: BedrockLanguageModelFactory,
-    sources: list[str] | None = None,
-) -> tuple[list, list[str], list[BaseCollector]]:
-    """Build the collect() coroutines plus the collector instances behind them. The instances are
-    returned (not just the coroutines) so run_collectors_with_health can read each collector's
-    park_status afterwards and report a stalled/unreadable S3 park file as STALE."""
-    collectors_map = collector_registry(config, llm_factory)
-
-    active_sources = (
-        [name for name, (_, cfg, _kw) in collectors_map.items() if cfg.enabled] if sources is None else sources
-    )
-    tasks = []
-    labels = []
-    collectors: list[BaseCollector] = []
-
-    for source_name in active_sources:
-        if source_name not in collectors_map:
-            logger.warning("Unknown source: '%s'", source_name)
-            continue
-        collector_cls, collector_cfg, kwargs = collectors_map[source_name]
-        if not collector_cfg.enabled:
-            logger.info("Skipping disabled source: '%s'", source_name)
-            continue
-        collector = collector_cls(collector_cfg, **kwargs)
-        logger.info("Starting collector: '%s'", source_name)
-        tasks.append(collector.collect())
-        labels.append(source_name)
-        collectors.append(collector)
-
-    return tasks, labels, collectors
 
 
 def _install_bounded_executor(config: Config) -> None:
@@ -151,15 +87,19 @@ async def _collect_within_budget(
 
 
 async def run_collectors_with_health(
-    config: Config,
-    llm_factory: BedrockLanguageModelFactory,
-    sources: list[str] | None = None,
+    config: Config, sources: list[tuple[str, ContentSource]]
 ) -> tuple[list[CollectedItem], HealthReport]:
+    """Run every (name, source) at once, each under the configured wall-clock budget, and report each
+    one's health: a stalled or unreadable park file reads STALE, a fraction of inputs DEGRADED."""
     _install_bounded_executor(config)
-    tasks, labels, collectors = _build_collector_tasks(config, llm_factory, sources)
-    if not tasks:
+    if not sources:
         logger.warning("No active collectors")
         return [], HealthReport()
+    labels = [label for label, _ in sources]
+    collectors = [collector for _, collector in sources]
+    for label in labels:
+        logger.info("Starting collector: '%s'", label)
+    tasks = [collector.collect() for collector in collectors]
 
     budget_sec = config.collectors.collector_budget_sec
     results = await asyncio.gather(
@@ -213,14 +153,12 @@ class PublishIncomplete(RuntimeError):
     """A local run's Threads post failed or did not fully land. The digest is already persisted."""
 
 
-def already_published(config: Config, digest_date: date) -> bool:
+def already_published(config: Config, digest_date: date, state_store: StateStore) -> bool:
     """True when the date's digest is already on Threads. A second run for it (a duplicate invoke, a
     local run) still persisted its own snapshot, leads and ledger entries before the post step skipped,
     so the record of the day became a digest nobody saw. With Threads posting off nothing can post, so a
     re-run is how a day's record is rebuilt."""
-    if config.pipeline.enable_threads_post and ThreadsPostLedger(create_state_store(config)).already_posted(
-        digest_date
-    ):
+    if config.pipeline.enable_threads_post and ThreadsPostLedger(state_store).already_posted(digest_date):
         logger.warning("The %s digest is already on Threads; this run persists and posts nothing", digest_date)
         return True
     return False
@@ -228,13 +166,17 @@ def already_published(config: Config, digest_date: date) -> bool:
 
 async def run_pipeline(
     config: Config,
-    llm_factory: BedrockLanguageModelFactory,
+    models: LanguageModels,
     collected_items: list[CollectedItem],
     digest_date: date,
+    *,
+    state_store: StateStore,
+    memory_store: Callable[[], MemoryStore],
     dry_run: bool = False,
-    force_republish: bool = False,
 ) -> tuple[list[CollectedItem], list[RankedItem], DigestResult] | tuple[None, None, None]:
-    state_store = create_state_store(config)
+    """Aggregate, rank and write the day's digest, then record its stories and lead. `memory_store`
+    is called only to read the recent snapshots, and a failure there costs only the cross-day dedup
+    seed. The digest is neither stored nor published here: see persist_digest and publish_inline."""
     ledger = PublishedUrlLedger(state_store, config.pipeline.published_url_ttl_days)
     leads_log = RollingLog(state_store, RECENT_LEADS_KEY, config.pipeline.recent_leads_window)
 
@@ -248,7 +190,7 @@ async def run_pipeline(
     try:
         # Seed the same window the ledger excludes: ages 1..ttl-1 (today's own snapshot is excluded
         # so a same-day re-run keeps its stories, and a story back on the TTL day is allowed again).
-        snapshots = create_memory_store().get_recent_digests(digest_date, config.pipeline.published_url_ttl_days - 1)
+        snapshots = memory_store().get_recent_digests(digest_date, config.pipeline.published_url_ttl_days - 1)
         exclude_urls |= {normalize_url(u) for u in published_urls_from_snapshots(snapshots)}
     except Exception:
         logger.warning("Could not seed cross-day dedup from memory snapshots (non-fatal)", exc_info=True)
@@ -263,7 +205,7 @@ async def run_pipeline(
 
     # Over-select (top_n + buffer): the editor picks the strongest top_n distinct stories from it.
     select_count = config.pipeline.top_n + config.pipeline.digest_candidate_buffer
-    ranker = ContentRanker(config.pipeline, llm_factory)
+    ranker = ContentRanker(config.pipeline, models)
     recent_titles = _recent_story_titles(snapshots)
     ranked_items = await ranker.rank(items, select_count=select_count, recent_titles=recent_titles)
     logger.info("Ranked %d items (from %d)", len(ranked_items), len(items))
@@ -272,11 +214,11 @@ async def run_pipeline(
         logger.warning("No items passed ranking threshold")
         return None, None, None
 
-    trend_tracker = TrendTracker(config.pipeline, llm_factory, state_store)
+    trend_tracker = TrendTracker(config.pipeline, models, state_store)
     trends_context = trend_tracker.get_trends_context(today=digest_date)
 
     recent_leads = [e.get("lead", "") for e in leads_log.entries()]
-    generator = DigestGenerator(config.pipeline, llm_factory)
+    generator = DigestGenerator(config.pipeline, models)
     digest = await generator.generate(
         ranked_items,
         trends_context=trends_context,
@@ -327,31 +269,6 @@ async def run_pipeline(
     except Exception:
         logger.warning("Failed to update published-URL / leads history (non-fatal)", exc_info=True)
 
-    # In AWS the digest Lambda fires a separate visual Lambda (off the critical path);
-    # locally we run it inline so `uv run python main.py` still produces the visual.
-    # The visual step also fans out to Threads (when enabled), so it carries the digest text.
-    if not is_running_in_aws():
-        # Persisted BEFORE the inline post: a store that fails after the post went up would leave the
-        # day's posted digest stored nowhere, and a re-run would record a different one.
-        persist_digest(ranked_items, digest, digest_date, base_dir=Path(LocalPaths.DIGEST_STATE_DIR.value))
-        from entrypoints import bootstrap
-        from shared.models import ThreadsDelivery
-
-        maker = bootstrap.daily_visual_maker(config, llm_factory)
-        try:
-            posted = await maker.run(ranked_items, digest.content, today=digest_date, force_republish=force_republish)
-        except Exception as e:
-            logger.error("Daily visual step failed", exc_info=True)
-            raise PublishIncomplete(f"The {digest_date} visual/Threads step failed: {e}") from e
-        logger.info("Daily visual %s", "posted" if posted else "skipped")
-        outcome = maker.threads_outcome
-        # Locally there is no alert: the exit code is the only place an incomplete post can show.
-        if isinstance(outcome, ThreadsDelivery) and outcome.posted < outcome.expected:
-            raise PublishIncomplete(
-                f"The {digest_date} Threads post did not fully land ({outcome.summary()}); root {outcome.root_id or '-'}"
-                + (f", standalone {', '.join(outcome.detached)}" if outcome.detached else "")
-            )
-
     return items, ranked_items, digest
 
 
@@ -381,22 +298,41 @@ def _editorial_lead(config: Config, digest: DigestResult, digest_date: date) -> 
 
 
 def persist_digest(
-    ranked_items: list[RankedItem],
-    digest: DigestResult,
-    digest_date: date,
-    *,
-    base_dir: Path | None = None,
+    ranked_items: list[RankedItem], digest: DigestResult, digest_date: date, memory: MemoryStore
 ) -> None:
-    """Persist the digest snapshot to the memory store (single path used by both the
-    local CLI and the Lambda handler). create_memory_store picks the deployed AgentCore memory when
-    it exists (MEMORY_ID, or looked up by name for a local run); base_dir is only the fallback.
+    """Persist the digest snapshot (the single path used by both the local CLI and the Lambda handler):
+    the visual Lambda publishes off it, and later runs dedup against it.
 
     DigestStateManager is imported here rather than at module scope: it lives in the agent package,
-    and importing it eagerly would make every consumer of `pipeline` load the agent (and Strands)
-    import graph."""
+    and importing it eagerly would make every consumer load the agent (and Strands) import graph."""
     from agent.tool_state import DigestStateManager
 
     mgr = DigestStateManager()
     mgr.store_digest(ranked_items, digest)
-    memory = create_memory_store(base_dir)
     memory.put_digest(digest_date.isoformat(), mgr.export_state())
+
+
+async def publish_inline(
+    maker: DailyVisualMaker,
+    ranked_items: list[RankedItem],
+    digest: DigestResult,
+    digest_date: date,
+    *,
+    force_republish: bool = False,
+) -> None:
+    """The local run's visual and Threads post, inline (in AWS the digest Lambda fires the visual
+    Lambda instead). Locally there is no alert: PublishIncomplete is the only place a failed or
+    partial post can show, as main.py's exit code. Persist the digest BEFORE calling this: a store
+    that fails after the post went up would leave the day's posted digest stored nowhere."""
+    try:
+        posted = await maker.run(ranked_items, digest.content, today=digest_date, force_republish=force_republish)
+    except Exception as e:
+        logger.error("Daily visual step failed", exc_info=True)
+        raise PublishIncomplete(f"The {digest_date} visual/Threads step failed: {e}") from e
+    logger.info("Daily visual %s", "posted" if posted else "skipped")
+    outcome = maker.threads_outcome
+    if outcome is not None and outcome.posted < outcome.expected:
+        raise PublishIncomplete(
+            f"The {digest_date} Threads post did not fully land ({outcome.summary()}); root {outcome.root_id or '-'}"
+            + (f", standalone {', '.join(outcome.detached)}" if outcome.detached else "")
+        )

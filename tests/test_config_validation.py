@@ -189,7 +189,7 @@ class TestAlertOnEmptyVocabulary:
         # named here that never appears in a health report (or vice versa).
         from unittest.mock import MagicMock
 
-        from pipeline.runner import collector_registry
+        from entrypoints.bootstrap import collector_registry
 
         assert set(collector_registry(Config(), MagicMock())) == set(COLLECTOR_NAMES)
 

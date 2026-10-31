@@ -135,7 +135,8 @@ async def recall_trends() -> str:
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    from shared import TRENDS_KEY, TrendMemory, create_state_store
+    from adapters.state_store import create_state_store
+    from shared import TRENDS_KEY, TrendMemory
 
     config = get_config()
     half_life = config.pipeline.trend_momentum_half_life_days
@@ -183,7 +184,7 @@ async def recall_digest(digest_date: str) -> str:
     """
     from datetime import date as date_cls
 
-    from shared import create_memory_store
+    from adapters.memory import create_memory_store
 
     raw = digest_date.strip()
     try:

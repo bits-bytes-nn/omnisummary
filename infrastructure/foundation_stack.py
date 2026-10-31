@@ -11,7 +11,7 @@ from aws_cdk.aws_bedrockagentcore import CfnMemory
 from constructs import Construct
 
 from shared import Config
-from shared.memory import digest_memory_name
+from shared.naming import digest_memory_name
 
 
 class OmniSummaryFoundationStack(Stack):

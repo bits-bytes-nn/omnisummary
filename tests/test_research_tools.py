@@ -72,7 +72,7 @@ class TestRecallTrends:
                 Trend(id="empty", title="No Evidence"),
             ]
         )
-        with patch("shared.create_state_store", return_value=self._store(memory.model_dump_json())):
+        with patch("adapters.state_store.create_state_store", return_value=self._store(memory.model_dump_json())):
             result = await rt.recall_trends._tool_func()
         assert result.index("Diffusion LLMs") < result.index("Old Thread")
         assert "first seen 2026-10-01, latest evidence on 2026-10-01, 2026-10-10): Mercury 2 ships" in result
@@ -83,14 +83,14 @@ class TestRecallTrends:
         # "S3 wouldn't tell me" is not "this topic never came up": returning TrendMemory() made a
         # throttled/denied read indistinguishable from an untracked topic, and the report then
         # asserted that absence. Same distinction recall_digest draws for the digest store.
-        with patch("shared.create_state_store", side_effect=RuntimeError("boom")):
+        with patch("adapters.state_store.create_state_store", side_effect=RuntimeError("boom")):
             result = await rt.recall_trends._tool_func()
         assert "could not be READ" in result
         assert "No earlier trends recalled" not in result
 
     @pytest.mark.asyncio
     async def test_an_empty_store_still_reports_no_history(self):
-        with patch("shared.create_state_store", return_value=self._store(None)):
+        with patch("adapters.state_store.create_state_store", return_value=self._store(None)):
             result = await rt.recall_trends._tool_func()
         assert "No earlier trends recalled" in result
 
@@ -116,7 +116,7 @@ class TestRecallDigest:
     async def test_returns_the_lead_and_story_titles(self):
         store = MagicMock()
         store.get_digest.return_value = self._snapshot()
-        with patch("shared.create_memory_store", return_value=store):
+        with patch("adapters.memory.create_memory_store", return_value=store):
             result = await rt.recall_digest._tool_func("2026-08-17")
         store.get_digest.assert_called_once_with("2026-08-17")
         assert "2026-08-17" in result
@@ -127,7 +127,7 @@ class TestRecallDigest:
     async def test_missing_day_says_so_instead_of_serving_another_date(self):
         store = MagicMock()
         store.get_digest.return_value = None
-        with patch("shared.create_memory_store", return_value=store):
+        with patch("adapters.memory.create_memory_store", return_value=store):
             result = await rt.recall_digest._tool_func("2026-08-17")
         assert result == "No digest stored for 2026-08-17."
 
@@ -137,7 +137,7 @@ class TestRecallDigest:
         # report could assert the digest never covered a topic it in fact covered.
         store = MagicMock()
         store.get_digest.side_effect = RuntimeError("throttled")
-        with patch("shared.create_memory_store", return_value=store):
+        with patch("adapters.memory.create_memory_store", return_value=store):
             result = await rt.recall_digest._tool_func("2026-08-17")
         assert "could not be READ" in result
         assert "throttled" in result
@@ -145,7 +145,7 @@ class TestRecallDigest:
 
     @pytest.mark.asyncio
     async def test_malformed_date_is_rejected(self):
-        with patch("shared.create_memory_store") as store:
+        with patch("adapters.memory.create_memory_store") as store:
             result = await rt.recall_digest._tool_func("yesterday")
         store.assert_not_called()
         assert "not a YYYY-MM-DD date" in result
@@ -161,7 +161,7 @@ class TestRecallDigest:
         ]
         store = MagicMock()
         store.get_digest.return_value = snapshot
-        with patch("shared.create_memory_store", return_value=store):
+        with patch("adapters.memory.create_memory_store", return_value=store):
             result = await rt.recall_digest._tool_func("2026-08-17")
         chars = get_config().agent.search_content_preview_chars
         lines = [ln for ln in result.splitlines() if ln.startswith("- ")]

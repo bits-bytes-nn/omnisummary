@@ -24,7 +24,7 @@ class TestDigest:
     def test_a_stored_day_returns_its_lead_and_stories(self):
         store = MagicMock()
         store.get_digest.return_value = _snapshot()
-        with patch.object(recall_cli, "create_memory_store", return_value=store):
+        with patch.object(recall_cli.bootstrap, "memory_store", return_value=store):
             result, code = recall_cli.run(["digest", "2026-10-11"])
         assert code == recall_cli.EXIT_OK and result["found"] is True
         assert result["stories"][0] == {
@@ -38,12 +38,12 @@ class TestDigest:
     def test_an_unstored_day_succeeds_with_nothing_found(self):
         store = MagicMock()
         store.get_digest.return_value = None
-        with patch.object(recall_cli, "create_memory_store", return_value=store):
+        with patch.object(recall_cli.bootstrap, "memory_store", return_value=store):
             result, code = recall_cli.run(["digest", "2026-10-11"])
         assert code == recall_cli.EXIT_OK and result["found"] is False
 
     def test_an_unreadable_store_fails_instead_of_reading_as_empty(self):
-        with patch.object(recall_cli, "create_memory_store", side_effect=RuntimeError("denied")):
+        with patch.object(recall_cli.bootstrap, "memory_store", side_effect=RuntimeError("denied")):
             result, code = recall_cli.run(["digest", "2026-10-11"])
         assert code == recall_cli.EXIT_FAILED and "denied" in result["error"]
 
@@ -63,7 +63,7 @@ class TestTrends:
         )
         store = MagicMock()
         store.read.return_value = memory.model_dump_json()
-        with patch.object(recall_cli, "create_state_store", return_value=store):
+        with patch.object(recall_cli.bootstrap, "state_store", return_value=store):
             result, code = recall_cli.run(["trends"])
         assert code == recall_cli.EXIT_OK
         assert [t["title"] for t in result["trends"]] == ["New", "Old"]

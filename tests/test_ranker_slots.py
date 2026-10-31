@@ -35,7 +35,7 @@ def _ranked(
 def _ranker(**overrides):
     from unittest.mock import MagicMock
 
-    from pipeline.ranker import ContentRanker
+    from application.ranker import ContentRanker
 
     config = PipelineConfig(**overrides)
     factory = MagicMock()

@@ -165,13 +165,13 @@ class TestPublicPackageBoundaries:
         # delivery handlers — it is the publish path; the generator only computes a budget.)
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parent.parent / "pipeline" / "digest_generator.py").read_text()
+        source = (Path(__file__).resolve().parent.parent / "application" / "digest_generator.py").read_text()
         assert "from output" not in source and "import output" not in source
 
     def test_the_threads_post_cap_has_one_definition(self):
         from adapters import threads as threads_handler
+        from application import digest_generator
         from output import renderers
-        from pipeline import digest_generator
         from shared.constants import THREADS_MAX_POST_CHARS
 
         assert renderers.THREADS_MAX_POST_CHARS is THREADS_MAX_POST_CHARS

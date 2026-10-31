@@ -23,7 +23,8 @@ load_dotenv()
 logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
 from agent.tool_state import DigestStateManager  # noqa: E402
-from shared import TRENDS_KEY, Config, TrendMemory, create_memory_store, create_state_store  # noqa: E402
+from entrypoints import bootstrap  # noqa: E402
+from shared import TRENDS_KEY, Config, TrendMemory  # noqa: E402
 
 EXIT_OK, EXIT_FAILED, EXIT_REJECTED = 0, 1, 2
 
@@ -50,7 +51,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def _digest(day: date) -> dict[str, Any]:
-    data = create_memory_store().get_digest(day.isoformat())
+    data = bootstrap.memory_store().get_digest(day.isoformat())
     content = DigestStateManager.load_from_dict(data).get_content() if data else None
     if content is None or not content.items:
         return {"found": False, "lead": "", "stories": []}
@@ -64,7 +65,7 @@ def _digest(day: date) -> dict[str, Any]:
 
 
 def _trends(config: Config, today: date) -> list[dict[str, Any]]:
-    raw = create_state_store(config).read(TRENDS_KEY)
+    raw = bootstrap.state_store(config).read(TRENDS_KEY)
     memory = TrendMemory.model_validate_json(raw) if raw else TrendMemory()
     half_life = config.pipeline.trend_momentum_half_life_days
     trends = sorted((t for t in memory.trends if t.evidence), key=lambda t: t.momentum(today, half_life), reverse=True)

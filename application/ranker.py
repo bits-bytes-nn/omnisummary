@@ -9,8 +9,10 @@ from collections.abc import Sequence
 
 from langchain_core.output_parsers import StrOutputParser
 
+from application.digest_generator import format_recent_titles
+from application.ports import LanguageModels
+from pipeline.aggregator import normalize_url
 from shared import (
-    BedrockLanguageModelFactory,
     CollectedItem,
     RankedItem,
     RankingHealth,
@@ -25,22 +27,19 @@ from shared import (
 )
 from shared.config import PipelineConfig
 
-from .aggregator import normalize_url
-from .digest_generator import format_recent_titles
-
 
 class ContentRanker:
 
-    def __init__(self, config: PipelineConfig, llm_factory: BedrockLanguageModelFactory) -> None:
+    def __init__(self, config: PipelineConfig, models: LanguageModels) -> None:
         self.config = config
-        self.llm_factory = llm_factory
-        self.llm = llm_factory.get_model(config.ranking_model, stage="ranking")
+        self.models = models
+        self.llm = models.get_model(config.ranking_model, stage="ranking")
         # How complete the last rank() was, for the caller to report/alert on. A digest built from a
         # pool that lost a whole batch of candidates must not read as a clean success.
         self.health = RankingHealth()
 
     def _truncate(self, text: str, max_tokens: int) -> str:
-        return self.llm_factory.truncate_to_tokens(text, max_tokens)
+        return self.models.truncate_to_tokens(text, max_tokens)
 
     async def rank(
         self, items: list[CollectedItem], select_count: int | None = None, recent_titles: Sequence[str] = ()

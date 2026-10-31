@@ -6,7 +6,7 @@ from typing import Any
 
 from application.comment_replies import CommentResponder
 from entrypoints import bootstrap
-from shared import Config, create_state_store, logger, set_correlation_id
+from shared import Config, logger, set_correlation_id
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -32,6 +32,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
 async def _run(config: Config):
     responder = CommentResponder(
-        config, bootstrap.language_models(config), create_state_store(config), bootstrap.threads(config)
+        config, bootstrap.language_models(config), bootstrap.state_store(config), bootstrap.threads(config)
     )
     return await responder.run(datetime.now(UTC))

@@ -12,9 +12,9 @@ from tavily import AsyncTavilyClient
 from tavily.errors import TimeoutError as TavilyTimeoutError
 from tavily.errors import UsageLimitExceededError
 
+from application.ports import LanguageModels
 from shared import (
     DOMAIN_TO_SOURCE,
-    BedrockLanguageModelFactory,
     CollectedItem,
     RefineQueryPrompt,
     SourceType,
@@ -46,7 +46,7 @@ _RETRIABLE_SEARCH_ERRORS: tuple[type[BaseException], ...] = (
 class WebSearchCollector(BaseCollector):
     config: WebSearchCollectorConfig
 
-    def __init__(self, config: WebSearchCollectorConfig, llm_factory: BedrockLanguageModelFactory | None = None):
+    def __init__(self, config: WebSearchCollectorConfig, llm_factory: LanguageModels | None = None):
         self.config = config
         self._api_key = ""
         self._client_instance: AsyncTavilyClient | None = None

@@ -2,76 +2,19 @@ from __future__ import annotations
 
 import json
 import os
-from abc import ABC, abstractmethod
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import boto3
 
-from .config import Config, get_config
-from .logger import logger
-from .utils import available_boto_profile, aws_region
+from application.ports import MemoryReadError, MemoryStore
+from shared.config import Config, get_config
+from shared.logger import logger
+from shared.naming import digest_memory_name
+from shared.utils import available_boto_profile, aws_region
 
 DEFAULT_ACTOR_ID = "omnisummary"
-
-
-class MemoryReadError(RuntimeError):
-    """The digest snapshot could NOT be read — distinct from "there is no snapshot for that date".
-
-    Both used to come back as None, so a throttled/denied/misconfigured AgentCore read was
-    indistinguishable from a day that simply has no digest: the visual Lambda logged "nothing to
-    publish", returned 200, and the day's digest — whose only delivery path that Lambda is — was
-    never posted, with no alarm.
-
-    A consumer that PUBLISHES must let this escape (a failed invoke fires the Errors alarm and
-    lands in the DLQ; retry_attempts=0 means it cannot duplicate a post). A consumer that only
-    ENRICHES — the cross-day dedup seed in main.py — keeps catching it and degrades, because a
-    lost dedup hint is harmless while a lost digest is not.
-    """
-
-
-class MemoryStore(ABC):
-    """Persistence boundary for the structured digest snapshot, one per digest date.
-
-    The visual Lambda reloads the day's snapshot to publish it, the pipeline reads recent ones to
-    seed cross-day dedup, and the research CLI's recall_digest reads one back. Trend memory lives in
-    the structured trends.json owned by the TrendTracker, not here.
-    """
-
-    @abstractmethod
-    def put_digest(self, digest_date: str, state: dict[str, Any]) -> None: ...
-
-    @abstractmethod
-    def get_digest(self, digest_date: str) -> dict[str, Any] | None:
-        """The snapshot stored FOR that ISO date, or None when the date has none.
-
-        Keyed by the digest date rather than "the latest": digest_result.generated_at is UTC and
-        would false-mismatch the KST digest date on every pre-09:00 KST run.
-
-        Raises MemoryReadError when the snapshot could not be READ (as opposed to not existing),
-        so a publish path never mistakes an unreadable store for an empty day.
-        """
-
-    def get_recent_digests(self, before: date, days: int) -> list[dict[str, Any]]:
-        """The snapshots for the `days` dates preceding `before` (newest first), skipping dates that
-        have none. Seeds cross-day dedup with the SAME window the published-URL ledger uses, and
-        never includes `before` itself, so a same-day re-run keeps its own stories.
-
-        Session ids are deterministic (`digest-YYYY-MM-DD`), so this reads exactly `days` sessions
-        instead of listing every session ever stored. Best-effort per date: it only ENRICHES the
-        dedup seed, so one unreadable day is logged and skipped rather than failing the read."""
-        out: list[dict[str, Any]] = []
-        for offset in range(1, max(0, days) + 1):
-            day = (before - timedelta(days=offset)).isoformat()
-            try:
-                data = self.get_digest(day)
-            except MemoryReadError as e:
-                logger.warning("Skipping the digest snapshot for %s: %s", day, e)
-                continue
-            if data is not None:
-                out.append(data)
-        return out
 
 
 class LocalMemoryStore(MemoryStore):
@@ -267,11 +210,6 @@ class AgentCoreMemoryStore(MemoryStore):
             if "text" in content:
                 return content["text"]
         return ""
-
-
-def digest_memory_name(project_name: str, stage: str) -> str:
-    """The AgentCore Memory name the foundation stack creates; its id is this name plus a suffix."""
-    return f"{project_name}_{stage}_digest_state".replace("-", "_")
 
 
 def _deployed_memory_id(config: Config, session: boto3.Session) -> str:

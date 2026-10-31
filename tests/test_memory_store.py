@@ -4,11 +4,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from shared.memory import AgentCoreMemoryStore, LocalMemoryStore, MemoryReadError, create_memory_store
+from adapters.memory import AgentCoreMemoryStore, LocalMemoryStore, create_memory_store
+from application.ports import MemoryReadError
 
 
 def _store() -> AgentCoreMemoryStore:
-    with patch("shared.memory.boto3.client"):
+    with patch("adapters.memory.boto3.client"):
         return AgentCoreMemoryStore("m", actor_id="a")
 
 
@@ -99,7 +100,7 @@ def store_region() -> str:
 class TestCreateMemoryStore:
     def test_local_when_no_memory_is_deployed(self, monkeypatch, tmp_path):
         monkeypatch.delenv("MEMORY_ID", raising=False)
-        with patch("shared.memory._deployed_memory_id", return_value=""), patch("shared.memory.boto3.Session"):
+        with patch("adapters.memory._deployed_memory_id", return_value=""), patch("adapters.memory.boto3.Session"):
             store = create_memory_store(tmp_path)
         assert isinstance(store, LocalMemoryStore)
 
@@ -109,7 +110,7 @@ class TestCreateMemoryStore:
         monkeypatch.delenv("MEMORY_ID", raising=False)
         session = MagicMock()
         session.client.return_value.get_paginator.return_value.paginate.side_effect = RuntimeError("expired token")
-        with patch("shared.memory.boto3.Session", return_value=session):
+        with patch("adapters.memory.boto3.Session", return_value=session):
             with pytest.raises(MemoryReadError, match="expired token"):
                 create_memory_store(tmp_path)
 
@@ -121,7 +122,7 @@ class TestCreateMemoryStore:
         session.client.return_value.get_paginator.return_value.paginate.return_value = [
             {"memories": [{"id": "other_dev_digest_state-AAA"}, {"id": "omnisummary_dev_digest_state-9GEp6f8MtL"}]}
         ]
-        with patch("shared.memory.boto3.Session", return_value=session):
+        with patch("adapters.memory.boto3.Session", return_value=session):
             store = create_memory_store()
         assert isinstance(store, AgentCoreMemoryStore)
         assert store.memory_id == "omnisummary_dev_digest_state-9GEp6f8MtL"
@@ -132,7 +133,7 @@ class TestCreateMemoryStore:
     def test_agentcore_when_memory_id_set(self, monkeypatch):
         monkeypatch.setenv("MEMORY_ID", "mem-123")
         session = MagicMock()
-        with patch("shared.memory.boto3.Session", return_value=session):
+        with patch("adapters.memory.boto3.Session", return_value=session):
             store = create_memory_store()
         assert isinstance(store, AgentCoreMemoryStore)
         assert store.memory_id == "mem-123"
@@ -141,7 +142,7 @@ class TestCreateMemoryStore:
 
 class TestAgentCoreMemoryStore:
     def _store(self):
-        with patch("shared.memory.boto3.client") as mock_client:
+        with patch("adapters.memory.boto3.client") as mock_client:
             client = MagicMock()
             mock_client.return_value = client
             store = AgentCoreMemoryStore("mem-1", region_name="us-west-2")
@@ -187,7 +188,7 @@ class TestAgentCoreMemoryStore:
 
 class TestAgentCoreGetDigestByDate:
     def _store(self):
-        with patch("shared.memory.boto3.client") as mock_client:
+        with patch("adapters.memory.boto3.client") as mock_client:
             client = MagicMock()
             mock_client.return_value = client
             store = AgentCoreMemoryStore("mem-1", region_name="us-west-2")
@@ -227,7 +228,7 @@ class TestNewestEventWithinASession:
     promises no ordering, so reading one event could serve the day's FIRST (superseded) attempt."""
 
     def _store(self):
-        with patch("shared.memory.boto3.client") as mock_client:
+        with patch("adapters.memory.boto3.client") as mock_client:
             client = MagicMock()
             mock_client.return_value = client
             store = AgentCoreMemoryStore("mem-1", region_name="us-west-2")

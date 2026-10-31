@@ -4,10 +4,10 @@ from datetime import UTC, date, datetime
 
 from langchain_core.output_parsers import StrOutputParser
 
+from application.ports import LanguageModels
 from pipeline.aggregator import normalize_url
 from shared import (
     THREADS_MAX_POST_CHARS,
-    BedrockLanguageModelFactory,
     CollectedItem,
     DigestContent,
     DigestItem,
@@ -36,18 +36,18 @@ class DigestContentError(ValueError):
 
 class DigestGenerator:
 
-    def __init__(self, config: PipelineConfig, llm_factory: BedrockLanguageModelFactory) -> None:
+    def __init__(self, config: PipelineConfig, models: LanguageModels) -> None:
         self.config = config
-        self.llm_factory = llm_factory
-        self.llm = llm_factory.get_model(config.digest_model, stage="digest")
+        self.models = models
+        self.llm = models.get_model(config.digest_model, stage="digest")
         # Its OWN handle: the grounding pass is a SECOND ~50k-token Sonnet call, and billed under
         # "digest" it was indistinguishable from the generation itself — defeating the only
         # spend-attribution mechanism the repo has (the bill is per MODEL, and several stages share
         # this one). Built eagerly beside the digest model so the stage label cannot drift.
-        self.grounding_llm = llm_factory.get_model(config.digest_model, stage="grounding")
+        self.grounding_llm = models.get_model(config.digest_model, stage="grounding")
 
     def _truncate(self, text: str, max_tokens: int) -> str:
-        return self.llm_factory.truncate_to_tokens(text, max_tokens)
+        return self.models.truncate_to_tokens(text, max_tokens)
 
     async def generate(
         self,

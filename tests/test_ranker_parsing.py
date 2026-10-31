@@ -1,6 +1,6 @@
 import json
 
-from pipeline.ranker import ContentRanker
+from application.ranker import ContentRanker
 from shared.constants import SourceType
 from shared.models import CollectedItem
 
