@@ -150,7 +150,7 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
         result["error"] = f"Config could not be loaded: {type(e).__name__}: {e}"
         return result, EXIT_FAILED
     result["model"] = config.agent.model_id.value
-    delivery = DeliveryContext(publish_threads=args.publish == THREADS, ports=bootstrap.research_ports(config))
+    delivery = DeliveryContext(publish_threads=args.publish == THREADS)
     allowed = "ALLOWED" if delivery.publish_threads else "NOT allowed"
     prompt = f"{topic}\n\n[DELIVERY] Threads publishing: {allowed}."
 
@@ -170,6 +170,8 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
     markdown = ""
     with request_context(delivery):
         try:
+            # Inside the try: building the ports opens AWS sessions, and a failure must still print the JSON.
+            delivery.ports = bootstrap.research_ports(config)
             agent = create_research_agent(config)
             run_result = agent(prompt, limits=research_run_limits(config))
         except Exception as e:

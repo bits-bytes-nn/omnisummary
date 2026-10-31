@@ -23,6 +23,7 @@ from application.ports import ContentSource, LanguageModels, MemoryStore, StateS
 from application.ranker import ContentRanker
 from application.trend_tracker import TrendTracker
 from domain.aggregator import ContentAggregator, normalize_url
+from domain.digest_snapshot import DigestStateManager
 from domain.formatting import agi_countdown_intro, editorial_lead
 from domain.models import CollectedItem, DigestResult, HealthReport, RankedItem, SourceHealth, SourceStatus
 from shared import Config, logger
@@ -292,12 +293,7 @@ def persist_digest(
     ranked_items: list[RankedItem], digest: DigestResult, digest_date: date, memory: MemoryStore
 ) -> None:
     """Persist the digest snapshot (the single path used by both the local CLI and the Lambda handler):
-    the visual Lambda publishes off it, and later runs dedup against it.
-
-    DigestStateManager is imported here rather than at module scope: it lives in the agent package,
-    and importing it eagerly would make every consumer load the agent (and Strands) import graph."""
-    from domain.digest_snapshot import DigestStateManager
-
+    the visual Lambda publishes off it, and later runs dedup against it."""
     mgr = DigestStateManager()
     mgr.store_digest(ranked_items, digest)
     memory.put_digest(digest_date.isoformat(), mgr.export_state())
