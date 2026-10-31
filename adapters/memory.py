@@ -8,11 +8,11 @@ from typing import Any
 
 import boto3
 
+from adapters.aws import available_boto_profile, aws_region
 from application.ports import MemoryReadError, MemoryStore
 from shared.config import Config, get_config
 from shared.logger import logger
 from shared.naming import digest_memory_name
-from shared.utils import available_boto_profile, aws_region
 
 DEFAULT_ACTOR_ID = "omnisummary"
 

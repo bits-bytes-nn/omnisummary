@@ -2,8 +2,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from adapters.bedrock import LANGUAGE_MODEL_INFO
 from shared.constants import LanguageModelId
-from shared.utils import LANGUAGE_MODEL_INFO
 
 
 class TestAgentPromptCaching:
@@ -283,7 +283,7 @@ class TestAgentTemperatureGating:
         assert "temperature" not in captured
 
     def test_temperature_sent_when_model_accepts_it(self):
-        from shared.utils import LanguageModelInfo
+        from adapters.bedrock import LanguageModelInfo
 
         captured = {}
 

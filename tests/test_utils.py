@@ -5,15 +5,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from adapters.aws import aws_region, resolve_secret
 from shared.utils import (
-    aws_region,
     backoff_delay,
     coerce_bool,
     extract_json_from_llm_output,
     generate_item_id,
     parse_feed_published_date,
     parse_json_from_llm_output,
-    resolve_secret,
     retry_async,
 )
 
@@ -64,7 +63,7 @@ class TestResolveSecret:
         monkeypatch.delenv("MY_SECRET", raising=False)
         monkeypatch.setenv("PROJECT_NAME", "proj")
         monkeypatch.setenv("STAGE", "dev")
-        ssm = patch("shared.utils._ssm_client").start()
+        ssm = patch("adapters.aws._ssm_client").start()
         ssm.return_value.get_parameter.return_value = {"Parameter": {"Value": "from-ssm"}}
         try:
             assert resolve_secret("MY_SECRET", "my-secret") == "from-ssm"
@@ -74,7 +73,7 @@ class TestResolveSecret:
 
     def test_returns_empty_on_failure(self, monkeypatch):
         monkeypatch.delenv("MY_SECRET", raising=False)
-        with patch("shared.utils._ssm_client", side_effect=Exception("no ssm")):
+        with patch("adapters.aws._ssm_client", side_effect=Exception("no ssm")):
             assert resolve_secret("MY_SECRET", "my-secret") == ""
 
     def test_strict_distinguishes_an_ssm_outage_from_an_unset_secret(self, monkeypatch):
@@ -83,32 +82,32 @@ class TestResolveSecret:
         # "nothing to do" while SSM is simply unreachable.
         from botocore.exceptions import ClientError
 
-        from shared.utils import SecretUnavailableError
+        from adapters.aws import SecretUnavailableError
 
         monkeypatch.delenv("MY_SECRET", raising=False)
-        with patch("shared.utils._ssm_client", side_effect=Exception("no ssm")):
+        with patch("adapters.aws._ssm_client", side_effect=Exception("no ssm")):
             with pytest.raises(SecretUnavailableError):
                 resolve_secret("MY_SECRET", "my-secret", strict=True)
 
         # A parameter that genuinely does not exist is still just "unset", even in strict mode.
         client = MagicMock()
         client.get_parameter.side_effect = ClientError({"Error": {"Code": "ParameterNotFound"}}, "GetParameter")
-        with patch("shared.utils._ssm_client", return_value=client):
+        with patch("adapters.aws._ssm_client", return_value=client):
             assert resolve_secret("MY_SECRET", "my-secret", strict=True) == ""
 
 
 # Captured at import, before the conftest stubs it, so these tests exercise the real factory.
-from shared.utils import _ssm_client as _REAL_SSM_CLIENT  # noqa: E402
+from adapters.aws import _ssm_client as _REAL_SSM_CLIENT  # noqa: E402
 
 
 class TestSsmClient:
     def test_a_resolvable_profile_reads_ssm_on_it_in_the_configured_region(self, monkeypatch):
         # A laptop shell may carry AWS_PROFILE/AWS_REGION for another account or the model region.
-        from shared import utils
+        from adapters import aws as utils
 
         config = MagicMock()
         config.aws.profile, config.aws.region = "research", "ap-northeast-2"
-        with patch("shared.config.get_config", return_value=config):
+        with patch.object(utils, "get_config", return_value=config):
             with patch.object(utils, "available_boto_profile", return_value="research"):
                 with patch.object(utils.boto3, "Session") as session:
                     _REAL_SSM_CLIENT()
@@ -116,7 +115,7 @@ class TestSsmClient:
         session.return_value.client.assert_called_once_with("ssm")
 
     def test_without_a_profile_it_is_the_runtimes_own_client_as_before(self, monkeypatch):
-        from shared import utils
+        from adapters import aws as utils
 
         monkeypatch.setenv("AWS_REGION", "ap-northeast-2")
         with patch.object(utils, "available_boto_profile", return_value=None):
@@ -339,14 +338,14 @@ class TestAvailableBotoProfile:
     asks is now the only one that matters: does this profile actually resolve here?"""
 
     def test_no_configured_profile_means_ambient(self):
-        from shared.utils import available_boto_profile
+        from adapters.aws import available_boto_profile
 
         assert available_boto_profile("") is None
 
     def test_a_configured_profile_that_exists_is_returned(self):
         from unittest.mock import MagicMock, patch
 
-        from shared.utils import available_boto_profile
+        from adapters.aws import available_boto_profile
 
         with patch("boto3.session.Session", return_value=MagicMock(available_profiles=["research"])):
             assert available_boto_profile("research") == "research"
@@ -354,7 +353,7 @@ class TestAvailableBotoProfile:
     def test_a_configured_profile_that_does_not_exist_means_ambient(self):
         from unittest.mock import MagicMock, patch
 
-        from shared.utils import available_boto_profile
+        from adapters.aws import available_boto_profile
 
         with patch("boto3.session.Session", return_value=MagicMock(available_profiles=["default"])):
             assert available_boto_profile("research") is None
@@ -363,7 +362,7 @@ class TestAvailableBotoProfile:
         # A broken/unreadable ~/.aws/config must never be able to stop a run.
         from unittest.mock import patch
 
-        from shared.utils import available_boto_profile
+        from adapters.aws import available_boto_profile
 
         with patch("boto3.session.Session", side_effect=RuntimeError("bad config")):
             assert available_boto_profile("research") is None

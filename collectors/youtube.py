@@ -11,7 +11,8 @@ import requests
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import YouTubeTranscriptApiException
 
-from shared import CollectedItem, SourceType, logger, resolve_secret, retry_async
+from adapters.aws import resolve_secret
+from shared import CollectedItem, SourceType, logger, retry_async
 from shared.config import YouTubeCollectorConfig
 
 from .base import (

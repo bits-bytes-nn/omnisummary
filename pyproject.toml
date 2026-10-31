@@ -42,6 +42,7 @@ dev = [
     "types-PyYAML>=6.0",
     "pre-commit>=4.0",
     "boto3-stubs~=1.42.63",
+    "import-linter>=2.1",
 ]
 
 [build-system]
@@ -103,6 +104,49 @@ warn_unused_configs = true
 warn_unused_ignores = false
 ignore_missing_imports = true
 exclude = "(references|tests|cdk\\.out|node_modules)/"
+
+[tool.importlinter]
+# The dependency direction of the ports-and-adapters layout, checked in CI (`lint-imports`).
+root_packages = [
+    "lambda_handlers",
+    "entrypoints",
+    "adapters",
+    "collectors",
+    "application",
+    "pipeline",
+    "output",
+    "agent",
+    "shared",
+]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Dependencies point inward: entrypoints, then adapters, then the application, then the core"
+type = "layers"
+layers = [
+    "lambda_handlers : entrypoints",
+    "adapters : collectors",
+    "application",
+    "pipeline : output : agent",
+    "shared",
+]
+
+[[tool.importlinter.contracts]]
+name = "The application and the core reach no outside system directly"
+type = "forbidden"
+source_modules = ["application", "pipeline", "output", "agent"]
+forbidden_modules = [
+    "boto3",
+    "botocore",
+    "httpx",
+    "openai",
+    "strands",
+    "tavily",
+    "feedparser",
+    "bs4",
+    "langchain_aws",
+    "youtube_transcript_api",
+]
 
 [tool.coverage.run]
 # Measure EVERYTHING that isn't explicitly excluded. The CI gate used to enumerate packages

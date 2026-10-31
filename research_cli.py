@@ -25,16 +25,11 @@ load_dotenv()
 # the app's own logger (shared.logger), which has its own stderr handler.
 logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
+from adapters.aws import SecretUnavailableError, resolve_secret  # noqa: E402
 from adapters.research_agent import create_research_agent, research_run_limits  # noqa: E402
 from application.research import MARKDOWN, THREADS, DeliveryContext, request_context  # noqa: E402
 from entrypoints import bootstrap  # noqa: E402
-from shared import (  # noqa: E402
-    Config,
-    SecretUnavailableError,
-    extract_urls,
-    logger,
-    resolve_secret,
-)
+from shared import Config, extract_urls, logger  # noqa: E402
 from shared.formatting import citation_key  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "reports"

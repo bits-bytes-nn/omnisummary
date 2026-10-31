@@ -6,7 +6,8 @@ from typing import Any
 import boto3
 import httpx
 
-from shared import logger, resolve_secret, set_correlation_id
+from adapters.aws import resolve_secret
+from shared import logger, set_correlation_id
 
 THREADS_REFRESH_URL = "https://graph.threads.net/refresh_access_token"
 

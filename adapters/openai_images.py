@@ -4,7 +4,8 @@ import base64
 from collections.abc import Sequence
 from typing import Any
 
-from shared import SecretUnavailableError, logger, resolve_secret
+from adapters.aws import SecretUnavailableError, resolve_secret
+from shared import logger
 
 
 def _image_file(index: int, data: bytes) -> tuple[str, bytes, str]:

@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
+from adapters.bedrock import LANGUAGE_MODEL_INFO
 from collectors.base import degradation_reason
 from shared.config import (
     CollectorsConfig,
@@ -15,7 +16,6 @@ from shared.config import (
     get_config,
 )
 from shared.constants import COLLECTOR_NAMES, EMPTY_RATE_CHECK_DISABLED
-from shared.utils import LANGUAGE_MODEL_INFO
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 CONFIG_TEMPLATE = CONFIG_DIR / "config-template.yaml"

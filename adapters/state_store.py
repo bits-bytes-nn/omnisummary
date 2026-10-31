@@ -86,7 +86,7 @@ def state_boto_session(config: Config | None):
     trends.json read and write failed on ProfileNotFound."""
     import boto3
 
-    from shared.utils import available_boto_profile
+    from adapters.aws import available_boto_profile
 
     if config is None:
         return boto3.Session()

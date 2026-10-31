@@ -135,7 +135,7 @@ class TestCollect:
         # A denied/throttled SSM read used to return "" — the same answer as "no key configured" —
         # so the digest silently lost its whole web-search source with one warning line. It must
         # raise, which reports the collector FAILED and alerts.
-        from shared.utils import SecretUnavailableError
+        from adapters.aws import SecretUnavailableError
 
         def _boom(*args, **kwargs):
             assert kwargs.get("strict") is True
