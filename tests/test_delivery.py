@@ -4,9 +4,8 @@ import pytest
 
 from application import research as dlv
 from application.research import DeliveryContext
-from shared import ImageAsset
-from shared.formatting import normalize_citation_url
-from shared.models import ThreadsDelivery
+from domain.formatting import normalize_citation_url
+from domain.models import ImageAsset, ThreadsDelivery
 from tests.fakes import FakeThreads
 
 

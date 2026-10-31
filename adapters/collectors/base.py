@@ -6,8 +6,10 @@ import json
 import math
 import os
 from abc import ABC, abstractmethod
+from calendar import timegm
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from enum import Enum
 from typing import Any
 
@@ -18,17 +20,28 @@ from botocore.exceptions import BotoCoreError, ClientError
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field, ValidationError
 
-from shared import (
-    CollectedItem,
-    SourceType,
-    generate_item_id,
-    is_running_in_aws,
-    logger,
-    parse_feed_published_date,
-    retry_async,
-)
+from domain.models import CollectedItem, generate_item_id
+from shared import SourceType, is_running_in_aws, logger, retry_async
 from shared.config import BaseCollectorConfig
 from shared.constants import BROWSER_USER_AGENT, DIGEST_PERIOD_HOURS
+
+
+def parse_feed_published_date(entry) -> datetime | None:
+    if hasattr(entry, "published_parsed") and entry.published_parsed:
+        return datetime.fromtimestamp(timegm(entry.published_parsed), tz=UTC)
+
+    published_str = entry.get("published")
+    if published_str:
+        try:
+            return parsedate_to_datetime(published_str).astimezone(UTC)
+        except (TypeError, ValueError) as e:
+            logger.debug("Failed to parse feed published date '%s': %s", published_str, e)
+
+    if hasattr(entry, "updated_parsed") and entry.updated_parsed:
+        return datetime.fromtimestamp(timegm(entry.updated_parsed), tz=UTC)
+
+    return None
+
 
 # HTTP statuses worth another attempt: rate limiting and server-side faults. Everything else —
 # notably 403 (quota exhausted / revoked key) and 404 (unknown resource) — is a verdict retrying

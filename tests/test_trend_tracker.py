@@ -6,8 +6,8 @@ import pytest
 
 from application.ports import StateReadError
 from application.trend_tracker import TRENDS_KEY, TrendTracker
+from domain.models import Trend, TrendEvidence, TrendMemory, TrendStatus
 from shared.config import PipelineConfig
-from shared.models import Trend, TrendEvidence, TrendMemory, TrendStatus
 
 
 class _FakeStore:

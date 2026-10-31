@@ -7,7 +7,11 @@ from typing import Any, NamedTuple
 
 from pydantic import BaseModel, Field, model_validator
 
-from .constants import SourceType, VisualOrientation
+from shared.constants import SourceType, VisualOrientation
+
+
+def generate_item_id(url: str) -> str:
+    return hashlib.sha256(url.encode()).hexdigest()[:16]
 
 
 class CollectedItem(BaseModel):

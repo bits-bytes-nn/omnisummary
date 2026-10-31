@@ -3,7 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from shared import CollectedItem, SourceType, generate_item_id, logger
+from domain.models import CollectedItem, generate_item_id
+from shared import SourceType, logger
 from shared.config import RedditCollectorConfig
 
 from .base import BaseCollector, fetch_feed_with_retry, parse_feed_entries

@@ -15,9 +15,9 @@ from typing import Any, Literal, Protocol
 
 from langchain_core.language_models import BaseChatModel
 
+from domain.models import CollectedItem, ImageAsset, ThreadsDelivery
 from shared.constants import LanguageModelId
 from shared.logger import logger
-from shared.models import CollectedItem, ImageAsset, ThreadsDelivery
 
 
 class StateReadError(RuntimeError):

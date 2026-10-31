@@ -3,8 +3,8 @@ from unittest.mock import patch
 
 import pytest
 
-from collectors.base import TransientStatusError
-from collectors.reddit import RedditCollector
+from adapters.collectors.base import TransientStatusError
+from adapters.collectors.reddit import RedditCollector
 from shared.config import RedditCollectorConfig
 from shared.constants import SourceType
 
@@ -82,7 +82,7 @@ class TestRedditCollect:
     async def test_collects_via_rss(self):
         collector = RedditCollector(_config())
         fetch, _ = _fetch(_feed([_entry()]))
-        with patch("collectors.base.fetch_feed", side_effect=fetch):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=fetch):
             items = await collector.collect()
         assert len(items) == 1
         item = items[0]
@@ -96,7 +96,7 @@ class TestRedditCollect:
         old = _entry(published_parsed=(2026, 5, 1, 0, 0, 0, 0, 0, 0))
         collector = RedditCollector(_config())
         fetch, _ = _fetch(_feed([old]))
-        with patch("collectors.base.fetch_feed", side_effect=fetch):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=fetch):
             items = await collector.collect()
         assert items == []
 
@@ -106,7 +106,7 @@ class TestRedditCollect:
         # so the health check marks Reddit FAILED rather than a silent empty day.
         collector = RedditCollector(_config())
         fetch, _ = _fetch(RuntimeError("Failed to parse Reddit feed"))
-        with patch("collectors.base.fetch_feed", side_effect=fetch):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=fetch):
             with pytest.raises(RuntimeError):
                 await collector.collect()
 
@@ -120,7 +120,7 @@ class TestRedditCollect:
             _entry(title=f"llama {i}", link=f"https://www.reddit.com/r/LocalLLaMA/comments/l{i}/x/") for i in range(4)
         ] + [_entry(title="ml", link="https://www.reddit.com/r/MachineLearning/comments/m1/x/")]
         fetch, calls = _fetch(_feed(entries))
-        with patch("collectors.base.fetch_feed", side_effect=fetch):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=fetch):
             items = await collector.collect()
         assert len(calls) == 1
         assert "/r/LocalLLaMA+MachineLearning/" in calls[0]
@@ -136,7 +136,7 @@ class TestRedditCollect:
         # returns a good feed -> the subreddit is collected instead of lost.
         collector = RedditCollector(_config(max_retries=3))
         fetch, calls = _fetch(TransientStatusError("returned HTTP 429"), _feed([_entry()]))
-        with patch("collectors.base.fetch_feed", side_effect=fetch):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=fetch):
             items = await collector.collect()
         assert len(items) == 1
         assert len(calls) == 2
@@ -147,7 +147,7 @@ class TestRedditCollect:
         # raises for the health alert).
         collector = RedditCollector(_config(max_retries=2))
         fetch, calls = _fetch(TransientStatusError("returned HTTP 429"))
-        with patch("collectors.base.fetch_feed", side_effect=fetch):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=fetch):
             with pytest.raises(RuntimeError):
                 await collector.collect()
         assert len(calls) == 2  # retried up to max_retries
@@ -157,7 +157,7 @@ class TestRedditCollect:
         # A permanent 4xx (e.g. 404) must NOT be retried - fail fast.
         collector = RedditCollector(_config(max_retries=3))
         fetch, calls = _fetch(RuntimeError("returned HTTP 404"))
-        with patch("collectors.base.fetch_feed", side_effect=fetch):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=fetch):
             with pytest.raises(RuntimeError):
                 await collector.collect()
         assert len(calls) == 1  # not retried
@@ -166,7 +166,7 @@ class TestRedditCollect:
     async def test_builds_correct_rss_url(self):
         collector = RedditCollector(_config(sort="top"))
         fetch, calls = _fetch(_feed([]))
-        with patch("collectors.base.fetch_feed", side_effect=fetch):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=fetch):
             await collector.collect()
         assert "/r/LocalLLaMA/top/.rss" in calls[0]
         assert "limit=100" in calls[0]
@@ -178,7 +178,7 @@ class TestRedditCollect:
         # ranking whose older viral posts pushed today's out of the capped list.
         collector = RedditCollector(_config(sort="top", lookback_hours=30))
         fetch, calls = _fetch(_feed([]))
-        with patch("collectors.base.fetch_feed", side_effect=fetch):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=fetch):
             await collector.collect()
         assert "t=day" in calls[0]
 

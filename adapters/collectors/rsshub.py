@@ -4,7 +4,8 @@ import asyncio
 
 import httpx
 
-from shared import CollectedItem, SourceType, is_running_in_aws, logger, retry_async
+from domain.models import CollectedItem
+from shared import SourceType, is_running_in_aws, logger, retry_async
 from shared.config import RSSHubCollectorConfig
 
 from .base import (

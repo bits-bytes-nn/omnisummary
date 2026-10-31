@@ -3,18 +3,9 @@ from __future__ import annotations
 import re
 from typing import NamedTuple
 
-from shared import (
-    THREADS_MAX_POST_CHARS,
-    THREADS_POST_SEPARATOR,
-    URL_RE,
-    DigestContent,
-    logger,
-    split_sentences,
-    strip_markup,
-    threads_meta_line,
-    truncate_at_word,
-)
-from shared.formatting import _trim_url
+from domain.formatting import URL_RE, _trim_url, split_sentences, strip_markup, threads_meta_line, truncate_at_word
+from domain.models import DigestContent
+from shared import THREADS_MAX_POST_CHARS, THREADS_POST_SEPARATOR, logger
 
 # Marks each of the other stories' titles in the root post.
 STORY_INDEX_BULLET = "· "

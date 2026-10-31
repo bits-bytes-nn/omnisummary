@@ -128,7 +128,7 @@ The defaults were measured on real pools:
 
 GPT-6.1 Sol was compared with Sonnet 5.5 as the digest model on six stored days (2026-10-21 to 10-26), judged blind on context, clarity, accuracy, insight, fit within the Threads limit, and Korean. Sonnet scored 137 against 133, won four days of six, and only GPT added a claim its source did not support. Sonnet stays the default; GPT is a config change away.
 
-The registry in `shared/utils.py` records what each model accepts: no `temperature` (only Sonnet 4.6, used for token counting, takes one), effort pinned to `high` where a model defaults lower (Claude through `output_config`, GPT through `reasoning`), and forced tool choice where it works. The research agent uses Converse prompt caching for Claude only; GPT caches on its own. Claude Fable 5.1 is not registered, because Bedrock rejects it under the account's default data-retention mode.
+The registry in `adapters/bedrock.py` records what each model accepts: no `temperature` (only Sonnet 4.6, used for token counting, takes one), effort pinned to `high` where a model defaults lower (Claude through `output_config`, GPT through `reasoning`), and forced tool choice where it works. The research agent uses Converse prompt caching for Claude only; GPT caches on its own. Claude Fable 5.1 is not registered, because Bedrock rejects it under the account's default data-retention mode.
 
 ### Secrets
 
@@ -306,6 +306,7 @@ A park file older than `park_max_age_hours` (12h; a healthy one is about 30 minu
 uv run python -m pytest tests/             # hermetic: no network, no AWS, no real secrets
 uv run pre-commit run --all-files          # ruff, black, file checks, uv lock --check
 uv run mypy .
+uv run lint-imports                        # the ports-and-adapters dependency direction
 npx cdk synth -a "uv run python scripts/ci_synth.py"   # offline synth through the pinned CLI
 ```
 
@@ -318,12 +319,11 @@ omnisummary/
 ├── main.py            # Digest CLI
 ├── research_cli.py    # Deep-research CLI (JSON on stdout)
 ├── recall_cli.py      # Past digests and trends (JSON on stdout)
-├── collectors/        # RSS, Reddit, RSSHub (X), YouTube, web search, S3 park loader
-├── pipeline/          # Aggregator, ranker, trends, digest, comic, comment replies, runner
-├── agent/             # Research agent and tools, image generator, digest state
-├── output/            # Threads rendering and posting, research delivery
-├── shared/            # Config, models, prompts, model registry, stores, research backends
-├── lambda_handlers/   # Digest, visual, token refresh, comment replies
+├── entrypoints/       # Lambda handlers and bootstrap.py, which builds the adapters
+├── adapters/          # Bedrock, Threads, OpenAI images, S3 and AgentCore stores, SNS, collectors, research agent
+├── application/       # Use cases (digest, comic, comment replies, research rules), ports, prompts
+├── domain/            # Models, URL dedup, formatting, Threads post rendering, the digest snapshot
+├── shared/            # Config, constants, logger, pure helpers
 ├── infrastructure/    # CDK stacks
 ├── scripts/           # Deploy, secrets, profiles, sync, samplers
 ├── assets/            # persona.jpg, the narrator's reference sheet
@@ -331,6 +331,8 @@ omnisummary/
 ├── tests/
 └── docs/              # design.md and diagrams
 ```
+
+The code follows ports and adapters. `application/ports.py` names what the core needs from the outside (language models, the image renderer, Threads, the stores, the content sources, the research sources); `adapters/` implements those ports, and `entrypoints/bootstrap.py` builds the adapters and hands them to the use cases. Dependencies point inward only (entrypoints → adapters → application → domain → shared), and CI checks it with import contracts (`uv run lint-imports`, `[tool.importlinter]` in pyproject). Tests hand the core fakes (`tests/fakes.py`) instead of real clients.
 
 ## License
 

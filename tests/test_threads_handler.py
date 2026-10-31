@@ -779,7 +779,7 @@ async def test_e2e_a_retried_reply_that_lands_standalone_is_counted_and_named(mo
     # but reads back as a standalone post. The outcome must say 2/3 with that id, and the alert name it.
     from datetime import date
 
-    from lambda_handlers import visual_handler
+    from entrypoints import visual_handler
 
     monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 0)
     monkeypatch.setattr(threads_handler, "_landed_detached", real_landed_detached)
@@ -828,7 +828,7 @@ class TestThreadsGateway:
 
     @staticmethod
     async def _post(config, **kwargs):
-        from shared.models import ThreadsDelivery
+        from domain.models import ThreadsDelivery
 
         post = AsyncMock(return_value=ThreadsDelivery(2, 2))
         with patch.object(threads_handler, "post_to_threads", new=post):

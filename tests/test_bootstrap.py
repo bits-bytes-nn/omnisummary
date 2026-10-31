@@ -74,7 +74,7 @@ class TestCollectors:
         assert labels == ["rss"]
 
     def test_only_web_search_receives_the_language_models(self):
-        from collectors.web_search import WebSearchCollector
+        from adapters.collectors.web_search import WebSearchCollector
 
         models = MagicMock()
         built = dict(bootstrap.collectors(self._config(), models, ["web_search", "rss"]))

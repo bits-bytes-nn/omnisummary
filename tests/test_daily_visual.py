@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from application.daily_visual import DailyVisualMaker
+from domain.models import CollectedItem, RankedItem, ThreadsDelivery, VisualBrief
 from shared.config import Config
 from shared.constants import SourceType
-from shared.models import CollectedItem, RankedItem, ThreadsDelivery, VisualBrief
 from tests.fakes import FakeRenderer, FakeThreads, MemoryStateStore, fake_models
 
 
@@ -40,7 +40,7 @@ def _items(n: int = 3) -> list[RankedItem]:
 
 
 def _content(lead: str = "리드.", implication: str = "시사점이다.", url: str = "http://e.com/1"):
-    from shared.models import DigestContent, DigestItem
+    from domain.models import DigestContent, DigestItem
 
     return DigestContent(
         lead=lead,
@@ -143,7 +143,7 @@ class TestThePublishPathStandsOnItsOwn:
 
     @staticmethod
     def _content():
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         return DigestContent(
             lead="오늘의 리드.",
@@ -187,7 +187,7 @@ class TestVisualFailureNeverCostsTheDigest:
 
     @staticmethod
     def _content():
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         return DigestContent(
             lead="오늘의 리드.",
@@ -273,7 +273,7 @@ class TestDailyVisualMaker:
     async def test_visual_draws_the_headline_not_editor_pick(self):
         # The headline is authoritative: even if the editor returns a different item_number,
         # the visual must depict the digest headline (so image and lead stay in sync).
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _rendering_maker()
         plan = {"skip": False, "item_number": 3, "research": [], "instruction": "draw"}  # editor drifts
@@ -292,7 +292,7 @@ class TestDailyVisualMaker:
 
     @pytest.mark.asyncio
     async def test_threads_enabled_fans_out_with_content(self):
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
@@ -324,7 +324,7 @@ class TestDailyVisualMaker:
         # unmarked so the day can still be retried.
         from datetime import date
 
-        from shared.models import DigestContent
+        from domain.models import DigestContent
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
@@ -350,7 +350,7 @@ class TestDailyVisualMaker:
         # stay silent so the daily alert/metric only speaks when something actually went wrong.
         from datetime import date
 
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
@@ -364,7 +364,7 @@ class TestDailyVisualMaker:
     async def test_post_exception_still_leaves_a_verdict(self):
         from datetime import date
 
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
@@ -386,7 +386,7 @@ class TestDailyVisualMaker:
         import time
         from datetime import date
 
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
@@ -414,7 +414,7 @@ class TestDailyVisualMaker:
         from datetime import date
 
         from adapters.threads import THREADS_INDEXING_BUDGET_SEC, THREADS_PUBLISH_RESERVE_SEC
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
@@ -438,7 +438,7 @@ class TestDailyVisualMaker:
         # check right before posting is the only thing that prevents a second thread.
         from datetime import date
 
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
@@ -460,7 +460,7 @@ class TestDailyVisualMaker:
         # A same-day re-run (or async Lambda retry) must not re-post the root+replies set.
         from datetime import date
 
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
@@ -480,7 +480,7 @@ class TestDailyVisualMaker:
     async def test_a_date_claimed_by_another_run_after_the_first_check_is_not_posted(self):
         from datetime import date
 
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
@@ -497,7 +497,7 @@ class TestDailyVisualMaker:
     async def test_threads_force_republish_bypasses_guard(self):
         from datetime import date
 
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
@@ -538,7 +538,7 @@ class TestDailyVisualMaker:
         # mark (only a mark WE added in this run is rolled back).
         from datetime import date
 
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
@@ -557,7 +557,7 @@ class TestDailyVisualMaker:
     async def test_threads_marks_ledger_after_successful_post(self):
         from datetime import date
 
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
@@ -576,7 +576,7 @@ class TestDailyVisualMaker:
         # A failed Threads post must stay retryable — the optimistic claim is rolled back.
         from datetime import date
 
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
@@ -596,7 +596,7 @@ class TestDailyVisualMaker:
         # is entered, so a racing concurrent invocation sees it taken and skips.
         from datetime import date
 
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
@@ -621,7 +621,7 @@ class TestDailyVisualMaker:
         # An exception mid-post must roll the claim back so the date stays retryable.
         from datetime import date
 
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
@@ -640,7 +640,7 @@ class TestDailyVisualMaker:
         # The lone root is on the account: releasing the date let a re-run post a second root.
         from datetime import date
 
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
@@ -697,7 +697,7 @@ class TestDailyVisualMaker:
         # lead + per-story replies, with image_bytes=None (text-only container).
         from datetime import date
 
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
@@ -722,7 +722,7 @@ class TestDailyVisualMaker:
         # every successful day.
         from datetime import date
 
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
@@ -760,7 +760,7 @@ class TestDailyVisualMaker:
     async def test_unmatched_headline_briefs_the_curated_story_not_ranked_one(self):
         # The old `or 1` fallback briefed the top-ranked story, which desyncs image and lead. With
         # no ranked match the CURATED headline's own prose is the source.
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _rendering_maker()
         maker.config.pipeline.enable_threads_post = False
@@ -831,7 +831,7 @@ class TestDailyVisualMaker:
     async def test_a_stringly_typed_skip_flag_does_not_kill_the_visual(self):
         # `if plan.get("skip")` read the STRING "false" as True, so an editor that quoted its
         # booleans silently killed the day's visual with no error anywhere.
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         maker = _rendering_maker()
         maker.config.pipeline.enable_threads_post = False

@@ -1,7 +1,6 @@
-from shared import format_collected_item
+from domain.formatting import format_collected_item, format_origin_label, resolve_origin_key
+from domain.models import CollectedItem
 from shared.constants import SourceType
-from shared.formatting import format_origin_label, resolve_origin_key
-from shared.models import CollectedItem
 
 
 def _item(text: str = "body text") -> CollectedItem:
@@ -127,19 +126,19 @@ class TestSourceDescriptorRegistry:
     in its own silent fall-through default — so only one of them was ever fixed at a time."""
 
     def test_every_source_type_has_a_descriptor(self):
-        from shared.formatting import SOURCE_DESCRIPTORS
+        from domain.formatting import SOURCE_DESCRIPTORS
 
         assert set(SOURCE_DESCRIPTORS) == set(SourceType)
 
     def test_the_tag_falls_back_to_the_host(self):
-        from shared.formatting import source_tag_and_metrics
+        from domain.formatting import source_tag_and_metrics
 
         tag, metrics = source_tag_and_metrics(_sourced(SourceType.X, url="https://x.com/a/status/1"))
         assert tag == "x.com"
         assert metrics == ""
 
     def test_only_youtube_carries_metrics(self):
-        from shared.formatting import source_tag_and_metrics
+        from domain.formatting import source_tag_and_metrics
 
         _, views = source_tag_and_metrics(_sourced(SourceType.YOUTUBE, view_count=12345))
         assert "12,345" in views
@@ -148,28 +147,18 @@ class TestSourceDescriptorRegistry:
 
 
 class TestPublicPackageBoundaries:
-    """Two boundary violations kept biting refactors: `shared` exported UNDERSCORE names as its
-    cross-package contract, and the pipeline's prose budget imported an
-    output channel's private helpers. Both are now public names in shared/."""
+    """`shared` once exported UNDERSCORE names as its cross-package contract, and the post cap had
+    several copies. The layer boundaries themselves are import contracts ([tool.importlinter])."""
 
     def test_shared_exports_no_underscore_names(self):
         import shared
 
         assert not [name for name in shared.__all__ if name.startswith("_")]
 
-    def test_the_digest_generator_does_not_import_from_the_output_layer(self):
-        # Its Threads-aware prose budget used to depend on output.renderers' PRIVATE helpers, so
-        # renaming a renderer internal broke the pipeline. (daily_visual legitimately imports the
-        # delivery handlers — it is the publish path; the generator only computes a budget.)
-        from pathlib import Path
-
-        source = (Path(__file__).resolve().parent.parent / "application" / "digest_generator.py").read_text()
-        assert "from output" not in source and "import output" not in source
-
     def test_the_threads_post_cap_has_one_definition(self):
         from adapters import threads as threads_handler
         from application import digest_generator
-        from output import renderers
+        from domain import renderers
         from shared.constants import THREADS_MAX_POST_CHARS
 
         assert renderers.THREADS_MAX_POST_CHARS is THREADS_MAX_POST_CHARS
@@ -183,30 +172,30 @@ class TestExtractUrls:
     already knows it."""
 
     def test_a_markdown_link_with_a_label_yields_the_bare_url(self):
-        from shared.formatting import extract_urls
+        from domain.formatting import extract_urls
 
         assert extract_urls("근거: [Real Example](https://real.example/a)") == ["https://real.example/a"]
 
     def test_a_url_with_balanced_parens_keeps_them(self):
-        from shared.formatting import extract_urls
+        from domain.formatting import extract_urls
 
         assert extract_urls("[Foo](https://en.wikipedia.org/wiki/Foo_(bar))") == [
             "https://en.wikipedia.org/wiki/Foo_(bar)"
         ]
 
     def test_an_angle_wrapped_url_yields_the_bare_url(self):
-        from shared.formatting import extract_urls
+        from domain.formatting import extract_urls
 
         assert extract_urls("출처 <https://ex.example/p>") == ["https://ex.example/p"]
 
     def test_prose_punctuation_is_trimmed_and_order_preserved(self):
-        from shared.formatting import extract_urls
+        from domain.formatting import extract_urls
 
         text = "본문 (https://a.example/1). 그리고 https://b.example/2, 끝."
         assert extract_urls(text) == ["https://a.example/1", "https://b.example/2"]
 
     def test_a_markdown_link_and_the_bare_url_normalize_to_the_same_identity(self):
-        from shared.formatting import extract_urls, normalize_citation_url
+        from domain.formatting import extract_urls, normalize_citation_url
 
         surfaced = normalize_citation_url("http://www.real.example/a/")
         (cited,) = extract_urls("[Real Example](https://real.example/a)")
@@ -219,7 +208,7 @@ class TestFormatAlarm:
 
     @staticmethod
     def _alarm(**kwargs):
-        from shared.formatting import format_alarm
+        from domain.formatting import format_alarm
 
         base = {"event": "Source Health", "status": "ALERT", "fields": {"Failed sources": "reddit"}}
         base.update(kwargs)

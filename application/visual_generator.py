@@ -5,7 +5,9 @@ import time
 from collections.abc import Sequence
 
 from application.ports import ImageRenderer, LanguageModels
-from shared import VisualBrief, VisualSynopsisPrompt, logger
+from application.prompts import VisualSynopsisPrompt
+from domain.models import VisualBrief
+from shared import logger
 from shared.config import LanguageModelId
 
 # Prepended to the image prompt when the narrator's reference sheet rides along as an input image.

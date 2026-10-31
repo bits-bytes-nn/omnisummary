@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from shared import DigestContent, DigestResult, RankedItem, logger
+from domain.models import DigestContent, DigestResult, RankedItem
+from shared import logger
 
 
 class DigestStateManager:

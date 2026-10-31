@@ -7,9 +7,9 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
 from application.digest_generator import DigestContentError, DigestGenerator
+from domain.models import CollectedItem, DigestContent, DigestItem, RankedItem
 from shared.config import PipelineConfig
 from shared.constants import SourceType
-from shared.models import CollectedItem, DigestContent, DigestItem, RankedItem
 
 
 def _item(source_type=SourceType.REDDIT, metadata=None, author=None):
@@ -55,7 +55,7 @@ class TestAgiCountdown:
     def test_computes_day_count(self):
         from datetime import date
 
-        from shared import agi_countdown_intro
+        from domain.formatting import agi_countdown_intro
 
         assert (
             agi_countdown_intro("2029-01-01", "AGI 등장 {days}일 전이다. ", date(2026, 1, 1))
@@ -65,7 +65,7 @@ class TestAgiCountdown:
     def test_counts_up_after_d_day(self):
         from datetime import date
 
-        from shared import agi_countdown_intro
+        from domain.formatting import agi_countdown_intro
 
         before, after = "D-{days}", "D+{days}"
         assert agi_countdown_intro("2029-01-01", before, date(2029, 1, 1), after) == "D+0"  # D-day
@@ -75,7 +75,7 @@ class TestAgiCountdown:
     def test_empty_past_date_or_disabled(self):
         from datetime import date
 
-        from shared import agi_countdown_intro
+        from domain.formatting import agi_countdown_intro
 
         # past D-day with NO after_template → empty (countup opt-in)
         assert agi_countdown_intro("2029-01-01", "x{days}", date(2030, 1, 1)) == ""
@@ -85,7 +85,7 @@ class TestAgiCountdown:
     def test_malformed_template_does_not_crash(self):
         from datetime import date
 
-        from shared import agi_countdown_intro
+        from domain.formatting import agi_countdown_intro
 
         # An operator typo in the config template must degrade to no intro, never raise mid-run
         # (it's applied AFTER the expensive collect/rank/LLM work).
@@ -636,7 +636,7 @@ class TestCountdownIntro:
     visual's editorial take never compare boilerplate."""
 
     def test_prefix_places_the_intro_first(self):
-        from shared import place_countdown_intro
+        from domain.formatting import place_countdown_intro
 
         assert (
             place_countdown_intro("오늘의 각도다.", "AGI 등장 870일 전이다. ")
@@ -644,20 +644,20 @@ class TestCountdownIntro:
         )
 
     def test_idempotent(self):
-        from shared import place_countdown_intro
+        from domain.formatting import place_countdown_intro
 
         intro = "AGI 등장 870일 전이다. "
         prefixed = place_countdown_intro("각도다.", intro)
         assert place_countdown_intro(prefixed, intro) == prefixed
 
     def test_no_intro_or_no_lead_changes_nothing(self):
-        from shared import place_countdown_intro
+        from domain.formatting import place_countdown_intro
 
         assert place_countdown_intro("각도다.", "") == "각도다."
         assert place_countdown_intro("", "AGI 등장 870일 전이다. ") == ""
 
     def test_editorial_lead_strips_the_gag(self):
-        from shared import editorial_lead
+        from domain.formatting import editorial_lead
 
         intro = "AGI 등장 870일 전이다. "
         assert editorial_lead("AGI 등장 870일 전이다. 각도다.", intro) == "각도다."
@@ -838,7 +838,7 @@ class TestGroundingStageAttribution:
 
 def test_grounding_corrections_land_on_the_right_fields_and_leave_the_input_alone():
     from application.digest_generator import _apply_grounding_payload
-    from shared import DigestContent, DigestItem
+    from domain.models import DigestContent, DigestItem
 
     original = DigestContent(
         lead="원래 리드.",
@@ -868,7 +868,7 @@ def test_grounding_corrections_land_on_the_right_fields_and_leave_the_input_alon
 def test_grounding_corrections_with_labels_never_sent_are_not_applied():
     # A model that renumbered ITEM 0..1 as 1..2 would have written item 0's text onto item 1.
     from application.digest_generator import _apply_grounding_payload
-    from shared import DigestContent, DigestItem
+    from domain.models import DigestContent, DigestItem
 
     original = DigestContent(
         lead="리드.",
@@ -883,7 +883,7 @@ def test_grounding_corrections_with_labels_never_sent_are_not_applied():
 
 def test_grounding_checks_and_corrects_the_editors_titles():
     from application.digest_generator import _apply_grounding_payload, _grounding_payload
-    from shared import DigestContent, DigestItem
+    from domain.models import DigestContent, DigestItem
 
     original = DigestContent(lead="리드.", items=[DigestItem(title="72% 향상", url="u0", body="본문.")])
     assert "ITEM 0 TITLE: 72% 향상" in _grounding_payload(original)

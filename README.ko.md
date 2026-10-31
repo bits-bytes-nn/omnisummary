@@ -128,7 +128,7 @@ agent:
 
 다이제스트 모델로 GPT-6.1 Sol과 Sonnet 5.5를 저장된 6일치(2026-10-21~10-26)로 비교했다. 맥락, 명료성, 정확성, 인사이트, Threads 글자 수 한도 준수, 한국어를 블라인드로 채점한 결과 Sonnet이 137점 대 133점으로 6일 중 4일을 이겼고, 출처에 없는 주장을 넣은 쪽은 GPT뿐이었다. 그래서 기본값은 Sonnet으로 두고, GPT는 설정만 바꾸면 쓸 수 있게 했다.
 
-`shared/utils.py`의 등록부가 모델마다 받는 요청 형태를 적어 둔다. `temperature`는 토큰 수 계산용 Sonnet 4.6만 받는다. 기본 effort가 더 낮은 모델은 `high`로 고정한다(Claude는 `output_config`, GPT는 `reasoning`으로 보낸다). 강제 도구 선택은 되는 모델에만 쓴다. 리서치 에이전트는 Claude에서만 Converse 프롬프트 캐싱을 쓰고, GPT는 자체적으로 캐싱한다. Claude Fable 5.1은 등록하지 않았다. 계정의 기본 데이터 보존 모드에서 Bedrock이 이 모델을 거부한다.
+`adapters/bedrock.py`의 등록부가 모델마다 받는 요청 형태를 적어 둔다. `temperature`는 토큰 수 계산용 Sonnet 4.6만 받는다. 기본 effort가 더 낮은 모델은 `high`로 고정한다(Claude는 `output_config`, GPT는 `reasoning`으로 보낸다). 강제 도구 선택은 되는 모델에만 쓴다. 리서치 에이전트는 Claude에서만 Converse 프롬프트 캐싱을 쓰고, GPT는 자체적으로 캐싱한다. Claude Fable 5.1은 등록하지 않았다. 계정의 기본 데이터 보존 모드에서 Bedrock이 이 모델을 거부한다.
 
 ### 비밀값
 
@@ -306,6 +306,7 @@ crontab -e
 uv run python -m pytest tests/             # 네트워크, AWS, 실제 비밀값 없이 돈다
 uv run pre-commit run --all-files          # ruff, black, 파일 검사, uv lock --check
 uv run mypy .
+uv run lint-imports                        # 포트와 어댑터 계층의 의존 방향
 npx cdk synth -a "uv run python scripts/ci_synth.py"   # 고정한 CLI로 오프라인 synth
 ```
 
@@ -318,12 +319,11 @@ omnisummary/
 ├── main.py            # 다이제스트 CLI
 ├── research_cli.py    # 딥 리서치 CLI(stdout에 JSON)
 ├── recall_cli.py      # 지난 다이제스트와 트렌드(stdout에 JSON)
-├── collectors/        # RSS, Reddit, RSSHub(X), YouTube, 웹 검색, S3 적재 파일 로더
-├── pipeline/          # 중복 제거, 랭킹, 트렌드, 다이제스트, 만화, 댓글 답글, 실행 흐름
-├── agent/             # 리서치 에이전트와 도구, 이미지 생성, 다이제스트 상태
-├── output/            # Threads 렌더링과 게시, 리서치 전달
-├── shared/            # 설정, 모델, 프롬프트, 모델 등록부, 저장소, 리서치 백엔드
-├── lambda_handlers/   # digest, visual, 토큰 갱신, 댓글 답글
+├── entrypoints/       # Lambda 핸들러와 어댑터를 조립하는 bootstrap.py
+├── adapters/          # Bedrock, Threads, OpenAI 이미지, S3·AgentCore 저장소, SNS, 수집기, 리서치 에이전트
+├── application/       # 유스케이스(다이제스트, 만화, 댓글 답글, 리서치 규칙), 포트, 프롬프트
+├── domain/            # 모델, URL 중복 제거, 포맷, Threads 게시물 렌더링, 다이제스트 스냅샷
+├── shared/            # 설정, 상수, 로거, 순수 함수
 ├── infrastructure/    # CDK 스택
 ├── scripts/           # 배포, 비밀값, 추론 프로필, 동기화, 샘플러
 ├── assets/            # persona.jpg(화자 캐릭터 기준 시트)
@@ -331,6 +331,8 @@ omnisummary/
 ├── tests/
 └── docs/              # design.md와 다이어그램
 ```
+
+코드는 포트와 어댑터(헥사고날) 구조를 따른다. `application/ports.py`가 핵심 로직이 바깥에 기대하는 것(언어 모델, 이미지 렌더러, Threads, 저장소, 수집 소스, 리서치 소스)을 정의하고, `adapters/`가 그것을 구현한다. `entrypoints/bootstrap.py`가 어댑터를 만들어 유스케이스에 넘긴다. 의존은 안쪽으로만 향하고(entrypoints → adapters → application → domain → shared), CI가 import 규칙으로 이를 검사한다(`uv run lint-imports`, pyproject의 `[tool.importlinter]`). 테스트는 실제 클라이언트 대신 가짜 구현(`tests/fakes.py`)을 넘긴다.
 
 ## 라이선스
 

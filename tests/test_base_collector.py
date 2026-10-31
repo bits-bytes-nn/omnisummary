@@ -6,7 +6,7 @@ import httpx
 import pytest
 from botocore.exceptions import ClientError, NoCredentialsError, ReadTimeoutError
 
-from collectors.base import (
+from adapters.collectors.base import (
     FEED_FETCH_HEADERS,
     BaseCollector,
     ParkedItems,
@@ -22,9 +22,9 @@ from collectors.base import (
     park_root_prefix,
     parse_feed_entries,
 )
+from domain.models import CollectedItem
 from shared.config import BaseCollectorConfig
 from shared.constants import SourceType
-from shared.models import CollectedItem
 
 RSS_BODY = b"""<?xml version="1.0"?><rss version="2.0"><channel><title>Example</title>
 <item><title>Post</title><link>https://example.com/p/1</link><guid>p1</guid>
@@ -137,7 +137,7 @@ class TestAMissingParkFileWhereItIsThePrimaryPath:
 
     def test_in_aws_an_absent_required_park_is_degraded_and_names_the_key(self):
         c = _Collector()
-        with patch("collectors.base.is_running_in_aws", return_value=True):
+        with patch("adapters.collectors.base.is_running_in_aws", return_value=True):
             c.flag_missing_park(self.ABSENT, required=True, hint="NO transcripts")
         assert "park file required but absent" in c.degraded_detail
         assert "s3://b/k/youtube_items.json" in c.degraded_detail
@@ -145,19 +145,19 @@ class TestAMissingParkFileWhereItIsThePrimaryPath:
 
     def test_locally_it_stays_the_normal_path(self):
         c = _Collector()
-        with patch("collectors.base.is_running_in_aws", return_value=False):
+        with patch("adapters.collectors.base.is_running_in_aws", return_value=False):
             c.flag_missing_park(self.ABSENT, required=True)
         assert c.degraded_detail == ""
 
     def test_a_source_that_does_not_require_a_park_file_is_unaffected(self):
         c = _Collector()
-        with patch("collectors.base.is_running_in_aws", return_value=True):
+        with patch("adapters.collectors.base.is_running_in_aws", return_value=True):
             c.flag_missing_park(self.ABSENT, required=False)
         assert c.degraded_detail == ""
 
     def test_a_usable_park_file_is_not_a_missing_one(self):
         c = _Collector()
-        with patch("collectors.base.is_running_in_aws", return_value=True):
+        with patch("adapters.collectors.base.is_running_in_aws", return_value=True):
             c.flag_missing_park(ParkedItems(outcome=ParkOutcome.FRESH, items=[_item("v1")]), required=True)
         assert c.degraded_detail == ""
 
@@ -246,7 +246,7 @@ class TestFetchFeed:
 
     @pytest.mark.asyncio
     async def test_body_is_fetched_with_the_configured_timeout_then_parsed(self):
-        with patch("collectors.base.httpx.AsyncClient", _client_factory(_response())):
+        with patch("adapters.collectors.base.httpx.AsyncClient", _client_factory(_response())):
             feed = await fetch_feed("https://example.com/feed", description="RSS feed", timeout=7)
         assert [e.get("title") for e in feed.entries] == ["Post"]
         assert _FakeClient.constructed[0]["timeout"] == 7
@@ -265,37 +265,37 @@ class TestFetchFeed:
             url="https://blog.example/feeds/rss.xml",
             headers={"Content-Type": "application/rss+xml; charset=ISO-8859-1"},
         )
-        with patch("collectors.base.httpx.AsyncClient", _client_factory(response)):
+        with patch("adapters.collectors.base.httpx.AsyncClient", _client_factory(response)):
             feed = await fetch_feed("https://old.example/feed", description="RSS feed", timeout=5)
         assert feed.entries[0].link == "https://blog.example/blog/post-a"
         assert feed.entries[0].title == "Caf\xe9 model"
 
     @pytest.mark.asyncio
     async def test_a_timeout_is_transient(self):
-        with patch("collectors.base.httpx.AsyncClient", _client_factory(httpx.ReadTimeout("hung"))):
+        with patch("adapters.collectors.base.httpx.AsyncClient", _client_factory(httpx.ReadTimeout("hung"))):
             with pytest.raises(TransientStatusError, match="timed out"):
                 await fetch_feed("https://hang.example/feed", description="RSS feed", timeout=1)
 
     @pytest.mark.asyncio
     async def test_a_transport_failure_is_transient_not_a_dead_feed(self):
         # A DNS hiccup used to lose the feed for the whole day while an HTTP 503 got three attempts.
-        with patch("collectors.base.httpx.AsyncClient", _client_factory(httpx.ConnectError("dns"))):
+        with patch("adapters.collectors.base.httpx.AsyncClient", _client_factory(httpx.ConnectError("dns"))):
             with pytest.raises(TransientStatusError, match="fetch failed"):
                 await fetch_feed("https://gone.example/feed", description="RSS feed", timeout=5)
 
     @pytest.mark.asyncio
     async def test_5xx_is_transient_and_4xx_is_a_verdict(self):
-        with patch("collectors.base.httpx.AsyncClient", _client_factory(_response(status=503))):
+        with patch("adapters.collectors.base.httpx.AsyncClient", _client_factory(_response(status=503))):
             with pytest.raises(TransientStatusError, match="HTTP 503"):
                 await fetch_feed("https://x.example/feed", description="RSS feed", timeout=5)
-        with patch("collectors.base.httpx.AsyncClient", _client_factory(_response(status=403))):
+        with patch("adapters.collectors.base.httpx.AsyncClient", _client_factory(_response(status=403))):
             with pytest.raises(RuntimeError, match="HTTP 403") as exc:
                 await fetch_feed("https://x.example/feed", description="RSS feed", timeout=5)
         assert not isinstance(exc.value, TransientStatusError)
 
     @pytest.mark.asyncio
     async def test_an_unparseable_body_is_a_permanent_failure(self):
-        with patch("collectors.base.httpx.AsyncClient", _client_factory(_response(content=b"not xml at all"))):
+        with patch("adapters.collectors.base.httpx.AsyncClient", _client_factory(_response(content=b"not xml at all"))):
             with pytest.raises(RuntimeError, match="Failed to parse") as exc:
                 await fetch_feed("https://x.example/feed", description="RSS feed", timeout=5)
         assert not isinstance(exc.value, TransientStatusError)
@@ -313,7 +313,7 @@ class TestFetchFeedWithRetry:
                 raise outcome
             return outcome
 
-        with patch("collectors.base.fetch_feed", side_effect=_fetch):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=_fetch):
             feed = await fetch_feed_with_retry(
                 "https://x.example/feed", description="RSS feed", timeout=1, max_retries=3, backoff_sec=0
             )
@@ -322,7 +322,7 @@ class TestFetchFeedWithRetry:
 
     @pytest.mark.asyncio
     async def test_a_permanent_failure_burns_no_retry_budget(self):
-        with patch("collectors.base.fetch_feed", side_effect=RuntimeError("HTTP 404")) as fetch:
+        with patch("adapters.collectors.base.fetch_feed", side_effect=RuntimeError("HTTP 404")) as fetch:
             with pytest.raises(RuntimeError, match="404"):
                 await fetch_feed_with_retry(
                     "https://x.example/feed", description="RSS feed", timeout=1, max_retries=3, backoff_sec=0
@@ -338,7 +338,7 @@ class TestFetchFeedWithRetry:
         async def _sleep(seconds):
             delays.append(seconds)
 
-        with patch("collectors.base.fetch_feed", side_effect=TransientStatusError("HTTP 429")):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=TransientStatusError("HTTP 429")):
             with patch("shared.utils.asyncio.sleep", side_effect=_sleep):
                 with pytest.raises(TransientStatusError):
                     await fetch_feed_with_retry(
@@ -479,7 +479,7 @@ class TestLoadItemsFromS3:
         ).encode("utf-8")
         client = MagicMock()
         client.get_object.return_value = {"Body": body}
-        with patch("collectors.base.boto3.client", return_value=client):
+        with patch("adapters.collectors.base.boto3.client", return_value=client):
             parked = load_items_from_s3("youtube_items.json", max_age_hours=36)
         assert parked.outcome == ParkOutcome.FRESH
         assert [i.item_id for i in parked.items] == ["v1"]
@@ -492,7 +492,7 @@ class TestLoadItemsFromS3:
         monkeypatch.setenv("STATE_BUCKET", "b")
         monkeypatch.setenv("S3_PREFIX", "digest_state")
         client = _s3_client_returning(b"[]")
-        with patch("collectors.base.boto3.client", return_value=client):
+        with patch("adapters.collectors.base.boto3.client", return_value=client):
             load_items_from_s3("youtube_items.json", max_age_hours=36)
         assert client.get_object.call_args.kwargs["Key"] == "youtube_items.json"
 
@@ -512,7 +512,7 @@ class TestLoadItemsFromS3:
         monkeypatch.setenv("S3_PREFIX", "omnisummary/digest_state")
         client = MagicMock()
         client.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
-        with patch("collectors.base.boto3.client", return_value=client):
+        with patch("adapters.collectors.base.boto3.client", return_value=client):
             parked = load_items_from_s3("youtube_items.json", max_age_hours=36)
         assert parked.outcome == ParkOutcome.ABSENT
         assert parked.degraded is False  # a missing park file is routine, not a stale sync
@@ -525,7 +525,7 @@ class TestLoadItemsFromS3:
         monkeypatch.setenv("S3_PREFIX", "omnisummary/digest_state")
         client = MagicMock()
         client.get_object.side_effect = ClientError({"Error": {"Code": "AccessDenied"}}, "GetObject")
-        with patch("collectors.base.boto3.client", return_value=client):
+        with patch("adapters.collectors.base.boto3.client", return_value=client):
             parked = load_items_from_s3("youtube_items.json", max_age_hours=36)
         assert parked.outcome == ParkOutcome.ERROR
         assert parked.usable is False and parked.degraded is True
@@ -544,7 +544,7 @@ class TestLoadItemsFromS3:
         monkeypatch.setenv("S3_PREFIX", "omnisummary/digest_state")
         client = MagicMock()
         client.get_object.side_effect = error
-        with patch("collectors.base.boto3.client", return_value=client):
+        with patch("adapters.collectors.base.boto3.client", return_value=client):
             parked = load_items_from_s3("youtube_items.json", max_age_hours=36)
         assert parked.outcome == ParkOutcome.ERROR
         assert parked.usable is False and parked.degraded is True
@@ -560,7 +560,7 @@ class TestLoadItemsFromS3:
                 "items": [{"item_id": "v1", "source_type": "youtube", "title": "T", "url": "https://y/v1"}],
             }
         ).encode("utf-8")
-        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(body)):
+        with patch("adapters.collectors.base.boto3.client", return_value=_s3_client_returning(body)):
             parked = load_items_from_s3("youtube_items.json", max_age_hours=36)
         assert [i.item_id for i in parked.items] == ["v1"]
         assert parked.outcome == ParkOutcome.FRESH
@@ -572,8 +572,8 @@ class TestLoadItemsFromS3:
         body = json.dumps(
             {"generated_at": old, "items": [{"item_id": "v1", "source_type": "youtube", "title": "T", "url": "u"}]}
         ).encode("utf-8")
-        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(body)):
-            with patch("collectors.base.logger.warning") as warn:
+        with patch("adapters.collectors.base.boto3.client", return_value=_s3_client_returning(body)):
+            with patch("adapters.collectors.base.logger.warning") as warn:
                 parked = load_items_from_s3("youtube_items.json", max_age_hours=36)
         assert [i.item_id for i in parked.items] == ["v1"]  # stale beats empty
         assert parked.outcome == ParkOutcome.STALE
@@ -588,7 +588,7 @@ class TestLoadItemsFromS3:
         body = json.dumps(
             {"generated_at": old, "items": [{"item_id": "v1", "source_type": "youtube", "title": "T", "url": "u"}]}
         ).encode("utf-8")
-        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(body)):
+        with patch("adapters.collectors.base.boto3.client", return_value=_s3_client_returning(body)):
             parked = load_items_from_s3("youtube_items.json", max_age_hours=72)
         assert parked.outcome == ParkOutcome.FRESH  # 48h is inside a 72h budget
 
@@ -603,7 +603,7 @@ class TestLoadItemsFromS3:
         body = json.dumps(
             {"generated_at": old, "items": [{"item_id": "x1", "source_type": "x", "title": "T", "url": "u"}]}
         ).encode("utf-8")
-        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(body)):
+        with patch("adapters.collectors.base.boto3.client", return_value=_s3_client_returning(body)):
             parked = load_items_from_s3("rsshub_items.json", max_age_hours=RSSHubCollectorConfig().park_max_age_hours)
         assert parked.outcome == ParkOutcome.STALE
 
@@ -614,7 +614,7 @@ class TestLoadItemsFromS3:
         monkeypatch.setenv("S3_PREFIX", "omnisummary/digest_state")
         old = (datetime.now(UTC) - timedelta(hours=72)).isoformat()
         body = json.dumps({"generated_at": old, "items": []}).encode("utf-8")
-        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(body)):
+        with patch("adapters.collectors.base.boto3.client", return_value=_s3_client_returning(body)):
             parked = load_items_from_s3("rsshub_items.json", max_age_hours=36)
         assert parked.outcome == ParkOutcome.ABSENT
         assert parked.usable is False  # -> live collection, so a real outage can report FAILED
@@ -625,7 +625,7 @@ class TestLoadItemsFromS3:
         monkeypatch.setenv("STATE_BUCKET", "b")
         monkeypatch.setenv("S3_PREFIX", "omnisummary/digest_state")
         body = json.dumps({"generated_at": datetime.now(UTC).isoformat(), "items": []}).encode("utf-8")
-        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(body)):
+        with patch("adapters.collectors.base.boto3.client", return_value=_s3_client_returning(body)):
             parked = load_items_from_s3("rsshub_items.json", max_age_hours=36)
         assert parked.outcome == ParkOutcome.FRESH
         assert parked.usable is True and parked.items == []
@@ -635,7 +635,7 @@ class TestLoadItemsFromS3:
         # Legacy bare list carries no age, so it can't be proven stale → keep prior behavior.
         monkeypatch.setenv("STATE_BUCKET", "b")
         monkeypatch.setenv("S3_PREFIX", "omnisummary/digest_state")
-        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(b"[]")):
+        with patch("adapters.collectors.base.boto3.client", return_value=_s3_client_returning(b"[]")):
             parked = load_items_from_s3("rsshub_items.json", max_age_hours=36)
         assert parked.outcome == ParkOutcome.FRESH
         assert parked.items == []
@@ -643,7 +643,7 @@ class TestLoadItemsFromS3:
     def test_malformed_json_is_error(self, monkeypatch):
         monkeypatch.setenv("STATE_BUCKET", "b")
         monkeypatch.setenv("S3_PREFIX", "omnisummary/digest_state")
-        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(b"{not json")):
+        with patch("adapters.collectors.base.boto3.client", return_value=_s3_client_returning(b"{not json")):
             parked = load_items_from_s3("youtube_items.json", max_age_hours=36)
         assert parked.outcome == ParkOutcome.ERROR
         assert parked.usable is False and parked.degraded is True
@@ -655,7 +655,7 @@ class TestDumpItemsEnvelope:
         payload = dump_items_envelope(items).encode("utf-8")
         monkeypatch.setenv("STATE_BUCKET", "b")
         monkeypatch.setenv("S3_PREFIX", "omnisummary/digest_state")
-        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(payload)):
+        with patch("adapters.collectors.base.boto3.client", return_value=_s3_client_returning(payload)):
             loaded = load_items_from_s3("youtube_items.json", max_age_hours=36)
         assert [i.item_id for i in loaded.items] == ["v1", "v2"]
         assert loaded.outcome == ParkOutcome.FRESH
@@ -666,13 +666,13 @@ class TestDumpItemsEnvelope:
         monkeypatch.setenv("STATE_BUCKET", "b")
         monkeypatch.setenv("S3_PREFIX", "omnisummary/digest_state")
         with_meta = dump_items_envelope([_item("v1")], meta={"accounts_total": 40, "accounts_failed": 30}).encode()
-        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(with_meta)):
+        with patch("adapters.collectors.base.boto3.client", return_value=_s3_client_returning(with_meta)):
             loaded = load_items_from_s3("rsshub_items.json", max_age_hours=36)
         assert loaded.meta == {"accounts_total": 40, "accounts_failed": 30}
 
         without_meta = dump_items_envelope([_item("v1")]).encode()
         assert "meta" not in json.loads(without_meta)
-        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(without_meta)):
+        with patch("adapters.collectors.base.boto3.client", return_value=_s3_client_returning(without_meta)):
             assert load_items_from_s3("rsshub_items.json", max_age_hours=36).meta == {}
 
     def test_legacy_shapes_still_load_with_an_empty_meta(self, monkeypatch):
@@ -681,7 +681,7 @@ class TestDumpItemsEnvelope:
         legacy_list = json.dumps(
             [{"item_id": "v1", "source_type": "youtube", "title": "T", "url": "https://y/v1"}]
         ).encode()
-        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(legacy_list)):
+        with patch("adapters.collectors.base.boto3.client", return_value=_s3_client_returning(legacy_list)):
             parked = load_items_from_s3("youtube_items.json", max_age_hours=36)
         assert [i.item_id for i in parked.items] == ["v1"]
         assert parked.meta == {}
@@ -692,7 +692,7 @@ class TestDumpItemsEnvelope:
                 "items": [{"item_id": "v2", "source_type": "youtube", "title": "T", "url": "https://y/v2"}],
             }
         ).encode()
-        with patch("collectors.base.boto3.client", return_value=_s3_client_returning(stamped_no_meta)):
+        with patch("adapters.collectors.base.boto3.client", return_value=_s3_client_returning(stamped_no_meta)):
             parked = load_items_from_s3("youtube_items.json", max_age_hours=36)
         assert [i.item_id for i in parked.items] == ["v2"]
         assert parked.meta == {}

@@ -14,9 +14,9 @@ import pytest
 from adapters.state_store import LocalStateStore
 from application import digest_pipeline as runner
 from application.history import PUBLISHED_URLS_KEY, RECENT_LEADS_KEY
+from domain.models import CollectedItem, DigestContent, DigestItem, DigestResult, RankedItem
 from shared.config import Config
 from shared.constants import SourceType
-from shared.models import CollectedItem, DigestContent, DigestItem, DigestResult, RankedItem
 
 DIGEST_DATE = date(2026, 6, 3)
 
@@ -38,7 +38,7 @@ def _digest(items: list[CollectedItem], lead: str = "리드 문장이다.") -> D
 
 
 class _Pipeline:
-    """Stubbed LLM collaborators + a real temp-dir state store, patched into pipeline.runner for one run."""
+    """Stubbed LLM collaborators + a real temp-dir state store, patched into application.digest_pipeline for one run."""
 
     def __init__(self, tmpdir: str, *, digest: DigestResult | None = None, ranked: list[RankedItem] | None = None):
         self.store = LocalStateStore(tmpdir)
@@ -266,7 +266,7 @@ class TestPublishInline:
 
     @pytest.mark.asyncio
     async def test_an_incomplete_post_is_reported(self):
-        from shared.models import ThreadsDelivery
+        from domain.models import ThreadsDelivery
 
         items = [_item("https://a.example/1")]
         maker = self._maker(ThreadsDelivery(5, 6, root_id="r", detached=("s",)))

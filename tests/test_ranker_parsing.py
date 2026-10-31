@@ -1,8 +1,8 @@
 import json
 
 from application.ranker import ContentRanker
+from domain.models import CollectedItem
 from shared.constants import SourceType
-from shared.models import CollectedItem
 
 
 def _items(n: int = 3) -> list[CollectedItem]:

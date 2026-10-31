@@ -12,11 +12,11 @@
 | 절 | 내용 |
 |----|------|
 | [1. 개요](#1-개요) | 두 개의 실행 경로와 전체 흐름 |
-| [2. 저장소 구조](#2-저장소-구조) | 디렉터리별 책임 |
+| [2. 저장소 구조](#2-저장소-구조) | 포트와 어댑터 계층, 디렉터리별 책임, 경계 검사 |
 | [3. 설정](#3-설정) | `config.yaml` 전체 필드와 시크릿 |
 | [4. 수집기](#4-수집기) | 다섯 소스, S3 park 파일, 실패 신호 |
 | [5. 파이프라인](#5-파이프라인) | 집계에서 랭킹, 다이제스트, 렌더링, 비주얼, Threads까지 |
-| [6. LLM 팩토리](#6-llm-팩토리-sharedutilspy) | 모델 구성, 비용 귀속, 토큰 카운트, 프롬프트 캐싱 |
+| [6. LLM 팩토리](#6-llm-팩토리-adaptersbedrockpy) | 모델 구성, 비용 귀속, 토큰 카운트, 프롬프트 캐싱 |
 | [7. 메모리](#7-메모리-세-개의-분리된-저장소) | 트렌드, 다이제스트 스냅샷, cross-day dedup |
 | [8. 헬스 체크와 알림](#8-헬스-체크와-알림) | 소스 분류, SNS 알림, 메트릭 |
 | [9. 딥 리서치 에이전트](#9-딥-리서치-에이전트) | Strands 에이전트, 도구 8개, 로컬 CLI와 OpenClaw 스킬 |
@@ -75,18 +75,40 @@ OpenClaw 스킬(`~/.openclaw/workspace/skills/omnisummary-research/SKILL.md`)이
 
 ## 2. 저장소 구조
 
+코드는 포트와 어댑터(헥사고날) 구조다. 의존은 안쪽으로만 향한다.
+
+```
+entrypoints  →  adapters  →  application  →  domain  →  shared
+(조립, 진입)    (외부 시스템)   (유스케이스, 포트)  (순수 규칙)   (설정, 상수, 로거)
+```
+
 | 경로 | 책임 |
 |------|------|
-| `collectors/` | `BaseCollector` ABC와 공유 `load_items_from_s3`(로컬에서 S3로 올린 park 파일 로더), 그리고 RSS, Reddit(`.rss` 피드), RSSHub(X/Twitter), YouTube, WebSearch(Tavily) 구현 |
-| `pipeline/` | `ContentAggregator`, `ContentRanker`, `DigestGenerator`, `TrendTracker`, `DailyVisualMaker`, 댓글 답글 `CommentResponder`(`comment_replies.py`), 그리고 오케스트레이션(`runner.py`: `run_collectors_with_health`, `run_pipeline`, `persist_digest`, `resolve_digest_window`) — CLI와 다이제스트 Lambda가 함께 타는 단일 경로 |
-| `agent/` | 딥 리서치 Strands 에이전트(`research_agent.py`)와 도구 8개(`research_tools.py`), 실행별 인메모리 상태 `DigestStateManager`(`tool_state.py`), 데일리 비주얼이 쓰는 이미지 생성기 `VisualGenerator`(`visuals.py`) |
+| `entrypoints/` | 조립 지점 `bootstrap.py`(어댑터를 만들어 유스케이스에 넘긴다: 언어 모델, 상태 저장소, AgentCore Memory, 수집기 레지스트리, Threads, 이미지 렌더러, 리서치 포트)와 Lambda 핸들러 네 개(`digest_handler`, 다이제스트 Lambda가 비동기로 부르는 `visual_handler`, `threads_refresh_handler`, 정해진 주기로 도는 `comment_reply_handler`). 알림 문구와 재게시 명령처럼 배포 환경을 아는 코드도 여기 있다 |
+| `adapters/` | 포트 구현. Bedrock(`bedrock.py`: 팩토리와 모델 레지스트리), AWS 세션과 SSM 비밀값(`aws.py`), S3·로컬 상태 저장소(`state_store.py`), AgentCore Memory(`memory.py`), SNS 알림(`alerts.py`), EMF 메트릭(`metrics.py`), Threads API와 `ThreadsGateway`(`threads.py`), OpenAI 이미지(`openai_images.py`), Tavily·OpenAlex(`research_backends.py`)와 OG 이미지(`og_image.py`), 수집기(`collectors/`: `BaseCollector`, 공유 park 파일 로더, RSS·Reddit·RSSHub·YouTube·WebSearch), Strands 리서치 에이전트(`research_agent.py`)와 그 도구(`research_tools.py`, 모델이 읽는 시그니처와 docstring만 있고 규칙은 `application/research.py`에 있다) |
+| `application/` | 포트 정의(`ports.py`: `LanguageModels`, `ImageRenderer`, `ThreadsPublisher`·`ThreadsComments`·`PublishError`, `StateStore`, `MemoryStore`, `ContentSource`, `ResearchSources`)와 유스케이스. 다이제스트 흐름(`digest_pipeline.py`: `run_collectors_with_health`, `run_pipeline`, `persist_digest`, `publish_inline`, `already_published`, `resolve_digest_window`), `ContentRanker`, `DigestGenerator`, `TrendTracker`, `DailyVisualMaker`와 `VisualGenerator`, `DigestPublisher`, `CommentResponder`, 리서치 실행 규칙(`research.py`: 인용 검사, 사실 확인, 전달), 원장(`history.py`), 프롬프트(`prompts/`) |
+| `domain/` | 외부 의존이 없는 규칙. 모델(`models.py`), URL 정규화와 중복 제거(`aggregator.py`), 포맷(`formatting.py`), Threads 게시물 렌더링(`renderers.py`), 다이제스트 스냅샷(`digest_snapshot.py`의 `DigestStateManager`) |
+| `shared/` | 공통 커널. config(공유 `KOREAN_PROSE_RULES`와 말투까지 정한 `KOREAN_STYLE_RULES` 포함), constants, logger, CDK와 코드가 함께 쓰는 이름(`naming.py`), 순수 헬퍼(`utils.py`: 재시도, LLM JSON 파싱) |
+| `main.py` | 다이제스트 로컬 CLI. 어댑터는 `bootstrap`에서 받고, 저장한 뒤 `publish_inline`으로 그 자리에서 게시한다 |
 | `research_cli.py` | 딥 리서치 로컬 CLI. JSON 한 개를 stdout에 쓰고 로그는 stderr로 보낸다 |
 | `recall_cli.py` | 다이제스트 메모리 조회 CLI(`digest [DATE]`, `trends`). 모델 호출 없는 무료 읽기 전용이고 JSON 한 개를 쓴다. 종료 코드 0/1/2이며, `failed`는 저장소를 못 읽었다는 뜻이고 `found: false`는 저장된 것이 없다는 뜻이다. 잘못된 인자도 `status: "rejected"` JSON과 종료 코드 2로 돌려준다. argparse 기본 동작은 stdout을 비운 채 stderr에 사용법을 찍으니 JSON 한 개라는 계약이 깨진다. 같은 이유로 `-h`가 없다 |
-| `shared/` | config(공유 `KOREAN_PROSE_RULES`와 말투까지 정한 `KOREAN_STYLE_RULES` 포함), models, constants, utils(Bedrock 팩토리와 모델 레지스트리), logger, prompts, state_store, memory, history_store(cross-day dedup 원장, 롤링 로그, 댓글 답글 원장), formatting, alerts, metrics, research(Tavily와 OpenAlex), media(OG 이미지 fetch) |
-| `output/` | 채널별 렌더러(`renderers.py`), 다이제스트 게시(`digest_delivery.py`: Threads 체인, 멱등 원장, 이미지 S3 호스팅), 리서치 리포트 전달(`delivery.py`), Threads API(`threads_handler.py`) |
-| `lambda_handlers/` | 다이제스트 핸들러, 데일리 비주얼 핸들러(`visual_handler`, 다이제스트 Lambda가 비동기로 호출한다), Threads 토큰 갱신 핸들러(`threads_refresh_handler`), 댓글 답글 핸들러(`comment_reply_handler`, 정해진 주기로 돈다) |
 | `infrastructure/` | CDK `foundation_stack`과 `application_stack` |
 | `scripts/` | `deploy.py`, `put_secrets.py`, `put_inference_profiles.py`, `ci_synth.py`, `sync_to_s3.py <rsshub\|youtube>`, `sync_all_to_s3.sh`(두 소스를 차례로 sync한다), `sample_digest.py <out_path> [cache_path]`(`run_pipeline(dry_run=True)`로 오늘 실행과 같은 프롬프트를 만들어 다이제스트를 파일로 쓴다. 게시하지 않는다), `sample_visual_brief.py <날짜> <out_dir> [--render] [--recent-comics FILE]`(저장된 스냅샷으로 그날 만화의 플랜과 브리프를 쓰고, `--render`면 그린다. 게시하지 않는다), `sample_comment_replies.py`(게시하지 않고 지금 달 답글 초안을 보여 준다), `render_excalidraw.mjs` |
+
+**경계는 CI가 검사한다.** `uv run lint-imports`가 pyproject의 `[tool.importlinter]` 계약 세 개를 본다. 계층은
+위 순서로만 import할 수 있고, `application`·`domain`·`shared`는 외부 시스템의 클라이언트(boto3, botocore, httpx,
+openai, strands, tavily, feedparser, bs4, langchain_aws, youtube_transcript_api)를 직접이든 다른 모듈을 거쳐서든
+import하지 않는다. `domain`과 `shared`는 LangChain도 모른다. `application`은 LCEL 체인을 쓰므로 `langchain_core`만
+허용한다(프롬프트와 파서, `BaseChatModel` 타입).
+
+**테스트는 가짜 구현을 넘긴다.** 유스케이스가 어댑터를 생성자나 인자로 받으니, 테스트는 실제 클라이언트를 patch하지
+않고 `tests/fakes.py`의 `FakeThreads`, `FakeRenderer`, `FakeSources`, `MemoryStateStore`를 넘긴다. 리서치 실행은
+`DeliveryContext.ports`(`ResearchPorts`)가 비어 있으면 아무 데도 닿지 않는다. conftest는 그래도 남는 경로를 막는다
+(`boto3.Session`, `boto3.client`, SSM 클라이언트, Threads 회신 확인, 누출되는 환경 변수).
+
+**바뀌는 곳은 bootstrap 한 곳이다.** 저장소나 게시처, 모델 공급자를 바꾸면 `entrypoints/bootstrap.py`와 새 어댑터만
+고친다. 유스케이스는 포트만 안다. 로컬 실행과 Lambda의 차이(인라인 게시와 visual Lambda 호출)도 진입점이 가른다.
+`run_pipeline`은 자기가 어디서 도는지 묻지 않는다.
 
 ## 3. 설정
 
@@ -111,8 +133,7 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 
 `Config.load()`는 호출마다 YAML을 다시 읽고 전체를 재검증한다. 리서치 한 번이면 도구 호출마다 그 작업이
 반복되므로, 값을 읽기만 하는 리프 호출자는 `lru_cache(maxsize=1)`로 감싼 `get_config()`를 쓴다
-(`output/delivery.py`, `shared/research/research_backends.py`, `agent/research_tools.py`,
-`shared/media/og_image.py`). 반면 Config를 변경하는 쪽은 자기 인스턴스가 필요하니 계속
+(`application/research.py`, `adapters/research_backends.py`, `adapters/og_image.py`). 반면 Config를 변경하는 쪽은 자기 인스턴스가 필요하니 계속
 `Config.load()`나 `from_yaml`을 쓴다. `main`과 핸들러의 `set_reference_time`, 인프라
 테스트의 버킷 오버라이드가 여기 해당한다. 테스트에서는 conftest의 autouse 픽스처가 매 테스트 전후로 캐시를
 비운다.
@@ -163,7 +184,7 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 남기지 않아서 다른 어떤 신호에도 걸리지 않는다. 그렇다고 빈 소스면 무조건 알리게 두면 reddit이나 X처럼
 조용한 날이 정상인 소스가 매일 페이징하고, 그러면 사람은 곧 알림을 무시한다. 그래서 명시적 opt-in 목록으로
 두었고, 비어 있으면 EMPTY로는 절대 알리지 않는다. 이름은 `shared/constants.py`의 `COLLECTOR_NAMES`(=
-`pipeline/runner.py`의 수집기 레지스트리 키)로 검증한다. 오타 난 이름은 어떤 소스와도 매칭되지 않아서, 감시하려던
+`entrypoints/bootstrap.py`의 수집기 레지스트리 키)로 검증한다. 오타 난 이름은 어떤 소스와도 매칭되지 않아서, 감시하려던
 어두운 소스가 그대로 어두운 채 남는다. 그래서 config 로드에서 실패시킨다. 같은 이유로 `pipeline.source_slots`의
 키는 `SourceType` 값이어야 한다. 랭커는 `item.source_type.value`로 매칭하니 오타 난 키는 그 소스의 보장 슬롯을
 조용히 없앤다.
@@ -177,9 +198,9 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | 후보 풀 | `top_n`(기본 5), `min_score`(기본 0.6), `digest_candidate_buffer`(기본 7), `source_slots`(소스마다 1), `max_per_origin`(기본 1) | 에디터에게 넘기는 후보는 `top_n + digest_candidate_buffer`개이고, 소스 슬롯과 origin 상한은 이 풀을 채우는 데만 쓴다. 실제로 나가는 `top_n`개는 에디터가 고른다([§5.2](#52-랭커-rankerpy)) |
 | 중복 | `published_url_ttl_days`(기본 6, 최소 2), `recent_leads_window`(기본 5) | cross-day dedup 원장 TTL과 최근 다이제스트 제목을 읽는 창, 반복 방지용 최근 lead와 최근 만화의 윈도([§5.6](#56-데일리-비주얼-daily_visualpy)). TTL이 최소 2인 것은 날짜만 있는 웹 결과가 이틀 연속 윈도에 들어가고([§4.7](#47-websearch-web_searchpy)) 두 번째 게시를 원장이 막기 때문이다 |
 | 트렌드 | `trend_retention_days`, `trend_cooling_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존과 냉각 기간, 증거와 active 캡, momentum 반감기 |
-| 전달 | `enable_threads_post`, `threads_topic_tag`(기본 `AI`) | Threads 게시 on/off. 코드 기본값은 off이고 배포 설정은 on이다. 데일리 비주얼 Lambda가 게시한다. 토픽 태그는 root 게시물에만 붙는다([§5.8](#58-threads-전달-outputthreads_handlerpy-enable_threads_post)) |
-| 댓글 답글 | `enable_comment_replies`, `comment_reply_lookback_days`(7), `comment_reply_max_per_run`(10), `comment_reply_max_per_commenter`(3) | 독자 댓글 자동 답글. 코드 기본값은 off이고 배포 설정은 on이다([§5.9](#59-댓글-답글-pipelinecomment_repliespy-enable_comment_replies)) |
-| AGI 카운트다운 | `agi_countdown_date`(기본 `2029-01-01`), `agi_countdown_template`, `agi_countdown_after` | 다이제스트 lead 맨 앞에 코드가 붙이는 "AGI N일 전" 인트로([§5.7](#57-agi-카운트다운-인트로-sharedformattingpy-agi_countdown_intro) 참조) |
+| 전달 | `enable_threads_post`, `threads_topic_tag`(기본 `AI`) | Threads 게시 on/off. 코드 기본값은 off이고 배포 설정은 on이다. 데일리 비주얼 Lambda가 게시한다. 토픽 태그는 root 게시물에만 붙는다([§5.8](#58-threads-전달-adaptersthreadspy-enable_threads_post)) |
+| 댓글 답글 | `enable_comment_replies`, `comment_reply_lookback_days`(7), `comment_reply_max_per_run`(10), `comment_reply_max_per_commenter`(3) | 독자 댓글 자동 답글. 코드 기본값은 off이고 배포 설정은 on이다([§5.9](#59-댓글-답글-applicationcomment_repliespy-enable_comment_replies)) |
+| AGI 카운트다운 | `agi_countdown_date`(기본 `2029-01-01`), `agi_countdown_template`, `agi_countdown_after` | 다이제스트 lead 맨 앞에 코드가 붙이는 "AGI N일 전" 인트로([§5.7](#57-agi-카운트다운-인트로-domainformattingpy-agi_countdown_intro) 참조) |
 | 시각화 | `image_model`(`gpt-image-2.5-sunburst`), `image_sizes`, `visual_image_quality`(`xhigh`), `visual_editor_source_max_tokens`, `visual_synopsis_source_max_tokens`, `visual_image_timeout_sec`(기본 300)과 `visual_image_max_retries`(기본 0), `visual_character_enabled`, `visual_character_sheet`, `visual_character_reference`(`assets/persona.jpg`) | 이미지 모델과 품질 등급, orientation에서 size로 가는 딕셔너리(키는 `VisualOrientation` 어휘로 고정이고 값만 튜닝한다), 입력 상한, 이미지 HTTP 호출 상한. SDK 기본값 600초씩 2회는 비주얼 Lambda의 15분 예산을 넘길 수 있어서 config로 고정했다 |
 | 프롬프트 주입 | `digest_language_rules`, `digest_voice_guidance`, `ranking_audience_description`, `digest_audience_description`, `visual_audience_description`, `visual_on_image_language`, `visual_synopsis_style_guidance`, `visual_synopsis_style_aesthetic`, `visual_guardrails`, `visual_moderation_softening_instruction` | 언어 규칙과 대상 독자, 톤, 미감, 가드레일, 모더레이션 완화 문구. 하드코딩 대신 템플릿 변수로 주입한다. `digest_language_rules`는 한국어 규칙과 번역 용어집을 튜닝하는 자리이고 언어 스위치가 아니다. 한국어 전용이 의도한 제품이다. `digest_voice_guidance`는 Gruber 톤이며, 단일 냉소 프레임으로 기본 고정하지 말고 그날 사실이 정당화할 때만 각을 세우도록 쓰여 있다 |
 
@@ -237,7 +258,7 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 `TAVILY_API_KEY`에는 단서가 하나 붙는다. web_search 수집기와 `research_cli.py`가 이 키를 `resolve_secret(strict=True)`로
 해석한다(리서치 CLI는 키를 읽지 못하면 exit 1로 끝난다). SSM 읽기 실패(거부나 스로틀)와 키 부재를 구분해야 하기 때문이다. 둘을 같이 `[]`로 떨어뜨리면 그날 웹
 소스 전체가 경고 한 줄과 함께 사라진다. 읽기 실패는 raise해서 헬스를 FAILED로, 그리고 알림으로 잇고,
-파라미터가 정말 없을 때만 `""`로 조용히 스킵한다. `shared/research` 백엔드와 에이전트 경로는 빈 문자열 degrade
+파라미터가 정말 없을 때만 `""`로 조용히 스킵한다. `adapters/research_backends.py` 백엔드와 에이전트 경로는 빈 문자열 degrade
 계약을 그대로 쓴다. 그쪽은 기능 하나가 비활성인 것이고, 수집기 쪽은 그날 다이제스트의 소스 하나가 빠지는
 것이다.
 
@@ -264,7 +285,7 @@ X 세션 쿠키는 SSM에 두지 않는다. 로컬 RSSHub Docker 컨테이너(`l
 ### 4.1 공통 계약
 
 모든 수집기는 `BaseCollector.collect() -> list[CollectedItem]`을 구현하고
-`in_collection_window(published_at, lookback_hours, reference_time)`(`collectors/base.py`)으로 시간 범위를
+`in_collection_window(published_at, lookback_hours, reference_time)`(`adapters/collectors/base.py`)으로 시간 범위를
 필터링한다. 윈도는 `[reference_time - lookback_hours, reference_time]`이고 **양끝이 닫혀 있다**. 라이브 경로와
 park 경로가 이 한 정의를 쓰므로, `--date`로 과거 날짜를 다시 돌려도 어느 소스도 **오늘** 항목을 싣지 않는다.
 `published_at`이 없는 항목은 윈도 **안**으로 본다. 날짜가 없다는 것이 범위 밖이라는 증거는
@@ -279,7 +300,7 @@ raise되어 러너의 예외 분기로 들어가고, 그 소스는 **부분 결�
 
 ### 4.2 S3 park 파일 로더
 
-`collectors/base.py`의 `load_items_from_s3(filename, max_age_hours)`가 담당한다. X와 YouTube는 데이터센터
+`adapters/collectors/base.py`의 `load_items_from_s3(filename, max_age_hours)`가 담당한다. X와 YouTube는 데이터센터
 (Lambda) IP에서 차단되니, 로컬 sync 스크립트가 거주용 IP로 항목을 수집해 S3에 미리 적재하고 AWS에서는
 수집기가 라이브 fetch 대신 이 파일을 읽는다. S3 키는 `S3_PREFIX`의 부모 디렉터리에 파일명을 붙인다(trends.json은 `S3_PREFIX` 자체, 즉 `<prefix>/digest_state/`
 아래에 있다). 두 수집기가 같은 로더를 공유하니 park 계약이 소스마다 갈라지지 않는다.
@@ -374,7 +395,7 @@ STALE이 되고, park 항목은 수집 윈도 밖이라 소스가 0건을 낸다
 ### 4.3 RSS (`rss.py`)
 
 `config.collectors.rss.feeds`의 피드를 읽고 `feed_url`과 `feed_title`을 메타데이터로 남긴다. fetch와 파싱과
-엔트리 루프는 모두 `collectors/base.py`의 공용 헬퍼가 소유한다(`fetch_feed`, `fetch_feed_with_retry`,
+엔트리 루프는 모두 `adapters/collectors/base.py`의 공용 헬퍼가 소유한다(`fetch_feed`, `fetch_feed_with_retry`,
 `parse_feed_entries`). RSS와 Reddit, RSSHub의 엔트리 루프는 글자 그대로 같으므로, 사본을 셋 두면 한쪽을 고칠 때
 나머지 둘이 조용히 뒤처진다.
 
@@ -414,7 +435,7 @@ backoff는 URL을 시드로 한 지터를 얹은 선형이다. 지터가 없으�
 레이트리밋한 바로 그 버스트로 다시 뭉친다. 반면 403이나 404, 파싱 불가 본문은 재시도해도 결론이 바뀌지 않으니
 첫 응답에서 즉시 실패시킨다.
 
-분류는 `collectors/base.py`의 `feed_status_failure(description, status)`와
+분류는 `adapters/collectors/base.py`의 `feed_status_failure(description, status)`와
 `feed_parse_failure(description, bozo_exception)` 한 쌍이 소유하고 RSS와 Reddit, RSSHub가 함께 쓴다. 상태
 코드는 `RETRIABLE_STATUS_CODES`(429와 5xx)로 판정한다. 전송 계층 실패도 여기서 갈린다. httpx의
 `TimeoutException`과 나머지 `HTTPError`(DNS, reset, TLS)는 transient로 올리고, 진짜 malformed 문서만 영구
@@ -560,7 +581,7 @@ FAILED로 분류되게 한다. 부분 실패는 그대로 허용한다.
 소스별 사본을 두면 한 소스만 반쪽 상태를 보고하고 나머지는 침묵한다. 이 메서드들은 보고만 하고 어떤 항목도
 필터링하지 않는다.
 
-`pipeline.runner.run_collectors_with_health()`는 수집기를 동시에 돌리고 `HealthReport`([§8](#8-헬스-체크와-알림)
+`application.digest_pipeline.run_collectors_with_health(config, sources)`는 진입점이 `bootstrap.collectors`로 만든 (이름, 수집기) 쌍을 동시에 돌리고 `HealthReport`([§8](#8-헬스-체크와-알림)
 참조)를 반환한다.
 
 **공유 스레드 풀은 하나다.** 이 함수가 시작할 때 `collectors.thread_pool_max_workers`(기본 16) 크기의
@@ -611,7 +632,7 @@ Reddit이나 블로그 제목의 "..."는 작성자가 쓴 것이라 비교 대�
 
 **cross-day dedup.** `aggregate(items, exclude_urls=...)`에서 호출자(`pipeline.runner.run_pipeline`)가 넘긴 정규화 URL
 집합(최근 발행 기사들)을 랭킹 이전에 제외한다. 같은 스토리가 며칠 간격으로 재요약되지 않게 하는 것이
-목적이고, 부수적으로 랭커 토큰도 절약된다([§7.3](#73-cross-day-dedup-히스토리-sharedhistory_storepy) 참조). 다만 핀
+목적이고, 부수적으로 랭커 토큰도 절약된다([§7.3](#73-cross-day-dedup-히스토리-applicationhistorypy) 참조). 다만 핀
 항목(`--pin-url`)은 URL과 제목 dedup을 모두 우회한다. 사용자가 오늘 명시적으로 요청한 URL이니, 최근
 발행됐거나 제목이 겹쳐도 살아남아 랭커의 핀 복구 단계까지 도달해야 한다.
 
@@ -785,8 +806,8 @@ raise한다. 스토리 없는 minimal 폴백을 두지 않는다. 그런 다이�
 값이다).
 
 캡과 계산에 쓰는 채널 무관 프리미티브는 `shared`에 둔다. `shared/constants.py`의
-`THREADS_MAX_POST_CHARS`(500)와 `THREADS_POST_SEPARATOR`, `shared/formatting.py`의 `split_sentences`,
-`truncate_at_word`, `strip_markup`, `threads_item_overhead_chars`다. 예산 계산이 `output/renderers.py`의
+`THREADS_MAX_POST_CHARS`(500)와 `THREADS_POST_SEPARATOR`, `domain/formatting.py`의 `split_sentences`,
+`truncate_at_word`, `strip_markup`, `threads_item_overhead_chars`다. 예산 계산이 `domain/renderers.py`의
 private 헬퍼를 부르면 파이프라인이 출력 채널의 내부 이름에 의존하게 되고, 500이라는 같은 숫자가 렌더러와
 게시기에 따로 박힌다.
 
@@ -860,7 +881,7 @@ sentences"다.
 `_verify_grounding`은 이 규칙의 예외가 아니다. 그쪽은 주장이 원문에 있는지를 보는 포함 관계 검사여서 코드로
 판정되고, 문법 판단이 아니다.
 
-### 5.5 Threads 렌더링 (`output/renderers.py`)
+### 5.5 Threads 렌더링 (`domain/renderers.py`)
 
 구조화 `DigestContent`와 리서치 리포트를 Threads 게시물로 바꾼다. 마크업은 없다(Threads는 렌더링하지 않는다).
 
@@ -894,7 +915,7 @@ reply 하나를 만든다. 500자 이하로 문장 경계에서 트림하며 tit
 
 - **구분자가 없으면 리포트 전체가 게시물 하나다.** 예전에는 문장 단위로 채워 넣는 폴백이 있었는데, 빈 줄마다
   게시물을 끊어서 소제목 한 줄이 공개 root로 나갔다. 그래서 지웠다. 이제 긴 무구분 리포트는 500자로 잘리고
-  `trimmed`로 집계되니, 전달 단계가 `TOO_LONG`으로 에이전트에게 돌려보낸다([§9](#도구-agentresearch_toolspy)).
+  `trimmed`로 집계되니, 전달 단계가 `TOO_LONG`으로 에이전트에게 돌려보낸다([§9](#도구-adaptersresearch_toolspy)).
 - **500자를 넘긴 게시물은 여러 개로 나누지 않고 한 개로 줄인다.** 앞 문장부터 들어가는 만큼 남기고 끝의 인용 URL은
   다시 붙인다. URL 끝 문장부호는 `_trim_url`로 떼서, 위키백과 `Foo_(bar)`처럼 `)`로 끝나는 URL도 살아남는다.
 - `max_posts`(0보다 큰 값)로 총 게시물 수를 하드 캡하고 초과분은 드롭한다.
@@ -1025,27 +1046,28 @@ AgentCore Memory에 저장된 그날의 스냅샷을 날짜로 읽어(비주얼 
 `--render`면 이미지까지 그리며, 아무것도 게시하거나 기록하지 않는다. `--recent-comics`로 그날 이전의 만화 목록을
 넘기면 지난 날을 다시 돌려 볼 수 있다. 테스트가 `_compose`의 출력과 렌더가 받은 입력이 같음을 고정한다.
 
-**게시는 `output/digest_delivery.py`의 `DigestPublisher`가 한다.** Threads root와 reply 체인, 그 체인의 멱등
-원장, 이미지의 S3 호스팅이 모두 여기 있다. 게시기가 이미지를 **옵셔널 인자**로 받으니 렌더 실패는 구조적으로
+**게시는 `application/digest_publisher.py`의 `DigestPublisher`가 한다.** Threads root와 reply 체인과 그 체인의 멱등
+원장이 여기 있고, 실제 게시와 이미지의 S3 호스팅은 `ThreadsPublisher` 포트를 구현한 `adapters/threads.py`의
+`ThreadsGateway`가 맡는다. 게시기가 이미지를 **옵셔널 인자**로 받으니 렌더 실패는 구조적으로
 텍스트 전용 게시일 뿐이고, 게시 경로를 OpenAI 키 없이 테스트할 수 있다.
 
 **게시할 곳이 없으면 렌더하지 않는다.** 렌더 전에 `DigestPublisher.has_a_destination`에 묻는다. Threads가
 꺼져 있거나, 원장에 오늘이 이미 있거나(force가 아닐 때), 스토리가 0건이면 에디터 호출과 렌더 비용을 쓰지 않는다.
 스토리 없는 날은 `threads_outcome = ThreadsDelivery(0, 1)`을 남겨 그날의 전달 알림이 no-op이 되지 않게 한다.
 
-**텍스트만 나간 날도 알린다.** `outcome.published and not outcome.with_image`면 `shared/alerts.publish_alert`
+**텍스트만 나간 날도 알린다.** `outcome.published and not outcome.with_image`면 `adapters/alerts.publish_alert`
 경로로 ALERT를 보낸다. 렌더 실패와 키 부재는 그 밖에는 maker 안의 로그 한 줄만 남긴다.
 
 **헤드라인 매핑.** 큐레이션 헤드라인 `content.items[0]`을 `normalize_url`로 랭킹 항목에 되매핑해 그 기사
 전문을 원문으로 쓴다. 매칭되지 않거나, 매칭된 랭킹 항목에 본문이 없으면 큐레이션 헤드라인 자신의 title과 body를
 원문으로 쓴다. 랭킹 1위로 떨어뜨리지 않으니 이미지와 텍스트가 같은 스토리를 다룬다. 본문 없는 랭킹 항목은 한도를
-넘은 스냅샷이 본문을 덜어낸 경우다([§7.2](#72-다이제스트-스냅샷--agentcore-memory-sharedmemorypy)). 그때 제목만
+넘은 스냅샷이 본문을 덜어낸 경우다([§7.2](#72-다이제스트-스냅샷--agentcore-memory-adaptersmemorypy)). 그때 제목만
 넘기는 것보다 큐레이션 본문이 낫다. 같은 이유로 랭킹 항목이 하나도 없어도 비주얼을 건너뛰지 않는다. implication은
 넘기지 않는다(위 '만화는 사실 하나와 개그 하나만 싣는다').
 
 전체적으로 best-effort다. 파이프라인을 막지 않으며 실패는 항상 로깅된다.
 
-### 5.7 AGI 카운트다운 인트로 (`shared/formatting.py` `agi_countdown_intro`)
+### 5.7 AGI 카운트다운 인트로 (`domain/formatting.py` `agi_countdown_intro`)
 
 "AGI 등장 N일 전이다" 식의 인트로를 LLM이 아니라 코드가 계산한다(`agi_countdown_date` 기본 `2029-01-01`,
 `agi_countdown_template`). D-day 이전에는 카운트다운, D-day 당일과 이후에는 `agi_countdown_after`로
@@ -1066,7 +1088,7 @@ root에 함께 나가고, 트렌드 재등장 수치와 같은 시계(같은 날
 **넘치면 앞 문장부터 남긴다.** Threads root가 500자를 넘으면 `_fit_lead`가 앞에서부터 온전한 문장만 남기니 접두
 개그는 살아남는다. 트림이 발생하면 WARNING을 남긴다. 에디터가 산문 예산을 넘겼다는 신호다.
 
-### 5.8 Threads 전달 (`output/threads_handler.py`, `enable_threads_post`)
+### 5.8 Threads 전달 (`adapters/threads.py`, `enable_threads_post`)
 
 **누가 부르는가.** 다이제스트 Lambda가 아니라 데일리 비주얼 Lambda가 `DigestPublisher.publish`로 게시한다.
 Threads 게시물은 이미지 root와 reply chain이 한 세트라 이미지를 만든 쪽이 함께 보내야 한다. 비주얼 Lambda는
@@ -1132,19 +1154,19 @@ Lambda가 넘긴 `deadline`이 답글 체인 몫(`THREADS_PUBLISH_RESERVE_SEC`)�
 적는다. root만 올라간 날의 알림은 `--force-republish`를 하지 말라고 적는다. 부분 전달과 전면 실패는 ERROR로 로깅되고,
 비주얼 Lambda가 `ALERT_SNS_TOPIC_ARN`이 있을 때 SNS 알림을 올린다. 없으면 no-op이다.
 
-**best-effort 계약.** API 오류는 로깅 후 건너뛰고 절대 raise하지 않는다. `output/delivery.py`의 리서치 경로가
+**best-effort 계약.** API 오류는 로깅 후 건너뛰고 절대 raise하지 않는다. `application/research.py`의 리서치 경로가
 이 계약에 의존한다. 단 자격증명(`THREADS_ACCESS_TOKEN`, `THREADS_USER_ID`) 부재는 ERROR로 올린다.
 `enable_threads_post`가 켜진 구성에서 자격증명이 없으면 그날 다이제스트가 어디에도 전달되지 않으니, INFO
 "skipping" 한 줄로 넘길 사건이 아니다.
 
-**토큰 갱신.** `lambda_handlers/threads_refresh_handler.py`와 매주 도는 EventBridge 스케줄이 60일 만료
+**토큰 갱신.** `entrypoints/threads_refresh_handler.py`와 매주 도는 EventBridge 스케줄이 60일 만료
 장기 토큰을 갱신해 SSM에 재기록한다([§11](#application_stack) 참조). 토큰은 갱신 요청의 쿼리 문자열에 실리고 httpx는
 오류 문구에 요청 URL을 넣으므로, 실패는 상태 코드와 응답 앞부분만 로그에 남기고 URL 없는 예외를 `from None`으로 다시
 던진다. 그대로 `str(e)`를 남기면 첫 갱신 실패에서 장기 토큰이 CloudWatch에 적힌다.
 
-### 5.9 댓글 답글 (`pipeline/comment_replies.py`, `enable_comment_replies`)
+### 5.9 댓글 답글 (`application/comment_replies.py`, `enable_comment_replies`)
 
-**흐름.** `lambda_handlers/comment_reply_handler.py`가 `aws.comment_reply_interval_minutes`(기본 60분)마다 돈다.
+**흐름.** `entrypoints/comment_reply_handler.py`가 `aws.comment_reply_interval_minutes`(기본 60분)마다 돈다.
 최근 `comment_reply_lookback_days`(기본 7일) 동안의 자기 top-level 게시물을 `/me/threads`로 읽고, 게시물마다
 `/{id}/conversation`으로 모든 깊이의 답글을 받는다. 답할 댓글을 고른 뒤 댓글마다 모델을 한 번 부르고, 답하기로
 하면 그 댓글에 답글 하나를 단다.
@@ -1206,7 +1228,7 @@ Bedrock의 JSON 스키마 제약 출력(`with_structured_output(..., method="jso
 **토큰.** 읽기 요청은 토큰을 쿼리 문자열이 아니라 `Authorization` 헤더로 보낸다(`threads_client`). httpx가 오류
 문구에 요청 URL을 넣기 때문이다. 페이지의 `next` 링크에도 토큰이 들어가지 않는다.
 
-## 6. LLM 팩토리 (`shared/utils.py`)
+## 6. LLM 팩토리 (`adapters/bedrock.py`)
 
 ### 의존성 경계
 
@@ -1346,7 +1368,7 @@ SecureString 복호화)을 본다. OpenAI 키는 데일리 비주얼의 gpt-imag
 
 env가 config보다 앞이라는 점은 로컬에서 SSM 폴백(`resolve_secret`)에만 남은 함정이다. 모델 호출용으로
 `AWS_REGION=us-west-2`를 물려받은 셸에서는 SSM 조회가 그 리전으로 간다. AgentCore Memory와 상태 버킷, Threads 이미지
-업로드는 `config.aws.region`과 설정된 프로필로 세션을 만들어 영향을 받지 않는다([§7.2](#72-다이제스트-스냅샷--agentcore-memory-sharedmemorypy)). Lambda에서는
+업로드는 `config.aws.region`과 설정된 프로필로 세션을 만들어 영향을 받지 않는다([§7.2](#72-다이제스트-스냅샷--agentcore-memory-adaptersmemorypy)). Lambda에서는
 `AWS_REGION`이 함수 리전이라 문제가 없다.
 
 ### 프롬프트 캐싱
@@ -1356,7 +1378,7 @@ Bedrock 프롬프트 캐싱은 Claude 기준으로 캐시 가능 프리픽스 �
 
 **에이전트에는 적용한다.** 약 1.7K 토큰의 시스템 프롬프트와 도구 스키마, 누적된 도구 결과가 매 ReAct 스텝마다
 재전송되니 그 프리픽스를 캐싱한다(실측 한 실행에서 캐시 입력 약 76만 토큰).
-`BedrockModel(cache_config=CacheConfig(strategy="anthropic"))`(`agent/research_agent.py`)이다.
+`BedrockModel(cache_config=CacheConfig(strategy="anthropic"))`(`adapters/research_agent.py`)이다.
 
 여기서 `"auto"`가 아니라 `"anthropic"`인 것이 중요하다. Strands는 `"auto"`를 model id 문자열에 `claude`나
 `anthropic`이 있는지로 판단하는데, 배포되는 id는 application inference profile
@@ -1391,9 +1413,9 @@ TTL의 원장이다.
 
 ### 7.1 트렌드 — 구조화 `trends.json`
 
-`StateStore`에 저장되며 시스템 오브 레코드다. 관리 주체는 `pipeline/trend_tracker.py`의 `TrendTracker`다.
+`StateStore`에 저장되며 시스템 오브 레코드다. 관리 주체는 `application/trend_tracker.py`의 `TrendTracker`다.
 
-**스토어 선택(`create_state_store`).** `STATE_BUCKET`(env), `config.aws.state_bucket_name`, 로컬 파일 폴백
+**스토어 선택(`adapters/state_store.py`의 `create_state_store`, `bootstrap.state_store`가 부른다).** `STATE_BUCKET`(env), `config.aws.state_bucket_name`, 로컬 파일 폴백
 순으로 **버킷 유무만** 보고 결정한다. `is_running_in_aws()` 같은 플랫폼 감지로 갈라서는 안 된다. Lambda가 아닌
 호출자(로컬 리서치 CLI, 실 버킷을 향한 로컬 실행)가 `STATE_BUCKET`을 들고 있어도 trends.json을 로컬
 파일시스템에 쓰게 되고, 그러면 트렌드 히스토리가 통째로 사라진다. AWS 밖에서는 세션을 `config.aws.profile`과
@@ -1443,7 +1465,7 @@ history를 버리지 않고 트렌드별로 관대하게 복구한다(`_recover_
 `_render_existing`은 캡하지 않는다. 거기서 cooling 트렌드를 숨기면 그 실이 고아가 되고 모델이 같은 주제에
 중복 id를 새로 만든다.
 
-### 7.2 다이제스트 스냅샷 — AgentCore Memory (`shared/memory.py`)
+### 7.2 다이제스트 스냅샷 — AgentCore Memory (`adapters/memory.py`)
 
 `AgentCoreMemoryStore`가 그날의 스냅샷(`ranked_items`와 `digest_result`)을 단기 세션 이벤트로 기록한다
 (`create_event`, 세션 `digest-<date>`). 각 `RankedItem`이 자기 `CollectedItem`을 품고 있으니 수집 원본은 따로
@@ -1477,7 +1499,7 @@ append하고, `list_events`는 순서를 보장하지 않는다. 한 페이지�
 **시맨틱 recall과 장기 전략은 쓰지 않는다.** 관리형 추출은 트렌드의 흐름이 아니라 안정적인 사용자-사실을 뽑도록
 설계돼 있어서 이 용도에 맞지 않는다. cross-day 연속성은 `trends.json`이 담당한다([§7.1](#71-트렌드--구조화-trendsjson)).
 
-**스토어 선택(`create_memory_store`).** `MEMORY_ID`(CDK가 Lambda에만 넣는다)가 있으면 그 id를, 없으면 스택이
+**스토어 선택(`adapters/memory.py`의 `create_memory_store`, `bootstrap.memory_store`가 부른다).** `MEMORY_ID`(CDK가 Lambda에만 넣는다)가 있으면 그 id를, 없으면 스택이
 만든 메모리를 이름(`digest_memory_name(project, stage)`, CDK와 같은 함수)으로 찾아 `config.aws.region`에서 연다.
 로컬 실행(`main.py`, `research_cli.py`, `recall_cli.py`)이 운영 스냅샷을 읽게 하려는 것이다. 예전처럼 `MEMORY_ID`가
 없다고 로컬 파일로 떨어지면 cross-day dedup은 어제를 못 보고 `recall_digest`는 거의 모든 날짜에 답하지 못했다. 이름
@@ -1489,13 +1511,13 @@ append하고, `list_events`는 순서를 보장하지 않는다. 한 페이지�
 `MemoryReadError`를 던진다. 폴백하면 production이 쓴 날짜를 "저장된 것 없음"으로 답했다.
 
 **윈도 조회.** `get_recent_digests(before, days)`가 cross-day dedup 시드를
-제공한다([§7.3](#73-cross-day-dedup-히스토리-sharedhistory_storepy)). 세션 id가 날짜로 정해지니 `before` 이전 `days`일의
+제공한다([§7.3](#73-cross-day-dedup-히스토리-applicationhistorypy)). 세션 id가 날짜로 정해지니 `before` 이전 `days`일의
 세션을 직접 읽고, 세션 목록을 페이지네이션하지 않는다(그래서 `ListSessions` 권한도 필요 없다). `before` 당일은
 빼서 같은 날 재실행이 자기 스토리를 살리게 하고, 한 날짜의 읽기 실패는 경고하고 건너뛴다.
 
-### 7.3 cross-day dedup 히스토리 (`shared/history_store.py`)
+### 7.3 cross-day dedup 히스토리 (`application/history.py`)
 
-`StateStore` 위에 작은 구조 네 개가 올라간다(`CommentReplyLedger`는 [§5.9](#59-댓글-답글-pipelinecomment_repliespy-enable_comment_replies)).
+`StateStore` 위에 작은 구조 네 개가 올라간다(`CommentReplyLedger`는 [§5.9](#59-댓글-답글-applicationcomment_repliespy-enable_comment_replies)).
 
 **`PublishedUrlLedger` (`published_urls.json`).** 정규화 URL에서 마지막 발행 ISO 날짜로 가는 롤링 맵이고 TTL은
 `published_url_ttl_days`(기본 6)다. `recent_urls(today)`는 엄격히 더 이른 날(`0 < age < ttl`)만 반환한다. 같은
@@ -1530,7 +1552,7 @@ AGI 카운트다운 프리픽스를 제거한다(`_editorial_lead`). novelty 신
 
 ## 8. 헬스 체크와 알림
 
-### 모델 (`shared/models.py`)
+### 모델 (`domain/models.py`)
 
 - `SourceStatus`는 `ok`, `empty`, `failed`, `stale`, `degraded` 중 하나다.
 - `SourceHealth(name, item_count, status, detail)`.
@@ -1576,7 +1598,7 @@ STALE과 DEGRADED는 실패가 아니니 `failed_sources`에 들어가지 않는
 사후에 할 수 있는 조치가 없다. 그런 알림이 운영 30회 중 14회 울리자 진짜 소스 장애 알림(X 수집 중단 54일)이 그
 소음에 묻혔다. 알림은 사람이 조치할 수 있는 상태에만 쓴다.
 
-**알림 경로는 한 곳이 소유한다(`shared/alerts.publish_alert`).** `ALERT_SNS_TOPIC_ARN` 조회와 `format_alarm`
+**알림 경로는 한 곳이 소유한다(`adapters/alerts.publish_alert`).** `ALERT_SNS_TOPIC_ARN` 조회와 `format_alarm`
 조립, publish, 경고 로그, 예외 삼키기가 모두 여기 있고, 핸들러는 `fields` 조립만 갖는다. 두 Lambda 핸들러가 같은
 루틴을 각자 들면 그 다섯 단계가 바이트 단위로 같은 사본이 되어, 알림 경로 수정이 한쪽에만 적용된다. 계약은 "절대
 raise하지 않는다"다. 알림 실패가 자기가 보고하려던 실행을 실패시켜서는 안 된다.
@@ -1595,7 +1617,7 @@ body를 반환하면 Lambda 입장에서는 정상 종료라서 Errors 알람도
 
 ### 게시량 메트릭과 날짜 전달 (다이제스트에서 비주얼 Lambda로)
 
-**EMF 봉투는 `shared/metrics.emit_emf`가 소유한다.** `_aws`/Timestamp 봉투를 호출 지점마다 손으로 만들면
+**EMF 봉투는 `adapters/metrics.emit_emf`가 소유한다.** `_aws`/Timestamp 봉투를 호출 지점마다 손으로 만들면
 `"Dimensions": [[]]`로 렌더되기 쉽고, 차원이 없으면 dev와 prod가 **같은 데이터포인트**에 쓴다. prod가 아무것도
 내지 못한 날 dev의 5건짜리 실행이 prod의 `Maximum<1` EmptyDigestAlarm을 초록으로 유지한다. 그래서 이 함수가 `PROJECT_NAME`/`STAGE`에서 읽은 `Project`/`Stage` 차원을 붙이고(값이
 비면 그 차원은 생략한다. CloudWatch가 빈 차원 값을 가진 레코드를 거부하기 때문이다), CDK 알람도 같은
@@ -1645,7 +1667,8 @@ no-op이다.
   --force-republish`는 다시 수집하고 새로 쓰므로 다른 다이제스트가 나간다.
 - 글이 하나라도 올라간 날에는 다시 올리지 말라고 적는다. 첫 글이 둘이 된다.
 
-로컬 실행에는 알림이 없으니 `main.py`가 종료 코드로 알린다. 수집 0건, 다이제스트 없음, 게시 실패나 미완료(`PublishIncomplete`,
+로컬 실행에는 알림이 없으니 `main.py`가 종료 코드로 알린다. `main.py`는 스냅샷을 먼저 저장하고(`persist_digest`)
+`publish_inline`으로 그 자리에서 게시한다. 수집 0건, 다이제스트 없음, 게시 실패나 미완료(`PublishIncomplete`,
 스냅샷은 이미 저장됐다)면 1이다. 게시 결과를 EMF 메트릭으로 따로 남기지 않는다. 그 메트릭을 읽는 알람이나 대시보드가 없었고, 같은
 판정을 SNS 알림이 이미 낸다.
 
@@ -1709,7 +1732,7 @@ Threads에서 드롭되거나 잘린 게시물이 있으면 그 수를 적는다
 요청에서 Threads 게시를 명시했을 때만 붙이고, Threads에 게시한 실행은 다시 돌리지 않는다(`--publish` 없이 실패한
 실행은 한 번 재시도할 수 있다).
 
-### 구성 (`agent/research_agent.py`의 `create_research_agent`)
+### 구성 (`adapters/research_agent.py`의 `create_research_agent`)
 
 `BedrockModel`(기본 Opus 5.5, `config.agent.model_id`)을 streaming으로 구성하고 도구 8개로 Strands
 `Agent`를 만든다. Claude 모델에만 `CacheConfig(strategy="anthropic")`를 붙인다([§6의 프롬프트 캐싱](#프롬프트-캐싱) 참조).
@@ -1748,13 +1771,16 @@ spec에서 이름과 인자, 한 줄 요약을 뽑아 `<tools>` 블록을 만든
   리포트(`# 제목`, `## N. 섹션`)와 Threads 평문의 차이, 구체적 사실(수치, 날짜, 출시, 인용)마다 그것을 준 도구 결과의 링크를 달고 출처를 댈 수 없으면 배경지식으로 표시하거나
   빼는 규칙(실측 리포트에서 수치 76개 중 약 12개가 출처 없이 실렸다), 출처 구분(검증과 주장, 추론)과 날조 금지.
 
-### 도구 (`agent/research_tools.py`)
+### 도구 (`adapters/research_tools.py`)
 
-모두 `@tool` 비동기 함수이고 에이전트가 자유롭게 조합한다.
+모두 `@tool` 비동기 함수이고 에이전트가 자유롭게 조합한다. 도구는 모델이 읽는 시그니처와 docstring만 갖고
+`application/research.py`의 같은 이름 함수에 위임한다. 인용 검사, 사실 확인, 전달 규칙이 그쪽에 있고, 검색과
+페이지 읽기, 게시, 사실 확인 모델, 저장소는 실행마다 묶이는 `DeliveryContext.ports`(`ResearchPorts`, `bootstrap.research_ports`가
+만든다)로만 닿는다.
 
 **`web_search(query, news, time_range)`** — 열린 웹 검색이다. `news=True`면 Tavily `topic="news"`를 쓰고,
 `time_range`(`day`|`week`|`month`|`year`)는 기간을 좁힌다. 둘 다 스키마의 boolean과 enum으로 나간다. 공유
-`tavily_search`(`shared/research/research_backends.py`)에 위임한다. 결과에는 Tavily가 날짜를 줄 때
+`tavily_search`(`adapters/research_backends.py`)에 위임한다. 결과에는 Tavily가 날짜를 줄 때
 `Published:` 줄이 붙는다. "최신 동향" 질문이 이 도구의 주 용도인데 날짜를 버리면 모든 결과가 날짜 없이 읽혔다.
 결과 포맷은 Tavily가 일부 페이지에 주는 명시적 null title/url/content를 흡수한다.
 
@@ -1780,7 +1806,7 @@ spec에서 이름과 인자, 한 줄 요약을 뽑아 `<tools>` 블록을 만든
 
 **`attach_image(source_url)`** — 소스 페이지의 대표 이미지(og:image)를 받아 stage한다(`fetch_og_image`).
 `research_max_staged_images` 캡에 도달하면 거부한다. Threads 게시물에는 스레드가 인용한 페이지의 이미지 중 첫
-1장만 실린다. 인용 여부는 인용 검사와 같은 `citation_key`로 판정하므로 URL에 붙은 조사("…/a에서")도 같은 출처로 본다([§9.2](#92-리포트-전달-outputdeliverypy)). 검색 결과나 읽은 페이지가 아닌 URL(`seen_urls`에 없는 것)의
+1장만 실린다. 인용 여부는 인용 검사와 같은 `citation_key`로 판정하므로 URL에 붙은 조사("…/a에서")도 같은 출처로 본다([§9.2](#92-리포트-전달-applicationresearchpy)). 검색 결과나 읽은 페이지가 아닌 URL(`seen_urls`에 없는 것)의
 이미지는 받지 않는다. 이미지는 공개 root에 실리기 때문이다.
 
 **`deliver_report(report, channel)`** — `channel`은 `"markdown"`|`"threads"` enum이다. `"markdown"`(기본)은 리포트를 CLI에 넘기고, 다시 부르면 수정본으로
@@ -1819,10 +1845,10 @@ Strands는 한 턴의 도구 호출을 동시에 돌리므로 Threads 전달은 
 인용 URL은 스킴 대소문자와 상관없이, `www.`로 시작해도 찾는다. 비교 키는 경로와 쿼리만 디코딩한다. 호스트에 `@`나 `%`가
 있는 URL(`openai.com%23@evil.example`)은 적힌 것과 다른 사이트이므로 무엇과도 맞지 않는다. 한국어 조사가 붙은 URL
 (`…/a에서`, `[label](url)에 따르면`)은 끝의 한글 음절을 떼고 경로가 남을 때만 한 번 더 찾는다. 점 바로 뒤의 한글은
-호스트의 일부라 떼지 않는다. 인용 검사와 사실 확인은 같은 키 함수(`shared.formatting.citation_key`)를 써서, 검사를 통과한 인용은 출처가 사실 확인에도 실린다.
+호스트의 일부라 떼지 않는다. 인용 검사와 사실 확인은 같은 키 함수(`domain.formatting.citation_key`)를 써서, 검사를 통과한 인용은 출처가 사실 확인에도 실린다.
 `deliver_report`는 리포트가 인용한 URL 중 그 집합에 없는 것이 하나라도
 있으면 받지 않는다. 반환 문자열이 문제의 URL을 열거하니 에이전트가 그것만 빼거나 바꿔 다시 호출한다. 비교는
-양쪽 모두 `shared.formatting.extract_urls`를 거치며, Markdown 링크 `[label](url)`과 괄호 안 URL, http→https
+양쪽 모두 `domain.formatting.extract_urls`를 거치며, Markdown 링크 `[label](url)`과 괄호 안 URL, http→https
 재작성을 통과시킨다. 가드는 조작된 인용을 막으려고 있으니 실제 인용을 떨어뜨리는 쪽으로는 엄격해지지 않는다.
 
 **AgentCore 내장 도구는 쓰지 않는다.** AgentCore Gateway의 Web Search 커넥터는 결과마다 게시일과 날짜 필터를 주지만
@@ -1832,7 +1858,7 @@ Tavily도 그대로 남아 검색 벤더가 둘이 된다. 고유 이점인 날�
 AgentCore Browser도 쓰지 않는다. 다이제스트에 실린 실제 URL 10개로 Tavily extract를 재면 8개는 전문을, 페이월
 1개는 요약만 읽었고, 브라우저도 페이월은 못 넘는다. Claude의 웹 검색·fetch 서버 도구는 Bedrock에 없다.
 
-### 9.2 리포트 전달 (`output/delivery.py`)
+### 9.2 리포트 전달 (`application/research.py`)
 
 **`DeliveryContext`(dataclass)** — 실행별 상태다. `publish_threads`, `staged_images`, `delivered_channels`,
 `partial_channels`(root만 게시되고 reply가 모두 실패한 채널. 재전송하면 공개 계정에 중복이 생긴다), `seen_urls`, `source_texts`,
@@ -1852,7 +1878,7 @@ AgentCore Browser도 쓰지 않는다. 다이제스트에 실린 실제 URL 10�
 있으면 경고를 남기고 텍스트만 게시한다. 상태 버킷이 없어도 텍스트만 게시한다.
 `post_to_threads`의 결과는 NamedTuple이라 늘 truthy이니 카운트를 명시적으로 읽는다.
 
-### 9.3 OG 이미지 첨부 (`shared/media/og_image.py`)
+### 9.3 OG 이미지 첨부 (`adapters/og_image.py`)
 
 **`fetch_og_image(url)`** — 페이지를 브라우저 UA로 fetch해 메타 태그를 파싱한다. 우선순위는 `og:image`,
 `og:image:url`, `twitter:image`, `twitter:image:src` 순이고 상대 URL은 페이지 URL로 절대화한다. Meta가 Threads
@@ -1881,8 +1907,9 @@ content_type이 다운스트림까지 일관되게 전달되게 한다.
 
 ## 10. 시각화 생성기
 
-`agent/visuals.py`의 `VisualGenerator`는 모드 없는 자유형 이미지 생성기다. 호출자는 데일리 비주얼
-파이프라인(`pipeline/daily_visual.py`의 `DailyVisualMaker`,
+`application/visual_generator.py`의 `VisualGenerator`는 모드 없는 자유형 이미지 생성기다. OpenAI Images 호출은
+`ImageRenderer` 포트를 구현한 `adapters/openai_images.py`의 `OpenAIImageRenderer`가 한다. 호출자는 데일리 비주얼
+파이프라인(`application/daily_visual.py`의 `DailyVisualMaker`,
 [§5.6](#56-데일리-비주얼-daily_visualpy)) 하나다.
 
 **설계.** 고정된 comic이나 diagram 모드, 컷 수 파라미터가 없다. 자연어 `instruction`이 원하는 형식을 묘사하고,
@@ -1980,7 +2007,7 @@ SNS, OpenAI, Threads, Tavily와 수집 대상).
 **재시도와 DLQ.** 다이제스트와 비주얼 Lambda는 `retry_attempts=0`에 SQS
 DLQ(`foundation.async_dlq`로 `on_failure`)를 붙인다. Threads 갱신과 댓글 답글 Lambda도 `retry_attempts=0`이고 DLQ는 없다. 명시값이
 없으면 비동기 재시도 2회가 기본이라 갱신 엔드포인트를 재호출하거나 댓글에 다시 답한다. 일시적으로 실패한 댓글은 다음
-정기 실행들이 세 번까지 다시 시도한다([§5.9](#59-댓글-답글-pipelinecomment_repliespy-enable_comment_replies)). 파이프라인이 멱등이 아니고 Threads는
+정기 실행들이 세 번까지 다시 시도한다([§5.9](#59-댓글-답글-applicationcomment_repliespy-enable_comment_replies)). 파이프라인이 멱등이 아니고 Threads는
 idempotency key가 없어서 재시도가 이중 게시를 일으키니, 자동 재시도 대신 실패 건을 DLQ에 남겨 점검과 수동
 리플레이를 한다. 핸들러는 [§8](#핸들러-예외-전파)처럼 raise해서 Errors 알람이 뜨게 한다.
 
@@ -2071,9 +2098,9 @@ CloudWatch 알람 10개가 모두 SNS 알림 토픽으로, 그리고 이메일�
 
 - 수집기(공용 `collectors.base.fetch_feed`를 모킹해 재시도와 분류, 헬스 판정을 돈다).
 - 집계기와 랭커 파싱, 슬롯과 origin-cap 로직, 그리고 배치 재시도와 전면 실패 승격, fan-out 상한.
-- **`pipeline.runner.run_pipeline` 오케스트레이션(`test_run_pipeline.py`)** — 집계 후 빈 입력과 임계 미달 조기 반환,
+- **`application.digest_pipeline` 오케스트레이션(`test_run_pipeline.py`, `test_main.py`)** — 집계 후 빈 입력과 임계 미달 조기 반환,
   원장과 leads 기록, 트렌드 갱신, 원장과 AgentCore 스냅샷 양쪽에서 시드하는 cross-day dedup(URL 정규화 포함),
-  dry-run이 상태를 쓰지 않고 아무 채널에도 보내지 않음, 로컬 인라인 비주얼 실행과, 게시가 실패하거나 다 올라가지 않으면 스냅샷 저장 뒤 `PublishIncomplete`로 알리는 것. LLM과
+  dry-run이 상태를 쓰지 않음, 로컬 실행이 저장한 뒤 인라인으로 게시하는 순서와, 게시가 실패하거나 다 올라가지 않으면 `PublishIncomplete`로 알리는 것. LLM과
   네트워크 협력자만 스텁하고 원장과 롤링 로그, 집계는 임시 디렉터리 StateStore로 실제 실행한다.
 - **`StateStore`(`test_state_store.py`)** — `S3StateStore`의 키 prefix와 UTF-8 인코딩, NoSuchKey와 기타
   ClientError의 구분, `create_state_store`의 버킷 기반 선택(AWS 밖에서도 `STATE_BUCKET`이면 S3와 프로파일 세션).
@@ -2104,6 +2131,7 @@ CloudWatch 알람 10개가 모두 SNS 알림 토픽으로, 그리고 이메일�
 
 **lint와 타입 체크.** ruff와 black `--check`, 그리고 `mypy .`로 레포 전체를 본다. 검사 경로를 열거하지 않고
 제외만 `[tool.mypy] exclude`에 둔다. 열거식은 새로 생긴 최상위 모듈을 조용히 게이트 밖에 남긴다.
+`lint-imports`가 계층 계약을 검사한다([§2](#2-저장소-구조)).
 
 **테스트와 커버리지 게이트.** 범위와 `fail_under`가 `pyproject.toml`(`[tool.coverage.*]`)에 있어서 커맨드라인
 수정으로 좁혀지지 않는다.
@@ -2120,7 +2148,7 @@ CloudWatch 알람 10개가 모두 SNS 알림 토픽으로, 그리고 이메일�
 계정을 써서 자격증명 없이 완전 오프라인으로 돈다.
 
 **Docker 빌드와 이미지 import 체크.** 다이제스트 이미지를 `load: true`(네이티브 amd64)로 빌드해 로컬 데몬에
-올린 뒤, `docker run --rm --network none --entrypoint python`으로 네 `lambda_handlers.*`를 import하고
+올린 뒤, `docker run --rm --network none --entrypoint python`으로 네 `entrypoints.*`를 import하고
 `Config.load()`가 템플릿을 읽는지 확인한다. 빌드만으로는 import가 한 번도 실행되지 않으니
 COPY 누락이나 개발자 머신에서만 해석되는 모듈이 그대로 통과한다. 자격증명 없이 `--network none`이니 import
 시점의 AWS 호출이나 HTTP fetch가 콜드스타트가 아니라 CI에서 깨진다. import 체크는 빌드가 얼마나 캐시됐든
@@ -2162,8 +2190,8 @@ shellcheck까지 검사한다. Python과 npm 의존성은 dependabot 대상이 �
 `uv pip install --system`하고 프로젝트 자신은 `--no-deps`). `pip install .`은 빌드 시점에 pyproject 범위를 다시
 해석하므로 CI가 테스트한 적 없는 의존성 집합이 Lambda에서 돌 수 있다. 의존성 레이어를 소스 COPY보다 먼저 두어
 코드 변경이 레이어를 재사용한다. 이미지에는 Lambda가 쓰는 패키지만 들어간다(로컬 CLI인 `main.py`는 넣지 않고
-포트도 열지 않는다). `agent/__init__.py`는 비어 있어서 Lambda가 `agent.visuals`나 `agent.tool_state`를 import해도
-리서치 에이전트(Strands)는 로드되지 않는다.
+포트도 열지 않는다). `adapters/__init__.py`는 비어 있고 Strands를 import하는 모듈은 `adapters/research_agent.py`와
+`adapters/research_tools.py`뿐이라, Lambda 핸들러를 import해도 리서치 에이전트(Strands)는 로드되지 않는다.
 
 런타임은 non-root(uid 10001)다. 그래서 `shared/logger.py`는 로그 디렉터리를 무가드로 `mkdir`하지 않는다. 모듈
 스코프에서 그것을 하면 쓰기 권한이 없는 환경에서 import 자체가 PermissionError로 죽는다. 프로덕션은
@@ -2190,6 +2218,7 @@ uv run python scripts/sync_to_s3.py rsshub              # 소스 하나만
 uv run python -m pytest tests/ -v                       # 테스트
 uv run pre-commit run --all-files                       # ruff, black, 파일 검사, uv lock --check
 uv run mypy .                                           # 레포 전체 타입 체크
+uv run lint-imports                                     # 계층 의존 방향(포트와 어댑터) 검사
 uv run python scripts/ci_synth.py                       # 오프라인 CDK synth(인프로세스)
 
 # 배포: 다이제스트 이미지(amd64)를 빌드/푸시하고, 푸시된 sha256 digest를 DIGEST_IMAGE_REF로 넘긴다. 태그 문자열이

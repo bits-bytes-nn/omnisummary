@@ -1,6 +1,6 @@
-from agent.tool_state import DigestStateManager
+from domain.digest_snapshot import DigestStateManager
+from domain.models import CollectedItem, DigestContent, DigestItem, DigestResult, RankedItem
 from shared.constants import SourceType
-from shared.models import CollectedItem, DigestContent, DigestItem, DigestResult, RankedItem
 
 
 def _item(item_id: str) -> CollectedItem:

@@ -160,8 +160,8 @@ jobs:
       - name: Import-check digest image
         run: >
           docker run --rm --network none --entrypoint python omnisummary-digest:ci -c
-          "import lambda_handlers.digest_handler, lambda_handlers.visual_handler,
-          lambda_handlers.threads_refresh_handler, lambda_handlers.comment_reply_handler;
+          "import entrypoints.digest_handler, entrypoints.visual_handler,
+          entrypoints.threads_refresh_handler, entrypoints.comment_reply_handler;
           print('digest image imports OK')"
       # Importing the handlers never loads a config, so green CI did not imply a DEPLOYABLE image:
       # config/config.yaml is gitignored and the Dockerfile COPYs config/, so the image CI validates

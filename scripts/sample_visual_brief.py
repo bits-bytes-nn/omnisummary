@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.tool_state import DigestStateManager
+from domain.digest_snapshot import DigestStateManager
 from entrypoints import bootstrap
 from shared import Config, logger
 

@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import recall_cli
-from shared.models import Trend, TrendEvidence, TrendMemory
+from domain.models import Trend, TrendEvidence, TrendMemory
 
 
 def _snapshot() -> dict:

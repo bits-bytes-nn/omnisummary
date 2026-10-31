@@ -18,17 +18,13 @@ RUN pip install --no-cache-dir --upgrade pip uv==0.6.14 && \
     uv pip install --system --no-cache -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
 
-COPY agent/ ./agent/
 COPY shared/ ./shared/
+COPY domain/ ./domain/
 COPY application/ ./application/
 COPY adapters/ ./adapters/
 COPY entrypoints/ ./entrypoints/
-COPY pipeline/ ./pipeline/
-COPY collectors/ ./collectors/
-COPY output/ ./output/
 COPY config/ ./config/
 COPY assets/ ./assets/
-COPY lambda_handlers/ ./lambda_handlers/
 
 # --no-deps: the pinned set above is authoritative; installing the project must not pull anything
 # newer. awslambdaric is the Lambda runtime shim, not an application dependency.
@@ -45,4 +41,4 @@ USER 10001
 ENV PYTHONUNBUFFERED=1
 
 ENTRYPOINT ["python", "-m", "awslambdaric"]
-CMD ["lambda_handlers.digest_handler.handler"]
+CMD ["entrypoints.digest_handler.handler"]

@@ -28,9 +28,9 @@ load_dotenv()
 # would just re-upload it).
 os.environ.pop("STATE_BUCKET", None)
 
-from collectors.base import PARK_META_PREVIOUS_SYNC_AT, dump_items_envelope, park_file_key
-from collectors.rsshub import RSSHubCollector
-from collectors.youtube import YouTubeCollector
+from adapters.collectors.base import PARK_META_PREVIOUS_SYNC_AT, dump_items_envelope, park_file_key
+from adapters.collectors.rsshub import RSSHubCollector
+from adapters.collectors.youtube import YouTubeCollector
 from shared import Config, LocalPaths, logger
 from shared.constants import DIGEST_PERIOD_HOURS
 

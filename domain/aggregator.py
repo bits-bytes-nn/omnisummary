@@ -3,8 +3,9 @@ from __future__ import annotations
 import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from shared import CollectedItem, SourceType, generate_item_id, logger, normalize_title
-from shared.formatting import RETWEET_PREFIX
+from domain.formatting import RETWEET_PREFIX, normalize_title
+from domain.models import CollectedItem, generate_item_id
+from shared import SourceType, logger
 
 _TRACKING_PARAM_PREFIXES = ("utm_",)
 _TRACKING_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src", "ref_url"}

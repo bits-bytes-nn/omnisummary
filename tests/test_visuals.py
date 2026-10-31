@@ -7,9 +7,9 @@ from pydantic import ValidationError
 
 from adapters.openai_images import OpenAIImageRenderer
 from application.visual_generator import VisualGenerator
+from domain.models import VisualBrief
 from shared.config import PipelineConfig
 from shared.constants import LanguageModelId
-from shared.models import VisualBrief
 
 
 class TestVisualBriefValidation:

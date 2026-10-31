@@ -9,10 +9,10 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from adapters.alerts import publish_alert
-from agent.tool_state import DigestStateManager
+from domain.digest_snapshot import DigestStateManager
+from domain.models import ThreadsDelivery
 from entrypoints import bootstrap
 from shared import Config, logger, set_correlation_id
-from shared.models import ThreadsDelivery
 
 
 def _remaining_deadline(context: Any) -> float | None:

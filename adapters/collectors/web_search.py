@@ -14,17 +14,9 @@ from tavily.errors import UsageLimitExceededError
 
 from adapters.aws import resolve_secret
 from application.ports import LanguageModels
-from shared import (
-    DOMAIN_TO_SOURCE,
-    CollectedItem,
-    RefineQueryPrompt,
-    SourceType,
-    generate_item_id,
-    get_config,
-    logger,
-    parse_json_from_llm_output,
-    retry_async,
-)
+from application.prompts import RefineQueryPrompt
+from domain.models import CollectedItem, generate_item_id
+from shared import DOMAIN_TO_SOURCE, SourceType, get_config, logger, parse_json_from_llm_output, retry_async
 from shared.config import WebSearchCollectorConfig
 
 from .base import BaseCollector, collection_window_dates, gather_collector_results, in_collection_window
