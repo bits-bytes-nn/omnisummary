@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -89,10 +90,10 @@ def pending_comments(
 # (a dot does not: "Thanks.@evil" is a mention).
 # Its cost is declining a reply that names a file or library ("node.js"): the account then stays silent.
 _BARE_DOMAIN = re.compile(r"(?i)[\w-]+(?:\.|\s+\.\s*|\s*(?:\[\.\]|\(\.\)|\(dot\)|닷|\bdot\b)\s*)[a-z]{2,}(?![a-z0-9-])")
-# "점"/"쩜" are the everyday Korean "dot" but also ordinary words (장점, 점수), so only an ASCII name before
-# and a common TLD after reads as a domain ("evil 점 com").
+# "점"/"쩜" are the everyday Korean "dot" but also ordinary words (장점, 점수, "100점 AI"), so only a name
+# starting with a letter and a common TLD after ("evil 점 com", "evil닷컴") reads as a domain.
 _SPOKEN_DOT_DOMAIN = re.compile(
-    r"(?i)(?<![a-z0-9-])[a-z0-9-]+\s*[점쩜]\s*(?:com|net|org|io|ai|kr|co|me|dev|app|xyz)(?![a-z0-9-])"
+    r"(?i)(?<![a-z0-9-])[a-z][a-z0-9-]*\s*(?:[점쩜닷]\s*(?:com|net|org|io|ai|kr|co|me|dev|app|xyz)(?![a-z0-9-])|[점쩜닷]컴)"
 )
 _ZERO_WIDTH = re.compile("[\u200b-\u200f\u2060\ufeff]")
 _HANDLE = re.compile(r"(?<![A-Za-z0-9_@])@([A-Za-z0-9._]+)")
@@ -164,7 +165,11 @@ class CommentResponder:
         except Exception:
             logger.warning("Could not record the failure on comment %s", comment_id, exc_info=True)
 
-    async def run(self, now: datetime, *, dry_run: bool = False) -> CommentReplyRun:
+    # A comment is started only with this much of the run's time left: a draft plus a publish takes well
+    # under it, and a run killed between the publish and the ledger write answers the comment again.
+    MIN_SECONDS_PER_COMMENT = 90
+
+    async def run(self, now: datetime, *, dry_run: bool = False, deadline: float | None = None) -> CommentReplyRun:
         """Answer what is pending. `dry_run` drafts the replies and posts and records nothing.
         A comment whose draft fails is tried again next run; one whose publish may have failed transiently
         is tried again up to the ledger's MAX_ATTEMPTS; one Threads rejects for good is recorded as failed."""
@@ -174,6 +179,10 @@ class CommentResponder:
         async with self.threads.comments() as threads:
             pending: list[PendingComment] = []
             for post in await threads.fetch_own_posts(since):
+                # `since` is a request to the API, not a guarantee: one that ignored it would grow every
+                # hourly run with the whole post history.
+                if post.created_at is not None and post.created_at < since:
+                    continue
                 pending += pending_comments(
                     post,
                     await threads.fetch_conversation(post.id),
@@ -186,6 +195,9 @@ class CommentResponder:
             if len(pending) > cap:
                 logger.info("%d comments pending; answering the oldest %d this run", len(pending), cap)
             for item in pending[:cap]:
+                if deadline is not None and deadline - time.monotonic() < self.MIN_SECONDS_PER_COMMENT:
+                    logger.info("Out of time; the remaining comments wait for the next run")
+                    break
                 comment_id = item.comment.id
                 try:
                     decision = await self.draft(item)

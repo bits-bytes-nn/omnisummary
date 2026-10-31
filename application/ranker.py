@@ -371,13 +371,17 @@ class ContentRanker:
                 number = entry["item"]
                 if isinstance(number, str) and number.isdigit():
                     number = int(number)
+                elif isinstance(number, float) and number.is_integer():
+                    number = int(number)
+                if number == 0 and type(number) is int:
+                    # Zero-based: every other number points at the item before the one meant. Drop the
+                    # whole answer so the coverage re-ask scores the batch again.
+                    logger.warning("Ranking response numbered items from 0; discarding the response")
+                    return []
                 # A bool or a fraction is not an item number (int(True) and int(2.7) would map silently).
                 if type(number) is not int or not 1 <= number <= len(items):
-                    # One bad number means the numbering itself is off (a zero-based answer shifted every
-                    # score onto the next item): drop the whole answer so the coverage re-ask scores the
-                    # batch again rather than keep the shifted part.
-                    logger.warning("Ranking response used item number %r; discarding the response", entry["item"])
-                    return []
+                    logger.warning("Skipping ranking entry with item number %r", entry["item"])
+                    continue
                 if number in seen:
                     duplicates.append(number)
                     continue

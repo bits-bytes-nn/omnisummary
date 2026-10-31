@@ -58,6 +58,21 @@ class TestRun:
         persist.assert_not_called()
         metric.assert_called_once_with(5)  # missing data is BREACHING for the EmptyDigest alarm
 
+    async def test_a_stored_but_unposted_day_is_delivered_not_rebuilt(self):
+        # A duplicate invocation (or a DLQ replay whose visual never fired) rebuilt the day, and the
+        # stored record then said B while Threads showed A.
+        with patch("entrypoints.digest_handler.Config.load", return_value=_config()):
+            with patch("entrypoints.digest_handler.already_published", return_value=False):
+                with patch("entrypoints.digest_handler.run_collectors_with_health", new=AsyncMock()) as collect:
+                    with patch("entrypoints.digest_handler.persist_digest") as persist:
+                        with patch("entrypoints.digest_handler._stored_story_count", return_value=5):
+                            with patch("entrypoints.digest_handler._emit_digest_items_metric"):
+                                with patch("entrypoints.digest_handler._trigger_visual") as trigger:
+                                    await digest_handler._run({"digest_date": "2026-10-31"})
+        collect.assert_not_awaited()
+        persist.assert_not_called()
+        trigger.assert_called_once_with(date(2026, 10, 31))
+
     async def test_exits_early_when_no_items(self):
         config = _config()
         health = HealthReport(sources=[SourceHealth(name="rss", item_count=0, status=SourceStatus.EMPTY)])

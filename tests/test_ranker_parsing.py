@@ -92,18 +92,22 @@ class TestParseRankings:
         assert result[0].score == 0.9
         assert result[0].reasoning == "first"
 
-    @pytest.mark.parametrize("bad", [0, -1, 4, 99])
-    def test_a_number_outside_the_batch_discards_the_answer(self, bad):
-        raw = json.dumps({"rankings": [{"item": 1, "score": 0.9}, {"item": bad, "score": 0.5}]})
-        assert self._parse(raw, _items(3)) == []
+    def test_a_zero_based_answer_is_discarded_whole(self):
+        # Zero-based shifts every score onto the item before; the re-ask scores the batch again.
+        raw = json.dumps(
+            {"rankings": [{"item": 0, "score": 0.9}, {"item": 1, "score": 0.5}, {"item": 2, "score": 0.1}]}
+        )
+        assert self._parse(raw) == []
 
-    def test_a_bool_or_fraction_is_not_an_item_number(self):
-        for bad in (True, 2.7):
-            raw = json.dumps({"rankings": [{"item": bad, "score": 0.9}, {"item": "3", "score": 0.7}]})
-            assert self._parse(raw) == []
-        assert [r.item.item_id for r in self._parse(json.dumps({"rankings": [{"item": "3", "score": 0.7}]}))] == [
-            "item_3"
-        ]
+    @pytest.mark.parametrize("bad", [-1, 4, 99, True, 2.7, None, "Item 2"])
+    def test_a_stray_entry_is_skipped_and_the_rest_kept(self, bad):
+        # One phantom entry used to throw away a whole 40-item batch and, repeated, fail it.
+        raw = json.dumps({"rankings": [{"item": 1, "score": 0.9}, {"item": bad, "score": 0.5}]})
+        assert [r.item.item_id for r in self._parse(raw, _items(3))] == ["item_1"]
+
+    def test_an_integral_float_or_digit_string_is_that_item(self):
+        raw = json.dumps({"rankings": [{"item": 2.0, "score": 0.9}, {"item": "3", "score": 0.7}]})
+        assert [r.item.item_id for r in self._parse(raw)] == ["item_2", "item_3"]
 
     def test_invalid_json_returns_empty(self):
         result = self._parse("not valid json at all")

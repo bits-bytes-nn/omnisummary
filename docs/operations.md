@@ -99,7 +99,7 @@ aws lambda invoke --profile research --region ap-northeast-2 --function-name omn
 `main.py --date <날짜> --force-republish`는 다시 수집하고 새로 쓰므로 그날 게시된 것과 다른 다이제스트가 나가고, 저장된
 기록도 그것으로 바뀐다. 저장된 스냅샷이 없거나 기사가 0건일 때만 쓴다.
 
-DLQ에 쌓인 메시지는 확인한 뒤 지운다. digest Lambda 메시지를 다시 넣으면 그 메시지가 실행됐던 날짜의 다이제스트를 다시 만든다(이벤트의 `time`을 읽는다).
+DLQ에 쌓인 메시지는 확인한 뒤 지운다. digest Lambda 메시지를 다시 넣으면 그 메시지가 실행됐던 날짜(이벤트의 `time`)를 다룬다. 그날 다이제스트가 이미 저장돼 있으면 새로 만들지 않고 저장된 것을 비주얼 Lambda로 다시 보낸다. 날을 새로 만들려면 `main.py --date <날짜> --force-republish`를 쓴다.
 
 ```bash
 Q=$(aws sqs get-queue-url --profile research --region ap-northeast-2 --queue-name omnisummary-dev-async-dlq --query QueueUrl --output text)
