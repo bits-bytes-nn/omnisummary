@@ -11,7 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .constants import (
     COLLECTOR_NAMES,
-    EMPTY_RATE_CHECK_DISABLED,
     RSSHUB_PORT,
     VISUAL_ORIENTATIONS,
     LanguageModelId,
@@ -93,9 +92,9 @@ class BaseCollectorConfig(_StrictModel):
     # nothing) is the same disappearance shape as a failure, but it trips no failure rate — and as
     # long as ONE input still produced an item the source reported OK. Source-dependent: many RSS
     # blogs legitimately publish nothing on a given day, whereas 40 X accounts all going quiet is a
-    # broken session. EMPTY_RATE_CHECK_DISABLED (the default) disables the check; set it per source
-    # in config.yaml for the sources whose silence is never legitimate.
-    empty_rate_threshold: float = Field(default=EMPTY_RATE_CHECK_DISABLED, ge=0.0, le=100.0)
+    # broken session. None (the default) disables the check; set it per source in config.yaml for the
+    # sources whose silence is never legitimate.
+    empty_rate_threshold: float | None = Field(default=None, ge=0.0, le=100.0)
 
 
 class YouTubeCollectorConfig(BaseCollectorConfig):
@@ -155,15 +154,10 @@ class WebSearchCollectorConfig(BaseCollectorConfig):
     max_concurrency: int = Field(default=5, ge=1)
 
 
-class RSSHubAccount(_StrictModel):
-    username: str
-    # X only: every configured account is X, and the routes for other platforms were never verified.
-    platform: Literal["x", "twitter"] = "x"
-
-
 class RSSHubCollectorConfig(BaseCollectorConfig):
     base_url: str = f"http://localhost:{RSSHUB_PORT}"
-    accounts: list[RSSHubAccount] = Field(default_factory=list)
+    # X usernames (X only: routes for other platforms were never verified).
+    accounts: list[str] = Field(default_factory=list)
     # How many account feeds the local sync fetches at once. Worst-case wall time is
     # ceil(accounts / max_concurrency) * (request_timeout + retry_backoff_sec) * max_retries.
     max_concurrency: int = Field(default=5, ge=1)

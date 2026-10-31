@@ -8,7 +8,7 @@ import pytest
 from adapters.collectors.base import ParkedItems, ParkOutcome, TransientStatusError
 from adapters.collectors.rsshub import RSSHubCollector
 from domain.models import CollectedItem
-from shared.config import RSSHubAccount, RSSHubCollectorConfig
+from shared.config import RSSHubCollectorConfig
 from shared.constants import SourceType
 
 
@@ -24,7 +24,7 @@ def _item(item_id: str) -> CollectedItem:
 def _config(**kwargs) -> RSSHubCollectorConfig:
     base = {
         "base_url": "http://localhost:1200",
-        "accounts": [RSSHubAccount(username="karpathy", platform="x")],
+        "accounts": ["karpathy"],
         # Retries still happen; they just don't sleep, so the suite stays hermetic and fast.
         "retry_backoff_sec": 0,
     }
@@ -148,7 +148,7 @@ class TestReachability:
         monkeypatch.delenv("STATE_BUCKET", raising=False)
         c = RSSHubCollector(
             _config(
-                accounts=[RSSHubAccount(username="hangs", platform="x"), RSSHubAccount(username="ok", platform="x")],
+                accounts=["hangs", "ok"],
                 request_timeout=1,
                 max_retries=1,
             )
@@ -169,9 +169,7 @@ class TestReachability:
         # Reachable service but nothing parseable on ANY account is an outage, not a quiet day:
         # it must surface as FAILED instead of a silent empty result.
         monkeypatch.delenv("STATE_BUCKET", raising=False)
-        c = RSSHubCollector(
-            _config(accounts=[RSSHubAccount(username="a", platform="x"), RSSHubAccount(username="b", platform="x")])
-        )
+        c = RSSHubCollector(_config(accounts=["a", "b"]))
         with patch("adapters.collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with _reachable():
                 with patch("adapters.collectors.base.fetch_feed", side_effect=RuntimeError("bozo")):
@@ -181,9 +179,7 @@ class TestReachability:
     @pytest.mark.asyncio
     async def test_partial_failure_keeps_succeeding_accounts(self, monkeypatch):
         monkeypatch.delenv("STATE_BUCKET", raising=False)
-        c = RSSHubCollector(
-            _config(accounts=[RSSHubAccount(username="bad", platform="x"), RSSHubAccount(username="ok", platform="x")])
-        )
+        c = RSSHubCollector(_config(accounts=["bad", "ok"]))
         fetch = _fetch_by_username({"bad": RuntimeError("bozo"), "ok": _feed([_entry()])})
         with patch("adapters.collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with _reachable():
@@ -253,7 +249,7 @@ class TestFailureHint:
     @pytest.mark.asyncio
     async def test_hint_names_twitter_cookies_when_x_feeds_fail(self, monkeypatch):
         monkeypatch.delenv("STATE_BUCKET", raising=False)
-        accounts = [RSSHubAccount(username="a", platform="x"), RSSHubAccount(username="b", platform="x")]
+        accounts = ["a", "b"]
         c = RSSHubCollector(_config(accounts=accounts, error_rate_threshold=40.0))
         fetch = _fetch_by_username({"a": _feed([_entry()]), "b": RuntimeError("feed down")})
         with patch("adapters.collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
@@ -270,7 +266,7 @@ class TestFanOutBound:
         monkeypatch.delenv("STATE_BUCKET", raising=False)
         c = RSSHubCollector(
             _config(
-                accounts=[RSSHubAccount(username=f"u{i}", platform="x") for i in range(6)],
+                accounts=[f"u{i}" for i in range(6)],
                 max_concurrency=2,
             )
         )
@@ -466,7 +462,7 @@ class TestDegradedReporting:
 
     @pytest.mark.asyncio
     async def test_live_run_records_meta_and_flags_a_mostly_failed_fan_out(self):
-        accounts = [RSSHubAccount(username=f"u{i}", platform="x") for i in range(4)]
+        accounts = [f"u{i}" for i in range(4)]
         c = RSSHubCollector(_config(accounts=accounts, error_rate_threshold=50.0))
         fetch = _fetch_by_username(
             {

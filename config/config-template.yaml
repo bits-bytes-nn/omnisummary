@@ -72,8 +72,7 @@ collectors:
     enabled: false
     base_url: "http://localhost:1200"
     accounts: []
-      # - username: "karpathy"
-      #   platform: x
+      # - "karpathy"
     lookback_hours: 72
     max_concurrency: 5
     park_max_age_hours: 12
@@ -81,7 +80,7 @@ collectors:
     # trips, and as long as one account still had a post the source reported a clean OK. Percent of
     # inputs that may come back empty before the source is DEGRADED. Set per source — many RSS blogs
     # legitimately publish nothing on a given day, whereas 40 X accounts going quiet is a broken
-    # session. 100 (the code default) makes the check UNREACHABLE, because the comparison is `>`.
+    # session. Left unset (the code default) the check is off.
     empty_rate_threshold: 90.0
   # Sources whose EMPTY result is an incident worth an SNS alert. A dark source raises no exception
   # and leaves no stale park file, so nothing else notices it — but reddit/x are legitimately quiet

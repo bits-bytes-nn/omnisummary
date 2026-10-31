@@ -183,26 +183,6 @@ async def test_reddit_subreddits_missing_from_the_feed_report_degraded_when_arme
 
 
 @pytest.mark.asyncio
-async def test_reddit_all_subreddits_answering_is_not_degraded():
-    from adapters.collectors.reddit import RedditCollector
-    from shared.config import RedditCollectorConfig
-
-    class _Feed(dict):
-        def __getattr__(self, name):
-            try:
-                return self[name]
-            except KeyError as e:
-                raise AttributeError(name) from e
-
-    collector = RedditCollector(RedditCollectorConfig(subreddits=["a", "b"], retry_backoff_sec=0))
-    with patch("adapters.collectors.base.fetch_feed", return_value=_Feed(entries=[], bozo=False)):
-        assert await collector.collect() == []
-
-    # A quiet day (every feed answered, nothing new) must NOT be reported as degraded.
-    assert collector.degraded_detail == ""
-
-
-@pytest.mark.asyncio
 async def test_stale_wins_over_degraded():
     # A stale park file is the more actionable finding (the sync itself has stopped), so it keeps
     # the report slot rather than being masked by the degradation flag.

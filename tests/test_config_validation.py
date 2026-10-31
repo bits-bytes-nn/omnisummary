@@ -12,10 +12,9 @@ from shared.config import (
     Config,
     PipelineConfig,
     RedditCollectorConfig,
-    YouTubeCollectorConfig,
     get_config,
 )
-from shared.constants import COLLECTOR_NAMES, EMPTY_RATE_CHECK_DISABLED
+from shared.constants import COLLECTOR_NAMES
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 CONFIG_TEMPLATE = CONFIG_DIR / "config-template.yaml"
@@ -228,14 +227,14 @@ class TestParkedSourceTripwires:
     @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
     def test_the_empty_rate_tripwire_is_armed_for_the_source_with_a_silent_outage(self, config_path):
         source = Config.from_yaml(str(config_path)).collectors.rsshub
-        assert source.empty_rate_threshold < EMPTY_RATE_CHECK_DISABLED
+        assert source.empty_rate_threshold is not None
 
     @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
     def test_youtube_does_not_alert_on_a_quiet_day(self, config_path):
         # 9 weekly-cadence channels at max_videos_per_channel 1 all being quiet is 100% empty, which
         # any armed threshold reports as DEGRADED → an SNS 'Source Health' ALERT on a normal day.
         config = Config.from_yaml(str(config_path))
-        assert config.collectors.youtube.empty_rate_threshold == EMPTY_RATE_CHECK_DISABLED
+        assert config.collectors.youtube.empty_rate_threshold is None
         assert "youtube" not in config.collectors.alert_on_empty
 
     @pytest.mark.parametrize("config_path", CONFIG_FILES, ids=CONFIG_IDS)
@@ -243,22 +242,6 @@ class TestParkedSourceTripwires:
     def test_a_skipped_sync_day_cannot_read_fresh(self, config_path, source_name):
         source = getattr(Config.from_yaml(str(config_path)).collectors, source_name)
         assert source.park_max_age_hours <= self._ONE_SYNC_CADENCE_HOURS
-
-    def test_the_code_default_leaves_the_empty_rate_check_unreachable(self):
-        # Documents WHY the file must set it: the default equals the sentinel, and the comparison
-        # is strict, so no observed empty rate can ever exceed it.
-        assert YouTubeCollectorConfig().empty_rate_threshold == EMPTY_RATE_CHECK_DISABLED
-        assert (
-            degradation_reason(
-                total=10,
-                failed=0,
-                empty=10,
-                what="channels",
-                threshold=50.0,
-                empty_threshold=EMPTY_RATE_CHECK_DISABLED,
-            )
-            == ""
-        )
 
     def test_an_armed_threshold_reports_an_all_empty_source(self):
         reason = degradation_reason(

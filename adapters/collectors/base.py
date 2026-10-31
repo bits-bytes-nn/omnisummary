@@ -128,7 +128,7 @@ def degradation_reason(
     empty: int,
     what: str,
     threshold: float,
-    empty_threshold: float,
+    empty_threshold: float | None,
 ) -> str:
     """Why a source that produced items is nonetheless DEGRADED, or "" when it is healthy. Shared by
     the live path and the park-file path so the two verdicts cannot drift.
@@ -143,7 +143,7 @@ def degradation_reason(
     empty_rate = empty / total * 100
     if failed > 0 and fail_rate > threshold:
         return f"{failed}/{total} {what} failed (>{threshold:.0f}%)"
-    if empty > 0 and empty_rate > empty_threshold:
+    if empty_threshold is not None and empty > 0 and empty_rate > empty_threshold:
         return f"{empty}/{total} {what} returned nothing (>{empty_threshold:.0f}%)"
     return ""
 
