@@ -153,7 +153,7 @@ class TestVoiceInjection:
         prompt = captured["system_prompt"]
         # All placeholders substituted — a dropped/mis-named key would leave a literal brace.
         assert "{voice_guidance}" not in prompt
-        assert "{research_breadth}" not in prompt
+        assert "{research_target_words}" not in prompt
         assert "{korean_style_rules}" not in prompt
         # The digest narrator persona is actually injected (the headline feature).
         token = cfg.pipeline.digest_voice_guidance.split()[0]

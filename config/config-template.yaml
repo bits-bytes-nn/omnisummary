@@ -149,7 +149,7 @@ pipeline:
 agent:
   model_id: "anthropic.claude-opus-5-5"
   # Hard per-invocation bounds on the research tool loop, enforced by the Strands SDK at every turn
-  # boundary (research_breadth/research_max_iterations are prompt guidance, not bounds). A run that
+  # boundary. A run that
   # trips one is reported to the user as cut short.
   research_max_turns: 40
   research_max_total_tokens: 2000000

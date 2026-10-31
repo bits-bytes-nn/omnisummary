@@ -209,8 +209,7 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 
 ### 3.3 `agent`
 
-딥 리서치 에이전트 설정이다. 이 절의 값은 두 종류로 나뉘고 그 구분이 중요하다. `research_breadth`,
-`research_max_iterations`, `research_target_words`는 시스템 프롬프트에 보간되어 에이전트가 가이던스로 따르는 값이다
+딥 리서치 에이전트 설정이다. 이 절의 값은 두 종류로 나뉘고 그 구분이 중요하다. `research_target_words`는 시스템 프롬프트에 보간되어 에이전트가 가이던스로 따르는 값이다
 (그래도 바꾸면 실제 동작이 바뀐다). 나머지는 코드가 강제한다. `research_max_turns`, `research_max_total_tokens`,
 `research_max_output_tokens`는 실행을 멈추는 Strands `Limits`이고, `research_content_cap_chars`,
 `research_max_staged_images`, `og_image_timeout_sec`, `og_image_max_bytes`는 도구가 적용하는 하드 캡이다.
@@ -219,7 +218,6 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | 필드 | 설명 |
 |------|------|
 | `model_id` | 에이전트 모델(기본 Opus 5.5) |
-| `research_breadth`, `research_max_iterations` | 프롬프트에 주입되는 검색 폭(쿼리 수)과 깊이(라운드 수) 가이던스. 루프 상한이 아니다 |
 | `research_max_turns`, `research_max_total_tokens`, `research_max_output_tokens` | 툴 루프의 하드 상한(`strands.types.agent.Limits`로 실행마다 전달한다). SDK가 매 턴 경계에서 검사하고 `stop_reason="limit_*"`으로 멈춘다. 사이클마다 대화 전체를 다시 보내므로, 이 값들이 없으면 비용과 벽시계 시간에 상한이 없다 |
 | `research_target_words` | Markdown 리포트의 목표 분량(단어) 가이던스(기본 1500) |
 | `research_max_threads_posts` | Threads 게시물(root와 reply) 총수 하드 캡(기본 10). 너무 긴 리포트가 공개 게시물 수십 개로 퍼지지 않게 코드가 트림한다. 이 값이 Threads 리포트의 산문 예산을 정한다([§9의 `<delivery>`](#system_prompt_template) 참조) |
@@ -1769,8 +1767,8 @@ spec에서 이름과 인자, 한 줄 요약을 뽑아 `<tools>` 블록을 만든
 - **`<voice>`** — 데일리 다이제스트와 같은 내레이터 페르소나(`config.pipeline.digest_voice_guidance` 주입)를
   리포트 길이에 맞게 쓴다. 반복 금지는 한 번만 적는다.
 - **`<tools>`와 `<flow>`** — 도구 8개와 권장하되 강제하지 않는 흐름이다. 이해와 재작성, 다중 소스 리서치,
-  아웃라인, 작성, 이미지 첨부(기본은 생략), 전달 순이다. 검색 폭 `research_breadth`와 깊이
-  `research_max_iterations`를 가이던스로 주입한다.
+  작성, 이미지 첨부(기본은 생략), 전달 순이다. 검색 폭과 깊이는 숫자로 주지 않는다. 루프를 멈추는 것은 `Limits`이고,
+  프롬프트의 숫자 가이던스는 아무것도 강제하지 않았다.
 - **`<delivery>`** — 항상 전체 리포트(약 `research_target_words` 단어)를 Markdown으로
   `deliver_report(channel="markdown")`에 넘긴다. `[DELIVERY]`가 허용할 때만 Threads 스레드를 추가로 넘긴다.
   Threads는 깊이가 아니라 **범위**로 갈린다. `research_max_threads_posts` 캡 안에서(게시물당

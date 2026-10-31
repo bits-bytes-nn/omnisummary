@@ -496,10 +496,7 @@ class AgentConfig(_StrictModel):
     boto_read_timeout: int = Field(default=300, ge=1)
     boto_connect_timeout: int = Field(default=60, ge=1)
     boto_max_attempts: int = Field(default=3, ge=1)
-    # Deep-research soft knobs the agent follows as guidance (interpolated into its prompt, so
-    # editing these actually changes behavior — they are not enforced loop bounds).
-    research_breadth: int = Field(default=4, ge=1)
-    research_max_iterations: int = Field(default=3, ge=1)
+    # Report length the agent follows as guidance (interpolated into its prompt; not a bound).
     research_target_words: int = Field(default=1500, ge=200)
     # HARD per-invocation bounds handed to the Strands agent loop (strands.types.agent.Limits),
     # checked at every turn boundary. Unlike the guidance knobs above these are enforced by the SDK:
