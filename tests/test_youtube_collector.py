@@ -5,11 +5,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from collectors.base import ParkedItems, ParkOutcome
-from collectors.youtube import YouTubeCollector
+from adapters.collectors.base import ParkedItems, ParkOutcome
+from adapters.collectors.youtube import YouTubeCollector
+from domain.models import CollectedItem
 from shared.config import YouTubeCollectorConfig
 from shared.constants import SourceType
-from shared.models import CollectedItem
 
 
 def _absent_park() -> ParkedItems:
@@ -71,7 +71,7 @@ class TestApiPath:
         ctx.__aexit__ = AsyncMock(return_value=False)
 
         with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
-            with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
+            with patch("adapters.collectors.youtube.httpx.AsyncClient", return_value=ctx):
                 with patch.object(collector, "_get_transcript", return_value="full transcript"):
                     items = await collector.collect()
 
@@ -97,7 +97,7 @@ class TestApiPath:
         ctx.__aenter__ = AsyncMock(return_value=client)
         ctx.__aexit__ = AsyncMock(return_value=False)
         with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
-            with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
+            with patch("adapters.collectors.youtube.httpx.AsyncClient", return_value=ctx):
                 with patch.object(collector, "_get_transcript", return_value="t"):
                     items = await collector.collect()
         playlists = [c.kwargs["params"]["playlistId"] for c in client.get.await_args_list[:2]]
@@ -147,7 +147,7 @@ class TestApiPath:
         ctx.__aexit__ = AsyncMock(return_value=False)
 
         with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
-            with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
+            with patch("adapters.collectors.youtube.httpx.AsyncClient", return_value=ctx):
                 with patch.object(collector, "_get_transcript", return_value=""):
                     items = await collector.collect()
 
@@ -169,7 +169,7 @@ class TestApiPath:
         ctx.__aexit__ = AsyncMock(return_value=False)
 
         with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
-            with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
+            with patch("adapters.collectors.youtube.httpx.AsyncClient", return_value=ctx):
                 with pytest.raises(RuntimeError, match="returned 403"):
                     await collector.collect()
 
@@ -187,7 +187,7 @@ class TestApiPath:
         ctx.__aexit__ = AsyncMock(return_value=False)
 
         with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
-            with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
+            with patch("adapters.collectors.youtube.httpx.AsyncClient", return_value=ctx):
                 with pytest.raises(RuntimeError, match="malformed JSON"):
                     await collector.collect()
 
@@ -208,7 +208,7 @@ class TestApiPath:
         ctx.__aexit__ = AsyncMock(return_value=False)
 
         with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
-            with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
+            with patch("adapters.collectors.youtube.httpx.AsyncClient", return_value=ctx):
                 with pytest.raises(RuntimeError, match="malformed JSON"):
                     await collector.collect()
 
@@ -227,7 +227,7 @@ class TestApiPath:
         ctx.__aexit__ = AsyncMock(return_value=False)
 
         with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
-            with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
+            with patch("adapters.collectors.youtube.httpx.AsyncClient", return_value=ctx):
                 with pytest.raises(RuntimeError, match="returned 503"):
                     await collector.collect()
         assert client.get.await_count == 3  # playlist + 2 attempts at the details call
@@ -255,7 +255,7 @@ class TestApiPath:
                 raise RuntimeError("quota exceeded")
             return [CollectedItem(item_id="ok", source_type=SourceType.YOUTUBE, title="t", url="https://y/ok")]
 
-        with patch("collectors.youtube.load_items_from_s3", return_value=_absent_park()):
+        with patch("adapters.collectors.youtube.load_items_from_s3", return_value=_absent_park()):
             with patch.object(collector, "_collect_channel", side_effect=_collect):
                 items = await collector.collect()
         assert [i.item_id for i in items] == ["ok"]
@@ -279,7 +279,7 @@ class TestRetriableStatuses:
         ctx.__aexit__ = AsyncMock(return_value=False)
 
         with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
-            with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
+            with patch("adapters.collectors.youtube.httpx.AsyncClient", return_value=ctx):
                 with patch.object(collector, "_get_transcript", return_value=""):
                     items = await collector.collect()
         assert [i.item_id for i in items] == ["vid00000001"]
@@ -298,7 +298,7 @@ class TestRetriableStatuses:
         ctx.__aexit__ = AsyncMock(return_value=False)
 
         with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
-            with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
+            with patch("adapters.collectors.youtube.httpx.AsyncClient", return_value=ctx):
                 with pytest.raises(RuntimeError, match="returned 403"):
                     await collector.collect()
         assert client.get.await_count == 1
@@ -329,8 +329,8 @@ class TestRetriableStatuses:
             slept.append(delay)
 
         with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
-            with patch("collectors.youtube.httpx.AsyncClient", return_value=ctx):
-                with patch("collectors.youtube.asyncio.sleep", new=_sleep):
+            with patch("adapters.collectors.youtube.httpx.AsyncClient", return_value=ctx):
+                with patch("adapters.collectors.youtube.asyncio.sleep", new=_sleep):
                     with patch.object(collector, "_get_transcript", return_value=""):
                         items = await collector.collect()
         assert [i.item_id for i in items] == ["vid00000001"]
@@ -338,7 +338,7 @@ class TestRetriableStatuses:
         assert slept[0] == 7.0 and all(s <= 7.0 for s in slept)
 
     def test_retry_after_parsing(self):
-        from collectors.youtube import _retry_after_delay
+        from adapters.collectors.youtube import _retry_after_delay
 
         resp = MagicMock()
         resp.headers = {}
@@ -367,7 +367,7 @@ class TestChannelFanOut:
             state["active"] -= 1
             return []
 
-        with patch("collectors.youtube.load_items_from_s3", return_value=_absent_park()):
+        with patch("adapters.collectors.youtube.load_items_from_s3", return_value=_absent_park()):
             with patch.object(collector, "_collect_channel", side_effect=_collect):
                 await collector.collect()
         assert state["peak"] <= 2, f"fan-out exceeded max_concurrency: peak={state['peak']}"
@@ -383,7 +383,7 @@ class TestChannelFanOut:
             await asyncio.sleep(10)
             return []
 
-        with patch("collectors.youtube.load_items_from_s3", return_value=_absent_park()):
+        with patch("adapters.collectors.youtube.load_items_from_s3", return_value=_absent_park()):
             with patch.object(collector, "_collect_channel", side_effect=_hang):
                 with patch.object(type(collector.config), "channel_budget_sec", property(lambda self: 0)):
                     with pytest.raises(RuntimeError, match="timed out"):
@@ -408,7 +408,7 @@ class TestTranscriptSocketTimeout:
     asyncio.run blocked on the executor join at shutdown. The bound has to be at the socket."""
 
     def test_the_transcript_api_gets_a_session_carrying_the_configured_timeout(self):
-        from collectors import youtube
+        from adapters.collectors import youtube
 
         with patch.object(youtube, "YouTubeTranscriptApi") as api:
             api.return_value.fetch.return_value = MagicMock(snippets=[])
@@ -418,7 +418,7 @@ class TestTranscriptSocketTimeout:
         assert session._timeout_sec == 7
 
     def test_the_session_injects_the_timeout_into_every_request(self):
-        from collectors.youtube import _TimeoutSession
+        from adapters.collectors.youtube import _TimeoutSession
 
         session = _TimeoutSession(3)
         with patch("requests.Session.request", return_value="resp") as request:
@@ -426,7 +426,7 @@ class TestTranscriptSocketTimeout:
         assert request.call_args.kwargs["timeout"] == 3
 
     def test_an_explicit_timeout_is_not_overridden(self):
-        from collectors.youtube import _TimeoutSession
+        from adapters.collectors.youtube import _TimeoutSession
 
         session = _TimeoutSession(3)
         with patch("requests.Session.request", return_value="resp") as request:
@@ -438,7 +438,7 @@ class TestTranscriptSocketTimeout:
         # best-effort, so it must not fail the whole channel collect.
         import requests
 
-        from collectors import youtube
+        from adapters.collectors import youtube
 
         with patch.object(youtube, "YouTubeTranscriptApi") as api:
             api.return_value.fetch.side_effect = requests.exceptions.ReadTimeout("hung")
@@ -448,7 +448,7 @@ class TestTranscriptSocketTimeout:
     @pytest.mark.asyncio
     async def test_the_collector_passes_its_transcript_timeout_through(self):
         collector = YouTubeCollector(_config(transcript_timeout=9))
-        with patch("collectors.youtube.fetch_youtube_transcript", return_value="") as fetch:
+        with patch("adapters.collectors.youtube.fetch_youtube_transcript", return_value="") as fetch:
             collector._get_transcript("vid")
         assert fetch.call_args.kwargs["timeout_sec"] == 9
 
@@ -470,7 +470,7 @@ class TestS3Preload:
             )
         ]
         with patch(
-            "collectors.youtube.load_items_from_s3",
+            "adapters.collectors.youtube.load_items_from_s3",
             return_value=ParkedItems(outcome=ParkOutcome.FRESH, items=parked),
         ):
             with patch.object(collector, "_collect_channel", new=AsyncMock()) as live:
@@ -486,7 +486,7 @@ class TestS3Preload:
         collector = YouTubeCollector(_config())
         parked = [CollectedItem(item_id="vOld", source_type=SourceType.YOUTUBE, title="t", url="https://y/v")]
         stale = ParkedItems(outcome=ParkOutcome.STALE, items=parked, detail="72.0h old")
-        with patch("collectors.youtube.load_items_from_s3", return_value=stale):
+        with patch("adapters.collectors.youtube.load_items_from_s3", return_value=stale):
             with patch.object(collector, "_collect_channel", new=AsyncMock()) as live:
                 items = await collector.collect()
         assert [i.item_id for i in items] == ["vOld"]
@@ -508,7 +508,7 @@ class TestS3Preload:
         meta = {"previous_sync_at": "2026-06-01T09:00:00+00:00"}
         for parked_meta, expected in (({}, []), (meta, ["vMissed"])):
             parked = ParkedItems(outcome=ParkOutcome.FRESH, items=[missed], meta=parked_meta)
-            with patch("collectors.youtube.load_items_from_s3", return_value=parked):
+            with patch("adapters.collectors.youtube.load_items_from_s3", return_value=parked):
                 assert [i.item_id for i in await collector.collect()] == expected
 
     @pytest.mark.asyncio
@@ -534,7 +534,7 @@ class TestS3Preload:
             ),
         ]
         stale = ParkedItems(outcome=ParkOutcome.STALE, items=parked, detail="72.0h old")
-        with patch("collectors.youtube.load_items_from_s3", return_value=stale):
+        with patch("adapters.collectors.youtube.load_items_from_s3", return_value=stale):
             items = await collector.collect()
         assert [i.item_id for i in items] == ["vFresh"]
 
@@ -557,7 +557,7 @@ class TestS3Preload:
             )
         ]
         stale = ParkedItems(outcome=ParkOutcome.STALE, items=parked, detail="25.0h old")
-        with patch("collectors.youtube.load_items_from_s3", return_value=stale):
+        with patch("adapters.collectors.youtube.load_items_from_s3", return_value=stale):
             items = await collector.collect()
         assert [i.item_id for i in items] == ["vEvening"]
 
@@ -575,7 +575,7 @@ class TestS3Preload:
             )
         ]
         with patch(
-            "collectors.youtube.load_items_from_s3",
+            "adapters.collectors.youtube.load_items_from_s3",
             return_value=ParkedItems(outcome=ParkOutcome.FRESH, items=parked),
         ):
             with patch.object(collector, "_collect_channel", new=AsyncMock()) as live:
@@ -586,7 +586,7 @@ class TestS3Preload:
     async def test_park_age_budget_comes_from_config(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
         collector = YouTubeCollector(_config(park_max_age_hours=72))
-        with patch("collectors.youtube.load_items_from_s3", return_value=_absent_park()) as load:
+        with patch("adapters.collectors.youtube.load_items_from_s3", return_value=_absent_park()) as load:
             with patch.object(collector, "_collect_channel", new=AsyncMock(return_value=[])):
                 await collector.collect()
         assert load.call_args.kwargs["max_age_hours"] == 72
@@ -595,7 +595,7 @@ class TestS3Preload:
     async def test_live_collection_when_no_s3(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
         collector = YouTubeCollector(_config())
-        with patch("collectors.youtube.load_items_from_s3", return_value=_absent_park()):
+        with patch("adapters.collectors.youtube.load_items_from_s3", return_value=_absent_park()):
             with patch.object(collector, "_collect_channel", new=AsyncMock(return_value=[])):
                 items = await collector.collect()
         assert items == []
@@ -607,8 +607,8 @@ class TestS3Preload:
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
         collector = YouTubeCollector(_config(park_required=True))
         park = ParkedItems(outcome=ParkOutcome.ABSENT, detail="no object at 's3://b/youtube_items.json'")
-        with patch("collectors.base.is_running_in_aws", return_value=True):
-            with patch("collectors.youtube.load_items_from_s3", return_value=park):
+        with patch("adapters.collectors.base.is_running_in_aws", return_value=True):
+            with patch("adapters.collectors.youtube.load_items_from_s3", return_value=park):
                 with patch.object(
                     collector,
                     "_collect_channel",
@@ -627,8 +627,8 @@ class TestS3Preload:
     async def test_a_missing_park_file_is_silent_when_it_is_not_required(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
         collector = YouTubeCollector(_config())
-        with patch("collectors.base.is_running_in_aws", return_value=True):
-            with patch("collectors.youtube.load_items_from_s3", return_value=_absent_park()):
+        with patch("adapters.collectors.base.is_running_in_aws", return_value=True):
+            with patch("adapters.collectors.youtube.load_items_from_s3", return_value=_absent_park()):
                 with patch.object(collector, "_collect_channel", new=AsyncMock(return_value=[])):
                     await collector.collect()
         assert collector.degraded_detail == ""
@@ -648,8 +648,8 @@ class TestApiKeyResolution:
             calls.append(args)
             return "key-from-ssm"
 
-        with patch("collectors.youtube.load_items_from_s3", return_value=_absent_park()):
-            with patch("collectors.youtube.resolve_secret", side_effect=_resolve):
+        with patch("adapters.collectors.youtube.load_items_from_s3", return_value=_absent_park()):
+            with patch("adapters.collectors.youtube.resolve_secret", side_effect=_resolve):
                 with patch.object(collector, "_collect_via_api", new=AsyncMock(return_value=[])) as via_api:
                     await collector.collect()
         assert len(calls) == 1  # once for the whole run, not once per channel
@@ -663,10 +663,10 @@ class TestApiKeyResolution:
         collector = YouTubeCollector(_config())
         parked = [CollectedItem(item_id="v", source_type=SourceType.YOUTUBE, title="t", url="https://y/v")]
         with patch(
-            "collectors.youtube.load_items_from_s3",
+            "adapters.collectors.youtube.load_items_from_s3",
             return_value=ParkedItems(outcome=ParkOutcome.FRESH, items=parked),
         ):
-            with patch("collectors.youtube.resolve_secret") as resolve:
+            with patch("adapters.collectors.youtube.resolve_secret") as resolve:
                 await collector.collect()
         resolve.assert_not_called()
 
@@ -706,7 +706,7 @@ class TestRssFallback:
 
         with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
             with patch(
-                "collectors.youtube.fetch_feed_with_retry",
+                "adapters.collectors.youtube.fetch_feed_with_retry",
                 new=AsyncMock(return_value=self._feed(self._entry())),
             ):
                 with patch.object(collector, "_get_transcript", return_value=""):
@@ -727,7 +727,7 @@ class TestRssFallback:
         collector = YouTubeCollector(config)
         fetch = AsyncMock(return_value=self._feed(self._entry()))
         with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
-            with patch("collectors.youtube.fetch_feed_with_retry", new=fetch):
+            with patch("adapters.collectors.youtube.fetch_feed_with_retry", new=fetch):
                 with patch.object(collector, "_get_transcript", return_value=""):
                     await collector.collect()
         kwargs = fetch.await_args.kwargs
@@ -743,7 +743,7 @@ class TestRssFallback:
         collector = YouTubeCollector(_config())
         feed = self._feed(self._entry(), self._entry("", link="https://www.youtube.com/@x"))
         with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
-            with patch("collectors.youtube.fetch_feed_with_retry", new=AsyncMock(return_value=feed)):
+            with patch("adapters.collectors.youtube.fetch_feed_with_retry", new=AsyncMock(return_value=feed)):
                 with patch.object(collector, "_get_transcript", return_value=""):
                     items = await collector.collect()
         assert [item.item_id for item in items] == ["rssvid00001"]
@@ -754,7 +754,7 @@ class TestRssFallback:
         collector = YouTubeCollector(_config())
         feed = self._feed(self._entry("", link="https://www.youtube.com/watch?v=fromlink001"))
         with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
-            with patch("collectors.youtube.fetch_feed_with_retry", new=AsyncMock(return_value=feed)):
+            with patch("adapters.collectors.youtube.fetch_feed_with_retry", new=AsyncMock(return_value=feed)):
                 with patch.object(collector, "_get_transcript", return_value=""):
                     items = await collector.collect()
         assert [item.item_id for item in items] == ["fromlink001"]
@@ -817,14 +817,14 @@ class TestResolveChannelIdViaApi:
 class TestTranscript:
     def test_transcript_failure_returns_empty(self):
         collector = YouTubeCollector(_config())
-        with patch("collectors.youtube.YouTubeTranscriptApi", side_effect=RuntimeError("boom")):
+        with patch("adapters.collectors.youtube.YouTubeTranscriptApi", side_effect=RuntimeError("boom")):
             assert collector._get_transcript("vid") == ""
 
     def test_fetch_uses_configured_language_first(self):
         collector = YouTubeCollector(_config(transcript_language="ko"))
         api = MagicMock()
         api.fetch.return_value = MagicMock(snippets=[MagicMock(text="안녕")])
-        with patch("collectors.youtube.YouTubeTranscriptApi", return_value=api):
+        with patch("adapters.collectors.youtube.YouTubeTranscriptApi", return_value=api):
             out = collector._get_transcript("vid")
         assert out == "안녕"
         assert api.fetch.call_args.kwargs["languages"] == ("ko",)
@@ -841,7 +841,7 @@ class TestTranscript:
         listing.__iter__ = lambda self: iter([track])
         listing.find_transcript.return_value.fetch.return_value = MagicMock(snippets=[MagicMock(text="대체")])
         api.list.return_value = listing
-        with patch("collectors.youtube.YouTubeTranscriptApi", return_value=api):
+        with patch("adapters.collectors.youtube.YouTubeTranscriptApi", return_value=api):
             out = collector._get_transcript("vid")
         assert out == "대체"
         assert api.list.return_value.find_transcript.call_args.args[0] == ["ko"]
@@ -855,7 +855,7 @@ class TestTranscript:
             raise TimeoutError
 
         with patch.object(collector, "_get_transcript", return_value="never"):
-            with patch("collectors.youtube.asyncio.wait_for", side_effect=timeout):
+            with patch("adapters.collectors.youtube.asyncio.wait_for", side_effect=timeout):
                 result = await collector._fetch_transcript("vid")
         assert result == ""
 
@@ -870,7 +870,7 @@ class TestResolveChannelIdTimeout:
             raise TimeoutError
 
         with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
-            with patch("collectors.youtube.asyncio.wait_for", side_effect=timeout):
+            with patch("adapters.collectors.youtube.asyncio.wait_for", side_effect=timeout):
                 result = await collector._resolve_channel_id_async("https://youtube.com/@x")
         assert result == ""
 

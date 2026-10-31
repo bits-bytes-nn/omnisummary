@@ -20,8 +20,9 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from application.digest_pipeline import resolve_digest_window, run_collectors_with_health, run_pipeline
+from domain.models import CollectedItem
 from entrypoints import bootstrap
-from shared import CollectedItem, Config, logger
+from shared import Config, logger
 
 
 async def _collect(config, models) -> list[CollectedItem]:

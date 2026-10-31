@@ -4,8 +4,8 @@ import os
 
 import boto3
 
+from domain.formatting import format_alarm
 from shared.constants import DEFAULT_PROJECT_NAME
-from shared.formatting import format_alarm
 from shared.logger import get_correlation_id, logger
 
 

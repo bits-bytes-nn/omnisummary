@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from adapters.threads import ThreadsGateway
 from application.ports import StateStore
-from shared.models import ThreadsDelivery
+from domain.models import ThreadsDelivery
 
 
 class MemoryStateStore(StateStore):

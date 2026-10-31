@@ -8,7 +8,8 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 from bs4 import BeautifulSoup
 
-from shared import ImageAsset, get_config, logger
+from domain.models import ImageAsset
+from shared import get_config, logger
 from shared.constants import BROWSER_USER_AGENT
 
 _BROWSER_HEADERS = {"User-Agent": BROWSER_USER_AGENT}

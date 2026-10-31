@@ -2,7 +2,7 @@ import re
 
 import pytest
 
-from shared.prompts import (
+from application.prompts import (
     DigestPrompt,
     GroundingCheckPrompt,
     RankingPrompt,

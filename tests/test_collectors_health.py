@@ -2,10 +2,10 @@ from unittest.mock import patch
 
 import pytest
 
-from collectors.base import ParkedItems, ParkOutcome
+from adapters.collectors.base import ParkedItems, ParkOutcome
+from domain.models import CollectedItem, SourceStatus
 from shared import Config
 from shared.constants import SourceType
-from shared.models import CollectedItem, SourceStatus
 
 
 def _item(url: str) -> CollectedItem:
@@ -152,7 +152,7 @@ async def test_partially_collected_source_reports_degraded_not_ok():
 async def test_reddit_subreddits_missing_from_the_feed_report_degraded_when_armed():
     # All subreddits share ONE request, so a subreddit that vanished (banned, renamed) shows up as
     # an input with no entries — judged by the configured empty-rate verdict.
-    from collectors.reddit import RedditCollector
+    from adapters.collectors.reddit import RedditCollector
     from shared.config import RedditCollectorConfig
 
     class _Feed(dict):
@@ -171,7 +171,7 @@ async def test_reddit_subreddits_missing_from_the_feed_report_degraded_when_arme
     )
     collector = RedditCollector(config)
 
-    with patch("collectors.base.fetch_feed", return_value=_Feed(entries=entries, bozo=False)):
+    with patch("adapters.collectors.base.fetch_feed", return_value=_Feed(entries=entries, bozo=False)):
         items = await collector.collect()
 
     # Reporting only: the two healthy subreddits' items still reach the aggregator.
@@ -181,7 +181,7 @@ async def test_reddit_subreddits_missing_from_the_feed_report_degraded_when_arme
 
 @pytest.mark.asyncio
 async def test_reddit_all_subreddits_answering_is_not_degraded():
-    from collectors.reddit import RedditCollector
+    from adapters.collectors.reddit import RedditCollector
     from shared.config import RedditCollectorConfig
 
     class _Feed(dict):
@@ -192,7 +192,7 @@ async def test_reddit_all_subreddits_answering_is_not_degraded():
                 raise AttributeError(name) from e
 
     collector = RedditCollector(RedditCollectorConfig(subreddits=["a", "b"], retry_backoff_sec=0))
-    with patch("collectors.base.fetch_feed", return_value=_Feed(entries=[], bozo=False)):
+    with patch("adapters.collectors.base.fetch_feed", return_value=_Feed(entries=[], bozo=False)):
         assert await collector.collect() == []
 
     # A quiet day (every feed answered, nothing new) must NOT be reported as degraded.

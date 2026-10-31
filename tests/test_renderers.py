@@ -1,11 +1,7 @@
-from output.renderers import (
-    _fit_one_post,
-    render_threads_posts,
-    render_threads_research,
-)
+from domain.formatting import source_tag_and_metrics, strip_markup, threads_item_overhead_chars
+from domain.models import CollectedItem, DigestContent, DigestItem
+from domain.renderers import _fit_one_post, render_threads_posts, render_threads_research
 from shared.constants import THREADS_MAX_POST_CHARS, SourceType
-from shared.formatting import source_tag_and_metrics, strip_markup, threads_item_overhead_chars
-from shared.models import CollectedItem, DigestContent, DigestItem
 
 
 def _content(n_items: int = 2, lead: str = "오늘의 리드.") -> DigestContent:
@@ -60,7 +56,7 @@ class TestThreadsPosts:
         # Regression (2026-08-18, live post): metrics carried the shortcode `:arrow_forward:`, and the
         # markup strip removes `_`, so Threads published a bare ":arrowforward:". Metric emoji must
         # be real Unicode.
-        from shared.formatting import YOUTUBE_VIEWS_LABEL
+        from domain.formatting import YOUTUBE_VIEWS_LABEL
 
         content = DigestContent(
             lead="리드.",
@@ -215,14 +211,14 @@ class TestThreadsPosts:
         # A trimmed lead means the editor overran its prose budget: visible, not silent.
         from unittest.mock import patch
 
-        with patch("output.renderers.logger") as log:
+        with patch("domain.renderers.logger") as log:
             render_threads_posts(_content(1, lead="긴 문장이다. " * 100))
         assert log.warning.called
 
     def test_short_lead_is_untouched(self):
         from unittest.mock import patch
 
-        with patch("output.renderers.logger") as log:
+        with patch("domain.renderers.logger") as log:
             root, _ = render_threads_posts(_content(1, lead="짧은 리드다.\n\nAGI 등장 870일 전이다."))
         assert root == "짧은 리드다.\n\nAGI 등장 870일 전이다."
         log.warning.assert_not_called()
@@ -502,7 +498,7 @@ class TestThreadsItemOverhead:
                 DigestItem(title="짧은 스토리", url="http://e.com/y", body="짧다.", implication="끝."),
             ],
         )
-        with patch("output.renderers.logger") as log:
+        with patch("domain.renderers.logger") as log:
             render_threads_posts(content)
         args = log.warning.call_args.args
         assert args[1] == 1 and args[2] == 2
@@ -511,7 +507,7 @@ class TestThreadsItemOverhead:
     def test_nothing_reported_when_everything_fits(self):
         from unittest.mock import patch
 
-        with patch("output.renderers.logger") as log:
+        with patch("domain.renderers.logger") as log:
             render_threads_posts(_content(3))
         log.warning.assert_not_called()
 
@@ -559,7 +555,7 @@ class TestThreadsResearchNumbering:
 
 class TestThreadsItemFit:
     def test_body_sentences_go_from_the_end_and_the_first_one_stays(self):
-        from output.renderers import _fit_one_post
+        from domain.renderers import _fit_one_post
 
         body = "첫 문장은 핵심이다. " + " ".join(f"덧붙인 문장 {i}번이다." for i in range(60))
         post = _fit_one_post("제목", "src", body, "시사점이다.", "https://e.com/x")
@@ -569,7 +565,7 @@ class TestThreadsItemFit:
     def test_a_hard_cut_body_still_ends_with_the_whole_url(self):
         # With no word boundary the body is cut exactly to the room; a room that forgot the separator
         # overran 500 by two, and the publisher's own cut then chopped the link's last characters.
-        from output.renderers import _fit_one_post
+        from domain.renderers import _fit_one_post
 
         url = "https://e.com/a-long-path-that-must-survive"
         post = _fit_one_post("제목", "src", "가" * 1000, "시" * 600, url)

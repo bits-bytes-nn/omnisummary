@@ -1,6 +1,6 @@
+from domain.models import CollectedItem, RankedItem
 from shared.config import PipelineConfig
 from shared.constants import SourceType
-from shared.models import CollectedItem, RankedItem
 
 
 def _ranked(

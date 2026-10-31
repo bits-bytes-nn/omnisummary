@@ -481,7 +481,7 @@ class PipelineConfig(_StrictModel):
         unknown = sorted(set(self.source_slots) - {source.value for source in SourceType})
         if unknown:
             raise ValueError(
-                f"pipeline.source_slots names unknown source type(s) {unknown}; "
+                f"domain.aggregator.source_slots names unknown source type(s) {unknown}; "
                 f"valid keys are {sorted(source.value for source in SourceType)}"
             )
         return self
@@ -496,14 +496,14 @@ class PipelineConfig(_StrictModel):
         actual = set(self.image_sizes)
         if actual != expected:
             raise ValueError(
-                "pipeline.image_sizes keys must be exactly the visual orientation vocabulary "
+                "domain.aggregator.image_sizes keys must be exactly the visual orientation vocabulary "
                 f"{sorted(expected)} (got {sorted(actual)}); the keys are what the art director is "
                 "offered and what VisualBrief.orientation is validated against, so only the SIZES "
                 "are tunable here"
             )
         bad_sizes = sorted(size for size in self.image_sizes.values() if not _IMAGE_SIZE_RE.fullmatch(size))
         if bad_sizes:
-            raise ValueError(f"pipeline.image_sizes values must look like '1024x1536' (got {bad_sizes})")
+            raise ValueError(f"domain.aggregator.image_sizes values must look like '1024x1536' (got {bad_sizes})")
         return self
 
 

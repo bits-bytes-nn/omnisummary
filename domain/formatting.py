@@ -7,9 +7,9 @@ from datetime import UTC, date, datetime
 from typing import NamedTuple
 from urllib.parse import unquote, urlparse
 
-from .constants import THREADS_POST_SEPARATOR, SourceType
-from .logger import logger
-from .models import CollectedItem
+from domain.models import CollectedItem
+from shared.constants import THREADS_POST_SEPARATOR, SourceType
+from shared.logger import logger
 
 # Text, not an emoji: Threads counts an emoji as its UTF-8 bytes against the 500-char cap ("▶️" is 6)
 # while the renderer budgets with len(), so a full-length YouTube reply could overrun and drop.

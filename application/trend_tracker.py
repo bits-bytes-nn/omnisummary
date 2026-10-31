@@ -9,16 +9,9 @@ from langchain_core.output_parsers import StrOutputParser
 from pydantic import ValidationError
 
 from application.ports import LanguageModels, StateReadError, StateStore
-from shared import (
-    TRENDS_KEY,
-    Trend,
-    TrendClassifyPrompt,
-    TrendEvidence,
-    TrendMemory,
-    TrendStatus,
-    logger,
-    parse_json_from_llm_output,
-)
+from application.prompts import TrendClassifyPrompt
+from domain.models import Trend, TrendEvidence, TrendMemory, TrendStatus
+from shared import TRENDS_KEY, logger, parse_json_from_llm_output
 from shared.config import PipelineConfig
 
 __all__ = ["TRENDS_KEY", "TrendTracker"]

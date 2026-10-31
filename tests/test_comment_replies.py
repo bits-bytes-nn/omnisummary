@@ -11,8 +11,9 @@ from application import comment_replies
 from application.comment_replies import CommentReplyRun, CommentResponder, pending_comments
 from application.history import CommentReplyLedger
 from application.ports import PublishError, StateReadError
-from lambda_handlers import comment_reply_handler
-from shared import CommentReply, Config
+from domain.models import CommentReply
+from entrypoints import comment_reply_handler
+from shared import Config
 from tests.fakes import FakeComments, FakeThreads
 
 NOW = datetime(2026, 10, 16, 12, 0, tzinfo=UTC)

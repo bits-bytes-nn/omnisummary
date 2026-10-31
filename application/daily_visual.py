@@ -12,20 +12,12 @@ from langchain_core.output_parsers import StrOutputParser
 from application.digest_publisher import DigestPublisher
 from application.history import RECENT_COMICS_KEY, RollingLog, ThreadsPostLedger
 from application.ports import ImageRenderer, LanguageModels, StateStore, ThreadsPublisher
+from application.prompts import VisualEditorPrompt
 from application.visual_generator import VisualGenerator
-from pipeline.aggregator import normalize_url
-from shared import (
-    DigestContent,
-    DigestItem,
-    RankedItem,
-    VisualBrief,
-    VisualEditorPrompt,
-    coerce_bool,
-    logger,
-    parse_json_from_llm_output,
-)
+from domain.aggregator import normalize_url
+from domain.models import DigestContent, DigestItem, RankedItem, ThreadsDelivery, VisualBrief
+from shared import coerce_bool, logger, parse_json_from_llm_output
 from shared.config import Config
-from shared.models import ThreadsDelivery
 
 
 class DailyVisualMaker:

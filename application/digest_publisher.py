@@ -5,14 +5,10 @@ from zoneinfo import ZoneInfo
 
 from application.history import ThreadsPostLedger
 from application.ports import StateStore, ThreadsPublisher
-from output.renderers import render_threads_posts
-from shared import (
-    DigestContent,
-    get_correlation_id,
-    logger,
-)
+from domain.models import DigestContent, ThreadsDelivery
+from domain.renderers import render_threads_posts
+from shared import get_correlation_id, logger
 from shared.config import Config
-from shared.models import ThreadsDelivery
 
 
 class DigestPublisher:

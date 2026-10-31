@@ -2,34 +2,10 @@ import asyncio
 import hashlib
 import json
 import re
-from calendar import timegm
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 from typing import Any
 
 from .logger import logger
-
-
-def generate_item_id(url: str) -> str:
-    return hashlib.sha256(url.encode()).hexdigest()[:16]
-
-
-def parse_feed_published_date(entry) -> datetime | None:
-    if hasattr(entry, "published_parsed") and entry.published_parsed:
-        return datetime.fromtimestamp(timegm(entry.published_parsed), tz=UTC)
-
-    published_str = entry.get("published")
-    if published_str:
-        try:
-            return parsedate_to_datetime(published_str).astimezone(UTC)
-        except (TypeError, ValueError) as e:
-            logger.debug("Failed to parse feed published date '%s': %s", published_str, e)
-
-    if hasattr(entry, "updated_parsed") and entry.updated_parsed:
-        return datetime.fromtimestamp(timegm(entry.updated_parsed), tz=UTC)
-
-    return None
 
 
 def extract_json_from_llm_output(raw: str) -> str:

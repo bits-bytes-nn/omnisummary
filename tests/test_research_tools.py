@@ -11,8 +11,9 @@ from application.research import (
     current_delivery_context,
     request_context,
 )
-from shared import ImageAsset, get_config
-from shared.formatting import normalize_citation_url
+from domain.formatting import normalize_citation_url
+from domain.models import ImageAsset
+from shared import get_config
 from tests.fakes import FakeSources
 
 
@@ -78,7 +79,7 @@ class TestRecallTrends:
     async def test_returns_every_trend_strongest_first_for_the_model_to_judge(self):
         # Substring matching ranked "AI Doom Discourse" first for "diffusion LLM" and returned nothing
         # for a Korean query against the English trends; the whole list lets the model judge.
-        from shared.models import Trend, TrendEvidence, TrendMemory
+        from domain.models import Trend, TrendEvidence, TrendMemory
 
         memory = TrendMemory(
             trends=[

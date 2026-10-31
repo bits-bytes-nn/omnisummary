@@ -12,7 +12,8 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import YouTubeTranscriptApiException
 
 from adapters.aws import resolve_secret
-from shared import CollectedItem, SourceType, logger, retry_async
+from domain.models import CollectedItem
+from shared import SourceType, logger, retry_async
 from shared.config import YouTubeCollectorConfig
 
 from .base import (
@@ -458,7 +459,7 @@ class YouTubeCollector(BaseCollector):
 
     async def _fetch_transcript(self, video_id: str) -> str:
         # The bound that actually holds is the SOCKET timeout inside _get_transcript: wait_for
-        # cannot cancel an asyncio.to_thread worker (see collectors/base.py's fetch_feed), so this
+        # cannot cancel an asyncio.to_thread worker (see base.py's fetch_feed), so this
         # wait_for only stops the CALLER waiting — the thread would keep its pool slot forever, and
         # asyncio.run then blocks on the executor join at shutdown.
         try:

@@ -1,8 +1,8 @@
 import pytest
 
-from pipeline.aggregator import ContentAggregator
+from domain.aggregator import ContentAggregator
+from domain.models import CollectedItem
 from shared.constants import SourceType
-from shared.models import CollectedItem
 
 
 def _item(item_id: str = "", url: str = "http://example.com", title: str = "T", **kwargs) -> CollectedItem:
@@ -76,7 +76,7 @@ class TestContentAggregator:
     def test_excludes_recently_published_urls(self):
         # Cross-day dedup: an article already published on a recent day is dropped, even
         # across http/https + trailing-slash variants (exclude set holds normalized URLs).
-        from pipeline.aggregator import normalize_url
+        from domain.aggregator import normalize_url
 
         items = [
             _item(item_id="id1", url="https://a.com/post/", title="Already published"),
@@ -88,7 +88,7 @@ class TestContentAggregator:
 
     def test_pinned_item_bypasses_cross_day_dedup(self):
         # A user-pinned URL must survive even if it's in the recently-published exclude set.
-        from pipeline.aggregator import normalize_url
+        from domain.aggregator import normalize_url
 
         items = [
             _item(item_id="id1", url="https://a.com/post/", title="Pinned", metadata={"pinned": True}),
@@ -125,12 +125,12 @@ class TestContentAggregator:
         ],
     )
     def test_share_link_variants_of_one_item_normalize_alike(self, canonical, variant):
-        from pipeline.aggregator import normalize_url
+        from domain.aggregator import normalize_url
 
         assert normalize_url(variant) == normalize_url(canonical)
 
     def test_distinct_items_stay_distinct_after_normalization(self):
-        from pipeline.aggregator import normalize_url
+        from domain.aggregator import normalize_url
 
         # An arXiv version is a different document, and `feature`/`si` mean something off YouTube.
         assert normalize_url("https://arxiv.org/abs/2410.01234v2") != normalize_url("https://arxiv.org/abs/2410.01234")
@@ -146,12 +146,12 @@ class TestContentAggregator:
         ],
     )
     def test_other_spellings_of_one_post_or_video_normalize_alike(self, a, b):
-        from pipeline.aggregator import normalize_url
+        from domain.aggregator import normalize_url
 
         assert normalize_url(a) == normalize_url(b)
 
     def test_a_timestamped_share_of_a_video_is_the_same_item(self):
-        from pipeline.aggregator import normalize_url
+        from domain.aggregator import normalize_url
 
         assert normalize_url("https://youtu.be/abc?t=30") == normalize_url("https://www.youtube.com/watch?v=abc")
 
@@ -301,8 +301,9 @@ class TestContentAggregator:
 def test_a_pinned_item_survives_title_dedup_against_an_earlier_copy():
     from datetime import UTC, datetime
 
-    from pipeline.aggregator import ContentAggregator
-    from shared import CollectedItem, SourceType
+    from domain.aggregator import ContentAggregator
+    from domain.models import CollectedItem
+    from shared import SourceType
 
     def item(url, **meta):
         return CollectedItem(
@@ -321,8 +322,9 @@ def test_a_pinned_item_survives_title_dedup_against_an_earlier_copy():
 def test_two_pins_sharing_a_title_are_both_kept():
     from datetime import UTC, datetime
 
-    from pipeline.aggregator import ContentAggregator
-    from shared import CollectedItem, SourceType
+    from domain.aggregator import ContentAggregator
+    from domain.models import CollectedItem
+    from shared import SourceType
 
     pins = [
         CollectedItem(

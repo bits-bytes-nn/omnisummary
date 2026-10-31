@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from adapters.bedrock import LANGUAGE_MODEL_INFO
-from collectors.base import degradation_reason
+from adapters.collectors.base import degradation_reason
 from shared.config import (
     CollectorsConfig,
     Config,

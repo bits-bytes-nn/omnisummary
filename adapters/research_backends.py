@@ -7,7 +7,8 @@ from tavily import AsyncTavilyClient
 
 from adapters.aws import resolve_secret
 from adapters.og_image import fetch_og_image
-from shared import ImageAsset, get_config, logger, retry_async
+from domain.models import ImageAsset
+from shared import get_config, logger, retry_async
 
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 

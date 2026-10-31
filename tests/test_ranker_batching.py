@@ -3,9 +3,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from application.ranker import ContentRanker
+from domain.models import CollectedItem
 from shared.config import PipelineConfig
 from shared.constants import SourceType
-from shared.models import CollectedItem
 
 
 def _factory() -> MagicMock:

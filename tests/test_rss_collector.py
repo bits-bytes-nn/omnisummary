@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from collectors.base import TransientStatusError
-from collectors.rss import RSSCollector
+from adapters.collectors.base import TransientStatusError
+from adapters.collectors.rss import RSSCollector
 from shared.config import RSSCollectorConfig
 from shared.constants import SourceType
 
@@ -59,7 +59,7 @@ class TestRSSCollect:
     @pytest.mark.asyncio
     async def test_collects_entries(self):
         c = RSSCollector(_config())
-        with patch("collectors.base.fetch_feed", return_value=_feed([_entry()])):
+        with patch("adapters.collectors.base.fetch_feed", return_value=_feed([_entry()])):
             items = await c.collect()
         assert len(items) == 1
         assert items[0].source_type == SourceType.RSS
@@ -76,8 +76,8 @@ class TestRSSCollect:
                 "https://ok.example/feed": _feed([_entry()]),
             }
         )
-        with patch("collectors.base.fetch_feed", side_effect=fetch):
-            with patch("collectors.base.logger") as log:
+        with patch("adapters.collectors.base.fetch_feed", side_effect=fetch):
+            with patch("adapters.collectors.base.logger") as log:
                 items = await c.collect()
         assert len(items) == 1
         assert log.warning.called  # dead feed must be logged, not silently swallowed
@@ -86,7 +86,7 @@ class TestRSSCollect:
     async def test_all_feeds_http_error_raises(self):
         # Total outage (every feed 4xx/5xx) must be FAILED, not a silently empty digest.
         c = RSSCollector(_config(feeds=["https://a.example/feed", "https://b.example/feed"]))
-        with patch("collectors.base.fetch_feed", side_effect=RuntimeError("RSS feed returned HTTP 404")):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=RuntimeError("RSS feed returned HTTP 404")):
             with pytest.raises(RuntimeError, match="returned HTTP 404"):
                 await c.collect()
 
@@ -96,7 +96,7 @@ class TestRSSCollect:
         c = RSSCollector(
             _config(feeds=["https://a.example/feed", "https://b.example/feed"], max_retries=2, retry_backoff_sec=0)
         )
-        with patch("collectors.base.fetch_feed", side_effect=TransientStatusError("timed out after 30s")):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=TransientStatusError("timed out after 30s")):
             with pytest.raises(RuntimeError, match="timed out"):
                 await c.collect()
 
@@ -117,7 +117,7 @@ class TestRSSCollect:
                 "https://ok.example/feed": _feed([_entry()]),
             }
         )
-        with patch("collectors.base.fetch_feed", side_effect=fetch):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=fetch):
             items = await c.collect()
         assert len(items) == 1  # the healthy feed still delivered
 
@@ -134,7 +134,7 @@ class TestRSSCollect:
                 raise outcome
             return outcome
 
-        with patch("collectors.base.fetch_feed", side_effect=_fetch):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=_fetch):
             items = await c.collect()
         assert len(items) == 1
         assert outcomes == []  # both the failed attempt and the retry ran
@@ -146,7 +146,9 @@ class TestRSSCollect:
         c = RSSCollector(
             _config(feeds=["https://a.example/feed", "https://b.example/feed"], max_retries=2, retry_backoff_sec=0)
         )
-        with patch("collectors.base.fetch_feed", side_effect=TransientStatusError("returned HTTP 503")) as fetch:
+        with patch(
+            "adapters.collectors.base.fetch_feed", side_effect=TransientStatusError("returned HTTP 503")
+        ) as fetch:
             with pytest.raises(RuntimeError, match="returned HTTP 503"):
                 await c.collect()
         assert fetch.call_count == 4  # 2 feeds x 2 attempts
@@ -154,7 +156,7 @@ class TestRSSCollect:
     @pytest.mark.asyncio
     async def test_permanent_status_is_not_retried(self):
         c = RSSCollector(_config(max_retries=3, retry_backoff_sec=0))
-        with patch("collectors.base.fetch_feed", side_effect=RuntimeError("returned HTTP 403")) as fetch:
+        with patch("adapters.collectors.base.fetch_feed", side_effect=RuntimeError("returned HTTP 403")) as fetch:
             with pytest.raises(RuntimeError, match="returned HTTP 403"):
                 await c.collect()
         assert fetch.call_count == 1  # a verdict, not a blip
@@ -174,7 +176,7 @@ class TestRSSCollect:
                 raise outcome
             return outcome
 
-        with patch("collectors.base.fetch_feed", side_effect=_fetch):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=_fetch):
             items = await c.collect()
         assert len(items) == 1
         assert timeouts == [11, 11]
@@ -196,7 +198,7 @@ class TestRSSCollect:
             in_flight -= 1
             return _feed([_entry()])
 
-        with patch("collectors.base.fetch_feed", side_effect=_fetch):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=_fetch):
             items = await c.collect()
         assert len(items) == 8  # every feed still collected
         assert peak <= 2, f"fan-out exceeded max_concurrency: peak={peak}"
@@ -205,7 +207,7 @@ class TestRSSCollect:
     async def test_raises_when_all_feeds_fail(self):
         # A total outage (every feed errors) must surface as FAILED, not a silent empty result.
         c = RSSCollector(_config(feeds=["https://a.example/feed", "https://b.example/feed"]))
-        with patch("collectors.base.fetch_feed", side_effect=OSError("network down")):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=OSError("network down")):
             with pytest.raises(RuntimeError):
                 await c.collect()
 
@@ -217,7 +219,7 @@ class TestRSSCollect:
         c = RSSCollector(_config(feeds=feeds, empty_rate_threshold=50.0))
         mapping = {url: _feed([]) for url in feeds}
         mapping[feeds[0]] = _feed([_entry()])
-        with patch("collectors.base.fetch_feed", side_effect=_fetch_by_url(mapping)):
+        with patch("adapters.collectors.base.fetch_feed", side_effect=_fetch_by_url(mapping)):
             items = await c.collect()
         assert len(items) == 1
         assert "3/4 feeds returned nothing" in c.degraded_detail
@@ -229,8 +231,8 @@ class TestSummaryOnlyEntries:
         c = RSSCollector(_config())
         pages = AsyncMock(return_value={"https://example.com/p/1": "the full article text"})
         with (
-            patch("collectors.base.fetch_feed", return_value=_feed([_entry()])),
-            patch("collectors.rss.extract_pages", new=pages),
+            patch("adapters.collectors.base.fetch_feed", return_value=_feed([_entry()])),
+            patch("adapters.collectors.rss.extract_pages", new=pages),
         ):
             items = await c.collect()
         pages.assert_awaited_once_with(["https://example.com/p/1"])
@@ -243,8 +245,8 @@ class TestSummaryOnlyEntries:
         c = RSSCollector(_config())
         pages = AsyncMock(return_value={})
         with (
-            patch("collectors.base.fetch_feed", return_value=_feed([entry])),
-            patch("collectors.rss.extract_pages", new=pages),
+            patch("adapters.collectors.base.fetch_feed", return_value=_feed([entry])),
+            patch("adapters.collectors.rss.extract_pages", new=pages),
         ):
             items = await c.collect()
         pages.assert_not_awaited()
@@ -254,8 +256,10 @@ class TestSummaryOnlyEntries:
     async def test_the_feed_text_stays_when_the_page_reads_shorter_or_fails(self):
         c = RSSCollector(_config())
         with (
-            patch("collectors.base.fetch_feed", return_value=_feed([_entry()])),
-            patch("collectors.rss.extract_pages", new=AsyncMock(return_value={"https://example.com/p/1": "x"})),
+            patch("adapters.collectors.base.fetch_feed", return_value=_feed([_entry()])),
+            patch(
+                "adapters.collectors.rss.extract_pages", new=AsyncMock(return_value={"https://example.com/p/1": "x"})
+            ),
         ):
             items = await c.collect()
         assert items[0].text == "body"
@@ -267,8 +271,8 @@ class TestSummaryOnlyEntries:
         c = RSSCollector(_config())
         pages = AsyncMock(return_value={})
         with (
-            patch("collectors.base.fetch_feed", return_value=_feed([entry])),
-            patch("collectors.rss.extract_pages", new=pages),
+            patch("adapters.collectors.base.fetch_feed", return_value=_feed([entry])),
+            patch("adapters.collectors.rss.extract_pages", new=pages),
         ):
             items = await c.collect()
         pages.assert_not_awaited()

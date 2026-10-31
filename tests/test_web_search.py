@@ -6,7 +6,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
-from collectors.web_search import WebSearchCollector, fetch_pinned_items
+from adapters.collectors.web_search import WebSearchCollector, fetch_pinned_items
 from shared.config import TrendSearch, WebSearchCollectorConfig
 from shared.constants import SourceType
 
@@ -88,7 +88,7 @@ class TestParseResults:
         assert items[0].published_at.tzinfo is not None
 
     def test_an_rfc2822_date_without_a_zone_is_utc_not_host_local(self):
-        from collectors.web_search import _parse_date
+        from adapters.collectors.web_search import _parse_date
 
         assert _parse_date("Sat, 10 Oct 2026 12:00:00 -0000") == datetime(2026, 10, 10, 12, tzinfo=UTC)
         assert _parse_date("Sat, 10 Oct 2026 12:00:00 +0900") == datetime(2026, 10, 10, 3, tzinfo=UTC)
@@ -126,7 +126,7 @@ class TestCollect:
     @pytest.mark.asyncio
     async def test_skips_without_api_key(self, monkeypatch):
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "")
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "")
         c = _collector(min_search_score=0.3)
         assert await c.collect() == []
 
@@ -141,21 +141,21 @@ class TestCollect:
             assert kwargs.get("strict") is True
             raise SecretUnavailableError("AccessDenied")
 
-        monkeypatch.setattr("collectors.web_search.resolve_secret", _boom)
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", _boom)
         c = _collector(min_search_score=0.3)
         with pytest.raises(SecretUnavailableError):
             await c.collect()
 
     @pytest.mark.asyncio
     async def test_no_queries_configured_short_circuits(self, monkeypatch):
-        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         c = _collector(min_search_score=0.3)  # no trend_searches
         assert await c.collect() == []
 
     @pytest.mark.asyncio
     async def test_searches_every_query_and_dedups_urls(self, monkeypatch):
         # One query per trend query (3 total); the same URL returned twice collapses to one item.
-        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         c = _search_collector(min_search_score=0.3)
         client = MagicMock()
         client.search = AsyncMock(
@@ -178,7 +178,7 @@ class TestCollect:
 
     @pytest.mark.asyncio
     async def test_excluded_domains_reach_every_search_broad_and_refined(self, monkeypatch):
-        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         c = _search_collector(min_search_score=0.3, exclude_domains=["finance.biggo.com"])
         client = MagicMock()
         client.search = AsyncMock(return_value={"results": []})
@@ -191,7 +191,7 @@ class TestCollect:
     async def test_the_requested_window_widens_with_the_configured_lookback(self, monkeypatch):
         # `days = lookback_hours // 24` truncated the shipped 30-hour window to ONE day for the
         # largest source, so widening lookback_hours changed nothing upstream.
-        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         c = _search_collector(min_search_score=0.3)
         c.config.lookback_hours = 30
         client = MagicMock()
@@ -206,7 +206,7 @@ class TestCollect:
         # Unbounded fan-out threw every configured query at Tavily at once and self-throttled.
         import asyncio
 
-        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         c = _search_collector(min_search_score=0.3, max_concurrency=1)
         state = {"active": 0, "peak": 0}
 
@@ -227,7 +227,7 @@ class TestCollect:
     @pytest.mark.asyncio
     async def test_all_queries_failing_raises(self, monkeypatch):
         # A total Tavily outage must surface as FAILED, not a silently empty web source.
-        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         c = _search_collector(min_search_score=0.3, max_retries=1)
         client = MagicMock()
         client.search = AsyncMock(side_effect=RuntimeError("tavily down"))
@@ -241,7 +241,7 @@ class TestCollect:
         # before health could report DEGRADED. One attempt each, then the source fails.
         from tavily.errors import InvalidAPIKeyError
 
-        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         c = _search_collector(min_search_score=0.3, max_retries=3)
         client = MagicMock()
         client.search = AsyncMock(side_effect=InvalidAPIKeyError("revoked key"))
@@ -254,7 +254,7 @@ class TestCollect:
     async def test_transient_search_failure_is_still_retried(self, monkeypatch):
         # The narrower predicate must not lose the retry that matters: a hung request still gets
         # another attempt, and the query survives.
-        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         c = _search_collector(min_search_score=0.3, max_retries=2)
         client = MagicMock()
         client.search = AsyncMock(
@@ -274,7 +274,7 @@ class TestCollect:
     async def test_a_rate_limited_search_is_retried(self, monkeypatch):
         from tavily.errors import UsageLimitExceededError
 
-        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         c = _search_collector(min_search_score=0.3, max_retries=2)
         client = MagicMock()
         client.search = AsyncMock(
@@ -292,7 +292,7 @@ class TestCollect:
 
     @pytest.mark.asyncio
     async def test_partial_query_failure_keeps_the_rest(self, monkeypatch):
-        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         c = _search_collector(min_search_score=0.3, max_retries=1)
         client = MagicMock()
         client.search = AsyncMock(
@@ -310,7 +310,7 @@ class TestCollect:
     async def test_refinement_adds_llm_generated_queries(self, monkeypatch):
         # With a refine LLM configured, collect() runs a second phase using the LLM's queries and
         # merges the results (deduped against the broad phase).
-        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         factory = MagicMock()
         factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content='["refined query"]'))
         c = _search_collector(min_search_score=0.3, max_refine_queries=2, llm_factory=factory)
@@ -331,7 +331,7 @@ class TestCollect:
     @pytest.mark.asyncio
     async def test_refinement_is_told_the_digest_date_not_the_next_day(self, monkeypatch):
         # reference_time is midnight at the END of the digest date; its .date() is the next day.
-        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         seen: list[str] = []
         factory = MagicMock()
         factory.get_model.return_value = RunnableLambda(lambda p: (seen.append(str(p)), AIMessage(content="[]"))[1])
@@ -345,7 +345,7 @@ class TestCollect:
     @pytest.mark.asyncio
     async def test_refinement_skipped_when_broad_phase_empty(self, monkeypatch):
         # Nothing to refine FROM → no extra LLM call and no extra searches.
-        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         factory = MagicMock()
         factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content='["never used"]'))
         c = _search_collector(min_search_score=0.3, llm_factory=factory)
@@ -357,7 +357,7 @@ class TestCollect:
 
     @pytest.mark.asyncio
     async def test_refinement_llm_failure_keeps_broad_results(self, monkeypatch):
-        monkeypatch.setattr("collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         factory = MagicMock()
         factory.get_model.return_value = RunnableLambda(lambda _: (_ for _ in ()).throw(RuntimeError("bedrock down")))
         c = _search_collector(min_search_score=0.3, llm_factory=factory)
@@ -385,8 +385,8 @@ class TestFetchPinnedItems:
                 ]
             }
         )
-        with patch("collectors.web_search.resolve_secret", return_value="key"):
-            with patch("collectors.web_search.AsyncTavilyClient", return_value=client):
+        with patch("adapters.collectors.web_search.resolve_secret", return_value="key"):
+            with patch("adapters.collectors.web_search.AsyncTavilyClient", return_value=client):
                 items = await fetch_pinned_items(["https://darioamodei.com/post/policy-on-the-ai-exponential"])
         assert len(items) == 1
         assert items[0].metadata["pinned"] is True
@@ -419,10 +419,10 @@ class TestFetchPinnedItems:
 
         tavily = MagicMock()
         tavily.extract = AsyncMock()
-        with patch("collectors.web_search.resolve_secret", return_value="key"):
-            with patch("collectors.web_search.httpx.AsyncClient", return_value=ctx):
-                with patch("collectors.web_search.fetch_youtube_transcript", return_value=""):
-                    with patch("collectors.web_search.AsyncTavilyClient", return_value=tavily):
+        with patch("adapters.collectors.web_search.resolve_secret", return_value="key"):
+            with patch("adapters.collectors.web_search.httpx.AsyncClient", return_value=ctx):
+                with patch("adapters.collectors.web_search.fetch_youtube_transcript", return_value=""):
+                    with patch("adapters.collectors.web_search.AsyncTavilyClient", return_value=tavily):
                         items = await fetch_pinned_items(["https://www.youtube.com/watch?v=4pG3SJQPAwk"])
         assert len(items) == 1
         assert items[0].title == "The data black hole at the center of AI"
@@ -443,9 +443,9 @@ class TestFetchPinnedItems:
         ctx = MagicMock()
         ctx.__aenter__ = AsyncMock(return_value=http_client)
         ctx.__aexit__ = AsyncMock(return_value=False)
-        with patch("collectors.web_search.resolve_secret", return_value="key"):
-            with patch("collectors.web_search.httpx.AsyncClient", return_value=ctx):
-                with patch("collectors.web_search.fetch_youtube_transcript", return_value="full transcript"):
+        with patch("adapters.collectors.web_search.resolve_secret", return_value="key"):
+            with patch("adapters.collectors.web_search.httpx.AsyncClient", return_value=ctx):
+                with patch("adapters.collectors.web_search.fetch_youtube_transcript", return_value="full transcript"):
                     items = await fetch_pinned_items(["https://youtu.be/4pG3SJQPAwk"])
         assert items[0].text == "full transcript"  # transcript wins when present
 
@@ -460,10 +460,10 @@ class TestFetchPinnedItems:
         ctx.__aexit__ = AsyncMock(return_value=False)
         tavily = MagicMock()
         tavily.extract = AsyncMock(return_value={"results": [{"url": "https://example.com/post", "raw_content": "b"}]})
-        with patch("collectors.web_search.resolve_secret", return_value="key"):
-            with patch("collectors.web_search.httpx.AsyncClient", return_value=ctx):
-                with patch("collectors.web_search.fetch_youtube_transcript", return_value=""):
-                    with patch("collectors.web_search.AsyncTavilyClient", return_value=tavily):
+        with patch("adapters.collectors.web_search.resolve_secret", return_value="key"):
+            with patch("adapters.collectors.web_search.httpx.AsyncClient", return_value=ctx):
+                with patch("adapters.collectors.web_search.fetch_youtube_transcript", return_value=""):
+                    with patch("adapters.collectors.web_search.AsyncTavilyClient", return_value=tavily):
                         items = await fetch_pinned_items(
                             ["https://www.youtube.com/watch?v=4pG3SJQPAwk", "https://example.com/post"]
                         )
@@ -484,9 +484,9 @@ class TestFetchPinnedItems:
         ctx.__aenter__ = AsyncMock(return_value=http_client)
         ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("collectors.web_search.resolve_secret", return_value="key"):
-            with patch("collectors.web_search.httpx.AsyncClient", return_value=ctx):
-                with patch("collectors.web_search.logger") as mock_logger:
+        with patch("adapters.collectors.web_search.resolve_secret", return_value="key"):
+            with patch("adapters.collectors.web_search.httpx.AsyncClient", return_value=ctx):
+                with patch("adapters.collectors.web_search.logger") as mock_logger:
                     items = await fetch_pinned_items(["https://www.youtube.com/watch?v=4pG3SJQPAwk"])
         assert items == []
         warned = " ".join(str(c.args) for c in mock_logger.warning.call_args_list)
@@ -501,8 +501,8 @@ class TestFetchPinnedItems:
         ctx = MagicMock()
         ctx.__aenter__ = AsyncMock(return_value=http_client)
         ctx.__aexit__ = AsyncMock(return_value=False)
-        with patch("collectors.web_search.resolve_secret", return_value="key"):
-            with patch("collectors.web_search.httpx.AsyncClient", return_value=ctx):
+        with patch("adapters.collectors.web_search.resolve_secret", return_value="key"):
+            with patch("adapters.collectors.web_search.httpx.AsyncClient", return_value=ctx):
                 items = await fetch_pinned_items(["https://www.youtube.com/watch?v=4pG3SJQPAwk"])
         assert items == []
 
@@ -513,21 +513,21 @@ class TestFetchPinnedItems:
 
     @pytest.mark.asyncio
     async def test_no_api_key_returns_empty(self):
-        with patch("collectors.web_search.resolve_secret", return_value=""):
+        with patch("adapters.collectors.web_search.resolve_secret", return_value=""):
             assert await fetch_pinned_items(["https://x.com/a"]) == []
 
     @pytest.mark.asyncio
     async def test_extract_failure_returns_empty(self):
         client = MagicMock()
         client.extract = AsyncMock(side_effect=RuntimeError("boom"))
-        with patch("collectors.web_search.resolve_secret", return_value="key"):
-            with patch("collectors.web_search.AsyncTavilyClient", return_value=client):
+        with patch("adapters.collectors.web_search.resolve_secret", return_value="key"):
+            with patch("adapters.collectors.web_search.AsyncTavilyClient", return_value=client):
                 assert await fetch_pinned_items(["https://x.com/a"]) == []
 
 
 class TestTitleFromUrl:
     def test_article_slug(self):
-        from collectors.web_search import _title_from_url
+        from adapters.collectors.web_search import _title_from_url
 
         assert (
             _title_from_url("https://darioamodei.com/post/policy-on-the-ai-exponential")
@@ -535,19 +535,19 @@ class TestTitleFromUrl:
         )
 
     def test_youtube_falls_back_to_host(self):
-        from collectors.web_search import _title_from_url
+        from adapters.collectors.web_search import _title_from_url
 
         assert _title_from_url("https://www.youtube.com/watch?v=haK1KoQWm18") == "youtube.com"
 
     def test_x_status_id_falls_back_to_host(self):
-        from collectors.web_search import _title_from_url
+        from adapters.collectors.web_search import _title_from_url
 
         assert _title_from_url("https://x.com/karpathy/status/1944435413395685866") == "x.com"
 
 
 class TestYoutubeVideoId:
     def test_extracts_id_from_url_forms(self):
-        from collectors.web_search import _youtube_video_id
+        from adapters.collectors.web_search import _youtube_video_id
 
         assert _youtube_video_id("https://www.youtube.com/watch?v=4pG3SJQPAwk") == "4pG3SJQPAwk"
         assert _youtube_video_id("https://youtu.be/4pG3SJQPAwk") == "4pG3SJQPAwk"
@@ -555,7 +555,7 @@ class TestYoutubeVideoId:
         assert _youtube_video_id("https://www.youtube.com/shorts/4pG3SJQPAwk") == "4pG3SJQPAwk"
 
     def test_returns_empty_for_non_youtube(self):
-        from collectors.web_search import _youtube_video_id
+        from adapters.collectors.web_search import _youtube_video_id
 
         assert _youtube_video_id("https://example.com/watch?v=4pG3SJQPAwk") == ""
         assert _youtube_video_id("https://www.youtube.com/@DwarkeshPatel") == ""

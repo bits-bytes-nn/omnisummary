@@ -14,9 +14,9 @@ import httpx
 from adapters.aws import resolve_secret
 from adapters.og_image import extension_for
 from application.ports import PublishError
+from domain.models import ThreadsDelivery
 from shared import THREADS_MAX_POST_CHARS, logger
 from shared.config import Config
-from shared.models import ThreadsDelivery
 
 # Meta's cap on an image post's alt_text.
 THREADS_ALT_TEXT_MAX_CHARS = 1000

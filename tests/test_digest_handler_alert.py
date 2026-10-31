@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
-from lambda_handlers import digest_handler
-from shared.models import HealthReport, SourceHealth, SourceStatus
+from domain.models import HealthReport, SourceHealth, SourceStatus
+from entrypoints import digest_handler
 
 
 def _report_with_failure() -> HealthReport:
@@ -16,21 +16,21 @@ def _report_with_failure() -> HealthReport:
 class TestMaybeAlert:
     def test_no_topic_arn_skips(self, monkeypatch):
         monkeypatch.delenv("ALERT_SNS_TOPIC_ARN", raising=False)
-        with patch("lambda_handlers.digest_handler.boto3.client") as mock_client:
+        with patch("entrypoints.digest_handler.boto3.client") as mock_client:
             digest_handler._maybe_alert(_report_with_failure())
         mock_client.assert_not_called()
 
     def test_no_failures_skips(self, monkeypatch):
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:::topic")
         healthy = HealthReport(sources=[SourceHealth(name="rss", item_count=5, status=SourceStatus.OK)])
-        with patch("lambda_handlers.digest_handler.boto3.client") as mock_client:
+        with patch("entrypoints.digest_handler.boto3.client") as mock_client:
             digest_handler._maybe_alert(healthy)
         mock_client.assert_not_called()
 
     def test_publishes_on_failure(self, monkeypatch):
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:::topic")
         sns = MagicMock()
-        with patch("lambda_handlers.digest_handler.boto3.client", return_value=sns):
+        with patch("entrypoints.digest_handler.boto3.client", return_value=sns):
             digest_handler._maybe_alert(_report_with_failure())
         sns.publish.assert_called_once()
         kwargs = sns.publish.call_args.kwargs
@@ -47,7 +47,7 @@ class TestMaybeAlert:
         monkeypatch.setenv("PROJECT_NAME", "omnisummary")
         monkeypatch.setenv("STAGE", "prod")
         sns = MagicMock()
-        with patch("lambda_handlers.digest_handler.boto3.client", return_value=sns):
+        with patch("entrypoints.digest_handler.boto3.client", return_value=sns):
             digest_handler._maybe_alert(_report_with_failure())
         assert sns.publish.call_args.kwargs["Subject"] == "[omnisummary/prod] Source Health — ALERT"
 
@@ -59,7 +59,7 @@ class TestMaybeAlert:
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:::topic")
         set_correlation_id("abc123def456")
         sns = MagicMock()
-        with patch("lambda_handlers.digest_handler.boto3.client", return_value=sns):
+        with patch("entrypoints.digest_handler.boto3.client", return_value=sns):
             digest_handler._maybe_alert(_report_with_failure())
         assert "abc123def456" in sns.publish.call_args.kwargs["Message"]
         assert "Correlation id" in sns.publish.call_args.kwargs["Message"]
@@ -75,7 +75,7 @@ class TestMaybeAlert:
             ]
         )
         sns = MagicMock()
-        with patch("lambda_handlers.digest_handler.boto3.client", return_value=sns):
+        with patch("entrypoints.digest_handler.boto3.client", return_value=sns):
             digest_handler._maybe_alert(report)
         sns.publish.assert_called_once()
         message = sns.publish.call_args.kwargs["Message"]
@@ -86,7 +86,7 @@ class TestMaybeAlert:
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:::topic")
         sns = MagicMock()
         sns.publish.side_effect = Exception("network down")
-        with patch("lambda_handlers.digest_handler.boto3.client", return_value=sns):
+        with patch("entrypoints.digest_handler.boto3.client", return_value=sns):
             digest_handler._maybe_alert(_report_with_failure())
         sns.publish.assert_called_once()  # attempted, and its failure did not escape
 
@@ -107,14 +107,14 @@ class TestEmptySourceAlert:
 
     def test_an_unwatched_empty_source_does_not_alert(self, monkeypatch):
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:::topic")
-        with patch("lambda_handlers.digest_handler.boto3.client") as mock_client:
+        with patch("entrypoints.digest_handler.boto3.client") as mock_client:
             digest_handler._maybe_alert(self._report_with_empty(), [])
         mock_client.assert_not_called()
 
     def test_a_watched_empty_source_alerts(self, monkeypatch):
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:::topic")
         sns = MagicMock()
-        with patch("lambda_handlers.digest_handler.boto3.client", return_value=sns):
+        with patch("entrypoints.digest_handler.boto3.client", return_value=sns):
             digest_handler._maybe_alert(self._report_with_empty(), ["web_search"])
         sns.publish.assert_called_once()
         message = sns.publish.call_args.kwargs["Message"]
@@ -130,19 +130,19 @@ class TestRankingHealthAlert:
 
     @staticmethod
     def _digest(**kwargs):
-        from shared.models import DigestResult
+        from domain.models import DigestResult
 
         return DigestResult(digest_text="body", **kwargs)
 
     def test_publishes_when_candidates_were_lost(self, monkeypatch):
         from datetime import date
 
-        from shared.models import RankingHealth
+        from domain.models import RankingHealth
 
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:::topic")
         sns = MagicMock()
         health = RankingHealth(batches_total=3, batches_failed=1, items_total=90, items_scored=60, items_lost=30)
-        with patch("lambda_handlers.digest_handler.boto3.client", return_value=sns):
+        with patch("entrypoints.digest_handler.boto3.client", return_value=sns):
             digest_handler._maybe_alert_ranking(self._digest(ranking_health=health), date(2026, 8, 18))
         sns.publish.assert_called_once()
         assert "Ranking Health" in sns.publish.call_args.kwargs["Subject"]
@@ -151,10 +151,10 @@ class TestRankingHealthAlert:
     def test_silent_on_a_complete_ranking_pass(self, monkeypatch):
         from datetime import date
 
-        from shared.models import RankingHealth
+        from domain.models import RankingHealth
 
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:::topic")
-        with patch("lambda_handlers.digest_handler.boto3.client") as client:
+        with patch("entrypoints.digest_handler.boto3.client") as client:
             clean = RankingHealth(batches_total=2, items_total=60)
             digest_handler._maybe_alert_ranking(self._digest(ranking_health=clean), date(2026, 8, 18))
             digest_handler._maybe_alert_ranking(None, date(2026, 8, 18))

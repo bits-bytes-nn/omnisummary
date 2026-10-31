@@ -89,8 +89,8 @@ def sync(request, monkeypatch, tmp_path):
 
 
 def _item(source: str):
+    from domain.models import CollectedItem
     from shared.constants import SourceType
-    from shared.models import CollectedItem
 
     kind = SourceType.X if source == "rsshub" else SourceType.YOUTUBE
     return CollectedItem(item_id="i1", source_type=kind, title="t", url="https://e.com/1", text="body")
@@ -174,7 +174,7 @@ class TestTheParkCoversASkippedDay:
         # stale file (up to park_max_age_hours late) and the next sync no longer reached back to it.
         from datetime import UTC, datetime, timedelta
 
-        from collectors.base import in_collection_window
+        from adapters.collectors.base import in_collection_window
         from shared.config import RSSHubCollectorConfig, YouTubeCollectorConfig
 
         module, _, source, _, _ = sync
@@ -268,7 +268,7 @@ class TestTheReaderReachesBackToThePreviousSync:
     def test_a_skipped_sync_widens_the_read_back_to_the_previous_one(self):
         from datetime import UTC, datetime, timedelta
 
-        from collectors.base import ParkedItems, ParkOutcome, park_read_lookback_hours
+        from adapters.collectors.base import ParkedItems, ParkOutcome, park_read_lookback_hours
 
         now = datetime(2026, 10, 28, 15, 0, tzinfo=UTC)
 

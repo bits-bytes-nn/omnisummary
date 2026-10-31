@@ -8,9 +8,10 @@ from typing import Any
 
 from application.history import CommentReplyLedger
 from application.ports import LanguageModels, PublishError, StateStore, ThreadsPublisher
-from shared import KOREAN_PROSE_RULES, CommentReply, Config, logger
-from shared.formatting import URL_RE
-from shared.prompts import CommentReplyPrompt
+from application.prompts import CommentReplyPrompt
+from domain.formatting import URL_RE
+from domain.models import CommentReply
+from shared import KOREAN_PROSE_RULES, Config, logger
 
 # Meta's moderation states a reader still sees; a HIDDEN, COVERED or BLOCKED comment is left alone.
 VISIBLE_HIDE_STATUSES = frozenset({"", "NOT_HUSHED", "UNHUSHED"})

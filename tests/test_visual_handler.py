@@ -6,8 +6,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from application.ports import MemoryReadError
-from lambda_handlers import visual_handler
-from shared.models import ThreadsDelivery
+from domain.models import ThreadsDelivery
+from entrypoints import visual_handler
 
 
 class TestVisualHandler:
@@ -15,7 +15,7 @@ class TestVisualHandler:
         # Patch _run (not asyncio.run) so the EVENT the handler forwards is asserted: patching the
         # runner made the test pass no matter what payload — or none — reached the pipeline.
         event = {"digest_date": "2026-08-18"}
-        with patch("lambda_handlers.visual_handler._run", new=AsyncMock()) as run:
+        with patch("entrypoints.visual_handler._run", new=AsyncMock()) as run:
             result = visual_handler.handler(event, None)
         assert run.await_args.args[0] == event
         assert run.await_args.kwargs["deadline"] is None  # no Lambda context in this test
@@ -24,14 +24,14 @@ class TestVisualHandler:
     def test_handler_forwards_the_context_deadline(self):
         context = MagicMock()
         context.get_remaining_time_in_millis.return_value = 600_000
-        with patch("lambda_handlers.visual_handler._run", new=AsyncMock()) as run:
+        with patch("entrypoints.visual_handler._run", new=AsyncMock()) as run:
             visual_handler.handler({}, context)
         assert run.await_args.kwargs["deadline"] is not None
 
     def test_handler_reraises_on_exception_so_alarms_and_dlq_fire(self):
         # Returning a 500 body made Lambda record a success — no Errors alarm, no DLQ message.
-        with patch("lambda_handlers.visual_handler._run", new=AsyncMock(side_effect=RuntimeError("boom"))):
-            with patch("lambda_handlers.visual_handler.logger") as log:
+        with patch("entrypoints.visual_handler._run", new=AsyncMock(side_effect=RuntimeError("boom"))):
+            with patch("entrypoints.visual_handler.logger") as log:
                 with pytest.raises(RuntimeError, match="boom"):
                     visual_handler.handler({}, None)
         assert log.error.called
@@ -42,8 +42,8 @@ class TestCorrelationId:
     pipeline and its only delivery path — appear under one id in the logs."""
 
     def test_prefers_the_id_the_digest_run_passed(self):
-        with patch("lambda_handlers.visual_handler._run", new=AsyncMock()):
-            with patch("lambda_handlers.visual_handler.set_correlation_id") as set_id:
+        with patch("entrypoints.visual_handler._run", new=AsyncMock()):
+            with patch("entrypoints.visual_handler.set_correlation_id") as set_id:
                 visual_handler.handler({"digest_date": "2026-08-18", "correlation_id": "abc123"}, MagicMock())
         assert set_id.call_args.args[0] == "abc123"
 
@@ -54,8 +54,8 @@ class TestCorrelationId:
     def test_falls_back_to_the_request_id_when_the_invoke_carries_none(self):
         context = MagicMock()
         context.aws_request_id = "req-987"
-        with patch("lambda_handlers.visual_handler._run", new=AsyncMock()):
-            with patch("lambda_handlers.visual_handler.set_correlation_id") as set_id:
+        with patch("entrypoints.visual_handler._run", new=AsyncMock()):
+            with patch("entrypoints.visual_handler.set_correlation_id") as set_id:
                 visual_handler.handler({"digest_date": "2026-08-18"}, context)
         assert set_id.call_args.args[0] == "req-987"
 
@@ -94,9 +94,9 @@ class TestVisualRun:
         config.aws.timezone = "Asia/Seoul"
         store = MagicMock()
         store.get_digest.return_value = None
-        with patch("lambda_handlers.visual_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.visual_handler.bootstrap.memory_store", return_value=store):
-                with patch("lambda_handlers.visual_handler.bootstrap.daily_visual_maker") as maker:
+        with patch("entrypoints.visual_handler.Config.load", return_value=config):
+            with patch("entrypoints.visual_handler.bootstrap.memory_store", return_value=store):
+                with patch("entrypoints.visual_handler.bootstrap.daily_visual_maker") as maker:
                     with pytest.raises(RuntimeError, match="No digest state for 2026-08-17"):
                         await visual_handler._run({"digest_date": "2026-08-17"})
         # Loaded BY date, and no stale fallback to whatever snapshot is newest.
@@ -110,9 +110,9 @@ class TestVisualRun:
         config.aws.timezone = "Asia/Seoul"
         store = MagicMock()
         store.get_digest.return_value = None
-        with patch("lambda_handlers.visual_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.visual_handler.bootstrap.memory_store", return_value=store):
-                with patch("lambda_handlers.visual_handler.bootstrap.daily_visual_maker") as maker:
+        with patch("entrypoints.visual_handler.Config.load", return_value=config):
+            with patch("entrypoints.visual_handler.bootstrap.memory_store", return_value=store):
+                with patch("entrypoints.visual_handler.bootstrap.daily_visual_maker") as maker:
                     await visual_handler._run({})
         maker.assert_not_called()
 
@@ -121,8 +121,8 @@ class TestVisualRun:
         config.aws.timezone = "Asia/Seoul"
         store = MagicMock()
         store.get_digest.side_effect = MemoryReadError("throttled")
-        with patch("lambda_handlers.visual_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.visual_handler.bootstrap.memory_store", return_value=store):
+        with patch("entrypoints.visual_handler.Config.load", return_value=config):
+            with patch("entrypoints.visual_handler.bootstrap.memory_store", return_value=store):
                 with pytest.raises(MemoryReadError):
                     await visual_handler._run({"digest_date": "2026-08-17"})
 
@@ -139,12 +139,10 @@ class TestVisualRun:
         maker_instance = MagicMock()
         maker_instance.run = AsyncMock(return_value=True)
         maker_instance.threads_outcome = ThreadsDelivery(6, 6)
-        with patch("lambda_handlers.visual_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.visual_handler.bootstrap.memory_store", return_value=store):
-                with patch("lambda_handlers.visual_handler.DigestStateManager.load_from_dict", return_value=mgr):
-                    with patch(
-                        "lambda_handlers.visual_handler.bootstrap.daily_visual_maker", return_value=maker_instance
-                    ):
+        with patch("entrypoints.visual_handler.Config.load", return_value=config):
+            with patch("entrypoints.visual_handler.bootstrap.memory_store", return_value=store):
+                with patch("entrypoints.visual_handler.DigestStateManager.load_from_dict", return_value=mgr):
+                    with patch("entrypoints.visual_handler.bootstrap.daily_visual_maker", return_value=maker_instance):
                         await visual_handler._run({"digest_date": "2026-08-18"})
         store.get_digest.assert_called_once_with("2026-08-18")
         args, kwargs = maker_instance.run.call_args
@@ -162,13 +160,11 @@ class TestVisualRun:
         maker_instance = MagicMock()
         maker_instance.run = AsyncMock(return_value=False)
         maker_instance.threads_outcome = ThreadsDelivery(0, 6)
-        with patch("lambda_handlers.visual_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.visual_handler.bootstrap.memory_store", return_value=store):
-                with patch("lambda_handlers.visual_handler.DigestStateManager.load_from_dict"):
-                    with patch(
-                        "lambda_handlers.visual_handler.bootstrap.daily_visual_maker", return_value=maker_instance
-                    ):
-                        with patch("lambda_handlers.visual_handler._maybe_alert_threads_outcome"):
+        with patch("entrypoints.visual_handler.Config.load", return_value=config):
+            with patch("entrypoints.visual_handler.bootstrap.memory_store", return_value=store):
+                with patch("entrypoints.visual_handler.DigestStateManager.load_from_dict"):
+                    with patch("entrypoints.visual_handler.bootstrap.daily_visual_maker", return_value=maker_instance):
+                        with patch("entrypoints.visual_handler._maybe_alert_threads_outcome"):
                             with pytest.raises(RuntimeError, match="posted nothing"):
                                 await visual_handler._run({"digest_date": "2026-08-18"})
 

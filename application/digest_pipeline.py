@@ -22,19 +22,10 @@ from application.history import (
 from application.ports import ContentSource, LanguageModels, MemoryStore, StateStore
 from application.ranker import ContentRanker
 from application.trend_tracker import TrendTracker
-from pipeline.aggregator import ContentAggregator, normalize_url
-from shared import (
-    CollectedItem,
-    Config,
-    DigestResult,
-    HealthReport,
-    RankedItem,
-    SourceHealth,
-    SourceStatus,
-    agi_countdown_intro,
-    editorial_lead,
-    logger,
-)
+from domain.aggregator import ContentAggregator, normalize_url
+from domain.formatting import agi_countdown_intro, editorial_lead
+from domain.models import CollectedItem, DigestResult, HealthReport, RankedItem, SourceHealth, SourceStatus
+from shared import Config, logger
 
 if TYPE_CHECKING:
     from application.daily_visual import DailyVisualMaker
@@ -305,7 +296,7 @@ def persist_digest(
 
     DigestStateManager is imported here rather than at module scope: it lives in the agent package,
     and importing it eagerly would make every consumer load the agent (and Strands) import graph."""
-    from agent.tool_state import DigestStateManager
+    from domain.digest_snapshot import DigestStateManager
 
     mgr = DigestStateManager()
     mgr.store_digest(ranked_items, digest)

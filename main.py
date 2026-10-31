@@ -78,7 +78,7 @@ async def main() -> int:
     logger.info("Source health report:\n%s", health.summary())
 
     if args.pin_url:
-        from collectors.web_search import fetch_pinned_items
+        from adapters.collectors.web_search import fetch_pinned_items
 
         pinned = await fetch_pinned_items(args.pin_url)
         logger.info("Fetched %d pinned item(s) from %d URL(s)", len(pinned), len(args.pin_url))

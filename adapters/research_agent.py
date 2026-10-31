@@ -14,7 +14,7 @@ from strands.types.agent import Limits
 from adapters.aws import available_boto_profile
 from adapters.bedrock import LANGUAGE_MODEL_INFO, BedrockCrossRegionModelHelper
 from adapters.research_tools import RESEARCH_TOOLS
-from output.renderers import research_post_budget
+from domain.renderers import research_post_budget
 from shared import KOREAN_STYLE_RULES, Config, logger
 
 
@@ -238,7 +238,7 @@ def create_research_agent(config: Config | None = None, tools: list[Any] | None 
     # GPT models reject a Converse cachePoint ("Cache point cannot be inserted") and cache implicitly.
     if model_info.provider == "anthropic":
         model_kwargs["cache_config"] = CacheConfig(strategy="anthropic")
-    # Same gates as the Bedrock factory (shared.utils.LanguageModelInfo). No tool_choice is set: the
+    # Same gates as the Bedrock factory (adapters.bedrock.LanguageModelInfo). No tool_choice is set: the
     # Strands loop sends "auto", which every registered model accepts; only Strands structured output
     # forces "any", and this agent does not use it.
     if model_info.supports_temperature:

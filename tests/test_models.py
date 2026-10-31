@@ -4,8 +4,8 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
+from domain.models import CollectedItem, RankedItem, Trend, TrendEvidence, TrendMemory, VisualBrief
 from shared.constants import SourceType
-from shared.models import CollectedItem, RankedItem, Trend, TrendEvidence, TrendMemory, VisualBrief
 
 
 class TestCollectedItem:

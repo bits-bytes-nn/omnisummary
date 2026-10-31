@@ -22,9 +22,10 @@ load_dotenv()
 # Same reason as research_cli: botocore at DEBUG logs the session token.
 logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
-from agent.tool_state import DigestStateManager  # noqa: E402
+from domain.digest_snapshot import DigestStateManager  # noqa: E402
+from domain.models import TrendMemory  # noqa: E402
 from entrypoints import bootstrap  # noqa: E402
-from shared import TRENDS_KEY, Config, TrendMemory  # noqa: E402
+from shared import TRENDS_KEY, Config  # noqa: E402
 
 EXIT_OK, EXIT_FAILED, EXIT_REJECTED = 0, 1, 2
 

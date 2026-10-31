@@ -17,16 +17,9 @@ from application.digest_pipeline import (
     run_collectors_with_health,
     run_pipeline,
 )
+from domain.models import DigestResult, HealthReport
 from entrypoints import bootstrap
-from shared import (
-    Config,
-    DigestResult,
-    HealthReport,
-    get_correlation_id,
-    is_running_in_aws,
-    logger,
-    set_correlation_id,
-)
+from shared import Config, get_correlation_id, is_running_in_aws, logger, set_correlation_id
 from shared.constants import DIGEST_ITEMS_METRIC
 
 
@@ -152,7 +145,7 @@ async def _run() -> None:
 
 def _stored_story_count(digest_date: date) -> int:
     """How many stories the date's stored digest carries; 0 when it can't be read."""
-    from agent.tool_state import DigestStateManager
+    from domain.digest_snapshot import DigestStateManager
 
     try:
         data = bootstrap.memory_store().get_digest(digest_date.isoformat())

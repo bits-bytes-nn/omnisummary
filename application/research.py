@@ -17,9 +17,10 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from application.ports import LanguageModels, MemoryStore, ResearchSources, StateStore, ThreadsPublisher
-from output.renderers import render_threads_research, research_post_budget
-from shared import THREADS_MAX_POST_CHARS, ImageAsset, get_config, logger
-from shared.formatting import citation_key, extract_urls, normalize_citation_url
+from domain.formatting import citation_key, extract_urls, normalize_citation_url
+from domain.models import ImageAsset
+from domain.renderers import render_threads_research, research_post_budget
+from shared import THREADS_MAX_POST_CHARS, get_config, logger
 
 # The two places a research report can go. MARKDOWN is the report handed back to the caller (the CLI
 # prints it and saves it); THREADS publishes a plain-text thread to the public account and is allowed
@@ -328,7 +329,8 @@ async def read_url(url: str) -> str:
 
 
 async def recall_trends() -> str:
-    from shared import TRENDS_KEY, TrendMemory
+    from domain.models import TrendMemory
+    from shared import TRENDS_KEY
 
     config = get_config()
     half_life = config.pipeline.trend_momentum_half_life_days
@@ -404,7 +406,7 @@ async def recall_digest(digest_date: str) -> str:
         # coverage is worse than no recall at all.
         return f"No digest stored for {day.isoformat()}."
 
-    from agent.tool_state import DigestStateManager
+    from domain.digest_snapshot import DigestStateManager
 
     content = DigestStateManager.load_from_dict(data).get_content()
     if content is None or not content.items:
@@ -539,7 +541,8 @@ async def check_thread_facts(report: str, delivery: DeliveryContext) -> list[dic
     before, since the check must not be able to stop publishing on its own."""
     from langchain_core.output_parsers import StrOutputParser
 
-    from shared import ThreadFactCheckPrompt, parse_json_from_llm_output
+    from application.prompts import ThreadFactCheckPrompt
+    from shared import parse_json_from_llm_output
 
     keys = (citation_key(url, delivery.seen_urls) for url in extract_urls(report))
     cited = [delivery.source_texts[key] for key in dict.fromkeys(keys) if key in delivery.source_texts]

@@ -14,6 +14,7 @@ import boto3
 
 from adapters.aws import available_boto_profile
 from adapters.bedrock import BedrockLanguageModelFactory
+from adapters.collectors import RedditCollector, RSSCollector, RSSHubCollector, WebSearchCollector, YouTubeCollector
 from adapters.memory import create_memory_store
 from adapters.openai_images import OpenAIImageRenderer
 from adapters.research_backends import WebResearchSources
@@ -22,7 +23,6 @@ from adapters.threads import ThreadsGateway
 from application.daily_visual import DailyVisualMaker
 from application.ports import ContentSource, LanguageModels, MemoryStore, StateStore
 from application.research import ResearchPorts
-from collectors import RedditCollector, RSSCollector, RSSHubCollector, WebSearchCollector, YouTubeCollector
 from shared import Config, logger
 
 

@@ -1,4 +1,4 @@
-from shared.models import HealthReport, SourceHealth, SourceStatus
+from domain.models import HealthReport, SourceHealth, SourceStatus
 
 
 class TestHealthReport:

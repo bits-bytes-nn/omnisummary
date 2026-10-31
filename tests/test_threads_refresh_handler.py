@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lambda_handlers import threads_refresh_handler as h
+from entrypoints import threads_refresh_handler as h
 
 
 class TestThreadsRefreshHandler:

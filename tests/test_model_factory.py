@@ -132,7 +132,7 @@ class TestRequestGating:
 
 
 class TestStructuredOutputRequest:
-    """agent/visuals.py builds the brief with with_structured_output, which forces the schema tool
+    """application/visual_generator.py builds the brief with with_structured_output, which forces the schema tool
     whenever langchain-aws believes the model allows it. Drives the real ChatBedrockConverse against a
     mocked Converse client and asserts on the request that would go over the wire."""
 
@@ -158,7 +158,7 @@ class TestStructuredOutputRequest:
 
     def _converse_request(self, model: LanguageModelId, resolved: str) -> dict:
         from adapters.bedrock import BedrockCrossRegionModelHelper as H
-        from shared.models import VisualBrief
+        from domain.models import VisualBrief
 
         client = MagicMock()
         # A fresh copy per call: the response parser pops keys off the dict it is given.

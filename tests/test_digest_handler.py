@@ -4,15 +4,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lambda_handlers import digest_handler
+from domain.models import HealthReport, SourceHealth, SourceStatus
+from entrypoints import digest_handler
 from shared.constants import METRIC_NAMESPACE
-from shared.models import HealthReport, SourceHealth, SourceStatus
 
 
 class TestHandler:
     def test_runs_the_pipeline_and_returns_200(self):
         # Patch _run, not asyncio.run: patching the runner asserted only that SOMETHING was awaited.
-        with patch("lambda_handlers.digest_handler._run", new=AsyncMock()) as run:
+        with patch("entrypoints.digest_handler._run", new=AsyncMock()) as run:
             result = digest_handler.handler({}, None)
         run.assert_awaited_once_with()
         assert result["statusCode"] == 200
@@ -21,8 +21,8 @@ class TestHandler:
         # A returned 500 body counts as a SUCCESSFUL invocation to Lambda: neither the Errors
         # alarm nor the async DLQ would ever see a broken digest. The failure must propagate
         # (retry_attempts=0 means it can't re-post).
-        with patch("lambda_handlers.digest_handler._run", new=AsyncMock(side_effect=RuntimeError("boom"))):
-            with patch("lambda_handlers.digest_handler.logger") as log:
+        with patch("entrypoints.digest_handler._run", new=AsyncMock(side_effect=RuntimeError("boom"))):
+            with patch("entrypoints.digest_handler.logger") as log:
                 with pytest.raises(RuntimeError, match="boom"):
                     digest_handler.handler({}, None)
         assert log.error.called  # still logged (with the correlation id set) before re-raising
@@ -38,7 +38,7 @@ def _config() -> MagicMock:
 class TestRun:
     @pytest.fixture(autouse=True)
     def _not_yet_published(self):
-        with patch("lambda_handlers.digest_handler.already_published", return_value=False):
+        with patch("entrypoints.digest_handler.already_published", return_value=False):
             yield
 
     @pytest.fixture(autouse=True)
@@ -47,12 +47,12 @@ class TestRun:
 
     async def test_a_date_already_on_threads_runs_nothing(self):
         # A duplicate invoke used to persist its own snapshot over the posted digest's record.
-        with patch("lambda_handlers.digest_handler.Config.load", return_value=_config()):
-            with patch("lambda_handlers.digest_handler.already_published", return_value=True):
-                with patch("lambda_handlers.digest_handler.run_collectors_with_health", new=AsyncMock()) as collect:
-                    with patch("lambda_handlers.digest_handler.persist_digest") as persist:
-                        with patch("lambda_handlers.digest_handler._stored_story_count", return_value=5):
-                            with patch("lambda_handlers.digest_handler._emit_digest_items_metric") as metric:
+        with patch("entrypoints.digest_handler.Config.load", return_value=_config()):
+            with patch("entrypoints.digest_handler.already_published", return_value=True):
+                with patch("entrypoints.digest_handler.run_collectors_with_health", new=AsyncMock()) as collect:
+                    with patch("entrypoints.digest_handler.persist_digest") as persist:
+                        with patch("entrypoints.digest_handler._stored_story_count", return_value=5):
+                            with patch("entrypoints.digest_handler._emit_digest_items_metric") as metric:
                                 await digest_handler._run()
         collect.assert_not_awaited()
         persist.assert_not_called()
@@ -61,13 +61,13 @@ class TestRun:
     async def test_exits_early_when_no_items(self):
         config = _config()
         health = HealthReport(sources=[SourceHealth(name="rss", item_count=0, status=SourceStatus.EMPTY)])
-        with patch("lambda_handlers.digest_handler.Config.load", return_value=config):
+        with patch("entrypoints.digest_handler.Config.load", return_value=config):
             with patch(
-                "lambda_handlers.digest_handler.run_collectors_with_health",
+                "entrypoints.digest_handler.run_collectors_with_health",
                 new=AsyncMock(return_value=([], health)),
             ):
-                with patch("lambda_handlers.digest_handler._maybe_alert") as alert:
-                    with patch("lambda_handlers.digest_handler.run_pipeline", new=AsyncMock()) as pipeline:
+                with patch("entrypoints.digest_handler._maybe_alert") as alert:
+                    with patch("entrypoints.digest_handler.run_pipeline", new=AsyncMock()) as pipeline:
                         await digest_handler._run()
         alert.assert_called_once_with(health, config.collectors.alert_on_empty)
         pipeline.assert_not_called()
@@ -78,7 +78,7 @@ class TestRun:
         # that still triggered the visual is exactly how 2026-08-13/08-17 published a broken post.
         from datetime import datetime
 
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         # Frozen: a "today" read after the run disagreed with the run's own date across KST midnight.
         digest_date = date(2026, 1, 15)
@@ -91,17 +91,17 @@ class TestRun:
         digest.content = DigestContent(lead="리드.", items=[DigestItem(title="t", url="http://e/1", body="b")])
         ranked = [MagicMock(), MagicMock(), MagicMock()]
         result = (items, ranked, digest)
-        with patch("lambda_handlers.digest_handler.Config.load", return_value=config):
+        with patch("entrypoints.digest_handler.Config.load", return_value=config):
             with patch(
-                "lambda_handlers.digest_handler.run_collectors_with_health",
+                "entrypoints.digest_handler.run_collectors_with_health",
                 new=AsyncMock(return_value=(items, health)),
             ):
-                with patch("lambda_handlers.digest_handler._maybe_alert"):
-                    with patch("lambda_handlers.digest_handler.run_pipeline", new=AsyncMock(return_value=result)):
-                        with patch("lambda_handlers.digest_handler.persist_digest") as persist:
-                            with patch("lambda_handlers.digest_handler._trigger_visual") as trigger:
+                with patch("entrypoints.digest_handler._maybe_alert"):
+                    with patch("entrypoints.digest_handler.run_pipeline", new=AsyncMock(return_value=result)):
+                        with patch("entrypoints.digest_handler.persist_digest") as persist:
+                            with patch("entrypoints.digest_handler._trigger_visual") as trigger:
                                 with patch(
-                                    "lambda_handlers.digest_handler.resolve_digest_window",
+                                    "entrypoints.digest_handler.resolve_digest_window",
                                     return_value=window,
                                 ):
                                     await digest_handler._run()
@@ -115,7 +115,7 @@ class TestRun:
     async def test_metric_counts_digest_stories_not_ranker_candidates(self):
         # Regression (2026-08-13 / 08-17): the digest shipped ZERO stories while this metric
         # reported the full ranker candidate count, so the EmptyDigestAlarm never fired.
-        from shared.models import DigestContent, DigestItem
+        from domain.models import DigestContent, DigestItem
 
         config = _config()
         items = [MagicMock()]
@@ -123,16 +123,16 @@ class TestRun:
         digest = MagicMock()
         digest.content = DigestContent(lead="l", items=[DigestItem(title="t", url="http://e/1", body="b")])
         result = (items, [MagicMock() for _ in range(8)], digest)  # 8 ranked candidates, 1 story
-        with patch("lambda_handlers.digest_handler.Config.load", return_value=config):
+        with patch("entrypoints.digest_handler.Config.load", return_value=config):
             with patch(
-                "lambda_handlers.digest_handler.run_collectors_with_health",
+                "entrypoints.digest_handler.run_collectors_with_health",
                 new=AsyncMock(return_value=(items, health)),
             ):
-                with patch("lambda_handlers.digest_handler._maybe_alert"):
-                    with patch("lambda_handlers.digest_handler.run_pipeline", new=AsyncMock(return_value=result)):
-                        with patch("lambda_handlers.digest_handler.persist_digest"):
-                            with patch("lambda_handlers.digest_handler._trigger_visual"):
-                                with patch("lambda_handlers.digest_handler._emit_digest_items_metric") as emit:
+                with patch("entrypoints.digest_handler._maybe_alert"):
+                    with patch("entrypoints.digest_handler.run_pipeline", new=AsyncMock(return_value=result)):
+                        with patch("entrypoints.digest_handler.persist_digest"):
+                            with patch("entrypoints.digest_handler._trigger_visual"):
+                                with patch("entrypoints.digest_handler._emit_digest_items_metric") as emit:
                                     await digest_handler._run()
         emit.assert_called_once_with(1)
 
@@ -143,16 +143,16 @@ class TestRun:
         digest = MagicMock()
         digest.content = None  # the 08-17 failure mode: content that could not be parsed
         result = (items, [MagicMock()], digest)
-        with patch("lambda_handlers.digest_handler.Config.load", return_value=config):
+        with patch("entrypoints.digest_handler.Config.load", return_value=config):
             with patch(
-                "lambda_handlers.digest_handler.run_collectors_with_health",
+                "entrypoints.digest_handler.run_collectors_with_health",
                 new=AsyncMock(return_value=(items, health)),
             ):
-                with patch("lambda_handlers.digest_handler._maybe_alert"):
-                    with patch("lambda_handlers.digest_handler.run_pipeline", new=AsyncMock(return_value=result)):
-                        with patch("lambda_handlers.digest_handler.persist_digest"):
-                            with patch("lambda_handlers.digest_handler._trigger_visual"):
-                                with patch("lambda_handlers.digest_handler._emit_digest_items_metric") as emit:
+                with patch("entrypoints.digest_handler._maybe_alert"):
+                    with patch("entrypoints.digest_handler.run_pipeline", new=AsyncMock(return_value=result)):
+                        with patch("entrypoints.digest_handler.persist_digest"):
+                            with patch("entrypoints.digest_handler._trigger_visual"):
+                                with patch("entrypoints.digest_handler._emit_digest_items_metric") as emit:
                                     await digest_handler._run()
         emit.assert_called_once_with(0)
 
@@ -164,18 +164,18 @@ class TestRun:
         items = [MagicMock()]
         health = HealthReport(sources=[SourceHealth(name="rss", item_count=1, status=SourceStatus.OK)])
         result = (items, [MagicMock()], MagicMock())
-        with patch("lambda_handlers.digest_handler.Config.load", return_value=config):
+        with patch("entrypoints.digest_handler.Config.load", return_value=config):
             with patch(
-                "lambda_handlers.digest_handler.run_collectors_with_health",
+                "entrypoints.digest_handler.run_collectors_with_health",
                 new=AsyncMock(return_value=(items, health)),
             ):
-                with patch("lambda_handlers.digest_handler._maybe_alert"):
-                    with patch("lambda_handlers.digest_handler.run_pipeline", new=AsyncMock(return_value=result)):
+                with patch("entrypoints.digest_handler._maybe_alert"):
+                    with patch("entrypoints.digest_handler.run_pipeline", new=AsyncMock(return_value=result)):
                         with patch(
-                            "lambda_handlers.digest_handler.persist_digest",
+                            "entrypoints.digest_handler.persist_digest",
                             side_effect=RuntimeError("memory full"),
                         ):
-                            with patch("lambda_handlers.digest_handler._trigger_visual") as trigger:
+                            with patch("entrypoints.digest_handler._trigger_visual") as trigger:
                                 with pytest.raises(RuntimeError, match="persist failed"):
                                     await digest_handler._run()
         trigger.assert_not_called()
@@ -200,14 +200,14 @@ class TestRun:
 class TestTriggerVisual:
     def test_no_function_name_skips(self, monkeypatch):
         monkeypatch.delenv("VISUAL_FUNCTION_NAME", raising=False)
-        with patch("lambda_handlers.digest_handler.boto3.client") as client:
+        with patch("entrypoints.digest_handler.boto3.client") as client:
             digest_handler._trigger_visual(date(2026, 8, 18))
         client.assert_not_called()
 
     def test_invokes_visual_lambda(self, monkeypatch):
         monkeypatch.setenv("VISUAL_FUNCTION_NAME", "omnisummary-dev-visual")
         lambda_client = MagicMock()
-        with patch("lambda_handlers.digest_handler.boto3.client", return_value=lambda_client):
+        with patch("entrypoints.digest_handler.boto3.client", return_value=lambda_client):
             digest_handler._trigger_visual(date(2026, 8, 18))
         lambda_client.invoke.assert_called_once()
         kwargs = lambda_client.invoke.call_args.kwargs
@@ -226,7 +226,7 @@ class TestTriggerVisual:
         monkeypatch.setenv("VISUAL_FUNCTION_NAME", "fn")
         set_correlation_id("abc123def456")
         lambda_client = MagicMock()
-        with patch("lambda_handlers.digest_handler.boto3.client", return_value=lambda_client):
+        with patch("entrypoints.digest_handler.boto3.client", return_value=lambda_client):
             digest_handler._trigger_visual(date(2026, 8, 18))
         payload = json.loads(lambda_client.invoke.call_args.kwargs["Payload"])
         assert payload["correlation_id"] == "abc123def456"
@@ -238,7 +238,7 @@ class TestTriggerVisual:
         monkeypatch.setenv("VISUAL_FUNCTION_NAME", "fn")
         lambda_client = MagicMock()
         lambda_client.invoke.side_effect = Exception("network down")
-        with patch("lambda_handlers.digest_handler.boto3.client", return_value=lambda_client):
+        with patch("entrypoints.digest_handler.boto3.client", return_value=lambda_client):
             with pytest.raises(RuntimeError, match="Could not trigger visual delivery"):
                 digest_handler._trigger_visual(date(2026, 8, 18))
 
@@ -246,6 +246,6 @@ class TestTriggerVisual:
         # Locally the visual runs inline from main.py, so an unset name is normal (test above). In
         # AWS it is the only link to delivery, so it must fail the run rather than exit green.
         monkeypatch.delenv("VISUAL_FUNCTION_NAME", raising=False)
-        monkeypatch.setattr("lambda_handlers.digest_handler.is_running_in_aws", lambda: True)
+        monkeypatch.setattr("entrypoints.digest_handler.is_running_in_aws", lambda: True)
         with pytest.raises(RuntimeError, match="VISUAL_FUNCTION_NAME"):
             digest_handler._trigger_visual(date(2026, 8, 18))

@@ -7,9 +7,9 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
 from application.ranker import ContentRanker
+from domain.models import CollectedItem
 from shared.config import PipelineConfig
 from shared.constants import SourceType
-from shared.models import CollectedItem
 
 
 def _mock_factory() -> MagicMock:

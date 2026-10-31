@@ -88,7 +88,7 @@ class OmniSummaryApplicationStack(Stack):
             code=lambda_.DockerImageCode.from_ecr(
                 foundation.ecr_repo,
                 tag_or_digest=digest_tag_or_digest,
-                cmd=["lambda_handlers.visual_handler.handler"],
+                cmd=["entrypoints.visual_handler.handler"],
             ),
             # gpt-image render + Threads root post + reply-indexing retries (an IMAGE
             # root isn't addressable as a reply target for several MINUTES) can exceed 10 min; 15
@@ -129,7 +129,7 @@ class OmniSummaryApplicationStack(Stack):
             code=lambda_.DockerImageCode.from_ecr(
                 foundation.ecr_repo,
                 tag_or_digest=digest_tag_or_digest,
-                cmd=["lambda_handlers.digest_handler.handler"],
+                cmd=["entrypoints.digest_handler.handler"],
             ),
             timeout=Duration.minutes(15),
             memory_size=1024,
@@ -171,7 +171,7 @@ class OmniSummaryApplicationStack(Stack):
             code=lambda_.DockerImageCode.from_ecr(
                 foundation.ecr_repo,
                 tag_or_digest=digest_tag_or_digest,
-                cmd=["lambda_handlers.threads_refresh_handler.handler"],
+                cmd=["entrypoints.threads_refresh_handler.handler"],
             ),
             timeout=Duration.minutes(1),
             memory_size=256,
@@ -200,7 +200,7 @@ class OmniSummaryApplicationStack(Stack):
             code=lambda_.DockerImageCode.from_ecr(
                 foundation.ecr_repo,
                 tag_or_digest=digest_tag_or_digest,
-                cmd=["lambda_handlers.comment_reply_handler.handler"],
+                cmd=["entrypoints.comment_reply_handler.handler"],
             ),
             # Up to comment_reply_max_per_run comments, each a model call plus a publish whose retry
             # ladder alone can take 30s.
