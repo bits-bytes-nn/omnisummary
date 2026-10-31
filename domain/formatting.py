@@ -294,16 +294,22 @@ def _trim_url(url: str) -> str:
     return url
 
 
-# The Korean particles prose glues to a cited URL ("...com/a에서"), longest first. A closed list, so a
-# Korean path segment ("/blog/가짜발표") or the rest of a longer slug ("/w/인공지능" for a seen "/w/인공")
-# is never taken for one.
-_URL_PARTICLES = tuple(
-    sorted(
-        "에서는 에서도 에서 에는 에도 에게 에 의 을 를 은 는 이 가 으로 로 와 과 도 만 까지 부터 처럼 보다 이다 입니다 참고".split(),
-        key=len,
-        reverse=True,
-    )
+# The Korean particles and endings prose glues to a cited URL ("...com/a에서", ".../a와의", ".../a라는"). A
+# closed set, combined freely ("에서" + "의"), so a Korean path segment ("/blog/가짜발표") or the rest of a
+# longer slug ("/w/인공지능" for a seen "/w/인공") is never taken for one.
+_URL_PARTICLES = frozenset(
+    "에서 에게 에 엔 선 의 을 를 은 는 이 가 으로 로 부터 와 과 랑 이랑 도 만 까지 처럼 보다 께 한테 "
+    "이다 다 입니다 이라는 라는 이란 란 이나 나 이며 며 이고 고 인 이에요 예요 에요 요 참고".split()
 )
+
+
+def _is_particles(suffix: str) -> bool:
+    """Whether `suffix` is one or more particles from _URL_PARTICLES, end to end."""
+    ends = {0}
+    for i in range(1, len(suffix) + 1):
+        if any(suffix[j:i] in _URL_PARTICLES for j in ends if j < i):
+            ends.add(i)
+    return len(suffix) in ends
 
 
 def citation_key(url: str, seen: set[str]) -> str | None:
@@ -316,10 +322,13 @@ def citation_key(url: str, seen: set[str]) -> str | None:
     if key in seen:
         return key
     trimmed = _trim_url(url)
-    for particle in _URL_PARTICLES:
-        if trimmed.endswith(particle):
-            bare = normalize_citation_url(_trim_url(trimmed[: -len(particle)]))
-            return bare if "/" in bare.rstrip("/") and bare in seen else None
+    hangul = len(trimmed) - len(trimmed.rstrip("".join(chr(c) for c in range(0xAC00, 0xD7A4))))
+    for cut in range(1, hangul + 1):
+        if not _is_particles(trimmed[-cut:]):
+            continue
+        bare = normalize_citation_url(_trim_url(trimmed[:-cut]))
+        if "/" in bare.rstrip("/") and bare in seen:
+            return bare
     return None
 
 

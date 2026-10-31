@@ -137,9 +137,6 @@ class OmniSummaryApplicationStack(Stack):
             # No auto-retry on the daily cron invoke: the pipeline is not idempotent (a retry
             # re-posts the digest). A failure goes to the DLQ for inspection/manual replay.
             retry_attempts=0,
-            # One at a time, so a duplicate delivery of the day's event queues behind the first run and
-            # then finds its stored digest (which it delivers instead of rebuilding).
-            reserved_concurrent_executions=1,
             on_failure=destinations.SqsDestination(async_dlq),
             log_group=self._log_group("DigestPipelineLambdaLogGroup", f"{project_name}-{stage}-digest"),
             environment={

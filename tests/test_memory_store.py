@@ -180,7 +180,10 @@ class TestAgentCoreMemoryStore:
 
         store, client = self._store()
         pool = {
-            "ranked_items": [{"item": {"item_id": f"i{n}", "text": "가" * 20_000}, "score": 0.8} for n in range(12)],
+            "ranked_items": [
+                {"item": {"item_id": f"i{n}", "text": ('가나다 "인용" ' * 8 + "\n") * 300}, "score": 0.8}
+                for n in range(12)
+            ],
             "digest_result": {"digest_text": "ok"},
         }
         store.put_digest("2026-06-02", pool)

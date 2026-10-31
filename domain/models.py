@@ -119,7 +119,7 @@ class DigestResult(BaseModel):
 class VisualBrief(BaseModel):
     # Optional: the title only feeds a log line, so requiring it could only cost the day's visual.
     title: str = ""
-    # The Images API limit for the GPT image models (4000 is dall-e-3's): a four-panel brief overran it.
+    # The Images API limit for the GPT image models (4000 is dall-e-3's): a multi-panel brief overran it.
     prompt: str = Field(min_length=1, max_length=32000)
     # Required, no default: a default let a brief that left the field out silently become portrait,
     # and the visual pipeline then recorded that fallback as if it had been chosen.

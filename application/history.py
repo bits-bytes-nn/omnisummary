@@ -141,7 +141,7 @@ class PublishedUrlLedger:
                 age = (today - date.fromisoformat(iso)).days
                 # Negative ages too: a late backfill or DLQ replay of an older day must not re-ship what
                 # the days after it already ran.
-                if age != 0 and age < self.ttl_days:
+                if age != 0 and -self.ttl_days < age < self.ttl_days:
                     keep.add(url)
             except (ValueError, TypeError):
                 continue
