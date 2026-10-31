@@ -1072,7 +1072,7 @@ root에 함께 나가고, 트렌드 재등장 수치와 같은 시계(같은 날
 보는 줄을 매일 같은 고정 문장이 차지한다. 실제로 연속 40개 게시물이 동일 문장으로 시작했다. 그래도 카운트다운은 이
 계정의 서명이고, 소유자가 첫 줄 도달률 논리보다 알아볼 수 있는 브랜딩을 위에 뒀다.
 
-**각만 볼 때는 뺀다(`editorial_lead`).** 최근 lead 신선도 비교는 개그를 뺀 각만 본다.
+**각만 비교한다.** 최근 lead 신선도 비교에는 각 lead의 마지막 문장(논지)만 보여 주니, 맨 앞의 개그는 비교에 들어가지 않는다.
 
 **넘치면 앞 문장부터 남긴다.** Threads root가 500자를 넘으면 `_fit_lead`가 앞에서부터 온전한 문장만 남기니 접두
 개그는 살아남는다. 트림이 발생하면 WARNING을 남긴다. 에디터가 산문 예산을 넘겼다는 신호다.
@@ -1517,9 +1517,8 @@ append하고, `list_events`는 순서를 보장하지 않는다. 한 페이지�
 날짜로 찍힌 URL은 그대로 둔다. `--date`로 지난 날을 다시 돌린 backfill이 최근 발행을 옛 날짜로 덮으면, 그 URL이
 윈도에서 일찍 빠져 다시 실릴 수 있다.
 
-**`RollingLog`.** 한 JSON blob에 담는 capped FIFO다. 반복 방지용 최근 lead(`recent_leads.json`)와 최근 만화(`recent_comics.json`)에 쓴다. `append(record, dedup_key=...)`로 같은 키 값의 기존 항목을 교체할 수 있고,
-leads는 `date`로 dedup해서 `--force-republish` 재실행이 같은 날 lead를 중복 추가해 반복 방지 윈도를 잠식하지
-않게 한다.
+**`RollingLog`.** 한 JSON blob에 담는 capped FIFO다. 최근 만화(`recent_comics.json`)에 쓴다. `append(record, dedup_key=...)`로 같은 키 값의 기존 항목을 교체할 수 있어,
+`date`로 dedup하면 같은 날 재실행이 항목을 중복 추가해 윈도를 잠식하지 않는다.
 
 **`ThreadsPostLedger` (`threads_posted.json`).** 데일리 Threads 게시의 멱등 마커다. `{date: owner_run_id}`
 맵으로 저장하고, 가장 최근에 마크한 30개만 남긴다(날짜순이 아니라 마크한 순서라서 `--date`로 되살린 옛날짜도 바로 밀려나지 않는다. 예전 bare-list 형식은 더 읽지 않는다). 호출자(비주얼 Lambda)가 여러 분에 걸친 게시 전에 날짜를 마크하고
@@ -1531,9 +1530,8 @@ leads는 `date`로 dedup해서 `--force-republish` 재실행이 같은 날 lead�
 아니라 AgentCore Memory 히스토리로도 self-heal되게 한다. 원장이 비어도 작동한다.
 
 **시드와 기록(`application.digest_pipeline.run_pipeline`).** exclude 집합을 원장과 최근 AgentCore Memory 스냅샷 양쪽에서
-시드한다(`get_recent_digests(today, published_url_ttl_days - 1)`로 원장이 제외하는 것과 같은 창, 1일 전부터 TTL 하루 전까지를 읽는다. TTL 당일에는 둘 다 같은 스토리를 다시 허용한다). 생성 후에는 발행된 `content.items` URL을 원장에 기록하고, lead를 `recent_leads.json`에 append하되
-AGI 카운트다운 프리픽스를 제거한다(`_editorial_lead`). novelty 신호가 고정 보일러플레이트가 아니라 편집 각이
-되어야 한다.
+시드한다(`get_recent_digests(today, published_url_ttl_days - 1)`로 원장이 제외하는 것과 같은 창, 1일 전부터 TTL 하루 전까지를 읽는다. TTL 당일에는 둘 다 같은 스토리를 다시 허용한다). 생성 후에는 발행된 `content.items` URL을 원장에 기록한다. 최근 lead와 최근 스토리 제목은 따로 저장하지 않고
+이미 읽어 온 같은 스냅샷에서 꺼낸다(`_recent_leads`, `_recent_story_titles`).
 
 ### `recall_trends`는 어디를 보는가
 

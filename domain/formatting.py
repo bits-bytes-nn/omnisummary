@@ -102,15 +102,6 @@ def place_countdown_intro(lead: str, intro: str) -> str:
     return lead if lead.startswith(intro) else intro + lead
 
 
-def editorial_lead(lead: str, intro: str) -> str:
-    """The lead without the AGI-countdown gag that opens it, leaving only the editorial angle.
-    Callers that reason about the ANGLE (recent-leads novelty) want this rather
-    than the raw lead, which opens with the same fixed daily template every single day."""
-    if intro and lead.startswith(intro):
-        return lead[len(intro) :].lstrip()
-    return lead
-
-
 RETWEET_PREFIX = re.compile(r"^\s*RT\s+[^:]{1,60}:\s*")
 
 
