@@ -358,7 +358,7 @@ async def recall_trends() -> str:
     today = datetime.now(ZoneInfo(config.aws.timezone)).date()
     trends.sort(key=lambda t: t.momentum(today, half_life), reverse=True)
     lines = [
-        f"- {t.title} ({t.status.value}; first seen {t.first_seen or t.evidence[0].date}, latest evidence on "
+        f"- {t.title} (first seen {t.first_seen or t.evidence[0].date}, latest evidence on "
         f"{', '.join(sorted({ev.date for ev in t.evidence}))}): {t.evidence[-1].summary[:gist_chars]}"
         for t in trends
     ]

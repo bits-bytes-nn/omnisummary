@@ -196,7 +196,7 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | 랭킹 | `ranking_batch_size`(기본 40), `ranking_max_concurrency`(기본 4), `ranking_max_retries`(기본 3), `ranking_retry_backoff_sec`(기본 5), `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치, Bedrock fan-out 상한, 배치 재시도, 점수 루브릭 |
 | 후보 풀 | `top_n`(기본 5), `min_score`(기본 0.6), `digest_candidate_buffer`(기본 7), `source_slots`(소스마다 1), `max_per_origin`(기본 1) | 에디터에게 넘기는 후보는 `top_n + digest_candidate_buffer`개이고, 소스 슬롯과 origin 상한은 이 풀을 채우는 데만 쓴다. 실제로 나가는 `top_n`개는 에디터가 고른다([§5.2](#52-랭커-rankerpy)) |
 | 중복 | `published_url_ttl_days`(기본 6, 최소 2), `recent_leads_window`(기본 5) | cross-day dedup 원장 TTL과 최근 다이제스트 제목을 읽는 창, 반복 방지용 최근 lead와 최근 만화의 윈도([§5.6](#56-데일리-비주얼-daily_visualpy)). TTL이 최소 2인 것은 날짜만 있는 웹 결과가 이틀 연속 윈도에 들어가고([§4.7](#47-websearch-web_searchpy)) 두 번째 게시를 원장이 막기 때문이다 |
-| 트렌드 | `trend_retention_days`, `trend_cooling_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존과 냉각 기간, 증거와 active 캡, momentum 반감기 |
+| 트렌드 | `trend_retention_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존 기간, 증거와 active 캡, momentum 반감기 |
 | 전달 | `enable_threads_post`, `threads_topic_tag`(기본 `AI`) | Threads 게시 on/off. 코드 기본값은 off이고 배포 설정은 on이다. 데일리 비주얼 Lambda가 게시한다. 토픽 태그는 root 게시물에만 붙는다([§5.8](#58-threads-전달-adaptersthreadspy-enable_threads_post)) |
 | 댓글 답글 | `enable_comment_replies`, `comment_reply_lookback_days`(7), `comment_reply_max_per_run`(10), `comment_reply_max_per_commenter`(3) | 독자 댓글 자동 답글. 코드 기본값은 off이고 배포 설정은 on이다([§5.9](#59-댓글-답글-applicationcomment_repliespy-enable_comment_replies)) |
 | AGI 카운트다운 | `agi_countdown_date`(기본 `2029-01-01`), `agi_countdown_template`, `agi_countdown_after` | 다이제스트 lead 맨 앞에 코드가 붙이는 "AGI N일 전" 인트로([§5.7](#57-agi-카운트다운-인트로-domainformattingpy-agi_countdown_intro) 참조) |
@@ -590,11 +590,8 @@ FAILED로 분류되게 한다. 부분 실패는 그대로 허용한다.
 ### 5.1 집계기 (`aggregator.py`)
 
 URL로 먼저, 그다음 정규화된 제목으로 중복을 제거한다. 제목 정규화(`normalize_title`)는 앞머리의
-`RT 이름:`을 떼므로 셀프 리트윗이 원문과 겹친다. 겹치면 본문이 접두어만큼 긴 리트윗이 아니라 원문을 남긴다. RSSHub는
-긴 X 제목을 정해진 길이에서 잘라 "..."를 붙이는데, 리트윗은 접두어가 그 길이를 먹어 더 일찍 잘린다. 그래서 같은 길이에서 잘린 X 제목
-두 개는 한쪽이 다른 쪽의 앞부분과 같으면 같은 글로 본다(2026-10-26 omarsar0 리트윗 두 쌍이 이렇게 살아남았다). 길이가 같아야
-하는 것은 작성자가 직접 "..."로 끝낸 짧은 글("Big news coming...")이 같은 말로 시작하는 다른 글을 삼키지 않게 하려는 것이다.
-Reddit이나 블로그 제목의 "..."는 작성자가 쓴 것이라 비교 대상이 아니다.
+`RT 이름:`을 떼므로 셀프 리트윗이 원문과 겹친다. 겹치면 본문이 접두어만큼 긴 리트윗이 아니라 원문을 남긴다. RSSHub가 긴 X 제목을 잘라 리트윗과 원문의 제목이
+달라진 경우는 여기서 합치지 않는다. 같은 사건의 두 항목은 에디터가 하나만 남긴다([§5.3](#53-다이제스트-생성기-digest_generatorpy)).
 
 **URL 정규화.** 모듈 레벨 `normalize_url`이 scheme과 host case, trailing slash, 추적 파라미터(`utm_*`,
 `fbclid`, `ref` 등), fragment를 접고 경로의 비ASCII 퍼센트 인코딩(한글 슬러그)을 풀어서 같은 기사가 https 기준으로 일치하게 만든다.
@@ -717,8 +714,7 @@ unmatched-key 경고 경로를 요구한다. 권위는 프롬프트의 *Source A
 
 ### 5.3 트렌드 트래커 (`trend_tracker.py`)
 
-구조화된 `trends.json`을 유지한다. slug id와 증거 리스트를 가진 `Trend` 객체들이다. 날짜 기반 상태
-(active, cooling), 보존 기간이 지나면 삭제, momentum 감쇠 랭킹, active 캡이 전부 여기 있고, 자세한 규칙은
+구조화된 `trends.json`을 유지한다. slug id와 증거 리스트를 가진 `Trend` 객체들이다. 보존 기간이 지나면 삭제, momentum 감쇠 랭킹, active 캡이 전부 여기 있고, 자세한 규칙은
 [§7.1](#71-트렌드--구조화-trendsjson)에 정리했다. 갱신은 다이제스트를 쓴 뒤 돌고 실패해도 그날 게시를 막지 않는다.
 트렌드는 다음 날 lead의 재료일 뿐이라, 갱신의 Sonnet 호출이나 S3 쓰기 하나가 스로틀되면 비용을 다 치른 다이제스트가
 저장도 게시도 되지 않던 경로를 막는다.
@@ -1426,8 +1422,8 @@ TTL의 원장이다.
 분류한다. 부기는 전부 결정론적 Python이다.
 
 - 증거 날짜는 코드가 스탬프한다. LLM이 아니다.
-- 상태(active, cooling)는 `last_seen`을 `trend_cooling_days`에 비교해 계산하고, `last_seen`은 저장된 증거의
-  가장 늦은 날짜에서 도출한다. 그래서 같은 날 재실행이 오늘 증거를 걷어내면 `last_seen`도 함께 뒤로 간다.
+- `last_seen`은 저장된 증거의 가장 늦은 날짜에서 도출한다(별도의 active/cooling 상태는 두지 않는다. 날짜와
+  momentum이 같은 정보를 준다). 그래서 같은 날 재실행이 오늘 증거를 걷어내면 `last_seen`도 함께 뒤로 간다.
 - `last_seen`이 `trend_retention_days`를 넘긴 트렌드는 보관 단계 없이 삭제한다(보관된 트렌드는 어느 독자도 읽지
   않아 되살아날 수 없었다).
 - momentum은 recency 감쇠다. `0.5^(age/half_life)`이고 `trend_momentum_half_life_days` 기본값은 7일이다.

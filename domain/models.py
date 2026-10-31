@@ -208,15 +208,9 @@ class TrendEvidence(BaseModel):
     summary: str
 
 
-class TrendStatus(str, Enum):
-    ACTIVE = "active"
-    COOLING = "cooling"
-
-
 class Trend(BaseModel):
     id: str  # stable slug; identity survives title rephrasing
     title: str
-    status: TrendStatus = TrendStatus.ACTIVE
     first_seen: str = ""
     last_seen: str = ""
     evidence: list[TrendEvidence] = Field(default_factory=list)
@@ -224,8 +218,6 @@ class Trend(BaseModel):
     def momentum(self, today: date, half_life_days: float) -> float:
         # Recency-decayed evidence count: each piece of evidence contributes
         # 0.5 ** (age_days / half_life). Recent, frequently-cited trends rank highest.
-        if half_life_days <= 0:
-            return float(len(self.evidence))
         total = 0.0
         for ev in self.evidence:
             try:

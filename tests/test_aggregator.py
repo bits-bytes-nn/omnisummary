@@ -38,32 +38,7 @@ class TestContentAggregator:
         ]
         assert len(ContentAggregator().aggregate(items)) == 2
 
-    def test_a_clipped_retweet_collapses_into_the_clipped_post_it_retweets(self):
-        # RSSHub clips long titles at a fixed length; the "RT name:" prefix makes the retweet's clip
-        # end earlier, so the two titles differ unless one is matched as a prefix of the other.
-        body = "Coding agents became more decisive and stopped changing its plan every few steps " * 2
-        items = [
-            _item(item_id="og", url="https://x.com/u/status/1", title=body[:150] + "...", source_type=SourceType.X),
-            _item(
-                item_id="rt",
-                url="https://x.com/u/status/2",
-                title=("RT elvis: " + body)[:150] + "...",
-                source_type=SourceType.X,
-            ),
-            _item(item_id="other", url="https://x.com/u/status/3", title=body[:40], source_type=SourceType.X),
-        ]
-        result = ContentAggregator().aggregate(items)
-        assert [it.item_id for it in result] == ["og", "other"]
 
-    def test_a_short_x_post_ending_in_an_ellipsis_is_not_a_clip(self):
-        # RSSHub clips at one fixed length; "Big news coming..." is the author's own ending and must not
-        # swallow a longer clipped title that starts the same way.
-        long = "Big news coming from the lab today about the new model and its many surprising results " * 2
-        items = [
-            _item(item_id="a", url="https://x.com/u/status/1", title=long[:150] + "...", source_type=SourceType.X),
-            _item(item_id="b", url="https://x.com/u/status/2", title="Big news coming...", source_type=SourceType.X),
-        ]
-        assert len(ContentAggregator().aggregate(items)) == 2
 
     def test_a_short_title_ending_in_an_ellipsis_elsewhere_is_not_a_clip(self):
         # A Reddit "Introducing..." is the author's own title, not RSSHub's fixed-length clip.

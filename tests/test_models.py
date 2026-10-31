@@ -89,14 +89,6 @@ class TestTrendMomentum:
         stale = Trend(id="s", title="S", evidence=[TrendEvidence(date="2026-06-01", summary="s")])
         assert recent.momentum(today, 7.0) > stale.momentum(today, 7.0)
 
-    def test_nonpositive_half_life_falls_back_to_count(self):
-        today = date(2026, 6, 5)
-        trend = Trend(
-            id="t",
-            title="T",
-            evidence=[TrendEvidence(date="2026-01-01", summary="a"), TrendEvidence(date="2026-06-05", summary="b")],
-        )
-        assert trend.momentum(today, half_life_days=0) == 2.0
 
     def test_bad_date_contributes_zero(self):
         today = date(2026, 6, 5)

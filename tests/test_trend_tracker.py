@@ -6,7 +6,7 @@ import pytest
 
 from application.ports import StateReadError
 from application.trend_tracker import TRENDS_KEY, TrendTracker
-from domain.models import Trend, TrendEvidence, TrendMemory, TrendStatus
+from domain.models import Trend, TrendEvidence, TrendMemory
 from shared.config import PipelineConfig
 
 
@@ -153,8 +153,8 @@ class TestUpdateTrends:
 
 
 class TestLifecycle:
-    def test_status_transitions_by_date_and_retention_drops(self):
-        config = PipelineConfig(trend_cooling_days=7, trend_retention_days=30)
+    def test_retention_drops_a_trend_unseen_too_long(self):
+        config = PipelineConfig(trend_retention_days=30)
         tracker = TrendTracker(config, MagicMock(), _FakeStore())
 
         def trend(tid: str, seen: str) -> Trend:
@@ -164,12 +164,12 @@ class TestLifecycle:
 
         memory = TrendMemory(trends=[trend("a", "2026-06-04"), trend("c", "2026-05-25"), trend("z", "2026-05-01")])
         tracker._run_lifecycle(memory, "2026-06-05")
-        assert {t.id: t.status for t in memory.trends} == {"a": TrendStatus.ACTIVE, "c": TrendStatus.COOLING}
+        assert [t.id for t in memory.trends] == ["a", "c"]
 
     @pytest.mark.asyncio
     async def test_a_same_day_rerun_rederives_last_seen_from_the_remaining_evidence(self, monkeypatch):
         # The re-run strips today's evidence before re-applying; a trend the second pass does not
-        # re-emit kept last_seen at today and stayed ACTIVE with its retention clock restarted.
+        # re-emit kept last_seen at today with its retention clock restarted.
         existing = TrendMemory(
             trends=[
                 Trend(
@@ -185,12 +185,11 @@ class TestLifecycle:
             ]
         )
         store = _FakeStore({TRENDS_KEY: existing.model_dump_json()})
-        tracker = _patched_tracker(store, [], monkeypatch, trend_cooling_days=7, trend_retention_days=30)
+        tracker = _patched_tracker(store, [], monkeypatch, trend_retention_days=30)
         await tracker.update_trends("d", "2026-06-20")
         t = TrendMemory.model_validate_json(store.data[TRENDS_KEY]).by_id("t")
         assert t is not None
         assert t.last_seen == "2026-06-01"
-        assert t.status == TrendStatus.COOLING
 
     @pytest.mark.asyncio
     async def test_max_evidence_cap_drops_oldest(self, monkeypatch):
@@ -336,7 +335,6 @@ class TestGetTrendsContext:
             Trend(
                 id="low",
                 title="Low",
-                status=TrendStatus.ACTIVE,
                 first_seen="2026-05-01",
                 last_seen="2026-05-20",
                 evidence=[TrendEvidence(date="2026-05-20", summary="old")],
@@ -344,7 +342,6 @@ class TestGetTrendsContext:
             Trend(
                 id="high",
                 title="High",
-                status=TrendStatus.ACTIVE,
                 first_seen="2026-06-01",
                 last_seen=(date.today() - timedelta(days=1)).isoformat(),
                 evidence=[TrendEvidence(date=(date.today() - timedelta(days=1)).isoformat(), summary="fresh")],
@@ -369,7 +366,6 @@ class TestGetTrendsContext:
             Trend(
                 id="t",
                 title="T",
-                status=TrendStatus.ACTIVE,
                 first_seen="2026-06-01",
                 last_seen="2026-06-10",
                 evidence=[TrendEvidence(date="2026-06-10", summary="s")],
@@ -394,7 +390,6 @@ class TestDigestFacingTrendCap:
                 Trend(
                     id=f"t{i}",
                     title=f"Trend {i}",
-                    status=TrendStatus.COOLING if i % 2 else TrendStatus.ACTIVE,
                     first_seen="2026-06-01",
                     last_seen=today.isoformat(),
                     # More evidence → more momentum, so the cap keeps the strongest threads.

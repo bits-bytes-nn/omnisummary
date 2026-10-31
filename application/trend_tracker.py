@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from application.ports import LanguageModels, StateReadError, StateStore
 from application.prompts import TrendClassifyPrompt
-from domain.models import Trend, TrendEvidence, TrendMemory, TrendStatus
+from domain.models import Trend, TrendEvidence, TrendMemory
 from shared import TRENDS_KEY, logger, parse_json_from_llm_output
 from shared.config import PipelineConfig
 
@@ -260,8 +260,6 @@ class TrendTracker:
             age = self._age_days(trend, today)
             if age is not None and age >= self.config.trend_retention_days:
                 continue
-            if age is not None:
-                trend.status = TrendStatus.COOLING if age >= self.config.trend_cooling_days else TrendStatus.ACTIVE
             kept.append(trend)
         if len(kept) < len(memory.trends):
             logger.info(
