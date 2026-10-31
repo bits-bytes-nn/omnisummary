@@ -2,7 +2,7 @@
 
 # 🗞️ OmniSummary
 
-**An AI/ML daily digest in Korean, published to Threads with a four-panel comic, plus a deep-research CLI that writes cited reports on any topic.**
+**An AI/ML daily digest in Korean, published to Threads with a comic of the headline, plus a deep-research CLI that writes cited reports on any topic.**
 
 Runs on AWS · Amazon Bedrock (Claude, GPT) · Bedrock AgentCore Memory
 
@@ -23,7 +23,7 @@ Runs on AWS · Amazon Bedrock (Claude, GPT) · Bedrock AgentCore Memory
 
 OmniSummary has two independent parts.
 
-- **Daily digest (AWS, on a schedule).** It collects AI news from RSS/Substack, Reddit, YouTube, X and web search, scores every item, and lets an editor model pick the five best stories. It then writes a Korean digest and draws the headline as a four-panel Korean comic. Everything goes out as one Threads thread: the root carries the comic, the lead and the other stories' titles, then one reply per story.
+- **Daily digest (AWS, on a schedule).** It collects AI news from RSS/Substack, Reddit, YouTube, X and web search, scores every item, and lets an editor model pick the five best stories. It then writes a Korean digest and draws the headline as a Korean comic. Everything goes out as one Threads thread: the root carries the comic, the lead and the other stories' titles, then one reply per story.
 - **Deep research (local CLI).** Give it a topic and an agent searches the web, papers and community discussion, reads the primary sources, and writes a cited Korean report in the digest's voice. It prints one JSON object (the contract an OpenClaw skill reads) and publishes to Threads only with `--publish threads`.
 
 When turned on, an hourly job also answers readers' comments on the last week's posts, and declines spam and empty praise. A reply carrying a link, a domain, another account's handle or a hashtag is never posted, so a comment cannot make the account say what its writer wants.
@@ -67,6 +67,7 @@ uv run python main.py                                   # full run: save, draw, 
 # Deep research: one JSON object on stdout, the report under reports/
 uv run python research_cli.py "<topic>"
 uv run python research_cli.py "<topic>" --publish threads
+uv run python research_cli.py "<topic>" --publish threads-preview   # writes the thread into the JSON, posts nothing
 
 # What the digest already published (free, read-only, JSON)
 uv run python recall_cli.py digest 2026-10-26
@@ -167,7 +168,7 @@ Without the cookies the feeds come back empty. When the RSSHub failure rate clim
 4. **Track trends.** The model only sorts today's items into existing or new trends. Dates, lifecycle, momentum and caps are plain Python, kept in `trends.json`, and the active trends give the next day's lead its continuity.
 5. **Write.** The editor picks the five strongest distinct stories and writes a lead plus a title, body and takeaway for each, as plain prose. A grounding pass then checks every specific claim against the source text. Character budgets are computed in code, so no post overflows Threads' 500-character limit.
 6. **Render.** Code, not the prompt, lays out the posts: the root is the lead plus the other stories' titles (replies get 2-5% of the root's views), one reply per story, and a topic tag.
-7. **Draw.** A separate Lambda draws the headline as a 2x2 comic: one fact, literal scenes where the story happens, and the story's own twist as a sight gag in the last panel, narrated by the owner-persona character in Korean. The same Lambda posts to Threads, so a failed render still ships the text.
+7. **Draw.** A separate Lambda draws the headline as a Korean comic in the form the story needs (a single cartoon, a 2-6 panel strip or an illustrated explainer): one idea, the story's real people and companies in literal scenes, and the story's own twist in the last frame. The owner-persona narrator joins only when the editor asks for him. The same Lambda posts to Threads, so a failed render still ships the text.
 
 > ⚠️ **DigestPrompt's JSON key order matters.** It asks for `items` first and `lead` last, so the lead comments on stories already written (word overlap with the headline reply fell from 0.21-0.41 to 0.03-0.21). Do not reorder the keys to match `DigestContent`.
 

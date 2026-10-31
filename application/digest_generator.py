@@ -308,7 +308,7 @@ class DigestGenerator:
         self, content: DigestContent, sources_items: list[CollectedItem], trends_context: str = ""
     ) -> DigestContent:
         """Check the digest's specific claims against the source items and surgically revise
-        unsupported ones. The trend context is code-rendered from trends.json, so it's passed as a
+        unsupported ones. The trend notes the editor was given are passed as a
         valid source — otherwise grounding would strip the lead's link to the arc it belongs to. Runs over a plain-text serialization
         of the content; on success the corrected text is re-parsed back into the structured fields.
         Best-effort: any failure keeps the original content.
@@ -324,7 +324,7 @@ class DigestGenerator:
                 for i, item in enumerate(sources_items)
             )
             if trends_context:
-                sources += f"\n\n[TRENDS] Verified trend-tracking history (recurrence facts):\n{trends_context}"
+                sources += f"\n\n[TRENDS] Trend-tracking notes:\n{trends_context}"
             chain = GroundingCheckPrompt.get_prompt() | self.grounding_llm | StrOutputParser()
             raw = await chain.ainvoke({"digest_text": _grounding_payload(content), "sources": sources})
             data = parse_json_from_llm_output(raw)

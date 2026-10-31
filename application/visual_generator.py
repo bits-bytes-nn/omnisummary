@@ -20,7 +20,7 @@ REFERENCE_NOTE = (
 
 class VisualGenerator:
     """Free-form synopsis -> image. The caller supplies a natural-language instruction
-    describing the desired visual (normally a four-panel comic) plus the source material.
+    describing the desired visual (normally the daily comic) plus the source material.
 
     brief (the art director model) -> single image prompt -> the image renderer -> PNG bytes.
     """

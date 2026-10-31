@@ -15,9 +15,13 @@ from shared.constants import LanguageModelId
 class TestVisualBriefValidation:
     # The brief is returned via Bedrock structured output (with_structured_output),
     # so schema enforcement lives in the VisualBrief model rather than a hand JSON parser.
-    def test_rejects_empty_field(self):
+    def test_rejects_an_empty_prompt(self):
         with pytest.raises(ValidationError):
-            VisualBrief(title="", prompt="p", orientation="portrait")
+            VisualBrief(title="t", prompt="", orientation="portrait")
+
+    def test_a_missing_title_costs_nothing(self):
+        # The art-director prompt no longer asks for one; it only feeds a log line.
+        assert VisualBrief(prompt="p", orientation="portrait").title == ""
 
     def test_a_long_four_panel_brief_is_accepted(self):
         # A 2026-10-11 four-panel brief ran past the old 4000-char cap (dall-e-3's) and the day

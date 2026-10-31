@@ -236,8 +236,7 @@ class PipelineConfig(_StrictModel):
     enable_grounding_check: bool = True
     # Korean editorial rules + translation glossary, injected into the digest prompt's *Language*
     # block so the glossary can be tuned without editing the prompt. NOT a language switch: the
-    # digest prompt states the Korean requirement itself and the trend tracker injects Korean
-    # recurrence facts, so overriding this alone cannot move the digest to another language.
+    # digest prompt states the Korean requirement itself, so overriding this alone cannot move the digest to another language.
     # Korean-only is the intended product.
     digest_language_rules: str = (
         "- Write in Korean (95%+); English ONLY for proper nouns and untranslatable technical terms. "
@@ -354,8 +353,8 @@ class PipelineConfig(_StrictModel):
     comment_reply_max_per_commenter: int = Field(default=3, ge=1)
     # Sunburst over flare: the same token price, and it draws brand logos correctly (docs/design.md).
     image_model: str = "gpt-image-2.5-sunburst"
-    # orientation -> gpt-image size. The four-panel comic defaults to the 2x2 portrait grid; the art
-    # director picks the frame the editor's layout needs. The KEYS are not free-form: they are the
+    # orientation -> gpt-image size. The art director picks the frame the editor's form needs (a grid
+    # is portrait, a stacked strip tall). The KEYS are not free-form: they are the
     # VisualBrief orientation vocabulary, checked below.
     image_sizes: dict[str, str] = Field(
         default_factory=lambda: {
@@ -389,9 +388,8 @@ class PipelineConfig(_StrictModel):
     # visual pipeline's tone can be retuned (or reused for non-AI domains) without forking.
     visual_synopsis_style_guidance: str = (
         "Multi-panel: the same characters, outfits and art style in every panel; each panel "
-        "follows from the previous so the sequence reads in order without explanation. Every other character looks "
-        "clearly different from the narrator (hair, glasses, clothes), and every speech bubble's tail points at the "
-        "character who says it."
+        "follows from the previous so the sequence reads in order without explanation, and every speech bubble's "
+        "tail points at the character who says it."
     )
     # Default aesthetic injected into the image-generation prompt. Configurable so the visual
     # pipeline's look can be retuned (or reused for non-AI domains) without editing the prompt.
