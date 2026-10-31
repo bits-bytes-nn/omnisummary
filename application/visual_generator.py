@@ -65,7 +65,6 @@ class VisualGenerator:
             {
                 "instruction": instruction,
                 "source": self.models.truncate_to_tokens(source, self.source_max_tokens),
-                "orientations": ", ".join(self.image_sizes),
                 "on_image_language": self.on_image_language,
                 "style_guidance": self.style_guidance,
                 "style_aesthetic": self.style_aesthetic,

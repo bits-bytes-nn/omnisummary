@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import math
-from collections import Counter, defaultdict
+from collections import defaultdict
 from collections.abc import Sequence
 
 from langchain_core.output_parsers import StrOutputParser
@@ -12,7 +12,6 @@ from langchain_core.output_parsers import StrOutputParser
 from application.digest_generator import format_recent_titles
 from application.ports import LanguageModels
 from application.prompts import RankingPrompt
-from domain.aggregator import normalize_url
 from domain.formatting import format_collected_item, format_origin_label, resolve_origin_key
 from domain.models import CollectedItem, RankedItem, RankingHealth
 from shared import SourceType, logger, parse_json_from_llm_output, retry_async
@@ -324,7 +323,6 @@ class ContentRanker:
             engagement = self._format_engagement(item)
             origin = format_origin_label(item)
             fields = [
-                ("ID", item.item_id),
                 ("Title", item.title),
                 ("Source", item.source_type.value),
                 ("Author", item.author or "Unknown"),
@@ -351,37 +349,8 @@ class ContentRanker:
             return f"{meta['view_count']:,} views"
         return ""
 
-    @staticmethod
-    def _resolve_item_id(raw_id: str, items: list[CollectedItem]) -> tuple[str, str]:
-        """(item_id, how) for an id the model answered with, or ("", "") when nothing in the batch
-        matches it.
-
-        The `=== Item N ===` header the prompt builder emits invites the model to answer with the
-        DISPLAY ORDINAL, and production logs show it doing exactly that ('30', '27', '18', '9', '5'),
-        alongside a truncated 14-character id and full URLs. All of those were discarded with a
-        warning, so those candidates left the day's pool silently.
-
-        Exact match first, so a genuine id can never be reinterpreted as an ordinal. A prefix is
-        accepted only when it is UNAMBIGUOUS across the batch."""
-        by_id = {item.item_id: item for item in items}
-        if raw_id in by_id:
-            return raw_id, "exact"
-        if raw_id.isdigit():
-            ordinal = int(raw_id)
-            if 1 <= ordinal <= len(items):
-                return items[ordinal - 1].item_id, "ordinal"
-        wanted_url = normalize_url(raw_id)
-        by_url = {normalize_url(item.url): item.item_id for item in items if item.url}
-        if wanted_url in by_url:
-            return by_url[wanted_url], "url"
-        prefixed = [item.item_id for item in items if raw_id and item.item_id.startswith(raw_id)]
-        if len(prefixed) == 1:
-            return prefixed[0], "prefix"
-        return "", ""
-
     def _parse_rankings(self, raw_output: str, items: list[CollectedItem]) -> list[RankedItem]:
-        items_by_id = {item.item_id: item for item in items}
-
+        """Each entry names its item by the `=== Item N ===` number the batch was shown with."""
         try:
             data = parse_json_from_llm_output(raw_output)
             rankings = data.get("rankings", []) if isinstance(data, dict) else []
@@ -391,47 +360,34 @@ class ContentRanker:
             return []
 
         ranked_items: list[RankedItem] = []
-        # One RankedItem per INPUT id, at most. A model that repeats an id (and, in practice, omits
+        # One RankedItem per INPUT item, at most. A model that repeats an item (and, in practice, omits
         # another to compensate) otherwise made len(ranked) == len(items): coverage read 1.0, the
         # re-ask never fired, items_scored overstated the pool, and the editor was handed the same
         # story twice. First entry wins — deterministic, and it is the one the model committed to.
-        seen_ids: set[str] = set()
-        duplicate_ids: list[str] = []
-        recovered: Counter[str] = Counter()
+        seen: set[int] = set()
+        duplicates: list[int] = []
         for entry in rankings:
             try:
-                raw_id = str(entry["item_id"])
-                item_id, how = self._resolve_item_id(raw_id, items)
-                if not item_id:
-                    logger.warning("Unknown item_id in ranking response: '%s'", raw_id)
+                number = int(entry["item"])
+                if not 1 <= number <= len(items):
+                    logger.warning("Unknown item number in ranking response: %s", entry["item"])
                     continue
-                if how != "exact":
-                    recovered[how] += 1
-                if item_id in seen_ids:
-                    duplicate_ids.append(item_id)
+                if number in seen:
+                    duplicates.append(number)
                     continue
                 ranked_items.append(
                     RankedItem(
-                        item=items_by_id[item_id],
+                        item=items[number - 1],
                         score=float(entry["score"]),
                         reasoning=entry.get("reasoning", ""),
                     )
                 )
-                seen_ids.add(item_id)
+                seen.add(number)
             except (KeyError, ValueError, TypeError) as exc:
                 logger.warning("Skipping malformed ranking entry: %s (%s)", entry, exc)
 
-        if duplicate_ids:
+        if duplicates:
             logger.warning(
-                "Ranking response repeated %d item_id(s); kept the first entry for each: %s",
-                len(duplicate_ids),
-                duplicate_ids,
-            )
-        if recovered:
-            # WHICH path recovered them: a persistent 'ordinal' count says the model is answering with
-            # the display number, which is a prompt-shape finding, not a transient slip.
-            logger.info(
-                "Ranking response used non-exact item ids; resolved against the batch by %s",
-                ", ".join(f"{how}={count}" for how, count in sorted(recovered.items())),
+                "Ranking response repeated %d item(s); kept the first entry for each: %s", len(duplicates), duplicates
             )
         return ranked_items

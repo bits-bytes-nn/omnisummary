@@ -131,7 +131,7 @@ class DigestGenerator:
             content = await self._verify_grounding(content, shipped_sources, trends_context)
 
         # Attach the AGI countdown to the lead at generation time, using the digest's own date
-        # (the single KST clock for the run) so the day count is consistent with trend stamps and
+        # (the single KST clock for the run) so the countdown is consistent with trend stamps and
         # lands on every channel via the stored content — not just one renderer.
         content.lead = place_countdown_intro(content.lead, intro)
 
@@ -308,9 +308,8 @@ class DigestGenerator:
         self, content: DigestContent, sources_items: list[CollectedItem], trends_context: str = ""
     ) -> DigestContent:
         """Check the digest's specific claims against the source items and surgically revise
-        unsupported ones. The trend ammunition (days-running, recurrence counts) is code-derived
-        fact from trends.json, so it's passed as a valid source — otherwise grounding would strip
-        the very recurrence figures that make the lead sharp. Runs over a plain-text serialization
+        unsupported ones. The trend context is code-rendered from trends.json, so it's passed as a
+        valid source — otherwise grounding would strip the lead's link to the arc it belongs to. Runs over a plain-text serialization
         of the content; on success the corrected text is re-parsed back into the structured fields.
         Best-effort: any failure keeps the original content.
 
