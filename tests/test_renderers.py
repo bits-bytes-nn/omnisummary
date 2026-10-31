@@ -559,3 +559,50 @@ def test_a_body_that_fits_ships_as_the_editor_wrote_it():
     body = '그는 "이건 끝났다."라고 말했다. (출시는 다음 달이다.)\n\n둘째 문단이다.'
     post = _fit_one_post("제목", "블로그", body, "시사점이다.", "https://e.com/a")
     assert body in post
+
+
+class TestNoPostEverExceedsTheCap:
+    """A seeded property check over the whole renderer: two mutated length calculations each produced
+    hundreds of over-cap posts while every example-based test still passed."""
+
+    @staticmethod
+    def _text(rng, n):
+        words = ["모델", "에이전트가", "벤치마크", "Anthropic", "추론", "비용이", "줄었다.", "공개했다.", "x" * 30]
+        return " ".join(rng.choice(words) for _ in range(n))
+
+    def test_digest_posts(self):
+        import random
+
+        from domain.models import DigestContent, DigestItem
+        from shared import THREADS_MAX_POST_CHARS
+
+        rng = random.Random(7)
+        for _ in range(300):
+            items = [
+                DigestItem(
+                    title=self._text(rng, rng.randint(1, 40)),
+                    url="https://example.com/" + "p" * rng.randint(1, 400),
+                    body=self._text(rng, rng.randint(1, 120)),
+                    implication=self._text(rng, rng.randint(0, 30)),
+                    source_tag=self._text(rng, rng.randint(0, 4)),
+                )
+                for _ in range(rng.randint(1, 5))
+            ]
+            root, replies = render_threads_posts(DigestContent(lead=self._text(rng, rng.randint(1, 150)), items=items))
+            assert all(len(post) <= THREADS_MAX_POST_CHARS for post in [root, *replies])
+
+    def test_research_posts(self):
+        import random
+
+        from domain.renderers import render_threads_research
+        from shared import THREADS_MAX_POST_CHARS
+
+        rng = random.Random(11)
+        for _ in range(300):
+            posts = [
+                f"{self._text(rng, rng.randint(1, 30))}\n\n{self._text(rng, rng.randint(1, 160))}\n"
+                + ("https://example.com/" + "q" * rng.randint(1, 300) if rng.random() < 0.6 else "")
+                for _ in range(rng.randint(1, 12))
+            ]
+            render = render_threads_research("\n---\n".join(posts), max_posts=10)
+            assert all(len(post) <= THREADS_MAX_POST_CHARS for post in [render[0], *render[1]])

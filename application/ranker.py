@@ -191,9 +191,9 @@ class ContentRanker:
             # outage check), so keep exactly what the first pass produced.
             logger.warning("Ranking coverage re-ask failed; keeping the partially scored batch", exc_info=True)
 
-        extra = [r for r in recovered if r.item.item_id not in scored_ids]
-        logger.info("Coverage re-ask recovered %d of %d omitted item(s)", len(extra), len(missing))
-        scored = ranked + extra
+        # The re-ask only scored the missing items, so nothing it returns is already in `ranked`.
+        logger.info("Coverage re-ask recovered %d of %d omitted item(s)", len(recovered), len(missing))
+        scored = ranked + recovered
         if not scored:
             # NOTHING parsed, twice over (a malformed JSON response both times): returning [] left
             # `failures` empty and items_lost at 0, so RankingHealth read clean and every ranking

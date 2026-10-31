@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from application.ranker import ContentRanker
 from domain.models import CollectedItem
 from shared.constants import SourceType
@@ -89,6 +91,11 @@ class TestParseRankings:
         assert [r.item.item_id for r in result] == ["item_1", "item_2"]
         assert result[0].score == 0.9
         assert result[0].reasoning == "first"
+
+    @pytest.mark.parametrize("bad", [0, -1, 4, 99])
+    def test_a_number_outside_the_batch_discards_the_answer(self, bad):
+        raw = json.dumps({"rankings": [{"item": 1, "score": 0.9}, {"item": bad, "score": 0.5}]})
+        assert self._parse(raw, _items(3)) == []
 
     def test_a_bool_or_fraction_is_not_an_item_number(self):
         for bad in (True, 2.7):

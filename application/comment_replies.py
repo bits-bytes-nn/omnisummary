@@ -89,6 +89,11 @@ def pending_comments(
 # (a dot does not: "Thanks.@evil" is a mention).
 # Its cost is declining a reply that names a file or library ("node.js"): the account then stays silent.
 _BARE_DOMAIN = re.compile(r"(?i)[\w-]+(?:\.|\s+\.\s*|\s*(?:\[\.\]|\(\.\)|\(dot\)|닷|\bdot\b)\s*)[a-z]{2,}(?![a-z0-9-])")
+# "점"/"쩜" are the everyday Korean "dot" but also ordinary words (장점, 점수), so only an ASCII name before
+# and a common TLD after reads as a domain ("evil 점 com").
+_SPOKEN_DOT_DOMAIN = re.compile(
+    r"(?i)(?<![a-z0-9-])[a-z0-9-]+\s*[점쩜]\s*(?:com|net|org|io|ai|kr|co|me|dev|app|xyz)(?![a-z0-9-])"
+)
 _ZERO_WIDTH = re.compile("[\u200b-\u200f\u2060\ufeff]")
 _HANDLE = re.compile(r"(?<![A-Za-z0-9_@])@([A-Za-z0-9._]+)")
 _HASHTAG = re.compile(r"(?<![\w#&])#[^\W\d_]")
@@ -97,7 +102,7 @@ _HASHTAG = re.compile(r"(?<![\w#&])#[^\W\d_]")
 def unsafe_reply_reason(text: str, commenter: str) -> str:
     """Why `text` must not be published as the account's reply to `commenter`; "" when it may."""
     text = _ZERO_WIDTH.sub("", unicodedata.normalize("NFKC", text)).replace("。", ".")
-    if URL_RE.search(text) or _BARE_DOMAIN.search(text):
+    if URL_RE.search(text) or _BARE_DOMAIN.search(text) or _SPOKEN_DOT_DOMAIN.search(text):
         return "it carries a link or a domain"
     if any(handle.rstrip(".").lower() != commenter.lower() for handle in _HANDLE.findall(text)):
         return "it names another account"

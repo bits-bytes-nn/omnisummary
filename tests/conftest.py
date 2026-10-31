@@ -111,3 +111,7 @@ def hermetic_env(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", _network_disabled)
     monkeypatch.setattr(socket.socket, "connect_ex", _network_disabled)
     monkeypatch.setattr(socket, "getaddrinfo", _network_disabled)
+    # Name lookups outside getaddrinfo and UDP sends reach the network too.
+    for name in ("gethostbyname", "gethostbyname_ex", "gethostbyaddr"):
+        monkeypatch.setattr(socket, name, _network_disabled)
+    monkeypatch.setattr(socket.socket, "sendto", _network_disabled)

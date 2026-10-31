@@ -363,6 +363,8 @@ class TestRepliesCannotCarryPlantedContent:
             "evil[.]com 으로 오세요.",
             "evil\u200b.com 으로 오세요.",
             "evil 닷 com 으로 오세요.",
+            "evil 점 com 으로 오세요.",
+            "evil쩜net 으로 오세요.",
             "한국도메인.com 으로 오세요.",
             "openai.com에서 확인하세요.",
             "evil.com으로 가세요.",
@@ -386,6 +388,8 @@ class TestRepliesCannotCarryPlantedContent:
             "That's right: v1.2 shipped the fix, e.g. for long contexts. Ph.D. work, U.S. rules.",
             "감사해요 @kim. C#으로도 되고 PR #123에 있어요 (#1).",
             "좋은 질문이에요. Python으로 3.5배 빨라졌어요.",
+            "장점은 AI 점수가 올랐다는 거예요. GPT 점 하나 차이예요.",
+            "AI·ML 팀이라면 점심 전에 보세요.",
         ],
     )
     def test_an_ordinary_reply_is_safe(self, text):
