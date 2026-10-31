@@ -370,12 +370,8 @@ async def post_to_threads(
             )
             logger.info("Posted Threads root '%s'", root_id)
             # An image root needs time to become addressable as a reply target, so every reply
-            # carries this deadline and retries its own create-container against it. A root-readiness
-            # GET poll used to run here first; over 30 production runs it never once reported the
-            # root unready (GET 200 on the first probe every time) while the reply retries fired 77
-            # times, because decoding error_user_msg on all 82 code-24 failures showed the media id
-            # Meta names is the REPLY's own container, not the root — so a root probe structurally
-            # cannot gate the delay it was written for.
+            # carries this deadline and retries its own create-container against it (code 24 names the
+            # reply's own container, so polling the root cannot gate this delay).
             indexing_deadline = time.monotonic() + _indexing_budget_sec(deadline)
             # All replies hang off the ROOT (a flat thread), not off each other — otherwise
             # they nest as reply-of-reply and only the first shows under the root. Each reply is

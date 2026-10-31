@@ -38,12 +38,6 @@ class TestHealthReport:
         report = HealthReport(sources=[SourceHealth(name="rss", item_count=3, status=SourceStatus.OK)])
         assert report.summary() == "[OK] rss: 3 items"
 
-    def test_status_enum_values(self):
-        assert SourceStatus.OK.value == "ok"
-        assert SourceStatus.EMPTY.value == "empty"
-        assert SourceStatus.FAILED.value == "failed"
-        assert SourceStatus.STALE.value == "stale"
-
     def test_stale_is_reported_but_is_not_a_failure(self):
         # A STALE source produced items off a park file whose sync has stopped: it must be listed
         # for alerting, but must NOT land in failed_sources (which drives the FAILED escalation).

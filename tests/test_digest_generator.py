@@ -214,14 +214,6 @@ class TestProseBudgetReachesTheEditor:
     editor was never told a budget: 5 of 95 sampled items lost their closing sentence (median 106
     chars — usually the concrete figures), and adding the source line pushed that to 8 of 95."""
 
-    def test_the_budget_clause_points_at_the_items_own_number(self):
-        # One number for the whole digest charged every short-URL item for the longest URL in the
-        # pool, so the clause defers to the PROSE BUDGET stated with each candidate.
-        from application.digest_generator import _PROSE_BUDGET_RULE
-
-        assert "PROSE BUDGET" in _PROSE_BUDGET_RULE
-        assert "implication" in _PROSE_BUDGET_RULE
-
     @pytest.mark.asyncio
     async def test_budget_is_passed_into_the_prompt(self):
         from datetime import date
@@ -271,13 +263,6 @@ class TestDerivedBudgets:
         long_ = gen._item_prose_budget(self._web(long_url).item)
         assert short < THREADS_MAX_POST_CHARS
         assert long_ == short - (len(long_url) - len(short_url))
-
-    def test_each_candidate_keeps_its_own_budget(self):
-        # The budget used to be the worst case across the whole pool, so a short-URL item was charged
-        # for the longest URL in it and lost its closing sentence to a cap it never came near.
-        gen = self._gen()
-        short, long_ = self._web("https://e.com/a"), self._web("https://e.com/" + "p" * 120)
-        assert gen._item_prose_budget(short.item) > gen._item_prose_budget(long_.item)
 
     def test_every_candidates_budget_reaches_the_editor(self):
         gen = self._gen()

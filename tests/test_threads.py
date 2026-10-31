@@ -423,8 +423,6 @@ class TestWireProtocol:
     def _client_factory(recorded: list[httpx.Request]):
         def handle(request: httpx.Request) -> httpx.Response:
             recorded.append(request)
-            if request.method == "GET":  # readiness probe
-                return httpx.Response(200, json={"id": "root"})
             if request.url.path.endswith("/threads_publish"):
                 return httpx.Response(200, json={"id": f"published-{len(recorded)}"})
             return httpx.Response(200, json={"id": f"container-{len(recorded)}"})

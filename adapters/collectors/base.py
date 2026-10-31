@@ -138,15 +138,7 @@ def degradation_reason(
     - `empty_threshold`: percent of inputs that answered with ZERO items. All-200-and-empty (expired
       RSSHub cookies, a paywalled 200, a playlist that resolves to nothing) is the same
       disappearance shape as a failure, but it trips no failure rate at all — and as long as ONE
-      input still produced an item, the source reported a clean OK.
-
-    An ABSOLUTE failed-count tripwire (`max_failed_inputs`) sat here too, for input lists too short
-    for a rate to express a partial outage. Removed 2026-08-19: reddit was the only source small
-    enough to need it, and measured over 30 production runs r/MachineLearning 429s on 29 of them and
-    exhausts its retries on 4 — so armed at 1 it paged 4 times a month on a condition present in 97%
-    of runs, with no action available (the retry IS the mitigation and worked the other 26 days). On
-    all four days reddit still shipped a story in its slot. It was the only arming in either config
-    file, so the field went with it."""
+      input still produced an item, the source reported a clean OK."""
     fail_rate = failed / total * 100
     empty_rate = empty / total * 100
     if failed > 0 and fail_rate > threshold:

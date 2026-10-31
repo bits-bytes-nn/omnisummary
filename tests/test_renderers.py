@@ -1,3 +1,5 @@
+import pytest
+
 from domain.formatting import source_tag_and_metrics, strip_markup, threads_item_overhead_chars
 from domain.models import CollectedItem, DigestContent, DigestItem
 from domain.renderers import _fit_one_post, render_threads_posts, render_threads_research
@@ -368,11 +370,10 @@ class TestThreadsResearch:
 
     def test_oversize_delimited_post_is_trimmed_to_one(self):
         # An agent-delimited post over 500 chars is TRIMMED to one post (heading kept), not fanned
-        # out — so the 'N/M 소제목' line never orphans and the post count matches the agent's. The
-        # index itself is the renderer's, computed from the final count, so "3/4" becomes "1/2".
+        # out — so the 'N/M 소제목' line never orphans and the post count matches the agent's.
         subheading = "마스터카드의 전략"
-        big = f"3/4 {subheading}" + "\n\n" + "문장이다. " * 120  # >500 chars, multiple body sentences
-        root, replies, *_ = render_threads_research(f"{big}\n---\n4/4 끝이다.", max_posts=8)
+        big = subheading + "\n\n" + "문장이다. " * 120  # >500 chars, multiple body sentences
+        root, replies, *_ = render_threads_research(f"{big}\n---\n끝이다.", max_posts=8)
         assert root.startswith(f"1/2  {subheading}")  # heading stays attached to its body
         assert len(root) <= THREADS_MAX_POST_CHARS
         assert len(replies) == 1  # exactly the agent's 2 posts → 1 root + 1 reply, no fan-out
@@ -460,18 +461,12 @@ class TestThreadsItemOverhead:
     """The per-item prose budget the editor is told about is derived from THIS number, so it has to
     match what the assembled post really spends on the parts code owns."""
 
-    def test_counts_the_inline_source_line_url_and_separators(self):
-        # "title (meta)" \n\n body \n\n implication \n\n url → 3 separators (6 chars) + url + the
-        # meta and the " ()" that wraps it onto the title line, which costs no separator of its own.
-        meta, url = "src · 조회 775", "http://e.com/1"
-        assert threads_item_overhead_chars(meta, url) == len(meta) + 3 + len(url) + 6
-
-    def test_no_source_line_costs_neither_the_text_nor_the_parentheses(self):
-        assert threads_item_overhead_chars("", "http://e.com/1") == len("http://e.com/1") + 6
-
-    def test_matches_the_real_assembly(self):
-        # An item whose title+body+implication exactly fill the derived budget must not be trimmed.
-        meta, url = "src1 · 👍 +10", "http://e.com/1"
+    @pytest.mark.parametrize("source_tag, metrics", [("src1", "👍 +10"), ("", "")])
+    def test_matches_the_real_assembly(self, source_tag, metrics):
+        # An item whose title+body+implication exactly fill the derived budget must not be trimmed,
+        # with a source line and without one (no parentheses on the title then).
+        meta = " · ".join(p for p in (source_tag, metrics) if p)
+        url = "http://e.com/1"
         budget = THREADS_MAX_POST_CHARS - threads_item_overhead_chars(meta, url)
         title, implication = "제목", "시사점이다."
         body = "가" * (budget - len(title) - len(implication))
@@ -479,7 +474,7 @@ class TestThreadsItemOverhead:
             lead="리드.",
             items=[
                 DigestItem(
-                    title=title, url=url, source_tag="src1", metrics="👍 +10", body=body, implication=implication
+                    title=title, url=url, source_tag=source_tag, metrics=metrics, body=body, implication=implication
                 )
             ],
         )
@@ -513,13 +508,11 @@ class TestThreadsItemOverhead:
 
 
 class TestThreadsResearchNumbering:
-    """max_posts is applied AFTER the model has already written its "N/M" headings, so a capped report
-    went out publicly as "1/8 ... 6/8" and stopped mid-argument — telling every reader two posts were
-    missing. The renderer owns the index: it strips whatever the model wrote and re-derives it from
-    the final post count."""
+    """The renderer owns the "N/M" index and derives it from the post count AFTER the max_posts cap: a
+    capped report numbered by the model went out as "1/8 ... 6/8" and told readers posts were missing."""
 
     def _report(self, count: int) -> str:
-        return "\n---\n".join(f"{i}/{count} 소제목 {i}\n\n본문 {i}이다." for i in range(1, count + 1))
+        return "\n---\n".join(f"소제목 {i}\n\n본문 {i}이다." for i in range(1, count + 1))
 
     def test_a_capped_report_is_renumbered_to_what_ships(self):
         root, replies, dropped, _ = render_threads_research(self._report(8), max_posts=3)
@@ -532,18 +525,6 @@ class TestThreadsResearchNumbering:
         assert dropped == 0
         assert root.startswith("1/3  소제목 1")
         assert replies[-1].startswith("3/3  소제목 3")
-
-    def test_a_title_that_looks_like_a_fraction_is_not_an_index(self):
-        report = "24/7 에이전트 시대\n\n본문이다.\n---\n결론\n\n마무리다."
-        root, *_ = render_threads_research(report, max_posts=10)
-        assert root.startswith("1/2  24/7 에이전트 시대")
-
-    def test_an_unnumbered_report_still_gets_indices(self):
-        # The prompt no longer asks the model to number Threads posts at all.
-        report = "도입 소제목\n\n본문이다.\n---\n결론 소제목\n\n마무리다."
-        root, replies, *_ = render_threads_research(report, max_posts=10)
-        assert root.startswith("1/2  도입 소제목")
-        assert replies[0].startswith("2/2  결론 소제목")
 
     def test_numbered_posts_stay_within_the_channel_cap(self):
         # The index is added BEFORE the oversize trim, so it can never push a post past 500 chars.

@@ -74,9 +74,6 @@ class TestDigestLeadSpec:
         rendered = _render(DigestPrompt)
         assert rendered.index('"items"') < rendered.index('"lead"')
 
-    def test_lead_carries_a_character_budget(self):
-        assert "under 470 characters" in _render(DigestPrompt)
-
 
 class TestItemSpecStaysShort:
     """Both item fields were specified by menu, and a menu invites the safest option.

@@ -906,8 +906,8 @@ reply 하나를 만든다. 500자 이하로 문장 경계에서 트림하며 tit
 
 **implication은 body와 한 단락으로 잇지 않는다.** 빈 줄로 분리해 자기 블록으로 내보낸다. 이어 붙이면 목소리 줄이
 본문의 마지막 문장처럼 읽혀서 항목이 착지하는 지점이 사라진다. 이 추가 구분자는
-`threads_item_overhead_chars`(에디터에게 알려주는 파생 예산)와 `_item_post_overflows`(트림 카운트)에도 똑같이
-반영되어 예산이 정확히 유지된다. 산문이 캡에 걸려 잘린 항목이 있으면 개수만 WARNING으로 남긴다.
+`threads_item_overhead_chars`(에디터에게 알려주는 파생 예산)에도 반영되어 예산이 정확히 유지된다. 들어가는 본문은
+쓴 그대로 내보내니, 결과에서 본문이나 implication이 빠졌으면 잘린 것이다. 그런 항목은 개수만 WARNING으로 남긴다.
 
 **`render_threads_research`.** 딥 리서치 리포트(Markdown)를 Threads용 root와 평탄한 reply chain(각 500자
 이하)으로 렌더한다. 에이전트가 `---`만 있는 줄로 게시물 경계를 표시하고, 렌더러는 구분된 블록 하나를 게시물 하나로

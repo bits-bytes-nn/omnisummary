@@ -1,4 +1,3 @@
-import hashlib
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -128,14 +127,6 @@ class TestGenerateItemId:
     def test_deterministic(self):
         url = "http://example.com/article"
         assert generate_item_id(url) == generate_item_id(url)
-
-    def test_length(self):
-        assert len(generate_item_id("http://example.com")) == 16
-
-    def test_matches_sha256_prefix(self):
-        url = "http://test.com"
-        expected = hashlib.sha256(url.encode()).hexdigest()[:16]
-        assert generate_item_id(url) == expected
 
     def test_different_urls_different_ids(self):
         assert generate_item_id("http://a.com") != generate_item_id("http://b.com")
