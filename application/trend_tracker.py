@@ -8,9 +8,9 @@ from datetime import date
 from langchain_core.output_parsers import StrOutputParser
 from pydantic import ValidationError
 
+from application.ports import LanguageModels, StateReadError, StateStore
 from shared import (
     TRENDS_KEY,
-    BedrockLanguageModelFactory,
     Trend,
     TrendClassifyPrompt,
     TrendEvidence,
@@ -20,7 +20,6 @@ from shared import (
     parse_json_from_llm_output,
 )
 from shared.config import PipelineConfig
-from shared.state_store import StateReadError, StateStore
 
 __all__ = ["TRENDS_KEY", "TrendTracker"]
 
@@ -31,11 +30,11 @@ class TrendTracker:
     def __init__(
         self,
         config: PipelineConfig,
-        llm_factory: BedrockLanguageModelFactory,
+        models: LanguageModels,
         state_store: StateStore,
     ) -> None:
         self.config = config
-        self.llm = llm_factory.get_model(config.trend_model, stage="trends")
+        self.llm = models.get_model(config.trend_model, stage="trends")
         self.state_store = state_store
         self._memory: TrendMemory | None = None
         # Set when trends.json could not be READ this run: history is unknown, so the merge must

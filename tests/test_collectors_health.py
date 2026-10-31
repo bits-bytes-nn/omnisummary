@@ -12,6 +12,13 @@ def _item(url: str) -> CollectedItem:
     return CollectedItem(source_type=SourceType.RSS, title="t", url=url)
 
 
+def _sources(tasks, labels, collectors) -> list:
+    """(name, collector) pairs whose collect() answers the given coroutine."""
+    for task, collector in zip(tasks, collectors, strict=True):
+        collector.collect = lambda task=task: task
+    return list(zip(labels, collectors, strict=True))
+
+
 class _Collector:
     """Stand-in for a built collector: run_collectors_with_health only reads park_status and
     degraded_detail off it."""
@@ -23,7 +30,7 @@ class _Collector:
 
 @pytest.mark.asyncio
 async def test_health_report_classifies_sources():
-    from pipeline import runner
+    from application import digest_pipeline as runner
 
     async def ok():
         return [_item("http://a.com"), _item("http://b.com")]
@@ -37,8 +44,7 @@ async def test_health_report_classifies_sources():
     tasks = [ok(), empty(), boom()]
     labels = ["rss", "reddit", "youtube"]
     collectors = [_Collector(), _Collector(), _Collector()]
-    with patch.object(runner, "_build_collector_tasks", return_value=(tasks, labels, collectors)):
-        items, report = await runner.run_collectors_with_health(config=Config(), llm_factory=None)
+    items, report = await runner.run_collectors_with_health(Config(), _sources(tasks, labels, collectors))
 
     assert len(items) == 2
     by_name = {s.name: s for s in report.sources}
@@ -52,10 +58,9 @@ async def test_health_report_classifies_sources():
 
 @pytest.mark.asyncio
 async def test_no_active_collectors_returns_empty_report():
-    from pipeline import runner
+    from application import digest_pipeline as runner
 
-    with patch.object(runner, "_build_collector_tasks", return_value=([], [], [])):
-        items, report = await runner.run_collectors_with_health(config=Config(), llm_factory=None)
+    items, report = await runner.run_collectors_with_health(Config(), _sources([], [], []))
 
     assert items == []
     assert report.sources == []
@@ -66,16 +71,15 @@ async def test_no_active_collectors_returns_empty_report():
 async def test_stale_park_file_reports_stale_not_ok():
     # A source served from a too-old park file produced items, so the old code called it OK and a
     # dead local cron stayed invisible for days. It must read STALE (and not as a FAILURE).
-    from pipeline import runner
+    from application import digest_pipeline as runner
 
     async def parked_items():
         return [_item("http://a.com")]
 
     park = ParkedItems(outcome=ParkOutcome.STALE, detail="park file is 72.0h old (>36h)")
-    with patch.object(
-        runner, "_build_collector_tasks", return_value=([parked_items()], ["youtube"], [_Collector(park)])
-    ):
-        items, report = await runner.run_collectors_with_health(config=Config(), llm_factory=None)
+    items, report = await runner.run_collectors_with_health(
+        Config(), _sources([parked_items()], ["youtube"], [_Collector(park)])
+    )
 
     assert len(items) == 1
     source = report.sources[0]
@@ -90,14 +94,15 @@ async def test_stale_park_file_reports_stale_not_ok():
 async def test_unreadable_park_file_reports_stale_after_live_fallback():
     # An unreadable park file falls through to live collection; the live items are kept, but the
     # source is still flagged STALE so the broken park read surfaces.
-    from pipeline import runner
+    from application import digest_pipeline as runner
 
     async def live_items():
         return [_item("http://a.com")]
 
     park = ParkedItems(outcome=ParkOutcome.ERROR, detail="could not read park file: AccessDenied")
-    with patch.object(runner, "_build_collector_tasks", return_value=([live_items()], ["rsshub"], [_Collector(park)])):
-        items, report = await runner.run_collectors_with_health(config=Config(), llm_factory=None)
+    items, report = await runner.run_collectors_with_health(
+        Config(), _sources([live_items()], ["rsshub"], [_Collector(park)])
+    )
 
     assert len(items) == 1
     assert report.sources[0].status == SourceStatus.STALE
@@ -106,16 +111,15 @@ async def test_unreadable_park_file_reports_stale_after_live_fallback():
 
 @pytest.mark.asyncio
 async def test_fresh_park_file_is_ok():
-    from pipeline import runner
+    from application import digest_pipeline as runner
 
     async def parked_items():
         return [_item("http://a.com")]
 
     park = ParkedItems(outcome=ParkOutcome.FRESH)
-    with patch.object(
-        runner, "_build_collector_tasks", return_value=([parked_items()], ["youtube"], [_Collector(park)])
-    ):
-        _items, report = await runner.run_collectors_with_health(config=Config(), llm_factory=None)
+    _items, report = await runner.run_collectors_with_health(
+        Config(), _sources([parked_items()], ["youtube"], [_Collector(park)])
+    )
 
     assert report.sources[0].status == SourceStatus.OK
     assert report.stale_sources == []
@@ -125,14 +129,13 @@ async def test_fresh_park_file_is_ok():
 async def test_partially_collected_source_reports_degraded_not_ok():
     # Items arrived, on time, but from a fraction of the source's feeds. That used to read as a
     # healthy OK, which is how X could shrink from 40 accounts to 3 without anyone noticing.
-    from pipeline import runner
+    from application import digest_pipeline as runner
 
     async def some_items():
         return [_item("http://a.com")]
 
     collector = _Collector(degraded_detail="30/40 account feeds failed (>50%)")
-    with patch.object(runner, "_build_collector_tasks", return_value=([some_items()], ["rsshub"], [collector])):
-        items, report = await runner.run_collectors_with_health(config=Config(), llm_factory=None)
+    items, report = await runner.run_collectors_with_health(Config(), _sources([some_items()], ["rsshub"], [collector]))
 
     # Reporting only — the items still reach the aggregator untouched.
     assert len(items) == 1
@@ -200,15 +203,16 @@ async def test_reddit_all_subreddits_answering_is_not_degraded():
 async def test_stale_wins_over_degraded():
     # A stale park file is the more actionable finding (the sync itself has stopped), so it keeps
     # the report slot rather than being masked by the degradation flag.
-    from pipeline import runner
+    from application import digest_pipeline as runner
 
     async def parked_items():
         return [_item("http://a.com")]
 
     park = ParkedItems(outcome=ParkOutcome.STALE, detail="park file is 72.0h old (>36h)")
     collector = _Collector(park, degraded_detail="30/40 account feeds failed")
-    with patch.object(runner, "_build_collector_tasks", return_value=([parked_items()], ["rsshub"], [collector])):
-        _items, report = await runner.run_collectors_with_health(config=Config(), llm_factory=None)
+    _items, report = await runner.run_collectors_with_health(
+        Config(), _sources([parked_items()], ["rsshub"], [collector])
+    )
 
     assert report.sources[0].status == SourceStatus.STALE
 
@@ -221,7 +225,7 @@ async def test_a_collector_over_its_wall_clock_budget_is_reported_failed():
     # FAILED, never as a silent EMPTY (which reads as a legitimately quiet day).
     import asyncio
 
-    from pipeline import runner
+    from application import digest_pipeline as runner
 
     async def wedged():
         await asyncio.sleep(60)
@@ -233,16 +237,15 @@ async def test_a_collector_over_its_wall_clock_budget_is_reported_failed():
 
 @pytest.mark.asyncio
 async def test_the_budget_comes_from_config_and_zero_leaves_collectors_unbounded():
-    from pipeline import runner
+    from application import digest_pipeline as runner
 
     async def fine():
         return [_item("http://a.com")]
 
     config = Config()
     config.collectors.collector_budget_sec = 0
-    with patch.object(runner, "_build_collector_tasks", return_value=([fine()], ["rss"], [_Collector()])):
-        with patch.object(runner, "_collect_within_budget", wraps=runner._collect_within_budget) as bounded:
-            items, report = await runner.run_collectors_with_health(config=config, llm_factory=None)
+    with patch.object(runner, "_collect_within_budget", wraps=runner._collect_within_budget) as bounded:
+        items, report = await runner.run_collectors_with_health(config, _sources([fine()], ["rss"], [_Collector()]))
 
     assert bounded.call_args.args[2] == 0
     assert report.sources[0].status == SourceStatus.OK

@@ -14,7 +14,7 @@ from constructs import Construct
 
 from shared import Config
 from shared.constants import DIGEST_ITEMS_METRIC, METRIC_NAMESPACE, SSM_PLACEHOLDER, SSM_SECRET_ENV_VARS
-from shared.metrics import metric_dimensions
+from shared.naming import metric_dimensions
 
 from .foundation_stack import OmniSummaryFoundationStack
 

@@ -8,18 +8,23 @@ from typing import Any
 
 import boto3
 
-from pipeline import already_published, persist_digest, resolve_digest_window, run_collectors_with_health, run_pipeline
+from adapters.alerts import publish_alert
+from adapters.metrics import emit_emf
+from application.digest_pipeline import (
+    already_published,
+    persist_digest,
+    resolve_digest_window,
+    run_collectors_with_health,
+    run_pipeline,
+)
+from entrypoints import bootstrap
 from shared import (
-    BedrockLanguageModelFactory,
     Config,
     DigestResult,
     HealthReport,
-    create_memory_store,
-    emit_emf,
     get_correlation_id,
     is_running_in_aws,
     logger,
-    publish_alert,
     set_correlation_id,
 )
 from shared.constants import DIGEST_ITEMS_METRIC
@@ -91,18 +96,14 @@ async def _run() -> None:
 
     digest_date, reference_time = resolve_digest_window(config)
     config.collectors.set_reference_time(reference_time)
-    if already_published(config, digest_date):
+    state_store = bootstrap.state_store(config)
+    if already_published(config, digest_date, state_store):
         # The EmptyDigest alarm reads a missing metric as a failed day.
         _emit_digest_items_metric(_stored_story_count(digest_date))
         return
 
-    boto_session = boto3.Session(region_name=config.aws.bedrock_region)
-    llm_factory = BedrockLanguageModelFactory(
-        boto_session=boto_session,
-        region_name=config.aws.bedrock_region,
-    )
-
-    collected_items, health = await run_collectors_with_health(config, llm_factory)
+    models = bootstrap.language_models(config)
+    collected_items, health = await run_collectors_with_health(config, bootstrap.collectors(config, models))
     logger.info("Collected %d total items", len(collected_items))
     logger.info("Source health report:\n%s", health.summary())
     _maybe_alert(health, config.collectors.alert_on_empty)
@@ -112,7 +113,14 @@ async def _run() -> None:
         _emit_digest_items_metric(0)
         return
 
-    result = await run_pipeline(config, llm_factory, collected_items, digest_date=digest_date)
+    result = await run_pipeline(
+        config,
+        models,
+        collected_items,
+        digest_date,
+        state_store=state_store,
+        memory_store=bootstrap.memory_store,
+    )
 
     items, ranked_items, digest = result
     # Count the STORIES the digest actually carries (the curated content items), not the ranker's
@@ -128,8 +136,7 @@ async def _run() -> None:
 
     if items and ranked_items and digest:
         try:
-            # base_dir=None → AgentCore-backed memory store in AWS.
-            persist_digest(ranked_items, digest, digest_date, base_dir=None)
+            persist_digest(ranked_items, digest, digest_date, bootstrap.memory_store())
         except Exception as e:
             # The visual Lambda publishes off this snapshot and is the only Threads delivery path,
             # so a failed persist means the day produces NOTHING. Don't trigger the visual (it
@@ -148,7 +155,7 @@ def _stored_story_count(digest_date: date) -> int:
     from agent.tool_state import DigestStateManager
 
     try:
-        data = create_memory_store().get_digest(digest_date.isoformat())
+        data = bootstrap.memory_store().get_digest(digest_date.isoformat())
         content = DigestStateManager.load_from_dict(data).get_content() if data else None
     except Exception:
         logger.warning("Could not read the stored digest for %s", digest_date, exc_info=True)

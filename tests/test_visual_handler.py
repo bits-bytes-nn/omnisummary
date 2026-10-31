@@ -5,8 +5,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from application.ports import MemoryReadError
 from lambda_handlers import visual_handler
-from shared.memory import MemoryReadError
 from shared.models import ThreadsDelivery
 
 
@@ -95,7 +95,7 @@ class TestVisualRun:
         store = MagicMock()
         store.get_digest.return_value = None
         with patch("lambda_handlers.visual_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.visual_handler.create_memory_store", return_value=store):
+            with patch("lambda_handlers.visual_handler.bootstrap.memory_store", return_value=store):
                 with patch("lambda_handlers.visual_handler.bootstrap.daily_visual_maker") as maker:
                     with pytest.raises(RuntimeError, match="No digest state for 2026-08-17"):
                         await visual_handler._run({"digest_date": "2026-08-17"})
@@ -111,7 +111,7 @@ class TestVisualRun:
         store = MagicMock()
         store.get_digest.return_value = None
         with patch("lambda_handlers.visual_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.visual_handler.create_memory_store", return_value=store):
+            with patch("lambda_handlers.visual_handler.bootstrap.memory_store", return_value=store):
                 with patch("lambda_handlers.visual_handler.bootstrap.daily_visual_maker") as maker:
                     await visual_handler._run({})
         maker.assert_not_called()
@@ -122,7 +122,7 @@ class TestVisualRun:
         store = MagicMock()
         store.get_digest.side_effect = MemoryReadError("throttled")
         with patch("lambda_handlers.visual_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.visual_handler.create_memory_store", return_value=store):
+            with patch("lambda_handlers.visual_handler.bootstrap.memory_store", return_value=store):
                 with pytest.raises(MemoryReadError):
                     await visual_handler._run({"digest_date": "2026-08-17"})
 
@@ -140,7 +140,7 @@ class TestVisualRun:
         maker_instance.run = AsyncMock(return_value=True)
         maker_instance.threads_outcome = ThreadsDelivery(6, 6)
         with patch("lambda_handlers.visual_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.visual_handler.create_memory_store", return_value=store):
+            with patch("lambda_handlers.visual_handler.bootstrap.memory_store", return_value=store):
                 with patch("lambda_handlers.visual_handler.DigestStateManager.load_from_dict", return_value=mgr):
                     with patch(
                         "lambda_handlers.visual_handler.bootstrap.daily_visual_maker", return_value=maker_instance
@@ -163,7 +163,7 @@ class TestVisualRun:
         maker_instance.run = AsyncMock(return_value=False)
         maker_instance.threads_outcome = ThreadsDelivery(0, 6)
         with patch("lambda_handlers.visual_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.visual_handler.create_memory_store", return_value=store):
+            with patch("lambda_handlers.visual_handler.bootstrap.memory_store", return_value=store):
                 with patch("lambda_handlers.visual_handler.DigestStateManager.load_from_dict"):
                     with patch(
                         "lambda_handlers.visual_handler.bootstrap.daily_visual_maker", return_value=maker_instance
@@ -195,7 +195,7 @@ class TestThreadsOutcomeAlert:
     def test_alerts_on_a_partial_reply_chain(self, monkeypatch):
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
         sns = MagicMock()
-        with patch("shared.alerts.boto3.client", return_value=sns):
+        with patch("adapters.alerts.boto3.client", return_value=sns):
             visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(4, 6), date(2026, 8, 18))
         sns.publish.assert_called_once()
         message = sns.publish.call_args.kwargs["Message"]
@@ -205,21 +205,21 @@ class TestThreadsOutcomeAlert:
     def test_alerts_on_total_failure(self, monkeypatch):
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
         sns = MagicMock()
-        with patch("shared.alerts.boto3.client", return_value=sns):
+        with patch("adapters.alerts.boto3.client", return_value=sns):
             visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(0, 6), date(2026, 8, 18))
         assert "FAILED" in sns.publish.call_args.kwargs["Subject"]
 
     def test_a_live_root_without_replies_warns_against_a_force_republish(self, monkeypatch):
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
         sns = MagicMock()
-        with patch("shared.alerts.boto3.client", return_value=sns):
+        with patch("adapters.alerts.boto3.client", return_value=sns):
             visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(1, 6), date(2026, 8, 18))
         assert "do NOT re-post the day" in sns.publish.call_args.kwargs["Message"]
 
     def test_an_ambiguous_failure_says_the_root_may_be_live(self, monkeypatch):
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
         sns = MagicMock()
-        with patch("shared.alerts.boto3.client", return_value=sns):
+        with patch("adapters.alerts.boto3.client", return_value=sns):
             visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(0, 6, uncertain=True), date(2026, 8, 18))
         assert "MAY be live" in sns.publish.call_args.kwargs["Message"]
 
@@ -229,7 +229,7 @@ class TestThreadsOutcomeAlert:
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
         monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "omnisummary-dev-visual")
         sns = MagicMock()
-        with patch("shared.alerts.boto3.client", return_value=sns):
+        with patch("adapters.alerts.boto3.client", return_value=sns):
             visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(0, 6, uncertain=True), date(2026, 8, 18))
         message = sns.publish.call_args.kwargs["Message"]
         assert "--function-name omnisummary-dev-visual" in message
@@ -241,7 +241,7 @@ class TestThreadsOutcomeAlert:
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
         monkeypatch.setenv("AWS_REGION", "ap-northeast-2")
         sns = MagicMock()
-        with patch("shared.alerts.boto3.client", return_value=sns):
+        with patch("adapters.alerts.boto3.client", return_value=sns):
             visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(0, 6), date(2026, 8, 18), marker_kept=True)
         message = sns.publish.call_args.kwargs["Message"]
         assert '"force_republish": true' in message and "--region ap-northeast-2" in message
@@ -249,7 +249,7 @@ class TestThreadsOutcomeAlert:
     def test_a_story_less_snapshot_is_not_sent_to_a_futile_replay(self, monkeypatch):
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
         sns = MagicMock()
-        with patch("shared.alerts.boto3.client", return_value=sns):
+        with patch("adapters.alerts.boto3.client", return_value=sns):
             visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(0, 1), date(2026, 8, 18))
         message = sns.publish.call_args.kwargs["Message"]
         assert "main.py --date 2026-08-18 --force-republish" in message and "aws lambda invoke" not in message
@@ -259,7 +259,7 @@ class TestThreadsOutcomeAlert:
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
         sns = MagicMock()
         outcome = ThreadsDelivery(5, 6, True, root_id="root-1", detached=("stray-4",))
-        with patch("shared.alerts.boto3.client", return_value=sns):
+        with patch("adapters.alerts.boto3.client", return_value=sns):
             visual_handler._maybe_alert_threads_outcome(outcome, date(2026, 10, 27))
         message = sns.publish.call_args.kwargs["Message"]
         assert "root-1" in message and "stray-4" in message and "delete" in message
@@ -273,7 +273,7 @@ class TestThreadsOutcomeAlert:
     def test_silent_on_a_complete_post(self, monkeypatch):
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
         sns = MagicMock()
-        with patch("shared.alerts.boto3.client", return_value=sns):
+        with patch("adapters.alerts.boto3.client", return_value=sns):
             visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(6, 6, True), date(2026, 8, 18))
         sns.publish.assert_not_called()
 
@@ -283,7 +283,7 @@ class TestThreadsOutcomeAlert:
         # an unreadable secret, and the only trace was one log line inside the maker.
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
         sns = MagicMock()
-        with patch("shared.alerts.boto3.client", return_value=sns):
+        with patch("adapters.alerts.boto3.client", return_value=sns):
             visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(6, 6, False), date(2026, 8, 18))
         sns.publish.assert_called_once()
         assert "TEXT-ONLY" in sns.publish.call_args.kwargs["Message"]
@@ -292,18 +292,18 @@ class TestThreadsOutcomeAlert:
         # A total failure has no image either; it must not produce a second, redundant notice.
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
         sns = MagicMock()
-        with patch("shared.alerts.boto3.client", return_value=sns):
+        with patch("adapters.alerts.boto3.client", return_value=sns):
             visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(0, 6), date(2026, 8, 18))
         sns.publish.assert_called_once()
 
     def test_no_op_without_the_topic_env(self, monkeypatch):
         monkeypatch.delenv("ALERT_SNS_TOPIC_ARN", raising=False)
-        with patch("shared.alerts.boto3.client") as client:
+        with patch("adapters.alerts.boto3.client") as client:
             visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(0, 6), date(2026, 8, 18))
         client.assert_not_called()
 
     def test_no_op_without_an_outcome(self, monkeypatch):
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
-        with patch("shared.alerts.boto3.client") as client:
+        with patch("adapters.alerts.boto3.client") as client:
             visual_handler._maybe_alert_threads_outcome(None, date(2026, 8, 18))
         client.assert_not_called()

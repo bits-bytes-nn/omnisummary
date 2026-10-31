@@ -4,8 +4,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
+from adapters.state_store import LocalStateStore, S3StateStore, create_state_store
+from application.ports import StateReadError
 from shared.config import Config
-from shared.state_store import LocalStateStore, S3StateStore, StateReadError, create_state_store
 
 
 def _s3_session(client: MagicMock) -> MagicMock:
@@ -102,7 +103,7 @@ class TestS3StateStore:
         client = MagicMock()
         client.get_object.side_effect = ClientError({"Error": {"Code": "AccessDenied"}}, "GetObject")
         store = S3StateStore(_s3_session(client), "bkt")
-        with patch("shared.state_store.logger.error") as err:
+        with patch("adapters.state_store.logger.error") as err:
             with pytest.raises(StateReadError):
                 store.read("trends.json")
         assert err.called

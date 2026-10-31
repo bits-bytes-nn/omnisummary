@@ -1,66 +1,16 @@
 from __future__ import annotations
 
-import json
 import os
-from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from .logger import logger
+from application.ports import StateReadError, StateStore
+from shared.logger import logger
 
 if TYPE_CHECKING:
-    from .config import Config
-
-
-class StateReadError(RuntimeError):
-    """The state blob could NOT be read — distinct from "there is no history yet".
-
-    Both used to come back as None, so a throttled/denied S3 GET read as an empty ledger and the
-    next read-modify-write persisted that emptiness: the published-URL ledger, the recent-leads log,
-    the visual-format window and the Threads idempotency marker were all blanked by one failed read.
-
-    Every consumer handles this the same way: log at ERROR, treat the history as UNKNOWN, and SKIP
-    the write. It must never reach a publish path — a lost digest is strictly worse than a run
-    without history.
-    """
-
-
-class StateStore(ABC):
-    """Blob store for the structured trends memory (read-modify-write each run).
-
-    Distinct from shared.memory.MemoryStore by design — and NOT replaceable by it.
-    trends.json is a deliberately time-varying document with explicit code-managed
-    merge/cooling/archive of topic threads. AgentCore's managed strategies extract STABLE
-    records (semantic facts, user preferences) or per-session summaries; even
-    customMemoryStrategy can only *append to* those built-in prompts, not implement
-    trend-thread maintenance. So trends.json stays the system of record for trends;
-    MemoryStore holds the digest snapshot for the follow-up agent.
-    """
-
-    @abstractmethod
-    def read(self, key: str) -> str | None: ...
-
-    @abstractmethod
-    def write(self, key: str, content: str) -> None: ...
-
-    def read_json(self, key: str, default: Any = None) -> Any:
-        """Read and parse a JSON blob; return default on missing/corrupt content.
-
-        Raises StateReadError when the blob could not be READ at all — corrupt content is a
-        recoverable "start fresh", an unreadable store is not."""
-        raw = self.read(key)
-        if not raw:
-            return default
-        try:
-            return json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
-            logger.warning("State key '%s' held invalid JSON; using default", key)
-            return default
-
-    def write_json(self, key: str, value: Any) -> None:
-        self.write(key, json.dumps(value, ensure_ascii=False))
+    from shared.config import Config
 
 
 class LocalStateStore(StateStore):
@@ -136,7 +86,7 @@ def state_boto_session(config: Config | None):
     trends.json read and write failed on ProfileNotFound."""
     import boto3
 
-    from .utils import available_boto_profile
+    from shared.utils import available_boto_profile
 
     if config is None:
         return boto3.Session()
@@ -151,7 +101,7 @@ def create_state_store(config: Config | None = None) -> StateStore:
     Gated on the BUCKET, not on is_running_in_aws(): that platform sniff meant any non-Lambda
     caller carrying STATE_BUCKET (the agent runtime, a container, a local run against the real
     bucket) silently wrote trends.json to the local filesystem and lost every trend thread."""
-    from .constants import LocalPaths
+    from shared.constants import LocalPaths
 
     env_bucket = os.environ.get("STATE_BUCKET", "")
     if env_bucket:

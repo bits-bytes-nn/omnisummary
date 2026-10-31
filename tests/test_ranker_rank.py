@@ -6,7 +6,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
-from pipeline.ranker import ContentRanker
+from application.ranker import ContentRanker
 from shared.config import PipelineConfig
 from shared.constants import SourceType
 from shared.models import CollectedItem
@@ -69,7 +69,7 @@ class TestRankEndToEnd:
             advanced_during_truncation.append(ticks > before)
             return text
 
-        ranker.llm_factory.truncate_to_tokens.side_effect = _slow_truncate
+        ranker.models.truncate_to_tokens.side_effect = _slow_truncate
 
         async def _tick() -> None:
             nonlocal ticks
@@ -488,7 +488,7 @@ class TestRankingHealthVerdict:
             return await original(batch, semaphore, recent_titles)
 
         with patch.object(ranker, "_score_batch", side_effect=flaky):
-            with patch("pipeline.ranker.logger.error") as err:
+            with patch("application.ranker.logger.error") as err:
                 await ranker.rank(items)
         assert ranker.health.degraded is True
         assert ranker.health.batches_failed == 2 and ranker.health.batches_total == 3

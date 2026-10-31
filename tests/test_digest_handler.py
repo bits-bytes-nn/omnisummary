@@ -41,6 +41,10 @@ class TestRun:
         with patch("lambda_handlers.digest_handler.already_published", return_value=False):
             yield
 
+    @pytest.fixture(autouse=True)
+    def _adapters(self, monkeypatch):
+        monkeypatch.setattr(digest_handler, "bootstrap", MagicMock())
+
     async def test_a_date_already_on_threads_runs_nothing(self):
         # A duplicate invoke used to persist its own snapshot over the posted digest's record.
         with patch("lambda_handlers.digest_handler.Config.load", return_value=_config()):
@@ -58,15 +62,13 @@ class TestRun:
         config = _config()
         health = HealthReport(sources=[SourceHealth(name="rss", item_count=0, status=SourceStatus.EMPTY)])
         with patch("lambda_handlers.digest_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.digest_handler.boto3.Session"):
-                with patch("lambda_handlers.digest_handler.BedrockLanguageModelFactory"):
-                    with patch(
-                        "lambda_handlers.digest_handler.run_collectors_with_health",
-                        new=AsyncMock(return_value=([], health)),
-                    ):
-                        with patch("lambda_handlers.digest_handler._maybe_alert") as alert:
-                            with patch("lambda_handlers.digest_handler.run_pipeline", new=AsyncMock()) as pipeline:
-                                await digest_handler._run()
+            with patch(
+                "lambda_handlers.digest_handler.run_collectors_with_health",
+                new=AsyncMock(return_value=([], health)),
+            ):
+                with patch("lambda_handlers.digest_handler._maybe_alert") as alert:
+                    with patch("lambda_handlers.digest_handler.run_pipeline", new=AsyncMock()) as pipeline:
+                        await digest_handler._run()
         alert.assert_called_once_with(health, config.collectors.alert_on_empty)
         pipeline.assert_not_called()
 
@@ -90,28 +92,24 @@ class TestRun:
         ranked = [MagicMock(), MagicMock(), MagicMock()]
         result = (items, ranked, digest)
         with patch("lambda_handlers.digest_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.digest_handler.boto3.Session"):
-                with patch("lambda_handlers.digest_handler.BedrockLanguageModelFactory"):
-                    with patch(
-                        "lambda_handlers.digest_handler.run_collectors_with_health",
-                        new=AsyncMock(return_value=(items, health)),
-                    ):
-                        with patch("lambda_handlers.digest_handler._maybe_alert"):
-                            with patch(
-                                "lambda_handlers.digest_handler.run_pipeline", new=AsyncMock(return_value=result)
-                            ):
-                                with patch("lambda_handlers.digest_handler.persist_digest") as persist:
-                                    with patch("lambda_handlers.digest_handler._trigger_visual") as trigger:
-                                        with patch(
-                                            "lambda_handlers.digest_handler.resolve_digest_window",
-                                            return_value=window,
-                                        ):
-                                            await digest_handler._run()
-        persisted_ranked, persisted_digest, persisted_date = persist.call_args.args
+            with patch(
+                "lambda_handlers.digest_handler.run_collectors_with_health",
+                new=AsyncMock(return_value=(items, health)),
+            ):
+                with patch("lambda_handlers.digest_handler._maybe_alert"):
+                    with patch("lambda_handlers.digest_handler.run_pipeline", new=AsyncMock(return_value=result)):
+                        with patch("lambda_handlers.digest_handler.persist_digest") as persist:
+                            with patch("lambda_handlers.digest_handler._trigger_visual") as trigger:
+                                with patch(
+                                    "lambda_handlers.digest_handler.resolve_digest_window",
+                                    return_value=window,
+                                ):
+                                    await digest_handler._run()
+        persisted_ranked, persisted_digest, persisted_date, memory = persist.call_args.args
         assert len(persisted_ranked) == 3
         assert persisted_digest.content.items  # the stories actually reach the snapshot
         assert persisted_date == digest_date
-        assert persist.call_args.kwargs["base_dir"] is None  # AgentCore-backed store in AWS
+        assert memory is digest_handler.bootstrap.memory_store.return_value
         trigger.assert_called_once_with(digest_date)
 
     async def test_metric_counts_digest_stories_not_ranker_candidates(self):
@@ -126,20 +124,16 @@ class TestRun:
         digest.content = DigestContent(lead="l", items=[DigestItem(title="t", url="http://e/1", body="b")])
         result = (items, [MagicMock() for _ in range(8)], digest)  # 8 ranked candidates, 1 story
         with patch("lambda_handlers.digest_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.digest_handler.boto3.Session"):
-                with patch("lambda_handlers.digest_handler.BedrockLanguageModelFactory"):
-                    with patch(
-                        "lambda_handlers.digest_handler.run_collectors_with_health",
-                        new=AsyncMock(return_value=(items, health)),
-                    ):
-                        with patch("lambda_handlers.digest_handler._maybe_alert"):
-                            with patch(
-                                "lambda_handlers.digest_handler.run_pipeline", new=AsyncMock(return_value=result)
-                            ):
-                                with patch("lambda_handlers.digest_handler.persist_digest"):
-                                    with patch("lambda_handlers.digest_handler._trigger_visual"):
-                                        with patch("lambda_handlers.digest_handler._emit_digest_items_metric") as emit:
-                                            await digest_handler._run()
+            with patch(
+                "lambda_handlers.digest_handler.run_collectors_with_health",
+                new=AsyncMock(return_value=(items, health)),
+            ):
+                with patch("lambda_handlers.digest_handler._maybe_alert"):
+                    with patch("lambda_handlers.digest_handler.run_pipeline", new=AsyncMock(return_value=result)):
+                        with patch("lambda_handlers.digest_handler.persist_digest"):
+                            with patch("lambda_handlers.digest_handler._trigger_visual"):
+                                with patch("lambda_handlers.digest_handler._emit_digest_items_metric") as emit:
+                                    await digest_handler._run()
         emit.assert_called_once_with(1)
 
     async def test_story_less_digest_emits_zero(self):
@@ -150,20 +144,16 @@ class TestRun:
         digest.content = None  # the 08-17 failure mode: content that could not be parsed
         result = (items, [MagicMock()], digest)
         with patch("lambda_handlers.digest_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.digest_handler.boto3.Session"):
-                with patch("lambda_handlers.digest_handler.BedrockLanguageModelFactory"):
-                    with patch(
-                        "lambda_handlers.digest_handler.run_collectors_with_health",
-                        new=AsyncMock(return_value=(items, health)),
-                    ):
-                        with patch("lambda_handlers.digest_handler._maybe_alert"):
-                            with patch(
-                                "lambda_handlers.digest_handler.run_pipeline", new=AsyncMock(return_value=result)
-                            ):
-                                with patch("lambda_handlers.digest_handler.persist_digest"):
-                                    with patch("lambda_handlers.digest_handler._trigger_visual"):
-                                        with patch("lambda_handlers.digest_handler._emit_digest_items_metric") as emit:
-                                            await digest_handler._run()
+            with patch(
+                "lambda_handlers.digest_handler.run_collectors_with_health",
+                new=AsyncMock(return_value=(items, health)),
+            ):
+                with patch("lambda_handlers.digest_handler._maybe_alert"):
+                    with patch("lambda_handlers.digest_handler.run_pipeline", new=AsyncMock(return_value=result)):
+                        with patch("lambda_handlers.digest_handler.persist_digest"):
+                            with patch("lambda_handlers.digest_handler._trigger_visual"):
+                                with patch("lambda_handlers.digest_handler._emit_digest_items_metric") as emit:
+                                    await digest_handler._run()
         emit.assert_called_once_with(0)
 
     async def test_persist_failure_is_loud_and_does_not_trigger_the_visual(self):
@@ -175,23 +165,19 @@ class TestRun:
         health = HealthReport(sources=[SourceHealth(name="rss", item_count=1, status=SourceStatus.OK)])
         result = (items, [MagicMock()], MagicMock())
         with patch("lambda_handlers.digest_handler.Config.load", return_value=config):
-            with patch("lambda_handlers.digest_handler.boto3.Session"):
-                with patch("lambda_handlers.digest_handler.BedrockLanguageModelFactory"):
-                    with patch(
-                        "lambda_handlers.digest_handler.run_collectors_with_health",
-                        new=AsyncMock(return_value=(items, health)),
-                    ):
-                        with patch("lambda_handlers.digest_handler._maybe_alert"):
-                            with patch(
-                                "lambda_handlers.digest_handler.run_pipeline", new=AsyncMock(return_value=result)
-                            ):
-                                with patch(
-                                    "lambda_handlers.digest_handler.persist_digest",
-                                    side_effect=RuntimeError("memory full"),
-                                ):
-                                    with patch("lambda_handlers.digest_handler._trigger_visual") as trigger:
-                                        with pytest.raises(RuntimeError, match="persist failed"):
-                                            await digest_handler._run()
+            with patch(
+                "lambda_handlers.digest_handler.run_collectors_with_health",
+                new=AsyncMock(return_value=(items, health)),
+            ):
+                with patch("lambda_handlers.digest_handler._maybe_alert"):
+                    with patch("lambda_handlers.digest_handler.run_pipeline", new=AsyncMock(return_value=result)):
+                        with patch(
+                            "lambda_handlers.digest_handler.persist_digest",
+                            side_effect=RuntimeError("memory full"),
+                        ):
+                            with patch("lambda_handlers.digest_handler._trigger_visual") as trigger:
+                                with pytest.raises(RuntimeError, match="persist failed"):
+                                    await digest_handler._run()
         trigger.assert_not_called()
 
     def test_emit_metric_writes_emf_doc(self, capsys):

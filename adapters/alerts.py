@@ -4,9 +4,9 @@ import os
 
 import boto3
 
-from .constants import DEFAULT_PROJECT_NAME
-from .formatting import format_alarm
-from .logger import get_correlation_id, logger
+from shared.constants import DEFAULT_PROJECT_NAME
+from shared.formatting import format_alarm
+from shared.logger import get_correlation_id, logger
 
 
 def publish_alert(event: str, status: str, fields: dict[str, str]) -> None:

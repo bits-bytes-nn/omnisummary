@@ -510,7 +510,7 @@ class TestImageHosting:
     def test_uploads_with_content_type_and_presigns(self):
         s3 = MagicMock()
         s3.generate_presigned_url.return_value = "https://s3/presigned"
-        with patch("shared.state_store.state_boto_session") as session:
+        with patch("adapters.state_store.state_boto_session") as session:
             session.return_value.client.return_value = s3
             url = threads_handler._upload_image_for_hosting(b"PNG", "bucket", "k/p.jpg", content_type="image/jpeg")
         assert url == "https://s3/presigned"
@@ -817,7 +817,7 @@ async def test_e2e_a_retried_reply_that_lands_standalone_is_counted_and_named(mo
 
     monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
     sns = MagicMock()
-    with patch("shared.alerts.boto3.client", return_value=sns):
+    with patch("adapters.alerts.boto3.client", return_value=sns):
         visual_handler._maybe_alert_threads_outcome(outcome, date(2026, 10, 27))
     message = sns.publish.call_args.kwargs["Message"]
     assert "m0" in message and "m2" in message and "2/3 posts" in message

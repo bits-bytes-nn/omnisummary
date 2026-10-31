@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent.tool_state import DigestStateManager
 from entrypoints import bootstrap
-from shared import Config, create_memory_store, logger
+from shared import Config, logger
 
 
 async def main() -> None:
@@ -34,7 +34,7 @@ async def main() -> None:
     args = parser.parse_args()
 
     config = Config.load()
-    data = create_memory_store().get_digest(args.digest_date.isoformat())
+    data = bootstrap.memory_store().get_digest(args.digest_date.isoformat())
     if not data:
         raise SystemExit(f"No digest snapshot for {args.digest_date}")
     state = DigestStateManager.load_from_dict(data)

@@ -8,8 +8,8 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
 from adapters.threads import ThreadsGateway
+from application.ports import StateStore
 from shared.models import ThreadsDelivery
-from shared.state_store import StateStore
 
 
 class MemoryStateStore(StateStore):

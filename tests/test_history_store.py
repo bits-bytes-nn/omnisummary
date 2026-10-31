@@ -1,6 +1,6 @@
 from datetime import date, timedelta
 
-from shared.history_store import (
+from application.history import (
     PUBLISHED_URLS_KEY,
     THREADS_POSTED_KEY,
     PublishedUrlLedger,
@@ -8,7 +8,7 @@ from shared.history_store import (
     ThreadsPostLedger,
     published_urls_from_snapshots,
 )
-from shared.state_store import StateReadError, StateStore
+from application.ports import StateReadError, StateStore
 
 
 class _MemStore(StateStore):
