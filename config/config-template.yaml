@@ -83,10 +83,6 @@ collectors:
     # legitimately publish nothing on a given day, whereas 40 X accounts going quiet is a broken
     # session. 100 (the code default) makes the check UNREACHABLE, because the comparison is `>`.
     empty_rate_threshold: 90.0
-  # Width of the ONE thread pool the whole run shares. Each collector's max_concurrency bounds only
-  # its own fan-out; every asyncio.to_thread lands in this pool, whose stdlib default is 6 threads on
-  # a 2-vCPU Lambda — so the per-collector bounds did not hold globally.
-  thread_pool_max_workers: 16
   # Sources whose EMPTY result is an incident worth an SNS alert. A dark source raises no exception
   # and leaves no stale park file, so nothing else notices it — but reddit/x are legitimately quiet
   # on many days, so this is an explicit opt-in list rather than "alert on any empty source".

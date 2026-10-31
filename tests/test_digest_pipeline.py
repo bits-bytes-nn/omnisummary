@@ -341,22 +341,6 @@ class TestResolveDigestWindow:
         assert reference_time.astimezone(UTC) == datetime(2026, 6, 4, 4, 0, tzinfo=UTC)
 
 
-class TestBoundedExecutor:
-    @pytest.mark.asyncio
-    async def test_one_bounded_pool_is_installed_from_config(self):
-        # Each collector's max_concurrency bounds only its own fan-out; every asyncio.to_thread call
-        # lands in the loop's DEFAULT executor (6 threads on a 2-vCPU Lambda), so the per-collector
-        # bounds did not hold globally.
-        import asyncio
-
-        config = Config()
-        config.collectors.thread_pool_max_workers = 9
-        await runner.run_collectors_with_health(config, [])
-        executor = asyncio.get_running_loop()._default_executor
-        assert executor is not None
-        assert executor._max_workers == 9
-
-
 class TestAlreadyPublished:
     def test_reads_the_threads_ledger_for_the_date(self):
         from adapters.state_store import LocalStateStore

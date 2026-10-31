@@ -484,7 +484,7 @@ class TestDailyVisualMaker:
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
         maker.publisher.has_a_destination = MagicMock(return_value=True)
-        maker.threads_ledger.already_posted = MagicMock(side_effect=[False, True])
+        maker.threads_ledger.already_posted = MagicMock(return_value=True)  # claimed after has_a_destination passed
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"skip": True})):
             maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
