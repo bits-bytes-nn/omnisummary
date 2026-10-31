@@ -240,7 +240,7 @@ Produce ONLY a JSON object:
 {{
   "skip": false,
   "use_character": false,
-  "instruction": "the comic as a synopsis in this shape. LOGLINE: what happened and the turn it leads to, in one sentence. COMPOSITION: the form and its layout. Then one entry per frame, FRAME n: where it is, who is in it (the real people a reader would recognize, named, with their features; others by role; the narrator is just 'the narrator', his look is fixed elsewhere), what they do, and its ONE short line of dialogue or narration in {on_image_language}."
+  "instruction": "the comic as a synopsis in this shape. LOGLINE: what happened and the turn it leads to, in one sentence. COMPOSITION: the form and its layout. Then one entry per frame, FRAME n: where it is, who is in it (the real people a reader would recognize, named; others by role; the narrator is just 'the narrator', his look is fixed elsewhere), what they do, and its ONE short line of dialogue or narration in {on_image_language}."
 }}
 ```
 
@@ -278,9 +278,9 @@ order, the characters, the exact on-image text, and the style — {style_aesthet
 
 Think like an editor BEFORE you describe pixels. A viewer should grasp the subject and the joke \
 within a few seconds:
-1. SUBJECT — make it visually unmistakable with the real-world cues this story calls for: name each \
-real person and describe the features that make them recognizable at a glance (face shape, hairline, \
-glasses, build, signature clothing); organization logos and brand colors; \
+1. SUBJECT — make it visually unmistakable with the real-world cues this story calls for: a person the \
+public knows by sight is drawn with their known look, named; anyone else is drawn by role, with no \
+invented likeness; organization logos and brand colors; \
 recognizable products or settings.
 2. THE JOKE — the requested visual's punchline; every element serves it.
 3. FIT — the whole composition fits the frame with no panel, bubble or line of text cut off; panel \
