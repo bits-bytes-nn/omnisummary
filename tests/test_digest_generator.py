@@ -669,13 +669,6 @@ class TestCountdownIntro:
         assert place_countdown_intro("각도다.", "") == "각도다."
         assert place_countdown_intro("", "AGI 등장 870일 전이다. ") == ""
 
-    def test_editorial_lead_strips_the_gag(self):
-        from domain.formatting import editorial_lead
-
-        intro = "AGI 등장 870일 전이다. "
-        assert editorial_lead("AGI 등장 870일 전이다. 각도다.", intro) == "각도다."
-        assert editorial_lead("각도다.", intro) == "각도다."  # never attached
-
 
 class TestSourceMatchingByNormalizedUrl:
     """The editor echoes each story's URL back, and the source tag was matched by EXACT string: one

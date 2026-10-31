@@ -12,9 +12,7 @@ from zoneinfo import ZoneInfo
 
 from application.digest_generator import DigestGenerator
 from application.history import (
-    RECENT_LEADS_KEY,
     PublishedUrlLedger,
-    RollingLog,
     ThreadsPostLedger,
     published_urls_from_snapshots,
 )
@@ -23,7 +21,6 @@ from application.ranker import ContentRanker
 from application.trend_tracker import TrendTracker
 from domain.aggregator import ContentAggregator, normalize_url
 from domain.digest_snapshot import DigestSnapshot
-from domain.formatting import agi_countdown_intro, editorial_lead
 from domain.models import CollectedItem, DigestResult, HealthReport, RankedItem, SourceHealth, SourceStatus
 from shared import Config, logger
 
@@ -115,7 +112,6 @@ async def run_pipeline(
     is called only to read the recent snapshots, and a failure there costs only the cross-day dedup
     seed. The digest is neither stored nor published here: see persist_digest and publish_inline."""
     ledger = PublishedUrlLedger(state_store, config.pipeline.published_url_ttl_days)
-    leads_log = RollingLog(state_store, RECENT_LEADS_KEY, config.pipeline.recent_leads_window)
 
     # Cross-day dedup draws from BOTH the ledger AND recent AgentCore Memory snapshots, so it
     # self-heals from existing history (and survives a lost/empty ledger) rather than only
@@ -154,7 +150,7 @@ async def run_pipeline(
     trend_tracker = TrendTracker(config.pipeline, models, state_store)
     trends_context = trend_tracker.get_trends_context(today=digest_date)
 
-    recent_leads = [e.get("lead", "") for e in leads_log.entries()]
+    recent_leads = _recent_leads(snapshots, config.pipeline.recent_leads_window)
     generator = DigestGenerator(config.pipeline, models)
     digest = await generator.generate(
         ranked_items,
@@ -190,21 +186,14 @@ async def run_pipeline(
     except Exception:
         logger.error("Trend update failed (non-fatal; today's digest still ships)", exc_info=True)
 
-    # Record the stories that became TODAY'S digest of record so future runs don't re-publish
-    # them, and remember the lead so the next digest avoids repeating the same opening angle.
-    # Recorded at generation (post trend-update) — the same content.items the snapshot carries
-    # and the visual Lambda delivers — not gated on downstream delivery, which is async/
-    # best-effort and alarmed separately. The lead is stored WITHOUT the AGI-countdown prefix
-    # (a fixed daily template) so the novelty signal is the editorial angle, not the boilerplate.
+    # Record the stories that became TODAY'S digest of record so future runs don't re-publish them.
+    # Recorded at generation (post trend-update) — the same content.items the snapshot carries and
+    # the visual Lambda delivers — not gated on downstream delivery, which is alarmed separately.
     try:
         if digest.content and digest.content.items:
             ledger.record([normalize_url(it.url) for it in digest.content.items], digest_date)
-            leads_log.append(
-                {"date": digest_date.isoformat(), "lead": _editorial_lead(config, digest, digest_date)},
-                dedup_key="date",
-            )
     except Exception:
-        logger.warning("Failed to update published-URL / leads history (non-fatal)", exc_info=True)
+        logger.warning("Failed to update the published-URL ledger (non-fatal)", exc_info=True)
 
     return items, ranked_items, digest
 
@@ -222,16 +211,12 @@ def _recent_story_titles(snapshots: list[dict]) -> list[str]:
     return list(dict.fromkeys(titles))
 
 
-def _editorial_lead(config: Config, digest: DigestResult, digest_date: date) -> str:
-    """The digest lead with the AGI-countdown prefix removed, so recent-leads novelty compares
-    the editorial angle (not the fixed daily countdown template every lead starts with)."""
-    intro = agi_countdown_intro(
-        config.pipeline.agi_countdown_date,
-        config.pipeline.agi_countdown_template,
-        digest_date,
-        config.pipeline.agi_countdown_after,
-    )
-    return editorial_lead(digest.content.lead if digest.content else "", intro)
+def _recent_leads(snapshots: list[dict], window: int) -> list[str]:
+    """The leads of the snapshots the cross-day dedup seed already fetched (newest first), so the next
+    lead avoids their angle. The editor is shown each lead's last sentence, its thesis, so the
+    countdown gag the lead opens with never reaches the comparison."""
+    leads = [(((snap or {}).get("digest_result") or {}).get("content") or {}).get("lead") or "" for snap in snapshots]
+    return [lead for lead in leads if lead.strip()][:window]
 
 
 def persist_digest(

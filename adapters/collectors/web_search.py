@@ -81,7 +81,7 @@ class WebSearchCollector(BaseCollector):
             return []
 
         broad = await gather_collector_results(tasks, raise_if_all_failed=True)
-        broad_items = self._deduplicate(broad.items)
+        broad_items = broad.items
         logger.info(
             "Web search collector gathered %d items (broad phase) from %d/%d queries (%d failed)",
             len(broad_items),
@@ -99,7 +99,8 @@ class WebSearchCollector(BaseCollector):
         )
 
         refined_items = await self._refine_search(broad_items, semaphore)
-        all_items = self._deduplicate(broad_items + refined_items)
+        # Duplicates across queries are left to the aggregator, which dedups every source by URL and title.
+        all_items = broad_items + refined_items
         logger.info("Web search collector gathered %d items total (after refinement)", len(all_items))
 
         return all_items
@@ -266,16 +267,6 @@ class WebSearchCollector(BaseCollector):
         parsed = urlparse(url)
         domain = parsed.netloc.lower().removeprefix("www.")
         return DOMAIN_TO_SOURCE.get(domain, SourceType.WEB)
-
-    @staticmethod
-    def _deduplicate(items: list[CollectedItem]) -> list[CollectedItem]:
-        seen_urls: set[str] = set()
-        unique: list[CollectedItem] = []
-        for item in items:
-            if item.url not in seen_urls:
-                seen_urls.add(item.url)
-                unique.append(item)
-        return unique
 
 
 def _title_from_url(url: str) -> str:

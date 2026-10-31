@@ -22,7 +22,6 @@ def published_urls_from_snapshots(snapshots: list[dict[str, Any]]) -> set[str]:
 
 
 PUBLISHED_URLS_KEY = "published_urls.json"
-RECENT_LEADS_KEY = "recent_leads.json"
 RECENT_COMICS_KEY = "recent_comics.json"
 THREADS_POSTED_KEY = "threads_posted.json"
 COMMENT_REPLIES_KEY = "comment_replies.json"

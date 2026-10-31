@@ -13,7 +13,7 @@ import pytest
 
 from adapters.state_store import LocalStateStore
 from application import digest_pipeline as runner
-from application.history import PUBLISHED_URLS_KEY, RECENT_LEADS_KEY
+from application.history import PUBLISHED_URLS_KEY
 from domain.models import CollectedItem, DigestContent, DigestItem, DigestResult, RankedItem
 from shared.config import Config
 from shared.constants import SourceType
@@ -126,12 +126,10 @@ class TestRunPipelineHappyPath:
             with _Pipeline(tmpdir) as p:
                 collected, ranked, digest = await _run(p, _config(), items)
                 ledger = p.store.read_json(PUBLISHED_URLS_KEY)
-                leads = p.store.read_json(RECENT_LEADS_KEY)
         assert len(collected) == 2 and len(ranked) == 2 and digest is not None
         # Every published URL is stamped with today's date so tomorrow's run skips the story.
         assert set(ledger) == {"https://a.example/1", "https://b.example/2"}
         assert set(ledger.values()) == {DIGEST_DATE.isoformat()}
-        assert [e["date"] for e in leads] == [DIGEST_DATE.isoformat()]
         p.tracker.update_trends.assert_awaited_once()
         assert p.tracker.update_trends.await_args.args[1] == DIGEST_DATE.isoformat()
 
@@ -152,30 +150,11 @@ class TestRunPipelineHappyPath:
     async def test_recent_leads_are_fed_back_to_the_generator(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
-                p.store.write_json(RECENT_LEADS_KEY, [{"date": "2026-06-02", "lead": "어제의 리드다."}])
+                p.memory.get_recent_digests.return_value = [{"digest_result": {"content": {"lead": "어제의 리드다."}}}]
                 await _run(p, _config(), [_item("https://a.example/1")])
         assert p.generate_kwargs["recent_leads"] == ["어제의 리드다."]
         assert p.generate_kwargs["trends_context"] == "trends"
         assert p.generate_kwargs["today"] == DIGEST_DATE
-
-    @pytest.mark.asyncio
-    async def test_lead_is_stored_without_the_agi_countdown_prefix(self):
-        # The countdown is a fixed daily template; storing it would make every lead look similar
-        # to the novelty check, defeating the anti-repetition feedback.
-        config = _config(agi_countdown_date="2029-01-01", agi_countdown_template="AGI 등장 {days}일 전이다. ")
-        intro = runner.agi_countdown_intro(
-            config.pipeline.agi_countdown_date,
-            config.pipeline.agi_countdown_template,
-            DIGEST_DATE,
-            config.pipeline.agi_countdown_after,
-        )
-        items = [_item("https://a.example/1")]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with _Pipeline(tmpdir, digest=_digest(items, lead=intro + "본론 리드다.")) as p:
-                await _run(p, config, items)
-                leads = p.store.read_json(RECENT_LEADS_KEY)
-        assert intro  # the countdown is actually configured, so the test isn't vacuous
-        assert leads[0]["lead"] == "본론 리드다."
 
     @pytest.mark.asyncio
     async def test_select_count_over_selects_by_the_candidate_buffer(self):
@@ -230,7 +209,6 @@ class TestRunPipelineDryRun:
             with _Pipeline(tmpdir) as p:
                 collected, ranked, digest = await _run(p, _config(), items, dry_run=True)
                 assert p.store.read_json(PUBLISHED_URLS_KEY) is None
-                assert p.store.read_json(RECENT_LEADS_KEY) is None
         assert collected and ranked and digest
         p.tracker.update_trends.assert_not_awaited()
 
