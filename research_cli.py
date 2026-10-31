@@ -233,8 +233,6 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
         return result, EXIT_FAILED
     if threads is not None and threads["posts_delivered"] < threads["posts_rendered"]:
         warnings.append("Some Threads posts did not land.")
-    if threads is not None and (threads["dropped"] or threads["trimmed"]):
-        warnings.append(f"Threads rendering dropped {threads['dropped']} and trimmed {threads['trimmed']} post(s).")
     result["status"] = "succeeded"
     return result, EXIT_OK
 

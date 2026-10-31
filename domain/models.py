@@ -27,7 +27,7 @@ class CollectedItem(BaseModel):
     @model_validator(mode="after")
     def ensure_item_id(self) -> CollectedItem:
         if not self.item_id and self.url:
-            self.item_id = hashlib.sha256(self.url.encode()).hexdigest()[:16]
+            self.item_id = generate_item_id(self.url)
         return self
 
     def __hash__(self) -> int:

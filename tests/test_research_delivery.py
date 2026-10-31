@@ -205,5 +205,6 @@ class TestATooLongThreadNeverPosts:
         assert fits is dlv.DeliveryOutcome.POSTED and pt.await_count == 1
 
     def test_a_trimmed_post_alone_is_too_long(self):
-        assert dlv.sends_back_as_too_long("x", DeliveryContext(), dropped=0, trimmed=1)
-        assert not dlv.sends_back_as_too_long("x", DeliveryContext(), dropped=0, trimmed=0)
+        # One post over the cap and no dropped post: the trim alone sends it back.
+        assert dlv.sends_back_as_too_long("소제목\n\n" + "문장이다. " * 120, DeliveryContext())
+        assert not dlv.sends_back_as_too_long("소제목\n\n짧은 본문이다.", DeliveryContext())

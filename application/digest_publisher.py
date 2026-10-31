@@ -26,11 +26,7 @@ class DigestPublisher:
         self.threads = threads
         # Last Threads publish outcome (posted/expected posts), for the caller's metrics/alerts.
         self.threads_outcome: ThreadsDelivery | None = None
-        # `store` is REQUIRED, and None means "the caller tried and it failed" — not "not supplied".
-        # With a default of None plus an `if store is None` fallback, those two cases were
-        # indistinguishable, so a caller whose own create_state_store had just failed triggered a
-        # second attempt here: two inits and two ERROR logs for one broken store. Both call sites
-        # already pass it explicitly, so the fallback only ever ran on the failure path.
+        # None means "the caller tried to build the store and it failed": publish without the ledger.
         self.threads_ledger: ThreadsPostLedger | None = ThreadsPostLedger(store) if store is not None else None
         # Posts are (or may be) live but the ledger does not carry the date: a replay or a re-run would
         # post the day again. The caller alerts on it.

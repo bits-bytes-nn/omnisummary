@@ -288,12 +288,6 @@ class TestApplicationStack:
                 {"Namespace": METRIC_NAMESPACE, "MetricName": metric_name, "Dimensions": expected},
             )
 
-    def test_openai_ssm_param(self, templates):
-        _, app = templates
-        params = app.find_resources("AWS::SSM::Parameter")
-        names = {v["Properties"]["Name"] for v in params.values()}
-        assert "/omnisummary/dev/openai-api-key" in names
-
     def test_the_comment_reply_lambda_runs_one_at_a_time_inside_its_interval(self, templates):
         # Two concurrent runs reading the same conversation would both answer a comment.
         _, app = templates

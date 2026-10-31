@@ -303,53 +303,6 @@ class TestRetriableStatuses:
                     await collector.collect()
         assert client.get.await_count == 1
 
-    @pytest.mark.asyncio
-    async def test_retry_after_is_honoured_and_capped(self, monkeypatch):
-        # A 429's Retry-After is respected, but clamped to the per-request timeout so an absurd
-        # value can't outlive the channel's budget.
-        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config(request_timeout=7, retry_backoff_sec=0))
-
-        throttled = _resp(429, {})
-        throttled.headers = {"Retry-After": "3600"}
-        ok = _resp(200, _playlist_payload("vid00000001"))
-        ok.headers = {}
-        details = _resp(200, _videos_payload("vid00000001"))
-        details.headers = {}
-
-        client = AsyncMock()
-        client.get.side_effect = [throttled, ok, details]
-        ctx = MagicMock()
-        ctx.__aenter__ = AsyncMock(return_value=client)
-        ctx.__aexit__ = AsyncMock(return_value=False)
-
-        slept: list[float] = []
-
-        async def _sleep(delay):
-            slept.append(delay)
-
-        with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
-            with patch("adapters.collectors.youtube.httpx.AsyncClient", return_value=ctx):
-                with patch("adapters.collectors.youtube.asyncio.sleep", new=_sleep):
-                    with patch.object(collector, "_get_transcript", return_value=""):
-                        items = await collector.collect()
-        assert [i.item_id for i in items] == ["vid00000001"]
-        # 3600s clamped to request_timeout (the retry backoff's own 0s sleep may follow).
-        assert slept[0] == 7.0 and all(s <= 7.0 for s in slept)
-
-    def test_retry_after_parsing(self):
-        from adapters.collectors.youtube import _retry_after_delay
-
-        resp = MagicMock()
-        resp.headers = {}
-        assert _retry_after_delay(resp, 10) == 0.0
-        resp.headers = {"Retry-After": "4"}
-        assert _retry_after_delay(resp, 10) == 4.0
-        resp.headers = {"Retry-After": "not-a-date"}
-        assert _retry_after_delay(resp, 10) == 0.0
-        resp.headers = {"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}  # in the past → no wait
-        assert _retry_after_delay(resp, 10) == 0.0
-
 
 class TestChannelFanOut:
     @pytest.mark.asyncio

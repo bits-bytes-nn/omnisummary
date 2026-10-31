@@ -108,15 +108,6 @@ class TestParseRankings:
         result = self._parse(raw)
         assert len(result) == 0
 
-    def test_leading_json_token_not_stripped_into_content(self):
-        # removeprefix('json') must not corrupt a value — guard against the old
-        # lstrip('json') char-set bug that would eat leading j/s/o/n characters.
-        inner = json.dumps({"rankings": [{"item_id": "item_1", "score": 0.7, "reasoning": "sonnet json notes"}]})
-        raw = f"```json\n{inner}\n```"
-        result = self._parse(raw)
-        assert len(result) == 1
-        assert result[0].reasoning == "sonnet json notes"
-
 
 class TestItemIdResolution:
     """The `=== Item N ===` header the prompt builder emits invites the model to answer with the

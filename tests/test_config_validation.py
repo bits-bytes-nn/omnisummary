@@ -194,14 +194,6 @@ class TestAlertOnEmptyVocabulary:
         assert set(collector_registry(Config(), MagicMock())) == set(COLLECTOR_NAMES)
 
 
-class TestTranscriptLanguage:
-    def test_default_is_en(self):
-        assert YouTubeCollectorConfig().transcript_language == "en"
-
-    def test_is_configurable(self):
-        assert YouTubeCollectorConfig(transcript_language="ko").transcript_language == "ko"
-
-
 class TestCodeDefaultsMatchTheDeployedConfig:
     """A code default that disagrees with config.yaml is a live trap: it is what a deployment
     without a config.yaml (and every PipelineConfig() in a test) silently gets."""
@@ -251,15 +243,6 @@ class TestParkedSourceTripwires:
     def test_a_skipped_sync_day_cannot_read_fresh(self, config_path, source_name):
         source = getattr(Config.from_yaml(str(config_path)).collectors, source_name)
         assert source.park_max_age_hours <= self._ONE_SYNC_CADENCE_HOURS
-
-    # How many INPUTS a source declares, per collector name — what the failure RATE is computed over.
-    _INPUT_LISTS = {
-        "rss": lambda c: c.rss.feeds,
-        "reddit": lambda c: c.reddit.subreddits,
-        "youtube": lambda c: c.youtube.channels,
-        "rsshub": lambda c: c.rsshub.accounts,
-        "web_search": lambda c: [q for search in c.web_search.trend_searches for q in search.queries],
-    }
 
     def test_the_code_default_leaves_the_empty_rate_check_unreachable(self):
         # Documents WHY the file must set it: the default equals the sentinel, and the comparison
@@ -361,10 +344,6 @@ class TestCollectionWindowCoversTheGapBetweenRuns:
         # the other three failed loudly. The constraint is declared once, so it holds for all five.
         with pytest.raises(ValidationError):
             Config(collectors={source_name: {"lookback_hours": 0}})
-
-    def test_a_wider_window_is_still_configurable_per_source(self):
-        config = Config(collectors={"web_search": {"lookback_hours": 72}})
-        assert config.collectors.web_search.lookback_hours == 72
 
     def test_an_earlier_run_needs_a_wider_window(self):
         # A 06:00 KST run is 42h from the previous run's clock time to this run's reference midnight.

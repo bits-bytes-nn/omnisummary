@@ -76,18 +76,6 @@ def _fit_one_post(
     return THREADS_POST_SEPARATOR.join([p for p in (truncate_at_word(title, max(0, room)), url.strip()) if p])
 
 
-def _item_post_overflows(title: str, meta: str, body: str, implication: str, url: str) -> bool:
-    """True when the item's FULL prose cannot fit one post — i.e. _fit_one_post had to drop
-    something. Mirrors its assembly with nothing trimmed (the source line in parentheses on the
-    title, the implication as its own block, so the separator count matches); used for counts-only
-    trim reporting."""
-    titled = f"{title.strip()} ({meta.strip()})" if title.strip() and meta.strip() else (title.strip() or meta.strip())
-    blocks = [p for p in (titled, body.strip(), implication.strip()) if p]
-    tail = [url.strip()] if url.strip() else []
-    assembled = THREADS_POST_SEPARATOR.join(blocks + tail)
-    return len(assembled) > THREADS_MAX_POST_CHARS
-
-
 def _fit_lead(lead: str) -> str:
     """Fit the root text (the digest lead) into one Threads post, keeping whole sentences from the
     front, so the countdown gag that opens it survives. Logged at WARNING because a trimmed lead
@@ -134,8 +122,10 @@ def render_threads_posts(content: DigestContent) -> tuple[str, list[str]]:
     for item in content.items:
         meta = _item_meta(item)
         implication = item.implication or ""
-        replies.append(_fit_one_post(item.title, meta, item.body, implication, item.url))
-        if _item_post_overflows(item.title, meta, item.body, implication, item.url):
+        post = _fit_one_post(item.title, meta, item.body, implication, item.url)
+        replies.append(post)
+        # _fit_one_post ships the prose as written whenever it fits, so a missing piece was trimmed.
+        if item.body.strip() not in post or implication.strip() not in post:
             trimmed += 1
     if trimmed:
         # Counts only, never the text: a trimmed item means the editor's prose budget was overrun,
@@ -171,11 +161,6 @@ def _trim_long_sentence(sentence: str, max_len: int) -> str:
 # the renderer guessing from blank lines. A delimiter at the very start or end of the report counts too,
 # so it never rides into a post as literal text.
 _THREADS_POST_DELIMITER = re.compile(r"(?m)^[ \t]*---[ \t]*\r?$")
-# The "N/M" index at the head of a post. The RENDERER owns it, because max_posts is applied AFTER the
-# model has written its numbers: a capped report went out publicly as "1/8 ... 6/8" and stopped
-# mid-argument, telling every reader two posts were missing. Any index the model still writes is
-# stripped and replaced from the FINAL post count.
-_THREADS_POST_INDEX = re.compile(r"^\s*(\d+)\s*/\s*(\d+)[.:)]?\s*")
 # Separator between the index and the post's own 소제목.
 _THREADS_INDEX_SEPARATOR = "  "
 
@@ -186,25 +171,14 @@ def research_post_budget(max_posts: int) -> int:
     return THREADS_MAX_POST_CHARS - len(f"{max_posts}/{max_posts}{_THREADS_INDEX_SEPARATOR}")
 
 
-def _strip_post_index(head: str) -> str:
-    """The head without a model-written "N/M" index. N > M is not an index: "24/7 에이전트" is a title."""
-    match = _THREADS_POST_INDEX.match(head)
-    if match and int(match.group(1)) <= int(match.group(2)):
-        return head[match.end() :]
-    return head
-
-
 def _renumber_threads_posts(posts: list[str]) -> list[str]:
-    """Re-prefix each post with 'N/M' derived from the FINAL list length, replacing whatever index the
-    model wrote. Applied only to agent-delimited posts: the sentence-packing fallback fills each post
-    to the 500-char cap, so prepending an index there would push every post over it and cost each one
-    a trailing sentence — and that fallback exists for output that predates the numbered format
-    anyway."""
+    """Prefix each post with 'N/M' derived from the FINAL list length (after the max_posts cap), so the
+    index describes the thread the reader gets. The prompt does not ask the model to number posts."""
     total = len(posts)
     renumbered: list[str] = []
     for index, post in enumerate(posts, start=1):
         head, separator, rest = post.partition("\n")
-        subheading = _strip_post_index(head).strip()
+        subheading = head.strip()
         prefix = f"{index}/{total}"
         head = f"{prefix}{_THREADS_INDEX_SEPARATOR}{subheading}" if subheading else prefix
         renumbered.append(head + separator + rest)
@@ -272,9 +246,8 @@ class ThreadsResearchRender(NamedTuple):
 def render_threads_research(report: str, *, max_posts: int = 0) -> ThreadsResearchRender:
     """Render a Threads research report into a root post + flat reply chain, each <=500 chars.
     Markup is stripped (Threads renders none). The agent marks its own post boundaries with
-    a line containing only '---', so a post's number + heading + body stay together; the renderer
-    honors those boundaries and only re-splits a post that overflows 500 chars. If no delimiters
-    are present (older output), it falls back to sentence packing.
+    a line containing only '---', so a post's heading + body stay together; a report with no
+    delimiter is one post. A post over 500 chars is trimmed, never re-split.
 
     `max_posts` (>0) hard-caps the total post count (root + replies) so a too-long report can't
     fan out into dozens of public posts; excess posts are dropped. Returns the render plus the

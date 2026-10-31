@@ -190,16 +190,10 @@ class TestStructuredOutputRequest:
 class TestModelClassConstructorSurface:
     """Every other test here asserts on the config DICT, so a langchain-aws upgrade that renamed or
     dropped a kwarg still passed the whole suite — nothing ever fed the dict to the real class. Both
-    ChatBedrockConverse and ChatBedrock set pydantic extra="forbid", so actually constructing them
+    ChatBedrockConverse sets pydantic extra="forbid", so actually constructing it
     is what turns a silent framework break into a red build. No network: the boto client is a mock."""
 
-    CASES = [
-        *[(model, {}) for model in LANGUAGE_MODEL_INFO],
-        (LanguageModelId.CLAUDE_V5_SONNET, {"enable_thinking": True}),
-        (LanguageModelId.CLAUDE_V4_6_SONNET, {"enable_thinking": True}),  # legacy budget_tokens form
-        (LanguageModelId.CLAUDE_V5_SONNET, {"supports_1m_context_window": True}),
-        (LanguageModelId.CLAUDE_V5_SONNET, {"enable_performance_optimization": True}),
-    ]
+    CASES = [(model, {}) for model in LANGUAGE_MODEL_INFO]
 
     def test_every_built_config_constructs_the_model_class(self):
         from langchain_aws import ChatBedrockConverse

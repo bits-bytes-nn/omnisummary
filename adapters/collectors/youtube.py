@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -54,22 +53,6 @@ def _entry_video_id(entry: Any, link: str) -> str:
         return video_id
     match = re.search(r"v=([a-zA-Z0-9_-]{11})", link)
     return match.group(1) if match else ""
-
-
-def _retry_after_delay(response: httpx.Response, cap_sec: float) -> float:
-    """Server-requested backoff from a Retry-After header (delta-seconds or HTTP-date), clamped to
-    cap_sec so an absurd value can't outlive the channel's timeout budget. 0 when absent/unusable."""
-    raw = response.headers.get("Retry-After", "").strip()
-    if not raw:
-        return 0.0
-    try:
-        delay = float(raw)
-    except ValueError:
-        try:
-            delay = (parsedate_to_datetime(raw) - datetime.now(UTC)).total_seconds()
-        except (TypeError, ValueError):
-            return 0.0
-    return max(0.0, min(delay, cap_sec))
 
 
 def _latest_within_window(items: list[CollectedItem], limit: int) -> list[CollectedItem]:
@@ -406,7 +389,7 @@ class YouTubeCollector(BaseCollector):
 
     async def _get_api(self, client: httpx.AsyncClient, path: str, params: dict, *, description: str) -> httpx.Response:
         """GET a YouTube Data API endpoint, retrying transport errors AND transient statuses
-        (429 / 5xx, honouring a Retry-After capped inside the channel's budget). Permanent
+        (429 / 5xx, with the collector's backoff). Permanent
         rejections (403 quota/key, 404 unknown resource) are returned as-is on the first response
         so the caller fails the channel immediately instead of retrying a verdict."""
 
@@ -416,12 +399,6 @@ class YouTubeCollector(BaseCollector):
                 f"{YOUTUBE_API_BASE}/{path}", params=params, headers={"X-Goog-Api-Key": self.api_key}
             )
             if resp.status_code in RETRIABLE_STATUS_CODES:
-                delay = _retry_after_delay(resp, self.config.request_timeout)
-                if delay:
-                    logger.warning(
-                        "%s returned %d; honouring Retry-After of %.0fs", description, resp.status_code, delay
-                    )
-                    await asyncio.sleep(delay)
                 raise TransientStatusError(f"{description} returned {resp.status_code}")
             return resp
 

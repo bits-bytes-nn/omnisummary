@@ -156,21 +156,6 @@ omit = [
     ".venv/*",
     "digest_state/*",
     "logs/*",
-    # Most of scripts/ is EXPLICITLY excluded, not accidentally: operator entrypoints (deploy,
-    # ci_synth, one-off sample renderers) are `sys.path`-mutating __main__ scripts, not importable
-    # modules, and they are exercised by RUNNING them (CI runs scripts/ci_synth.py through the
-    # pinned CDK CLI). Listing them keeps the gate honest: uncovered LOC can't silently sit in TOTAL.
-    #
-    # scripts/sync_to_s3.py and put_secrets are NOT in this list, because they have tests. The sync is
-    # the only supply of X posts and of transcript-carrying YouTube items, and it encodes fixes for
-    # documented stale-data incidents (the STATE_BUCKET pop, the empty-envelope stamp) that only its
-    # own tests can hold in place.
-    "scripts/ci_synth.py",
-    "scripts/sample_comment_replies.py",
-    "scripts/deploy.py",
-    "scripts/put_inference_profiles.py",
-    "scripts/sample_digest.py",
-    "scripts/sample_visual_brief.py",
 ]
 
 [tool.coverage.report]

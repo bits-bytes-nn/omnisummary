@@ -1,18 +1,16 @@
-import hashlib
 from datetime import date
 
 import pytest
 from pydantic import ValidationError
 
-from domain.models import CollectedItem, RankedItem, Trend, TrendEvidence, TrendMemory, VisualBrief
+from domain.models import CollectedItem, RankedItem, Trend, TrendEvidence, TrendMemory, VisualBrief, generate_item_id
 from shared.constants import SourceType
 
 
 class TestCollectedItem:
     def test_fallback_item_id_from_url(self):
         item = CollectedItem(source_type=SourceType.REDDIT, title="T", url="http://example.com")
-        expected = hashlib.sha256(b"http://example.com").hexdigest()[:16]
-        assert item.item_id == expected
+        assert item.item_id == generate_item_id("http://example.com")
 
     def test_explicit_item_id_preserved(self):
         item = CollectedItem(item_id="my_id", source_type=SourceType.REDDIT, title="T", url="http://example.com")

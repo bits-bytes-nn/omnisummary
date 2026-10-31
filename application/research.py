@@ -146,16 +146,13 @@ def request_context(delivery: DeliveryContext):
         _request_delivery.reset(token)
 
 
-async def _deliver_threads(report: str, delivery: DeliveryContext) -> bool:
-    """Post a research report to Threads: a root + flat reply chain (each <=500 chars). At most one
-    staged image rides the root (Threads media indexing is slow)."""
+async def _deliver_threads(root_text: str, replies: list[str], delivery: DeliveryContext) -> bool:
+    """Post a rendered research thread to Threads: a root + flat reply chain (each <=500 chars). At most
+    one staged image rides the root (Threads media indexing is slow)."""
     threads = delivery.ports.threads
     if threads is None:
         logger.error("No Threads publisher is configured for this run; the thread was not posted")
         return False
-    max_posts = delivery.config.agent.research_max_threads_posts
-    root_text, replies, dropped, trimmed = render_threads_research(report, max_posts=max_posts)
-    delivery.threads_stats = DeliveryStats(dropped=dropped, trimmed=trimmed)
     if not root_text.strip():
         # Empty report → nothing to post. An empty root would 400 the Threads API; skip cleanly.
         logger.warning("Research report rendered to empty Threads root; skipping Threads delivery.")
@@ -184,14 +181,11 @@ async def _deliver_threads(report: str, delivery: DeliveryContext) -> bool:
     return outcome.published
 
 
-def sends_back_as_too_long(report: str, delivery: DeliveryContext, *, dropped: int = -1, trimmed: int = 0) -> bool:
+def sends_back_as_too_long(report: str, delivery: DeliveryContext) -> bool:
     """Whether this thread will be refused for losing text to the channel's limits. Every such text is,
     rewrites included: a rewrite that still overflowed went out cut, numbered "1/10 … 10/10" without the
     conclusion that was dropped, and read as complete. Not posting is the worst case now."""
-    if dropped < 0:
-        _, _, dropped, trimmed = render_threads_research(
-            report, max_posts=delivery.config.agent.research_max_threads_posts
-        )
+    _, _, dropped, trimmed = render_threads_research(report, max_posts=delivery.config.agent.research_max_threads_posts)
     return bool(dropped or trimmed)
 
 
@@ -215,7 +209,7 @@ async def deliver_research_report(report: str, *, channel: str, delivery: Delive
     root_text, replies, dropped, trimmed = render_threads_research(
         report, max_posts=delivery.config.agent.research_max_threads_posts
     )
-    if sends_back_as_too_long(report, delivery, dropped=dropped, trimmed=trimmed):
+    if dropped or trimmed:
         # Refuse before anything is public: the dropped tail is the conclusion and its sources, and
         # telling the agent after the post could only say "incomplete".
         delivery.last_refusal = "too long"
@@ -225,7 +219,7 @@ async def deliver_research_report(report: str, *, channel: str, delivery: Delive
     # Reset before dispatch so the verdict below reads THIS attempt's counts, never a previous one's.
     delivery.threads_stats = DeliveryStats()
     delivery.threads_attempted = True
-    ok = await _deliver_threads(report, delivery)
+    ok = await _deliver_threads(root_text, replies, delivery)
     if ok:
         delivery.delivered_channels.add(channel)
         if not delivery.threads_stats.complete:
