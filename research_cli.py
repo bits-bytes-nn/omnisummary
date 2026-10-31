@@ -204,8 +204,13 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
                 )
                 unverified = [u for u in extract_urls(markdown) if citation_key(u, delivery.seen_urls) is None]
                 if unverified:
-                    warnings.append(f"URLs no tool returned: {', '.join(dict.fromkeys(unverified))}")
+                    # The citation guard never saw this answer: a URL no tool returned may be invented.
+                    run_error = (
+                        run_error or f"The report cites URLs no tool returned: {', '.join(dict.fromkeys(unverified))}"
+                    )
 
+    if delivery.fact_check_skipped:
+        warnings.append("The Threads fact check could not run; the thread was posted unchecked.")
     if result["stop_reason"].startswith("limit_") and run_error is None:
         warnings.append(f"The run stopped at its budget cap ({result['stop_reason']}); the report may be partial.")
     result["threads"] = _threads_result(delivery)

@@ -67,7 +67,8 @@ def main() -> int:
         raise SystemExit(f"{CONFIG_PATH} is missing: the secrets would be written under the template's paths")
     config = Config.load()
     project, stage = config.aws.project_name, config.aws.stage
-    ssm = boto3.client("ssm", region_name=config.aws.region)
+    # The config's profile, like put_inference_profiles: a shell can inherit another account's AWS_PROFILE.
+    ssm = boto3.Session(profile_name=config.aws.profile or None).client("ssm", region_name=config.aws.region)
 
     if args.verify:
         return _verify(ssm, project, stage)

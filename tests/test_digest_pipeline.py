@@ -132,6 +132,9 @@ class TestRunPipelineHappyPath:
         assert set(ledger.values()) == {DIGEST_DATE.isoformat()}
         p.tracker.update_trends.assert_awaited_once()
         assert p.tracker.update_trends.await_args.args[1] == DIGEST_DATE.isoformat()
+        # The classifier reads the stories, never the editor's lead (its theses became trends).
+        classified = p.tracker.update_trends.await_args.args[0]
+        assert "본문" in classified and "리드 문장이다." not in classified
 
     @pytest.mark.asyncio
     async def test_a_failed_trend_update_does_not_cost_the_days_digest(self):

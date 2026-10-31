@@ -181,8 +181,11 @@ async def run_pipeline(
         return items, ranked_items, digest
 
     try:
-        # Trends only feed tomorrow's lead: a failed update must not cost today's post.
-        await trend_tracker.update_trends(digest.digest_text, digest_date.isoformat())
+        # Trends only feed tomorrow's lead: a failed update must not cost today's post. The classifier
+        # reads the stories, not the editor's lead and implications: fed those, the editor's own theses
+        # came back as trends ("the digest cautioned ...") and then as tomorrow's arc.
+        stories = "\n\n".join(f"{item.title}\n{item.body}" for item in (digest.content.items if digest.content else []))
+        await trend_tracker.update_trends(stories or digest.digest_text, digest_date.isoformat())
     except Exception:
         logger.error("Trend update failed (non-fatal; today's digest still ships)", exc_info=True)
 

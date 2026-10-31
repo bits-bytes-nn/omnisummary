@@ -263,6 +263,13 @@ class TestLoadNeverSilentlyShipsAnEmptyConfig:
     rss/reddit/youtube lists and region us-east-1. Nothing raised; the first sign was a digest with
     no stories."""
 
+    def test_a_deployed_lambda_never_falls_back_to_the_template(self, tmp_path, monkeypatch):
+        # The template's placeholder sources would collect almost nothing and still publish.
+        monkeypatch.setattr("shared.config.Path", _ConfigDirRedirect(tmp_path, keep=("config-template.yaml",)))
+        monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "omnisummary-dev-digest")
+        with pytest.raises(FileNotFoundError, match="deployed image"):
+            Config.load()
+
     def test_a_missing_config_falls_back_to_the_tracked_template(self, tmp_path, monkeypatch):
         monkeypatch.setattr("shared.config.Path", _ConfigDirRedirect(tmp_path, keep=("config-template.yaml",)))
         config = Config.load()

@@ -290,6 +290,9 @@ class DigestGenerator:
                 unmatched.append(item.url)
                 continue
             shipped.add(key)
+            # The collected URL, not the editor's echo of it (which came back with http, a decoded path
+            # or a tracking parameter); the prose budget was computed from this one too.
+            item.url = src.url
             item.source_tag, item.metrics = self._source_tag_and_metrics(src)
             kept.append(item)
             sources.append(src)

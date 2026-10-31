@@ -47,18 +47,12 @@ class TestParseRankings:
         result = self._parse(raw)
         assert len(result) == 1
 
-    def test_an_out_of_range_number_is_skipped(self):
+    def test_an_out_of_range_number_discards_the_whole_answer(self):
+        # A zero-based answer shifts every score onto the next item; the re-ask scores the batch again.
         raw = json.dumps(
-            {
-                "rankings": [
-                    {"item": 1, "score": 0.9},
-                    {"item": 99, "score": 0.8},
-                ]
-            }
+            {"rankings": [{"item": 0, "score": 0.9}, {"item": 1, "score": 0.5}, {"item": 2, "score": 0.1}]}
         )
-        result = self._parse(raw)
-        assert len(result) == 1
-        assert result[0].item.item_id == "item_1"
+        assert self._parse(raw) == []
 
     def test_malformed_entry_skipped(self):
         raw = json.dumps(
@@ -97,10 +91,12 @@ class TestParseRankings:
         assert result[0].reasoning == "first"
 
     def test_a_bool_or_fraction_is_not_an_item_number(self):
-        raw = json.dumps(
-            {"rankings": [{"item": True, "score": 0.9}, {"item": 2.7, "score": 0.8}, {"item": "3", "score": 0.7}]}
-        )
-        assert [r.item.item_id for r in self._parse(raw)] == ["item_3"]
+        for bad in (True, 2.7):
+            raw = json.dumps({"rankings": [{"item": bad, "score": 0.9}, {"item": "3", "score": 0.7}]})
+            assert self._parse(raw) == []
+        assert [r.item.item_id for r in self._parse(json.dumps({"rankings": [{"item": "3", "score": 0.7}]}))] == [
+            "item_3"
+        ]
 
     def test_invalid_json_returns_empty(self):
         result = self._parse("not valid json at all")

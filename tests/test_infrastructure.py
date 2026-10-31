@@ -20,7 +20,7 @@ CONFIG_TEMPLATE = Path(__file__).resolve().parent.parent / "config" / "config-te
 # alarm sits right on that edge (a 24h period), which is why application_stack carries a note about it.
 _CLOUDWATCH_MAX_ALARM_WINDOW_SEC = 86400
 # The share of a function's configured Timeout its Duration alarm fires at (application_stack's 0.9):
-# a timeout does not count as an Error, so this is the only signal for "ran out of time mid-post".
+# Errors also counts a timeout; this one catches a run that finished within 10% of its timeout.
 _TIMEOUT_ALARM_THRESHOLD_RATIO = 0.9
 
 
