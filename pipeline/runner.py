@@ -334,11 +334,10 @@ async def run_pipeline(
         # Persisted BEFORE the inline post: a store that fails after the post went up would leave the
         # day's posted digest stored nowhere, and a re-run would record a different one.
         persist_digest(ranked_items, digest, digest_date, base_dir=Path(LocalPaths.DIGEST_STATE_DIR.value))
-        from output.threads_handler import ThreadsDelivery
+        from entrypoints import bootstrap
+        from shared.models import ThreadsDelivery
 
-        from .daily_visual import DailyVisualMaker
-
-        maker = DailyVisualMaker(config, llm_factory)
+        maker = bootstrap.daily_visual_maker(config, llm_factory)
         try:
             posted = await maker.run(ranked_items, digest.content, today=digest_date, force_republish=force_republish)
         except Exception as e:

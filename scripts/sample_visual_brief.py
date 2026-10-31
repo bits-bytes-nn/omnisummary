@@ -20,11 +20,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import boto3
-
 from agent.tool_state import DigestStateManager
-from pipeline.daily_visual import DailyVisualMaker
-from shared import BedrockLanguageModelFactory, Config, create_memory_store, logger
+from entrypoints import bootstrap
+from shared import Config, create_memory_store, logger
 
 
 async def main() -> None:
@@ -41,9 +39,7 @@ async def main() -> None:
         raise SystemExit(f"No digest snapshot for {args.digest_date}")
     state = DigestStateManager.load_from_dict(data)
 
-    session = boto3.Session(region_name=config.aws.bedrock_region, profile_name=config.aws.profile or None)
-    factory = BedrockLanguageModelFactory(boto_session=session, region_name=config.aws.bedrock_region)
-    maker = DailyVisualMaker(config, factory)
+    maker = bootstrap.daily_visual_maker(config)
     if args.recent_comics:
         logged = json.loads(args.recent_comics.read_text(encoding="utf-8"))
         recent = [e for e in logged if e["date"] < args.digest_date.isoformat()][-config.pipeline.recent_leads_window :]

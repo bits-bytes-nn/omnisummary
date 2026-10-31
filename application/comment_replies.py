@@ -6,33 +6,20 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-import httpx
-
-from output.threads_handler import (
-    error_detail,
-    fetch_conversation,
-    fetch_own_posts,
-    is_transient_reply_error,
-    publish_may_be_live,
-    publish_reply,
-    threads_client,
-)
+from application.ports import LanguageModels, PublishError, ThreadsPublisher
 from shared import (
     KOREAN_PROSE_RULES,
-    BedrockLanguageModelFactory,
     CommentReply,
     CommentReplyLedger,
     Config,
     StateStore,
     logger,
-    resolve_secret,
 )
 from shared.formatting import URL_RE
 from shared.prompts import CommentReplyPrompt
 
 # Meta's moderation states a reader still sees; a HIDDEN, COVERED or BLOCKED comment is left alone.
 VISIBLE_HIDE_STATUSES = frozenset({"", "NOT_HUSHED", "UNHUSHED"})
-REQUEST_TIMEOUT_SEC = 30
 
 
 @dataclass
@@ -160,11 +147,12 @@ class CommentResponder:
     """Answers readers' comments on the account's recent posts: one model call per comment, which
     may decline it, then one reply under the comment."""
 
-    def __init__(self, config: Config, llm_factory: BedrockLanguageModelFactory, store: StateStore) -> None:
+    def __init__(self, config: Config, models: LanguageModels, store: StateStore, threads: ThreadsPublisher) -> None:
         self.config = config.pipeline
+        self.threads = threads
         # json_schema is Bedrock's constrained output, so every answer is a verdict. Sonnet 5.5 takes the
         # schema tool only under "auto", and then answered 4 of 5 English comments in plain prose.
-        self.llm = llm_factory.get_model(self.config.digest_model, stage="comment-reply").with_structured_output(
+        self.llm = models.get_model(self.config.digest_model, stage="comment-reply").with_structured_output(
             CommentReply, method="json_schema"
         )
         self.ledger = CommentReplyLedger(store, retention=timedelta(days=2 * self.config.comment_reply_lookback_days))
@@ -195,19 +183,15 @@ class CommentResponder:
         """Answer what is pending. `dry_run` drafts the replies and posts and records nothing.
         A comment whose draft fails is tried again next run; one whose publish may have failed transiently
         is tried again up to the ledger's MAX_ATTEMPTS; one Threads rejects for good is recorded as failed."""
-        token = resolve_secret("THREADS_ACCESS_TOKEN", "threads-access-token", strict=True)
-        user_id = resolve_secret("THREADS_USER_ID", "threads-user-id", strict=True)
-        if not token or not user_id:
-            raise RuntimeError("Threads access token / user id not configured; cannot answer comments")
         since = now - timedelta(days=self.config.comment_reply_lookback_days)
         handled = self.ledger.handled()
         run = CommentReplyRun()
-        async with threads_client(token, REQUEST_TIMEOUT_SEC) as client:
+        async with self.threads.comments() as threads:
             pending: list[PendingComment] = []
-            for post in await fetch_own_posts(client, since):
+            for post in await threads.fetch_own_posts(since):
                 pending += pending_comments(
                     post,
-                    await fetch_conversation(client, post["id"]),
+                    await threads.fetch_conversation(post["id"]),
                     handled=handled,
                     since=since,
                     max_per_commenter=self.config.comment_reply_max_per_commenter,
@@ -231,7 +215,7 @@ class CommentResponder:
                             self.ledger.record(comment_id, "declined", now)
                         continue
                     if not dry_run:
-                        reply_id = await publish_reply(client, user_id, token, text, comment_id)
+                        reply_id = await threads.publish_reply(text, comment_id)
                         try:
                             self.ledger.record(comment_id, "replied", now)
                         except Exception:
@@ -244,18 +228,14 @@ class CommentResponder:
                     run.replied.append(
                         {"comment_id": comment_id, "comment": item.comment.get("text", ""), "reply": text}
                     )
-                except httpx.HTTPStatusError as e:
-                    logger.warning(
-                        "Could not answer comment %s (%s): %s", comment_id, e.response.status_code, error_detail(e)
-                    )
+                except PublishError as e:
+                    logger.warning("Could not answer comment %s (%s): %s", comment_id, e.status, e.detail)
                     run.failed.append(comment_id)
                     # A verdict retrying cannot change (auth, a permanent rejection) is final, and so is a
-                    # 5xx from the publish step: that reply may be live, and the next run would post a second
-                    # one whenever the conversation lags. A 400 that may be transient is tried again.
+                    # failure of the publish step itself: that reply may be live, and the next run would post
+                    # a second one whenever the conversation lags. A 400 that may be transient is tried again.
                     if not dry_run:
-                        self._record_failure(
-                            comment_id, now, final=publish_may_be_live(e) or not is_transient_reply_error(e)
-                        )
+                        self._record_failure(comment_id, now, final=e.may_be_live or not e.transient)
                 except Exception as e:
                     logger.warning("Could not answer comment %s: %s", comment_id, e)
                     run.failed.append(comment_id)
@@ -263,10 +243,7 @@ class CommentResponder:
                     # parsing, both ValueErrors): uncounted, such a comment held a slot and raised the alarm
                     # for the whole lookback. A throttle, timeout or outage fails every comment alike, and
                     # counting it retired comments that were never answered.
-                    if not dry_run and publish_may_be_live(e):
-                        # Like a publish-step 5xx: the reply may be live, and answering again could post twice.
-                        self._record_failure(comment_id, now, final=True)
-                    elif isinstance(e, ValueError) and not dry_run:
+                    if isinstance(e, ValueError) and not dry_run:
                         self._record_failure(comment_id, now, final=False)
         logger.info(
             "Comment replies: %d replied, %d declined, %d failed", len(run.replied), len(run.declined), len(run.failed)

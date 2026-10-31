@@ -4,10 +4,9 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
-import boto3
-
-from pipeline.comment_replies import CommentResponder
-from shared import BedrockLanguageModelFactory, Config, create_state_store, logger, set_correlation_id
+from application.comment_replies import CommentResponder
+from entrypoints import bootstrap
+from shared import Config, create_state_store, logger, set_correlation_id
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -32,6 +31,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
 
 async def _run(config: Config):
-    session = boto3.Session(region_name=config.aws.bedrock_region)
-    factory = BedrockLanguageModelFactory(boto_session=session, region_name=config.aws.bedrock_region)
-    return await CommentResponder(config, factory, create_state_store(config)).run(datetime.now(UTC))
+    responder = CommentResponder(
+        config, bootstrap.language_models(config), create_state_store(config), bootstrap.threads(config)
+    )
+    return await responder.run(datetime.now(UTC))

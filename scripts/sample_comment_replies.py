@@ -14,17 +14,16 @@ from datetime import UTC, datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import boto3
-
-from pipeline.comment_replies import CommentResponder
-from shared import BedrockLanguageModelFactory, Config, create_state_store
+from application.comment_replies import CommentResponder
+from entrypoints import bootstrap
+from shared import Config, create_state_store
 
 
 async def main() -> None:
     config = Config.load()
-    session = boto3.Session(region_name=config.aws.bedrock_region, profile_name=config.aws.profile or None)
-    factory = BedrockLanguageModelFactory(boto_session=session, region_name=config.aws.bedrock_region)
-    responder = CommentResponder(config, factory, create_state_store(config))
+    responder = CommentResponder(
+        config, bootstrap.language_models(config), create_state_store(config), bootstrap.threads(config)
+    )
     run = await responder.run(datetime.now(UTC), dry_run=True)
     print(json.dumps(asdict(run), ensure_ascii=False, indent=2))
 

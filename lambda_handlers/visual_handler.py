@@ -8,19 +8,16 @@ from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import boto3
-
 from agent.tool_state import DigestStateManager
-from output.threads_handler import ThreadsDelivery
-from pipeline.daily_visual import DailyVisualMaker
+from entrypoints import bootstrap
 from shared import (
-    BedrockLanguageModelFactory,
     Config,
     create_memory_store,
     logger,
     publish_alert,
     set_correlation_id,
 )
+from shared.models import ThreadsDelivery
 
 
 def _remaining_deadline(context: Any) -> float | None:
@@ -205,10 +202,7 @@ async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = 
     ranked_items = state.get_ranked_items()
     content = state.get_content()
 
-    session = boto3.Session(region_name=config.aws.bedrock_region)
-    factory = BedrockLanguageModelFactory(boto_session=session, region_name=config.aws.bedrock_region)
-
-    maker = DailyVisualMaker(config, factory)
+    maker = bootstrap.daily_visual_maker(config)
     posted = await maker.run(
         ranked_items, content, today=digest_date, force_republish=_requested_force(event or {}), deadline=deadline
     )

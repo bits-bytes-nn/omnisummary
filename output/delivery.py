@@ -124,7 +124,7 @@ def request_context(delivery: DeliveryContext):
 async def _deliver_threads(report: str, delivery: DeliveryContext) -> bool:
     """Post a research report to Threads: a root + flat reply chain (each <=500 chars). At most one
     staged image rides the root (Threads media indexing is slow)."""
-    from output.threads_handler import post_to_threads
+    from adapters.threads import post_to_threads
 
     max_posts = get_config().agent.research_max_threads_posts
     root_text, replies, dropped, trimmed = render_threads_research(report, max_posts=max_posts)

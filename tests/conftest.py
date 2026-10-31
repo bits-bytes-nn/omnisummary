@@ -98,6 +98,6 @@ def hermetic_env(monkeypatch):
     monkeypatch.setattr("agent.research_tools._fact_check_factory", _aws_disabled)
     # The reply read-back GETs graph.threads.net on whatever client the test handed in: a real one
     # would go to the network. Tests of the read-back itself call `real_landed_detached`.
-    from output import threads_handler
+    from adapters import threads
 
-    monkeypatch.setattr(threads_handler, "_landed_detached", _never_detached)
+    monkeypatch.setattr(threads, "_landed_detached", _never_detached)

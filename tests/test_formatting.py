@@ -169,7 +169,8 @@ class TestPublicPackageBoundaries:
         assert "from output" not in source and "import output" not in source
 
     def test_the_threads_post_cap_has_one_definition(self):
-        from output import renderers, threads_handler
+        from adapters import threads as threads_handler
+        from output import renderers
         from pipeline import digest_generator
         from shared.constants import THREADS_MAX_POST_CHARS
 

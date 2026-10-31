@@ -5,9 +5,9 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from output import threads_handler
-from output.threads_handler import _landed_detached as real_landed_detached  # before conftest stubs it
-from output.threads_handler import is_media_not_found, post_to_threads
+from adapters import threads as threads_handler
+from adapters.threads import _landed_detached as real_landed_detached  # before conftest stubs it
+from adapters.threads import is_media_not_found, post_to_threads
 
 
 def _ctx(obj):
@@ -817,7 +817,47 @@ async def test_e2e_a_retried_reply_that_lands_standalone_is_counted_and_named(mo
 
     monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
     sns = MagicMock()
-    with patch("lambda_handlers.visual_handler.boto3.client", return_value=sns):
+    with patch("shared.alerts.boto3.client", return_value=sns):
         visual_handler._maybe_alert_threads_outcome(outcome, date(2026, 10, 27))
     message = sns.publish.call_args.kwargs["Message"]
     assert "m0" in message and "m2" in message and "2/3 posts" in message
+
+
+class TestThreadsGateway:
+    """The adapter the application posts through: it names where the image is hosted."""
+
+    @staticmethod
+    async def _post(config, **kwargs):
+        from shared.models import ThreadsDelivery
+
+        post = AsyncMock(return_value=ThreadsDelivery(2, 2))
+        with patch.object(threads_handler, "post_to_threads", new=post):
+            await threads_handler.ThreadsGateway(config).post_thread("root", ["reply"], **kwargs)
+        return post.await_args.kwargs
+
+    async def test_the_image_is_hosted_under_the_configured_prefix(self):
+        from shared.config import Config
+
+        config = Config()
+        config.aws.state_bucket_name = "bucket"
+        config.aws.s3_prefix = "omni"
+        sent = await self._post(config, image_bytes=b"PNG", image_alt="1컷")
+        assert sent["image_bucket"] == "bucket"
+        assert sent["image_key"].startswith("omni/threads/") and sent["image_key"].endswith(".png")
+        assert sent["image_alt"] == "1컷"
+
+    async def test_a_research_image_keeps_its_own_name_and_type(self):
+        from shared.config import Config
+
+        config = Config()
+        config.aws.state_bucket_name = "bucket"
+        sent = await self._post(
+            config, image_bytes=b"JPG", image_content_type="image/jpeg", image_key_prefix="research_"
+        )
+        assert sent["image_key"].startswith("threads/research_") and sent["image_key"].endswith(".jpg")
+
+    async def test_no_bucket_posts_text_only(self):
+        from shared.config import Config
+
+        sent = await self._post(Config(), image_bytes=b"PNG")
+        assert (sent["image_bucket"], sent["image_key"]) == ("", "")

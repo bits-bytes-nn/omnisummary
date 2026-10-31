@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import hashlib
-import os
 from datetime import date, datetime
-from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
+from application.ports import ThreadsPublisher
+from output.renderers import render_threads_posts
 from shared import (
     DigestContent,
     get_correlation_id,
@@ -13,25 +12,23 @@ from shared import (
 )
 from shared.config import Config
 from shared.history_store import ThreadsPostLedger
+from shared.models import ThreadsDelivery
 from shared.state_store import StateStore
-
-if TYPE_CHECKING:
-    from output.threads_handler import ThreadsDelivery
 
 
 class DigestPublisher:
-    """The digest's publish path: the Threads root + reply chain, that chain's idempotency ledger
-    and the S3 hosting of its image.
+    """The digest's publish path: the Threads root + reply chain and that chain's idempotency ledger.
 
-    It lives here, beside the channel handler, rather than inside DailyVisualMaker: the image is an
+    It stands apart from DailyVisualMaker: the image is an
     OPTIONAL argument, so a failed render is just a text-only publish and cannot short-circuit the
     day's digest by construction — and the publish path is exercisable without an OpenAI key.
 
     Best-effort in both directions: no failure escapes into the pipeline, and every outcome is left
     on `threads_outcome` so the caller can alert on a partial or missing delivery."""
 
-    def __init__(self, config: Config, store: StateStore | None) -> None:
+    def __init__(self, config: Config, store: StateStore | None, threads: ThreadsPublisher) -> None:
         self.config = config
+        self.threads = threads
         # Last Threads publish outcome (posted/expected posts), for the caller's metrics/alerts.
         self.threads_outcome: ThreadsDelivery | None = None
         # `store` is REQUIRED, and None means "the caller tried and it failed" — not "not supplied".
@@ -61,8 +58,6 @@ class DigestPublisher:
                 post_date,
             )
             if self.config.pipeline.enable_threads_post:
-                from output.threads_handler import ThreadsDelivery
-
                 self.threads_outcome = ThreadsDelivery(0, 1)
             return False
         return True
@@ -109,10 +104,6 @@ class DigestPublisher:
     ) -> bool:
         if not self.config.pipeline.enable_threads_post:
             return False
-        from output.renderers import render_threads_posts
-        from output.threads_handler import ThreadsDelivery as Delivery
-        from output.threads_handler import post_to_threads
-
         # Idempotency: a same-day re-run (manual `main.py`) or an automatic async retry of the
         # visual Lambda after a timeout would otherwise post the whole root+replies set again.
         # Skip if today's digest already went to Threads, unless explicitly forced.
@@ -135,13 +126,9 @@ class DigestPublisher:
             # shape (the channel was enabled, the day was unpublished, and nothing went out), and
             # with threads_outcome left at None the caller's alert was a no-op. expected=1 keeps
             # posted >= expected false, so the "nothing to report" early-return can't swallow it.
-            self.threads_outcome = Delivery(0, 1)
+            self.threads_outcome = ThreadsDelivery(0, 1)
             return False
         root_text, replies = render_threads_posts(content)
-
-        bucket = self.config.aws.state_bucket_name or os.environ.get("STATE_BUCKET", "")
-        prefix = self.config.aws.s3_prefix.rstrip("/") + "/" if self.config.aws.s3_prefix else ""
-        image_key = f"{prefix}threads/{hashlib.sha256(image_bytes).hexdigest()[:16]}.png" if image_bytes else ""
 
         # Claim the date BEFORE the multi-minute post so concurrent invocations (e.g. a client
         # that retried a timed-out invoke) see it already taken and skip, instead of all passing
@@ -163,12 +150,10 @@ class DigestPublisher:
                 logger.error("Failed to record the Threads post marker; a replay is not protected", exc_info=True)
 
         try:
-            outcome = await post_to_threads(
+            outcome = await self.threads.post_thread(
                 root_text=root_text,
                 replies=replies,
                 image_bytes=image_bytes,
-                image_bucket=bucket,
-                image_key=image_key,
                 image_alt=image_alt,
                 topic_tag=self.config.pipeline.threads_topic_tag,
                 deadline=deadline,
@@ -178,7 +163,7 @@ class DigestPublisher:
             # retryable, log, and don't let a Threads failure escape into the caller. The verdict
             # is still recorded (nothing landed of the posts we intended) so the caller can alert.
             logger.warning("Threads post failed", exc_info=True)
-            self.threads_outcome = Delivery(0, 1 + len([r for r in replies if r.strip()]))
+            self.threads_outcome = ThreadsDelivery(0, 1 + len([r for r in replies if r.strip()]))
             if not was_marked:
                 self._release_threads_marker(post_date, run_id)
             return False
