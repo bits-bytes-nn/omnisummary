@@ -166,7 +166,6 @@ class TestThePublishPathStandsOnItsOwn:
         await publisher.publish(self._content(), image_bytes=b"PNG", image_alt="1컷", today=date(2026, 6, 10))
         assert th.await_args.kwargs["image_bytes"] == b"PNG"
         assert th.await_args.kwargs["image_alt"] == "1컷"
-        assert th.await_args.kwargs["topic_tag"] == publisher.config.pipeline.threads_topic_tag
 
     def test_an_already_published_day_has_no_destination_left(self):
         publisher = self._publisher(enable_threads_post=True)
@@ -974,3 +973,57 @@ class TestCharacterReference:
     def test_the_shipped_reference_sheet_loads(self):
         maker = _maker()
         assert maker._load_character_reference(maker.config)
+
+
+class TestALiveDayStaysProtected:
+    """2026-10-31 review: the claim before the post read the ledger, a throttled read skipped the write,
+    and the day posted 6/6 with no marker: the next trigger for the date posted it again."""
+
+    @staticmethod
+    def _publisher():
+        from application.digest_publisher import DigestPublisher
+
+        config = Config()
+        config.pipeline.enable_threads_post = True
+        return DigestPublisher(config, MemoryStateStore(), FakeThreads())
+
+    @pytest.mark.asyncio
+    async def test_a_claim_that_did_not_stick_is_written_after_the_post(self):
+        publisher = self._publisher()
+        real_mark = publisher.threads_ledger.mark
+        calls: list[int] = []
+
+        def mark(*args):
+            calls.append(1)
+            if len(calls) > 1:  # the claim before the post is lost; the one after it lands
+                real_mark(*args)
+
+        publisher.threads_ledger.mark = mark
+        await publisher.publish(_content(), today=date(2026, 10, 31))
+        assert publisher.threads_ledger.already_posted(date(2026, 10, 31))
+        assert publisher.unprotected is False
+
+    @pytest.mark.asyncio
+    async def test_a_date_that_cannot_be_recorded_is_reported(self):
+        publisher = self._publisher()
+        publisher.threads_ledger.mark = MagicMock(return_value=None)
+        await publisher.publish(_content(), today=date(2026, 10, 31))
+        assert publisher.unprotected is True
+
+    @pytest.mark.asyncio
+    async def test_a_day_that_posted_nothing_is_not_reported_as_unprotected(self):
+        publisher = self._publisher()
+        publisher.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(0, 2))
+        publisher.threads_ledger.mark = MagicMock(return_value=None)
+        await publisher.publish(_content(), today=date(2026, 10, 31))
+        assert publisher.unprotected is False
+
+    @pytest.mark.asyncio
+    async def test_a_story_less_digest_posts_nothing_even_past_the_destination_check(self):
+        # The 2026-08-13/08-17 guard inside publish() itself, not only has_a_destination.
+        from domain.models import DigestContent
+
+        publisher = self._publisher()
+        assert await publisher.publish(DigestContent(lead="리드.", items=[]), today=date(2026, 10, 31)) is False
+        publisher.threads.post_thread.assert_not_awaited()
+        assert publisher.threads_outcome == ThreadsDelivery(0, 1)

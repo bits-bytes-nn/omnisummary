@@ -49,6 +49,10 @@ def _fit_one_post(
             blocks.append(impl)
         return THREADS_POST_SEPARATOR.join(blocks + tail)
 
+    # The body as the editor wrote it whenever it fits: re-joining its sentences respaces quotes and
+    # parentheses and drops its paragraph breaks.
+    if len(whole := assemble(body.strip())) <= max_len:
+        return whole
     body_sents = split_sentences(body)
     # Drop body sentences from the end while keeping the implication block.
     while body_sents:

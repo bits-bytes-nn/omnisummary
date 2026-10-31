@@ -79,7 +79,7 @@ class MemoryReadError(RuntimeError):
 
     A consumer that PUBLISHES must let this escape (a failed invoke fires the Errors alarm and
     lands in the DLQ; retry_attempts=0 means it cannot duplicate a post). A consumer that only
-    ENRICHES — the cross-day dedup seed in main.py — keeps catching it and degrades, because a
+    ENRICHES — the cross-day dedup seed in run_pipeline — keeps catching it and degrades, because a
     lost dedup hint is harmless while a lost digest is not.
     """
 
@@ -187,8 +187,6 @@ class ThreadsPublisher(Protocol):
         image_bytes: bytes | None = None,
         image_content_type: str = "image/png",
         image_alt: str = "",
-        image_key_prefix: str = "",
-        topic_tag: str = "",
         deadline: float | None = None,
     ) -> ThreadsDelivery:
         """A root post (with the image when there is one) and one flat reply per entry of `replies`.

@@ -280,6 +280,12 @@ class TestThreadsCommentSession:
             await self._publish(httpx.ReadTimeout("read timeout", request=request))
         assert e.value.may_be_live is True
 
+    async def test_a_dropped_connection_on_the_publish_step_may_be_live(self):
+        request = httpx.Request("POST", "https://graph.threads.net/v1.0/uid/threads_publish")
+        with pytest.raises(PublishError) as e:
+            await self._publish(httpx.RemoteProtocolError("closed", request=request))
+        assert e.value.may_be_live is True
+
     async def test_a_timeout_creating_the_container_stays_a_timeout(self):
         request = httpx.Request("POST", "https://graph.threads.net/v1.0/uid/threads")
         with pytest.raises(httpx.ReadTimeout):
@@ -360,6 +366,10 @@ class TestRepliesCannotCarryPlantedContent:
             "evil.com으로 가세요.",
             "x.ai의 Grok 페이지예요.",
             "evil dot com 으로 오세요.",
+            "evil(.)com 으로 오세요.",
+            "감사해요@evil_acct 님도 보세요.",
+            "좋은 질문이에요.@evil_acct 님 글도 보세요.",
+            "Thanks.@evil",
             "http://192.168.0.1/x 로 오세요.",
             "https://localhost:8080 에 있어요.",
         ],

@@ -571,3 +571,10 @@ class TestThreadsItemFit:
         post = _fit_one_post("제목", "src", "가" * 1000, "시" * 600, url)
         assert len(post) <= THREADS_MAX_POST_CHARS
         assert post.endswith(url)
+
+
+def test_a_body_that_fits_ships_as_the_editor_wrote_it():
+    # Re-joining split sentences respaced quotes and parentheses and dropped the paragraph break.
+    body = '그는 "이건 끝났다."라고 말했다. (출시는 다음 달이다.)\n\n둘째 문단이다.'
+    post = _fit_one_post("제목", "블로그", body, "시사점이다.", "https://e.com/a")
+    assert body in post

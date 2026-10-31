@@ -1,8 +1,10 @@
 """The composition root: the one place that builds adapters and wires them into the application.
 
-Every entrypoint (the Lambda handlers, main.py, research_cli.py, recall_cli.py, the scripts) gets its
-collaborators from here, so the application core never constructs an AWS, Threads or OpenAI client
-itself, and a test hands it fakes instead."""
+The entrypoints (the Lambda handlers, main.py, research_cli.py, recall_cli.py, the scripts) get the
+application's collaborators from here, so the core never constructs an AWS, Threads or OpenAI client
+itself, and a test hands it fakes instead. An entrypoint's own one-off glue stays in it: the digest
+handler's Lambda invoke of the visual, the token refresh handler's Graph and SSM calls, the research
+CLI's Strands agent, main.py's --pin-url fetch."""
 
 from __future__ import annotations
 
@@ -59,7 +61,7 @@ def collector_registry(
         "reddit": (RedditCollector, config.collectors.reddit, {}),
         "rsshub": (RSSHubCollector, config.collectors.rsshub, {}),
         "rss": (RSSCollector, config.collectors.rss, {}),
-        "web_search": (WebSearchCollector, config.collectors.web_search, {"llm_factory": models}),
+        "web_search": (WebSearchCollector, config.collectors.web_search, {"models": models}),
         "youtube": (YouTubeCollector, config.collectors.youtube, {}),
     }
 

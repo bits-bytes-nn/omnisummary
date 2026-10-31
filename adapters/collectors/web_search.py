@@ -38,11 +38,11 @@ _RETRIABLE_SEARCH_ERRORS: tuple[type[BaseException], ...] = (
 class WebSearchCollector(BaseCollector):
     config: WebSearchCollectorConfig
 
-    def __init__(self, config: WebSearchCollectorConfig, llm_factory: LanguageModels | None = None):
+    def __init__(self, config: WebSearchCollectorConfig, models: LanguageModels | None = None):
         self.config = config
         self._api_key = ""
         self._client_instance: AsyncTavilyClient | None = None
-        self._llm = llm_factory.get_model(config.refine_model, stage="query-refine") if llm_factory else None
+        self._llm = models.get_model(config.refine_model, stage="query-refine") if models else None
 
     @property
     def _client(self) -> AsyncTavilyClient:

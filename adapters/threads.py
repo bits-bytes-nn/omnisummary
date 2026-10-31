@@ -108,16 +108,17 @@ async def _publish_post(
 
 def publish_may_be_live(exc: Exception) -> bool:
     """True when a failure came back from the PUBLISH step in a way that can answer a post that went
-    live: a 5xx or a timeout. Retrying it creates a new container, so the same text could post twice."""
+    live: a 5xx, or a transport failure after the request may have been sent (a timeout, a dropped
+    connection). Retrying it creates a new container, so the same text could post twice."""
     try:
-        request = exc.request if isinstance(exc, httpx.HTTPStatusError | httpx.TimeoutException) else None
+        request = exc.request if isinstance(exc, httpx.HTTPStatusError | httpx.RequestError) else None
     except RuntimeError:
         return False
     if request is None or not request.url.path.endswith("/threads_publish"):
         return False
-    return isinstance(exc, httpx.TimeoutException) or (
-        isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500
-    )
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return not isinstance(exc, httpx.ConnectError)
 
 
 def is_media_not_found(exc: httpx.HTTPStatusError) -> bool:
@@ -483,10 +484,10 @@ class _CommentSession:
                 may_be_live=publish_may_be_live(e),
                 transient=is_transient_reply_error(e),
             ) from e
-        except httpx.TimeoutException as e:
+        except httpx.RequestError as e:
             if not publish_may_be_live(e):
                 raise
-            raise PublishError(0, f"publish timed out ({type(e).__name__})", may_be_live=True, transient=False) from e
+            raise PublishError(0, f"publish failed ({type(e).__name__})", may_be_live=True, transient=False) from e
 
 
 class ThreadsGateway:
@@ -506,8 +507,6 @@ class ThreadsGateway:
         image_bytes: bytes | None = None,
         image_content_type: str = "image/png",
         image_alt: str = "",
-        image_key_prefix: str = "",
-        topic_tag: str = "",
         deadline: float | None = None,
     ) -> ThreadsDelivery:
         bucket = key = ""
@@ -516,7 +515,7 @@ class ThreadsGateway:
             if bucket:
                 prefix = self.config.aws.s3_prefix.rstrip("/") + "/" if self.config.aws.s3_prefix else ""
                 digest = hashlib.sha256(image_bytes).hexdigest()[:16]
-                key = f"{prefix}threads/{image_key_prefix}{digest}.{extension_for(image_content_type)}"
+                key = f"{prefix}threads/{digest}.{extension_for(image_content_type)}"
             else:
                 logger.warning("No state bucket configured; the Threads image is skipped (text-only post)")
         return await post_to_threads(
@@ -527,7 +526,7 @@ class ThreadsGateway:
             image_key=key,
             image_content_type=image_content_type,
             image_alt=image_alt,
-            topic_tag=topic_tag,
+            topic_tag=self.config.pipeline.threads_topic_tag,
             deadline=deadline,
         )
 

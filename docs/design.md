@@ -104,7 +104,7 @@ import하지 않는다. `domain`과 `shared`는 LangChain도 모른다. `applica
 **테스트는 가짜 구현을 넘긴다.** 유스케이스가 어댑터를 생성자나 인자로 받으니, 테스트는 실제 클라이언트를 patch하지
 않고 `tests/fakes.py`의 `FakeThreads`, `FakeRenderer`, `FakeSources`, `MemoryStateStore`를 넘긴다. 리서치 실행은
 `DeliveryContext.ports`(`ResearchPorts`)가 비어 있으면 아무 데도 닿지 않는다. conftest는 그래도 남는 경로를 막는다
-(`boto3.Session`, `boto3.client`, SSM 클라이언트, Threads 회신 확인, 누출되는 환경 변수).
+(`boto3.Session`, `boto3.client`, SSM 클라이언트, Threads 회신 확인, 누출되는 환경 변수, 그리고 모든 소켓 연결과 이름 해석).
 
 **바뀌는 곳은 bootstrap 한 곳이다.** 저장소나 게시처, 모델 공급자를 바꾸면 `entrypoints/bootstrap.py`와 새 어댑터만
 고친다. 유스케이스는 포트만 안다. 로컬 실행과 Lambda의 차이(인라인 게시와 visual Lambda 호출)도 진입점이 가른다.
@@ -132,8 +132,7 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 필드를 지우는 변경은 운영자의 `config.yaml`도 함께 고쳐야 한다.
 
 `Config.load()`는 호출마다 YAML을 다시 읽고 전체를 재검증한다. 리서치 한 번이면 도구 호출마다 그 작업이
-반복되므로, 값을 읽기만 하는 리프 호출자는 `lru_cache(maxsize=1)`로 감싼 `get_config()`를 쓴다
-(`application/research.py`, `adapters/research_backends.py`, `adapters/og_image.py`). 반면 Config를 변경하는 쪽은 자기 인스턴스가 필요하니 계속
+반복되므로, 값을 읽기만 하는 리프 호출자는 `lru_cache(maxsize=1)`로 감싼 `get_config()`를 쓴다. 반면 Config를 변경하는 쪽은 자기 인스턴스가 필요하니 계속
 `Config.load()`나 `from_yaml`을 쓴다. `main`과 핸들러의 `set_reference_time`, 인프라
 테스트의 버킷 오버라이드가 여기 해당한다. 테스트에서는 conftest의 autouse 픽스처가 매 테스트 전후로 캐시를
 비운다.
@@ -295,7 +294,7 @@ park 경로가 이 한 정의를 쓰므로, `--date`로 과거 날짜를 다시 
 소스를 묶지 못한다. RSSHub 계정 피드 41개를 `max_concurrency` 5로, 각각 `(request_timeout +
 retry_backoff_sec) * max_retries = 105초`까지 허용하면 직렬 라운드로 약 16분이 필요하고, 이는 다이제스트
 Lambda의 15분 예산 전체보다 길다. 소스 하나가 막히면 실행 전체가 죽는다는 뜻이다. 이 예산의 타임아웃은
-raise되어 러너의 예외 분기로 들어가고, 그 소스는 **부분 결과 없이** FAILED로 보고된다. 0이면 비활성이고,
+raise되어 `run_collectors_with_health`의 예외 분기로 들어가고, 그 소스는 **부분 결과 없이** FAILED로 보고된다. 0이면 비활성이고,
 그때의 유일한 상한은 다시 Lambda 예산이다.
 
 ### 4.2 S3 park 파일 로더
@@ -614,7 +613,8 @@ URL로 먼저, 그다음 정규화된 제목으로 중복을 제거한다. 제�
 Reddit이나 블로그 제목의 "..."는 작성자가 쓴 것이라 비교 대상이 아니다.
 
 **URL 정규화.** 모듈 레벨 `normalize_url`이 scheme과 host case, trailing slash, 추적 파라미터(`utm_*`,
-`fbclid`, `ref` 등), fragment를 접어서 같은 기사가 https 기준으로 일치하게 만든다. cross-day
+`fbclid`, `ref` 등), fragment를 접고 경로의 비ASCII 퍼센트 인코딩(한글 슬러그)을 풀어서 같은 기사가 https 기준으로 일치하게 만든다.
+`%2F`, `%3F`, `%23` 같은 예약 문자는 풀지 않는다. 풀면 다른 경로가 합쳐지고 두 번 정규화한 결과가 달라진다. cross-day
 원장도 같은 정규형을 공유한다. 공유 링크 호스트도 접는다.
 
 - `twitter.com`과 `mobile.twitter.com`은 `x.com`, `old.reddit.com`은 `reddit.com`, `m.youtube.com`은 `youtube.com`이 된다.
@@ -688,7 +688,7 @@ web-search 항목도 포함한다. URL 호스트를 쓰며 `resolve_origin_key`�
 GUID(RSS와 X는 기사 URL, 그 밖은 글이나 영상 id)라서 그대로 정렬하면 GeekNews 33건이 한 배치에, X 전부가
 다른 배치에 몰렸다.
 
-**최근 다이제스트 제목을 랭커도 본다.** `rank(..., recent_titles=...)`는 러너가 에디터에게 주는 것과 같은
+**최근 다이제스트 제목을 랭커도 본다.** `rank(..., recent_titles=...)`는 `run_pipeline`이 에디터에게 주는 것과 같은
 `_recent_story_titles(snapshots)`(원장과 같은 창, 1일 전부터 `published_url_ttl_days`-1일 전까지의 출고 스토리 제목)를 받아 RankingPrompt의
 *Already in recent digests* 블록에 넣는다(`format_recent_titles`). Novelty 기준은 목록에 있는 스토리를 실질적
 새 진전이 없으면 재탕으로 본다. URL 원장은 정확한 URL만 맞추므로, 다른 매체나 주간 정리로 돌아온 같은 사건은
@@ -1055,6 +1055,11 @@ AgentCore Memory에 저장된 그날의 스냅샷을 날짜로 읽어(비주얼 
 꺼져 있거나, 원장에 오늘이 이미 있거나(force가 아닐 때), 스토리가 0건이면 에디터 호출과 렌더 비용을 쓰지 않는다.
 스토리 없는 날은 `threads_outcome = ThreadsDelivery(0, 1)`을 남겨 그날의 전달 알림이 no-op이 되지 않게 한다.
 
+**올라간 날은 반드시 기록한다.** 게시 전의 날짜 선점이 원장 읽기 실패(S3 스로틀)로 기록되지 않으면, 게시가
+성공해도 그날을 막을 것이 없어 다음 트리거가 같은 글을 한 번 더 올린다. 그래서 무언가 올라갔거나 올라갔을 수 있는
+날(`posted > 0` 또는 `uncertain`)은 게시 뒤에 다시 기록하고, 그래도 원장에서 확인되지 않으면(읽기 실패 포함) `unprotected`로 표시해 visual
+Lambda가 "다시 올리지 말라"는 Threads Delivery 알림을 보낸다.
+
 **텍스트만 나간 날도 알린다.** `outcome.published and not outcome.with_image`면 `adapters/alerts.publish_alert`
 경로로 ALERT를 보낸다. 렌더 실패와 키 부재는 그 밖에는 maker 안의 로그 한 줄만 남긴다.
 
@@ -1124,8 +1129,8 @@ addressable해지지 않았다"는 **0번**인 반면 reply 재시도는 25일�
 `(posted, expected)` NamedTuple이며, `published`(root와 reply chain이면 최소 1건)와 `partial`(게시됐지만 일부
 누락)을 구분한다. bool이면 5개 중 4개만 붙은 실행도 그냥 성공이어서 truncated chain을 아무도 알 수 없다.
 
-⚠️ 호출자는 값 자체의 truthiness로 분기하면 안 된다. NamedTuple은 `(0, 5)`도 truthy다. `daily_visual`과
-`delivery` 모두 `.published`를 명시적으로 읽는다. 아무것도 올라가지 않았을 때만 ledger 마커를 롤백해 그날을 재시도
+⚠️ 호출자는 값 자체의 truthiness로 분기하면 안 된다. NamedTuple은 `(0, 5)`도 truthy다. `digest_publisher`와
+`research` 모두 `.published`를 명시적으로 읽는다. 아무것도 올라가지 않았을 때만 ledger 마커를 롤백해 그날을 재시도
 가능하게 둔다. root만 올라가고 답글이 모두 실패했으면 그 root가 계정에 남아 있으니 마커를 유지한다. 풀면 재실행이
 두 번째 root를 올린다. 둘 다 실패로 보고된다.
 
@@ -1451,7 +1456,9 @@ TTL의 원장이다.
 
 **로드 견고성.** 전체 `TrendMemory.model_validate_json`이 실패하면(스키마 드리프트나 제거된 enum 값 등) 모든
 history를 버리지 않고 트렌드별로 관대하게 복구한다(`_recover_trends`가 개별 검증해 살아남는 것만 유지한다).
-레코드 하나가 나빠도 누적 history가 통째로 날아가지 않아야 한다.
+레코드 하나가 나빠도 누적 history가 통째로 날아가지 않아야 한다. 복구가 무언가를 버렸으면(깨진 JSON 포함) 원본을
+`trends.unrecovered-<시각>.json`에 먼저 남기고 평소처럼 저장한다. 쓰지 않고 버티면 레코드 하나 때문에 트렌드가 영원히
+멈추고, 그냥 쓰면 버린 트렌드가 사라진다. 사본조차 못 남기면 그날은 쓰지 않는다.
 
 **진실의 원천.** `trends.json`(`TrendMemory`)이 원천이고 렌더된 텍스트는 뷰다.
 
@@ -1531,7 +1538,7 @@ leads는 `date`로 dedup해서 `--force-republish` 재실행이 같은 날 lead�
 않게 한다.
 
 **`ThreadsPostLedger` (`threads_posted.json`).** 데일리 Threads 게시의 멱등 마커다. `{date: owner_run_id}`
-맵으로 저장한다(예전 bare-list 형식은 더 읽지 않는다). 호출자(비주얼 Lambda)가 여러 분에 걸친 게시 전에 날짜를 마크하고
+맵으로 저장하고, 가장 최근에 마크한 30개만 남긴다(날짜순이 아니라 마크한 순서라서 `--date`로 되살린 옛날짜도 바로 밀려나지 않는다. 예전 bare-list 형식은 더 읽지 않는다). 호출자(비주얼 Lambda)가 여러 분에 걸친 게시 전에 날짜를 마크하고
 실패하면 롤백하는데, `unmark`은 소유권 스코프다. 자기 `run_id`(correlation id)일 때만 해제한다. 그러지 않으면
 동시 invocation의 실패 롤백이 성공한 게시의 마커를 지우고 다음 실행이 중복 게시한다. read-modify-write 자체는
 원자적이 아니지만(락이 없다), 남의 성공을 내 실패가 지우는 경로는 이 스코프가 막는다.
@@ -1572,8 +1579,7 @@ STALE과 DEGRADED는 실패가 아니니 `failed_sources`에 들어가지 않는
 - 예외가 나면 **FAILED**이고 잘린 detail을 담는다.
 - park 파일이 `degraded`(stale은 나이 예산 초과, error는 읽기 불가)면 **STALE**이고 항목 수와 park detail을
   담는다. 항목은 나왔지만 그 sync가 멈춰 있다는 뜻이라 OK도 FAILED도 아닌 별도 상태다.
-  `_build_collector_tasks`가 코루틴과 함께 수집기 인스턴스를 반환하고, 이 함수가 각 인스턴스의
-  `park_status`를 읽어 판정한다.
+  `run_collectors_with_health`가 넘겨받은 수집기 인스턴스의 `park_status`를 읽어 판정한다.
 - 수집기가 `degraded_detail`을 남겼으면 **DEGRADED**이고 항목 수와 detail을 담는다. 항목은 제때 나왔지만 그
   소스의 입력 중 일부만 응답한 경우로, RSSHub 계정 피드가 대부분 실패한 상황이 그렇다. 이 상태가 없으면 40개
   계정이 3개로 줄어든 날도 OK로 읽힌다. STALE 판정이 더 조치 가능하니 park가 degraded면 STALE이 우선한다. 이
@@ -1645,6 +1651,10 @@ body를 반환하면 Lambda 입장에서는 정상 종료라서 Errors 알람도
 `requestPayload` 아래 값도 인정한다) 해당 날짜의 스냅샷만 로드한다. 스냅샷이 없을 때 날짜가 명시된 invoke면
 raise한다. 방금 persist한 실행이 부른 것이니 그날 무출력이라는 뜻이다. 오늘로 폴백한 invoke, 곧 로컬이나
 수동 실행은 조용히 종료한다.
+
+**다이제스트 날짜는 이벤트가 정한다.** 스케줄 이벤트의 `time`(또는 명시한 `digest_date`)을 다이제스트 시간대의
+날짜로 읽고, DLQ 봉투면 `requestPayload` 안을 읽는다. 오늘로 계산하면 자정 넘어 다시 넣은 실패 메시지가 다음 날
+다이제스트를 반쪽 수집 윈도로 만들어 게시하고, 실패한 날은 끝내 다시 만들지 않았다.
 
 **`_trigger_visual`은 best-effort가 아니다.** AWS(`is_running_in_aws()`)에서 `VISUAL_FUNCTION_NAME`이 비었거나
 invoke가 실패하면 raise한다. 스냅샷은 이미 persist된 시점이라 잃는 것이 없고, 이것이 Errors 알람과 DLQ 재생을
@@ -1862,9 +1872,9 @@ AgentCore Browser도 쓰지 않는다. 다이제스트에 실린 실제 URL 10�
 
 **`DeliveryContext`(dataclass)** — 실행별 상태다. `publish_threads`, `staged_images`, `delivered_channels`,
 `partial_channels`(root만 게시되고 reply가 모두 실패한 채널. 재전송하면 공개 계정에 중복이 생긴다), `seen_urls`, `source_texts`,
-`threads_lock`(Threads 전달을 사실 확인까지 한 번에 하나로 묶는다), `refused_report`·`refused_for_facts`(돌려보낸
-텍스트), `threads_attempted`,
-`report`(제출된 최신 Markdown), `threads_stats`(Threads 전달이 실제로 낸 렌더·게시·드롭·트림 수)가 있다. `request_context`는 contextvar로 바인딩해
+`threads_lock`(Threads 전달을 사실 확인까지 한 번에 하나로 묶는다), `refused_for_facts`·`fact_issues`(사실 확인으로 돌려보낸
+텍스트와 그 지적), `last_refusal`(마지막으로 돌려보낸 이유), `threads_attempted`,
+`report`(제출된 최신 Markdown), `threads_stats`(Threads 전달이 실제로 낸 렌더·게시·드롭·트림 수), 실행이 바깥에 닿는 유일한 통로인 `ports`(`ResearchPorts`)가 있다. `request_context`는 contextvar로 바인딩해
 상태가 실행 사이에 쌓이지 않게 하고, `current_delivery_context`는 바인딩이 없으면 새 인스턴스를 반환한다.
 
 **`deliver_research_report`** — `MARKDOWN`은 리포트를 기록하고 `POSTED`를 돌려준다. `THREADS`는 멱등이고
@@ -1873,7 +1883,7 @@ AgentCore Browser도 쓰지 않는다. 다이제스트에 실린 실제 URL 10�
 
 **`_deliver_threads`** — `render_threads_research(report, max_posts=research_max_threads_posts)`로 root와
 평탄한 reply chain, 그리고 드롭·트림 수를 얻는다. 이미지는 stage된 것 중 원본 페이지를 스레드가 인용한 첫
-1장만 S3(`{prefix}threads/research_<sha>.<ext>`)에 올려 root에 태운다. 비교는 `normalize_citation_url` 키로 한다.
+1장만 S3(`{prefix}threads/<sha>.<ext>`, `ThreadsGateway`가 올린다)에 올려 root에 태운다. 비교는 `normalize_citation_url` 키로 한다.
 인용하지 않은 페이지의 이미지를 실으면 스레드가 이름을 대지 않은 출처를 독자 앞에 내세우게 된다. 그런 이미지만
 있으면 경고를 남기고 텍스트만 게시한다. 상태 버킷이 없어도 텍스트만 게시한다.
 `post_to_threads`의 결과는 NamedTuple이라 늘 truthy이니 카운트를 명시적으로 읽는다.
@@ -2087,16 +2097,18 @@ CloudWatch 알람 10개가 모두 SNS 알림 토픽으로, 그리고 이메일�
 
 ### 테스트 (`tests/`, pytest, `asyncio_mode=auto`)
 
-약 1,100개의 테스트가 있고 커버리지 게이트는 90%다. 게이트는 측정값을 따라 움직여야 한다.
+약 1,350개의 테스트가 있고 커버리지 게이트는 90%다. 게이트는 측정값을 따라 움직여야 한다.
 10포인트 이상 낮게 방치된 게이트는 진짜 회귀를 오타만큼이나 편하게 통과시킨다. `tests/conftest.py`의 autouse
 픽스처가 앰비언트 시크릿과 인프라 env를 monkeypatch로 비우고 SSM 클라이언트를 막아 hermetic하게 만든다. 개발자의
-`.env`나 AWS 프로파일에 결과가 좌우되지 않고, 실 SSM 왕복에 드는 수십 초도 들지 않는다. 같은 파일이
+`.env`나 AWS 프로파일에 결과가 좌우되지 않고, 실 SSM 왕복에 드는 수십 초도 들지 않는다. 그 아래에서 소켓 연결과
+이름 해석 자체를 막는다. 위의 차단은 막을 대상을 하나씩 적는 방식이라 빠뜨린 하나가 실제 게시(2026-10-27)와 실제
+S3 읽기(10-28)로 이어졌다. 이제는 빠뜨린 stub이 그 자리에서 실패한다. 같은 파일이
 `BedrockCrossRegionModelHelper._resolution_cache`(클래스 변수)도 매 테스트마다 비운다. 비우지 않으면 해석 경로를
 처음 건드린 테스트가 이후 모든 테스트의 해석 결과를 결정한다.
 
 커버하는 영역은 다음과 같다.
 
-- 수집기(공용 `collectors.base.fetch_feed`를 모킹해 재시도와 분류, 헬스 판정을 돈다).
+- 수집기(공용 `adapters.collectors.base.fetch_feed`를 모킹해 재시도와 분류, 헬스 판정을 돈다).
 - 집계기와 랭커 파싱, 슬롯과 origin-cap 로직, 그리고 배치 재시도와 전면 실패 승격, fan-out 상한.
 - **`application.digest_pipeline` 오케스트레이션(`test_run_pipeline.py`, `test_main.py`)** — 집계 후 빈 입력과 임계 미달 조기 반환,
   원장과 leads 기록, 트렌드 갱신, 원장과 AgentCore 스냅샷 양쪽에서 시드하는 cross-day dedup(URL 정규화 포함),
@@ -2220,26 +2232,13 @@ uv run pre-commit run --all-files                       # ruff, black, 파일 �
 uv run mypy .                                           # 레포 전체 타입 체크
 uv run lint-imports                                     # 계층 의존 방향(포트와 어댑터) 검사
 uv run python scripts/ci_synth.py                       # 오프라인 CDK synth(인프로세스)
-
-# 배포: 다이제스트 이미지(amd64)를 빌드/푸시하고, 푸시된 sha256 digest를 DIGEST_IMAGE_REF로 넘긴다. 태그 문자열이
-# 안 바뀌면 CFN이 Lambda를 재배포하지 않고, 빠뜨리면 Lambda가 그 순간의 :latest로 옮겨 가니 deploy.py는
-# DIGEST_IMAGE_REF가 없으면 실행을 거부한다. 이미지가 아직 없는 bootstrap과 첫 foundation 배포만 FOUNDATION_ONLY=1로
-# foundation 스택만 synth한다. 배포된 계정에서 foundation만 synth하면 application 스택이 쓰는 export가 빠져 업데이트가 실패한다.
-# CDK CLI는 package.json에 핀된 것을 npx로 쓰고, deploy.py는 계정을 CLI가 넣는 CDK_DEFAULT_ACCOUNT에서 읽는다.
-npm install                                             # 1회 — 핀된 CDK CLI 설치
-FOUNDATION_ONLY=1 npx cdk bootstrap -a "uv run python scripts/deploy.py"  # 계정+리전당 1회
-# 빈 계정에서는 foundation부터(ECR 리포가 거기 있다):
-#   FOUNDATION_ONLY=1 npx cdk deploy '*-foundation' -a "uv run python scripts/deploy.py"
-aws ecr get-login-password --profile research --region ap-northeast-2 | docker login --username AWS --password-stdin <account>.dkr.ecr.ap-northeast-2.amazonaws.com
-docker build --platform linux/amd64 --provenance=false -t <ecr>:latest . && docker push <ecr>:latest
-export DIGEST_IMAGE_REF=sha256:<pushed>
-AWS_PROFILE=research npx cdk deploy --all -a "uv run python scripts/deploy.py"
-# 시크릿은 템플릿에 없다. 배포 직후 실제 값을 SecureString으로 기록한다(§3.5).
-AWS_PROFILE=research uv run python scripts/put_secrets.py              # --dry-run / --verify / --force
-# 비용 귀속용 application inference profile(이름은 config의 project/stage). 계정/스테이지당 1회, 단계 모델을 바꿨을 때도 다시:
-AWS_PROFILE=research uv run python scripts/put_inference_profiles.py   # --dry-run / --delete
 uv run pre-commit install                               # 1회 — 커밋 전 게이트
 ```
+
+배포 명령은 README의 [AWS 배포](../README.ko.md#aws-배포)를 따른다. 핵심은 둘이다. 푸시한 이미지의 sha256 digest를
+`DIGEST_IMAGE_REF`로 넘긴다(태그 문자열이 그대로면 CloudFormation이 Lambda를 다시 배포하지 않으니 `deploy.py`는 없으면
+거부한다). `FOUNDATION_ONLY=1`은 bootstrap과 빈 계정의 첫 foundation 배포에만 쓴다(배포된 계정에서 foundation만 synth하면
+application 스택이 쓰는 export가 빠져 업데이트가 실패한다).
 
 **다이어그램.** README가 싣는 두 그림은 관리 방식이 다르다.
 

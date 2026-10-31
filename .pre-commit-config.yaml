@@ -24,6 +24,15 @@ repos:
         language: system
         types_or: [python, pyi]
         require_serial: true
+      # The ports-and-adapters import contracts ([tool.importlinter]). Unlike mypy it takes well under a
+      # second, so it costs nothing here; it checks the whole graph, hence pass_filenames: false.
+      - id: lint-imports
+        name: import contracts (lint-imports)
+        entry: uv run lint-imports
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0

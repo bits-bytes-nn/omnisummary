@@ -252,7 +252,7 @@ class OmniSummaryApplicationStack(Stack):
         project_name: str,
         stage: str,
     ) -> None:
-        # The EMF-backed metrics below are published with these dimensions (shared/metrics.py), so
+        # The EMF-backed metrics below are published with these dimensions (adapters/metrics.py), so
         # the alarm MUST carry the same map: an undimensioned alarm reads every deployment's
         # datapoints as one series, which made a dev run of 5 items keep prod's empty-digest alarm
         # green on a day prod shipped nothing.

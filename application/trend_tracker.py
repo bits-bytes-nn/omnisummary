@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from datetime import date
+from datetime import UTC, date, datetime
 
 from langchain_core.output_parsers import StrOutputParser
 from pydantic import ValidationError
@@ -54,29 +54,47 @@ class TrendTracker:
                 # A single bad record (schema drift, a removed enum value) must not wipe ALL
                 # accumulated trend history. Recover per-trend: parse the raw JSON and validate
                 # each trend independently, keeping every one that still validates.
-                self._memory = self._recover_trends(raw, e)
+                self._memory, lost = self._recover_trends(raw, e)
+                if lost:
+                    self._keep_unrecovered(raw)
                 return self._memory
 
         logger.info("No existing trends found, starting fresh")
         self._memory = TrendMemory()
         return self._memory
 
+    def _keep_unrecovered(self, raw: str) -> None:
+        """Save the blob recovery could not fully read under a side key before the next write replaces
+        it. Without the copy the dropped trends were gone for good; refusing to write instead froze the
+        trends forever on a single bad record. If even the copy cannot be written, nothing is written."""
+        key = f"trends.unrecovered-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}.json"
+        try:
+            self.state_store.write(key, raw)
+            logger.error("Kept the unrecovered trends blob at '%s'; the history continues without it", key)
+        except Exception:
+            logger.error("Could not keep the unrecovered trends blob; not rewriting the history", exc_info=True)
+            self._degraded = True
+
     @staticmethod
-    def _recover_trends(raw: str, err: ValidationError) -> TrendMemory:
+    def _recover_trends(raw: str, err: ValidationError) -> tuple[TrendMemory, bool]:
+        """(the trends that still validate, whether anything was lost)."""
         try:
             data = json.loads(raw)
             raw_trends = data.get("trends", []) if isinstance(data, dict) else []
         except (json.JSONDecodeError, ValueError):
-            logger.warning("Trends blob is not valid JSON (%s); starting fresh", err)
-            return TrendMemory()
+            logger.error("Trends blob is not valid JSON (%s); running without trend history", err)
+            return TrendMemory(), True
         recovered: list[Trend] = []
         for rt in raw_trends:
             try:
                 recovered.append(Trend.model_validate(rt))
             except ValidationError:
                 logger.warning("Dropping one unparseable trend during recovery: %r", rt)
-        logger.warning("Trends schema drift (%s); recovered %d/%d trends", err, len(recovered), len(raw_trends))
-        return TrendMemory(trends=recovered)
+        lost = len(recovered) < len(raw_trends)
+        (logger.error if lost else logger.warning)(
+            "Trends schema drift (%s); recovered %d/%d trends", err, len(recovered), len(raw_trends)
+        )
+        return TrendMemory(trends=recovered), lost
 
     def get_trends_context(self, today: date | None = None) -> str:
         """The DIGEST-facing trend ammunition: the highest-momentum visible trends, with the
@@ -186,7 +204,7 @@ class TrendTracker:
             data = parse_json_from_llm_output(raw)
         except (json.JSONDecodeError, ValueError) as e:
             # Raise, not []: an empty list is persisted as "no trends today", and on a same-day re-run
-            # (today's evidence already stripped) it deletes the day's trends. The runner logs it and
+            # (today's evidence already stripped) it deletes the day's trends. run_pipeline logs it and
             # skips the write.
             raise ValueError(f"Unparseable trend classifier output: {e}") from e
         items = data.get("observations") if isinstance(data, dict) else data

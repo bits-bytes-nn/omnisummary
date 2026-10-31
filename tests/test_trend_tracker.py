@@ -268,6 +268,38 @@ class TestLoadRecovery:
         ids = {t.id for t in memory.trends}
         assert "good" in ids
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "blob", ['{"trends": [{"id": "good"', '{"trends": [{"id": "x", "title": "X"}, {"id": "bad"}]}']
+    )
+    async def test_a_lossy_recovery_keeps_the_original_before_the_history_moves_on(self, blob, monkeypatch):
+        # 2026-10-31 review: a truncated or drifted blob was recovered to a fraction, and the day's
+        # write then replaced the rest for good. Refusing to write instead froze the trends forever.
+        store = _FakeStore({TRENDS_KEY: blob})
+        obs = [{"trend_id": "", "new_title": "Open Weight Models", "summary": "Meta released a model."}]
+        tracker = _patched_tracker(store, obs, monkeypatch)
+        await tracker.update_trends("digest", "2026-06-10")
+        kept = [k for k in store.data if k.startswith("trends.unrecovered-")]
+        assert len(kept) == 1 and store.data[kept[0]] == blob
+        assert store.data[TRENDS_KEY] != blob  # today's run still updates the history
+
+    @pytest.mark.asyncio
+    async def test_no_copy_no_rewrite(self, monkeypatch):
+        blob = '{"trends": [{"id": "good"'
+        store = _FakeStore({TRENDS_KEY: blob})
+        real_write = store.write
+
+        def write(key, content):
+            if key.startswith("trends.unrecovered-"):
+                raise RuntimeError("s3 down")
+            real_write(key, content)
+
+        store.write = write
+        obs = [{"trend_id": "", "new_title": "Open Weight Models", "summary": "Meta released a model."}]
+        tracker = _patched_tracker(store, obs, monkeypatch)
+        await tracker.update_trends("digest", "2026-06-10")
+        assert store.data[TRENDS_KEY] == blob
+
 
 class TestUnreadableTrendStateIsNotEmptyState:
     """A throttled/denied read used to look exactly like "no trends yet", and update_trends then

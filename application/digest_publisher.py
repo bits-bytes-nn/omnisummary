@@ -32,6 +32,9 @@ class DigestPublisher:
         # second attempt here: two inits and two ERROR logs for one broken store. Both call sites
         # already pass it explicitly, so the fallback only ever ran on the failure path.
         self.threads_ledger: ThreadsPostLedger | None = ThreadsPostLedger(store) if store is not None else None
+        # Posts are (or may be) live but the ledger does not carry the date: a replay or a re-run would
+        # post the day again. The caller alerts on it.
+        self.unprotected = False
 
     def has_a_destination(self, content: DigestContent | None, post_date: date, force_republish: bool) -> bool:
         """Whether anything can still be published for this date — checked BEFORE the visual is
@@ -150,7 +153,6 @@ class DigestPublisher:
                 replies=replies,
                 image_bytes=image_bytes,
                 image_alt=image_alt,
-                topic_tag=self.config.pipeline.threads_topic_tag,
                 deadline=deadline,
             )
         except Exception:
@@ -171,7 +173,24 @@ class DigestPublisher:
         # second root next to it. The caller still alerts.
         if outcome.posted == 0 and not outcome.uncertain and not was_marked:
             self._release_threads_marker(post_date, run_id)
+        elif self.threads_ledger and not was_marked:
+            self._ensure_marked(post_date, run_id)
         return outcome.published
+
+    def _ensure_marked(self, post_date: date, run_id: str) -> None:
+        """The claim before the post can fail on a ledger read (a throttled S3 GET): the post still goes
+        up, and nothing would stop the next trigger for the date from posting it again. Try once more;
+        if the date still is not recorded, say so for the caller's alert."""
+        assert self.threads_ledger is not None
+        try:
+            if not self.threads_ledger.already_posted(post_date):
+                self.threads_ledger.mark(post_date, run_id)
+            self.unprotected = not self.threads_ledger.already_posted(post_date)
+        except Exception:
+            logger.error("Could not confirm the Threads post marker", exc_info=True)
+            self.unprotected = True
+        if self.unprotected:
+            logger.error("The %s digest is on Threads but its post marker could not be confirmed", post_date)
 
     def _release_threads_marker(self, post_date: date, run_id: str = "") -> None:
         if not self.threads_ledger:

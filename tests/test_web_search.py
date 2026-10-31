@@ -15,8 +15,8 @@ def _collector(**kwargs) -> WebSearchCollector:
     cfg = WebSearchCollectorConfig(**kwargs)
     cfg.reference_time = datetime(2026, 6, 3, tzinfo=UTC)
     cfg.lookback_hours = 24
-    # no llm_factory -> _llm stays None, no Tavily client call in _parse_results
-    return WebSearchCollector(cfg, llm_factory=None)
+    # no models -> _llm stays None, no Tavily client call in _parse_results
+    return WebSearchCollector(cfg, models=None)
 
 
 def _result(score, *, days_old=0, title="X", url="https://example.com/a"):
@@ -107,7 +107,7 @@ class TestParseResults:
             assert len(c._parse_results({"results": [r]}, trend_name="t")) == 1
 
 
-def _search_collector(*, llm_factory=None, **kwargs) -> WebSearchCollector:
+def _search_collector(*, models=None, **kwargs) -> WebSearchCollector:
     """A collector configured with real trend searches, for exercising collect()."""
     cfg = WebSearchCollectorConfig(
         trend_searches=[
@@ -119,7 +119,7 @@ def _search_collector(*, llm_factory=None, **kwargs) -> WebSearchCollector:
     )
     cfg.reference_time = datetime(2026, 6, 3, tzinfo=UTC)
     cfg.lookback_hours = 24
-    return WebSearchCollector(cfg, llm_factory=llm_factory)
+    return WebSearchCollector(cfg, models=models)
 
 
 class TestCollect:
@@ -313,7 +313,7 @@ class TestCollect:
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         factory = MagicMock()
         factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content='["refined query"]'))
-        c = _search_collector(min_search_score=0.3, max_refine_queries=2, llm_factory=factory)
+        c = _search_collector(min_search_score=0.3, max_refine_queries=2, models=factory)
         client = MagicMock()
         client.search = AsyncMock(
             side_effect=[
@@ -335,7 +335,7 @@ class TestCollect:
         seen: list[str] = []
         factory = MagicMock()
         factory.get_model.return_value = RunnableLambda(lambda p: (seen.append(str(p)), AIMessage(content="[]"))[1])
-        c = _search_collector(min_search_score=0.3, max_refine_queries=2, llm_factory=factory)
+        c = _search_collector(min_search_score=0.3, max_refine_queries=2, models=factory)
         client = MagicMock()
         client.search = AsyncMock(return_value={"results": [_result(0.9, url="https://a.example/1", title="A")]})
         c._client_instance = client
@@ -348,7 +348,7 @@ class TestCollect:
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         factory = MagicMock()
         factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content='["never used"]'))
-        c = _search_collector(min_search_score=0.3, llm_factory=factory)
+        c = _search_collector(min_search_score=0.3, models=factory)
         client = MagicMock()
         client.search = AsyncMock(return_value={"results": []})
         c._client_instance = client
@@ -360,7 +360,7 @@ class TestCollect:
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         factory = MagicMock()
         factory.get_model.return_value = RunnableLambda(lambda _: (_ for _ in ()).throw(RuntimeError("bedrock down")))
-        c = _search_collector(min_search_score=0.3, llm_factory=factory)
+        c = _search_collector(min_search_score=0.3, models=factory)
         client = MagicMock()
         client.search = AsyncMock(
             side_effect=[
