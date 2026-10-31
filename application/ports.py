@@ -15,7 +15,7 @@ from typing import Any, Literal, Protocol
 
 from langchain_core.language_models import BaseChatModel
 
-from domain.models import CollectedItem, ImageAsset, ThreadsDelivery
+from domain.models import CollectedItem, ImageAsset, SourceStatus, ThreadsComment, ThreadsDelivery
 from shared.constants import LanguageModelId
 from shared.logger import logger
 
@@ -165,9 +165,9 @@ class PublishError(RuntimeError):
 class ThreadsComments(Protocol):
     """One authenticated session over the account's posts and the comments under them."""
 
-    async def fetch_own_posts(self, since: datetime) -> list[dict[str, Any]]: ...
+    async def fetch_own_posts(self, since: datetime) -> list[ThreadsComment]: ...
 
-    async def fetch_conversation(self, media_id: str) -> list[dict[str, Any]]: ...
+    async def fetch_conversation(self, media_id: str) -> list[ThreadsComment]: ...
 
     async def publish_reply(self, text: str, reply_to_id: str) -> str:
         """The reply's id. Raises PublishError when Threads refuses or fails it."""
@@ -196,23 +196,12 @@ class ThreadsPublisher(Protocol):
     def comments(self) -> AbstractAsyncContextManager[ThreadsComments]: ...
 
 
-class ParkStatus(Protocol):
-    @property
-    def degraded(self) -> bool: ...
-
-    @property
-    def detail(self) -> str: ...
-
-
 class ContentSource(Protocol):
-    """One collector. After collect(), `park_status` says whether its items came from a stale or
-    unreadable park file and `degraded_detail` whether only a fraction of its inputs answered."""
+    """One collector. After collect(), `health_issue` is (STALE or DEGRADED, why) when its items are
+    usable but not healthy (a stalled sync, a fraction of its inputs answering), else None."""
 
     @property
-    def park_status(self) -> ParkStatus | None: ...
-
-    @property
-    def degraded_detail(self) -> str: ...
+    def health_issue(self) -> tuple[SourceStatus, str] | None: ...
 
     async def collect(self) -> list[CollectedItem]: ...
 

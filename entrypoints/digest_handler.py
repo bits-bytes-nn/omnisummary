@@ -165,11 +165,11 @@ async def _run(event: dict[str, Any] | None = None) -> None:
 
 def _stored_story_count(digest_date: date) -> int:
     """How many stories the date's stored digest carries; 0 when it can't be read."""
-    from domain.digest_snapshot import DigestStateManager
+    from domain.digest_snapshot import DigestSnapshot
 
     try:
         data = bootstrap.memory_store().get_digest(digest_date.isoformat())
-        content = DigestStateManager.load_from_dict(data).get_content() if data else None
+        content = DigestSnapshot.from_dict(data).content if data else None
     except Exception:
         logger.warning("Could not read the stored digest for %s", digest_date, exc_info=True)
         return 0

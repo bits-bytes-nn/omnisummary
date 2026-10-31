@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from domain.digest_snapshot import DigestStateManager
+from domain.digest_snapshot import DigestSnapshot
 from entrypoints import bootstrap
 from shared import Config, logger
 
@@ -37,7 +37,7 @@ async def main() -> None:
     data = bootstrap.memory_store().get_digest(args.digest_date.isoformat())
     if not data:
         raise SystemExit(f"No digest snapshot for {args.digest_date}")
-    state = DigestStateManager.load_from_dict(data)
+    snapshot = DigestSnapshot.from_dict(data)
 
     maker = bootstrap.daily_visual_maker(config)
     if args.recent_comics:
@@ -50,7 +50,7 @@ async def main() -> None:
     logger.info("Replaying %s against %d recent comic(s)", args.digest_date, len(recent))
 
     plan, instruction, source = await maker._compose(
-        state.get_ranked_items(), state.get_content(), args.digest_date, recent_comics=recent
+        snapshot.ranked_items, snapshot.content, args.digest_date, recent_comics=recent
     )
     out: dict = {"editor_plan": plan, "instruction": instruction}
     args.out_dir.mkdir(parents=True, exist_ok=True)

@@ -14,7 +14,7 @@ import httpx
 from adapters.aws import resolve_secret
 from adapters.og_image import extension_for
 from application.ports import PublishError
-from domain.models import ThreadsDelivery
+from domain.models import ThreadsComment, ThreadsDelivery
 from shared import THREADS_MAX_POST_CHARS, logger
 from shared.config import Config
 
@@ -461,17 +461,39 @@ def _root_may_be_live(exc: Exception) -> bool:
 COMMENT_REQUEST_TIMEOUT_SEC = 30
 
 
+# Meta's moderation states a reader still sees; a HIDDEN, COVERED or BLOCKED comment is left alone.
+VISIBLE_HIDE_STATUSES = frozenset({"", "NOT_HUSHED", "UNHUSHED"})
+
+
+def to_comment(raw: dict[str, Any], *, own: bool | None = None) -> ThreadsComment:
+    """One Graph API post or reply as the comment model. `own` overrides is_reply_owned_by_me (the
+    account's top-level posts do not carry it)."""
+    try:
+        created_at = datetime.strptime(str(raw.get("timestamp", "")), "%Y-%m-%dT%H:%M:%S%z")
+    except ValueError:
+        created_at = None
+    return ThreadsComment(
+        id=str(raw["id"]),
+        text=raw.get("text") or "",
+        username=raw.get("username") or "",
+        created_at=created_at,
+        parent_id=str((raw.get("replied_to") or {}).get("id", "")),
+        own=bool(raw.get("is_reply_owned_by_me")) if own is None else own,
+        visible=raw.get("hide_status", "") in VISIBLE_HIDE_STATUSES,
+    )
+
+
 class _CommentSession:
     def __init__(self, client: httpx.AsyncClient, user_id: str, token: str) -> None:
         self._client = client
         self._user_id = user_id
         self._token = token
 
-    async def fetch_own_posts(self, since: datetime) -> list[dict[str, Any]]:
-        return await fetch_own_posts(self._client, since)
+    async def fetch_own_posts(self, since: datetime) -> list[ThreadsComment]:
+        return [to_comment(post, own=True) for post in await fetch_own_posts(self._client, since)]
 
-    async def fetch_conversation(self, media_id: str) -> list[dict[str, Any]]:
-        return await fetch_conversation(self._client, media_id)
+    async def fetch_conversation(self, media_id: str) -> list[ThreadsComment]:
+        return [to_comment(reply) for reply in await fetch_conversation(self._client, media_id)]
 
     async def publish_reply(self, text: str, reply_to_id: str) -> str:
         """Publish one text reply to `reply_to_id`, with the reply chain's retry on a transient error."""

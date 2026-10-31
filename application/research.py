@@ -20,7 +20,7 @@ from application.ports import LanguageModels, MemoryStore, ResearchSources, Stat
 from domain.formatting import citation_key, extract_urls, normalize_citation_url
 from domain.models import ImageAsset
 from domain.renderers import render_threads_research, research_post_budget
-from shared import THREADS_MAX_POST_CHARS, get_config, logger
+from shared import THREADS_MAX_POST_CHARS, Config, get_config, logger
 
 # The two places a research report can go. MARKDOWN is the report handed back to the caller (the CLI
 # prints it and saves it); THREADS publishes a plain-text thread to the public account and is allowed
@@ -119,6 +119,8 @@ class DeliveryContext:
     # Whether a Threads post was actually attempted this run.
     threads_attempted: bool = False
     ports: ResearchPorts = field(default_factory=ResearchPorts)
+    # The run's config, handed in by the caller; the cached file config only when none is.
+    config: Config = field(default_factory=get_config)
 
     @property
     def allowed_channels(self) -> set[str]:
@@ -151,7 +153,7 @@ async def _deliver_threads(report: str, delivery: DeliveryContext) -> bool:
     if threads is None:
         logger.error("No Threads publisher is configured for this run; the thread was not posted")
         return False
-    max_posts = get_config().agent.research_max_threads_posts
+    max_posts = delivery.config.agent.research_max_threads_posts
     root_text, replies, dropped, trimmed = render_threads_research(report, max_posts=max_posts)
     delivery.threads_stats = DeliveryStats(dropped=dropped, trimmed=trimmed)
     if not root_text.strip():
@@ -188,7 +190,7 @@ def sends_back_as_too_long(report: str, delivery: DeliveryContext, *, dropped: i
     conclusion that was dropped, and read as complete. Not posting is the worst case now."""
     if dropped < 0:
         _, _, dropped, trimmed = render_threads_research(
-            report, max_posts=get_config().agent.research_max_threads_posts
+            report, max_posts=delivery.config.agent.research_max_threads_posts
         )
     return bool(dropped or trimmed)
 
@@ -211,7 +213,7 @@ async def deliver_research_report(report: str, *, channel: str, delivery: Delive
         logger.warning("Report already posted to '%s'; the text of this call was NOT published", channel)
         return DeliveryOutcome.NOT_POSTED
     root_text, replies, dropped, trimmed = render_threads_research(
-        report, max_posts=get_config().agent.research_max_threads_posts
+        report, max_posts=delivery.config.agent.research_max_threads_posts
     )
     if sends_back_as_too_long(report, delivery, dropped=dropped, trimmed=trimmed):
         # Refuse before anything is public: the dropped tail is the conclusion and its sources, and
@@ -302,7 +304,7 @@ async def web_search(
 
 
 async def community_search(query: str) -> str:
-    return await web_search(query, include_domains=get_config().agent.community_search_domains)
+    return await web_search(query, include_domains=current_delivery_context().config.agent.community_search_domains)
 
 
 async def search_papers(query: str) -> str:
@@ -330,7 +332,7 @@ async def recall_trends() -> str:
     from domain.models import TrendMemory
     from shared import TRENDS_KEY
 
-    config = get_config()
+    config = current_delivery_context().config
     half_life = config.pipeline.trend_momentum_half_life_days
     gist_chars = config.agent.search_content_preview_chars
     store = current_delivery_context().ports.state_store
@@ -376,7 +378,7 @@ async def recall_digest(digest_date: str) -> str:
     except ValueError:
         return f'"{digest_date}" is not a YYYY-MM-DD date.'
 
-    config = get_config()
+    config = current_delivery_context().config
     max_stories = config.pipeline.top_n
     max_chars = config.agent.search_content_preview_chars
     store = current_delivery_context().ports.memory_store
@@ -404,9 +406,9 @@ async def recall_digest(digest_date: str) -> str:
         # coverage is worse than no recall at all.
         return f"No digest stored for {day.isoformat()}."
 
-    from domain.digest_snapshot import DigestStateManager
+    from domain.digest_snapshot import DigestSnapshot
 
-    content = DigestStateManager.load_from_dict(data).get_content()
+    content = DigestSnapshot.from_dict(data).content
     if content is None or not content.items:
         return f"The digest for {day.isoformat()} carries no stories."
     lines = [f"- {it.title[:max_chars]}" for it in content.items[:max_stories]]
@@ -421,7 +423,7 @@ async def attach_image(source_url: str) -> str:
             f"NOT attached: {source_url} was not a search hit or a page you read. read_url it first, or attach "
             "an image from a source you found."
         )
-    limit = get_config().agent.research_max_staged_images
+    limit = delivery.config.agent.research_max_staged_images
     if len(delivery.staged_images) >= limit:
         return f"Already staged the maximum of {limit} images; not attaching more."
     sources = _sources()
@@ -511,7 +513,7 @@ async def deliver_thread(report: str, delivery: DeliveryContext) -> str:
             "never published. Do not call deliver_report for it again; say so in your final answer."
         )
     if outcome is DeliveryOutcome.TOO_LONG:
-        max_posts = get_config().agent.research_max_threads_posts
+        max_posts = delivery.config.agent.research_max_threads_posts
         return (
             f"NOT posted: as written the thread would lose text to the channel's limits ({stats.summary()}). "
             f"Rewrite it as at most {max_posts} posts of at most {research_post_budget(max_posts)} characters "
@@ -550,7 +552,7 @@ async def check_thread_facts(report: str, delivery: DeliveryContext) -> list[dic
         logger.warning("No model is configured for the thread fact check; posting without it")
         return []
     try:
-        config = get_config()
+        config = delivery.config
         root, replies, _, _ = render_threads_research(report, max_posts=config.agent.research_max_threads_posts)
         thread = "\n\n".join(f"POST {n}:\n{post}" for n, post in enumerate([root, *replies], start=1))
         # Cut by characters, not CountTokens: a character is at most about one token, so this bounds the

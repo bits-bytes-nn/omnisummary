@@ -20,7 +20,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field, ValidationError
 
-from domain.models import CollectedItem, generate_item_id
+from domain.models import CollectedItem, SourceStatus, generate_item_id
 from shared import SourceType, is_running_in_aws, logger, retry_async
 from shared.config import BaseCollectorConfig
 from shared.constants import BROWSER_USER_AGENT, DIGEST_PERIOD_HOURS
@@ -176,6 +176,17 @@ class BaseCollector(ABC):
 
     @abstractmethod
     async def collect(self) -> list[CollectedItem]: ...
+
+    @property
+    def health_issue(self) -> tuple[SourceStatus, str] | None:
+        """STALE when the items came off a too-old or unreadable park file (a sync that has stopped
+        running would otherwise look healthy for days), DEGRADED when only a fraction of the inputs
+        answered, else None."""
+        if self.park_status is not None and self.park_status.degraded:
+            return SourceStatus.STALE, self.park_status.detail
+        if self.degraded_detail:
+            return SourceStatus.DEGRADED, self.degraded_detail
+        return None
 
     def record_run_health(
         self,

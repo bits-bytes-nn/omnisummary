@@ -9,7 +9,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from adapters.alerts import publish_alert
-from domain.digest_snapshot import DigestStateManager
+from domain.digest_snapshot import DigestSnapshot
 from domain.models import ThreadsDelivery
 from entrypoints import bootstrap
 from shared import Config, logger, set_correlation_id
@@ -193,9 +193,8 @@ async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = 
             raise RuntimeError(f"No digest state for {digest_date} in AgentCore Memory; nothing to publish")
         logger.info("No digest state for %s yet; nothing to publish", digest_date)
         return
-    state = DigestStateManager.load_from_dict(data)
-    ranked_items = state.get_ranked_items()
-    content = state.get_content()
+    snapshot = DigestSnapshot.from_dict(data)
+    ranked_items, content = snapshot.ranked_items, snapshot.content
 
     maker = bootstrap.daily_visual_maker(config)
     posted = await maker.run(
