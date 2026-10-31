@@ -179,8 +179,8 @@ def _is_later(iso: object, day: date) -> bool:
 
 
 class RollingLog:
-    """A capped, FIFO list of small records persisted as one JSON blob (the recent digest leads and
-    comics the prompts are told not to reuse)."""
+    """A capped, FIFO list of small records persisted as one JSON blob (the recent comics the editor is
+    told not to repeat)."""
 
     def __init__(self, store: StateStore, key: str, max_entries: int) -> None:
         self.store = store
