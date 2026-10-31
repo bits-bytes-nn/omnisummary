@@ -23,7 +23,7 @@ from application.ports import ContentSource, LanguageModels, MemoryStore, StateS
 from application.ranker import ContentRanker
 from application.trend_tracker import TrendTracker
 from domain.aggregator import ContentAggregator, normalize_url
-from domain.digest_snapshot import DigestStateManager
+from domain.digest_snapshot import DigestSnapshot
 from domain.formatting import agi_countdown_intro, editorial_lead
 from domain.models import CollectedItem, DigestResult, HealthReport, RankedItem, SourceHealth, SourceStatus
 from shared import Config, logger
@@ -106,28 +106,12 @@ async def run_collectors_with_health(
             logger.warning("Collector '%s' failed: %s", label, result)
             continue
         items.extend(result)
-        # A source served from a too-old (or unreadable) S3 park file is neither OK nor FAILED:
-        # it produced items, but off a sync that has stopped running — report STALE so the digest
-        # Lambda alerts instead of the dead cron looking healthy for days.
-        park = collector.park_status
-        if park is not None and park.degraded:
-            health.append(
-                SourceHealth(name=label, item_count=len(result), status=SourceStatus.STALE, detail=park.detail[:200])
-            )
-            logger.warning("Collector '%s' is STALE: %s", label, park.detail)
-            continue
-        # Items arrived, on time, but from only a fraction of the source's inputs. Reported, never
-        # filtered: the items themselves are fine and all of them reach the aggregator.
-        if collector.degraded_detail:
-            health.append(
-                SourceHealth(
-                    name=label,
-                    item_count=len(result),
-                    status=SourceStatus.DEGRADED,
-                    detail=collector.degraded_detail[:200],
-                )
-            )
-            logger.warning("Collector '%s' is DEGRADED: %s", label, collector.degraded_detail)
+        # Items arrived, but the source says they are stale or came from a fraction of its inputs.
+        # Reported, never filtered: every item still reaches the aggregator.
+        if (issue := collector.health_issue) is not None:
+            status, detail = issue
+            health.append(SourceHealth(name=label, item_count=len(result), status=status, detail=detail[:200]))
+            logger.warning("Collector '%s' is %s: %s", label, status.value.upper(), detail)
             continue
         status = SourceStatus.OK if result else SourceStatus.EMPTY
         health.append(SourceHealth(name=label, item_count=len(result), status=status))
@@ -294,9 +278,7 @@ def persist_digest(
 ) -> None:
     """Persist the digest snapshot (the single path used by both the local CLI and the Lambda handler):
     the visual Lambda publishes off it, and later runs dedup against it."""
-    mgr = DigestStateManager()
-    mgr.store_digest(ranked_items, digest)
-    memory.put_digest(digest_date.isoformat(), mgr.export_state())
+    memory.put_digest(digest_date.isoformat(), DigestSnapshot(ranked_items, digest).to_dict())
 
 
 async def publish_inline(

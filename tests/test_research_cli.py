@@ -228,3 +228,8 @@ def test_ports_that_cannot_be_built_still_answer_with_json(tmp_path):
         with patch.object(research_cli, "resolve_secret", return_value="key"):
             result, code = research_cli.run(["주제", "--output-dir", str(tmp_path)])
     assert code == research_cli.EXIT_FAILED and "ProfileNotFound" in result["error"]
+
+
+def test_the_run_carries_the_config_the_cli_loaded(tmp_path):
+    _, _, cap = _run(["주제", "--output-dir", str(tmp_path)])
+    assert cap["delivery"].config is cap["create"].call_args.args[0]

@@ -136,6 +136,21 @@ class CommentReply(BaseModel):
     text: str = Field(default="", description="The reply to post, when `reply` is true.")
 
 
+class ThreadsComment(BaseModel):
+    """A post or reply in one of the account's conversations, as the comment responder reads it."""
+
+    id: str
+    text: str = ""
+    username: str = ""
+    created_at: datetime | None = None
+    # The post this one answers; "" for a top-level post.
+    parent_id: str = ""
+    # Written by the account itself.
+    own: bool = False
+    # Still shown to readers (not hidden or covered by moderation).
+    visible: bool = True
+
+
 class ImageAsset(BaseModel):
     """A representative image downloaded from a source page (its og:image / twitter:image),
     carried through to Threads delivery. `source_url` is the article the image belongs

@@ -87,7 +87,7 @@ entrypoints  →  adapters  →  application  →  domain  →  shared
 | `entrypoints/` | 조립 지점 `bootstrap.py`(어댑터를 만들어 유스케이스에 넘긴다: 언어 모델, 상태 저장소, AgentCore Memory, 수집기 레지스트리, Threads, 이미지 렌더러, 리서치 포트)와 Lambda 핸들러 네 개(`digest_handler`, 다이제스트 Lambda가 비동기로 부르는 `visual_handler`, `threads_refresh_handler`, 정해진 주기로 도는 `comment_reply_handler`). 알림 문구와 재게시 명령처럼 배포 환경을 아는 코드도 여기 있다 |
 | `adapters/` | 포트 구현. Bedrock(`bedrock.py`: 팩토리와 모델 레지스트리), AWS 세션과 SSM 비밀값(`aws.py`), S3·로컬 상태 저장소(`state_store.py`), AgentCore Memory(`memory.py`), SNS 알림(`alerts.py`), EMF 메트릭(`metrics.py`), Threads API와 `ThreadsGateway`(`threads.py`), OpenAI 이미지(`openai_images.py`), Tavily·OpenAlex(`research_backends.py`)와 OG 이미지(`og_image.py`), 수집기(`collectors/`: `BaseCollector`, 공유 park 파일 로더, RSS·Reddit·RSSHub·YouTube·WebSearch), Strands 리서치 에이전트(`research_agent.py`)와 그 도구(`research_tools.py`, 모델이 읽는 시그니처와 docstring만 있고 규칙은 `application/research.py`에 있다) |
 | `application/` | 포트 정의(`ports.py`: `LanguageModels`, `ImageRenderer`, `ThreadsPublisher`·`ThreadsComments`·`PublishError`, `StateStore`, `MemoryStore`, `ContentSource`, `ResearchSources`)와 유스케이스. 다이제스트 흐름(`digest_pipeline.py`: `run_collectors_with_health`, `run_pipeline`, `persist_digest`, `publish_inline`, `already_published`, `resolve_digest_window`), `ContentRanker`, `DigestGenerator`, `TrendTracker`, `DailyVisualMaker`와 `VisualGenerator`, `DigestPublisher`, `CommentResponder`, 리서치 실행 규칙(`research.py`: 인용 검사, 사실 확인, 전달), 원장(`history.py`), 프롬프트(`prompts/`) |
-| `domain/` | 외부 의존이 없는 규칙. 모델(`models.py`), URL 정규화와 중복 제거(`aggregator.py`), 포맷(`formatting.py`), Threads 게시물 렌더링(`renderers.py`), 다이제스트 스냅샷(`digest_snapshot.py`의 `DigestStateManager`) |
+| `domain/` | 외부 의존이 없는 규칙. 모델(`models.py`), URL 정규화와 중복 제거(`aggregator.py`), 포맷(`formatting.py`), Threads 게시물 렌더링(`renderers.py`), 다이제스트 스냅샷(`digest_snapshot.py`의 값 객체 `DigestSnapshot`) |
 | `shared/` | 공통 커널. config(공유 `KOREAN_PROSE_RULES`와 말투까지 정한 `KOREAN_STYLE_RULES` 포함), constants, logger, CDK와 코드가 함께 쓰는 이름(`naming.py`), 순수 헬퍼(`utils.py`: 재시도, LLM JSON 파싱) |
 | `main.py` | 다이제스트 로컬 CLI. 어댑터는 `bootstrap`에서 받고, 저장한 뒤 `publish_inline`으로 그 자리에서 게시한다 |
 | `research_cli.py` | 딥 리서치 로컬 CLI. JSON 한 개를 stdout에 쓰고 로그는 stderr로 보낸다 |
@@ -1579,7 +1579,8 @@ STALE과 DEGRADED는 실패가 아니니 `failed_sources`에 들어가지 않는
 - 예외가 나면 **FAILED**이고 잘린 detail을 담는다.
 - park 파일이 `degraded`(stale은 나이 예산 초과, error는 읽기 불가)면 **STALE**이고 항목 수와 park detail을
   담는다. 항목은 나왔지만 그 sync가 멈춰 있다는 뜻이라 OK도 FAILED도 아닌 별도 상태다.
-  `run_collectors_with_health`가 넘겨받은 수집기 인스턴스의 `park_status`를 읽어 판정한다.
+  수집기의 `health_issue`(포트의 유일한 헬스 항목, `BaseCollector`가 `park_status`와 `degraded_detail`로 만든다)를
+  `run_collectors_with_health`가 읽어 판정한다.
 - 수집기가 `degraded_detail`을 남겼으면 **DEGRADED**이고 항목 수와 detail을 담는다. 항목은 제때 나왔지만 그
   소스의 입력 중 일부만 응답한 경우로, RSSHub 계정 피드가 대부분 실패한 상황이 그렇다. 이 상태가 없으면 40개
   계정이 3개로 줄어든 날도 OK로 읽힌다. STALE 판정이 더 조치 가능하니 park가 degraded면 STALE이 우선한다. 이
@@ -2110,7 +2111,7 @@ S3 읽기(10-28)로 이어졌다. 이제는 빠뜨린 stub이 그 자리에서 �
 
 - 수집기(공용 `adapters.collectors.base.fetch_feed`를 모킹해 재시도와 분류, 헬스 판정을 돈다).
 - 집계기와 랭커 파싱, 슬롯과 origin-cap 로직, 그리고 배치 재시도와 전면 실패 승격, fan-out 상한.
-- **`application.digest_pipeline` 오케스트레이션(`test_run_pipeline.py`, `test_main.py`)** — 집계 후 빈 입력과 임계 미달 조기 반환,
+- **`application.digest_pipeline` 오케스트레이션(`test_digest_pipeline.py`, `test_main.py`)** — 집계 후 빈 입력과 임계 미달 조기 반환,
   원장과 leads 기록, 트렌드 갱신, 원장과 AgentCore 스냅샷 양쪽에서 시드하는 cross-day dedup(URL 정규화 포함),
   dry-run이 상태를 쓰지 않음, 로컬 실행이 저장한 뒤 인라인으로 게시하는 순서와, 게시가 실패하거나 다 올라가지 않으면 `PublishIncomplete`로 알리는 것. LLM과
   네트워크 협력자만 스텁하고 원장과 롤링 로그, 집계는 임시 디렉터리 StateStore로 실제 실행한다.
@@ -2122,9 +2123,9 @@ S3 읽기(10-28)로 이어졌다. 이제는 빠뜨린 stub이 그 자리에서 �
 - 메모리 스토어(로컬과 AgentCore 모킹).
 - 다이제스트 핸들러 알림.
 - 딥 리서치 — 구성과 프롬프트 보간(`test_research_agent.py`), 도구 8개(`test_research_tools.py`), 리서치
-  백엔드(`test_research_backends.py`), 리포트 전달(`test_delivery.py`), 렌더러(`test_renderers.py`), OG
+  백엔드(`test_research_backends.py`), 리포트 전달(`test_research_delivery.py`), 렌더러(`test_renderers.py`), OG
   이미지(`test_og_image.py`), CLI의 JSON 계약과 종료 코드, `Limits` 전달(`test_research_cli.py`).
-- `VisualGenerator`(`test_visuals.py`)와 데일리 비주얼(`test_daily_visual.py`).
+- `VisualGenerator`(`test_visual_generator.py`)와 데일리 비주얼(`test_daily_visual.py`).
 - trend_tracker(보존 기간 삭제, 재실행 시 `last_seen` 도출, 같은 날 재실행이 오늘 증거를 문맥에서 빼는지, evidence 캡).
 - CDK assertion(`aws-cdk.assertions`로 두 스택을 검증한다).
 - 운영 스크립트 — `DIGEST_IMAGE_REF` 없는 배포 거부와 `FOUNDATION_ONLY`(`test_deploy.py`), `copyFrom` ARN 조립(`test_put_inference_profiles.py`),

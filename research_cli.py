@@ -150,7 +150,7 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
         result["error"] = f"Config could not be loaded: {type(e).__name__}: {e}"
         return result, EXIT_FAILED
     result["model"] = config.agent.model_id.value
-    delivery = DeliveryContext(publish_threads=args.publish == THREADS)
+    delivery = DeliveryContext(publish_threads=args.publish == THREADS, config=config)
     allowed = "ALLOWED" if delivery.publish_threads else "NOT allowed"
     prompt = f"{topic}\n\n[DELIVERY] Threads publishing: {allowed}."
 

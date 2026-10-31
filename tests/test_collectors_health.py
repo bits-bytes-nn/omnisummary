@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 import pytest
 
-from adapters.collectors.base import ParkedItems, ParkOutcome
+from adapters.collectors.base import BaseCollector, ParkedItems, ParkOutcome
 from domain.models import CollectedItem, SourceStatus
 from shared import Config
 from shared.constants import SourceType
@@ -19,13 +19,16 @@ def _sources(tasks, labels, collectors) -> list:
     return list(zip(labels, collectors, strict=True))
 
 
-class _Collector:
-    """Stand-in for a built collector: run_collectors_with_health only reads park_status and
-    degraded_detail off it."""
+class _Collector(BaseCollector):
+    """A built collector whose run left this park status and degraded detail; its health_issue is the
+    real BaseCollector verdict run_collectors_with_health reads."""
 
     def __init__(self, park_status: ParkedItems | None = None, degraded_detail: str = "") -> None:
         self.park_status = park_status
         self.degraded_detail = degraded_detail
+
+    async def collect(self):
+        return []
 
 
 @pytest.mark.asyncio

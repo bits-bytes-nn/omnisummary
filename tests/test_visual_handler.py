@@ -133,16 +133,16 @@ class TestVisualRun:
         store.get_digest.return_value = {"some": "state"}
         ranked = [MagicMock()]
         mgr = MagicMock()
-        mgr.get_ranked_items.return_value = ranked
+        mgr.ranked_items = ranked
         content = MagicMock()
-        mgr.get_content.return_value = content
+        mgr.content = content
         maker_instance = MagicMock()
         maker_instance.run = AsyncMock(return_value=True)
         maker_instance.threads_outcome = ThreadsDelivery(6, 6)
         maker_instance.threads_unprotected = False
         with patch("entrypoints.visual_handler.Config.load", return_value=config):
             with patch("entrypoints.visual_handler.bootstrap.memory_store", return_value=store):
-                with patch("entrypoints.visual_handler.DigestStateManager.load_from_dict", return_value=mgr):
+                with patch("entrypoints.visual_handler.DigestSnapshot.from_dict", return_value=mgr):
                     with patch("entrypoints.visual_handler.bootstrap.daily_visual_maker", return_value=maker_instance):
                         await visual_handler._run({"digest_date": "2026-08-18"})
         store.get_digest.assert_called_once_with("2026-08-18")
@@ -164,7 +164,7 @@ class TestVisualRun:
         maker_instance.threads_unprotected = False
         with patch("entrypoints.visual_handler.Config.load", return_value=config):
             with patch("entrypoints.visual_handler.bootstrap.memory_store", return_value=store):
-                with patch("entrypoints.visual_handler.DigestStateManager.load_from_dict"):
+                with patch("entrypoints.visual_handler.DigestSnapshot.from_dict"):
                     with patch("entrypoints.visual_handler.bootstrap.daily_visual_maker", return_value=maker_instance):
                         with patch("entrypoints.visual_handler._maybe_alert_threads_outcome"):
                             with pytest.raises(RuntimeError, match="posted nothing"):
@@ -183,7 +183,7 @@ class TestUnprotectedDay:
         maker_instance.threads_unprotected = True
         with patch("entrypoints.visual_handler.Config.load", return_value=config):
             with patch("entrypoints.visual_handler.bootstrap.memory_store", return_value=store):
-                with patch("entrypoints.visual_handler.DigestStateManager.load_from_dict"):
+                with patch("entrypoints.visual_handler.DigestSnapshot.from_dict"):
                     with patch("entrypoints.visual_handler.bootstrap.daily_visual_maker", return_value=maker_instance):
                         with patch("entrypoints.visual_handler.publish_alert") as alert:
                             await visual_handler._run({"digest_date": "2026-10-31"})

@@ -4,24 +4,20 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any
 
 from application.history import CommentReplyLedger
 from application.ports import LanguageModels, PublishError, StateStore, ThreadsPublisher
 from application.prompts import CommentReplyPrompt
 from domain.formatting import URL_RE
-from domain.models import CommentReply
+from domain.models import CommentReply, ThreadsComment
 from shared import KOREAN_PROSE_RULES, Config, logger
-
-# Meta's moderation states a reader still sees; a HIDDEN, COVERED or BLOCKED comment is left alone.
-VISIBLE_HIDE_STATUSES = frozenset({"", "NOT_HUSHED", "UNHUSHED"})
 
 
 @dataclass
 class PendingComment:
-    comment: dict[str, Any]
+    comment: ThreadsComment
     # The posts above the comment, oldest first: the account's post, then each reply on the way down.
-    thread: list[dict[str, Any]]
+    thread: list[ThreadsComment]
     # The account's own posts in this conversation, so the model can tell its words from the reader's.
     own_ids: set[str]
 
@@ -33,16 +29,9 @@ class CommentReplyRun:
     failed: list[str] = field(default_factory=list)
 
 
-def _parse_time(raw: str) -> datetime | None:
-    try:
-        return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S%z")
-    except (TypeError, ValueError):
-        return None
-
-
 def pending_comments(
-    post: dict[str, Any],
-    conversation: list[dict[str, Any]],
+    post: ThreadsComment,
+    conversation: list[ThreadsComment],
     *,
     handled: set[str],
     since: datetime,
@@ -51,47 +40,41 @@ def pending_comments(
     """The comments under `post` the account still owes an answer: written by someone else, visible,
     newer than `since`, not yet dealt with, and addressed to one of the account's own posts. A reply
     between two readers is their conversation, not the account's."""
-    by_id = {post["id"]: post, **{c["id"]: c for c in conversation}}
-    own = {post["id"]} | {c["id"] for c in conversation if c.get("is_reply_owned_by_me")}
-
-    def parent_id(item: dict[str, Any]) -> str:
-        return str((item.get("replied_to") or {}).get("id", ""))
-
-    answered = {parent_id(c) for c in conversation if c["id"] in own}
+    by_id = {post.id: post, **{c.id: c for c in conversation}}
+    own = {post.id} | {c.id for c in conversation if c.own}
+    answered = {c.parent_id for c in conversation if c.id in own}
     replies_to: dict[str, int] = {}
     for parent in answered:
-        user = by_id.get(parent, {}).get("username", "")
+        user = by_id[parent].username if parent in by_id else ""
         replies_to[user] = replies_to.get(user, 0) + 1
 
     pending = []
     for c in conversation:
-        created = _parse_time(c.get("timestamp", ""))
         if (
-            c["id"] in own
-            or c["id"] in handled
-            or c["id"] in answered
-            or parent_id(c) not in own
-            or not (c.get("text") or "").strip()
-            or c.get("hide_status", "") not in VISIBLE_HIDE_STATUSES
-            or created is None
-            or created < since
+            c.id in own
+            or c.id in handled
+            or c.id in answered
+            or c.parent_id not in own
+            or not c.text.strip()
+            or not c.visible
+            or c.created_at is None
+            or c.created_at < since
         ):
             continue
-        if replies_to.get(c.get("username", ""), 0) >= max_per_commenter:
-            logger.info("Not answering @%s again under post %s: already answered", c.get("username"), post["id"])
+        if replies_to.get(c.username, 0) >= max_per_commenter:
+            logger.info("Not answering @%s again under post %s: already answered", c.username, post.id)
             continue
-        if parent_id(c) == post["id"]:
+        if c.parent_id == post.id:
             # A comment on the root may be about any story: the root only lists their titles.
-            thread = [post] + [s for s in conversation if s["id"] in own and parent_id(s) == post["id"]]
+            thread = [post] + [s for s in conversation if s.id in own and s.parent_id == post.id]
         else:
             thread = []
-            cursor = by_id.get(parent_id(c))
-            while cursor is not None and cursor not in thread:
+            cursor = by_id.get(c.parent_id)
+            while cursor is not None and cursor.id not in {t.id for t in thread}:
                 thread.insert(0, cursor)
-                cursor = None if cursor is post else by_id.get(parent_id(cursor))
+                cursor = None if cursor.id == post.id else by_id.get(cursor.parent_id)
         pending.append(PendingComment(comment=c, thread=thread, own_ids=own))
-        user = c.get("username", "")
-        replies_to[user] = replies_to.get(user, 0) + 1
+        replies_to[c.username] = replies_to.get(c.username, 0) + 1
     return pending
 
 
@@ -130,12 +113,12 @@ def _reader_text(text: str) -> str:
 
 
 def _thread_text(pending: PendingComment) -> str:
-    def author(item: dict[str, Any]) -> str:
-        return "YOU" if item["id"] in pending.own_ids else f"@{item.get('username', 'reader')}"
+    def author(item: ThreadsComment) -> str:
+        return "YOU" if item.id in pending.own_ids else f"@{item.username or 'reader'}"
 
-    def text(item: dict[str, Any]) -> str:
-        raw = (item.get("text") or "").strip()
-        return raw if item["id"] in pending.own_ids else _reader_text(raw)
+    def text(item: ThreadsComment) -> str:
+        raw = item.text.strip()
+        return raw if item.id in pending.own_ids else _reader_text(raw)
 
     return "\n\n".join(f"[{author(item)}]\n{text(item)}" for item in pending.thread)
 
@@ -161,8 +144,8 @@ class CommentResponder:
                 "audience": self.config.digest_audience_description,
                 "language_rules": KOREAN_PROSE_RULES,
                 "thread": _thread_text(pending),
-                "username": _reader_text(pending.comment.get("username", "reader")),
-                "comment": _reader_text(pending.comment.get("text", "").strip()),
+                "username": _reader_text(pending.comment.username or "reader"),
+                "comment": _reader_text(pending.comment.text.strip()),
             }
         )
         return CommentReply.model_validate(result)
@@ -188,25 +171,25 @@ class CommentResponder:
             for post in await threads.fetch_own_posts(since):
                 pending += pending_comments(
                     post,
-                    await threads.fetch_conversation(post["id"]),
+                    await threads.fetch_conversation(post.id),
                     handled=handled,
                     since=since,
                     max_per_commenter=self.config.comment_reply_max_per_commenter,
                 )
-            pending.sort(key=lambda p: p.comment.get("timestamp", ""))
+            pending.sort(key=lambda p: p.comment.created_at or since)
             cap = self.config.comment_reply_max_per_run
             if len(pending) > cap:
                 logger.info("%d comments pending; answering the oldest %d this run", len(pending), cap)
             for item in pending[:cap]:
-                comment_id = item.comment["id"]
+                comment_id = item.comment.id
                 try:
                     decision = await self.draft(item)
                     text = decision.text.strip()
-                    unsafe = unsafe_reply_reason(text, item.comment.get("username", "")) if decision.reply else ""
+                    unsafe = unsafe_reply_reason(text, item.comment.username) if decision.reply else ""
                     if unsafe:
                         logger.warning("Not posting the reply to comment %s: %s", comment_id, unsafe)
                     if not decision.reply or not text or unsafe:
-                        logger.info("Declined comment %s by @%s", comment_id, item.comment.get("username"))
+                        logger.info("Declined comment %s by @%s", comment_id, item.comment.username)
                         run.declined.append(comment_id)
                         if not dry_run:
                             self.ledger.record(comment_id, "declined", now)
@@ -219,12 +202,8 @@ class CommentResponder:
                             # The reply is live: counting it as failed would raise the alarm for a
                             # comment that was answered.
                             logger.error("Replied to comment %s but could not record it", comment_id, exc_info=True)
-                        logger.info(
-                            "Replied %s to comment %s by @%s", reply_id, comment_id, item.comment.get("username")
-                        )
-                    run.replied.append(
-                        {"comment_id": comment_id, "comment": item.comment.get("text", ""), "reply": text}
-                    )
+                        logger.info("Replied %s to comment %s by @%s", reply_id, comment_id, item.comment.username)
+                    run.replied.append({"comment_id": comment_id, "comment": item.comment.text, "reply": text})
                 except PublishError as e:
                     logger.warning("Could not answer comment %s (%s): %s", comment_id, e.status, e.detail)
                     run.failed.append(comment_id)
