@@ -143,7 +143,7 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 
 | 그룹 | 필드 | 설명 |
 |------|------|------|
-| 공통(상속) | `enabled`, `lookback_hours`, `reference_time`, `request_timeout`, `max_retries`, `retry_backoff_sec`, `park_max_age_hours`(기본 12), `error_rate_threshold`(기본 50.0), `empty_rate_threshold`(기본 100.0=비활성) | 활성화 여부, 조회 윈도, 타임아웃, 재시도, S3 park 파일의 나이 예산(초과하면 항목은 쓰되 헬스를 STALE로 보고한다), 그리고 DEGRADED 판정 두 갈래: 입력(피드·계정·채널·쿼리) 실패율과 입력 빈 응답률. 어느 하나만 걸려도 DEGRADED이고 보고만 할 뿐 항목은 그대로 전달한다 |
+| 공통(상속) | `enabled`, `lookback_hours`, `reference_time`, `request_timeout`, `max_retries`, `retry_backoff_sec`, `park_max_age_hours`(기본 12), `error_rate_threshold`(기본 50.0), `empty_rate_threshold`(기본 없음=비활성) | 활성화 여부, 조회 윈도, 타임아웃, 재시도, S3 park 파일의 나이 예산(초과하면 항목은 쓰되 헬스를 STALE로 보고한다), 그리고 DEGRADED 판정 두 갈래: 입력(피드·계정·채널·쿼리) 실패율과 입력 빈 응답률. 어느 하나만 걸려도 DEGRADED이고 보고만 할 뿐 항목은 그대로 전달한다 |
 | `rss` | `feeds`, `max_concurrency`(기본 5) | RSS 피드 URL 목록과 동시 fetch 상한 |
 | `reddit` | `subreddits`, `sort`, `limit` | 서브레딧, 정렬, 개수 |
 | `youtube` | `channels`, `max_videos_per_channel`, `resolve_timeout`, `transcript_timeout`, `transcript_language`, `max_concurrency`, `park_required` | 채널, 영상 수, 자막 관련 설정, 동시 채널 상한, AWS에서 park 파일 부재를 DEGRADED로 볼지([§4.2](#42-s3-park-파일-로더)) |
@@ -171,8 +171,8 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 실패율이 못 보는 모양이 하나 있어서 노브가 하나 더 있다. 입력 전부가 HTTP 200에 entries 0으로 답하는
 경우다(만료된 RSSHub 쿠키, 페이월 200, 아무것도 없는 플레이리스트). 실패율은 0이고, 항목을 낸 입력이 하나만
 있어도 소스는 OK로 읽힌다. `empty_rate_threshold`가 빈 응답률로 이것을 잡는다. 소스마다 성격이 달라서(RSS
-블로그는 하루 글이 없는 게 정상이고, X 계정 40개가 모두 조용한 건 세션이 깨진 것이다) 기본값은 비활성인
-100.0이고 config.yaml에서 소스별로 켠다.
+블로그는 하루 글이 없는 게 정상이고, X 계정 40개가 모두 조용한 건 세션이 깨진 것이다) 기본값은 비활성(값
+없음)이고 config.yaml에서 소스별로 켠다.
 
 **절대 개수로 판정하는 노브는 두지 않는다.** 비율은 입력이 적은 소스에서 판정을 표현하지 못하지만, 입력이 적은
 유일한 소스인 reddit은 서브레딧 전체를 요청 한 번으로 받으니([§4.4](#44-reddit-redditpy)) 실패가 소스
@@ -478,7 +478,7 @@ Lambda의 15분 예산 안에 넉넉히 들어가야 한다. 넘칠 만큼 피�
 HTTP 상태도 분류한다. 429와 5xx는 재시도하고 그 밖의 4xx와 파싱 불가 본문은 즉시 실패시킨다. 계정이 가장 많은
 소스라 시도가 한 번뿐이면 blip 몇 개가 겹치는 것만으로 `error_rate_threshold`까지 밀린다.
 
-계정은 X만 받는다(`platform: x`). 다른 플랫폼 라우트는 쓰인 적도 검증된 적도 없어 뺐다. degraded 힌트는 그래서
+계정은 X 사용자 이름 목록이다(`accounts: ["karpathy", ...]`). 다른 플랫폼 라우트는 쓰인 적도 검증된 적도 없어 뺐다. degraded 힌트는 그래서
 늘 Twitter 쿠키 만료를 가리킨다.
 
 **팬아웃 상한.** 계정 수가 40개를 넘으니 한 번에 모두 띄우면 상류에 대한 버스트가 된다. 그래서 `collect()`

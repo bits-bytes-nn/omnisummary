@@ -74,12 +74,6 @@ SSM_PLACEHOLDER: str = "PLACEHOLDER-run-scripts/put_secrets.py"
 # dark source it was meant to watch simply stays dark, with no signal anywhere.
 COLLECTOR_NAMES: tuple[str, ...] = ("reddit", "rss", "rsshub", "web_search", "youtube")
 
-# empty_rate_threshold value that DISABLES the all-inputs-empty tripwire. degradation_reason tests
-# `empty_rate > empty_threshold`, so 100 can never be exceeded — the check is unreachable at this
-# value. Named here because the config default, the collector helpers' defaults and the config test
-# that asserts the knob stays armed must all mean the same sentinel.
-EMPTY_RATE_CHECK_DISABLED: float = 100.0
-
 # CloudWatch namespace every EMF record and every metric-backed alarm uses. ONE definition: the
 # emitting code and the CDK alarm must agree, and a drifting literal makes an alarm watch a
 # namespace nothing writes to (which reads as "no data", i.e. permanently green).

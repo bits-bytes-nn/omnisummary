@@ -72,8 +72,8 @@ class RSSHubCollector(BaseCollector):
         # Bounded fan-out against one local RSSHub instance. Created on the running loop, never at
         # import/__init__.
         semaphore = asyncio.Semaphore(self.config.max_concurrency)
-        coros = [self._collect_account(account.username, semaphore) for account in self.config.accounts]
-        labels = [f"x/{a.username}" for a in self.config.accounts]
+        coros = [self._collect_account(username, semaphore) for username in self.config.accounts]
+        labels = [f"x/{username}" for username in self.config.accounts]
         results = await asyncio.gather(*coros, return_exceptions=True)
 
         items: list[CollectedItem] = []
