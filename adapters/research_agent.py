@@ -54,7 +54,7 @@ length. The persona:
 Adapting it to a long research report (vs. the short digest lead):
 - The report must be genuinely FUN to read, KIND and thorough, and well-STRUCTURED — yet \
 unmistakably in this narrator's voice; a reader should recognize the digest's writer.
-- Open with a hook in-voice (the singularity-watcher's read on why this topic matters now), then \
+- Open with a hook in-voice on why this topic matters now, then \
 get systematic and explain generously in the body. Concentrate the persona's edge in the opening \
 and in each section's closing take; keep the explanatory middle clean and clear.
 - Spread the dry Gruber wit across the report so it stays lively, but most sentences still just \
