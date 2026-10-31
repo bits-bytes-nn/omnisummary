@@ -114,15 +114,6 @@ async def _run(event: dict[str, Any] | None = None) -> None:
         # The EmptyDigest alarm reads a missing metric as a failed day.
         _emit_digest_items_metric(_stored_story_count(digest_date))
         return
-    stored = _stored_story_count(digest_date)
-    if stored:
-        # A second invocation for a day already written (an at-least-once duplicate, a DLQ replay of a
-        # run whose visual never fired): deliver the stored digest rather than write a different one. A
-        # rebuild let the record say B while Threads showed A. A fresh rebuild is main.py --force-republish.
-        logger.info("A digest for %s is already stored; delivering it instead of rebuilding", digest_date)
-        _emit_digest_items_metric(stored)
-        _trigger_visual(digest_date)
-        return
 
     models = bootstrap.language_models(config)
     collected_items, health = await run_collectors_with_health(config, bootstrap.collectors(config, models))

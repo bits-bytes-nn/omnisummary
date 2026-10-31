@@ -85,24 +85,26 @@ class AgentCoreMemoryStore(MemoryStore):
         import copy
 
         trimmed = copy.deepcopy(state)
-        texts = [r.get("item", {}) for r in trimmed.get("ranked_items", [])]
-        texts = [item for item in texts if isinstance(item.get("text"), str)]
+        pairs = [
+            (r.get("item", {}).get("text"), t.get("item", {}))
+            for r, t in zip(state.get("ranked_items", []), trimmed.get("ranked_items", []), strict=True)
+        ]
+        pairs = [(text, item) for text, item in pairs if isinstance(text, str)]
         # An even share of what the metadata leaves, not a fixed cap: 12 items x 12k overflowed on every
-        # full pool, and the visual then lost the headline article it draws from.
-        for item in texts:
+        # full pool, and the visual then lost the headline article it draws from. The share is re-cut on
+        # the SERIALIZED length, which escapes every newline and quote into two characters.
+        for _, item in pairs:
             item["text"] = ""
-        room = self.MAX_EVENT_TEXT - len(json.dumps(trimmed, ensure_ascii=False))
-        share = max(0, room // max(1, len(texts)) - 64)
-        for ranked, item in zip(
-            state.get("ranked_items", []), [r.get("item", {}) for r in trimmed.get("ranked_items", [])]
-        ):
-            original = ranked.get("item", {}).get("text")
-            if isinstance(original, str):
-                item["text"] = original[:share]
-        payload_text = json.dumps(trimmed, ensure_ascii=False)
-        if len(payload_text) <= self.MAX_EVENT_TEXT:
-            logger.warning("Digest state still large; truncated each ranked item's text to %d chars", share)
-            return payload_text
+        share = max(0, (self.MAX_EVENT_TEXT - len(json.dumps(trimmed, ensure_ascii=False))) // max(1, len(pairs)))
+        for _ in range(8):
+            for text, item in pairs:
+                item["text"] = text[:share]
+            payload_text = json.dumps(trimmed, ensure_ascii=False)
+            overflow = len(payload_text) - self.MAX_EVENT_TEXT
+            if overflow <= 0:
+                logger.warning("Digest state still large; truncated each ranked item's text to %d chars", share)
+                return payload_text
+            share = max(0, share - overflow // max(1, len(pairs)) - 1)
 
         logger.warning("Digest state exceeds limit after trimming; storing ranked metadata only")
         minimal: dict[str, Any] = {

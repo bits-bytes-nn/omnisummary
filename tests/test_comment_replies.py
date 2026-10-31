@@ -401,6 +401,7 @@ class TestRepliesCannotCarryPlantedContent:
             "장점은 AI 점수가 올랐다는 거예요. GPT 점 하나 차이예요.",
             "AI·ML 팀이라면 점심 전에 보세요.",
             "수능 수학 100점 AI가 나왔어요. IQ 130점 ai라니요.",
+            "지금 AI 닷컴 버블과 비슷하다는 말이 많아요.",
         ],
     )
     def test_an_ordinary_reply_is_safe(self, text):

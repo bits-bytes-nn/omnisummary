@@ -1021,6 +1021,16 @@ class TestALiveDayStaysProtected:
         assert publisher.unprotected is True
 
     @pytest.mark.asyncio
+    async def test_an_ambiguous_root_without_a_ledger_is_unprotected_not_a_crash(self):
+        from application.digest_publisher import DigestPublisher
+
+        config = Config()
+        config.pipeline.enable_threads_post = True
+        publisher = DigestPublisher(config, None, FakeThreads(ThreadsDelivery(0, 6, uncertain=True)))
+        assert await publisher.publish(_content(), today=date(2026, 10, 31)) is False
+        assert publisher.unprotected is True
+
+    @pytest.mark.asyncio
     async def test_a_ledger_that_cannot_be_written_never_costs_the_post(self):
         publisher = self._publisher()
         publisher.threads_ledger.store.write = MagicMock(side_effect=RuntimeError("S3 PUT throttled"))

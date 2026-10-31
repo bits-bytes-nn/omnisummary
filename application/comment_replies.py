@@ -91,9 +91,10 @@ def pending_comments(
 # Its cost is declining a reply that names a file or library ("node.js"): the account then stays silent.
 _BARE_DOMAIN = re.compile(r"(?i)[\w-]+(?:\.|\s+\.\s*|\s*(?:\[\.\]|\(\.\)|\(dot\)|닷|\bdot\b)\s*)[a-z]{2,}(?![a-z0-9-])")
 # "점"/"쩜" are the everyday Korean "dot" but also ordinary words (장점, 점수, "100점 AI"), so only a name
-# starting with a letter and a common TLD after ("evil 점 com", "evil닷컴") reads as a domain.
+# starting with a letter and a common TLD after ("evil 점 com"), or "닷컴" glued to the name ("evil닷컴",
+# never "AI 닷컴 버블"), reads as a domain.
 _SPOKEN_DOT_DOMAIN = re.compile(
-    r"(?i)(?<![a-z0-9-])[a-z][a-z0-9-]*\s*(?:[점쩜닷]\s*(?:com|net|org|io|ai|kr|co|me|dev|app|xyz)(?![a-z0-9-])|[점쩜닷]컴)"
+    r"(?i)(?<![a-z0-9-])[a-z][a-z0-9-]*(?:\s*[점쩜닷]\s*(?:com|net|org|io|ai|kr|co|me|dev|app|xyz)(?![a-z0-9-])|[점쩜닷]컴)"
 )
 _ZERO_WIDTH = re.compile("[\u200b-\u200f\u2060\ufeff]")
 _HANDLE = re.compile(r"(?<![A-Za-z0-9_@])@([A-Za-z0-9._]+)")

@@ -210,7 +210,7 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
                     )
 
     if delivery.fact_check_skipped:
-        warnings.append("The Threads fact check could not run; the thread was posted unchecked.")
+        warnings.append("The Threads fact check could not run; the thread went out without it.")
     if result["stop_reason"].startswith("limit_") and run_error is None:
         warnings.append(f"The run stopped at its budget cap ({result['stop_reason']}); the report may be partial.")
     result["threads"] = _threads_result(delivery)

@@ -45,6 +45,12 @@ class TestPublishedUrlLedger:
         ledger.record(["https://later.com/x"], date(2026, 6, 12))
         assert ledger.recent_urls(date(2026, 6, 9)) == {"https://later.com/x"}
 
+    def test_a_far_future_stamp_does_not_hide_a_story_until_that_date(self):
+        store = _MemStore()
+        ledger = PublishedUrlLedger(store, ttl_days=6)
+        ledger.record(["https://typo.com/x"], date(2026, 12, 25))
+        assert ledger.recent_urls(date(2026, 11, 1)) == set()
+
     def test_entries_outside_ttl_are_pruned(self):
         store = _MemStore()
         store.write_json(PUBLISHED_URLS_KEY, {"https://old.com": "2026-06-01", "https://new.com": "2026-06-08"})
