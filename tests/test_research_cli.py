@@ -121,11 +121,19 @@ class TestResult:
             submit=None,
             final="# 답\n\n근거 https://real.example/a 와 https://invented.example/x",
         )
-        assert code == research_cli.EXIT_OK
+        # The citation guard never saw it, so an invented URL fails the run; the text is still returned.
+        assert code == research_cli.EXIT_FAILED
         assert result["markdown"].startswith("# 답")
         assert any("unchecked" in w for w in result["warnings"])
-        assert any("https://invented.example/x" in w for w in result["warnings"])
-        assert not any("https://real.example/a" in w for w in result["warnings"])
+        assert "https://invented.example/x" in result["error"]
+        assert "https://real.example/a" not in result["error"]
+
+    def test_an_unsubmitted_answer_citing_only_seen_urls_still_succeeds(self, tmp_path):
+        result, code, _ = _run(
+            ["주제", "--output-dir", str(tmp_path)], submit=None, final="# 답\n\n근거 https://real.example/a"
+        )
+        assert code == research_cli.EXIT_OK
+        assert any("unchecked" in w for w in result["warnings"])
 
     def test_a_budget_stop_is_a_warning(self, tmp_path):
         result, code, _ = _run(["주제", "--output-dir", str(tmp_path)], stop="limit_turns")

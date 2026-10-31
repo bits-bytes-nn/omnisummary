@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -11,7 +10,7 @@ from typing import Any
 
 import httpx
 
-from adapters.aws import resolve_secret
+from adapters.aws import resolve_secret, state_location
 from adapters.og_image import extension_for
 from application.ports import PublishError
 from domain.models import ThreadsComment, ThreadsDelivery
@@ -529,9 +528,9 @@ class ThreadsGateway:
     ) -> ThreadsDelivery:
         bucket = key = ""
         if image_bytes:
-            bucket = self.config.aws.state_bucket_name or os.environ.get("STATE_BUCKET", "")
+            bucket, root = state_location(self.config)
             if bucket:
-                prefix = self.config.aws.s3_prefix.rstrip("/") + "/" if self.config.aws.s3_prefix else ""
+                prefix = f"{root}/" if root else ""
                 digest = hashlib.sha256(image_bytes).hexdigest()[:16]
                 key = f"{prefix}threads/{digest}.{extension_for(image_content_type)}"
             else:

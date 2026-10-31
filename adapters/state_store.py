@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -101,15 +100,12 @@ def create_state_store(config: Config | None = None) -> StateStore:
     Gated on the BUCKET, not on is_running_in_aws(): that platform sniff meant any non-Lambda
     caller carrying STATE_BUCKET (the agent runtime, a container, a local run against the real
     bucket) silently wrote trends.json to the local filesystem and lost every trend thread."""
+    from adapters.aws import state_location
     from shared.constants import LocalPaths
 
-    env_bucket = os.environ.get("STATE_BUCKET", "")
-    if env_bucket:
-        # S3_PREFIX is the digest-state prefix itself (set by the CDK Lambda env), unlike the
-        # config's s3_prefix, which is the bucket ROOT and gets '/digest_state' appended.
-        prefix = os.environ.get("S3_PREFIX", "digest_state")
-        return S3StateStore(state_boto_session(config), env_bucket, prefix=prefix)
-    if config and config.aws.state_bucket_name:
-        prefix = f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state"
-        return S3StateStore(state_boto_session(config), config.aws.state_bucket_name, prefix=prefix)
+    bucket, root = state_location(config)
+    if bucket:
+        return S3StateStore(
+            state_boto_session(config), bucket, prefix=f"{root}/digest_state" if root else "digest_state"
+        )
     return LocalStateStore(Path(LocalPaths.DIGEST_STATE_DIR.value))

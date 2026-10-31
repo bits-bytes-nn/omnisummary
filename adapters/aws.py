@@ -50,6 +50,19 @@ def secret_parameter_name(suffix: str) -> str:
     return f"/{project or 'omnisummary'}/{stage or 'dev'}/{suffix}"
 
 
+def state_location(config) -> tuple[str, str]:
+    """(bucket, ROOT prefix) of the state bucket, or ("", "") when there is none. The Lambda env
+    (STATE_BUCKET + S3_PREFIX, the latter '<root>/digest_state') wins over the config, for every reader
+    and writer alike: the ledgers and the hosted comic once resolved it in opposite orders."""
+    bucket = os.environ.get("STATE_BUCKET", "")
+    if bucket:
+        prefix = os.environ.get("S3_PREFIX", "").strip("/")
+        return bucket, prefix.rsplit("/", 1)[0] if "/" in prefix else ""
+    if config is not None and config.aws.state_bucket_name:
+        return config.aws.state_bucket_name, config.aws.s3_prefix.strip("/")
+    return "", ""
+
+
 def available_boto_profile(profile: str) -> str | None:
     """`profile` when boto3 can actually resolve it here, else None — i.e. "use ambient credentials".
 

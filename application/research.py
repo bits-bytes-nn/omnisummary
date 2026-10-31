@@ -107,6 +107,8 @@ class DeliveryContext:
     # text gets the same verdict instead of a second, non-deterministic check.
     refused_for_facts: str | None = None
     fact_issues: list[dict] = field(default_factory=list)
+    # The fact check could not run, so the thread went out unchecked; the CLI says so in its warnings.
+    fact_check_skipped: bool = False
     # Why the last Threads attempt was sent back, for the CLI's warning when nothing was resubmitted.
     last_refusal: str = ""
     # Held across a Threads delivery, its fact check included: two identical calls in one turn each ran
@@ -544,6 +546,7 @@ async def check_thread_facts(report: str, delivery: DeliveryContext) -> list[dic
         return []
     if delivery.ports.models is None:
         logger.warning("No model is configured for the thread fact check; posting without it")
+        delivery.fact_check_skipped = True
         return []
     try:
         config = delivery.config
@@ -562,4 +565,5 @@ async def check_thread_facts(report: str, delivery: DeliveryContext) -> list[dic
         return [i for i in issues if isinstance(i, dict) and i.get("claim")]
     except Exception:
         logger.warning("Thread fact check failed; posting without it", exc_info=True)
+        delivery.fact_check_skipped = True
         return []

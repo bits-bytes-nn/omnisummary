@@ -696,6 +696,13 @@ class TestSourceMatchingByNormalizedUrl:
         gen._fill_source_metadata(content, ranked)
         assert content.items[0].source_tag == "Interconnects"
 
+    def test_the_collected_url_ships_not_the_editors_echo(self):
+        gen, ranked = self._generator_with("https://interconnects.ai/p/x")
+        echoed = "http://www.interconnects.ai/p/x/?utm_source=llm"
+        content = DigestContent(lead="l", items=[DigestItem(title="T", url=echoed, body="b")])
+        gen._fill_source_metadata(content, ranked)
+        assert content.items[0].url == "https://interconnects.ai/p/x"
+
     def test_identical_urls_are_unaffected(self):
         gen, ranked = self._generator_with("https://interconnects.ai/p/x")
         content = DigestContent(lead="l", items=[DigestItem(title="T", url="https://interconnects.ai/p/x", body="b")])

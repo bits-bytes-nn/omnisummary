@@ -57,7 +57,9 @@ class TestMidWayAbort:
         config.aws.project_name, config.aws.stage, config.aws.region = "omnisummary", "dev", "ap-northeast-2"
         with patch.object(put_secrets, "Config") as cfg:
             cfg.load.return_value = config
-            with patch.object(put_secrets.boto3, "client", return_value=client):
+            with patch.object(
+                put_secrets.boto3, "Session", return_value=MagicMock(client=MagicMock(return_value=client))
+            ):
                 with patch.object(sys, "argv", ["put_secrets.py"]):
                     rc = put_secrets.main()
         out = capsys.readouterr().out
@@ -82,7 +84,9 @@ class TestMidWayAbort:
         config.aws.project_name, config.aws.stage, config.aws.region = "omnisummary", "dev", "ap-northeast-2"
         with patch.object(put_secrets, "Config") as cfg:
             cfg.load.return_value = config
-            with patch.object(put_secrets.boto3, "client", return_value=client):
+            with patch.object(
+                put_secrets.boto3, "Session", return_value=MagicMock(client=MagicMock(return_value=client))
+            ):
                 with patch.object(sys, "argv", ["put_secrets.py"]):
                     rc = put_secrets.main()
         out = capsys.readouterr().out
@@ -104,7 +108,9 @@ class TestMidWayAbort:
         config.aws.project_name, config.aws.stage, config.aws.region = "omnisummary", "dev", "ap-northeast-2"
         with patch.object(put_secrets, "Config") as cfg:
             cfg.load.return_value = config
-            with patch.object(put_secrets.boto3, "client", return_value=client):
+            with patch.object(
+                put_secrets.boto3, "Session", return_value=MagicMock(client=MagicMock(return_value=client))
+            ):
                 with patch.object(sys, "argv", ["put_secrets.py"]):
                     rc = put_secrets.main()
         out = capsys.readouterr().out
@@ -123,7 +129,9 @@ class TestMidWayAbort:
         config.aws.project_name, config.aws.stage, config.aws.region = "omnisummary", "dev", "ap-northeast-2"
         with patch.object(put_secrets, "Config") as cfg:
             cfg.load.return_value = config
-            with patch.object(put_secrets.boto3, "client", return_value=client):
+            with patch.object(
+                put_secrets.boto3, "Session", return_value=MagicMock(client=MagicMock(return_value=client))
+            ):
                 with patch.object(sys, "argv", ["put_secrets.py"]):
                     rc = put_secrets.main()
         out = capsys.readouterr().out

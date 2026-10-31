@@ -16,7 +16,7 @@ from .constants import (
     LanguageModelId,
     SourceType,
 )
-from .logger import logger
+from .logger import is_running_in_aws, logger
 
 
 class _StrictModel(BaseModel):
@@ -602,12 +602,18 @@ class Config(_StrictModel):
 
         The template is tracked and always present, so it is a real config rather than nothing: the
         source lists are placeholders, but every knob is the shipped one and the WARNING names what
-        happened. With neither file there is nothing to deploy, and load() says so."""
+        happened. With neither file there is nothing to deploy, and load() says so. Inside AWS the fallback
+        is refused: an image built from a checkout without config.yaml would otherwise collect from the
+        placeholders, rank and publish a thin digest with only a log line to show for it."""
         load_dotenv()
         config_dir = Path(__file__).parent.parent / "config"
         config_path = config_dir / "config.yaml"
         if config_path.exists():
             return cls.from_yaml(str(config_path))
+        if is_running_in_aws():
+            raise FileNotFoundError(
+                f"'{config_path}' is missing from the deployed image; rebuild it from a checkout that has it."
+            )
         template_path = config_dir / "config-template.yaml"
         if not template_path.exists():
             raise FileNotFoundError(

@@ -373,8 +373,11 @@ class ContentRanker:
                     number = int(number)
                 # A bool or a fraction is not an item number (int(True) and int(2.7) would map silently).
                 if type(number) is not int or not 1 <= number <= len(items):
-                    logger.warning("Unknown item number in ranking response: %s", entry["item"])
-                    continue
+                    # One bad number means the numbering itself is off (a zero-based answer shifted every
+                    # score onto the next item): drop the whole answer so the coverage re-ask scores the
+                    # batch again rather than keep the shifted part.
+                    logger.warning("Ranking response used item number %r; discarding the response", entry["item"])
+                    return []
                 if number in seen:
                     duplicates.append(number)
                     continue
