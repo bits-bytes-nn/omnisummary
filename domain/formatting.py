@@ -294,8 +294,16 @@ def _trim_url(url: str) -> str:
     return url
 
 
-# Hangul glued to a URL's end, not right after a dot (a host part): a particle, or part of a Korean path.
-_TRAILING_HANGUL = re.compile(r"(?<![.\u3002\uff0e\uff61])[\uac00-\ud7a3]+$")
+# The Korean particles prose glues to a cited URL ("...com/a에서"), longest first. A closed list, so a
+# Korean path segment ("/blog/가짜발표") or the rest of a longer slug ("/w/인공지능" for a seen "/w/인공")
+# is never taken for one.
+_URL_PARTICLES = tuple(
+    sorted(
+        "에서는 에서도 에서 에는 에도 에게 에 의 을 를 은 는 이 가 으로 로 와 과 도 만 까지 부터 처럼 보다 이다 입니다 참고".split(),
+        key=len,
+        reverse=True,
+    )
+)
 
 
 def citation_key(url: str, seen: set[str]) -> str | None:
@@ -307,16 +315,11 @@ def citation_key(url: str, seen: set[str]) -> str | None:
     key = normalize_citation_url(url)
     if key in seen:
         return key
-    # Shortest particle first ("/위키/인공지능에서" needs only "에서" off), and never a whole path segment:
-    # dropping all of "/blog/가짜발표" matched any page under a seen "/blog".
-    run = _TRAILING_HANGUL.search(url)
-    for cut in range(1, len(run.group()) + 1 if run else 0):
-        stem = url[:-cut]
-        if stem.endswith("/"):
-            break
-        bare = normalize_citation_url(_trim_url(stem))
-        if "/" in bare.rstrip("/") and bare in seen:
-            return bare
+    trimmed = _trim_url(url)
+    for particle in _URL_PARTICLES:
+        if trimmed.endswith(particle):
+            bare = normalize_citation_url(_trim_url(trimmed[: -len(particle)]))
+            return bare if "/" in bare.rstrip("/") and bare in seen else None
     return None
 
 

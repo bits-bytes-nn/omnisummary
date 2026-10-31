@@ -231,6 +231,22 @@ class TestPlantedUrlsInEveryResultField:
 
 
 class TestKoreanParticleAfterACitation:
+    @pytest.mark.parametrize(
+        "cited, seen, expected",
+        [
+            ("https://openai.com/index/introducing-gpt-5/에서", "https://openai.com/index/introducing-gpt-5/", True),
+            ("https://ko.wikipedia.org/wiki/인공지능에서", "https://ko.wikipedia.org/wiki/인공지능", True),
+            ("https://ex.com/a/에", "https://ex.com/a", True),
+            # A Korean path segment, or the rest of a longer slug, is never taken for a particle.
+            ("https://openai.com/blog/가짜발표", "https://openai.com/blog", False),
+            ("https://ex.com/w/인공지능", "https://ex.com/w/인공", False),
+        ],
+    )
+    def test_only_a_particle_comes_off(self, cited, seen, expected):
+        from domain.formatting import citation_key
+
+        assert (citation_key(cited, {normalize_citation_url(seen)}) is not None) is expected
+
     def test_a_fullwidth_host_suffix_is_not_a_particle(self):
         delivery = DeliveryContext(seen_urls={normalize_citation_url("https://openai.com/")})
         with request_context(delivery):

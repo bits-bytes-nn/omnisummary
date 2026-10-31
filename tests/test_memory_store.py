@@ -173,6 +173,22 @@ class TestAgentCoreMemoryStore:
         client.create_event.assert_called_once()  # stored, did not raise
         assert "ranked_items" in text
 
+    def test_a_full_pool_keeps_every_items_text_within_the_limit(self):
+        # 12 candidates x 12k overflowed the old fixed cap on every full pool, so the visual lost the
+        # headline article; each item now keeps an even share of the room.
+        import json
+
+        store, client = self._store()
+        pool = {
+            "ranked_items": [{"item": {"item_id": f"i{n}", "text": "가" * 20_000}, "score": 0.8} for n in range(12)],
+            "digest_result": {"digest_text": "ok"},
+        }
+        store.put_digest("2026-06-02", pool)
+        text = client.create_event.call_args.kwargs["payload"][0]["conversational"]["content"]["text"]
+        assert len(text) <= AgentCoreMemoryStore.MAX_EVENT_TEXT
+        kept = [len(r["item"]["text"]) for r in json.loads(text)["ranked_items"]]
+        assert min(kept) > 6000
+
     def test_put_digest_minimal_fallback_when_still_too_large(self):
         # Pathological: many ranked items with huge text — falls back to metadata only.
         store, client = self._store()

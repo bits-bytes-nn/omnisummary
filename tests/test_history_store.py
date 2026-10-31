@@ -39,6 +39,12 @@ class TestPublishedUrlLedger:
         ledger.record(["https://a.com/x"], today)
         assert ledger.recent_urls(today) == set()
 
+    def test_a_replayed_older_day_excludes_what_later_days_ran(self):
+        store = _MemStore()
+        ledger = PublishedUrlLedger(store, ttl_days=6)
+        ledger.record(["https://later.com/x"], date(2026, 6, 12))
+        assert ledger.recent_urls(date(2026, 6, 9)) == {"https://later.com/x"}
+
     def test_entries_outside_ttl_are_pruned(self):
         store = _MemStore()
         store.write_json(PUBLISHED_URLS_KEY, {"https://old.com": "2026-06-01", "https://new.com": "2026-06-08"})

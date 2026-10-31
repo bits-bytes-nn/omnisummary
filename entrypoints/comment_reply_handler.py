@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -21,7 +22,9 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         logger.info("Comment replies are disabled (pipeline.enable_comment_replies)")
         return {"statusCode": 200, "body": "disabled"}
     try:
-        run = asyncio.run(_run(config))
+        remaining_ms = getattr(context, "get_remaining_time_in_millis", lambda: None)()
+        deadline = time.monotonic() + remaining_ms / 1000 if isinstance(remaining_ms, int | float) else None
+        run = asyncio.run(_run(config, deadline))
     except Exception as e:
         logger.error("Comment-reply Lambda failed: %s", e, exc_info=True)
         raise
@@ -30,8 +33,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     return {"statusCode": 200, "body": f"{len(run.replied)} replied, {len(run.declined)} declined"}
 
 
-async def _run(config: Config):
+async def _run(config: Config, deadline: float | None = None):
     responder = CommentResponder(
         config, bootstrap.language_models(config), bootstrap.state_store(config), bootstrap.threads(config)
     )
-    return await responder.run(datetime.now(UTC))
+    return await responder.run(datetime.now(UTC), deadline=deadline)

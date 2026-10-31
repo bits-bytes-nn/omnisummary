@@ -43,7 +43,9 @@ class ThreadsPostLedger:
     StateStore read-modify-write is still not atomic (no lock), but ownership scoping closes
     the specific 'a peer's failure erases my success' hole."""
 
-    MAX_DATES = 30
+    # As long as a snapshot can be replayed (AgentCore events expire after 90 days): a replay of an
+    # older date found no marker and posted the day again.
+    MAX_DATES = 90
 
     def __init__(self, store: StateStore) -> None:
         self.store = store
@@ -125,7 +127,7 @@ class PublishedUrlLedger:
         return ledger if isinstance(ledger, dict) else {}
 
     def recent_urls(self, today: date) -> set[str]:
-        """URLs published on a STRICTLY EARLIER day within the window. Same-day (age 0) is
+        """URLs published on another day within the window, earlier or (for a replayed day) later. Same-day (age 0) is
         excluded from the set so a same-day re-run reproduces today's digest rather than
         suppressing its own just-recorded stories; within-run duplicates are handled by the
         aggregator's own dedup, not here. An unreadable ledger yields no exclusions (a repeat
@@ -137,7 +139,9 @@ class PublishedUrlLedger:
         for url, iso in ledger.items():
             try:
                 age = (today - date.fromisoformat(iso)).days
-                if 0 < age < self.ttl_days:
+                # Negative ages too: a late backfill or DLQ replay of an older day must not re-ship what
+                # the days after it already ran.
+                if age != 0 and age < self.ttl_days:
                     keep.add(url)
             except (ValueError, TypeError):
                 continue

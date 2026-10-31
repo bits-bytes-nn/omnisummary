@@ -57,6 +57,8 @@ def state_location(config) -> tuple[str, str]:
     bucket = os.environ.get("STATE_BUCKET", "")
     if bucket:
         prefix = os.environ.get("S3_PREFIX", "").strip("/")
+        if not prefix:
+            return bucket, config.aws.s3_prefix.strip("/") if config is not None else ""
         return bucket, prefix.rsplit("/", 1)[0] if "/" in prefix else ""
     if config is not None and config.aws.state_bucket_name:
         return config.aws.state_bucket_name, config.aws.s3_prefix.strip("/")

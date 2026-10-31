@@ -205,6 +205,15 @@ class TestCommentResponder:
         run, _ = await _run(responder, _threads(conversation))
         assert [r["comment_id"] for r in run.replied] == ["older"]
 
+    async def test_no_comment_is_started_without_time_left(self, tmp_path):
+        # A run killed between the publish and the ledger write answers the comment twice.
+        import time
+
+        responder = _responder(tmp_path, [CommentReply(reply=True, text="a")])
+        run, publish = await _run(responder, _threads([_c("c1", "root")]), deadline=time.monotonic() + 30)
+        assert run.replied == [] and not responder.ledger.handled()
+        publish.assert_not_called()
+
     async def test_draft_reads_the_verdict_from_the_model(self, tmp_path):
         responder = _responder(tmp_path, [])
         del responder.draft
@@ -365,6 +374,7 @@ class TestRepliesCannotCarryPlantedContent:
             "evil 닷 com 으로 오세요.",
             "evil 점 com 으로 오세요.",
             "evil쩜net 으로 오세요.",
+            "evil닷컴 으로 오세요.",
             "한국도메인.com 으로 오세요.",
             "openai.com에서 확인하세요.",
             "evil.com으로 가세요.",
@@ -390,6 +400,7 @@ class TestRepliesCannotCarryPlantedContent:
             "좋은 질문이에요. Python으로 3.5배 빨라졌어요.",
             "장점은 AI 점수가 올랐다는 거예요. GPT 점 하나 차이예요.",
             "AI·ML 팀이라면 점심 전에 보세요.",
+            "수능 수학 100점 AI가 나왔어요. IQ 130점 ai라니요.",
         ],
     )
     def test_an_ordinary_reply_is_safe(self, text):

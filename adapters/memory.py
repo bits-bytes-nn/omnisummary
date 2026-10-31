@@ -61,9 +61,6 @@ class AgentCoreMemoryStore(MemoryStore):
         self._client = (session or boto3).client("bedrock-agentcore", region_name=region_name or aws_region())
 
     MAX_EVENT_TEXT = 100_000
-    # When even the ranked set overflows, cap each item's stored body. The digest snapshot
-    # only needs enough text for cross-day dedup/recall, so a per-item cap loses nothing used.
-    RANKED_TEXT_CAP = 12_000
 
     def put_digest(self, digest_date: str, state: dict[str, Any]) -> None:
         session_id = f"{self.DIGEST_SESSION_PREFIX}-{digest_date}"
@@ -88,13 +85,23 @@ class AgentCoreMemoryStore(MemoryStore):
         import copy
 
         trimmed = copy.deepcopy(state)
-        for ranked in trimmed.get("ranked_items", []):
-            item = ranked.get("item", {})
-            if isinstance(item.get("text"), str):
-                item["text"] = item["text"][: self.RANKED_TEXT_CAP]
+        texts = [r.get("item", {}) for r in trimmed.get("ranked_items", [])]
+        texts = [item for item in texts if isinstance(item.get("text"), str)]
+        # An even share of what the metadata leaves, not a fixed cap: 12 items x 12k overflowed on every
+        # full pool, and the visual then lost the headline article it draws from.
+        for item in texts:
+            item["text"] = ""
+        room = self.MAX_EVENT_TEXT - len(json.dumps(trimmed, ensure_ascii=False))
+        share = max(0, room // max(1, len(texts)) - 64)
+        for ranked, item in zip(
+            state.get("ranked_items", []), [r.get("item", {}) for r in trimmed.get("ranked_items", [])]
+        ):
+            original = ranked.get("item", {}).get("text")
+            if isinstance(original, str):
+                item["text"] = original[:share]
         payload_text = json.dumps(trimmed, ensure_ascii=False)
         if len(payload_text) <= self.MAX_EVENT_TEXT:
-            logger.warning("Digest state still large; truncated ranked-item text to %d chars", self.RANKED_TEXT_CAP)
+            logger.warning("Digest state still large; truncated each ranked item's text to %d chars", share)
             return payload_text
 
         logger.warning("Digest state exceeds limit after trimming; storing ranked metadata only")
