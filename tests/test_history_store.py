@@ -257,3 +257,31 @@ class TestLedgerBoundaries:
         ledger.record(["https://e.com/a"], date(2026, 6, 1))
         assert "https://e.com/a" in ledger.recent_urls(date(2026, 6, 6))  # age 5
         assert "https://e.com/a" not in ledger.recent_urls(date(2026, 6, 7))  # age 6 == ttl
+
+
+def test_a_backfilled_date_keeps_its_marker_behind_thirty_newer_ones():
+    from datetime import date, timedelta
+
+    from application.history import ThreadsPostLedger
+    from tests.fakes import MemoryStateStore
+
+    ledger = ThreadsPostLedger(MemoryStateStore())
+    for offset in range(ThreadsPostLedger.MAX_DATES):
+        ledger.mark(date(2026, 10, 31) - timedelta(days=offset))
+    ledger.mark(date(2026, 8, 1))
+    assert ledger.already_posted(date(2026, 8, 1))
+
+
+def test_a_backfilled_marker_survives_the_next_days_marks():
+    from datetime import date, timedelta
+
+    from application.history import ThreadsPostLedger
+    from tests.fakes import MemoryStateStore
+
+    ledger = ThreadsPostLedger(MemoryStateStore())
+    for offset in range(ThreadsPostLedger.MAX_DATES):
+        ledger.mark(date(2026, 10, 30) - timedelta(days=offset))
+    ledger.mark(date(2026, 8, 1))
+    for offset in range(1, 6):
+        ledger.mark(date(2026, 10, 30) + timedelta(days=offset))
+    assert ledger.already_posted(date(2026, 8, 1))

@@ -846,18 +846,48 @@ class TestThreadsGateway:
         assert sent["image_key"].startswith("omni/threads/") and sent["image_key"].endswith(".png")
         assert sent["image_alt"] == "1컷"
 
-    async def test_a_research_image_keeps_its_own_name_and_type(self):
+    async def test_the_image_type_names_the_key_and_the_post_carries_the_topic_and_deadline(self):
         from shared.config import Config
 
         config = Config()
         config.aws.state_bucket_name = "bucket"
-        sent = await self._post(
-            config, image_bytes=b"JPG", image_content_type="image/jpeg", image_key_prefix="research_"
-        )
-        assert sent["image_key"].startswith("threads/research_") and sent["image_key"].endswith(".jpg")
+        sent = await self._post(config, image_bytes=b"JPG", image_content_type="image/jpeg", deadline=12.5)
+        assert sent["image_key"].startswith("threads/") and sent["image_key"].endswith(".jpg")
+        assert sent["topic_tag"] == config.pipeline.threads_topic_tag
+        assert sent["deadline"] == 12.5
 
     async def test_no_bucket_posts_text_only(self):
         from shared.config import Config
 
         sent = await self._post(Config(), image_bytes=b"PNG")
         assert (sent["image_bucket"], sent["image_key"]) == ("", "")
+
+
+class TestARootThatMayBeLive:
+    """A root whose publish step failed in transit may be live: the verdict must say so, or the ledger
+    is released and a replay posts a second public root."""
+
+    @staticmethod
+    async def _post(error):
+        async def publish(client, user_id, token, **kwargs):
+            raise error
+
+        with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
+            with patch.object(threads_handler, "_publish_post", side_effect=publish):
+                return await threads_handler.post_to_threads(root_text="root", replies=["r1"])
+
+    @pytest.mark.parametrize("error_type", [httpx.ReadTimeout, httpx.RemoteProtocolError, httpx.ReadError])
+    async def test_a_transport_failure_on_the_publish_step_may_be_live(self, error_type):
+        request = httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads_publish")
+        outcome = await self._post(error_type("x", request=request))
+        assert (outcome.posted, outcome.uncertain) == (0, True)
+
+    async def test_a_failure_creating_the_container_is_not(self):
+        request = httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads")
+        outcome = await self._post(httpx.ReadTimeout("x", request=request))
+        assert (outcome.posted, outcome.uncertain) == (0, False)
+
+    def test_a_dropped_connection_on_a_reply_publish_may_be_live(self):
+        request = httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads_publish")
+        assert threads_handler.publish_may_be_live(httpx.RemoteProtocolError("x", request=request))
+        assert not threads_handler.publish_may_be_live(httpx.ConnectError("x", request=request))

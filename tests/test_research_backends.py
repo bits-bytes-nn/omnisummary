@@ -216,3 +216,24 @@ class TestExtractPages:
     async def test_no_key_reads_nothing(self):
         with patch.object(rb, "_get_tavily_client", return_value=None):
             assert await rb.extract_pages(["http://x"]) == {}
+
+
+class TestWebResearchSources:
+    """The adapter behind the research port: each port method reaches its own backend."""
+
+    async def test_each_method_reaches_its_backend_with_its_arguments(self):
+        sources = rb.WebResearchSources()
+        with (
+            patch.object(rb, "tavily_search", new=AsyncMock(return_value="web")) as web,
+            patch.object(rb, "paper_search", new=AsyncMock(return_value="papers")) as papers,
+            patch.object(rb, "extract_url", new=AsyncMock(return_value="page")) as page,
+            patch.object(rb, "fetch_og_image", new=AsyncMock(return_value=None)) as image,
+        ):
+            assert await sources.web_search("q", topic="news", time_range="week", include_domains=["x.com"]) == "web"
+            assert await sources.paper_search("p") == "papers"
+            assert await sources.read_page("https://a") == "page"
+            assert await sources.fetch_image("https://b") is None
+        web.assert_awaited_once_with("q", topic="news", time_range="week", include_domains=["x.com"])
+        papers.assert_awaited_once_with("p")
+        page.assert_awaited_once_with("https://a")
+        image.assert_awaited_once_with("https://b")

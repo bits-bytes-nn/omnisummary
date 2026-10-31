@@ -116,5 +116,6 @@ async def test_a_dry_run_stores_and_posts_nothing():
                         with patch.object(main, "persist_digest") as persist:
                             with patch.object(main, "publish_inline", new=AsyncMock()) as publish:
                                 assert await main.main() == 0
+                        assert main.run_pipeline.await_args.kwargs["dry_run"] is True
     persist.assert_not_called()
     publish.assert_not_awaited()

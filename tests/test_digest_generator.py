@@ -502,6 +502,34 @@ class TestTargetCountTrim:
         assert "u4" in urls  # pinned survived
         assert urls[0] == "u0"  # headline preserved at front
 
+    @pytest.mark.asyncio
+    async def test_a_pinned_story_the_editor_left_out_is_logged(self):
+        from datetime import date
+
+        emitted = {
+            "lead": "리드.",
+            "items": [{"title": f"T{i}", "url": f"u{i}", "body": "본문.", "implication": "시사점."} for i in range(2)],
+        }
+        config = PipelineConfig(enable_grounding_check=False, top_n=2)
+        factory = MagicMock()
+        factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content=json.dumps(emitted)))
+        ranked = [
+            RankedItem(
+                item=CollectedItem(
+                    item_id=f"i{i}",
+                    source_type=SourceType.RSS,
+                    title=f"T{i}",
+                    url=f"u{i}",
+                    metadata={"pinned": True} if i == 2 else {},
+                ),
+                score=0.8,
+            )
+            for i in range(3)
+        ]
+        with patch("application.digest_generator.logger") as log:
+            await DigestGenerator(config, factory).generate(ranked, today=date(2030, 1, 1))
+        assert any("Pinned URL(s) missing" in str(c.args[0]) for c in log.error.call_args_list)
+
     def test_trim_keeping_pinned_no_pins_is_plain_slice(self):
         ranked = [
             RankedItem(

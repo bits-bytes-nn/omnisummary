@@ -366,3 +366,21 @@ class TestAvailableBotoProfile:
 
         with patch("boto3.session.Session", side_effect=RuntimeError("bad config")):
             assert available_boto_profile("research") is None
+
+
+class TestSecretParameterName:
+    def test_the_lambdas_env_names_it(self, monkeypatch):
+        from adapters.aws import secret_parameter_name
+
+        monkeypatch.setenv("PROJECT_NAME", "omni")
+        monkeypatch.setenv("STAGE", "prod")
+        assert secret_parameter_name("tavily-api-key") == "/omni/prod/tavily-api-key"
+
+    def test_a_local_run_uses_the_configs_stage_not_dev(self):
+        # put_secrets.py writes under the config's project/stage, and the memory lookup reads it too.
+        from adapters import aws
+
+        config = MagicMock()
+        config.aws.project_name, config.aws.stage = "omnisummary", "prod"
+        with patch.object(aws, "get_config", return_value=config):
+            assert aws.secret_parameter_name("tavily-api-key") == "/omnisummary/prod/tavily-api-key"

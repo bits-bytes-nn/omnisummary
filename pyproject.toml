@@ -133,6 +133,8 @@ forbidden_modules = [
     "bs4",
     "langchain_aws",
     "youtube_transcript_api",
+    "requests",
+    "socket",
 ]
 
 [[tool.importlinter.contracts]]
@@ -164,6 +166,7 @@ omit = [
     # documented stale-data incidents (the STATE_BUCKET pop, the empty-envelope stamp) that only its
     # own tests can hold in place.
     "scripts/ci_synth.py",
+    "scripts/sample_comment_replies.py",
     "scripts/deploy.py",
     "scripts/put_inference_profiles.py",
     "scripts/sample_digest.py",

@@ -338,3 +338,19 @@ def test_two_pins_sharing_a_title_are_both_kept():
         for url in ("https://a.example/1", "https://b.example/2")
     ]
     assert len(ContentAggregator().aggregate(pins)) == 2
+
+
+def test_a_percent_encoded_path_is_the_same_url_as_its_literal_form():
+    from domain.aggregator import normalize_url
+
+    encoded = "https://blog.example/entry/%EC%97%90%EC%9D%B4%EC%A0%84%ED%8A%B8"
+    assert normalize_url(encoded) == normalize_url("https://blog.example/entry/에이전트")
+
+
+def test_encoded_reserved_characters_stay_encoded_and_normalizing_is_idempotent():
+    from domain.aggregator import normalize_url
+
+    for url in ("https://e.com/a%23b", "https://e.com/a%3Fb", "https://e.com/a%2Fb", "https://e.com/a%2541"):
+        once = normalize_url(url)
+        assert normalize_url(once) == once
+    assert normalize_url("https://e.com/a%2Fb") != normalize_url("https://e.com/a/b")

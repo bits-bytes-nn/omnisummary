@@ -317,6 +317,8 @@ async def publish_inline(
         logger.error("Daily visual step failed", exc_info=True)
         raise PublishIncomplete(f"The {digest_date} visual/Threads step failed: {e}") from e
     logger.info("Daily visual %s", "posted" if posted else "skipped")
+    if maker.threads_unprotected:
+        logger.error("Do NOT re-run %s: it is on Threads but not recorded as posted", digest_date)
     outcome = maker.threads_outcome
     if outcome is not None and outcome.posted < outcome.expected:
         raise PublishIncomplete(

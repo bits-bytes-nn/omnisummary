@@ -14,7 +14,7 @@ class TestHandler:
         # Patch _run, not asyncio.run: patching the runner asserted only that SOMETHING was awaited.
         with patch("entrypoints.digest_handler._run", new=AsyncMock()) as run:
             result = digest_handler.handler({}, None)
-        run.assert_awaited_once_with()
+        run.assert_awaited_once_with({})
         assert result["statusCode"] == 200
 
     def test_reraises_on_exception_so_alarms_and_dlq_fire(self):
@@ -249,3 +249,34 @@ class TestTriggerVisual:
         monkeypatch.setattr("entrypoints.digest_handler.is_running_in_aws", lambda: True)
         with pytest.raises(RuntimeError, match="VISUAL_FUNCTION_NAME"):
             digest_handler._trigger_visual(date(2026, 8, 18))
+
+
+class TestRequestedDate:
+    """A DLQ replay after midnight built the NEXT day's digest; the scheduled event names its own time."""
+
+    def test_the_scheduled_event_time_is_the_digest_date_in_the_digest_timezone(self):
+        assert digest_handler._requested_date({"time": "2026-10-31T10:00:00Z"}, "Asia/Seoul") == "2026-10-31"
+        assert digest_handler._requested_date({"time": "2026-10-31T16:00:00Z"}, "Asia/Seoul") == "2026-11-01"
+
+    def test_a_dlq_envelope_is_read_through_to_the_original_event(self):
+        envelope = {"requestPayload": {"time": "2026-10-31T10:00:00Z"}, "responsePayload": {}}
+        assert digest_handler._requested_date(envelope, "Asia/Seoul") == "2026-10-31"
+
+    def test_an_explicit_date_wins_and_nothing_means_today(self):
+        assert digest_handler._requested_date({"digest_date": "2026-10-30"}, "Asia/Seoul") == "2026-10-30"
+        assert digest_handler._requested_date({}, "Asia/Seoul") is None
+
+    async def test_the_run_uses_the_events_date(self):
+        config = _config()
+        with patch("entrypoints.digest_handler.Config.load", return_value=config):
+            with patch("entrypoints.digest_handler.bootstrap", MagicMock()):
+                with patch(
+                    "entrypoints.digest_handler.resolve_digest_window", side_effect=RuntimeError("stop")
+                ) as window:
+                    with pytest.raises(RuntimeError, match="stop"):
+                        await digest_handler._run({"digest_date": "2026-10-30"})
+        assert window.call_args.args[1] == "2026-10-30"
+
+
+def test_a_non_object_event_means_today():
+    assert digest_handler._requested_date(["x"], "Asia/Seoul") is None  # type: ignore[arg-type]

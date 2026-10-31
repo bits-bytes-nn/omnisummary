@@ -141,6 +141,11 @@ class DailyVisualMaker:
     def threads_ledger(self) -> ThreadsPostLedger | None:
         return self.publisher.threads_ledger
 
+    @property
+    def threads_unprotected(self) -> bool:
+        """Posts are live but the date is not recorded as posted, so a replay would post again."""
+        return self.publisher.unprotected
+
     async def _make_visual(
         self,
         ranked_items: list[RankedItem],

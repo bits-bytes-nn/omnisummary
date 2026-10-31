@@ -4,10 +4,8 @@
 [design.md](./design.md), 설치와 배포는 [README](../README.ko.md)를 본다.
 
 아래 명령은 `research` 프로필 계정과 ap-northeast-2 기준이다. 다른 계정이면 `--profile`과 `--region`을 바꾼다. 셸이 다른 계정의
-`AWS_PROFILE`·`AWS_REGION`을 물려받을 수 있으니 AWS CLI에는 항상 둘을 명시한다.
-
-아래 명령은 프로필과 리전을 직접 적는다. zsh는 `P="--profile ..."`처럼 담은 변수를 단어로 나누지 않아 `$P`가
-옵션 하나로 넘어간다.
+`AWS_PROFILE`·`AWS_REGION`을 물려받을 수 있으니 AWS CLI에는 항상 둘을 직접 적는다(zsh는 `P="--profile ..."`처럼 변수에 담은
+옵션을 단어로 나누지 않는다).
 
 ## 하루의 흐름
 
@@ -23,7 +21,7 @@
 본다. 수집 0건, 다이제스트 없음, 게시 실패나 미완료면 1이다(로컬에는 알림이 없다).
 
 ```bash
-uv run python recall_cli.py digest            # 오늘 게시된 리드와 기사(JSON)
+uv run python recall_cli.py digest            # 오늘 저장된 리드와 기사(JSON). 게시 여부는 Threads에서 본다
 uv run python recall_cli.py digest 2026-10-28 # 특정 날짜
 ```
 
@@ -62,6 +60,7 @@ aws logs filter-log-events --profile research --region ap-northeast-2 --log-grou
 | `the root is live but no story reply landed under it` | 첫 글만 올라갔다(답글이 실패했거나 별도 게시물로 올라갔다) | `--force-republish`를 하지 않는다(첫 글이 하나 더 생긴다) |
 | `the root MAY be live` | 첫 글 게시 요청이 오류로 끝났지만 실제로 올라갔는지 알 수 없다 | Threads 앱에서 그날 첫 글이 있는지 본다. **없을 때만** 알림에 적힌 명령(`force_republish: true`)을 실행한다 |
 | `the stored digest has NO stories` | 저장된 다이제스트에 기사가 없어 아무것도 올리지 않았다 | 다시 게시해도 같으니, 알림에 적힌 `main.py --date … --force-republish`로 새로 만든다 |
+| `could NOT be confirmed as recorded` | 게시는 됐는데 게시 기록(원장)에 그날이 남았는지 확인하지 못했다 | 그날은 다시 올리지도, 다시 돌리지도 않는다. 기록이 없으면 막을 장치가 없어 같은 글이 한 번 더 올라간다. 다음 날부터는 영향이 없다 |
 | `NOT published` | 아무것도 올라가지 않았다 | 알림에 적힌 명령을 실행한다. 게시 기록이 남아 있는 날이면 `force_republish: true`가 든 명령이 오니, 앱에서 첫 글이 없음을 확인한 뒤 실행한다 |
 
 ### CloudWatch 알람
@@ -82,7 +81,7 @@ aws logs filter-log-events --profile research --region ap-northeast-2 --log-grou
 먼저 Threads 앱에서 그날 첫 글이 정말 없는지 확인한다. 하나라도 올라가 있으면 다시 올리지 않는다(첫 글이 둘이 된다).
 
 **저장된 스냅샷으로 다시 게시한다(권장).** 다이제스트는 이미 만들어져 저장돼 있으니 visual Lambda만 다시 부른다. 같은
-글과 같은 기사가 나가고, 만화는 새로 그린다. Threads Delivery 알림에 날짜가 채워진 이 명령이 그대로 적혀 온다.
+글과 같은 기사가 나가고, 만화는 새로 그린다. Threads Delivery 알림에 날짜가 채워진 이 명령이 오니 `--profile research`를 붙여 실행한다.
 
 ```bash
 aws lambda invoke --profile research --region ap-northeast-2 --function-name omnisummary-dev-visual --invocation-type Event \
@@ -100,7 +99,7 @@ aws lambda invoke --profile research --region ap-northeast-2 --function-name omn
 `main.py --date <날짜> --force-republish`는 다시 수집하고 새로 쓰므로 그날 게시된 것과 다른 다이제스트가 나가고, 저장된
 기록도 그것으로 바뀐다. 저장된 스냅샷이 없거나 기사가 0건일 때만 쓴다.
 
-DLQ에 쌓인 메시지는 확인한 뒤 지운다.
+DLQ에 쌓인 메시지는 확인한 뒤 지운다. digest Lambda 메시지를 다시 넣으면 그 메시지가 실행됐던 날짜의 다이제스트를 다시 만든다(이벤트의 `time`을 읽는다).
 
 ```bash
 Q=$(aws sqs get-queue-url --profile research --region ap-northeast-2 --queue-name omnisummary-dev-async-dlq --query QueueUrl --output text)

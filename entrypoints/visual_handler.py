@@ -206,6 +206,17 @@ async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = 
     ledger = maker.threads_ledger
     marker_kept = bool(outcome is not None and outcome.posted == 0 and ledger and ledger.already_posted(digest_date))
     _maybe_alert_threads_outcome(outcome, digest_date, marker_kept=marker_kept)
+    if maker.threads_unprotected:
+        publish_alert(
+            "Threads Delivery",
+            "ALERT",
+            {
+                "Digest date": digest_date.isoformat(),
+                "Delivered": outcome.summary() if outcome else "-",
+                "Detail": "the post is live but its date could NOT be confirmed as recorded in the post ledger. Do NOT "
+                "replay or re-run this date: it may post the day again",
+            },
+        )
     if outcome is not None and outcome.posted == 0:
         # Nothing is known to have gone up: raise so the Errors alarm fires and the invoke lands in the
         # DLQ, instead of the Lambda reporting success. A replay is safe either way: the marker was

@@ -1,3 +1,5 @@
+import socket
+
 import pytest
 
 from adapters.bedrock import BedrockCrossRegionModelHelper
@@ -66,6 +68,10 @@ async def _never_detached(*args, **kwargs) -> bool:
     return False
 
 
+def _network_disabled(*args, **kwargs):
+    raise RuntimeError("Network access is disabled in tests; stub the client")
+
+
 @pytest.fixture(autouse=True)
 def hermetic_env(monkeypatch):
     """Isolate every test from the ambient environment and from live AWS.
@@ -99,3 +105,9 @@ def hermetic_env(monkeypatch):
     from adapters import threads
 
     monkeypatch.setattr(threads, "_landed_detached", _never_detached)
+    # Everything above is a deny-list, and both incidents (a real post on 2026-10-27, a real S3 read
+    # on 10-28) were misses of one. Below it, no test may open a connection or resolve a name at all:
+    # a missed stub fails loudly here instead of reaching Threads, Bedrock, OpenAI or the web.
+    monkeypatch.setattr(socket.socket, "connect", _network_disabled)
+    monkeypatch.setattr(socket.socket, "connect_ex", _network_disabled)
+    monkeypatch.setattr(socket, "getaddrinfo", _network_disabled)

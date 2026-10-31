@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 from domain.formatting import RETWEET_PREFIX, normalize_title
 from domain.models import CollectedItem, generate_item_id
@@ -19,6 +19,7 @@ _HOST_ALIASES = {
 }
 _YOUTUBE_VIDEO_PATH = re.compile(r"^/(?:shorts|live)/([\w-]+)$")
 _X_STATUS_PATH = re.compile(r"^/(?:i/web|[^/]+)/status/(\d+)")
+_NON_ASCII_ESCAPES = re.compile(r"(?:%[89A-Fa-f][0-9A-Fa-f])+")
 _HOST_TRACKING_PARAMS = {"x.com": {"s", "t"}, "youtube.com": {"si", "feature", "t"}}
 
 
@@ -36,7 +37,9 @@ def normalize_url(url: str) -> str:
         return url.strip()
     host = parts.netloc.lower().removeprefix("www.")
     host = _HOST_ALIASES.get(host, host)
-    path = parts.path.rstrip("/") or "/"
+    # Non-ASCII escapes decoded, so a percent-encoded Korean slug and its literal form are one URL.
+    # Only those: decoding %2F, %3F or %23 would merge distinct paths and change on a second pass.
+    path = _NON_ASCII_ESCAPES.sub(lambda m: unquote(m.group()), parts.path).rstrip("/") or "/"
     params = parse_qsl(parts.query, keep_blank_values=True)
     if host == "youtu.be" and path != "/":
         host, path, params = "youtube.com", "/watch", [("v", path.lstrip("/")), *params]

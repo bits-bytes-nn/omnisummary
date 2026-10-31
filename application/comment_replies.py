@@ -101,11 +101,13 @@ def pending_comments(
 # Any name.tld, including a shortener (lnkd.in, youtu.be) and the spelled-out or bracketed dot ("evil 닷
 # com", "evil[.]com", "evil . com"; a space only AFTER a dot is a sentence end). The text is NFKC-normalized
 # first, so a full-width or ideographic dot is a dot, and the TLD may be followed by a Korean particle
-# ("evil.com으로"): Hangul is a word character, so \b found no boundary there.
+# ("evil.com으로"): Hangul is a word character, so \b found no boundary there. For the same reason a handle
+# glued to Korean ("감사해요@evil") is still a handle: only an ASCII letter, digit or underscore before "@" makes it an address
+# (a dot does not: "Thanks.@evil" is a mention).
 # Its cost is declining a reply that names a file or library ("node.js"): the account then stays silent.
-_BARE_DOMAIN = re.compile(r"(?i)[\w-]+(?:\.|\s+\.\s*|\s*(?:\[\.\]|\(dot\)|닷|\bdot\b)\s*)[a-z]{2,}(?![a-z0-9-])")
+_BARE_DOMAIN = re.compile(r"(?i)[\w-]+(?:\.|\s+\.\s*|\s*(?:\[\.\]|\(\.\)|\(dot\)|닷|\bdot\b)\s*)[a-z]{2,}(?![a-z0-9-])")
 _ZERO_WIDTH = re.compile("[\u200b-\u200f\u2060\ufeff]")
-_HANDLE = re.compile(r"(?<![\w@])@([A-Za-z0-9._]+)")
+_HANDLE = re.compile(r"(?<![A-Za-z0-9_@])@([A-Za-z0-9._]+)")
 _HASHTAG = re.compile(r"(?<![\w#&])#[^\W\d_]")
 
 

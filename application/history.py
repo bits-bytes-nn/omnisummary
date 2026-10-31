@@ -62,8 +62,9 @@ class ThreadsPostLedger:
         return {}
 
     def _write(self, marks: dict[str, str]) -> None:
-        # Cap to the most recent MAX_DATES by ISO date (lexicographic == chronological).
-        trimmed = dict(sorted(marks.items())[-self.MAX_DATES :])
+        # Cap to the MAX_DATES most recently MARKED dates (the stored order is the marking order), not
+        # the newest by date: a --date backfill behind 30 newer dates would lose its fresh marker at once.
+        trimmed = dict(list(marks.items())[-self.MAX_DATES :])
         self.store.write_json(THREADS_POSTED_KEY, trimmed)
 
     def already_posted(self, today: date) -> bool:

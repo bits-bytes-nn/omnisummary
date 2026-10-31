@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import date
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import boto3
 
@@ -74,7 +75,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     logger.info("Digest pipeline Lambda invoked")
 
     try:
-        asyncio.run(_run())
+        asyncio.run(_run(event or {}))
         return {"statusCode": 200, "body": "Digest pipeline completed"}
     except Exception as e:
         # Log (with the correlation id) and then RE-RAISE: returning a 500 body made the
@@ -84,10 +85,29 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         raise
 
 
-async def _run() -> None:
+def _requested_date(event: dict[str, Any], timezone: str) -> str | None:
+    """The digest date this invocation is for: the scheduled event's own `time`, or an explicit
+    `digest_date`. A DLQ replay hands back the failed invoke's envelope with the original event under
+    `requestPayload`; without reading it, a replay after midnight built (and posted) the NEXT day's
+    digest on a partial window, and the failed day was never redone. None means today."""
+    if not isinstance(event, dict):
+        return None
+    if not ({"time", "digest_date"} & event.keys()) and isinstance(event.get("requestPayload"), dict):
+        event = event["requestPayload"]
+    explicit = str(event.get("digest_date") or "")
+    if explicit:
+        return explicit
+    stamp = str(event.get("time") or "")
+    try:
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(ZoneInfo(timezone)).date().isoformat()
+    except ValueError:
+        return None
+
+
+async def _run(event: dict[str, Any] | None = None) -> None:
     config = Config.load()
 
-    digest_date, reference_time = resolve_digest_window(config)
+    digest_date, reference_time = resolve_digest_window(config, _requested_date(event or {}, config.aws.timezone))
     config.collectors.set_reference_time(reference_time)
     state_store = bootstrap.state_store(config)
     if already_published(config, digest_date, state_store):

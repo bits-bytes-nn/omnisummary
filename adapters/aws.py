@@ -36,6 +36,20 @@ def aws_region() -> str | None:
         return None
 
 
+def secret_parameter_name(suffix: str) -> str:
+    """/{project}/{stage}/{suffix}: the Lambda's own PROJECT_NAME/STAGE, else the config's — the names
+    scripts/put_secrets.py writes under. Hardcoded "omnisummary"/"dev" fallbacks sent a local run of
+    any other stage to the dev secrets while it read that stage's memory."""
+    project, stage = os.getenv("PROJECT_NAME"), os.getenv("STAGE")
+    if not (project and stage):
+        try:
+            aws = get_config().aws
+            project, stage = project or aws.project_name, stage or aws.stage
+        except Exception:
+            logger.warning("Could not read the project/stage from config; using the defaults", exc_info=True)
+    return f"/{project or 'omnisummary'}/{stage or 'dev'}/{suffix}"
+
+
 def available_boto_profile(profile: str) -> str | None:
     """`profile` when boto3 can actually resolve it here, else None — i.e. "use ambient credentials".
 
@@ -92,11 +106,9 @@ def resolve_secret(env_var: str, ssm_suffix: str, *, strict: bool = False) -> st
     if value:
         return value
 
-    project = os.getenv("PROJECT_NAME", "omnisummary")
-    stage = os.getenv("STAGE", "dev")
     try:
         ssm = _ssm_client()
-        resolved = ssm.get_parameter(Name=f"/{project}/{stage}/{ssm_suffix}", WithDecryption=True)["Parameter"]["Value"]
+        resolved = ssm.get_parameter(Name=secret_parameter_name(ssm_suffix), WithDecryption=True)["Parameter"]["Value"]
     except Exception as e:
         if strict and not _is_parameter_not_found(e):
             raise SecretUnavailableError(f"Could not read secret '{ssm_suffix}' from SSM: {e}") from e

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import boto3
 import httpx
 
-from adapters.aws import resolve_secret
+from adapters.aws import resolve_secret, secret_parameter_name
 from shared import logger, set_correlation_id
 
 THREADS_REFRESH_URL = "https://graph.threads.net/refresh_access_token"
@@ -61,9 +60,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         logger.error("Threads token refresh response carried no access_token")
         raise RuntimeError("Threads token refresh response carried no access_token") from None
 
-    project = os.environ.get("PROJECT_NAME", "omnisummary")
-    stage = os.environ.get("STAGE", "dev")
-    name = f"/{project}/{stage}/threads-access-token"
+    name = secret_parameter_name("threads-access-token")
     ssm = boto3.client("ssm")
     try:
         # No Type: passing Type=SecureString on an overwrite is a type CHANGE, which SSM rejects

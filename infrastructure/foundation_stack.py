@@ -107,7 +107,7 @@ class OmniSummaryFoundationStack(Stack):
         # can be a pre-existing shared one (config.aws.state_bucket_name), so a bucket-wide
         # grant hands every other tenant's objects to this role. The root prefix provably covers
         # everything the project touches: {prefix}/digest_state/* (state_store), {prefix}/<file>
-        # park files (collectors.base.park_file_key) and {prefix}/threads/*.png (daily visual).
+        # park files (adapters.collectors.base.park_file_key) and {prefix}/threads/*.png (daily visual).
         # Exactly the calls the code makes: get_object/put_object (and the presigned GET Threads
         # fetches, signed by this role). ListBucket only so a missing key reads as NoSuchKey rather
         # than AccessDenied. It cannot carry an s3:prefix condition: S3 checks it on a GetObject for a

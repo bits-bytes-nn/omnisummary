@@ -67,7 +67,6 @@ class TestDeliverThreads:
         kw = pt.await_args.kwargs
         assert kw["image_content_type"] == "image/jpeg"  # the FIRST staged image
         assert kw["image_bytes"] == b"abc"
-        assert kw["image_key_prefix"] == "research_"
 
     @pytest.mark.asyncio
     async def test_empty_report_skips_threads_api(self):

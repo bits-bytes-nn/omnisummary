@@ -106,6 +106,16 @@ class DigestGenerator:
                 source_of = {id(it): src for it, src in zip(content.items, sources, strict=True)}
                 content.items = self._trim_keeping_pinned(content.items, target_count, ranked_items)
                 sources = [source_of[id(it)] for it in content.items]
+            shipped = {normalize_url(src.url) for src in sources}
+            missing = [
+                r.item.url
+                for r in ranked_items
+                if r.item.metadata.get("pinned") and normalize_url(r.item.url) not in shipped
+            ]
+            if missing:
+                # ERROR: --pin-url is an explicit request, and an editor that left the story out
+                # otherwise ships a digest that looks complete.
+                logger.error("Pinned URL(s) missing from the digest: %s", ", ".join(missing))
             return content, sources
 
         # Re-ask on a malformed emission (or a transient Bedrock error) instead of degrading.
@@ -373,7 +383,7 @@ class DigestGenerator:
             )
         return "\n".join(parts)
 
-    # The per-SourceType tag/metrics table lives in shared/formatting.py beside the origin key and
+    # The per-SourceType tag/metrics table lives in domain/formatting.py beside the origin key and
     # the origin label it has to agree with — three if/elif chains over the same five SourceTypes
     # each fell through to its own silent default, and only one of them was ever fixed at a time.
     _source_tag_and_metrics = staticmethod(source_tag_and_metrics)

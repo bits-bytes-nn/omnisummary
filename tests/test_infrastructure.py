@@ -80,6 +80,20 @@ class TestNoSecretsInTheTemplate:
                 # changed stack tag is a property change on each secret. Pinned to the deployed values.
                 assert resource["Properties"]["Tags"] == {"Project": "omnisummary", "Stage": "dev"}, logical_id
 
+    def test_secret_parameter_names_and_logical_ids_are_pinned(self, templates):
+        # A changed Name or logical ID is a REPLACEMENT: CloudFormation creates a new parameter holding
+        # the placeholder and deletes the live SecureString. Pinned to the deployed stack (2026-10-31).
+        _, application = templates
+        deployed = {
+            "Ssmtavilyapikey0660F80C": "/omnisummary/dev/tavily-api-key",
+            "SsmopenaiapikeyDE714F3D": "/omnisummary/dev/openai-api-key",
+            "Ssmyoutubeapikey075309A5": "/omnisummary/dev/youtube-api-key",
+            "Ssmthreadsaccesstoken0591E7DF": "/omnisummary/dev/threads-access-token",
+            "Ssmthreadsuserid67A268F6": "/omnisummary/dev/threads-user-id",
+        }
+        params = application.find_resources("AWS::SSM::Parameter")
+        assert {logical_id: r["Properties"]["Name"] for logical_id, r in params.items()} == deployed
+
 
 class TestFoundationStack:
     def test_sns_topic_created(self, templates):
@@ -262,7 +276,7 @@ class TestApplicationStack:
             ), logical_id
 
     def test_emf_alarms_read_this_deployments_datapoints_only(self, templates):
-        # The EMF records are dimensioned by project/stage (shared/metrics.py). An undimensioned
+        # The EMF records are dimensioned by project/stage (adapters/metrics.py). An undimensioned
         # alarm aggregates every deployment into one series: a dev run of 5 items kept prod's
         # Maximum<1 empty-digest alarm green on a day prod shipped nothing.
         _, app = templates
@@ -465,3 +479,20 @@ class TestThePushedImageDigestReachesEveryFunction:
         assert len(image_uris) == 4, image_uris
         for logical_id, uri in image_uris.items():
             assert ":latest" in uri, logical_id
+
+
+def test_every_lambda_command_names_a_callable_handler(templates):
+    # The image command is a string the code never sees: a typo, or a handler moved without it,
+    # only fails at the Lambda's first cold start.
+    import importlib
+
+    _, application = templates
+    commands = [
+        r["Properties"]["ImageConfig"]["Command"][0]
+        for r in application.find_resources("AWS::Lambda::Function").values()
+        if "ImageConfig" in r["Properties"]
+    ]
+    assert len(commands) == 4
+    for command in commands:
+        module, _, attr = command.rpartition(".")
+        assert callable(getattr(importlib.import_module(module), attr)), command
