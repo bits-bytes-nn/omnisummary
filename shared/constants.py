@@ -40,8 +40,6 @@ BROWSER_USER_AGENT: str = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
-# Platform aliases that RSSHub routes through its `twitter` namespace.
-
 # Port the local RSSHub container listens on (the collector's base URL).
 # Single source of truth so config and infrastructure can't drift.
 RSSHUB_PORT: int = 1200

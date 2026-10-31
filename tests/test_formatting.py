@@ -35,12 +35,6 @@ class TestFormatCollectedItem:
         assert "Source: rss\n" in out
         assert out.endswith("Text:\nbody text\n")
 
-    def test_custom_text_label(self):
-        out = format_collected_item(
-            _item(), index=1, max_tokens=1000, fields=[], truncate=_truncate, text_label="Content"
-        )
-        assert "Content:\nbody text" in out
-
     def test_truncates_body_with_supplied_callable(self):
         out = format_collected_item(_item("word " * 500), index=1, max_tokens=10, fields=[], truncate=_truncate)
         body = out.split("Text:\n", 1)[1]

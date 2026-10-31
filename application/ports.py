@@ -24,8 +24,8 @@ class StateReadError(RuntimeError):
     """The state blob could NOT be read — distinct from "there is no history yet".
 
     Both used to come back as None, so a throttled/denied S3 GET read as an empty ledger and the
-    next read-modify-write persisted that emptiness: the published-URL ledger, the recent-leads log,
-    the visual-format window and the Threads idempotency marker were all blanked by one failed read.
+    next read-modify-write persisted that emptiness: the published-URL ledger and the Threads idempotency
+    marker were both blanked by one failed read.
 
     Every consumer handles this the same way: log at ERROR, treat the history as UNKNOWN, and SKIP
     the write. It must never reach a publish path — a lost digest is strictly worse than a run
@@ -42,7 +42,7 @@ class StateStore(ABC):
     records (semantic facts, user preferences) or per-session summaries; even
     customMemoryStrategy can only *append to* those built-in prompts, not implement
     trend-thread maintenance. So trends.json stays the system of record for trends;
-    MemoryStore holds the digest snapshot for the follow-up agent.
+    MemoryStore holds the digest snapshots the visual Lambda, recall and the next day's run read.
     """
 
     @abstractmethod

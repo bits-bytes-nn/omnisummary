@@ -123,19 +123,18 @@ def format_collected_item(
     max_tokens: int,
     fields: list[tuple[str, str]],
     truncate: Callable[[str, int], str],
-    text_label: str = "Text",
 ) -> str:
     """Render a CollectedItem as a labelled `=== Item N ===` block for LLM input.
 
     `fields` are the leading "Label: value" lines in the caller's chosen order
     (Title, Source, Author, Score, ...); the body text (truncated to `max_tokens` via the
     caller's `truncate` callable — bound to the Bedrock CountTokens-based truncator) is appended
-    last under `text_label`. Shared so the ranker, digest generator, and agent stay in lockstep.
+    last under "Text". Shared so the ranker and the digest generator stay in lockstep.
     """
     snippet = truncate(item.text, max_tokens)
     lines = [f"=== Item {index} ==="]
     lines.extend(f"{label}: {value}" for label, value in fields)
-    lines.append(f"{text_label}:\n{snippet}")
+    lines.append(f"Text:\n{snippet}")
     return "\n".join(lines) + "\n"
 
 
