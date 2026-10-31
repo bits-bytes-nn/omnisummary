@@ -237,15 +237,29 @@ class TestKoreanParticleAfterACitation:
             ("https://openai.com/index/introducing-gpt-5/에서", "https://openai.com/index/introducing-gpt-5/", True),
             ("https://ko.wikipedia.org/wiki/인공지능에서", "https://ko.wikipedia.org/wiki/인공지능", True),
             ("https://ex.com/a/에", "https://ex.com/a", True),
+            ("[블로그](https://ex.com/a/)와의", "https://ex.com/a", True),
+            ("https://ex.com/a였다", "https://ex.com/a", True),
+            ("https://ex.com/a에서!", "https://ex.com/a", True),
             # A Korean path segment, or the rest of a longer slug, is never taken for a particle.
             ("https://openai.com/blog/가짜발표", "https://openai.com/blog", False),
             ("https://ex.com/w/인공지능", "https://ex.com/w/인공", False),
         ],
     )
     def test_only_a_particle_comes_off(self, cited, seen, expected):
+        from domain.formatting import citation_key, extract_urls
+
+        url = (extract_urls(cited) or [cited])[0] if cited.startswith("[") else cited
+        assert (citation_key(url, {normalize_citation_url(seen)}) is not None) is expected
+
+    def test_a_long_hangul_tail_is_never_decomposed(self):
+        # The decomposition is cubic in the run's length; a 5000-syllable tail once took minutes.
+        import time
+
         from domain.formatting import citation_key
 
-        assert (citation_key(cited, {normalize_citation_url(seen)}) is not None) is expected
+        start = time.monotonic()
+        assert citation_key("https://ex.com/a" + "가" * 5000, {normalize_citation_url("https://ex.com/a")}) is None
+        assert time.monotonic() - start < 1
 
     def test_a_fullwidth_host_suffix_is_not_a_particle(self):
         delivery = DeliveryContext(seen_urls={normalize_citation_url("https://openai.com/")})
