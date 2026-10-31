@@ -5,34 +5,28 @@ import json
 import time
 from datetime import date, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from langchain_core.output_parsers import StrOutputParser
 
-from agent.visuals import VisualGenerator
-from output.digest_delivery import DigestPublisher
+from application.digest_publisher import DigestPublisher
+from application.ports import ImageRenderer, LanguageModels, ThreadsPublisher
+from application.visual_generator import VisualGenerator
 from pipeline.aggregator import normalize_url
 from shared import (
-    BedrockLanguageModelFactory,
     DigestContent,
     DigestItem,
     RankedItem,
-    SecretUnavailableError,
     VisualBrief,
     VisualEditorPrompt,
     coerce_bool,
-    create_state_store,
     logger,
     parse_json_from_llm_output,
-    resolve_secret,
 )
 from shared.config import Config
 from shared.history_store import RECENT_COMICS_KEY, RollingLog, ThreadsPostLedger
+from shared.models import ThreadsDelivery
 from shared.state_store import StateStore
-
-if TYPE_CHECKING:
-    from output.threads_handler import ThreadsDelivery
 
 
 class DailyVisualMaker:
@@ -41,29 +35,32 @@ class DailyVisualMaker:
 
     Best-effort in BOTH directions: a visual failure (no OpenAI key, an editor skip, a render error)
     is logged and the digest still publishes TEXT-ONLY, and a delivery failure never escapes into
-    the pipeline. Publication itself belongs to `output.digest_delivery.DigestPublisher`, which takes
-    the image as an OPTIONAL argument — so no failure on this side can cost the day's digest."""
+    the pipeline. Publication itself belongs to `DigestPublisher`, which takes the image as an
+    OPTIONAL argument — so no failure on this side can cost the day's digest.
 
-    def __init__(self, config: Config, llm_factory: BedrockLanguageModelFactory) -> None:
+    `store` is None when the state store could not be built: the day then publishes without the
+    Threads ledger and the comic history rather than not at all."""
+
+    def __init__(
+        self,
+        config: Config,
+        models: LanguageModels,
+        store: StateStore | None,
+        threads: ThreadsPublisher,
+        renderer: ImageRenderer,
+    ) -> None:
         self.config = config
-        self.llm_factory = llm_factory
-        self.llm = llm_factory.get_model(config.pipeline.digest_model, stage="visual-editor")
-        # The publisher's Threads ledger needs the state store; a failed init degrades to publishing
-        # without the ledger rather than crashing the visual.
-        store: StateStore | None
-        try:
-            store = create_state_store(config)
-        except Exception:
-            logger.error("State store unavailable (init failed); publishing without the Threads ledger", exc_info=True)
-            store = None
-        self.publisher = DigestPublisher(config, store)
+        self.models = models
+        self.threads = threads
+        self.llm = models.get_model(config.pipeline.digest_model, stage="visual-editor")
+        self.publisher = DigestPublisher(config, store, threads)
         # What the last few comics drew, shown to the editor so today's does not repeat their sets,
         # props and gags (2026-10-13, -16 and -17 all locked a model in a glass case).
         self.comic_log = RollingLog(store, RECENT_COMICS_KEY, config.pipeline.recent_leads_window) if store else None
         self.generator = VisualGenerator(
-            llm_factory,
+            models,
             config.pipeline.digest_model,
-            image_model=config.pipeline.image_model,
+            renderer,
             image_sizes=config.pipeline.image_sizes,
             source_max_tokens=config.pipeline.visual_synopsis_source_max_tokens,
             on_image_language=config.pipeline.visual_on_image_language,
@@ -71,8 +68,6 @@ class DailyVisualMaker:
             style_guidance=config.pipeline.visual_synopsis_style_guidance,
             style_aesthetic=config.pipeline.visual_synopsis_style_aesthetic,
             image_timeout_sec=config.pipeline.visual_image_timeout_sec,
-            image_max_retries=config.pipeline.visual_image_max_retries,
-            image_quality=config.pipeline.visual_image_quality,
         )
         self.character_reference = self._load_character_reference(config)
 
@@ -167,17 +162,7 @@ class DailyVisualMaker:
         OpenAI key, an unusable editor plan, a render error — because the image is an ATTACHMENT to
         the digest, and this is the only Threads publish path. run() used to return early on all
         three, so a visual-only failure silently cost the whole day's digest."""
-        # strict=True so an SSM read FAILURE (throttled, denied, wrong region) is distinguishable
-        # from "no key configured": the lenient read returned "" for both, so a broken parameter
-        # store silently produced text-only digests that looked like a deliberate config. The
-        # exception is caught right here — a strict read must never cost the text digest.
-        try:
-            api_key = resolve_secret("OPENAI_API_KEY", "openai-api-key", strict=True)
-        except SecretUnavailableError as e:
-            logger.error("Could not read OPENAI_API_KEY (%s) — publishing the digest text-only", e)
-            return None, None
-        if not api_key:
-            logger.info("OPENAI_API_KEY not set — publishing the digest text-only, without a visual")
+        if not self.generator.renderer.ready():
             return None, None
 
         try:
@@ -241,13 +226,10 @@ class DailyVisualMaker:
             )
         return instruction
 
-    @staticmethod
-    def _image_deadline(deadline: float | None) -> float | None:
+    def _image_deadline(self, deadline: float | None) -> float | None:
         """When the image work must be done: the caller's deadline minus what the Threads publish
         still needs afterwards, so a slow render can never eat the day's post."""
-        from output.threads_handler import THREADS_INDEXING_BUDGET_SEC, THREADS_PUBLISH_RESERVE_SEC
-
-        return None if deadline is None else deadline - THREADS_INDEXING_BUDGET_SEC - THREADS_PUBLISH_RESERVE_SEC
+        return None if deadline is None else deadline - self.threads.publish_budget_sec
 
     def _features_character(self, plan: dict) -> bool:
         return self.config.pipeline.visual_character_enabled and coerce_bool(plan.get("use_character"), default=True)
@@ -301,7 +283,7 @@ class DailyVisualMaker:
         chain = VisualEditorPrompt.get_prompt() | self.llm | StrOutputParser()
         raw = await chain.ainvoke(
             {
-                "headline": self.llm_factory.truncate_to_tokens(
+                "headline": self.models.truncate_to_tokens(
                     headline_source.strip(), self.config.pipeline.visual_editor_source_max_tokens
                 ),
                 "recent_comics": _format_recent_comics(recent_comics),

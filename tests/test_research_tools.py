@@ -317,7 +317,7 @@ class TestThreadsDeliveryIsSerialized:
         check = AsyncMock(return_value=[])
         with request_context(delivery):
             with patch.object(rt, "_check_thread_facts", new=check):
-                with patch("output.threads_handler.post_to_threads", new=AsyncMock()) as pt:
+                with patch("adapters.threads.post_to_threads", new=AsyncMock()) as pt:
                     msg = await rt.deliver_report._tool_func(report, channel="threads")
         check.assert_not_awaited()
         pt.assert_not_awaited()

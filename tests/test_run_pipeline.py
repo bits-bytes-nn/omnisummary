@@ -75,7 +75,7 @@ class _Pipeline:
             patch.object(runner, "DigestGenerator", return_value=self.generator),
             patch.object(runner, "TrendTracker", return_value=self.tracker),
             patch.object(runner, "persist_digest"),
-            patch("pipeline.daily_visual.DailyVisualMaker", return_value=self.visual),
+            patch("entrypoints.bootstrap.daily_visual_maker", return_value=self.visual),
         ]
         started = [p.start() for p in self._patches]
         self.persist_digest = started[5]
@@ -272,7 +272,7 @@ class TestRunPipelineDelivery:
 
     @pytest.mark.asyncio
     async def test_an_incomplete_local_post_is_reported(self):
-        from output.threads_handler import ThreadsDelivery
+        from shared.models import ThreadsDelivery
 
         items = [_item("https://a.example/1")]
         with tempfile.TemporaryDirectory() as tmpdir:

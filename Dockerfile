@@ -20,6 +20,9 @@ RUN pip install --no-cache-dir --upgrade pip uv==0.6.14 && \
 
 COPY agent/ ./agent/
 COPY shared/ ./shared/
+COPY application/ ./application/
+COPY adapters/ ./adapters/
+COPY entrypoints/ ./entrypoints/
 COPY pipeline/ ./pipeline/
 COPY collectors/ ./collectors/
 COPY output/ ./output/

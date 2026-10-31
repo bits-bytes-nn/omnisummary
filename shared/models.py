@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, date, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, NamedTuple
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -142,6 +142,46 @@ class ImageAsset(BaseModel):
     image_url: str
     content_type: str = "image/png"
     alt: str = ""
+
+
+class ThreadsDelivery(NamedTuple):
+    """How much of the intended post set actually landed. `posted`/`expected` count the ROOT plus
+    one per reply, so a 5-story digest is 6 expected posts.
+
+    Deliberately NOT a bool: "the root went up" and "the digest went up" are different outcomes,
+    and a partial reply chain (4 of 6 posts on 2026-07-17) used to be reported as plain success.
+    CALLERS: a NamedTuple is ALWAYS truthy, so never branch on the value itself — use `published`.
+    """
+
+    posted: int
+    expected: int
+    # Whether the root that went up actually carried the day's image. Defaults to False so every
+    # existing construction (a failure verdict, a research report) is unchanged; the visual Lambda
+    # alerts on it, because "posted 6/6" says nothing about a text-only fallback that
+    # silently dropped the visual.
+    with_image: bool = False
+    # Nothing is KNOWN to have posted, but the root may be live: its publish step failed in a way
+    # that can come back for a post that went up (an error status, a timeout). Callers keep the
+    # date's marker so a replay cannot post a second root.
+    uncertain: bool = False
+    # The live root, and replies Threads published as standalone posts instead (2026-10-27): the
+    # operator's alert names them, because only they can delete one or reply the story by hand.
+    root_id: str = ""
+    detached: tuple[str, ...] = ()
+
+    @property
+    def published(self) -> bool:
+        """True when what landed is usable: the root, plus at least one reply when replies were
+        intended. An all-replies-failed root is a lone image with no stories, never a digest."""
+        return self.posted > 1 if self.expected > 1 else self.posted > 0
+
+    @property
+    def partial(self) -> bool:
+        """Published, but some intended posts are missing — the reader sees a truncated chain."""
+        return self.published and self.posted < self.expected
+
+    def summary(self) -> str:
+        return f"{self.posted}/{self.expected} posts"
 
 
 class TrendEvidence(BaseModel):

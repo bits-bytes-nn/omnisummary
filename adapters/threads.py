@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import os
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, NamedTuple
+from typing import Any
 
 import httpx
 
+from application.ports import PublishError
 from shared import THREADS_MAX_POST_CHARS, logger, resolve_secret
+from shared.config import Config
+from shared.media import extension_for
+from shared.models import ThreadsDelivery
 
 # Meta's cap on an image post's alt_text.
 THREADS_ALT_TEXT_MAX_CHARS = 1000
@@ -35,46 +43,6 @@ THREADS_PUBLISH_RESERVE_SEC = THREADS_MEDIA_PROCESS_WAIT_SEC + THREADS_REPLY_RET
 # How long the hosted-image presigned URL stays valid — must outlast the
 # create-container + media-processing window with margin.
 THREADS_IMAGE_URL_TTL_SEC = 900
-
-
-class ThreadsDelivery(NamedTuple):
-    """How much of the intended post set actually landed. `posted`/`expected` count the ROOT plus
-    one per reply, so a 5-story digest is 6 expected posts.
-
-    Deliberately NOT a bool: "the root went up" and "the digest went up" are different outcomes,
-    and a partial reply chain (4 of 6 posts on 2026-07-17) used to be reported as plain success.
-    CALLERS: a NamedTuple is ALWAYS truthy, so never branch on the value itself — use `published`.
-    """
-
-    posted: int
-    expected: int
-    # Whether the root that went up actually carried the day's image. Defaults to False so every
-    # existing construction (a failure verdict, a research report) is unchanged; the visual Lambda
-    # alerts on it, because "posted 6/6" says nothing about a text-only fallback that
-    # silently dropped the visual.
-    with_image: bool = False
-    # Nothing is KNOWN to have posted, but the root may be live: its publish step failed in a way
-    # that can come back for a post that went up (an error status, a timeout). Callers keep the
-    # date's marker so a replay cannot post a second root.
-    uncertain: bool = False
-    # The live root, and replies Threads published as standalone posts instead (2026-10-27): the
-    # operator's alert names them, because only they can delete one or reply the story by hand.
-    root_id: str = ""
-    detached: tuple[str, ...] = ()
-
-    @property
-    def published(self) -> bool:
-        """True when what landed is usable: the root, plus at least one reply when replies were
-        intended. An all-replies-failed root is a lone image with no stories, never a digest."""
-        return self.posted > 1 if self.expected > 1 else self.posted > 0
-
-    @property
-    def partial(self) -> bool:
-        """Published, but some intended posts are missing — the reader sees a truncated chain."""
-        return self.published and self.posted < self.expected
-
-    def summary(self) -> str:
-        return f"{self.posted}/{self.expected} posts"
 
 
 def _upload_image_for_hosting(image_bytes: bytes, bucket: str, key: str, content_type: str = "image/png") -> str:
@@ -296,11 +264,6 @@ async def _landed_detached(client: httpx.AsyncClient, token: str, media_id: str)
         return False
 
 
-async def publish_reply(client: httpx.AsyncClient, user_id: str, token: str, text: str, reply_to_id: str) -> str:
-    """Publish one text reply to `reply_to_id`, with the reply chain's retry on a transient error."""
-    return await _publish_reply_with_retry(client, user_id, token, text, reply_to_id)
-
-
 async def _publish_root(
     client: httpx.AsyncClient,
     user_id: str,
@@ -490,3 +453,89 @@ def _root_may_be_live(exc: Exception) -> bool:
     ):
         return False
     return request is None or request.url.path.endswith("/threads_publish")
+
+
+# The comment-reply reads and replies; a digest post set takes longer per call (an image root).
+COMMENT_REQUEST_TIMEOUT_SEC = 30
+
+
+class _CommentSession:
+    def __init__(self, client: httpx.AsyncClient, user_id: str, token: str) -> None:
+        self._client = client
+        self._user_id = user_id
+        self._token = token
+
+    async def fetch_own_posts(self, since: datetime) -> list[dict[str, Any]]:
+        return await fetch_own_posts(self._client, since)
+
+    async def fetch_conversation(self, media_id: str) -> list[dict[str, Any]]:
+        return await fetch_conversation(self._client, media_id)
+
+    async def publish_reply(self, text: str, reply_to_id: str) -> str:
+        """Publish one text reply to `reply_to_id`, with the reply chain's retry on a transient error."""
+        try:
+            return await _publish_reply_with_retry(self._client, self._user_id, self._token, text, reply_to_id)
+        except httpx.HTTPStatusError as e:
+            raise PublishError(
+                e.response.status_code,
+                error_detail(e),
+                may_be_live=publish_may_be_live(e),
+                transient=is_transient_reply_error(e),
+            ) from e
+        except httpx.TimeoutException as e:
+            if not publish_may_be_live(e):
+                raise
+            raise PublishError(0, f"publish timed out ({type(e).__name__})", may_be_live=True, transient=False) from e
+
+
+class ThreadsGateway:
+    """The account on Threads: posts a thread, hosting its image on the state bucket, and opens comment
+    sessions. Credentials are read per call, so a token the refresh Lambda rotated is picked up."""
+
+    publish_budget_sec = float(THREADS_INDEXING_BUDGET_SEC + THREADS_PUBLISH_RESERVE_SEC)
+
+    def __init__(self, config: Config) -> None:
+        self.config = config
+
+    async def post_thread(
+        self,
+        root_text: str,
+        replies: list[str],
+        *,
+        image_bytes: bytes | None = None,
+        image_content_type: str = "image/png",
+        image_alt: str = "",
+        image_key_prefix: str = "",
+        topic_tag: str = "",
+        deadline: float | None = None,
+    ) -> ThreadsDelivery:
+        bucket = key = ""
+        if image_bytes:
+            bucket = self.config.aws.state_bucket_name or os.environ.get("STATE_BUCKET", "")
+            if bucket:
+                prefix = self.config.aws.s3_prefix.rstrip("/") + "/" if self.config.aws.s3_prefix else ""
+                digest = hashlib.sha256(image_bytes).hexdigest()[:16]
+                key = f"{prefix}threads/{image_key_prefix}{digest}.{extension_for(image_content_type)}"
+            else:
+                logger.warning("No state bucket configured; the Threads image is skipped (text-only post)")
+        return await post_to_threads(
+            root_text=root_text,
+            replies=replies,
+            image_bytes=image_bytes,
+            image_bucket=bucket,
+            image_key=key,
+            image_content_type=image_content_type,
+            image_alt=image_alt,
+            topic_tag=topic_tag,
+            deadline=deadline,
+        )
+
+    @asynccontextmanager
+    async def comments(self) -> AsyncIterator[_CommentSession]:
+        # Strict: an SSM read failure must fail the run, not read as "nothing to answer".
+        token = resolve_secret("THREADS_ACCESS_TOKEN", "threads-access-token", strict=True)
+        user_id = resolve_secret("THREADS_USER_ID", "threads-user-id", strict=True)
+        if not token or not user_id:
+            raise RuntimeError("Threads access token / user id not configured; cannot answer comments")
+        async with threads_client(token, COMMENT_REQUEST_TIMEOUT_SEC) as client:
+            yield _CommentSession(client, user_id, token)

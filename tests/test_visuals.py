@@ -5,7 +5,8 @@ import pytest
 from langchain_core.runnables import RunnableLambda
 from pydantic import ValidationError
 
-from agent.visuals import VisualGenerator
+from adapters.openai_images import OpenAIImageRenderer
+from application.visual_generator import VisualGenerator
 from shared.config import PipelineConfig
 from shared.constants import LanguageModelId
 from shared.models import VisualBrief
@@ -31,13 +32,23 @@ class TestVisualBriefValidation:
             VisualBrief(title="t", prompt="p")
 
 
+def _renderer(image_model: str | None = None, image_quality: str | None = None) -> OpenAIImageRenderer:
+    """The real OpenAI adapter, configured as production configures it; tests patch the SDK under it."""
+    cfg = PipelineConfig()
+    return OpenAIImageRenderer(
+        image_model=cfg.image_model if image_model is None else image_model,
+        image_quality=cfg.visual_image_quality if image_quality is None else image_quality,
+        timeout_sec=cfg.visual_image_timeout_sec,
+        max_retries=cfg.visual_image_max_retries,
+    )
+
+
 def _visual_kwargs(**overrides) -> dict:
-    """VisualGenerator takes all ten visual knobs explicitly (it keeps NO defaults of its own —
+    """VisualGenerator takes all its visual knobs explicitly (it keeps NO defaults of its own —
     PipelineConfig is the single source of truth), so tests feed it the same config values
     production does."""
     cfg = PipelineConfig()
     kwargs: dict = {
-        "image_model": cfg.image_model,
         "image_sizes": cfg.image_sizes,
         "source_max_tokens": cfg.visual_synopsis_source_max_tokens,
         "on_image_language": cfg.visual_on_image_language,
@@ -45,17 +56,16 @@ def _visual_kwargs(**overrides) -> dict:
         "style_guidance": cfg.visual_synopsis_style_guidance,
         "style_aesthetic": cfg.visual_synopsis_style_aesthetic,
         "image_timeout_sec": cfg.visual_image_timeout_sec,
-        "image_max_retries": cfg.visual_image_max_retries,
-        "image_quality": cfg.visual_image_quality,
     }
     kwargs.update(overrides)
     return kwargs
 
 
-def _generator(**overrides) -> VisualGenerator:
+def _generator(*, image_model: str | None = None, image_quality: str | None = None, **overrides) -> VisualGenerator:
     factory = MagicMock()
     factory.get_model.return_value.with_structured_output.return_value = MagicMock()
-    return VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET, **_visual_kwargs(**overrides))
+    renderer = _renderer(image_model, image_quality)
+    return VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET, renderer, **_visual_kwargs(**overrides))
 
 
 class TestBrief:
@@ -67,7 +77,7 @@ class TestBrief:
         out = VisualBrief(title="T", prompt="draw X", orientation="landscape")
         factory.get_model.return_value.with_structured_output.return_value = RunnableLambda(lambda _: out)
         factory.truncate_to_tokens.side_effect = lambda text, _: text
-        gen = VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET, **_visual_kwargs())
+        gen = VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET, _renderer(), **_visual_kwargs())
         brief = await gen.brief("a 1-page slide", "source text")
         assert brief == out
 
@@ -78,7 +88,7 @@ class TestBrief:
         factory = MagicMock()
         factory.get_model.return_value.with_structured_output.return_value = RunnableLambda(lambda _: None)
         factory.truncate_to_tokens.side_effect = lambda text, _: text
-        gen = VisualGenerator(factory, LanguageModelId.CLAUDE_V5_5_SONNET, **_visual_kwargs())
+        gen = VisualGenerator(factory, LanguageModelId.CLAUDE_V5_5_SONNET, _renderer(), **_visual_kwargs())
         with pytest.raises(ValueError, match="no VisualBrief tool call"):
             await gen.brief("a 1-page slide", "source text")
 
@@ -141,7 +151,7 @@ class TestVisualGenerator:
         client = MagicMock()
         client.images.generate.return_value = resp
 
-        with patch("agent.visuals.logger") as log:
+        with patch("adapters.openai_images.logger") as log:
             with patch("openai.OpenAI", return_value=client):
                 _generator(image_quality="").render(brief)
         rendered = [m for c in log.info.call_args_list if "Rendered" in (m := c.args[0] % c.args[1:])]
@@ -163,7 +173,7 @@ class TestVisualGenerator:
         client = MagicMock()
         client.images.generate.return_value = resp
 
-        with patch("agent.visuals.logger") as log:
+        with patch("adapters.openai_images.logger") as log:
             with patch("openai.OpenAI", return_value=client):
                 assert _generator(image_quality="").render(brief) == b"P"
         rendered = [m for c in log.info.call_args_list if "Rendered" in (m := c.args[0] % c.args[1:])]
@@ -181,7 +191,7 @@ class TestVisualGenerator:
         client = MagicMock()
         client.images.generate.return_value = resp
 
-        with patch("agent.visuals.logger") as log:
+        with patch("adapters.openai_images.logger") as log:
             with patch("openai.OpenAI", return_value=client):
                 assert _generator(image_quality="high").render(brief) == b"P"
         assert client.images.generate.call_args.kwargs["quality"] == "high"
@@ -189,7 +199,7 @@ class TestVisualGenerator:
         assert "quality=high->" in rendered[0]
 
     def test_usage_summary_tolerates_a_missing_or_reshaped_usage(self):
-        from agent.visuals import _usage_summary
+        from adapters.openai_images import _usage_summary
 
         assert _usage_summary(None) == "unknown"
         assert _usage_summary(MagicMock(spec=[])) == "unknown"  # no token fields at all
@@ -256,19 +266,19 @@ class TestVisualGenerator:
 
     def test_render_requires_api_key(self):
         gen = _generator()
-        with patch("agent.visuals.resolve_secret", return_value=""):
+        with patch("adapters.openai_images.resolve_secret", return_value=""):
             with pytest.raises(RuntimeError):
                 gen.render(VisualBrief(title="t", prompt="anything", orientation="portrait"))
 
     def test_render_requires_prompt(self):
         gen = _generator()
-        with patch("agent.visuals.resolve_secret", return_value="key"):
+        with patch("adapters.openai_images.resolve_secret", return_value="key"):
             with pytest.raises(ValueError):
                 gen.render(VisualBrief(title="t", prompt="x", orientation="portrait").model_copy(update={"prompt": ""}))
 
     def test_render_raises_on_empty_image_data(self):
         gen = _generator()
-        with patch("agent.visuals.resolve_secret", return_value="key"):
+        with patch("adapters.openai_images.resolve_secret", return_value="key"):
             resp = MagicMock()
             resp.data = []
             client = MagicMock()
@@ -278,20 +288,20 @@ class TestVisualGenerator:
                     gen.render(VisualBrief(title="t", prompt="draw", orientation="portrait"))
 
     def test_is_moderation_error_string_fallback(self):
-        assert VisualGenerator._is_moderation_error(Exception("... moderation_blocked ..."))
-        assert VisualGenerator._is_moderation_error(Exception("rejected by the safety system"))
-        assert not VisualGenerator._is_moderation_error(RuntimeError("network down"))
+        assert OpenAIImageRenderer.is_moderation_error(Exception("... moderation_blocked ..."))
+        assert OpenAIImageRenderer.is_moderation_error(Exception("rejected by the safety system"))
+        assert not OpenAIImageRenderer.is_moderation_error(RuntimeError("network down"))
 
     def test_is_moderation_error_typed_openai_exception(self):
         from openai import BadRequestError
 
         exc = BadRequestError.__new__(BadRequestError)
         exc.body = {"code": "moderation_blocked", "type": "image_generation_user_error"}
-        assert VisualGenerator._is_moderation_error(exc)
+        assert OpenAIImageRenderer.is_moderation_error(exc)
 
         other = BadRequestError.__new__(BadRequestError)
         other.body = {"code": "invalid_request", "type": "invalid_request_error"}
-        assert not VisualGenerator._is_moderation_error(other)
+        assert not OpenAIImageRenderer.is_moderation_error(other)
 
     def test_render_uses_configured_model_and_orientation_size(self):
         gen = _generator(
@@ -303,7 +313,7 @@ class TestVisualGenerator:
         resp.data = [MagicMock(b64_json=fake_img)]
         client = MagicMock()
         client.images.generate.return_value = resp
-        with patch("agent.visuals.resolve_secret", return_value="key"):
+        with patch("adapters.openai_images.resolve_secret", return_value="key"):
             with patch("openai.OpenAI", return_value=client) as openai_cls:
                 gen.render(VisualBrief(title="t", prompt="draw", orientation="landscape"))
         kwargs = client.images.generate.call_args.kwargs
@@ -327,7 +337,7 @@ class TestVisualGenerator:
 
     def test_an_empty_size_map_raises_instead_of_rendering_something_arbitrary(self):
         gen = _generator(image_sizes={})
-        with patch("agent.visuals.resolve_secret", return_value="key"):
+        with patch("adapters.openai_images.resolve_secret", return_value="key"):
             with pytest.raises(RuntimeError, match="No image size configured"):
                 gen.render(VisualBrief(title="t", prompt="draw", orientation="portrait"))
 
@@ -336,7 +346,7 @@ class TestVisualGenerator:
         # getting a stale in-code copy (style_aesthetic had already drifted from config).
         factory = MagicMock()
         with pytest.raises(TypeError):
-            VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET, image_model="gpt-image-2")
+            VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET, _renderer(), image_sizes={})
 
 
 def _image_response(data: bytes = b"IMG") -> MagicMock:
@@ -347,13 +357,13 @@ def _image_response(data: bytes = b"IMG") -> MagicMock:
 
 class TestReferenceRender:
     def test_a_reference_sheet_turns_the_render_into_an_edit_with_the_note(self):
-        from agent.visuals import REFERENCE_NOTE
+        from application.visual_generator import REFERENCE_NOTE
 
         gen = _generator(image_quality="xhigh")
         client = MagicMock()
         client.images.edit.return_value = _image_response(b"COMIC")
         brief = VisualBrief(title="t", prompt="draw the strip", orientation="tall")
-        with patch.object(gen, "_images_client", return_value=client):
+        with patch.object(gen.renderer, "_client", return_value=client):
             assert gen.render(brief, [b"SHEET"]) == b"COMIC"
         kwargs = client.images.edit.call_args.kwargs
         assert kwargs["prompt"] == REFERENCE_NOTE + "draw the strip"
@@ -365,6 +375,26 @@ class TestReferenceRender:
         gen = _generator()
         client = MagicMock()
         client.images.generate.return_value = _image_response()
-        with patch.object(gen, "_images_client", return_value=client):
+        with patch.object(gen.renderer, "_client", return_value=client):
             gen.render(VisualBrief(title="t", prompt="p", orientation="square"))
         client.images.edit.assert_not_called()
+
+
+class TestRendererReadiness:
+    """The OpenAI key is read STRICTLY: a broken parameter store must be distinguishable from "no key
+    configured", and neither may raise into the digest's only publish path."""
+
+    def test_a_set_key_is_ready_and_is_read_strictly(self):
+        with patch("adapters.openai_images.resolve_secret", return_value="key") as secret:
+            assert _renderer().ready() is True
+        assert secret.call_args.kwargs.get("strict") is True
+
+    def test_an_unset_key_is_not_ready(self):
+        with patch("adapters.openai_images.resolve_secret", return_value=""):
+            assert _renderer().ready() is False
+
+    def test_an_unreadable_secret_is_not_ready_and_does_not_raise(self):
+        from shared import SecretUnavailableError
+
+        with patch("adapters.openai_images.resolve_secret", side_effect=SecretUnavailableError("AccessDenied")):
+            assert _renderer().ready() is False

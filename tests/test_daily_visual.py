@@ -3,38 +3,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from output.threads_handler import ThreadsDelivery
-from pipeline.daily_visual import DailyVisualMaker
+from application.daily_visual import DailyVisualMaker
 from shared.config import Config
 from shared.constants import SourceType
-from shared.models import CollectedItem, RankedItem, VisualBrief
-from shared.state_store import StateStore
+from shared.models import CollectedItem, RankedItem, ThreadsDelivery, VisualBrief
+from tests.fakes import FakeRenderer, FakeThreads, MemoryStateStore, fake_models
 
 
-class _MemoryStore(StateStore):
-    """In-memory state store so visual tests don't read/write the repo's digest_state dir
-    (which made format/idempotency history order-dependent across runs)."""
-
-    def __init__(self) -> None:
-        self._d: dict[str, str] = {}
-
-    def read(self, key: str) -> str | None:
-        return self._d.get(key)
-
-    def write(self, key: str, content: str) -> None:
-        self._d[key] = content
-
-
-def _maker() -> DailyVisualMaker:
-    config = Config()
-    factory = MagicMock()
-    factory.get_model.return_value = MagicMock()
-    # A real (no-op) truncator: the editor's headline block goes through it, and a bare MagicMock
-    # would put its repr into the prompt while every assertion still passed.
-    factory.truncate_to_tokens.side_effect = lambda text, max_tokens: text
-    with patch("pipeline.daily_visual.create_state_store", return_value=_MemoryStore()):
-        maker = DailyVisualMaker(config, factory)
-    return maker
+def _maker(*, renderer_ready: bool = True) -> DailyVisualMaker:
+    # An in-memory state store, so visual tests don't read/write the repo's digest_state dir (which
+    # made format/idempotency history order-dependent across runs).
+    return DailyVisualMaker(
+        Config(), fake_models(), MemoryStateStore(), FakeThreads(), FakeRenderer(ready=renderer_ready)
+    )
 
 
 def _rendering_maker() -> DailyVisualMaker:
@@ -95,10 +76,9 @@ class TestRecentComics:
             return_value=(b"PNG", VisualBrief(title="T", prompt="p", orientation="portrait", alt_text="1컷: 빵집."))
         )
         outcome = ThreadsDelivery(2, 2, with_image=with_image)
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"instruction": "draw"})):
-                with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=outcome)):
-                    await maker.run(_items(), _content(), today=date(2026, 10, 17))
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"instruction": "draw"})):
+            maker.threads.post_thread = AsyncMock(return_value=outcome)
+            await maker.run(_items(), _content(), today=date(2026, 10, 17))
         return maker
 
     @pytest.mark.asyncio
@@ -142,10 +122,7 @@ class TestRecentComics:
         assert "오늘 만화" not in seen[0]
 
     def test_no_state_store_means_no_history(self):
-        config = Config()
-        factory = MagicMock()
-        with patch("pipeline.daily_visual.create_state_store", side_effect=RuntimeError("no bucket")):
-            maker = DailyVisualMaker(config, factory)
+        maker = DailyVisualMaker(Config(), fake_models(), None, FakeThreads(), FakeRenderer())
         assert maker.comic_log is None
         assert maker._recent_comics(date(2026, 10, 17)) == []
 
@@ -153,16 +130,16 @@ class TestRecentComics:
 class TestThePublishPathStandsOnItsOwn:
     """The publish path used to live inside the class that generates the image, so nothing could
     exercise a delivery without also standing up an image generator (and an OpenAI key). It is now
-    `output.digest_delivery.DigestPublisher`, built from a config and a state store."""
+    `DigestPublisher`, built from a config, a state store and the Threads port."""
 
     @staticmethod
     def _publisher(**pipeline_overrides):
-        from output.digest_delivery import DigestPublisher
+        from application.digest_publisher import DigestPublisher
 
         config = Config()
         for key, value in pipeline_overrides.items():
             setattr(config.pipeline, key, value)
-        return DigestPublisher(config, _MemoryStore())
+        return DigestPublisher(config, MemoryStateStore(), FakeThreads())
 
     @staticmethod
     def _content():
@@ -176,18 +153,18 @@ class TestThePublishPathStandsOnItsOwn:
     @pytest.mark.asyncio
     async def test_a_digest_publishes_with_no_image_at_all(self):
         publisher = self._publisher(enable_threads_post=True)
-        with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))) as th:
-            assert await publisher.publish(self._content(), today=date(2026, 6, 10)) is True
+        publisher.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
+        th = publisher.threads.post_thread
+        assert await publisher.publish(self._content(), today=date(2026, 6, 10)) is True
         assert th.await_args.kwargs["image_bytes"] is None
-        assert th.await_args.kwargs["image_key"] == ""
 
     @pytest.mark.asyncio
-    async def test_the_image_is_hosted_under_the_configured_prefix(self):
+    async def test_the_image_and_its_alt_text_go_to_the_post(self):
         publisher = self._publisher(enable_threads_post=True)
-        publisher.config.aws.s3_prefix = "omni"
-        with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))) as th:
-            await publisher.publish(self._content(), image_bytes=b"PNG", image_alt="1컷", today=date(2026, 6, 10))
-        assert th.await_args.kwargs["image_key"].startswith("omni/threads/")
+        publisher.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
+        th = publisher.threads.post_thread
+        await publisher.publish(self._content(), image_bytes=b"PNG", image_alt="1컷", today=date(2026, 6, 10))
+        assert th.await_args.kwargs["image_bytes"] == b"PNG"
         assert th.await_args.kwargs["image_alt"] == "1컷"
         assert th.await_args.kwargs["topic_tag"] == publisher.config.pipeline.threads_topic_tag
 
@@ -224,51 +201,29 @@ class TestVisualFailureNeverCostsTheDigest:
         return maker
 
     @pytest.mark.asyncio
-    async def test_missing_openai_key_still_publishes_the_text_digest(self):
-        maker = self._threads_maker()
-        with patch("pipeline.daily_visual.resolve_secret", return_value=""):
-            with patch(
-                "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
-            ) as th:
-                result = await maker.run(_items(), self._content(), today=date(2026, 6, 10))
+    async def test_a_renderer_that_cannot_run_still_publishes_the_text_digest(self):
+        # No OpenAI key, or one the parameter store would not hand over: the renderer says so (and
+        # logs which); the image is an attachment, and this is the only Threads publish path.
+        maker = _maker(renderer_ready=False)
+        maker.config.pipeline.enable_threads_post = True
+        maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
+        th = maker.threads.post_thread
+        with patch.object(maker, "_write_synopsis", new=AsyncMock()) as write:
+            result = await maker.run(_items(), self._content(), today=date(2026, 6, 10))
+        write.assert_not_awaited()
+        maker.generator.renderer.render.assert_not_called()
         assert result is True
         th.assert_awaited_once()
         assert th.await_args.kwargs["root_text"] == "오늘의 리드."
         assert th.await_args.kwargs["image_bytes"] is None
 
     @pytest.mark.asyncio
-    async def test_an_unreadable_openai_secret_still_publishes_the_text_digest(self):
-        # The key is read STRICTLY so a broken parameter store is distinguishable from "no key
-        # configured" — but the exception must never escape _make_visual: the image is an
-        # attachment, and this is the only Threads publish path.
-        from shared import SecretUnavailableError
-
-        maker = self._threads_maker()
-        with patch("pipeline.daily_visual.resolve_secret", side_effect=SecretUnavailableError("AccessDenied")):
-            with patch(
-                "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
-            ) as th:
-                result = await maker.run(_items(), self._content(), today=date(2026, 6, 10))
-        assert result is True
-        assert th.await_args.kwargs["image_bytes"] is None
-
-    @pytest.mark.asyncio
-    async def test_the_openai_key_is_read_strictly(self):
-        maker = self._threads_maker()
-        with patch("pipeline.daily_visual.resolve_secret", return_value="") as secret:
-            with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))):
-                await maker.run(_items(), self._content(), today=date(2026, 6, 10))
-        assert secret.call_args.kwargs.get("strict") is True
-
-    @pytest.mark.asyncio
     async def test_editor_failure_still_publishes_the_text_digest(self):
         maker = self._threads_maker()
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(side_effect=RuntimeError("bedrock down"))):
-                with patch(
-                    "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
-                ) as th:
-                    result = await maker.run(_items(), self._content(), today=date(2026, 6, 10))
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(side_effect=RuntimeError("bedrock down"))):
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
+            th = maker.threads.post_thread
+            result = await maker.run(_items(), self._content(), today=date(2026, 6, 10))
         assert result is True
         th.assert_awaited_once()
         assert th.await_args.kwargs["image_bytes"] is None
@@ -276,12 +231,10 @@ class TestVisualFailureNeverCostsTheDigest:
     @pytest.mark.asyncio
     async def test_editor_skip_still_publishes_the_text_digest(self):
         maker = self._threads_maker()
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"skip": True})):
-                with patch(
-                    "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
-                ) as th:
-                    result = await maker.run(_items(), self._content(), today=date(2026, 6, 10))
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"skip": True})):
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
+            th = maker.threads.post_thread
+            result = await maker.run(_items(), self._content(), today=date(2026, 6, 10))
         assert result is True
         th.assert_awaited_once()
 
@@ -292,10 +245,10 @@ class TestVisualFailureNeverCostsTheDigest:
         maker = self._threads_maker()
         maker.threads_ledger.mark(date(2026, 6, 10))
         maker.generator.generate = AsyncMock()
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock()) as pick:
-                with patch("output.threads_handler.post_to_threads", new=AsyncMock()) as th:
-                    assert await maker.run(_items(), self._content(), today=date(2026, 6, 10)) is False
+        with patch.object(maker, "_write_synopsis", new=AsyncMock()) as pick:
+            maker.threads.post_thread = AsyncMock()
+            th = maker.threads.post_thread
+            assert await maker.run(_items(), self._content(), today=date(2026, 6, 10)) is False
         pick.assert_not_awaited()
         maker.generator.generate.assert_not_awaited()
         th.assert_not_awaited()
@@ -310,10 +263,9 @@ class TestDailyVisualMaker:
     async def test_no_image_rendered_when_the_editor_skips(self):
         maker = _rendering_maker()
         maker.generator.generate = AsyncMock()
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            plan = {"skip": True, "instruction": "draw"}  # a skip wins over a written synopsis
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                await maker.run(_items())
+        plan = {"skip": True, "instruction": "draw"}  # a skip wins over a written synopsis
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            await maker.run(_items())
         maker.generator.generate.assert_not_awaited()
         assert maker.publisher.publish.await_args.kwargs["image_bytes"] is None
 
@@ -328,12 +280,11 @@ class TestDailyVisualMaker:
         content = DigestContent(
             lead="lead", items=[DigestItem(title="t", url="http://e.com/2", body="b")]
         )  # headline maps to ranked Story 2 by URL
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = AsyncMock(
-                    return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
-                )
-                result = await maker.run(_items(), content)
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = AsyncMock(
+                return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
+            )
+            result = await maker.run(_items(), content)
         assert result is True
         # source must be the headline (Story 2), NOT the editor's item_number=3
         args, kwargs = maker.generator.generate.call_args
@@ -350,15 +301,13 @@ class TestDailyVisualMaker:
             lead="오늘의 리드.",
             items=[DigestItem(title="스토리", url="http://e.com/1", body="본문.")],
         )
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = AsyncMock(
-                    return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
-                )
-                with patch(
-                    "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
-                ) as th:
-                    await maker.run(_items(), content)
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = AsyncMock(
+                return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
+            )
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
+            th = maker.threads.post_thread
+            await maker.run(_items(), content)
         th.assert_awaited_once()
         # root is the digest lead as-is (the AGI countdown is prepended upstream at digest
         # generation, so it's already part of content.lead — not added here); replies = per item
@@ -381,15 +330,13 @@ class TestDailyVisualMaker:
         maker.config.pipeline.enable_threads_post = True
         plan = {"skip": False, "instruction": "x"}
         empty = DigestContent(lead="리드만 남았다.", items=[])
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = AsyncMock(
-                    return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
-                )
-                with patch(
-                    "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
-                ) as th:
-                    await maker.run(_items(), empty, today=date(2026, 6, 10))
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = AsyncMock(
+                return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
+            )
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
+            th = maker.threads.post_thread
+            await maker.run(_items(), empty, today=date(2026, 6, 10))
         th.assert_not_awaited()
         assert maker.threads_ledger.already_posted(date(2026, 6, 10)) is False
         # …and it leaves a VERDICT behind: content existed, the channel was on, nothing published.
@@ -423,13 +370,12 @@ class TestDailyVisualMaker:
         maker.config.pipeline.enable_threads_post = True
         plan = {"skip": False, "research": [], "instruction": "x"}
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = AsyncMock(
-                    return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
-                )
-                with patch("output.threads_handler.post_to_threads", new=AsyncMock(side_effect=RuntimeError("boom"))):
-                    posted = await maker.run(_items(), content, today=date(2026, 6, 10))
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = AsyncMock(
+                return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
+            )
+            maker.threads.post_thread = AsyncMock(side_effect=RuntimeError("boom"))
+            posted = await maker.run(_items(), content, today=date(2026, 6, 10))
         assert posted is False
         assert maker.threads_outcome == ThreadsDelivery(0, 2)
 
@@ -448,14 +394,12 @@ class TestDailyVisualMaker:
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
         deadline = time.monotonic() + 900
         gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait")))
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = gen
-                with patch(
-                    "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
-                ) as th:
-                    await maker.run(_items(), content, today=date(2026, 6, 10), deadline=deadline)
-        from output.threads_handler import THREADS_INDEXING_BUDGET_SEC, THREADS_PUBLISH_RESERVE_SEC
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = gen
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
+            th = maker.threads.post_thread
+            await maker.run(_items(), content, today=date(2026, 6, 10), deadline=deadline)
+        from adapters.threads import THREADS_INDEXING_BUDGET_SEC, THREADS_PUBLISH_RESERVE_SEC
 
         assert th.await_args.kwargs["deadline"] == deadline
         # The image work must finish early enough to leave the Threads publish its full budget.
@@ -469,7 +413,7 @@ class TestDailyVisualMaker:
         import time
         from datetime import date
 
-        from output.threads_handler import THREADS_INDEXING_BUDGET_SEC, THREADS_PUBLISH_RESERVE_SEC
+        from adapters.threads import THREADS_INDEXING_BUDGET_SEC, THREADS_PUBLISH_RESERVE_SEC
         from shared.models import DigestContent, DigestItem
 
         maker = _maker()
@@ -480,13 +424,11 @@ class TestDailyVisualMaker:
             await asyncio.sleep(60)
 
         deadline = time.monotonic() + THREADS_INDEXING_BUDGET_SEC + THREADS_PUBLISH_RESERVE_SEC + 0.05
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=_hang):
-                with patch(
-                    "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
-                ) as th:
-                    started = time.monotonic()
-                    assert await maker.run(_items(), content, today=date(2026, 6, 10), deadline=deadline) is True
+        with patch.object(maker, "_write_synopsis", new=_hang):
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
+            th = maker.threads.post_thread
+            started = time.monotonic()
+            assert await maker.run(_items(), content, today=date(2026, 6, 10), deadline=deadline) is True
         assert time.monotonic() - started < 5  # cut at the deadline, not after the hang
         assert th.await_args.kwargs["image_bytes"] is None
 
@@ -506,15 +448,11 @@ class TestDailyVisualMaker:
             maker.threads_ledger.mark(date(2026, 6, 10), "other-run")
             return b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait")
 
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(
-                maker, "_write_synopsis", new=AsyncMock(return_value={"skip": False, "instruction": "x"})
-            ):
-                maker.generator.generate = _render_while_another_run_posts
-                with patch(
-                    "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
-                ) as th:
-                    await maker.run(_items(), content, today=date(2026, 6, 10))
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"skip": False, "instruction": "x"})):
+            maker.generator.generate = _render_while_another_run_posts
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
+            th = maker.threads.post_thread
+            await maker.run(_items(), content, today=date(2026, 6, 10))
         th.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -529,15 +467,13 @@ class TestDailyVisualMaker:
         maker.threads_ledger.mark(date(2026, 6, 10))  # today already posted
         plan = {"skip": False, "instruction": "x"}
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = AsyncMock(
-                    return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
-                )
-                with patch(
-                    "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
-                ) as th:
-                    await maker.run(_items(), content, today=date(2026, 6, 10))
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = AsyncMock(
+                return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
+            )
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
+            th = maker.threads.post_thread
+            await maker.run(_items(), content, today=date(2026, 6, 10))
         th.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -552,10 +488,9 @@ class TestDailyVisualMaker:
         maker.threads_ledger.already_posted = MagicMock(side_effect=[False, True])
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"skip": True})):
-            with patch(
-                "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
-            ) as th:
-                await maker.run(_items(), content, today=date(2026, 6, 10))
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
+            th = maker.threads.post_thread
+            await maker.run(_items(), content, today=date(2026, 6, 10))
         th.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -569,15 +504,13 @@ class TestDailyVisualMaker:
         maker.threads_ledger.mark(date(2026, 6, 10))
         plan = {"skip": False, "instruction": "x"}
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = AsyncMock(
-                    return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
-                )
-                with patch(
-                    "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
-                ) as th:
-                    await maker.run(_items(), content, today=date(2026, 6, 10), force_republish=True)
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = AsyncMock(
+                return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
+            )
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
+            th = maker.threads.post_thread
+            await maker.run(_items(), content, today=date(2026, 6, 10), force_republish=True)
         th.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -612,13 +545,12 @@ class TestDailyVisualMaker:
         maker.threads_ledger.mark(date(2026, 6, 10))  # prior successful post
         plan = {"skip": False, "instruction": "x"}
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = AsyncMock(
-                    return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
-                )
-                with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(0, 2))):
-                    await maker.run(_items(), content, today=date(2026, 6, 10), force_republish=True)
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = AsyncMock(
+                return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
+            )
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(0, 2))
+            await maker.run(_items(), content, today=date(2026, 6, 10), force_republish=True)
         assert maker.threads_ledger.already_posted(date(2026, 6, 10))  # prior mark preserved
 
     @pytest.mark.asyncio
@@ -631,13 +563,12 @@ class TestDailyVisualMaker:
         maker.config.pipeline.enable_threads_post = True
         plan = {"skip": False, "instruction": "x"}
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = AsyncMock(
-                    return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
-                )
-                with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))):
-                    await maker.run(_items(), content, today=date(2026, 6, 10))
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = AsyncMock(
+                return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
+            )
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
+            await maker.run(_items(), content, today=date(2026, 6, 10))
         assert maker.threads_ledger.already_posted(date(2026, 6, 10))
 
     @pytest.mark.asyncio
@@ -651,13 +582,12 @@ class TestDailyVisualMaker:
         maker.config.pipeline.enable_threads_post = True
         plan = {"skip": False, "instruction": "x"}
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = AsyncMock(
-                    return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
-                )
-                with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(0, 2))):
-                    await maker.run(_items(), content, today=date(2026, 6, 10))
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = AsyncMock(
+                return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
+            )
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(0, 2))
+            await maker.run(_items(), content, today=date(2026, 6, 10))
         assert not maker.threads_ledger.already_posted(date(2026, 6, 10))
 
     @pytest.mark.asyncio
@@ -678,13 +608,12 @@ class TestDailyVisualMaker:
             claimed_during_post.append(maker.threads_ledger.already_posted(date(2026, 6, 10)))
             return ThreadsDelivery(2, 2)
 
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = AsyncMock(
-                    return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
-                )
-                with patch("output.threads_handler.post_to_threads", new=_post):
-                    await maker.run(_items(), content, today=date(2026, 6, 10))
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = AsyncMock(
+                return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
+            )
+            maker.threads.post_thread = _post
+            await maker.run(_items(), content, today=date(2026, 6, 10))
         assert claimed_during_post == [True]
 
     @pytest.mark.asyncio
@@ -698,16 +627,12 @@ class TestDailyVisualMaker:
         maker.config.pipeline.enable_threads_post = True
         plan = {"skip": False, "instruction": "x"}
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = AsyncMock(
-                    return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
-                )
-                with patch(
-                    "output.threads_handler.post_to_threads",
-                    new=AsyncMock(side_effect=RuntimeError("boom")),
-                ):
-                    await maker.run(_items(), content, today=date(2026, 6, 10))
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = AsyncMock(
+                return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
+            )
+            maker.threads.post_thread = AsyncMock(side_effect=RuntimeError("boom"))
+            await maker.run(_items(), content, today=date(2026, 6, 10))
         assert not maker.threads_ledger.already_posted(date(2026, 6, 10))
 
     @pytest.mark.asyncio
@@ -720,13 +645,12 @@ class TestDailyVisualMaker:
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"instruction": "x"})):
-                maker.generator.generate = AsyncMock(
-                    return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
-                )
-                with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(1, 2))):
-                    assert await maker.run(_items(), content, today=date(2026, 6, 10)) is False
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"instruction": "x"})):
+            maker.generator.generate = AsyncMock(
+                return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
+            )
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(1, 2))
+            assert await maker.run(_items(), content, today=date(2026, 6, 10)) is False
         assert maker.threads_ledger.already_posted(date(2026, 6, 10))
 
     @pytest.mark.asyncio
@@ -735,41 +659,34 @@ class TestDailyVisualMaker:
         # post a second root.
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"instruction": "x"})):
-                maker.generator.generate = AsyncMock(
-                    return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
-                )
-                with patch(
-                    "output.threads_handler.post_to_threads",
-                    new=AsyncMock(return_value=ThreadsDelivery(0, 2, uncertain=True)),
-                ):
-                    await maker.run(_items(), _content(), today=date(2026, 6, 10))
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"instruction": "x"})):
+            maker.generator.generate = AsyncMock(
+                return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
+            )
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(0, 2, uncertain=True))
+            await maker.run(_items(), _content(), today=date(2026, 6, 10))
         assert maker.threads_ledger.already_posted(date(2026, 6, 10))
 
     @pytest.mark.asyncio
     async def test_threads_disabled_by_default(self):
         maker = _maker()
         plan = {"skip": False, "instruction": "x"}
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = AsyncMock(
-                    return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
-                )
-                with patch(
-                    "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
-                ) as th:
-                    await maker.run(_items())
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = AsyncMock(
+                return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
+            )
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
+            th = maker.threads.post_thread
+            await maker.run(_items())
         th.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_render_failure_publishes_text_only(self):
         maker = _rendering_maker()
         plan = {"skip": False, "item_number": 1, "instruction": "draw"}
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = AsyncMock(side_effect=RuntimeError("boom"))
-                await maker.run(_items())
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = AsyncMock(side_effect=RuntimeError("boom"))
+            await maker.run(_items())
         maker.generator.generate.assert_awaited_once()
         assert maker.publisher.publish.await_args.kwargs["image_bytes"] is None
 
@@ -789,13 +706,11 @@ class TestDailyVisualMaker:
             lead="오늘의 리드.",
             items=[DigestItem(title="스토리", url="http://e.com/1", body="본문.")],
         )
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = AsyncMock(side_effect=RuntimeError("billing hard limit"))
-                with patch(
-                    "output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))
-                ) as th:
-                    await maker.run(_items(), content, today=date(2026, 6, 10))
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = AsyncMock(side_effect=RuntimeError("billing hard limit"))
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
+            th = maker.threads.post_thread
+            await maker.run(_items(), content, today=date(2026, 6, 10))
         th.assert_awaited_once()
         assert th.await_args.kwargs["root_text"] == "오늘의 리드."
         assert th.await_args.kwargs["image_bytes"] is None  # text-only, no attachment
@@ -813,13 +728,12 @@ class TestDailyVisualMaker:
         maker.config.pipeline.enable_threads_post = True
         plan = {"skip": False, "instruction": "x"}
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = AsyncMock(
-                    return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
-                )
-                with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))):
-                    result = await maker.run(_items(), content, today=date(2026, 6, 10))
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = AsyncMock(
+                return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
+            )
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
+            result = await maker.run(_items(), content, today=date(2026, 6, 10))
         assert result is True
 
     def test_the_headline_source_is_its_ranked_article_matched_by_url(self):
@@ -863,10 +777,9 @@ class TestDailyVisualMaker:
         )
         gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait")))
         plan = {"skip": False, "instruction": "draw"}
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)) as write:
-                maker.generator.generate = gen
-                await maker.run(_items(), content, today=date(2026, 6, 10))
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)) as write:
+            maker.generator.generate = gen
+            await maker.run(_items(), content, today=date(2026, 6, 10))
         source = gen.await_args.args[1]
         assert "합쳐진 헤드라인" in source and "합본 본문이다." in source
         assert "Story 1" not in source  # never the unrelated top-ranked story
@@ -890,7 +803,7 @@ class TestDailyVisualMaker:
         # Given the lead, the editor drew its argument one sentence per panel (2026-10-18 to 10-21).
         assert "리드 문장이다." not in seen[0]
         assert "Story 2" not in seen[0]  # the rest of the candidate pool is not the editor's business
-        assert maker.llm_factory.truncate_to_tokens.call_args.args[1] == 7
+        assert maker.models.truncate_to_tokens.call_args.args[1] == 7
 
     @pytest.mark.asyncio
     async def test_write_synopsis_parses_prose_wrapped_json(self):
@@ -925,10 +838,9 @@ class TestDailyVisualMaker:
         content = DigestContent(lead="리드.", items=[DigestItem(title="헤드라인", url="http://e.com/1", body="본문.")])
         gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait")))
         plan = {"skip": "false", "research": [], "instruction": "draw it"}
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = gen
-                await maker.run(_items(), content, today=date(2026, 6, 10))
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = gen
+            await maker.run(_items(), content, today=date(2026, 6, 10))
         gen.assert_awaited()
 
     @pytest.mark.asyncio
@@ -948,8 +860,7 @@ class TestDailyVisualMaker:
         calls = []
         maker.llm = RunnableLambda(lambda _: calls.append(1) or AIMessage(content="not json"))
         maker.generator.generate = AsyncMock()
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            await maker.run(_items())
+        await maker.run(_items())
         maker.generator.generate.assert_not_awaited()  # no wasted render
         assert len(calls) == 1  # and no retry LLM call
         assert maker.publisher.publish.await_args.kwargs["image_bytes"] is None
@@ -961,12 +872,11 @@ class TestCharacterInjection:
         maker = _rendering_maker()
         maker.config.pipeline.visual_character_enabled = True
         plan = {"skip": False, "instruction": "draw it", "use_character": True}
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = AsyncMock(
-                    return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
-                )
-                await maker.run(_items())
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = AsyncMock(
+                return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
+            )
+            await maker.run(_items())
         instruction = maker.generator.generate.call_args[0][0]
         assert "THE NARRATOR" in instruction
         assert "cardigan" in instruction  # the sheet's signature props came through
@@ -976,12 +886,11 @@ class TestCharacterInjection:
         maker = _rendering_maker()
         maker.config.pipeline.visual_character_enabled = False
         plan = {"skip": False, "instruction": "draw it", "use_character": True}
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = AsyncMock(
-                    return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
-                )
-                await maker.run(_items())
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = AsyncMock(
+                return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
+            )
+            await maker.run(_items())
         instruction = maker.generator.generate.call_args[0][0]
         assert "THE NARRATOR" not in instruction
 
@@ -997,11 +906,10 @@ class TestComposeIsWhatShips:
         maker = _rendering_maker()
         maker.config.pipeline.enable_threads_post = False
         gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait")))
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                maker.generator.generate = gen
-                await maker.run(_items(), _content(), today=post_date)
-                composed = await maker._compose(_items(), _content(), post_date)
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.generator.generate = gen
+            await maker.run(_items(), _content(), today=post_date)
+            composed = await maker._compose(_items(), _content(), post_date)
         assert composed == (plan, gen.await_args.args[0], gen.await_args.args[1])
 
 
@@ -1014,10 +922,9 @@ class TestStoryLessDayDoesNotPayForARender:
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
         gen = AsyncMock()
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock()) as pick:
-                maker.generator.generate = gen
-                result = await maker.run(_items(), None, today=date(2026, 8, 18))
+        with patch.object(maker, "_write_synopsis", new=AsyncMock()) as pick:
+            maker.generator.generate = gen
+            result = await maker.run(_items(), None, today=date(2026, 8, 18))
         assert result is False
         pick.assert_not_awaited()
         gen.assert_not_awaited()
@@ -1031,11 +938,10 @@ class TestStoryLessDayDoesNotPayForARender:
         content = TestVisualFailureNeverCostsTheDigest._content()
         plan = {"skip": False, "instruction": "Draw."}
         gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait")))
-        with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                with patch("output.threads_handler.post_to_threads", new=AsyncMock(return_value=ThreadsDelivery(2, 2))):
-                    maker.generator.generate = gen
-                    result = await maker.run(_items(), content, today=date(2026, 8, 18))
+        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+            maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
+            maker.generator.generate = gen
+            result = await maker.run(_items(), content, today=date(2026, 8, 18))
         assert result is True
         gen.assert_awaited_once()
 
@@ -1051,9 +957,8 @@ class TestCharacterReference:
         maker.generator.generate = gen
         for use_character, expected in ((True, [b"SHEET"]), (False, [])):
             plan = {"skip": False, "instruction": "x", "use_character": use_character}
-            with patch("pipeline.daily_visual.resolve_secret", return_value="key"):
-                with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
-                    await maker._make_visual(_items(), None, date(2026, 6, 10))
+            with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
+                await maker._make_visual(_items(), None, date(2026, 6, 10))
             assert gen.await_args.kwargs["references"] == expected
 
     def test_the_narrator_is_the_default_when_the_plan_does_not_say(self):
