@@ -228,7 +228,7 @@ class DailyVisualMaker:
         return None if deadline is None else deadline - self.threads.publish_budget_sec
 
     def _features_character(self, plan: dict) -> bool:
-        return self.config.pipeline.visual_character_enabled and coerce_bool(plan.get("use_character"), default=True)
+        return self.config.pipeline.visual_character_enabled and coerce_bool(plan.get("use_character"), default=False)
 
     def _references(self, plan: dict) -> list[bytes]:
         """The input images the render carries: the narrator's reference sheet when he appears."""

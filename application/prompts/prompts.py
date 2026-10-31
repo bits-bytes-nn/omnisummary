@@ -224,38 +224,33 @@ class VisualEditorPrompt(BasePrompt):
     input_variables = ["headline", "recent_comics", "audience", "on_image_language"]
 
     system_prompt_template = """\
-You are the cartoonist for {audience}. Today's comic is about the HEADLINE story given below in full. \
-A reader who has NOT read the story should get from the strip, at a glance, what happened, then an \
-insight or a laugh about it. So it carries ONE fact, the single most surprising thing the story says, \
-with everything else left out (other companies and stories, numbers, how it works), said in everyday \
-{on_image_language} that names what the thing really is, never a code word or a stand-in for it. It is \
-told through the digest's narrator, a recurring character who is the strip's viewpoint: in the panels \
-he is in, he takes part next to the real people and companies of the story. Panel 1 says plainly what \
-happened (who did what); panels 2-3 build up that one fact as literal scenes with the real people and \
-products, where the story actually happens, not an allegory; panel 4 SHOWS the story's own twist (its \
-irony or its catch) as a sight gag, and its line, said by a character in \
-that panel, reacts to what is drawn there rather than restating the setup or stating a moral. Apart \
-from that one gag, everything behaves as it would in real life. Every line and every sign or label is \
-plain {on_image_language} a non-specialist gets (names of people, companies and products stay as \
-written; no benchmark names, metrics or jargon). Readers saw the recent comics on the last few days: \
-don't reuse their gag or any of their props, the narrator's included. The synopsis describes only today's comic, never what it \
-avoids.
+You are the cartoonist for {audience}. Today's cartoon is about the HEADLINE story given below in full. \
+A reader who has NOT read the story should come away understanding what happened and why it matters, \
+then get a laugh or an insight from it. So it carries ONE idea, the thing the reader should understand \
+(for a hard story, how it works, in everyday terms), and leaves out other stories and companies. Every \
+line, sign and label is plain {on_image_language} a non-specialist gets, naming what the thing really \
+is (names of people, companies and products stay as written; no code words, benchmark names, metrics \
+or jargon). The cast is the real people, companies and products of the story, acting where the story \
+actually happens, as literal scenes rather than an allegory; the digest's narrator, a recurring character, joins them only when he adds \
+something they can't. Choose the form the story needs: a single cartoon, a strip of two to six \
+panels, or an illustrated explainer. Each frame follows from the one before, and the last one SHOWS \
+the story's own twist (its irony or its catch); its line, said by a character there, reacts to what \
+is drawn rather than restating the setup or stating a moral. Apart from that twist, everything \
+behaves as it would in real life. Readers saw the recent comics on the last few days: don't repeat \
+their form, gag or props. The synopsis describes only today's comic, never what it avoids.
 
 Produce ONLY a JSON object:
 ```json
 {{
   "skip": false,
-  "use_character": true,
-  "instruction": "the comic as a synopsis in this shape. LOGLINE: what happened and the one funny turn it leads to, in one sentence. COMPOSITION: the layout. Then one entry per panel, PANEL n (setup / development / turn / punchline): where it is, who is in it (the real people a reader would recognize, named, with their features; others by role; the narrator is just 'the narrator', his look is fixed elsewhere), what they do, and its ONE short line of dialogue or narration in {on_image_language}. Each panel follows from the one before and sets up the next; together they set up panel 4's payoff."
+  "use_character": false,
+  "instruction": "the comic as a synopsis in this shape. LOGLINE: what happened and the turn it leads to, in one sentence. COMPOSITION: the form and its layout. Then one entry per frame, FRAME n: where it is, who is in it (the real people a reader would recognize, named, with their features; others by role; the narrator is just 'the narrator', his look is fixed elsewhere), what they do, and its ONE short line of dialogue or narration in {on_image_language}."
 }}
 ```
 
 Rules:
-- The layout is a 2x2 grid read left to right, top to bottom, unless the story is clearly better told \
-another way (a single frame, a vertical strip); name it in COMPOSITION.
-- Keep every panel drawable: at most three characters acting in the foreground (a background crowd \
+- Keep every frame drawable: at most three characters acting in the foreground (a background crowd \
 is fine) and one clear action, on a plausible set.
-- Set `use_character` false only when the narrator would get in the way of the joke.
 - Return {{"skip": true}} only if the headline cannot be illustrated at all.
 - Output ONLY the JSON object."""
 
@@ -282,9 +277,9 @@ model can render in one image, honoring the requested format.
 
 Fill these fields:
 - title: a short working title
-- orientation: one of {orientations} — the frame the composition needs. A 2x2 four-panel grid is \
-`portrait`; a vertical four-panel strip is `tall` (four equal 4:3 panels stacked top to bottom in one column); a \
-single frame takes whichever shape fits it.
+- orientation: one of {orientations} — the frame the composition needs. A grid of panels is \
+`portrait`; a vertical strip is `tall` (equal 4:3 panels stacked top to bottom in one column); a \
+single frame or an explainer takes whichever shape fits it.
 - prompt: a single rich English prompt for the image model: the full composition, each panel in \
 order, the characters, the exact on-image text, and the style — {style_aesthetic}
 

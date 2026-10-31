@@ -144,7 +144,6 @@ class WebSearchCollectorConfig(BaseCollectorConfig):
     max_results_per_query: int = Field(default=10, ge=1)
     refine_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
     max_refine_queries: int = Field(default=3, ge=1)
-    min_search_score: float = Field(default=0.3, ge=0.0, le=1.0)
     # Hosts never returned by any search, broad or refined (Tavily `exclude_domains`): content farms
     # that rewrite wire stories under SEO titles and kept winning picks over the original report.
     exclude_domains: list[str] = Field(default_factory=list)
@@ -423,12 +422,12 @@ class PipelineConfig(_StrictModel):
     # guidance without editing code.
     visual_moderation_softening_instruction: str = (
         "IMPORTANT: keep it clearly safe-for-work and good-natured. "
-        "Use company logos and products and generic stylized characters rather than realistic "
-        "depictions of real named individuals; avoid anything that could read as defamatory."
+        "Keep the real people, drawn as friendly caricatures in neutral, everyday actions; "
+        "nothing violent, sexual or humiliating, and nothing that could read as defamatory."
     )
     # Recurring mascot = the visual embodiment of the digest's narrator persona (the singularity-
-    # believing science-geek technologist). He is the strip's viewpoint character unless the editor
-    # sets use_character false. Identity rides on a FEW signature cues (hair cowlick, retro glasses, two-tone cardigan),
+    # believing science-geek technologist). He appears only when the editor sets use_character.
+    # Identity rides on a FEW signature cues (hair cowlick, retro glasses, two-tone cardigan),
     # not an exhaustive prop list, so he reads as the same person while pose/outfit/expression vary
     # day to day instead of converging on one identical look.
     visual_character_enabled: bool = True
@@ -445,9 +444,7 @@ class PipelineConfig(_StrictModel):
         "visible. Keep him recognizable by just a FEW identity cues, drawn naturally: messy black "
         "hair with an upward cowlick; chunky rounded retro glasses worn normally ON HIS EYES; and a "
         "two-tone color-blocked knit cardigan (mustard + sage green) over a plain tee. Warm, bright, "
-        "charming — never a dark-room hacker. Where he appears he takes part in the story (asks, "
-        "tests, points out, intervenes) next to the real people, with an expression that fits the "
-        "beat: wonder, a skeptical squint, fired-up conviction. Prefer a waist-up or medium shot so "
+        "charming — never a dark-room hacker. Prefer a waist-up or medium shot so "
         "his face carries the moment; a full figure only when the composition needs it."
     )
 

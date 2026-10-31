@@ -960,10 +960,10 @@ class TestCharacterReference:
                 await maker._make_visual(_items(), None, date(2026, 6, 10))
             assert gen.await_args.kwargs["references"] == expected
 
-    def test_the_narrator_is_the_default_when_the_plan_does_not_say(self):
+    def test_the_narrator_joins_only_when_the_plan_asks_for_him(self):
         maker = _maker()
-        assert maker._features_character({"instruction": "x"}) is True
-        assert maker._features_character({"instruction": "x", "use_character": False}) is False
+        assert maker._features_character({"instruction": "x"}) is False
+        assert maker._features_character({"instruction": "x", "use_character": True}) is True
 
     def test_a_missing_reference_file_degrades_to_none(self, tmp_path):
         maker = _maker()
