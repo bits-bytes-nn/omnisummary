@@ -145,7 +145,12 @@ class DigestPublisher:
         # second root next to it. The caller still alerts.
         if outcome.posted == 0 and not outcome.uncertain and not was_marked:
             self._release_threads_marker(post_date, run_id)
-        elif self.threads_ledger and not was_marked:
+        elif self.threads_ledger is None:
+            # No ledger at all (the store could not be built): the posts are live and nothing records
+            # it, so a replay would post the day again. Same alert as an unconfirmed marker.
+            self.unprotected = True
+            logger.error("The %s digest is on Threads with no post ledger; a replay is not protected", post_date)
+        elif not was_marked:
             self._ensure_marked(post_date, run_id)
         return outcome.published
 

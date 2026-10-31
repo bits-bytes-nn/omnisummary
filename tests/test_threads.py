@@ -889,3 +889,22 @@ class TestARootThatMayBeLive:
         request = httpx.Request("POST", "https://graph.threads.net/v1.0/u/threads_publish")
         assert threads_handler.publish_may_be_live(httpx.RemoteProtocolError("x", request=request))
         assert not threads_handler.publish_may_be_live(httpx.ConnectError("x", request=request))
+
+
+class TestRootMayBeLive:
+    """A wrong "not live" verdict releases the day's marker and a replay posts a second public root."""
+
+    def test_a_failure_with_no_known_request_may_be_live(self):
+        from adapters.threads import _root_may_be_live
+
+        # e.g. the publish response could not be parsed after the root went up
+        assert _root_may_be_live(ValueError("bad JSON in the publish response")) is True
+
+    def test_a_container_or_rate_limit_failure_is_not_live(self):
+        import httpx
+
+        from adapters.threads import _root_may_be_live
+
+        request = httpx.Request("POST", "https://graph.threads.net/v1.0/me/threads_publish")
+        limited = httpx.HTTPStatusError("429", request=request, response=httpx.Response(429, request=request))
+        assert _root_may_be_live(limited) is False

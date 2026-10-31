@@ -1011,6 +1011,31 @@ class TestALiveDayStaysProtected:
         assert publisher.unprotected is True
 
     @pytest.mark.asyncio
+    async def test_a_post_without_a_ledger_is_reported_unprotected(self):
+        from application.digest_publisher import DigestPublisher
+
+        config = Config()
+        config.pipeline.enable_threads_post = True
+        publisher = DigestPublisher(config, None, FakeThreads())
+        assert await publisher.publish(_content(), today=date(2026, 10, 31)) is True
+        assert publisher.unprotected is True
+
+    @pytest.mark.asyncio
+    async def test_a_ledger_that_cannot_be_written_never_costs_the_post(self):
+        publisher = self._publisher()
+        publisher.threads_ledger.store.write = MagicMock(side_effect=RuntimeError("S3 PUT throttled"))
+        assert await publisher.publish(_content(), today=date(2026, 10, 31)) is True
+        publisher.threads.post_thread.assert_awaited_once()
+        assert publisher.unprotected is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_post_whose_rollback_fails_still_returns(self):
+        publisher = self._publisher()
+        publisher.threads.post_thread = AsyncMock(side_effect=RuntimeError("Threads down"))
+        publisher.threads_ledger.unmark = MagicMock(side_effect=RuntimeError("S3 PUT throttled"))
+        assert await publisher.publish(_content(), today=date(2026, 10, 31)) is False
+
+    @pytest.mark.asyncio
     async def test_a_day_that_posted_nothing_is_not_reported_as_unprotected(self):
         publisher = self._publisher()
         publisher.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(0, 2))

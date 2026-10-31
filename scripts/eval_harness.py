@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Blind A/B evaluation of the daily comic and the research thread. Nothing is published.
 
+    eval_harness.py digest <label> <date> [<date> ...]   # the digest re-written from a stored day's candidate pool
     eval_harness.py visual <label> <date> [<date> ...]   # editor plan + art-director brief per stored day
     eval_harness.py research <label> <topic> [...]       # research run with a Threads PREVIEW (posts nothing)
     eval_harness.py judge <kind> <label_a> <label_b>     # Opus judges each case blind, A/B order shuffled
 
 Runs land in evals/<kind>/<label>/<case>.json. Generate the baseline BEFORE changing a prompt and the
 candidate after, on the same cases; keep a few cases aside and judge them once, at the end. Cost: a
-visual case is two Sonnet calls (cents); a research case is a full research run (about $1.5); a judged
+digest or visual case is two Sonnet calls (cents); a research case is a full research run (about $1.5); a judged
 pair is one Opus call.
 """
 
@@ -38,6 +39,13 @@ ROOT = Path(__file__).resolve().parents[1] / "evals"
 JUDGE_MODEL = LanguageModelId.CLAUDE_V5_5_OPUS
 
 RUBRICS = {
+    "digest": [
+        ("clarity", "A reader outside the field understands each story and why it matters, without the source."),
+        ("fidelity", "Nothing contradicts, overgeneralizes or goes beyond the sources; no invented facts."),
+        ("insight", "The lead and each implication say something the source does not, argued from the story."),
+        ("freshness", "The lead's angle and the implications' shape differ from the recent leads listed; no formula."),
+        ("korean", "Natural Korean a good tech editor would write: no translationese, no stray English terms."),
+    ],
     "visual": [
         (
             "understanding",
@@ -92,6 +100,42 @@ def _case_dir(kind: str, label: str) -> Path:
 
 def _slug(text: str) -> str:
     return re.sub(r"\W+", "-", text).strip("-")[:40] + "-" + hashlib.sha256(text.encode()).hexdigest()[:6]
+
+
+async def _digest(label: str, dates: list[str]) -> None:
+    from application.digest_generator import DigestGenerator
+    from application.digest_pipeline import _recent_leads, _recent_story_titles
+    from application.trend_tracker import TrendTracker
+
+    config = Config.load()
+    models = bootstrap.language_models(config)
+    memory = bootstrap.memory_store()
+    for day in dates:
+        data = memory.get_digest(day)
+        if not data:
+            logger.warning("No snapshot for %s; skipped", day)
+            continue
+        snapshot = DigestSnapshot.from_dict(data)
+        today = date.fromisoformat(day)
+        # The same inputs a real run on that date had: the earlier snapshots and the trends before it.
+        earlier = memory.get_recent_digests(today, config.pipeline.published_url_ttl_days - 1)
+        trends = TrendTracker(config.pipeline, models, bootstrap.state_store(config)).get_trends_context(today=today)
+        result = await DigestGenerator(config.pipeline, models).generate(
+            snapshot.ranked_items,
+            today=today,
+            trends_context=trends,
+            recent_leads=_recent_leads(earlier, config.pipeline.recent_leads_window),
+            recent_titles=_recent_story_titles(earlier),
+        )
+        sources = "\n\n".join(f"[{r.item.title}] {r.item.url}\n{r.item.text[:1500]}" for r in snapshot.ranked_items)
+        out = {
+            "case": day,
+            "context": f"CANDIDATES:\n{sources[:24000]}\n\nRECENT LEADS:\n"
+            + "\n".join(_recent_leads(earlier, config.pipeline.recent_leads_window)),
+            "artifact": result.digest_text,
+        }
+        (_case_dir("digest", label) / f"{day}.json").write_text(json.dumps(out, ensure_ascii=False, indent=1))
+        logger.info("digest %s %s: %d stories", label, day, len(result.content.items) if result.content else 0)
 
 
 async def _visual(label: str, dates: list[str]) -> None:
@@ -192,6 +236,9 @@ async def _judge(kind: str, label_a: str, label_b: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
+    digest = sub.add_parser("digest")
+    digest.add_argument("label")
+    digest.add_argument("dates", nargs="+")
     visual = sub.add_parser("visual")
     visual.add_argument("label")
     visual.add_argument("dates", nargs="+")
@@ -203,7 +250,9 @@ def main() -> None:
     judge.add_argument("label_a")
     judge.add_argument("label_b")
     args = parser.parse_args()
-    if args.cmd == "visual":
+    if args.cmd == "digest":
+        asyncio.run(_digest(args.label, args.dates))
+    elif args.cmd == "visual":
         asyncio.run(_visual(args.label, args.dates))
     elif args.cmd == "research":
         _research(args.label, args.topics)
