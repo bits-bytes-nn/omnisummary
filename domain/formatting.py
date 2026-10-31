@@ -280,7 +280,7 @@ _SENTENCE_END = ("다.", "다!", "다?", ". ", "。", "! ", "? ", "…")
 URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
 # Punctuation a URL can pick up from the prose around it (a closing paren, a sentence period, the
 # '>' of an autolink). Trimmed from the right by both the URL extractor and the citation normalizer.
-_URL_TRAILING_PUNCT = "').,;:\"]>*`\u3002\u3001\u201d\u2019\u300d\u300f\uff09\u300b\u3009\uff0c\u2026\u200b"
+_URL_TRAILING_PUNCT = "').,;:!?\"]>*`\u3002\u3001\u201d\u2019\u300d\u300f\uff09\u300b\u3009\uff0c\u2026\u200b"
 
 
 def _trim_url(url: str) -> str:
@@ -299,8 +299,13 @@ def _trim_url(url: str) -> str:
 # longer slug ("/w/인공지능" for a seen "/w/인공") is never taken for one.
 _URL_PARTICLES = frozenset(
     "에서 에게 에 엔 선 의 을 를 은 는 이 가 으로 로 부터 와 과 랑 이랑 도 만 까지 처럼 보다 께 한테 "
-    "이다 다 입니다 이라는 라는 이란 란 이나 나 이며 며 이고 고 인 이에요 예요 에요 요 참고".split()
+    "이다 다 입니다 이라는 라는 이란 란 이나 나 이며 며 이고 고 인 이에요 예요 에요 요 참고 "
+    "이었 였 었 라고 이라고 지만 이지만 로서 으로서 인데 이죠 죠".split()
 )
+_HANGUL_SYLLABLES = "".join(chr(c) for c in range(0xAC00, 0xD7A4))
+# A glued particle run is a few syllables; longer Hangul is prose or a slug, never tried (and the
+# decomposition would otherwise be cubic in its length).
+_MAX_PARTICLE_RUN = 6
 
 
 def _is_particles(suffix: str) -> bool:
@@ -322,8 +327,8 @@ def citation_key(url: str, seen: set[str]) -> str | None:
     if key in seen:
         return key
     trimmed = _trim_url(url)
-    hangul = len(trimmed) - len(trimmed.rstrip("".join(chr(c) for c in range(0xAC00, 0xD7A4))))
-    for cut in range(1, hangul + 1):
+    hangul = len(trimmed) - len(trimmed.rstrip(_HANGUL_SYLLABLES))
+    for cut in range(1, min(hangul, _MAX_PARTICLE_RUN) + 1):
         if not _is_particles(trimmed[-cut:]):
             continue
         bare = normalize_citation_url(_trim_url(trimmed[:-cut]))
