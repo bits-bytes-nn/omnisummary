@@ -416,7 +416,7 @@ Tavily의 X 프로필 쿼리처럼 결과가 대부분 프로필 페이지인 �
 많은 쪽이 "더 긴" 본문으로 살아남는다. 링크를 `item.text`에서 읽는 코드는 없다.
 
 **요약만 싣는 피드는 페이지 본문으로 채운다.** `content` 요소 없이 `summary`만 있는 RSS 엔트리는 랭킹 전에
-Tavily extract(`shared.research.extract_pages`, 요청당 20개)로 페이지 본문을 받아 더 길 때만 바꾼다. DeepMind,
+Tavily extract(`adapters.research_backends.extract_pages`, 요청당 20개)로 페이지 본문을 받아 더 길 때만 바꾼다. DeepMind,
 Google Research, Hugging Face 피드는 설명이 비어 있거나 한 줄이고 OpenAI도 120~150자라서, 랭커가 제목만 보고
 점수를 매겼다. 2026-10-14에 본문 0자인 "Gemini 4 Argon" 글이 0.84를 받아 출고됐고, 근거 검증이 출처에 없는 주장을
 모두 지우자 한 문장짜리 스토리가 남았다. 하루 10건 안팎이다. 다만 `content` 없이 `summary`에 글 전체를 싣는
@@ -590,7 +590,7 @@ FAILED로 분류되게 한다. 부분 실패는 그대로 허용한다.
 (2 vCPU Lambda에서 6개)이 된다. 그러면 한 소스의 작업이 다른 소스 뒤에 큐잉된 채로 자기 타임아웃을 소진한다.
 `asyncio.run`이 루프와 함께 풀을 정리한다.
 
-**수집 윈도는 순수 함수가 소유한다.** `pipeline.runner.resolve_digest_window(config, date_arg)`가 다이제스트
+**수집 윈도는 순수 함수가 소유한다.** `application.digest_pipeline.resolve_digest_window(config, date_arg)`가 다이제스트
 날짜와 reference time을 함께 돌려준다. reference time은 `config.aws.timezone` 기준으로 다이제스트 날짜
 **다음날** 자정이고, 모든 수집기의 `lookback_hours`가 거기서부터 거슬러 센다. 그래서 19:00 KST 실행도 그날
 전체를 보고, `--date`로 지난 날을 재실행하면 지금 끝나는 윈도가 아니라 그날이 가졌던 윈도를 본다. CLI와
@@ -630,7 +630,7 @@ Reddit이나 블로그 제목의 "..."는 작성자가 쓴 것이라 비교 대�
 피드의 맨 RSS GUID `"1234"` 같은 것) 하나로 합쳐지고 다른 하나는 조용히 사라진다. 그래서 dedup 뒤에 이미 본 id가
 또 나오면 정규화 URL로 id를 새로 만든다.
 
-**cross-day dedup.** `aggregate(items, exclude_urls=...)`에서 호출자(`pipeline.runner.run_pipeline`)가 넘긴 정규화 URL
+**cross-day dedup.** `aggregate(items, exclude_urls=...)`에서 호출자(`application.digest_pipeline.run_pipeline`)가 넘긴 정규화 URL
 집합(최근 발행 기사들)을 랭킹 이전에 제외한다. 같은 스토리가 며칠 간격으로 재요약되지 않게 하는 것이
 목적이고, 부수적으로 랭커 토큰도 절약된다([§7.3](#73-cross-day-dedup-히스토리-applicationhistorypy) 참조). 다만 핀
 항목(`--pin-url`)은 URL과 제목 dedup을 모두 우회한다. 사용자가 오늘 명시적으로 요청한 URL이니, 최근
@@ -833,7 +833,7 @@ private 헬퍼를 부르면 파이프라인이 출력 채널의 내부 이름에
   목록이다. 주간 요약 글이 이미 실린 이야기를 새 URL로 다시 가져오면 URL 원장은 그것을 알아보지 못하고, 직전
   하루치 제목만 보여주던 때는 2026-10-11 다섯 이야기 중 셋이 1~4일 전에 실린 것이었다. 프레이밍은 한 줄이다.
   실질적 새 진전이 있을 때만 다시 싣고, 그때는 지난번 이후 무엇이 새로운지 본문에 말하라고 한다. 같은 목록을
-  랭커도 받는다([§5.2](#52-랭커-rankerpy)). 임계나 유사도 휴리스틱은 없다. 실제로 재발행을 막는 것은 여전히 URL 원장이다. `pipeline.runner.run_pipeline`이
+  랭커도 받는다([§5.2](#52-랭커-rankerpy)). 임계나 유사도 휴리스틱은 없다. 실제로 재발행을 막는 것은 여전히 URL 원장이다. `application.digest_pipeline.run_pipeline`이
   cross-day dedup이 이미 가져온 스냅샷에서 뽑으니 추가 호출도 없다.
 
 **시스템 오브 레코드.** `render_digest_text`가 구조화 콘텐츠를 평문 산문으로 렌더해 `digest_text`를 만들고,
@@ -1539,7 +1539,7 @@ leads는 `date`로 dedup해서 `--force-republish` 재실행이 같은 날 lead�
 **`published_urls_from_snapshots`.** 과거 다이제스트 스냅샷의 `content.items[].url`을 뽑아, dedup이 원장뿐
 아니라 AgentCore Memory 히스토리로도 self-heal되게 한다. 원장이 비어도 작동한다.
 
-**시드와 기록(`pipeline.runner.run_pipeline`).** exclude 집합을 원장과 최근 AgentCore Memory 스냅샷 양쪽에서
+**시드와 기록(`application.digest_pipeline.run_pipeline`).** exclude 집합을 원장과 최근 AgentCore Memory 스냅샷 양쪽에서
 시드한다(`get_recent_digests(today, published_url_ttl_days - 1)`로 원장이 제외하는 것과 같은 창, 1일 전부터 TTL 하루 전까지를 읽는다. TTL 당일에는 둘 다 같은 스토리를 다시 허용한다). 생성 후에는 발행된 `content.items` URL을 원장에 기록하고, lead를 `recent_leads.json`에 append하되
 AGI 카운트다운 프리픽스를 제거한다(`_editorial_lead`). novelty 신호가 고정 보일러플레이트가 아니라 편집 각이
 되어야 한다.
@@ -1631,7 +1631,7 @@ body를 반환하면 Lambda 입장에서는 정상 종료라서 Errors 알람도
 다이제스트는 겉보기 정상이라 이 줄이 유일한 흔적이다. 반면 동일 사건을 하나로 줄여 target보다 적어진 것은 정당하니
 `run_pipeline`이 WARNING으로만 남긴다. 코드가 명시적으로 허용하는 경우다.
 
-**이미 Threads에 올라간 날짜는 수집 전에 멈춘다(`pipeline.runner.already_published`).** 다이제스트 Lambda와
+**이미 Threads에 올라간 날짜는 수집 전에 멈춘다(`application.digest_pipeline.already_published`).** 다이제스트 Lambda와
 `main.py`가 날짜를 정한 직후 `ThreadsPostLedger`를 보고, 그날이 게시됐으면 WARNING 한 줄만 남기고 끝낸다. 전에는
 같은 날의 두 번째 실행(중복 invoke, 로컬 실행)이 게시 단계에서는 건너뛰면서도 그 전에 자기 스냅샷과 lead, 원장
 기록을 저장했다. 그래서 그날의 기록이 아무도 보지 못한 다이제스트로 바뀌었다. `main.py`는 `--dry-run`(아무것도

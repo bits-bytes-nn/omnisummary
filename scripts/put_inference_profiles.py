@@ -39,11 +39,11 @@ def _configured_models(config: Config) -> dict[LanguageModelId, str]:
     pipeline, agent, collectors = config.pipeline, config.agent, config.collectors
     wanted: dict[LanguageModelId, list[str]] = {}
     for setting, model in (
-        ("domain.aggregator.ranking_model", pipeline.ranking_model),
-        ("domain.aggregator.digest_model", pipeline.digest_model),
-        ("domain.aggregator.trend_model", pipeline.trend_model),
+        ("pipeline.ranking_model", pipeline.ranking_model),
+        ("pipeline.digest_model", pipeline.digest_model),
+        ("pipeline.trend_model", pipeline.trend_model),
         ("agent.model_id", agent.model_id),
-        ("adapters.collectors.web_search.refine_model", collectors.web_search.refine_model),
+        ("collectors.web_search.refine_model", collectors.web_search.refine_model),
     ):
         wanted.setdefault(model, []).append(setting)
     return {model: ", ".join(settings) for model, settings in wanted.items()}

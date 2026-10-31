@@ -220,3 +220,11 @@ def test_the_run_reaches_out_only_through_the_ports_the_bootstrap_built(tmp_path
                 create.return_value.side_effect = agent
                 research_cli.run(["주제", "--output-dir", str(tmp_path)])
     assert seen == [ports]
+
+
+def test_ports_that_cannot_be_built_still_answer_with_json(tmp_path):
+    # A shell AWS_PROFILE naming a missing profile made the session raise before any JSON was printed.
+    with patch.object(research_cli.bootstrap, "research_ports", side_effect=RuntimeError("ProfileNotFound")):
+        with patch.object(research_cli, "resolve_secret", return_value="key"):
+            result, code = research_cli.run(["주제", "--output-dir", str(tmp_path)])
+    assert code == research_cli.EXIT_FAILED and "ProfileNotFound" in result["error"]
