@@ -31,51 +31,34 @@ def _result(score, *, days_old=0, title="X", url="https://example.com/a"):
 
 
 class TestParseResults:
-    def test_filters_low_relevance(self):
-        c = _collector(min_search_score=0.3)
-        resp = {"results": [_result(0.02, title="off-topic"), _result(0.8, title="relevant")]}
-        items = c._parse_results(resp, trend_name="t")
-        titles = [i.title for i in items]
-        assert "relevant" in titles
-        assert "off-topic" not in titles
-
     def test_filters_stale_by_date(self):
-        c = _collector(min_search_score=0.0)
+        c = _collector()
         resp = {"results": [_result(0.9, days_old=10, title="old")]}
         assert c._parse_results(resp, trend_name="t") == []
 
     def test_filters_results_published_after_the_reference_time(self):
         # Only the parked path closed the upper end, so a `--date` backfill's Tavily results were
         # filtered against a cutoff alone and today's live hits were ingested as that day's.
-        c = _collector(min_search_score=0.0)
+        c = _collector()
         resp = {"results": [_result(0.9, days_old=-2, title="tomorrow")]}
         assert c._parse_results(resp, trend_name="t") == []
 
     def test_skips_missing_date(self):
-        c = _collector(min_search_score=0.0)
+        c = _collector()
         resp = {"results": [{"url": "u", "title": "no-date", "content": "x", "score": 0.9}]}
         assert c._parse_results(resp, trend_name="t") == []
 
     def test_keeps_relevant_recent(self):
-        c = _collector(min_search_score=0.3)
+        c = _collector()
         resp = {"results": [_result(0.7, days_old=0, title="good")]}
         items = c._parse_results(resp, trend_name="t")
         assert len(items) == 1
         assert items[0].source_type == SourceType.WEB
-        assert items[0].metadata["search_score"] == 0.7
-
-    def test_missing_score_not_filtered(self):
-        # if Tavily omits score, don't drop the item on relevance grounds
-        c = _collector(min_search_score=0.3)
-        r = _result(0.9)
-        del r["score"]
-        items = c._parse_results({"results": [r]}, trend_name="t")
-        assert len(items) == 1
 
     def test_date_only_published_date_is_kept(self):
         # Tavily often returns a date-only 'published_date', which parses to a naive datetime;
         # comparing it to the tz-aware cutoff used to raise TypeError and silently drop the result.
-        c = _collector(min_search_score=0.0)
+        c = _collector()
         r = {
             "url": "https://example.com/d",
             "title": "date-only",
@@ -101,7 +84,7 @@ class TestParseResults:
         kst = ZoneInfo("Asia/Seoul")
         r = {"url": "https://example.com/d", "title": "d", "content": "x", "score": 0.9, "published_date": "2026-10-10"}
         for reference in (datetime(2026, 10, 11, tzinfo=kst), datetime(2026, 10, 12, tzinfo=kst)):
-            c = _collector(min_search_score=0.0)
+            c = _collector()
             c.config.reference_time = reference
             c.config.lookback_hours = 30
             assert len(c._parse_results({"results": [r]}, trend_name="t")) == 1
@@ -127,7 +110,7 @@ class TestCollect:
     async def test_skips_without_api_key(self, monkeypatch):
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "")
-        c = _collector(min_search_score=0.3)
+        c = _collector()
         assert await c.collect() == []
 
     @pytest.mark.asyncio
@@ -142,21 +125,21 @@ class TestCollect:
             raise SecretUnavailableError("AccessDenied")
 
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", _boom)
-        c = _collector(min_search_score=0.3)
+        c = _collector()
         with pytest.raises(SecretUnavailableError):
             await c.collect()
 
     @pytest.mark.asyncio
     async def test_no_queries_configured_short_circuits(self, monkeypatch):
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
-        c = _collector(min_search_score=0.3)  # no trend_searches
+        c = _collector()  # no trend_searches
         assert await c.collect() == []
 
     @pytest.mark.asyncio
     async def test_searches_every_query_and_dedups_urls(self, monkeypatch):
         # One query per trend query (3 total); the same URL returned twice collapses to one item.
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
-        c = _search_collector(min_search_score=0.3)
+        c = _search_collector()
         client = MagicMock()
         client.search = AsyncMock(
             side_effect=[
@@ -179,7 +162,7 @@ class TestCollect:
     @pytest.mark.asyncio
     async def test_excluded_domains_reach_every_search_broad_and_refined(self, monkeypatch):
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
-        c = _search_collector(min_search_score=0.3, exclude_domains=["finance.biggo.com"])
+        c = _search_collector(exclude_domains=["finance.biggo.com"])
         client = MagicMock()
         client.search = AsyncMock(return_value={"results": []})
         c._client_instance = client
@@ -192,7 +175,7 @@ class TestCollect:
         # `days = lookback_hours // 24` truncated the shipped 30-hour window to ONE day for the
         # largest source, so widening lookback_hours changed nothing upstream.
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
-        c = _search_collector(min_search_score=0.3)
+        c = _search_collector()
         c.config.lookback_hours = 30
         client = MagicMock()
         client.search = AsyncMock(return_value={"results": []})
@@ -207,7 +190,7 @@ class TestCollect:
         import asyncio
 
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
-        c = _search_collector(min_search_score=0.3, max_concurrency=1)
+        c = _search_collector(max_concurrency=1)
         state = {"active": 0, "peak": 0}
 
         async def _search(**kwargs):
@@ -228,7 +211,7 @@ class TestCollect:
     async def test_all_queries_failing_raises(self, monkeypatch):
         # A total Tavily outage must surface as FAILED, not a silently empty web source.
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
-        c = _search_collector(min_search_score=0.3, max_retries=1)
+        c = _search_collector(max_retries=1)
         client = MagicMock()
         client.search = AsyncMock(side_effect=RuntimeError("tavily down"))
         c._client_instance = client
@@ -242,7 +225,7 @@ class TestCollect:
         from tavily.errors import InvalidAPIKeyError
 
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
-        c = _search_collector(min_search_score=0.3, max_retries=3)
+        c = _search_collector(max_retries=3)
         client = MagicMock()
         client.search = AsyncMock(side_effect=InvalidAPIKeyError("revoked key"))
         c._client_instance = client
@@ -255,7 +238,7 @@ class TestCollect:
         # The narrower predicate must not lose the retry that matters: a hung request still gets
         # another attempt, and the query survives.
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
-        c = _search_collector(min_search_score=0.3, max_retries=2)
+        c = _search_collector(max_retries=2)
         client = MagicMock()
         client.search = AsyncMock(
             side_effect=[
@@ -275,7 +258,7 @@ class TestCollect:
         from tavily.errors import UsageLimitExceededError
 
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
-        c = _search_collector(min_search_score=0.3, max_retries=2)
+        c = _search_collector(max_retries=2)
         client = MagicMock()
         client.search = AsyncMock(
             side_effect=[
@@ -293,7 +276,7 @@ class TestCollect:
     @pytest.mark.asyncio
     async def test_partial_query_failure_keeps_the_rest(self, monkeypatch):
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
-        c = _search_collector(min_search_score=0.3, max_retries=1)
+        c = _search_collector(max_retries=1)
         client = MagicMock()
         client.search = AsyncMock(
             side_effect=[
@@ -313,7 +296,7 @@ class TestCollect:
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         factory = MagicMock()
         factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content='["refined query"]'))
-        c = _search_collector(min_search_score=0.3, max_refine_queries=2, models=factory)
+        c = _search_collector(max_refine_queries=2, models=factory)
         client = MagicMock()
         client.search = AsyncMock(
             side_effect=[
@@ -335,7 +318,7 @@ class TestCollect:
         seen: list[str] = []
         factory = MagicMock()
         factory.get_model.return_value = RunnableLambda(lambda p: (seen.append(str(p)), AIMessage(content="[]"))[1])
-        c = _search_collector(min_search_score=0.3, max_refine_queries=2, models=factory)
+        c = _search_collector(max_refine_queries=2, models=factory)
         client = MagicMock()
         client.search = AsyncMock(return_value={"results": [_result(0.9, url="https://a.example/1", title="A")]})
         c._client_instance = client
@@ -348,7 +331,7 @@ class TestCollect:
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         factory = MagicMock()
         factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content='["never used"]'))
-        c = _search_collector(min_search_score=0.3, models=factory)
+        c = _search_collector(models=factory)
         client = MagicMock()
         client.search = AsyncMock(return_value={"results": []})
         c._client_instance = client
@@ -360,7 +343,7 @@ class TestCollect:
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         factory = MagicMock()
         factory.get_model.return_value = RunnableLambda(lambda _: (_ for _ in ()).throw(RuntimeError("bedrock down")))
-        c = _search_collector(min_search_score=0.3, models=factory)
+        c = _search_collector(models=factory)
         client = MagicMock()
         client.search = AsyncMock(
             side_effect=[

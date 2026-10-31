@@ -237,11 +237,6 @@ class WebSearchCollector(BaseCollector):
                 ):
                     continue
 
-                score = result.get("score")
-                if score is not None and score < self.config.min_search_score:
-                    logger.debug("Skipping low-relevance result (%.3f): '%s'", score, title[:60])
-                    continue
-
                 source_type = self._detect_source_type(url)
                 item_id = generate_item_id(url)
 
@@ -253,7 +248,7 @@ class WebSearchCollector(BaseCollector):
                         url=url,
                         text=content,
                         published_at=published_at,
-                        metadata={"trend_name": trend_name, "search_score": result.get("score")},
+                        metadata={"trend_name": trend_name},
                     )
                 )
                 logger.info("Collected web result: '%s'", title)
