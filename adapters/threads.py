@@ -5,7 +5,7 @@ import hashlib
 import os
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import datetime
 from typing import Any
 
@@ -557,3 +557,31 @@ class ThreadsGateway:
             raise RuntimeError("Threads access token / user id not configured; cannot answer comments")
         async with threads_client(token, COMMENT_REQUEST_TIMEOUT_SEC) as client:
             yield _CommentSession(client, user_id, token)
+
+
+class ThreadsPreview:
+    """A ThreadsPublisher that posts NOTHING: it keeps the thread it was handed, so a research run can
+    be read (and compared) exactly as it would have gone out."""
+
+    publish_budget_sec = 0.0
+
+    def __init__(self) -> None:
+        self.posts: list[str] = []
+        self.with_image = False
+
+    async def post_thread(
+        self,
+        root_text: str,
+        replies: list[str],
+        *,
+        image_bytes: bytes | None = None,
+        image_content_type: str = "image/png",
+        image_alt: str = "",
+        deadline: float | None = None,
+    ) -> ThreadsDelivery:
+        self.posts = [root_text, *(r for r in replies if r.strip())]
+        self.with_image = bool(image_bytes)
+        return ThreadsDelivery(len(self.posts), len(self.posts), with_image=self.with_image)
+
+    def comments(self) -> AbstractAsyncContextManager[_CommentSession]:
+        raise NotImplementedError("a preview has no comments")

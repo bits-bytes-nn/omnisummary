@@ -32,12 +32,15 @@ from domain.formatting import (
     citation_key,  # noqa: E402
     extract_urls,  # noqa: E402
 )
+from adapters.threads import ThreadsPreview  # noqa: E402
 from entrypoints import bootstrap  # noqa: E402
 from shared import Config, logger  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "reports"
 
 EXIT_OK, EXIT_FAILED, EXIT_REJECTED = 0, 1, 2
+# Writes the Threads thread through a publisher that posts nothing (adapters.threads.ThreadsPreview).
+PREVIEW = "threads-preview"
 
 
 class _ArgumentError(ValueError):
@@ -57,9 +60,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("topic", help="The AI/ML topic or question to research")
     parser.add_argument(
         "--publish",
-        choices=[THREADS],
+        choices=[THREADS, PREVIEW],
         default="",
-        help="Also publish a thread to the public Threads account (never happens without this flag)",
+        help="Also publish a thread to the public Threads account (never happens without this flag); "
+        f"'{PREVIEW}' writes the thread and returns it in the JSON without posting anything",
     )
     parser.add_argument(
         "--output-dir",
@@ -150,7 +154,8 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
         result["error"] = f"Config could not be loaded: {type(e).__name__}: {e}"
         return result, EXIT_FAILED
     result["model"] = config.agent.model_id.value
-    delivery = DeliveryContext(publish_threads=args.publish == THREADS, config=config)
+    delivery = DeliveryContext(publish_threads=args.publish in (THREADS, PREVIEW), config=config)
+    preview = ThreadsPreview() if args.publish == PREVIEW else None
     allowed = "ALLOWED" if delivery.publish_threads else "NOT allowed"
     prompt = f"{topic}\n\n[DELIVERY] Threads publishing: {allowed}."
 
@@ -172,6 +177,8 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
         try:
             # Inside the try: building the ports opens AWS sessions, and a failure must still print the JSON.
             delivery.ports = bootstrap.research_ports(config)
+            if preview is not None:
+                delivery.ports.threads = preview
             agent = create_research_agent(config)
             run_result = agent(prompt, limits=research_run_limits(config))
         except Exception as e:
@@ -202,6 +209,8 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
     if result["stop_reason"].startswith("limit_") and run_error is None:
         warnings.append(f"The run stopped at its budget cap ({result['stop_reason']}); the report may be partial.")
     result["threads"] = _threads_result(delivery)
+    if preview is not None and result["threads"] is not None:
+        result["threads"].update(preview=True, posts=preview.posts, with_image=preview.with_image)
     result["images"] = [
         {"image_url": a.image_url, "source_url": a.source_url, "content_type": a.content_type}
         for a in delivery.staged_images
