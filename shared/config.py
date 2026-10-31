@@ -334,7 +334,6 @@ class PipelineConfig(_StrictModel):
     )
     trend_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
     trend_retention_days: int = Field(default=30, ge=1)
-    trend_cooling_days: int = Field(default=7, ge=1)
     trend_max_evidence: int = Field(default=5, ge=1)
     trend_max_active_trends: int = Field(default=10, ge=1)
     trend_momentum_half_life_days: float = Field(default=7.0, gt=0)

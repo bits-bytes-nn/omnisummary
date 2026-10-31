@@ -73,7 +73,6 @@ def _trends(config: Config, today: date) -> list[dict[str, Any]]:
     return [
         {
             "title": t.title,
-            "status": t.status.value,
             "first_seen": t.first_seen or t.evidence[0].date,
             "last_seen": t.last_seen or t.evidence[-1].date,
             "latest": t.evidence[-1].summary,

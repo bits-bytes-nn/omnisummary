@@ -110,7 +110,6 @@ pipeline:
     youtube: 1
   trend_model: "anthropic.claude-sonnet-5-5"
   trend_retention_days: 30
-  trend_cooling_days: 7
   trend_max_evidence: 5
   trend_max_active_trends: 10
   trend_momentum_half_life_days: 7.0

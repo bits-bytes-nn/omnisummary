@@ -5,7 +5,7 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 from domain.formatting import RETWEET_PREFIX, normalize_title
 from domain.models import CollectedItem, generate_item_id
-from shared import SourceType, logger
+from shared import logger
 
 _TRACKING_PARAM_PREFIXES = ("utm_",)
 _TRACKING_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src", "ref_url"}
@@ -100,7 +100,6 @@ class ContentAggregator:
         url_deduped = list(seen_urls.values())
 
         seen_titles: dict[str, CollectedItem] = {}
-        clipped: dict[str, int] = {}
         deduplicated: list[CollectedItem] = []
         title_dupes = 0
         empty_norm = 0
@@ -116,7 +115,6 @@ class ContentAggregator:
                 continue
             # A pinned duplicate is not lost here: _pick_survivor always keeps the pinned copy. Two pins
             # sharing a title are both kept, since each was asked for by URL.
-            norm = _seen_key(norm, item, seen_titles, clipped)
             if norm in seen_titles and not (item.metadata.get("pinned") and seen_titles[norm].metadata.get("pinned")):
                 prev = seen_titles[norm]
                 logger.debug(
@@ -133,8 +131,6 @@ class ContentAggregator:
                 title_dupes += 1
             else:
                 seen_titles[norm] = item
-                if _is_clipped(item):
-                    clipped[norm] = len(item.title.rstrip())
                 deduplicated.append(item)
 
         if empty_norm:
@@ -187,26 +183,3 @@ class ContentAggregator:
         # metadata (feed_url, subreddit, channel_url, view_count) with a lower-priority dupe's.
         for k, v in dupe.metadata.items():
             kept.metadata.setdefault(k, v)
-
-
-def _is_clipped(item: CollectedItem) -> bool:
-    """RSSHub cuts a long X post's title at a fixed length and ends it with an ellipsis. Only X: a
-    Reddit or blog title ending in "..." is the author's own and can be short ("Introducing...")."""
-    return item.source_type == SourceType.X and item.title.rstrip().endswith(("...", "\u2026"))
-
-
-def _seen_key(norm: str, item: CollectedItem, seen_titles: dict, clipped: dict[str, int]) -> str:
-    """The seen title this one duplicates, or `norm` itself. RSSHub clips every long X title at the same
-    length, so a retweet, whose "RT name:" prefix spends part of that length, ends earlier than the post
-    it retweets and matches only as a prefix of it (both omarsar0 retweets on 2026-10-26 survived). Only
-    two titles clipped at that same length are compared so: a short post the author ended with "..."
-    ("Big news coming...") is not a clip and must not swallow every title that starts the same way."""
-    if norm in seen_titles:
-        return norm
-    if not _is_clipped(item):
-        return norm
-    length = len(item.title.rstrip())
-    for key, key_length in clipped.items():
-        if key_length == length and (key.startswith(norm) or norm.startswith(key)):
-            return key
-    return norm
