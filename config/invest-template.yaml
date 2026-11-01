@@ -68,6 +68,20 @@ collectors:
       - name: crypto
         queries:
           - "bitcoin ethereum crypto market ETF flows regulation"
+      # Global IB and asset-manager research pages (no RSS); robots.txt allows their insight paths.
+      - name: ib_research
+        queries:
+          - "market outlook strategist view stocks rates"
+          - "economic outlook inflation Fed recession strategist"
+        domains:
+          - "goldmansachs.com"
+          - "jpmorgan.com"
+          - "morganstanley.com"
+          - "blackrock.com"
+          - "ubs.com"
+          - "pimco.com"
+          - "schroders.com"
+          - "invesco.com"
     domain: "investing (Korean, US and global stocks, macro and markets, and crypto assets)"
     refine_rules: |-
       - Prefer: earnings and guidance, filings, central-bank and policy decisions, analyst actions, wire reports
@@ -195,6 +209,10 @@ agent:
     - "morganstanley.com"
     - "blackrock.com"
     - "vanguard.com"
+    - "ubs.com"
+    - "pimco.com"
+    - "schroders.com"
+    - "invesco.com"
     - "reuters.com"
     - "cnbc.com"
     - "marketwatch.com"
