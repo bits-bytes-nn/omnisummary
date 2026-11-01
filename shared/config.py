@@ -317,7 +317,7 @@ class PipelineConfig(_StrictModel):
     # Plain declarative ('~다') to match the columnist body voice — not honorific ('~입니다').
     # Before the D-day it counts down; on/after it, countdown_after counts up (the prediction
     # blew past — a self-aware joke). Empty countdown_date disables the intro entirely.
-    countdown_template: str = "아모데이 말대로라면 AGI 등장 {days}일 전이다. "
+    countdown_template: str = "아모데이 말대로라면 AGI 등장까지 {days}일 남았다. "
     # The gag OPENS the lead, which spends the root's first line (the one most feed readers see) on
     # the same sentence every day. That is deliberate: the countdown is the account's signature, and
     # the owner ranked recognisable branding above the first-line reach argument.

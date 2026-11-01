@@ -192,8 +192,8 @@ pipeline:
   # Elon Musk, U.S.-Saudi Investment Forum, 2025-11-19: work optional and money irrelevant in "10 to 20
   # years" ("universal high income"). Counted to the early end of his range; the gag quotes the money half.
   countdown_date: "2035-11-19"
-  countdown_template: "머스크 말대로라면 돈이 필요 없어지기 {days}일 전이다. "
-  countdown_after: "머스크 말대로라면 돈이 필요 없어질 날 D+{days}일째, 아직 돈이 필요하다. "
+  countdown_template: "머스크 말대로라면 보편적 고소득 시대까지 {days}일 남았다. "
+  countdown_after: "머스크 말대로라면 보편적 고소득 시대 예정일 D+{days}일째, 아직이다. "
   threads_topic_tag: "투자"
   threads_footer: "투자 권유가 아닙니다. 투자 판단의 책임은 본인에게 있습니다."
   domain: "investing (Korean, US and global stocks, macro and markets, crypto assets, and Korean real estate)"
