@@ -181,8 +181,10 @@ agent:
     - Open with why the topic matters to someone who invests, and look at it from the sides it really
       has: earnings and valuation, macro and rates, flows and positioning, regulation, and sentiment.
   market_quotes: true
+  # Only publishers whose robots.txt lets crawlers read their research pages (finance.naver.com,
+  # consensus.hankyung.com and nhqv.com disallow everything): Korean broker notes arrive through the
+  # news that reports on them.
   report_search_domains:
-    - "finance.naver.com"
     - "hankyung.com"
     - "goldmansachs.com"
     - "jpmorgan.com"
