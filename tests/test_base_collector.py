@@ -696,3 +696,30 @@ class TestDumpItemsEnvelope:
             parked = load_items_from_s3("youtube_items.json", max_age_hours=36)
         assert [i.item_id for i in parked.items] == ["v2"]
         assert parked.meta == {}
+
+
+class TestOffsetlessFeedDates:
+    """A Korean wire writes KST with no offset; read as UTC it sat nine hours in the future."""
+
+    @pytest.mark.parametrize(
+        "stamp",
+        [
+            "2026-11-01 19:55:54",
+            "Sun, 01 Nov 2026 19:55:54 +0900",
+            "Sun, 01 Nov 2026 10:55:54 GMT",
+            "2026-11-01T10:55:54Z",
+            "2026-11-01T19:55:54+09:00",
+        ],
+    )
+    def test_every_form_lands_on_the_same_instant(self, stamp):
+        from datetime import UTC, datetime
+        from zoneinfo import ZoneInfo
+
+        import feedparser
+
+        from adapters.collectors.base import parse_feed_published_date
+
+        entry = feedparser.parse(
+            f"<rss><channel><item><title>x</title><pubDate>{stamp}</pubDate></item></channel></rss>"
+        ).entries[0]
+        assert parse_feed_published_date(entry, ZoneInfo("Asia/Seoul")) == datetime(2026, 11, 1, 10, 55, 54, tzinfo=UTC)

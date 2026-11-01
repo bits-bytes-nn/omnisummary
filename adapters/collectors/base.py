@@ -8,8 +8,8 @@ import os
 from abc import ABC, abstractmethod
 from calendar import timegm
 from collections.abc import Awaitable, Callable, Sequence
-from datetime import UTC, datetime, timedelta
-from email.utils import parsedate_to_datetime
+from datetime import UTC, datetime, timedelta, tzinfo
+from email.utils import parsedate_to_datetime, parsedate_tz
 from enum import Enum
 from typing import Any
 
@@ -26,7 +26,32 @@ from shared.config import BaseCollectorConfig
 from shared.constants import BROWSER_USER_AGENT, DIGEST_PERIOD_HOURS
 
 
-def parse_feed_published_date(entry) -> datetime | None:
+def _stated_offset(published: str) -> bool:
+    """Whether a feed's date string carries its own UTC offset ("+0900", "Z", "GMT", "+09:00")."""
+    try:
+        parsed = parsedate_tz(published)
+    except (TypeError, ValueError):
+        parsed = None
+    if parsed is not None:
+        return parsed[9] is not None
+    try:
+        return datetime.fromisoformat(published.strip().replace(" ", "T", 1)).tzinfo is not None
+    except ValueError:
+        return True
+
+
+def parse_feed_published_date(entry, local_tz: tzinfo | None = None) -> datetime | None:
+    """The entry's publication time in UTC. A date string with no offset is read in `local_tz` (the run's
+    own zone): feedparser reads it as UTC, which put a Korean wire's KST stamps nine hours in the future."""
+    published_str = entry.get("published") or ""
+    if local_tz is not None and published_str and not _stated_offset(published_str):
+        try:
+            naive: datetime | None = datetime.fromisoformat(published_str.strip().replace(" ", "T", 1))
+        except ValueError:
+            parsed = parsedate_tz(published_str)
+            naive = datetime(*parsed[:6]) if parsed else None
+        if naive is not None:
+            return naive.replace(tzinfo=local_tz).astimezone(UTC)
     if hasattr(entry, "published_parsed") and entry.published_parsed:
         return datetime.fromtimestamp(timegm(entry.published_parsed), tz=UTC)
 
@@ -619,7 +644,7 @@ def parse_feed_entries(
     items: list[CollectedItem] = []
     for entry in feed.entries if limit is None else feed.entries[:limit]:
         try:
-            published_at = parse_feed_published_date(entry)
+            published_at = parse_feed_published_date(entry, reference_time.tzinfo if reference_time else None)
             if not in_collection_window(published_at, lookback_hours=lookback_hours, reference_time=reference_time):
                 continue
 
