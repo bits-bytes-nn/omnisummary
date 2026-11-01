@@ -3,7 +3,7 @@ import logging
 import os
 import uuid
 from contextvars import ContextVar
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .constants import LocalPaths
@@ -107,6 +107,22 @@ def _add_file_handler(logger_obj: logging.Logger, formatter: logging.Formatter) 
         return
     file_handler.setFormatter(formatter)
     logger_obj.addHandler(file_handler)
+    _prune_old_logs(logs_dir, name, ext)
+
+
+LOG_RETENTION_DAYS = 30
+
+
+def _prune_old_logs(logs_dir: Path, name: str, ext: str) -> None:
+    """Drop this logger's own dated files past LOG_RETENTION_DAYS (they grew ~20 MB a month unbounded).
+    Only `<name>_YYYY-MM-DD.<ext>` files are touched; anything else in the directory is left alone."""
+    cutoff = (datetime.now() - timedelta(days=LOG_RETENTION_DAYS)).strftime("%Y-%m-%d")
+    for path in logs_dir.glob(f"{name}_????-??-??.{ext}"):
+        if path.stem[len(name) + 1 :] < cutoff:
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
 
 def configure_logger(config: LoggerConfig) -> logging.Logger:
