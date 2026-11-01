@@ -11,6 +11,7 @@ from application.research import (
     current_delivery_context,
     request_context,
 )
+from domain.digest_snapshot import DigestSnapshot
 from domain.formatting import normalize_citation_url
 from domain.models import ImageAsset
 from shared import get_config
@@ -145,7 +146,7 @@ class TestRecallDigest:
     @pytest.mark.asyncio
     async def test_returns_the_lead_and_story_titles(self):
         store = MagicMock()
-        store.get_digest.return_value = self._snapshot()
+        store.get_digest.return_value = DigestSnapshot.from_dict(self._snapshot())
         with request_context(DeliveryContext(ports=ResearchPorts(memory_store=lambda: store))):
             result = await rt.recall_digest._tool_func("2026-08-17")
         store.get_digest.assert_called_once_with("2026-08-17")
@@ -191,7 +192,7 @@ class TestRecallDigest:
             {"title": f"\uc2a4\ud1a0\ub9ac {i}" + "\uac00" * 500, "url": f"u{i}", "body": "b"} for i in range(cap + 5)
         ]
         store = MagicMock()
-        store.get_digest.return_value = snapshot
+        store.get_digest.return_value = DigestSnapshot.from_dict(snapshot)
         with request_context(DeliveryContext(ports=ResearchPorts(memory_store=lambda: store))):
             result = await rt.recall_digest._tool_func("2026-08-17")
         chars = get_config().agent.search_content_preview_chars

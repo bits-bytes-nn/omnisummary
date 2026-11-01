@@ -15,6 +15,7 @@ from typing import Any, Literal, Protocol
 
 from langchain_core.language_models import BaseChatModel
 
+from domain.digest_snapshot import DigestSnapshot
 from domain.models import CollectedItem, ImageAsset, SourceStatus, ThreadsComment, ThreadsDelivery
 from shared.constants import LanguageModelId
 from shared.logger import logger
@@ -93,20 +94,37 @@ class MemoryStore(ABC):
     """
 
     @abstractmethod
-    def put_digest(self, digest_date: str, state: dict[str, Any]) -> None: ...
+    def put_raw(self, digest_date: str, state: dict[str, Any]) -> None:
+        """Store the serialized snapshot for the date (adapters own the wire format and its limits)."""
 
     @abstractmethod
-    def get_digest(self, digest_date: str) -> dict[str, Any] | None:
-        """The snapshot stored FOR that ISO date, or None when the date has none.
+    def get_raw(self, digest_date: str) -> dict[str, Any] | None:
+        """The serialized snapshot for the date, or None; raises MemoryReadError when unreadable."""
+
+    def put_digest(self, digest_date: str, snapshot: DigestSnapshot) -> None:
+        self.put_raw(digest_date, snapshot.to_dict())
+
+    def get_digest(self, digest_date: str) -> DigestSnapshot | None:
+        """The snapshot stored FOR that ISO date, or None when the date has none. Readers get the value
+        object, never the dict: three of them walked `.get("digest_result").get("content")` chains that
+        would have read a renamed field as an empty history.
 
         Keyed by the digest date rather than "the latest": digest_result.generated_at is UTC and
         would false-mismatch the KST digest date on every pre-09:00 KST run.
 
         Raises MemoryReadError when the snapshot could not be READ (as opposed to not existing),
-        so a publish path never mistakes an unreadable store for an empty day.
+        so a publish path never mistakes an unreadable store for an empty day; a stored snapshot that
+        no longer parses is unreadable too.
         """
+        data = self.get_raw(digest_date)
+        if not data:
+            return None
+        try:
+            return DigestSnapshot.from_dict(data)
+        except (ValueError, TypeError, AttributeError) as e:
+            raise MemoryReadError(f"The digest snapshot for {digest_date} does not parse: {e}") from e
 
-    def get_recent_digests(self, before: date, days: int) -> list[dict[str, Any]]:
+    def get_recent_digests(self, before: date, days: int) -> list[DigestSnapshot]:
         """The snapshots for the `days` dates preceding `before` (newest first), skipping dates that
         have none. Seeds cross-day dedup with the SAME window the published-URL ledger uses, and
         never includes `before` itself, so a same-day re-run keeps its own stories.
@@ -114,7 +132,7 @@ class MemoryStore(ABC):
         Session ids are deterministic (`digest-YYYY-MM-DD`), so this reads exactly `days` sessions
         instead of listing every session ever stored. Best-effort per date: it only ENRICHES the
         dedup seed, so one unreadable day is logged and skipped rather than failing the read."""
-        out: list[dict[str, Any]] = []
+        out: list[DigestSnapshot] = []
         for offset in range(1, max(0, days) + 1):
             day = (before - timedelta(days=offset)).isoformat()
             try:

@@ -88,20 +88,19 @@ class TestPublishedUrlLedger:
 
 class TestPublishedUrlsFromSnapshots:
     def test_extracts_item_urls_from_digest_snapshots(self):
+        from tests.fakes import snapshot
+
         snaps = [
-            {"digest_result": {"content": {"items": [{"url": "https://a.com/1"}, {"url": "https://b.com/2"}]}}},
-            {"digest_result": {"content": {"items": [{"url": "https://c.com/3"}]}}},
+            snapshot(items=[{"url": "https://a.com/1"}, {"url": "https://b.com/2"}]),
+            snapshot(items=[{"url": "https://c.com/3"}]),
         ]
         assert published_urls_from_snapshots(snaps) == {"https://a.com/1", "https://b.com/2", "https://c.com/3"}
 
-    def test_tolerates_missing_or_malformed_snapshots(self):
-        snaps = [
-            {},
-            {"digest_result": None},
-            {"digest_result": {"content": {}}},
-            {"digest_result": {"content": {"items": [{"no_url": 1}, None]}}},
-        ]
-        assert published_urls_from_snapshots(snaps) == set()
+    def test_a_story_less_or_empty_snapshot_contributes_nothing(self):
+        from domain.digest_snapshot import DigestSnapshot
+        from tests.fakes import snapshot
+
+        assert published_urls_from_snapshots([DigestSnapshot(), snapshot(items=[])]) == set()
         assert published_urls_from_snapshots([]) == set()
 
 

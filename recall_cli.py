@@ -22,7 +22,6 @@ load_dotenv()
 # Same reason as research_cli: botocore at DEBUG logs the session token.
 logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
-from domain.digest_snapshot import DigestSnapshot  # noqa: E402
 from domain.models import TrendMemory  # noqa: E402
 from entrypoints import bootstrap  # noqa: E402
 from shared import TRENDS_KEY, Config  # noqa: E402
@@ -52,8 +51,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def _digest(day: date) -> dict[str, Any]:
-    data = bootstrap.memory_store().get_digest(day.isoformat())
-    content = DigestSnapshot.from_dict(data).content if data else None
+    snapshot = bootstrap.memory_store().get_digest(day.isoformat())
+    content = snapshot.content if snapshot else None
     if content is None or not content.items:
         return {"found": False, "lead": "", "stories": []}
     return {

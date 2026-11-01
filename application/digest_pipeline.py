@@ -119,7 +119,7 @@ async def run_pipeline(
     # ledger's canonical form so http/https + trailing-slash variants of a past story still match.
     # Re-normalized on read: a key written under an older normalize_url must still match.
     exclude_urls = {normalize_url(u) for u in ledger.recent_urls(digest_date)}
-    snapshots: list[dict] = []
+    snapshots: list[DigestSnapshot] = []
     try:
         # Seed the same window the ledger excludes: ages 1..ttl-1 (today's own snapshot is excluded
         # so a same-day re-run keeps its stories, and a story back on the TTL day is allowed again).
@@ -203,25 +203,21 @@ async def run_pipeline(
     return items, ranked_items, digest
 
 
-def _recent_story_titles(snapshots: list[dict]) -> list[str]:
+def _recent_story_titles(snapshots: list[DigestSnapshot]) -> list[str]:
     """Story titles from every snapshot the cross-day dedup seed already fetched (the ledger's
     window, ages 1..published_url_ttl_days-1, newest first), so the editor sees what recent digests ran. One
     day was not enough: a weekly roundup brings a story back under a NEW URL the ledger cannot
     match, and on 2026-10-11 three of five stories had run 1-4 days earlier. The ranker reads it for
     Novelty and the editor for selection; it is information, not a filter."""
-    titles: list[str] = []
-    for snap in snapshots or []:
-        content = ((snap or {}).get("digest_result") or {}).get("content") or {}
-        titles += [t for it in (content.get("items") or []) if isinstance(it, dict) and (t := it.get("title", ""))]
+    titles = [item.title for snap in snapshots if snap.content for item in snap.content.items if item.title]
     return list(dict.fromkeys(titles))
 
 
-def _recent_leads(snapshots: list[dict], window: int) -> list[str]:
+def _recent_leads(snapshots: list[DigestSnapshot], window: int) -> list[str]:
     """The leads of the snapshots the cross-day dedup seed already fetched (newest first), so the next
     lead avoids their angle. The editor is shown each lead's last sentence, its thesis, so the
     countdown gag the lead opens with never reaches the comparison."""
-    leads = [(((snap or {}).get("digest_result") or {}).get("content") or {}).get("lead") or "" for snap in snapshots]
-    return [lead for lead in leads if lead.strip()][:window]
+    return [snap.content.lead for snap in snapshots if snap.content and snap.content.lead.strip()][:window]
 
 
 def persist_digest(
@@ -229,7 +225,7 @@ def persist_digest(
 ) -> None:
     """Persist the digest snapshot (the single path used by both the local CLI and the Lambda handler):
     the visual Lambda publishes off it, and later runs dedup against it."""
-    memory.put_digest(digest_date.isoformat(), DigestSnapshot(ranked_items, digest).to_dict())
+    memory.put_digest(digest_date.isoformat(), DigestSnapshot(ranked_items, digest))
 
 
 async def publish_inline(

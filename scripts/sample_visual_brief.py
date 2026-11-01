@@ -20,7 +20,6 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from domain.digest_snapshot import DigestSnapshot
 from entrypoints import bootstrap
 from shared import Config, logger
 
@@ -34,10 +33,9 @@ async def main() -> None:
     args = parser.parse_args()
 
     config = Config.load()
-    data = bootstrap.memory_store().get_digest(args.digest_date.isoformat())
-    if not data:
+    snapshot = bootstrap.memory_store().get_digest(args.digest_date.isoformat())
+    if snapshot is None:
         raise SystemExit(f"No digest snapshot for {args.digest_date}")
-    snapshot = DigestSnapshot.from_dict(data)
 
     maker = bootstrap.daily_visual_maker(config)
     if args.recent_comics:

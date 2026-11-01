@@ -4,21 +4,14 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from application.ports import StateReadError, StateStore
+from domain.digest_snapshot import DigestSnapshot
 from shared.logger import logger
 
 
-def published_urls_from_snapshots(snapshots: list[dict[str, Any]]) -> set[str]:
-    """Extract the URLs that were actually published in past digests from their stored
-    snapshots (digest_result.content.items[].url). Lets cross-day dedup self-heal from
-    AgentCore Memory history rather than only from the ledger a future run populates."""
-    urls: set[str] = set()
-    for snap in snapshots or []:
-        content = ((snap or {}).get("digest_result") or {}).get("content") or {}
-        for item in content.get("items") or []:
-            url = item.get("url") if isinstance(item, dict) else None
-            if url:
-                urls.add(url)
-    return urls
+def published_urls_from_snapshots(snapshots: list[DigestSnapshot]) -> set[str]:
+    """The URLs past digests actually published, from their stored snapshots. Lets cross-day dedup
+    self-heal from AgentCore Memory history rather than only from the ledger a future run populates."""
+    return {item.url for snap in snapshots if snap.content for item in snap.content.items if item.url}
 
 
 PUBLISHED_URLS_KEY = "published_urls.json"

@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import recall_cli
+from domain.digest_snapshot import DigestSnapshot
 from domain.models import Trend, TrendEvidence, TrendMemory
 
 
@@ -23,7 +24,7 @@ def _snapshot() -> dict:
 class TestDigest:
     def test_a_stored_day_returns_its_lead_and_stories(self):
         store = MagicMock()
-        store.get_digest.return_value = _snapshot()
+        store.get_digest.return_value = DigestSnapshot.from_dict(_snapshot())
         with patch.object(recall_cli.bootstrap, "memory_store", return_value=store):
             result, code = recall_cli.run(["digest", "2026-10-11"])
         assert code == recall_cli.EXIT_OK and result["found"] is True
