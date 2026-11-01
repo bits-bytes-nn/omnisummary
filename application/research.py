@@ -17,6 +17,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from application.ports import LanguageModels, MemoryStore, ResearchSources, StateStore, ThreadsPublisher
+from domain.digest_snapshot import DigestSnapshot
 from domain.formatting import citation_key, extract_urls, normalize_citation_url
 from domain.models import ImageAsset
 from domain.renderers import render_threads_research, research_post_budget
@@ -379,7 +380,7 @@ async def recall_digest(digest_date: str) -> str:
     max_chars = config.agent.search_content_preview_chars
     store = current_delivery_context().ports.memory_store
 
-    def _load():
+    def _load() -> DigestSnapshot | None:
         if store is None:
             raise RuntimeError("no digest store is configured for this run")
         return store().get_digest(day.isoformat())

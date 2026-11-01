@@ -131,17 +131,18 @@ class MemoryStore(ABC):
 
         Session ids are deterministic (`digest-YYYY-MM-DD`), so this reads exactly `days` sessions
         instead of listing every session ever stored. Best-effort per date: it only ENRICHES the
-        dedup seed, so one unreadable day is logged and skipped rather than failing the read."""
+        dedup seed, so one unreadable day (a snapshot that no longer parses included) is logged and
+        skipped whole rather than failing the read; the URL ledger still excludes that day's stories."""
         out: list[DigestSnapshot] = []
         for offset in range(1, max(0, days) + 1):
             day = (before - timedelta(days=offset)).isoformat()
             try:
-                data = self.get_digest(day)
+                snapshot = self.get_digest(day)
             except MemoryReadError as e:
                 logger.warning("Skipping the digest snapshot for %s: %s", day, e)
                 continue
-            if data is not None:
-                out.append(data)
+            if snapshot is not None:
+                out.append(snapshot)
         return out
 
 
