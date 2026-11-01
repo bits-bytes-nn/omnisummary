@@ -294,3 +294,21 @@ def _record_config(seen: list):
         return []
 
     return collect
+
+
+def test_each_edition_keeps_its_own_sync_stamp(monkeypatch):
+    from shared.config import EDITION_ENV
+
+    before = dict(os.environ)
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: False)
+    try:
+        module = _load("sync_to_s3.py")
+        monkeypatch.delenv(EDITION_ENV, raising=False)
+        default = module._sync_stamp_path("rsshub")
+        monkeypatch.setenv(EDITION_ENV, "invest")
+        invest = module._sync_stamp_path("rsshub")
+    finally:
+        os.environ.clear()
+        os.environ.update(before)
+    assert default.parent.name == "digest_state"
+    assert invest.parent == default.parent / "invest" and invest.name == default.name

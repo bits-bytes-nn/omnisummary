@@ -296,6 +296,8 @@ X와 YouTube 자막은 데이터센터 IP를 막으므로 다이제스트 실행
 crontab -e
 # 18:30 KST, 19:00 KST(10:00 UTC) 다이제스트 30분 전. cron은 그 컴퓨터의 시간대를 따른다
 30 18 * * * AWS_PROFILE=<profile> /path/to/omnisummary/scripts/sync_all_to_s3.sh >> /path/to/omnisummary/logs/sync.log 2>&1   # /tmp는 재부팅하면 지워진다
+# 판마다 자기 실행 전에 자기 적재 파일을 올린다(투자판: 07:30 KST)
+0 7 * * * OMNISUMMARY_EDITION=invest AWS_PROFILE=<profile> /path/to/omnisummary/scripts/sync_all_to_s3.sh >> /path/to/omnisummary/logs/sync.log 2>&1
 ```
 
 적재 파일이 `park_max_age_hours`(12시간. 정상이면 다이제스트 시점에 30분쯤 지났다)보다 오래되면 그 소스는 `STALE`을 보고하므로, cron이 멈춰도 정상처럼 보이지 않는다.

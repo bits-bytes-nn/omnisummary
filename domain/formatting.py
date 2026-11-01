@@ -69,7 +69,7 @@ def format_alarm(
     return subject, "\n".join(lines)
 
 
-def agi_countdown_intro(date_str: str, template: str, today: date, after_template: str = "") -> str:
+def countdown_intro(date_str: str, template: str, today: date, after_template: str = "") -> str:
     """The tongue-in-cheek AGI-countdown intro, computed in code (never the LLM) from a fixed D-day
     so it's accurate and ticks daily. Prefixed onto the lead when the digest is generated.
     Before the D-day: counts DOWN via `template` ({days} = days remaining). On/after the D-day:
@@ -91,7 +91,7 @@ def agi_countdown_intro(date_str: str, template: str, today: date, after_templat
         if after_template:
             return after_template.format(days=-days)
     except (KeyError, IndexError, ValueError) as e:
-        logger.warning("Malformed agi_countdown template (%s); skipping intro", e)
+        logger.warning("Malformed countdown template (%s); skipping intro", e)
     return ""
 
 

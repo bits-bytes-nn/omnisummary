@@ -298,6 +298,8 @@ X and YouTube transcripts block datacenter IPs, so collect them on your machine 
 crontab -e
 # 18:30 KST, 30 minutes before a 19:00 KST (10:00 UTC) digest; cron uses the machine's local time zone
 30 18 * * * AWS_PROFILE=<profile> /path/to/omnisummary/scripts/sync_all_to_s3.sh >> /path/to/omnisummary/logs/sync.log 2>&1   # not /tmp: a reboot clears it
+# An edition syncs its own park files before its own run (investing: 07:30 KST)
+0 7 * * * OMNISUMMARY_EDITION=invest AWS_PROFILE=<profile> /path/to/omnisummary/scripts/sync_all_to_s3.sh >> /path/to/omnisummary/logs/sync.log 2>&1
 ```
 
 A park file older than `park_max_age_hours` (12h; a healthy one is about 30 minutes old at the digest) makes the source report `STALE`, so a stopped cron can't look healthy.

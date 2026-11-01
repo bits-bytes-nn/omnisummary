@@ -12,6 +12,8 @@
 #
 # Cron example (18:30 KST daily, ~30 min before the 19:00 KST = 10:00 UTC digest) — `crontab -e`:
 #   30 18 * * * /Users/youngmki/Projects/omnisummary/scripts/sync_all_to_s3.sh >> /tmp/omnisummary-sync.log 2>&1
+# An edition syncs its own park files (config/<edition>.yaml) before its own run, e.g. investing at 07:30 KST:
+#   0 7 * * * OMNISUMMARY_EDITION=invest /Users/youngmki/Projects/omnisummary/scripts/sync_all_to_s3.sh >> /tmp/omnisummary-sync.log 2>&1
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

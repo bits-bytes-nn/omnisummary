@@ -750,6 +750,18 @@ class TestResolveChannelIdViaApi:
         assert client.get.call_args.kwargs["params"]["forHandle"] == "AndrejKarpathy"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "url", ["https://www.youtube.com/@김단테", "https://www.youtube.com/@%EA%B9%80%EB%8B%A8%ED%85%8C"]
+    )
+    async def test_resolves_a_non_latin_handle(self, monkeypatch, url):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config())
+        client = AsyncMock()
+        client.get.return_value = _resp(200, {"items": [{"id": "UCabc123"}]})
+        assert await collector._resolve_channel_id_via_api(url, client) == "UCabc123"
+        assert client.get.call_args.kwargs["params"]["forHandle"] == "김단테"
+
+    @pytest.mark.asyncio
     async def test_returns_empty_when_no_handle(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
         collector = YouTubeCollector(_config())

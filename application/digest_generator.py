@@ -8,7 +8,7 @@ from application.ports import LanguageModels
 from application.prompts import DigestPrompt, GroundingCheckPrompt
 from domain.aggregator import normalize_url
 from domain.formatting import (
-    agi_countdown_intro,
+    countdown_intro,
     format_collected_item,
     place_countdown_intro,
     source_tag_and_metrics,
@@ -71,11 +71,11 @@ class DigestGenerator:
 
         # The countdown gag is code-owned and lands on the lead after generation, so its length is
         # spent before the editor writes a word — compute it here to bound the lead's own budget.
-        intro = agi_countdown_intro(
-            self.config.agi_countdown_date,
-            self.config.agi_countdown_template,
+        intro = countdown_intro(
+            self.config.countdown_date,
+            self.config.countdown_template,
             today,
-            self.config.agi_countdown_after,
+            self.config.countdown_after,
         )
 
         items_text = self._format_ranked_items(ranked_items)
