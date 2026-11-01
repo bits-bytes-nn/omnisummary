@@ -133,3 +133,18 @@ class TestFileHandlerNeverBreaksImport:
         log = configure_logger(cfg)
         _add_file_handler(log, _build_formatter(cfg))  # must not raise
         assert not [h for h in log.handlers if isinstance(h, logging.FileHandler)]
+
+
+def test_old_dated_logs_are_pruned_and_nothing_else(tmp_path):
+    from datetime import datetime, timedelta
+
+    from shared.logger import LOG_RETENTION_DAYS, _prune_old_logs
+
+    old = (datetime.now() - timedelta(days=LOG_RETENTION_DAYS + 1)).strftime("%Y-%m-%d")
+    new = datetime.now().strftime("%Y-%m-%d")
+    for name in (f"logs_{old}.txt", f"logs_{new}.txt", "cloudwatch_backup.txt", f"other_{old}.txt"):
+        (tmp_path / name).write_text("x")
+    _prune_old_logs(tmp_path, "logs", "txt")
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+        [f"logs_{new}.txt", "cloudwatch_backup.txt", f"other_{old}.txt"]
+    )
