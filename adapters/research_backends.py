@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from datetime import UTC, datetime, tzinfo
+from datetime import datetime, timedelta, timezone, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
@@ -284,7 +284,17 @@ async def yahoo_quote(symbol: str, period: str = "5d") -> str:
         result = ((resp.json() or {}).get("chart") or {}).get("result")
         first = result[0] if isinstance(result, list) and result else None
         return _format_quote(symbol, period, first) if isinstance(first, dict) else ""
-    except (httpx.HTTPError, ValueError, TypeError, AttributeError, IndexError, KeyError, OverflowError, OSError) as e:
+    except (
+        httpx.HTTPError,
+        ValueError,
+        TypeError,
+        AttributeError,
+        IndexError,
+        KeyError,
+        OverflowError,
+        OSError,
+        RecursionError,
+    ) as e:
         # One odd payload must not cost the other tickers of the same call.
         logger.warning("Quote for '%s' failed: %s", symbol, e)
         return ""
@@ -294,10 +304,12 @@ def _format_quote(symbol: str, period: str, result: dict) -> str:
     meta = result.get("meta") or {}
     # Each bar dated in the exchange's own zone, daylight saving included: one offset for every bar put
     # summer bars stamped at local midnight (US monthly, FX and futures dailies) on the previous day.
+    offset = timezone(timedelta(seconds=int(meta.get("gmtoffset") or 0)))
     try:
-        zone: tzinfo = ZoneInfo(str(meta.get("exchangeTimezoneName") or "UTC"))
+        name = meta.get("exchangeTimezoneName")
+        zone: tzinfo = ZoneInfo(str(name)) if name else offset
     except (ZoneInfoNotFoundError, ValueError):
-        zone = UTC
+        zone = offset
     stamps = result.get("timestamp") or []
     closes = ((result.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
     days = [
@@ -319,14 +331,18 @@ def _format_quote(symbol: str, period: str, result: dict) -> str:
     regular = (meta.get("currentTradingPeriod") or {}).get("regular") or {}
     now = time.time()
     live = period != "5y" and all(isinstance(v, int | float) for v in (regular.get("start"), regular.get("end")))
-    live = live and regular["start"] <= now < regular["end"]
-    label = "Latest price (session open)" if live else "Last close"
+    live = (
+        live
+        and regular["start"] <= now < regular["end"]
+        and last_day == datetime.fromtimestamp(now, zone).date().isoformat()
+    )
+    label = "Latest price (session open)" if live else "Latest (month to date)" if period == "5y" else "Last close"
     unit = "monthly" if QUOTE_PERIODS[period] == "1mo" else "daily"
     return _result_block(
         f"{meta.get('longName') or meta.get('shortName') or symbol} ({symbol})",
         f"https://finance.yahoo.com/quote/{symbol}",
         [
-            (label, f"{_price(last)} {meta.get('currency', '')} on {last_day}"),
+            (label, f"{_price(last)} {meta.get('currency') or ''} on {last_day}"),
             ("Closes", ", ".join(f"{d} {_price(c)}" for d, c in shown.items())),
             ("Change", f"{change:+.2f}% since {first_day} ({period})"),
             ("Period high / low", f"{_price(high)} on {high_day} / {_price(low)} on {low_day} ({unit} closes)"),

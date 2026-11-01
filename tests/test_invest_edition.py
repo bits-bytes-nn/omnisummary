@@ -143,15 +143,16 @@ async def test_the_quote_uses_exchange_dates_labels_a_live_session_and_survives_
                             "exchangeTimezoneName": "Asia/Seoul",
                             "currentTradingPeriod": {"regular": {"start": now - 60, "end": now + 3600}},
                         },
-                        "timestamp": [stamp],
-                        "indicators": {"quote": [{"close": [100.0]}]},
+                        "timestamp": [stamp, now - 60],
+                        "indicators": {"quote": [{"close": [100.0, 101.0]}]},
                     }
                 ]
             }
         }
     )
     block = await research_backends.yahoo_quote("X.KS")
-    assert "Latest price (session open): 100.00 KRW on 2026-10-31" in block
+    assert "Latest price (session open): 101.00 KRW on" in block
+    assert "2026-10-31 100.00" in block  # 15:00 UTC on 10-30 is 10-31 in Seoul
     odd_payloads = (
         [],
         {"chart": None},
