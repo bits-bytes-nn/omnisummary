@@ -113,6 +113,23 @@ import하지 않는다. `domain`과 `shared`는 LangChain도 모른다. `applica
 ## 3. 설정
 
 `Config.load()`가 `config/config.yaml`을 읽어 `shared/config.py`의 Pydantic 모델로 만든다.
+
+**판(edition).** 같은 코드가 여러 판을 돌린다. `OMNISUMMARY_EDITION=invest`(리서치 CLI는 `--edition invest`)이면
+`config/invest.yaml`을 읽고, 그 파일의 `edition` 값이 다르면 거부한다. 판이 갖는 것은 설정 파일 하나다. 분야(`pipeline.domain`,
+프롬프트가 "AI/ML" 대신 읽는다), 독자 설명, 랭킹 기준(`pipeline.ranking_criteria`, AI/ML 기본값은 이전 프롬프트와 바이트 단위로
+같다), 소스, 고지 문구(`pipeline.threads_footer`, 코드가 첫 글과 리서치 마지막 게시물에 붙이고 잘리지 않는다)와 상태 위치다.
+상태는 판마다 따로 둔다. S3는 `aws.s3_prefix`(투자판은 `omnisummary/invest`) 아래에, AgentCore 세션은 `digest-invest-<날짜>`에
+쓴다. AI/ML판은 기존 키와 세션 id를 그대로 써서 옮길 것이 없다. `scripts/deploy.py`는 `edition`을 선언한 로컬
+`config/<판>.yaml`마다 다이제스트와 비주얼 Lambda 한 쌍(`omnisummary-dev-invest-digest`/`-visual`), 규칙, 빈 다이제스트 알람을
+만든다. 판이 없으면 합성된 템플릿은 판 도입 전과 바이트 단위로 같다. EMF 레코드에는 기본판이 아닐 때 `Edition` 차원이 붙어
+판끼리 알람을 가리지 않는다. 댓글 Lambda는 계정 전체를 맡는 하나뿐이고 AI/ML판 설정으로 돈다.
+
+투자판(`config/invest-template.yaml`)은 07:30 KST(22:30 UTC)에 돌고, 수집 창은 직전 아침 실행까지 닿도록 42시간(48 - 7)이다.
+리서치 에이전트는 `market_quote`(Yahoo 차트 종가, 기간별 고점과 저점, 국내·미국 주식, 지수, 환율, 가상화폐)와
+`search_reports`(robots.txt가 수집을 허용하는 운용사·리서치·뉴스 도메인)를 더 갖는다. 시세는 인용 가능한 출처로 기록되어
+사실 확인이 숫자를 대조한다. 규칙은 `agent.domain_rules`에 있다. 특정 종목의 매수·매도 판단과 자체 목표가를 쓰지 않고, 애널리스트
+의견은 누구의 것인지 날짜와 함께 밝힌다. 네이버 증권과 한경 컨센서스는 robots.txt가 모든 수집을 막아서 수집기를 만들지 않았고,
+국내 증권사 리포트는 그것을 보도한 기사로 들어온다.
 시크릿은 로컬에서는 `.env`, AWS에서는 SSM Parameter Store의 `/{project}/{stage}/{name}` 경로에서 온다. 로컬에서 SSM을
 읽을 때는 설정된 프로필(`aws.profile`)과 리전(`aws.region`)을 쓴다. 셸이 다른 계정의 `AWS_PROFILE`이나 모델 리전의
 `AWS_REGION`을 물려받으면 이름으로 찾던 파라미터가 ParameterNotFound가 됐다. 프로필이 없는 런타임(Lambda)은 기본 자격 증명과
