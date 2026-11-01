@@ -61,6 +61,19 @@ async def market_quote(symbols: str, period: Literal["5d", "1mo", "6mo", "1y", "
 
 
 @tool
+async def analyst_ratings(symbols: str) -> str:
+    """Analyst consensus for up to 5 stocks (number of analysts, mean/high/low price target, this
+    month's buy/hold/sell counts) and the last 90 days of dated rating and target changes by firm (US
+    stocks; Korean tickers such as 005930.KS have the consensus only). Use it for any rating or target the
+    report states, attributed to the firm and date it gives.
+
+    Args:
+        symbols: Stock tickers separated by spaces or commas.
+    """
+    return await research.analyst_ratings(symbols)
+
+
+@tool
 async def search_papers(query: str) -> str:
     """Search scholarly papers (OpenAlex, incl. arXiv preprints) for a research/technical claim.
     Results carry the publication date and citation count.

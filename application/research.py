@@ -318,15 +318,26 @@ async def market_quote(symbols: str, period: str = "5d") -> str:
     sources = _sources()
     if sources is None:
         return "Market data is not available in this run."
+    return await _market_blocks(symbols, 8, lambda s: sources.market_quote(s, period), "no quote found")
+
+
+async def analyst_ratings(symbols: str) -> str:
+    sources = _sources()
+    if sources is None:
+        return "Market data is not available in this run."
+    return await _market_blocks(symbols, 5, sources.analyst_ratings, "no analyst ratings found")
+
+
+async def _market_blocks(symbols: str, limit: int, fetch, missing: str) -> str:
     blocks = []
-    for symbol in list(dict.fromkeys(symbols.replace(",", " ").split()))[:8]:
-        block = await sources.market_quote(symbol, period)
+    for symbol in list(dict.fromkeys(symbols.upper().replace(",", " ").split()))[:limit]:
+        block = await fetch(symbol)
         if block:
-            # The quote page is the source of these numbers, for the citation check and the fact check.
+            # The data page is the source of these numbers, for the citation check and the fact check.
             url = (_RESULT_URL.findall(block) or [""])[0]
             record_seen_urls("", url)
             current_delivery_context().source_texts[normalize_citation_url(url)] = block
-        blocks.append(block or f"- {symbol}: no quote found (check the ticker: 005930.KS, AAPL, ^GSPC, BTC-USD).")
+        blocks.append(block or f"- {symbol}: {missing} (check the ticker: 005930.KS, AAPL, ^GSPC, BTC-USD).")
     return "\n\n".join(blocks) or "No ticker given."
 
 

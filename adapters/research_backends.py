@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
@@ -245,8 +245,22 @@ class WebResearchSources:
     async def market_quote(self, symbol: str, period: str = "5d") -> str:
         return await yahoo_quote(symbol, period)
 
+    async def analyst_ratings(self, symbol: str) -> str:
+        return await yahoo_analyst_ratings(symbol)
+
 
 _QUOTE_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+_SUMMARY_URL = "https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
+_CRUMB_URL = "https://query2.finance.yahoo.com/v1/test/getcrumb"
+_RATING_DAYS = 90
+_SHOWN_ACTIONS = 10
+
+
+def _ticker(symbol: str) -> str:
+    """The upper-cased ticker, or "" when it is not one (Yahoo tickers are short ASCII: 005930.KS, ^GSPC, KRW=X)."""
+    symbol = symbol.strip().upper()
+    ok = symbol and len(symbol) <= 20 and symbol.isascii() and all(c.isalnum() or c in "^.-=" for c in symbol)
+    return symbol if ok else ""
 
 
 def _price(value: float) -> str:
@@ -267,8 +281,8 @@ async def yahoo_quote(symbol: str, period: str = "5d") -> str:
     Korean (005930.KS), US (AAPL), index (^GSPC, ^KS11), FX (KRW=X) and crypto (BTC-USD) tickers alike.
     Dates are the exchange's local dates. A bar still trading (the Korean session, crypto at any hour) is
     labelled the latest price, not a close."""
-    symbol = symbol.strip().upper()
-    if not symbol or len(symbol) > 20 or not symbol.isascii() or not all(c.isalnum() or c in "^.-=" for c in symbol):
+    symbol = _ticker(symbol)
+    if not symbol:
         return ""
     if period not in QUOTE_PERIODS:
         period = "5d"
@@ -347,5 +361,93 @@ def _format_quote(symbol: str, period: str, result: dict) -> str:
             ("Change", f"{change:+.2f}% since {first_day} ({period})"),
             ("Period high / low", f"{_price(high)} on {high_day} / {_price(low)} on {low_day} ({unit} closes)"),
             ("Exchange", str(meta.get("exchangeName") or "")),
+        ],
+    )
+
+
+async def yahoo_analyst_ratings(symbol: str) -> str:
+    """Yahoo Finance's analyst consensus for one stock (analyst count, mean/high/low target, this month's
+    rating counts) and its dated rating and target actions of the last _RATING_DAYS days, newest first.
+    Korean tickers carry the consensus but no per-firm actions."""
+    symbol = _ticker(symbol)
+    if not symbol:
+        return ""
+    config = get_config().agent
+    try:
+        async with httpx.AsyncClient(
+            timeout=config.search_request_timeout, headers={"User-Agent": "Mozilla/5.0"}, follow_redirects=True
+        ) as client:
+            # quoteSummary wants the session cookie and its crumb, the same handshake the quote page does.
+            await client.get("https://fc.yahoo.com")
+            crumb = (await client.get(_CRUMB_URL)).text.strip()
+            resp = await client.get(
+                _SUMMARY_URL.format(symbol=symbol),
+                params={"modules": "financialData,recommendationTrend,upgradeDowngradeHistory", "crumb": crumb},
+            )
+            resp.raise_for_status()
+        result = ((resp.json() or {}).get("quoteSummary") or {}).get("result")
+        first = result[0] if isinstance(result, list) and result else None
+        return _format_ratings(symbol, first, time.time()) if isinstance(first, dict) else ""
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError, IndexError, KeyError, OverflowError) as e:
+        logger.warning("Analyst ratings for '%s' failed: %s", symbol, e)
+        return ""
+
+
+def _raw(value: object) -> float | None:
+    raw = value.get("raw") if isinstance(value, dict) else value
+    return float(raw) if isinstance(raw, int | float) and math.isfinite(raw) else None
+
+
+def _format_ratings(symbol: str, result: dict, now: float) -> str:
+    data = result.get("financialData") or {}
+    currency = str(data.get("financialCurrency") or "")
+    count, mean, high, low = (
+        _raw(data.get(k)) for k in ("numberOfAnalystOpinions", "targetMeanPrice", "targetHighPrice", "targetLowPrice")
+    )
+    rows = (result.get("recommendationTrend") or {}).get("trend") or []
+    trend: dict = next((row for row in rows if isinstance(row, dict) and row.get("period") == "0m"), {})
+    counts = ", ".join(
+        f"{label} {int(trend[key])}"
+        for key, label in (
+            ("strongBuy", "strong buy"),
+            ("buy", "buy"),
+            ("hold", "hold"),
+            ("sell", "sell"),
+            ("strongSell", "strong sell"),
+        )
+        if isinstance(trend.get(key), int)
+    )
+    actions = []
+    for row in (result.get("upgradeDowngradeHistory") or {}).get("history") or []:
+        stamp = row.get("epochGradeDate")
+        if not isinstance(stamp, int | float) or now - stamp > _RATING_DAYS * 86400:
+            continue
+        grade = (
+            f"{row.get('fromGrade') or '-'} -> {row.get('toGrade') or '-'}"
+            if row.get("fromGrade")
+            else str(row.get("toGrade") or "")
+        )
+        target, prior = _raw(row.get("currentPriceTarget")), _raw(row.get("priorPriceTarget"))
+        if target:
+            grade += f", target {_price(prior)} -> {_price(target)}" if prior else f", target {_price(target)}"
+        day = datetime.fromtimestamp(stamp, UTC).date().isoformat()
+        actions.append((stamp, f"{day} {row.get('firm') or '?'}: {grade} ({row.get('action') or ''})"))
+    actions.sort(reverse=True)
+    if not (count or counts or actions):
+        return ""
+    target_text = f"mean {_price(mean)} {currency}" if mean else ""
+    if mean and high and low:
+        target_text += f" (high {_price(high)}, low {_price(low)})"
+    return _result_block(
+        f"Analyst ratings for {symbol} (Yahoo Finance, as of {datetime.fromtimestamp(now, UTC).date().isoformat()})",
+        f"https://finance.yahoo.com/quote/{symbol}/analysis",
+        [
+            ("Analysts", str(int(count)) if count else ""),
+            ("Price target", target_text),
+            ("Ratings this month", counts),
+            (
+                f"Actions in the last {_RATING_DAYS} days (newest first)",
+                "; ".join(text for _, text in actions[:_SHOWN_ACTIONS]),
+            ),
         ],
     )

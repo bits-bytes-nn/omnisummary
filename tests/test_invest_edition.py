@@ -55,7 +55,7 @@ def test_the_investing_tools_are_bound_only_when_configured(monkeypatch):
     names = lambda: {getattr(t, "tool_name", "") for t in captured["tools"]}  # noqa: E731
 
     research_agent.create_research_agent(Config())
-    assert not names() & {"market_quote", "search_reports"}
+    assert not names() & {"market_quote", "analyst_ratings", "search_reports"}
     assert "AI/ML topics" in captured["system_prompt"] and "<domain_rules>" not in captured["system_prompt"]
 
     config = Config(
@@ -63,7 +63,7 @@ def test_the_investing_tools_are_bound_only_when_configured(monkeypatch):
         agent={"market_quotes": True, "report_search_domains": ["x.com"]},
     )
     research_agent.create_research_agent(config)
-    assert {"market_quote", "search_reports"} <= names()
+    assert {"market_quote", "analyst_ratings", "search_reports"} <= names()
     assert "investing topics" in captured["system_prompt"] and "No calls." in captured["system_prompt"]
 
 
@@ -164,3 +164,55 @@ async def test_the_quote_uses_exchange_dates_labels_a_live_session_and_survives_
         payloads.append(odd)
         assert await research_backends.yahoo_quote("AAPL") == ""
     assert await research_backends.yahoo_quote("삼성") == ""
+
+
+@pytest.mark.asyncio
+async def test_analyst_ratings_are_a_citable_source():
+    block = "- Analyst ratings for NVDA (Yahoo Finance, as of 2026-11-01)\n  URL: https://finance.yahoo.com/quote/NVDA/analysis\n  Analysts: 58"
+    sources = FakeSources(quote=block)
+    delivery = DeliveryContext(ports=ResearchPorts(sources=sources))
+    with request_context(delivery):
+        out = await research.analyst_ratings("NVDA, nvda TSLA")
+    assert sources.analyst_ratings.await_count == 2
+    assert out.count("Analysts: 58") == 2
+    assert any("finance.yahoo.com/quote/nvda/analysis" in key.lower() for key in delivery.seen_urls)
+
+
+def test_the_ratings_block_dates_recent_actions_and_drops_old_ones():
+    from adapters.research_backends import _format_ratings
+
+    now = 1793000000  # 2026-10-26 UTC
+    result = {
+        "financialData": {
+            "financialCurrency": "USD",
+            "numberOfAnalystOpinions": {"raw": 40},
+            "targetMeanPrice": {"raw": 411.8},
+            "targetHighPrice": {"raw": 600.0},
+            "targetLowPrice": {"raw": 120.0},
+        },
+        "recommendationTrend": {
+            "trend": [{"period": "0m", "strongBuy": 5, "buy": 15, "hold": 22, "sell": 2, "strongSell": 0}]
+        },
+        "upgradeDowngradeHistory": {
+            "history": [
+                {
+                    "epochGradeDate": now - 86400,
+                    "firm": "Barclays",
+                    "fromGrade": "Equal-Weight",
+                    "toGrade": "Overweight",
+                    "action": "up",
+                    "currentPriceTarget": 450.0,
+                    "priorPriceTarget": 370.0,
+                },
+                {"epochGradeDate": now - 200 * 86400, "firm": "Old Firm", "toGrade": "Sell", "action": "init"},
+                {"epochGradeDate": "bad", "firm": "Broken"},
+            ]
+        },
+    }
+    block = _format_ratings("TSLA", result, now)
+    assert "URL: https://finance.yahoo.com/quote/TSLA/analysis" in block
+    assert "Analysts: 40" in block and "mean 411.80 USD (high 600.00, low 120.00)" in block
+    assert "strong buy 5, buy 15, hold 22, sell 2, strong sell 0" in block
+    assert "2026-10-25 Barclays: Equal-Weight -> Overweight, target 370.00 -> 450.00 (up)" in block
+    assert "Old Firm" not in block and "Broken" not in block
+    assert _format_ratings("X", {}, now) == ""

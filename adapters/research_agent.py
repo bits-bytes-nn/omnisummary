@@ -238,7 +238,7 @@ def create_research_agent(config: Config | None = None, tools: list[Any] | None 
         if config.agent.report_search_domains:
             tools.insert(2, research_tools.search_reports)
         if config.agent.market_quotes:
-            tools.insert(2, research_tools.market_quote)
+            tools[2:2] = [research_tools.market_quote, research_tools.analyst_ratings]
 
     agent = Agent(
         model=bedrock_model,
