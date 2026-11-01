@@ -59,12 +59,8 @@ def test_the_investing_tools_are_bound_only_when_configured(monkeypatch):
     assert "AI/ML topics" in captured["system_prompt"] and "<domain_rules>" not in captured["system_prompt"]
 
     config = Config(
-        agent={
-            "market_quotes": True,
-            "report_search_domains": ["x.com"],
-            "domain": "investing",
-            "domain_rules": "No calls.",
-        }
+        pipeline={"domain": "investing"},
+        agent={"market_quotes": True, "report_search_domains": ["x.com"], "domain_rules": "No calls."},
     )
     research_agent.create_research_agent(config)
     assert {"market_quote", "search_reports"} <= names()
@@ -107,3 +103,18 @@ async def test_the_quote_parser_reads_the_chart_payload(monkeypatch):
     assert "225,000 KRW" in block and "+5.63%" in block
     assert "Period high / low: 225,000 on" in block
     assert await research_backends.yahoo_quote("bad symbol!") == ""
+
+
+def test_the_footer_closes_the_root_and_the_research_thread_within_the_cap():
+    from domain.models import DigestContent, DigestItem
+    from domain.renderers import render_threads_posts, render_threads_research
+    from shared import THREADS_MAX_POST_CHARS
+
+    footer = "투자 권유가 아닙니다. 투자 판단의 책임은 본인에게 있습니다."
+    items = [DigestItem(title=f"기사 {n} " + "가" * 60, url=f"https://e.com/{n}", body="본문.") for n in range(5)]
+    root, _ = render_threads_posts(DigestContent(lead="리드다. " * 80, items=items), footer)
+    assert root.endswith(footer) and len(root) <= THREADS_MAX_POST_CHARS
+    assert render_threads_posts(DigestContent(lead="리드.", items=items))[0].count(footer) == 0
+
+    render = render_threads_research("제목\n\n첫 글.\n---\n결론\n\n마지막 글.", max_posts=10, footer=footer)
+    assert render.replies[-1].endswith(footer) and footer not in render.root

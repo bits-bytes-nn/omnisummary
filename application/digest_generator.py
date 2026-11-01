@@ -17,6 +17,7 @@ from domain.formatting import (
     threads_meta_line,
 )
 from domain.models import CollectedItem, DigestContent, DigestItem, DigestResult, RankedItem
+from domain.renderers import footer_overhead
 from shared import THREADS_MAX_POST_CHARS, logger, parse_json_from_llm_output, retry_async
 from shared.config import PipelineConfig
 
@@ -164,7 +165,7 @@ class DigestGenerator:
         """Characters the editor may spend on the lead. The lead IS the Threads root post, and the
         code-owned countdown gag opens it afterwards, so the gag's own length is not the editor's to
         spend. An over-long lead is trimmed by whole sentences at publish time."""
-        return max(0, THREADS_MAX_POST_CHARS - len(intro))
+        return max(0, THREADS_MAX_POST_CHARS - len(intro) - footer_overhead(self.config.threads_footer))
 
     @classmethod
     def _threads_meta_line(cls, item: CollectedItem) -> str:
@@ -329,7 +330,9 @@ class DigestGenerator:
             if trends_context:
                 sources += f"\n\n[TRENDS] Trend-tracking notes:\n{trends_context}"
             chain = GroundingCheckPrompt.get_prompt() | self.grounding_llm | StrOutputParser()
-            raw = await chain.ainvoke({"digest_text": _grounding_payload(content), "sources": sources})
+            raw = await chain.ainvoke(
+                {"digest_text": _grounding_payload(content), "sources": sources, "domain": self.config.domain}
+            )
             data = parse_json_from_llm_output(raw)
             violations = data.get("violations", [])
             corrected = data.get("corrected_digest", "")

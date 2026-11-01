@@ -188,7 +188,11 @@ def sends_back_as_too_long(report: str, delivery: DeliveryContext) -> bool:
     """Whether this thread will be refused for losing text to the channel's limits. Every such text is,
     rewrites included: a rewrite that still overflowed went out cut, numbered "1/10 … 10/10" without the
     conclusion that was dropped, and read as complete. Not posting is the worst case now."""
-    _, _, dropped, trimmed = render_threads_research(report, max_posts=delivery.config.agent.research_max_threads_posts)
+    _, _, dropped, trimmed = render_threads_research(
+        report,
+        max_posts=delivery.config.agent.research_max_threads_posts,
+        footer=delivery.config.pipeline.threads_footer,
+    )
     return bool(dropped or trimmed)
 
 
@@ -210,7 +214,9 @@ async def deliver_research_report(report: str, *, channel: str, delivery: Delive
         logger.warning("Report already posted to '%s'; the text of this call was NOT published", channel)
         return DeliveryOutcome.NOT_POSTED
     root_text, replies, dropped, trimmed = render_threads_research(
-        report, max_posts=delivery.config.agent.research_max_threads_posts
+        report,
+        max_posts=delivery.config.agent.research_max_threads_posts,
+        footer=delivery.config.pipeline.threads_footer,
     )
     if dropped or trimmed:
         # Refuse before anything is public: the dropped tail is the conclusion and its sources, and
@@ -569,7 +575,9 @@ async def check_thread_facts(report: str, delivery: DeliveryContext) -> list[dic
         return []
     try:
         config = delivery.config
-        root, replies, _, _ = render_threads_research(report, max_posts=config.agent.research_max_threads_posts)
+        root, replies, _, _ = render_threads_research(
+            report, max_posts=config.agent.research_max_threads_posts, footer=config.pipeline.threads_footer
+        )
         thread = "\n\n".join(f"POST {n}:\n{post}" for n, post in enumerate([root, *replies], start=1))
         # Cut by characters, not CountTokens: a character is at most about one token, so this bounds the
         # call, while token counting cost about 17 blocking round trips per long page.

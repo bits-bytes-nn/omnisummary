@@ -145,6 +145,8 @@ class WebSearchCollectorConfig(BaseCollectorConfig):
     max_results_per_query: int = Field(default=10, ge=1)
     refine_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
     max_refine_queries: int = Field(default=3, ge=1)
+    # The field the refine step asks for queries about (the edition's pipeline.domain).
+    domain: str = "AI/ML"
     # Hosts never returned by any search, broad or refined (Tavily `exclude_domains`): content farms
     # that rewrite wire stories under SEO titles and kept winning picks over the original report.
     exclude_domains: list[str] = Field(default_factory=list)
@@ -256,6 +258,11 @@ class PipelineConfig(_StrictModel):
     )
     # Audience/domain the ranking and digest prompts target. Configurable so the pipeline can
     # be reused across domains without forking the prompts.
+    # The field this edition covers, as the prompts name it ("AI/ML", "investing (...)").
+    domain: str = "AI/ML"
+    # Closes every Threads root and research thread this edition posts (the investing disclaimer).
+    # Code-owned, never trimmed: the lead budget and the research post budget make room for it.
+    threads_footer: str = ""
     ranking_audience_description: str = "a daily digest aimed at practicing ML engineers"
     digest_audience_description: str = "Korean readers who follow AI news, engineers and curious non-specialists alike"
     # Editorial voice for the digest lead/implications: a recurring narrator persona (a singularity-
@@ -482,8 +489,6 @@ class PipelineConfig(_StrictModel):
 
 class AgentConfig(_StrictModel):
     model_id: LanguageModelId = LanguageModelId.CLAUDE_V5_5_OPUS
-    # The field the agent researches, as its prompt names it ("AI/ML", "investing: ...").
-    domain: str = "AI/ML"
     # Rules this edition adds to the research prompt (the investing edition: no buy/sell calls).
     domain_rules: str = ""
     # Publishers of analyst and strategy research; non-empty enables the search_reports tool.

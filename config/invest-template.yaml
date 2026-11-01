@@ -92,6 +92,8 @@ collectors:
     # - "web_search"
 
 pipeline:
+  threads_footer: "투자 권유가 아닙니다. 투자 판단의 책임은 본인에게 있습니다."
+  domain: "investing (Korean, US and global stocks, macro and markets, and crypto assets)"
   top_n: 5
   min_score: 0.6
   # Any *_model / model_id takes a LanguageModelId value (shared/constants.py): Claude
@@ -151,7 +153,6 @@ pipeline:
 agent:
   model_id: "anthropic.claude-opus-5-5"
   # Investing edition: the same narrator, reading markets in Korea, the US and globally, and crypto.
-  domain: "investing (Korean, US and global stocks, macro and markets, and crypto assets)"
   domain_rules: |
     - This is market commentary, not investment advice. Never tell the reader to buy, sell or hold a
       specific security or coin, never give a price target of your own, and never promise a return.
@@ -162,7 +163,6 @@ agent:
       expect, and say whose view each forecast is.
     - Open with why the topic matters to someone who invests, and look at it from the sides it really
       has: earnings and valuation, macro and rates, flows and positioning, regulation, and sentiment.
-    - The Threads thread ends with one plain line: "투자 권유가 아니며, 투자 판단의 책임은 본인에게 있다."
   market_quotes: true
   report_search_domains:
     - "finance.naver.com"
