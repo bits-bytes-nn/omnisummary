@@ -85,24 +85,36 @@ class OmniSummaryFoundationStack(Stack):
             actions=["bedrock:GetInferenceProfile", "bedrock:ListInferenceProfiles"],
             resources=["*"],
         )
+        # One role per kind of work, so the Lambda that reads strangers' comments holds neither the
+        # token write nor the publish fan-out: the digest and visual Lambdas share lambda_role, the
+        # comment-reply and token-refresh Lambdas get only what they call.
         self.lambda_role = iam.Role(
             self,
             "LambdaRole",
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
         )
+        self.comment_reply_role = iam.Role(
+            self,
+            "CommentReplyRole",
+            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+        )
+        self.token_refresh_role = iam.Role(
+            self,
+            "TokenRefreshRole",
+            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+        )
         # Logs for this project's own functions only: the VPC-access managed policy this replaced
         # granted logs:* writes on every group in the account (no Lambda runs in a VPC any more).
-        self.lambda_role.add_to_policy(
-            iam.PolicyStatement(
-                actions=["logs:CreateLogStream", "logs:PutLogEvents"],
-                resources=[
-                    f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/lambda/{project_name}-{stage}-*:*"
-                ],
-            )
+        logs_statement = iam.PolicyStatement(
+            actions=["logs:CreateLogStream", "logs:PutLogEvents"],
+            resources=[f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/lambda/{project_name}-{stage}-*:*"],
         )
-        self.lambda_role.add_to_policy(ssm_read_statement)
-        self.lambda_role.add_to_policy(bedrock_invoke_statement)
-        self.lambda_role.add_to_policy(bedrock_profile_statement)
+        for role in (self.lambda_role, self.comment_reply_role, self.token_refresh_role):
+            role.add_to_policy(logs_statement)
+            role.add_to_policy(ssm_read_statement)
+        for role in (self.lambda_role, self.comment_reply_role):
+            role.add_to_policy(bedrock_invoke_statement)
+            role.add_to_policy(bedrock_profile_statement)
         # Scope object access to the project's own prefix instead of the entire bucket. The bucket
         # can be a pre-existing shared one (config.aws.state_bucket_name), so a bucket-wide
         # grant hands every other tenant's objects to this role. The root prefix provably covers
@@ -115,18 +127,19 @@ class OmniSummaryFoundationStack(Stack):
         # AccessDenied. grant_read_write also handed out delete, legal-hold and retention actions.
         # An empty s3_prefix keeps the bucket-wide object scope.
         prefix = config.aws.s3_prefix.strip("/")
-        self.lambda_role.add_to_policy(
-            iam.PolicyStatement(
-                actions=["s3:GetObject", "s3:PutObject"],
-                resources=[self.state_bucket.arn_for_objects(f"{prefix}/*" if prefix else "*")],
+        for role in (self.lambda_role, self.comment_reply_role):
+            role.add_to_policy(
+                iam.PolicyStatement(
+                    actions=["s3:GetObject", "s3:PutObject"],
+                    resources=[self.state_bucket.arn_for_objects(f"{prefix}/*" if prefix else "*")],
+                )
             )
-        )
-        self.lambda_role.add_to_policy(
-            iam.PolicyStatement(
-                actions=["s3:ListBucket"],
-                resources=[self.state_bucket.bucket_arn],
+            role.add_to_policy(
+                iam.PolicyStatement(
+                    actions=["s3:ListBucket"],
+                    resources=[self.state_bucket.bucket_arn],
+                )
             )
-        )
         # The digest Lambda's only cross-function call is the async fan-out to the daily-visual
         # Lambda, so grant exactly that one function instead of every {project}-{stage}-* function
         # (which included the token-refresh Lambda). Built from the literal name the application
@@ -139,7 +152,7 @@ class OmniSummaryFoundationStack(Stack):
             )
         )
         # The Threads token-refresh Lambda writes the renewed token back to its own SSM param.
-        self.lambda_role.add_to_policy(
+        self.token_refresh_role.add_to_policy(
             iam.PolicyStatement(
                 actions=["ssm:PutParameter"],
                 resources=[
