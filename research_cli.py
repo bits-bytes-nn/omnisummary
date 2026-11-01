@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -34,7 +35,8 @@ from domain.formatting import (
     extract_urls,  # noqa: E402
 )
 from entrypoints import bootstrap  # noqa: E402
-from shared import Config, logger  # noqa: E402
+from shared import Config, get_config, logger  # noqa: E402
+from shared.config import EDITION_ENV  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "reports"
 
@@ -64,6 +66,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default="",
         help="Also publish a thread to the public Threads account (never happens without this flag); "
         f"'{PREVIEW}' writes the thread and returns it in the JSON without posting anything",
+    )
+    parser.add_argument(
+        "--edition",
+        default="",
+        help="Which edition's config to research with (config/<edition>.yaml), e.g. 'invest'; default the AI/ML one",
     )
     parser.add_argument(
         "--output-dir",
@@ -147,6 +154,10 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
         result.update(status="rejected", error="The topic is empty.")
         return result, EXIT_REJECTED
 
+    if args.edition:
+        # Every reader of get_config() (the tools, the backends) must see this edition too.
+        os.environ[EDITION_ENV] = args.edition
+        get_config.cache_clear()
     try:
         config = Config.load()
     except Exception as e:

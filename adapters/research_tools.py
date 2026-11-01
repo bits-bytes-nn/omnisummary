@@ -36,6 +36,29 @@ async def community_search(query: str) -> str:
 
 
 @tool
+async def search_reports(query: str) -> str:
+    """Search analyst, broker and strategy research (sell-side notes, house outlooks, crypto research
+    desks) and news that reports on it: rating and target changes, sector and macro views.
+
+    Args:
+        query: The search query, e.g. a company, sector or market plus "analyst" or "outlook".
+    """
+    return await research.search_reports(query)
+
+
+@tool
+async def market_quote(symbols: str) -> str:
+    """The latest closes for up to 8 tickers: stocks (005930.KS, 000660.KS, AAPL, NVDA), indices
+    (^KS11, ^GSPC, ^IXIC), FX (KRW=X) and crypto (BTC-USD, ETH-USD). Use it for every price or
+    performance figure the report states, instead of a number from memory or an article.
+
+    Args:
+        symbols: Tickers separated by spaces or commas.
+    """
+    return await research.market_quote(symbols)
+
+
+@tool
 async def search_papers(query: str) -> str:
     """Search scholarly papers (OpenAlex, incl. arXiv preprints) for a research/technical claim.
     Results carry the publication date and citation count.
@@ -59,7 +82,7 @@ async def read_url(url: str) -> str:
 
 @tool
 async def recall_trends() -> str:
-    """Every AI/ML trend tracked across earlier daily digests (cross-day memory), strongest first,
+    """Every trend tracked across earlier daily digests (cross-day memory), strongest first,
     with when it was first seen and the dates of its latest evidence (only the last few are kept, so
     they are not a count of every appearance). Judge yourself which ones bear on the topic; the
     trends are written in English. Use this for the "how has this evolved / what came before" angle."""

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 
 import httpx
 from tavily import AsyncTavilyClient
@@ -237,3 +238,60 @@ class WebResearchSources:
 
     async def fetch_image(self, url: str) -> ImageAsset | None:
         return await fetch_og_image(url)
+
+    async def market_quote(self, symbol: str) -> str:
+        return await yahoo_quote(symbol)
+
+
+_QUOTE_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+
+
+def _price(value: float) -> str:
+    """Thousands separators, cents below 1,000 and significant digits below 1 (225,000 / 344.60 / 0.0123)."""
+    if abs(value) >= 1000:
+        return f"{value:,.0f}"
+    return f"{value:,.2f}" if abs(value) >= 1 else f"{value:.4g}"
+
+
+async def yahoo_quote(symbol: str) -> str:
+    """Daily closes for the last five sessions from Yahoo Finance's chart endpoint, which covers
+    Korean (005930.KS), US (AAPL), index (^GSPC, ^KS11), FX (KRW=X) and crypto (BTC-USD) tickers alike."""
+    symbol = symbol.strip().upper()
+    if not symbol or len(symbol) > 20 or not all(c.isalnum() or c in "^.-=" for c in symbol):
+        return ""
+    config = get_config().agent
+    try:
+        async with httpx.AsyncClient(
+            timeout=config.search_request_timeout, headers={"User-Agent": "Mozilla/5.0"}
+        ) as client:
+            resp = await client.get(_QUOTE_URL.format(symbol=symbol), params={"range": "5d", "interval": "1d"})
+            resp.raise_for_status()
+        result = (resp.json().get("chart", {}).get("result") or [None])[0]
+    except (httpx.HTTPError, ValueError) as e:
+        logger.warning("Quote for '%s' failed: %s", symbol, e)
+        return ""
+    if not result:
+        return ""
+    meta = result.get("meta", {})
+    stamps = result.get("timestamp") or []
+    closes = ((result.get("indicators", {}).get("quote") or [{}])[0].get("close")) or []
+    days = [
+        (datetime.fromtimestamp(t, UTC).date().isoformat(), c)
+        for t, c in zip(stamps, closes, strict=False)
+        if c is not None
+    ]
+    if not days:
+        return ""
+    last_day, last = days[-1]
+    first_day, first = days[0]
+    change = (last / first - 1) * 100 if first else 0.0
+    return _result_block(
+        f"{meta.get('longName') or meta.get('shortName') or symbol} ({symbol})",
+        f"https://finance.yahoo.com/quote/{symbol}",
+        [
+            ("Last close", f"{_price(last)} {meta.get('currency', '')} on {last_day}"),
+            ("Closes", ", ".join(f"{d} {_price(c)}" for d, c in days)),
+            ("Change", f"{change:+.2f}% since {first_day}"),
+            ("Exchange", str(meta.get("exchangeName") or "")),
+        ],
+    )

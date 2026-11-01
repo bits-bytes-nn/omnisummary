@@ -246,3 +246,7 @@ class ResearchSources(Protocol):
     async def fetch_image(self, url: str) -> ImageAsset | None:
         """The page's representative image (og:image), or None."""
         ...
+
+    async def market_quote(self, symbol: str) -> str:
+        """The latest close and recent range for one ticker, as one result block, or "" if unknown."""
+        ...

@@ -1,3 +1,4 @@
+import os
 import re
 from datetime import datetime
 from functools import lru_cache
@@ -481,6 +482,14 @@ class PipelineConfig(_StrictModel):
 
 class AgentConfig(_StrictModel):
     model_id: LanguageModelId = LanguageModelId.CLAUDE_V5_5_OPUS
+    # The field the agent researches, as its prompt names it ("AI/ML", "investing: ...").
+    domain: str = "AI/ML"
+    # Rules this edition adds to the research prompt (the investing edition: no buy/sell calls).
+    domain_rules: str = ""
+    # Publishers of analyst and strategy research; non-empty enables the search_reports tool.
+    report_search_domains: list[str] = Field(default_factory=list)
+    # Enables the market_quote tool (prices for stocks, indices, FX and crypto).
+    market_quotes: bool = False
     community_search_domains: list[str] = Field(
         default_factory=lambda: ["twitter.com", "x.com", "reddit.com", "news.ycombinator.com", "substack.com"]
     )
@@ -543,7 +552,13 @@ class AWSConfig(_StrictModel):
     comment_reply_interval_minutes: int = Field(default=60, ge=10)
 
 
+EDITION_ENV = "OMNISUMMARY_EDITION"
+
+
 class Config(_StrictModel):
+    # Which edition this config is ("" is the AI/ML digest). One codebase runs several editions, each
+    # from its own config/<edition>.yaml with its own state prefix and memory sessions.
+    edition: str = ""
     collectors: CollectorsConfig = Field(default_factory=CollectorsConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
@@ -607,14 +622,19 @@ class Config(_StrictModel):
         placeholders, rank and publish a thin digest with only a log line to show for it."""
         load_dotenv()
         config_dir = Path(__file__).parent.parent / "config"
-        config_path = config_dir / "config.yaml"
+        edition = os.environ.get(EDITION_ENV, "").strip()
+        stem = edition or "config"
+        config_path = config_dir / f"{stem}.yaml"
         if config_path.exists():
-            return cls.from_yaml(str(config_path))
+            config = cls.from_yaml(str(config_path))
+            if config.edition != edition:
+                raise ValueError(f"'{config_path}' declares edition '{config.edition}', but {EDITION_ENV}='{edition}'")
+            return config
         if is_running_in_aws():
             raise FileNotFoundError(
                 f"'{config_path}' is missing from the deployed image; rebuild it from a checkout that has it."
             )
-        template_path = config_dir / "config-template.yaml"
+        template_path = config_dir / f"{stem}-template.yaml"
         if not template_path.exists():
             raise FileNotFoundError(
                 f"No config found: neither '{config_path}' nor '{template_path}' exists. "

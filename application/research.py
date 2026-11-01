@@ -304,6 +304,26 @@ async def community_search(query: str) -> str:
     return await web_search(query, include_domains=current_delivery_context().config.agent.community_search_domains)
 
 
+async def search_reports(query: str) -> str:
+    return await web_search(query, include_domains=current_delivery_context().config.agent.report_search_domains)
+
+
+async def market_quote(symbols: str) -> str:
+    sources = _sources()
+    if sources is None:
+        return "Market data is not available in this run."
+    blocks = []
+    for symbol in list(dict.fromkeys(symbols.replace(",", " ").split()))[:8]:
+        block = await sources.market_quote(symbol)
+        if block:
+            # The quote page is the source of these numbers, for the citation check and the fact check.
+            url = next((line.split("URL:", 1)[1].strip() for line in block.splitlines() if "URL:" in line), "")
+            record_seen_urls("", url)
+            current_delivery_context().source_texts[normalize_citation_url(url)] = block
+        blocks.append(block or f"- {symbol}: no quote found (check the ticker: 005930.KS, AAPL, ^GSPC, BTC-USD).")
+    return "\n\n".join(blocks) or "No ticker given."
+
+
 async def search_papers(query: str) -> str:
     sources = _sources()
     if sources is None:
