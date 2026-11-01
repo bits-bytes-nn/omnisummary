@@ -509,7 +509,8 @@ class AgentConfig(_StrictModel):
     model_id: LanguageModelId = LanguageModelId.CLAUDE_V5_5_OPUS
     # Publishers of analyst and strategy research; non-empty enables the search_reports tool.
     report_search_domains: list[str] = Field(default_factory=list)
-    # Enables the market_quote tool (prices for stocks, indices, FX and crypto).
+    # Enables the market data tools: market_quote (prices for stocks, indices, FX and crypto) and
+    # analyst_ratings (consensus and dated rating and target changes).
     market_quotes: bool = False
     community_search_domains: list[str] = Field(
         default_factory=lambda: ["twitter.com", "x.com", "reddit.com", "news.ycombinator.com", "substack.com"]
