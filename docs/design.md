@@ -130,6 +130,16 @@ import하지 않는다. `domain`과 `shared`는 LangChain도 모른다. `applica
 사실 확인이 숫자를 대조한다. 규칙은 `pipeline.domain_rules`에 있고 리서치 프롬프트와 다이제스트 에디터의 목소리 지침이 함께 읽는다(AI/ML판은 비어 있어 프롬프트가 그대로다). 댓글 Lambda는 매수·매도·목표가·보유 종목 처리 질문을 거절 목록에 둔다. 특정 종목의 매수·매도 판단과 자체 목표가를 쓰지 않고, 애널리스트
 의견은 누구의 것인지 날짜와 함께 밝힌다. 네이버 증권과 한경 컨센서스는 robots.txt가 모든 수집을 막아서 수집기를 만들지 않았고,
 국내 증권사 리포트는 그것을 보도한 기사로 들어온다.
+투자판 소스(2026-11-01 측정)는 통신사와 시장 매체의 RSS(연합뉴스 경제·마켓, 조선비즈 증권, 연합인포맥스 증권, 매경 증권, Bloomberg
+Markets, FT, MarketWatch, Investing.com, Seeking Alpha, 미 연준과 ECB 보도자료, 크립토 매체 다섯), 국내 부동산(인포맥스 부동산, 조선비즈
+부동산, 뉴스1·뉴시스·SBS Biz로 좁힌 웹 검색 한 묶음), 본문을 피드에 싣는 실명 경제학자·분석가의 블로그(뉴욕 연준 Liberty Street,
+Robin Brooks, Klement, Yardeni, Calculated Risk, Sahm, Damodaran, Dalio, Glassnode, Coin Metrics, Tiger Research 한국어판, UPPITY 뉴스),
+Reddit 네 곳, X 11개 계정과 YouTube 6개 채널이다. 수집 기준은 이렇다. 일반 독자처럼 공개 페이지를 읽고 요약과 출처 링크만 내보내며
+모델을 학습시키지 않으니, robots.txt가 학습용 AI 크롤러(GPTBot, ClaudeBot, CCBot)만 막은 곳은 쓴다. 사용자 요청형 AI까지 막은 곳,
+로그인·유료벽, 403과 봇 차단은 쓰지 않고 UA를 바꿔 우회하지 않는다. 그래서 한국경제(수집기 UA에 403)가 빠졌다. 국내 언론 기사 하단의
+"AI 학습 및 활용 금지" 문구와는 해석이 갈릴 수 있는 운영자 판단이다. 날짜 없는 피드(Apollo)는 수집 창 규칙상 매일 같은 글을 다시
+넣어서 뺐고, 분양·건설사 홍보 비중이 높은 부동산 피드(이데일리 약 38%, 파이낸셜뉴스 약 36%)도 뺐다. 텔레그램은 이용약관이
+AI 목적의 수집을 금지해서, 채널이 가리키는 증권사 원문 사이트를 따로 검토한다.
 시크릿은 로컬에서는 `.env`, AWS에서는 SSM Parameter Store의 `/{project}/{stage}/{name}` 경로에서 온다. 로컬에서 SSM을
 읽을 때는 설정된 프로필(`aws.profile`)과 리전(`aws.region`)을 쓴다. 셸이 다른 계정의 `AWS_PROFILE`이나 모델 리전의
 `AWS_REGION`을 물려받으면 이름으로 찾던 파라미터가 ParameterNotFound가 됐다. 프로필이 없는 런타임(Lambda)은 기본 자격 증명과
@@ -216,7 +226,7 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | 트렌드 | `trend_retention_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존 기간, 증거와 active 캡, momentum 반감기 |
 | 전달 | `enable_threads_post`, `threads_topic_tag`(기본 `AI`) | Threads 게시 on/off. 코드 기본값은 off이고 배포 설정은 on이다. 데일리 비주얼 Lambda가 게시한다. 토픽 태그는 root 게시물에만 붙는다([§5.8](#58-threads-전달-adaptersthreadspy-enable_threads_post)) |
 | 댓글 답글 | `enable_comment_replies`, `comment_reply_lookback_days`(7), `comment_reply_max_per_run`(10), `comment_reply_max_per_commenter`(3) | 독자 댓글 자동 답글. 코드 기본값은 off이고 배포 설정은 on이다([§5.9](#59-댓글-답글-applicationcomment_repliespy-enable_comment_replies)) |
-| AGI 카운트다운 | `agi_countdown_date`(기본 `2029-01-01`), `agi_countdown_template`, `agi_countdown_after` | 다이제스트 lead 맨 앞에 코드가 붙이는 "AGI N일 전" 인트로([§5.7](#57-agi-카운트다운-인트로-domainformattingpy-agi_countdown_intro) 참조) |
+| 카운트다운 | `countdown_date`(기본 `2029-01-01`), `countdown_template`, `countdown_after` | 다이제스트 lead 맨 앞에 코드가 붙이는 "AGI N일 전" 인트로. 투자판은 머스크의 "보편적 고소득" 카운트다운([§5.7](#57-카운트다운-인트로-domainformattingpy-countdown_intro) 참조) |
 | 시각화 | `image_model`(`gpt-image-2.5-sunburst`), `image_sizes`, `visual_image_quality`(`xhigh`), `visual_editor_source_max_tokens`, `visual_synopsis_source_max_tokens`, `visual_image_timeout_sec`(기본 300)과 `visual_image_max_retries`(기본 0), `visual_character_enabled`, `visual_character_sheet`, `visual_character_reference`(`assets/persona.jpg`) | 이미지 모델과 품질 등급, orientation에서 size로 가는 딕셔너리(키는 `VisualOrientation` 어휘로 고정이고 값만 튜닝한다), 입력 상한, 이미지 HTTP 호출 상한. SDK 기본값 600초씩 2회는 비주얼 Lambda의 15분 예산을 넘길 수 있어서 config로 고정했다 |
 | 프롬프트 주입 | `digest_language_rules`, `digest_voice_guidance`, `ranking_audience_description`, `digest_audience_description`, `visual_audience_description`, `visual_on_image_language`, `visual_synopsis_style_guidance`, `visual_synopsis_style_aesthetic`, `visual_guardrails`, `visual_moderation_softening_instruction` | 언어 규칙과 대상 독자, 톤, 미감, 가드레일, 모더레이션 완화 문구. 하드코딩 대신 템플릿 변수로 주입한다. `digest_language_rules`는 한국어 규칙과 번역 용어집을 튜닝하는 자리이고 언어 스위치가 아니다. 한국어 전용이 의도한 제품이다. `digest_voice_guidance`는 Gruber 톤이며, 단일 냉소 프레임으로 기본 고정하지 말고 그날 사실이 정당화할 때만 각을 세우도록 쓰여 있다 |
 
@@ -1092,11 +1102,13 @@ Lambda가 "다시 올리지 말라"는 Threads Delivery 알림을 보낸다. 상
 
 전체적으로 best-effort다. 파이프라인을 막지 않으며 실패는 항상 로깅된다.
 
-### 5.7 AGI 카운트다운 인트로 (`domain/formatting.py` `agi_countdown_intro`)
+### 5.7 카운트다운 인트로 (`domain/formatting.py` `countdown_intro`)
 
-"AGI 등장 N일 전이다" 식의 인트로를 LLM이 아니라 코드가 계산한다(`agi_countdown_date` 기본 `2029-01-01`,
-`agi_countdown_template`). D-day 이전에는 카운트다운, D-day 당일과 이후에는 `agi_countdown_after`로
-카운트업한다("AGI 등장 예정일 D+N일째, 아직이다"). `agi_countdown_date`가 비면 비활성이다. 템플릿은 운영자가
+"AGI 등장 N일 전이다" 식의 인트로를 LLM이 아니라 코드가 계산한다(`countdown_date` 기본 `2029-01-01`,
+`countdown_template`). D-day 이전에는 카운트다운, D-day 당일과 이후에는 `countdown_after`로
+카운트업한다("AGI 등장 예정일 D+N일째, 아직이다"). `countdown_date`가 비면 비활성이다. 투자판(`config/invest.yaml`)은
+같은 장치로 일론 머스크가 2025-11-19 미·사우디 투자 포럼에서 "10~20년 안에" 온다고 한 "보편적 고소득"까지
+남은 날을 센다. 기준일은 그 범위의 이른 끝인 2035-11-19다. 템플릿은 운영자가
 편집하는 config 문자열이니 `.format()`을 try/except로 감싼다. 잘못된 placeholder나 괄호 같은 오타가 있으면
 인트로를 비우고 생성 도중 크래시하지 않는다. 수집과 랭킹과 LLM 비용을 다 쓴 뒤에 죽는 것이 최악이다.
 

@@ -6,10 +6,16 @@ edition: "invest"
 collectors:
   youtube:
     enabled: true
-    # Lists must stay valid YAML lists — a key with only a commented-out entry under it parses as
-    # null and fails config validation, so keep the `[]` and add entries inside it.
-    channels: []
-      # - "https://www.youtube.com/@channel_name"
+    # Measured 2026-11-01. Not here: 슈카월드 (general), Real Vision (median ~1.8k views, off-topic
+    # uploads), Coin Bureau (could not confirm the official channel), impersonators such as
+    # @월가아재의재테크tv and @내일은금투자왕김단테.
+    channels:
+      - "https://www.youtube.com/@wsaj"
+      - "https://www.youtube.com/@3protv"
+      - "https://www.youtube.com/@김단테"
+      - "https://www.youtube.com/@sosumonkey"
+      - "https://www.youtube.com/@markets"
+      - "https://www.youtube.com/@PBoyle"
     max_videos_per_channel: 3
     # The collection window, defined here and aliased by reddit and rss below (web_search and rsshub
     # state their own, wider one — the code default is this floor for every source). The cutoff is anchored
@@ -40,15 +46,50 @@ collectors:
     # low-cadence channel happens to be quiet, which is a normal day and pure alert fatigue.
   reddit:
     enabled: true
-    subreddits: []
-      # - "subreddit_name"
+    subreddits:
+      - stocks
+      - ValueInvesting
+      - economics
+      - CryptoCurrency
     sort: hot
     limit: 20
     lookback_hours: *lookback_hours
   rss:
     enabled: true
-    feeds: []
-      # - "https://example.substack.com/feed"
+    # Measured 2026-11-01; docs/design.md (판) says what was left out and why. Wires and markets first,
+    # then real estate, then named economists' and analysts' blogs that ship their text in the feed.
+    feeds:
+      - "https://www.yna.co.kr/rss/economy.xml"
+      - "https://www.yna.co.kr/rss/market.xml"
+      - "https://biz.chosun.com/arc/outboundfeeds/rss/category/stock/?outputType=xml"
+      - "https://news.einfomax.co.kr/rss/S1N2.xml"
+      - "https://www.mk.co.kr/rss/50200011/"
+      - "https://news.einfomax.co.kr/rss/S1N17.xml"
+      - "https://biz.chosun.com/arc/outboundfeeds/rss/category/real_estate/?outputType=xml"
+      - "https://feeds.bloomberg.com/markets/news.rss"
+      - "https://www.ft.com/markets?format=rss"
+      - "https://feeds.content.dowjones.io/public/rss/mw_topstories"
+      - "https://www.investing.com/rss/news_25.rss"
+      - "https://seekingalpha.com/market_currents.xml"
+      - "https://www.federalreserve.gov/feeds/press_all.xml"
+      - "https://www.ecb.europa.eu/rss/press.html"
+      - "https://www.coindesk.com/arc/outboundfeeds/rss/"
+      - "https://www.theblock.co/rss.xml"
+      - "https://decrypt.co/feed"
+      - "https://cointelegraph.com/rss"
+      - "https://www.blockmedia.co.kr/feed"
+      - "https://libertystreeteconomics.newyorkfed.org/feed/"
+      - "https://robinjbrooks.substack.com/feed"
+      - "https://klementoninvesting.substack.com/feed"
+      - "https://www.yardeniquicktakes.com/rss/"
+      - "https://calculatedrisk.substack.com/feed"
+      - "https://stayathomemacro.substack.com/feed"
+      - "https://aswathdamodaran.blogspot.com/feeds/posts/default"
+      - "https://raydalio.substack.com/feed"
+      - "https://research.glassnode.com/rss/"
+      - "https://coinmetrics.substack.com/feed"
+      - "https://reports.tiger-research.com/feed?section=korean"
+      - "https://uppity.co.kr/category/news/feed/"
     lookback_hours: *lookback_hours
     # Feeds fetched at once (each fetch carries its own httpx timeout).
     max_concurrency: 5
@@ -65,6 +106,17 @@ collectors:
         queries:
           - "stock market today S&P 500 Nasdaq earnings Fed"
           - "analyst upgrade downgrade price target"
+      # Korean housing policy and statistics from outlets with no real-estate feed; unscoped, these
+      # queries returned foreign news and social posts.
+      - name: korea_realestate
+        queries:
+          - "부동산 대책 주택담보대출 DSR 가계대출 규제 국토교통부 금융위원회"
+          - "서울 아파트값 전셋값 주간 동향 주택공급 착공 신규택지"
+        domains:
+          - "news1.kr"
+          - "newsis.com"
+          - "news.sbs.co.kr"
+          - "biz.sbs.co.kr"
       - name: crypto
         queries:
           - "bitcoin ethereum crypto market ETF flows regulation"
@@ -82,7 +134,7 @@ collectors:
           - "pimco.com"
           - "schroders.com"
           - "invesco.com"
-    domain: "investing (Korean, US and global stocks, macro and markets, and crypto assets)"
+    domain: "investing (Korean, US and global stocks, macro and markets, crypto assets, and Korean real estate)"
     refine_rules: |-
       - Prefer: earnings and guidance, filings, central-bank and policy decisions, analyst actions, wire reports
       - No generic terms ("stock market news", "crypto update")
@@ -93,10 +145,23 @@ collectors:
     # Search queries in flight at once; unbounded fan-out self-throttled and lost whole queries.
     max_concurrency: 5
   rsshub:
-    enabled: false
+    enabled: true
     base_url: "http://localhost:1200"
-    accounts: []
-      # - "karpathy"
+    # Named reporters, strategists and economists, wires, the Fed and on-chain data. Not here: accounts
+    # that mostly relay unsourced headlines or sell subscriptions (zerohedge, unusual_whales, Kobeissi)
+    # and fund managers talking their book.
+    accounts:
+      - "NickTimiraos"
+      - "LizAnnSonders"
+      - "charliebilello"
+      - "Schuldensuehner"
+      - "elerianm"
+      - "jasonfurman"
+      - "WuBlockchain"
+      - "ReutersBiz"
+      - "WSJmarkets"
+      - "federalreserve"
+      - "glassnode"
     lookback_hours: 72
     max_concurrency: 5
     park_max_age_hours: 12
@@ -123,6 +188,8 @@ pipeline:
       never state one from memory.
     - Separate what happened (prices, filings, reported numbers) from what analysts or the community
       expect, and say whose view each forecast is.
+    - For housing, never tell the reader to buy, sell or wait, and never single out a district or a
+      complex as a place to buy. Name a price statistic's source and survey week.
     - Look at a story from the sides it really has for someone who invests: earnings and valuation as
       others assess them, macro and rates, flows and positioning, regulation, and sentiment.
   ranking_audience_description: "a daily Korean investing digest for individual investors who follow Korean, US and global markets and crypto"
@@ -135,10 +202,15 @@ pipeline:
     4. Evidence — concrete numbers, guidance, rating or target changes with reasons, not price-chasing or hype.
     5. Breadth — macro, policy, regulation and flows that affect many holdings count more than one stock's chatter.
     6. Source Authority — wire services, filings, named analysts and research houses get a small bonus.
-  agi_countdown_date: ""
+    7. Korean Real Estate — housing and lending policy, official price, transaction and supply statistics, and listed builders' results count; one complex's 분양 or 견본주택, a builder's PR and a district's development promise are promotion, not news.
+  # Elon Musk, U.S.-Saudi Investment Forum, 2025-11-19: work optional and money irrelevant in "10 to 20
+  # years" ("universal high income"). Counted to the early end of his range.
+  countdown_date: "2035-11-19"
+  countdown_template: "머스크가 말한 '보편적 고소득'까지 {days}일 남았다. "
+  countdown_after: "머스크가 말한 '보편적 고소득' 예정일 D+{days}일째, 아직이다. "
   threads_topic_tag: "투자"
   threads_footer: "투자 권유가 아닙니다. 투자 판단의 책임은 본인에게 있습니다."
-  domain: "investing (Korean, US and global stocks, macro and markets, and crypto assets)"
+  domain: "investing (Korean, US and global stocks, macro and markets, crypto assets, and Korean real estate)"
   top_n: 5
   min_score: 0.6
   # Any *_model / model_id takes a LanguageModelId value (shared/constants.py): Claude

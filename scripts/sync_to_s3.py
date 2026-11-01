@@ -7,6 +7,7 @@ IPs, so they are collected here and the digest Lambda reads the parked file inst
 Run locally via cron (sync_all_to_s3.sh runs every source):
     uv run python scripts/sync_to_s3.py rsshub
     uv run python scripts/sync_to_s3.py youtube
+    OMNISUMMARY_EDITION=invest uv run python scripts/sync_to_s3.py rsshub   # an edition's own park file
 """
 
 import argparse
@@ -32,6 +33,7 @@ from adapters.collectors.base import PARK_META_PREVIOUS_SYNC_AT, dump_items_enve
 from adapters.collectors.rsshub import RSSHubCollector
 from adapters.collectors.youtube import YouTubeCollector
 from shared import Config, LocalPaths, logger
+from shared.config import EDITION_ENV
 from shared.constants import DIGEST_PERIOD_HOURS
 
 _SOURCES = {
@@ -44,7 +46,11 @@ _SYNC_HISTORY = 14
 
 
 def _sync_stamp_path(source: str) -> Path:
-    return Path(__file__).resolve().parent.parent / LocalPaths.DIGEST_STATE_DIR.value / f"last_park_sync_{source}.txt"
+    """Per edition, like the local state store: the editions park separate files on separate schedules,
+    so one shared stamp made each edition's read-back point at the other's sync."""
+    state = Path(__file__).resolve().parent.parent / LocalPaths.DIGEST_STATE_DIR.value
+    edition = os.environ.get(EDITION_ENV, "").strip()
+    return (state / edition if edition else state) / f"last_park_sync_{source}.txt"
 
 
 def _healthy_syncs(source: str) -> list[tuple[datetime, datetime]]:

@@ -55,44 +55,43 @@ class TestAgiCountdown:
     def test_computes_day_count(self):
         from datetime import date
 
-        from domain.formatting import agi_countdown_intro
+        from domain.formatting import countdown_intro
 
         assert (
-            agi_countdown_intro("2029-01-01", "AGI 등장 {days}일 전이다. ", date(2026, 1, 1))
-            == "AGI 등장 1096일 전이다. "
+            countdown_intro("2029-01-01", "AGI 등장 {days}일 전이다. ", date(2026, 1, 1)) == "AGI 등장 1096일 전이다. "
         )
 
     def test_counts_up_after_d_day(self):
         from datetime import date
 
-        from domain.formatting import agi_countdown_intro
+        from domain.formatting import countdown_intro
 
         before, after = "D-{days}", "D+{days}"
-        assert agi_countdown_intro("2029-01-01", before, date(2029, 1, 1), after) == "D+0"  # D-day
-        assert agi_countdown_intro("2029-01-01", before, date(2029, 1, 11), after) == "D+10"  # after
-        assert agi_countdown_intro("2029-01-01", before, date(2028, 12, 22), after) == "D-10"  # before
+        assert countdown_intro("2029-01-01", before, date(2029, 1, 1), after) == "D+0"  # D-day
+        assert countdown_intro("2029-01-01", before, date(2029, 1, 11), after) == "D+10"  # after
+        assert countdown_intro("2029-01-01", before, date(2028, 12, 22), after) == "D-10"  # before
 
     def test_empty_past_date_or_disabled(self):
         from datetime import date
 
-        from domain.formatting import agi_countdown_intro
+        from domain.formatting import countdown_intro
 
         # past D-day with NO after_template → empty (countup opt-in)
-        assert agi_countdown_intro("2029-01-01", "x{days}", date(2030, 1, 1)) == ""
-        assert agi_countdown_intro("", "x{days}", date(2026, 1, 1)) == ""  # disabled
-        assert agi_countdown_intro("not-a-date", "x{days}", date(2026, 1, 1)) == ""  # malformed
+        assert countdown_intro("2029-01-01", "x{days}", date(2030, 1, 1)) == ""
+        assert countdown_intro("", "x{days}", date(2026, 1, 1)) == ""  # disabled
+        assert countdown_intro("not-a-date", "x{days}", date(2026, 1, 1)) == ""  # malformed
 
     def test_malformed_template_does_not_crash(self):
         from datetime import date
 
-        from domain.formatting import agi_countdown_intro
+        from domain.formatting import countdown_intro
 
         # An operator typo in the config template must degrade to no intro, never raise mid-run
         # (it's applied AFTER the expensive collect/rank/LLM work).
-        assert agi_countdown_intro("2029-01-01", "AGI {day}일 전", date(2026, 1, 1)) == ""  # wrong placeholder
-        assert agi_countdown_intro("2029-01-01", "AGI {days", date(2026, 1, 1)) == ""  # stray brace
+        assert countdown_intro("2029-01-01", "AGI {day}일 전", date(2026, 1, 1)) == ""  # wrong placeholder
+        assert countdown_intro("2029-01-01", "AGI {days", date(2026, 1, 1)) == ""  # stray brace
         # a malformed after_template on/after D-day also degrades cleanly
-        assert agi_countdown_intro("2029-01-01", "D-{days}", date(2029, 1, 2), "D+{nope}") == ""
+        assert countdown_intro("2029-01-01", "D-{days}", date(2029, 1, 2), "D+{nope}") == ""
 
 
 class TestGroundingCheck:
@@ -289,7 +288,7 @@ class TestDerivedBudgets:
         factory.get_model.return_value = RunnableLambda(
             lambda p: (seen.append(str(p)), AIMessage(content=json.dumps(emitted)))[1]
         )
-        config = PipelineConfig(enable_grounding_check=False, agi_countdown_date="")
+        config = PipelineConfig(enable_grounding_check=False, countdown_date="")
         gen = DigestGenerator(config, factory)
         ranked = [
             RankedItem(item=CollectedItem(item_id="i", source_type=SourceType.RSS, title="T", url="u"), score=0.8)

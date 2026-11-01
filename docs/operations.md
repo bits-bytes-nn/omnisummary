@@ -14,6 +14,7 @@
 | 18:30 | X와 YouTube 자막을 모아 S3에 올린다 | 로컬 cron(`scripts/sync_all_to_s3.sh`) |
 | 19:00 | 수집, 랭킹, 다이제스트 작성, 스냅샷 저장 | digest Lambda |
 | 19:0x | 만화를 그리고 Threads에 첫 글과 답글 5개를 올린다 | visual Lambda |
+| 07:00 | 투자판의 X와 YouTube 자막을 모아 S3(`omnisummary/invest/`)에 올린다 | 로컬 cron(`OMNISUMMARY_EDITION=invest scripts/sync_all_to_s3.sh`) |
 | 07:30 | 투자판: 수집, 랭킹, 다이제스트 작성, 스냅샷 저장, 만화와 게시 | invest-digest, invest-visual Lambda |
 | 매시간 | 최근 일주일 게시물의 새 댓글에 답한다(켜 두었을 때) | comment-replies Lambda |
 | 매주 | Threads 토큰을 갱신해 SSM에 쓴다 | threads-refresh Lambda |

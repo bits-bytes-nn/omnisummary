@@ -305,19 +305,19 @@ class PipelineConfig(_StrictModel):
         "hook); keep item bodies cleaner and let the edge land in each item's closing line. Plain "
         "declarative '~다' register. Ground every take in the supplied facts and trends, never vibes."
     )
-    # Tongue-in-cheek "AGI countdown" intro prepended to the digest lead (code computes the day
-    # count from agi_countdown_date — never the LLM — so it stays accurate and ticks down daily).
-    # The date is a fixed, defensible ~3-years-out target (Jensen Huang's call / tail of Amodei's
-    # "1-3 years"); tune it here. Empty date disables the intro.
-    agi_countdown_date: str = "2029-01-01"
+    # Tongue-in-cheek countdown intro prepended to the digest lead (code computes the day count from
+    # countdown_date — never the LLM — so it stays accurate and ticks down daily). The AI default is
+    # a fixed, defensible ~3-years-out AGI target (Jensen Huang's call / tail of Amodei's "1-3 years");
+    # an edition sets its own date and wording. Empty date disables the intro.
+    countdown_date: str = "2029-01-01"
     # Plain declarative ('~다') to match the columnist body voice — not honorific ('~입니다').
-    # Before the D-day it counts down; on/after it, agi_countdown_after counts up (the prediction
-    # blew past — a self-aware joke). Empty agi_countdown_date disables the intro entirely.
-    agi_countdown_template: str = "AGI 등장 {days}일 전이다. "
+    # Before the D-day it counts down; on/after it, countdown_after counts up (the prediction
+    # blew past — a self-aware joke). Empty countdown_date disables the intro entirely.
+    countdown_template: str = "AGI 등장 {days}일 전이다. "
     # The gag OPENS the lead, which spends the root's first line (the one most feed readers see) on
     # the same sentence every day. That is deliberate: the countdown is the account's signature, and
     # the owner ranked recognisable branding above the first-line reach argument.
-    agi_countdown_after: str = "AGI 등장 예정일 D+{days}일째, 아직이다. "
+    countdown_after: str = "AGI 등장 예정일 D+{days}일째, 아직이다. "
     item_text_max_tokens: int = Field(default=8000, ge=1)
     ranking_batch_size: int = Field(default=40, ge=1)
     # How many ranking batches may be in flight against Bedrock at once. Unbounded fan-out threw

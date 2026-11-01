@@ -4,6 +4,7 @@ import asyncio
 import re
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 import requests
@@ -33,7 +34,8 @@ YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
 # same ID with the "UC" prefix swapped to "UU", so a valid UC id is required.
 _CHANNEL_ID_PATTERN = re.compile(r'"channelId":"(UC[a-zA-Z0-9_-]{22})"')
 # Extract the @handle from a channel URL (e.g. https://www.youtube.com/@AndrejKarpathy).
-_HANDLE_PATTERN = re.compile(r"/@([A-Za-z0-9_.-]+)")
+# Handles may be non-Latin (@김단테), written raw or percent-encoded.
+_HANDLE_PATTERN = re.compile(r"/@([^/?#\s]+)")
 # Fetch this many recent uploads per channel, THEN filter to the lookback window and keep the
 # latest max_videos_per_channel. The uploads playlist / RSS feed is NOT reliably newest-first
 # (a scheduled/premiered video can sit below older ones), so taking only the top max_per_channel
@@ -366,7 +368,7 @@ class YouTubeCollector(BaseCollector):
         match = _HANDLE_PATTERN.search(channel_url)
         if not match:
             return ""
-        handle = match.group(1)
+        handle = unquote(match.group(1))
         try:
             resp = await self._get_api(
                 client,
