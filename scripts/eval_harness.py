@@ -30,7 +30,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from langchain_core.output_parsers import StrOutputParser  # noqa: E402
 from langchain_core.prompts import ChatPromptTemplate  # noqa: E402
 
-from domain.digest_snapshot import DigestSnapshot  # noqa: E402
 from entrypoints import bootstrap  # noqa: E402
 from shared import Config, logger, parse_json_from_llm_output  # noqa: E402
 from shared.constants import LanguageModelId  # noqa: E402
@@ -111,11 +110,10 @@ async def _digest(label: str, dates: list[str]) -> None:
     models = bootstrap.language_models(config)
     memory = bootstrap.memory_store()
     for day in dates:
-        data = memory.get_digest(day)
-        if not data:
+        snapshot = memory.get_digest(day)
+        if snapshot is None:
             logger.warning("No snapshot for %s; skipped", day)
             continue
-        snapshot = DigestSnapshot.from_dict(data)
         today = date.fromisoformat(day)
         # The same inputs a real run on that date had: the earlier snapshots and the trends before it.
         earlier = memory.get_recent_digests(today, config.pipeline.published_url_ttl_days - 1)
@@ -143,11 +141,10 @@ async def _visual(label: str, dates: list[str]) -> None:
     maker = bootstrap.daily_visual_maker(config)
     log = maker.comic_log.entries() if maker.comic_log else []
     for day in dates:
-        data = bootstrap.memory_store().get_digest(day)
-        if not data:
+        snapshot = bootstrap.memory_store().get_digest(day)
+        if snapshot is None:
             logger.warning("No snapshot for %s; skipped", day)
             continue
-        snapshot = DigestSnapshot.from_dict(data)
         recent = [e for e in log if str(e.get("date", "")) < day][-config.pipeline.recent_leads_window :]
         plan, instruction, source = await maker._compose(
             snapshot.ranked_items, snapshot.content, date.fromisoformat(day), recent_comics=recent

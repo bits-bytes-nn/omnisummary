@@ -70,25 +70,34 @@ class TestLocalMemoryStore:
         # The visual Lambda must publish the date it was fired for, not whatever is newest:
         # 'load latest' published yesterday's stories when today's snapshot was missing.
         store = LocalMemoryStore(tmp_path)
-        store.put_digest("2026-06-01", {"a": 1})
-        store.put_digest("2026-06-02", {"a": 2})
-        assert store.get_digest("2026-06-01") == {"a": 1}
-        assert store.get_digest("2026-06-03") is None
+        store.put_raw("2026-06-01", {"a": 1})
+        store.put_raw("2026-06-02", {"a": 2})
+        assert store.get_raw("2026-06-01") == {"a": 1}
+        assert store.get_raw("2026-06-03") is None
 
     def test_get_recent_digests_reads_the_window_before_the_date_newest_first(self, tmp_path):
         # Today's own snapshot is excluded (a same-day re-run keeps its stories), and anything older
         # than the window can't suppress a legitimately-recurring story.
         store = LocalMemoryStore(tmp_path)
         for d in ("2026-06-01", "2026-06-06", "2026-06-08", "2026-06-09"):
-            store.put_digest(d, {"d": d})
+            store.put_raw(d, _snapshot(d))
         recent = store.get_recent_digests(date(2026, 6, 9), 4)
-        assert [r["d"] for r in recent] == ["2026-06-08", "2026-06-06"]
+        assert [r.content.lead for r in recent] == ["2026-06-08", "2026-06-06"]
 
     def test_an_unreadable_day_is_skipped_not_fatal(self, tmp_path):
         store = LocalMemoryStore(tmp_path)
-        store.put_digest("2026-06-08", {"d": "2026-06-08"})
+        store.put_raw("2026-06-08", _snapshot("2026-06-08"))
         (tmp_path / "digest_2026-06-07.json").write_text("{not json", encoding="utf-8")
-        assert [r["d"] for r in store.get_recent_digests(date(2026, 6, 9), 3)] == ["2026-06-08"]
+        # A stored snapshot that no longer parses is skipped the same way.
+        store.put_raw("2026-06-06", {"ranked_items": [{"item": "not an item"}]})
+        assert [r.content.lead for r in store.get_recent_digests(date(2026, 6, 9), 3)] == ["2026-06-08"]
+
+
+def _snapshot(lead: str) -> dict:
+    from domain.digest_snapshot import DigestSnapshot
+    from domain.models import DigestContent, DigestResult
+
+    return DigestSnapshot([], DigestResult(digest_text="t", content=DigestContent(lead=lead, items=[]))).to_dict()
 
 
 def store_region() -> str:
@@ -150,7 +159,7 @@ class TestAgentCoreMemoryStore:
 
     def test_put_digest_creates_event(self):
         store, client = self._store()
-        store.put_digest("2026-06-02", {"ranked_items": []})
+        store.put_raw("2026-06-02", {"ranked_items": []})
         client.create_event.assert_called_once()
         kwargs = client.create_event.call_args.kwargs
         assert kwargs["memoryId"] == "mem-1"
@@ -167,7 +176,7 @@ class TestAgentCoreMemoryStore:
             "ranked_items": [{"item": {"item_id": f"i{n}", "text": "y" * 30_000}, "score": 0.8} for n in range(5)],
             "digest_result": {"digest_text": "ok"},
         }
-        store.put_digest("2026-06-02", big)
+        store.put_raw("2026-06-02", big)
         text = client.create_event.call_args.kwargs["payload"][0]["conversational"]["content"]["text"]
         assert len(text) <= AgentCoreMemoryStore.MAX_EVENT_TEXT
         client.create_event.assert_called_once()  # stored, did not raise
@@ -186,7 +195,7 @@ class TestAgentCoreMemoryStore:
             ],
             "digest_result": {"digest_text": "ok"},
         }
-        store.put_digest("2026-06-02", pool)
+        store.put_raw("2026-06-02", pool)
         text = client.create_event.call_args.kwargs["payload"][0]["conversational"]["content"]["text"]
         assert len(text) <= AgentCoreMemoryStore.MAX_EVENT_TEXT
         kept = [len(r["item"]["text"]) for r in json.loads(text)["ranked_items"]]
@@ -199,7 +208,7 @@ class TestAgentCoreMemoryStore:
             "ranked_items": [{"item": {"item_id": f"i{n}", "text": "z" * 50_000}, "score": 0.8} for n in range(20)],
             "digest_result": {"digest_text": "ok"},
         }
-        store.put_digest("2026-06-02", big)
+        store.put_raw("2026-06-02", big)
         text = client.create_event.call_args.kwargs["payload"][0]["conversational"]["content"]["text"]
         assert len(text) <= AgentCoreMemoryStore.MAX_EVENT_TEXT
         assert "ranked_items" in text
@@ -218,7 +227,7 @@ class TestAgentCoreGetDigestByDate:
         client.list_events.return_value = {
             "events": [{"payload": [{"conversational": {"content": {"text": '{"a": 1}'}}}]}]
         }
-        assert store.get_digest("2026-08-17") == {"a": 1}
+        assert store.get_raw("2026-08-17") == {"a": 1}
         # Addressed directly by session id — never a list-then-compare-generated_at (that field is
         # UTC and disagrees with the KST digest date on every pre-09:00 KST run).
         assert client.list_events.call_args.kwargs["sessionId"] == "digest-2026-08-17"
@@ -226,7 +235,7 @@ class TestAgentCoreGetDigestByDate:
     def test_missing_session_is_none_not_a_stale_fallback(self):
         store, client = self._store()
         client.list_events.return_value = {"events": []}
-        assert store.get_digest("2026-08-17") is None
+        assert store.get_raw("2026-08-17") is None
 
     def test_api_failure_raises_instead_of_reading_as_an_empty_day(self):
         # A throttled/denied read used to come back as None — indistinguishable from "this day has
@@ -234,12 +243,12 @@ class TestAgentCoreGetDigestByDate:
         store, client = self._store()
         client.list_events.side_effect = RuntimeError("throttled")
         with pytest.raises(MemoryReadError, match="digest-2026-08-17"):
-            store.get_digest("2026-08-17")
+            store.get_raw("2026-08-17")
 
     def test_a_genuinely_missing_snapshot_is_still_none(self):
         store, client = self._store()
         client.list_events.return_value = {"events": []}
-        assert store.get_digest("2026-08-17") is None
+        assert store.get_raw("2026-08-17") is None
 
 
 class TestNewestEventWithinASession:
@@ -267,7 +276,7 @@ class TestNewestEventWithinASession:
         client.list_events.return_value = {
             "events": [self._event('{"attempt": 1}', old), self._event('{"attempt": 2}', new)]
         }
-        assert store.get_digest("2026-08-17") == {"attempt": 2}
+        assert store.get_raw("2026-08-17") == {"attempt": 2}
 
     def test_reads_every_page_of_a_re_run_session(self):
         store, client = self._store()
@@ -277,7 +286,7 @@ class TestNewestEventWithinASession:
             {"events": [self._event('{"attempt": 1}', old)], "nextToken": "t"},
             {"events": [self._event('{"attempt": 2}', new)]},
         ]
-        assert store.get_digest("2026-08-17") == {"attempt": 2}
+        assert store.get_raw("2026-08-17") == {"attempt": 2}
         assert client.list_events.call_args.kwargs["nextToken"] == "t"
 
     def test_payload_generated_at_breaks_a_timestamp_tie_and_is_optional(self):
@@ -286,12 +295,12 @@ class TestNewestEventWithinASession:
         first = self._event(json.dumps({"digest_result": {"generated_at": "2026-08-17T03:00:00+00:00"}}), same)
         second = self._event(json.dumps({"digest_result": {"generated_at": "2026-08-17T05:00:00+00:00"}}), same)
         client.list_events.return_value = {"events": [second, first]}
-        picked = store.get_digest("2026-08-17")
+        picked = store.get_raw("2026-08-17")
         assert picked["digest_result"]["generated_at"] == "2026-08-17T05:00:00+00:00"
 
         # A snapshot stored WITHOUT that field must still load — the stamp only breaks ties.
         client.list_events.return_value = {"events": [self._event('{"ranked_items": []}')]}
-        assert store.get_digest("2026-08-17") == {"ranked_items": []}
+        assert store.get_raw("2026-08-17") == {"ranked_items": []}
 
     def test_one_unparseable_event_does_not_hide_a_good_one(self):
         store, client = self._store()
@@ -301,10 +310,10 @@ class TestNewestEventWithinASession:
                 self._event('{"ok": 1}', datetime(2026, 8, 17, 11, 0, tzinfo=UTC)),
             ]
         }
-        assert store.get_digest("2026-08-17") == {"ok": 1}
+        assert store.get_raw("2026-08-17") == {"ok": 1}
 
     def test_only_unparseable_events_raise_rather_than_read_as_an_empty_day(self):
         store, client = self._store()
         client.list_events.return_value = {"events": [self._event("{not json")]}
         with pytest.raises(MemoryReadError, match="digest-2026-08-17"):
-            store.get_digest("2026-08-17")
+            store.get_raw("2026-08-17")

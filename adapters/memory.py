@@ -24,12 +24,12 @@ class LocalMemoryStore(MemoryStore):
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-    def put_digest(self, digest_date: str, state: dict[str, Any]) -> None:
+    def put_raw(self, digest_date: str, state: dict[str, Any]) -> None:
         path = self.base_dir / f"digest_{digest_date}.json"
         path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         logger.info("Stored digest state locally at '%s'", path)
 
-    def get_digest(self, digest_date: str) -> dict[str, Any] | None:
+    def get_raw(self, digest_date: str) -> dict[str, Any] | None:
         path = self.base_dir / f"digest_{digest_date}.json"
         if not path.exists():
             logger.info("No local digest state for '%s' in '%s'", digest_date, self.base_dir)
@@ -62,7 +62,7 @@ class AgentCoreMemoryStore(MemoryStore):
 
     MAX_EVENT_TEXT = 100_000
 
-    def put_digest(self, digest_date: str, state: dict[str, Any]) -> None:
+    def put_raw(self, digest_date: str, state: dict[str, Any]) -> None:
         session_id = f"{self.DIGEST_SESSION_PREFIX}-{digest_date}"
         payload_text = self._fit_to_limit(state)
         self._client.create_event(
@@ -198,7 +198,7 @@ class AgentCoreMemoryStore(MemoryStore):
         stamp = (data.get("digest_result") or {}).get("generated_at")
         return stamp if isinstance(stamp, str) else ""
 
-    def get_digest(self, digest_date: str) -> dict[str, Any] | None:
+    def get_raw(self, digest_date: str) -> dict[str, Any] | None:
         session_id = f"{self.DIGEST_SESSION_PREFIX}-{digest_date}"
         try:
             data = self._load_session(session_id)

@@ -14,9 +14,11 @@ import pytest
 from adapters.state_store import LocalStateStore
 from application import digest_pipeline as runner
 from application.history import PUBLISHED_URLS_KEY
+from domain.digest_snapshot import DigestSnapshot
 from domain.models import CollectedItem, DigestContent, DigestItem, DigestResult, RankedItem
 from shared.config import Config
 from shared.constants import SourceType
+from tests.fakes import snapshot
 
 DIGEST_DATE = date(2026, 6, 3)
 
@@ -153,7 +155,7 @@ class TestRunPipelineHappyPath:
     async def test_recent_leads_are_fed_back_to_the_generator(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
-                p.memory.get_recent_digests.return_value = [{"digest_result": {"content": {"lead": "어제의 리드다."}}}]
+                p.memory.get_recent_digests.return_value = [snapshot(lead="어제의 리드다.")]
                 await _run(p, _config(), [_item("https://a.example/1")])
         assert p.generate_kwargs["recent_leads"] == ["어제의 리드다."]
         assert p.generate_kwargs["trends_context"] == "trends"
@@ -185,9 +187,7 @@ class TestRunPipelineDedup:
         # and trailing-slash variants of a story published earlier in the window.
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
-                p.memory.get_recent_digests.return_value = [
-                    {"digest_result": {"content": {"items": [{"url": "http://old.example/1/"}]}}}
-                ]
+                p.memory.get_recent_digests.return_value = [snapshot(items=[{"url": "http://old.example/1/"}])]
                 collected, _r, _d = await _run(
                     p, _config(), [_item("https://old.example/1"), _item("https://new.example/2")]
                 )
@@ -273,14 +273,14 @@ class TestRecentStoryTitles:
     def test_titles_come_from_every_snapshot_in_the_window_newest_first(self):
         # A weekly roundup re-surfaces a story under a new URL; one day of titles missed three
         # repeats on 2026-10-11.
-        newest = {"digest_result": {"content": {"items": [{"title": "어제 1"}, {"title": "어제 2"}]}}}
-        older = {"digest_result": {"content": {"items": [{"title": "그제 1"}, {"title": "어제 1"}]}}}
+        newest = snapshot(items=[{"title": "어제 1"}, {"title": "어제 2"}])
+        older = snapshot(items=[{"title": "그제 1"}, {"title": "어제 1"}])
         assert runner._recent_story_titles([newest, older]) == ["어제 1", "어제 2", "그제 1"]
 
     def test_a_story_less_or_missing_snapshot_degrades_to_nothing(self):
         assert runner._recent_story_titles([]) == []
-        assert runner._recent_story_titles([{"digest_result": None}]) == []
-        assert runner._recent_story_titles([{"digest_result": {"content": {"items": []}}}]) == []
+        assert runner._recent_story_titles([DigestSnapshot()]) == []
+        assert runner._recent_story_titles([snapshot(items=[])]) == []
 
 
 class TestResolveDigestWindow:

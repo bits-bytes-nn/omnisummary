@@ -67,3 +67,12 @@ class FakeSources:
         self.paper_search = AsyncMock(return_value=papers)
         self.read_page = AsyncMock(return_value=page)
         self.fetch_image = AsyncMock(return_value=image)
+
+
+def snapshot(lead: str = "리드.", items=()):
+    """A stored digest snapshot carrying `lead` and stories built from partial dicts (title/url/body default)."""
+    from domain.digest_snapshot import DigestSnapshot
+    from domain.models import DigestContent, DigestItem, DigestResult
+
+    stories = [DigestItem(**{"title": "t", "url": "https://e.com/x", "body": "b", **it}) for it in items]
+    return DigestSnapshot([], DigestResult(digest_text="t", content=DigestContent(lead=lead, items=stories)))

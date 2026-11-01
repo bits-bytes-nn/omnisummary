@@ -9,7 +9,6 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from adapters.alerts import publish_alert
-from domain.digest_snapshot import DigestSnapshot
 from domain.models import ThreadsDelivery
 from entrypoints import bootstrap
 from shared import Config, logger, set_correlation_id
@@ -183,8 +182,8 @@ async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = 
     # snapshot was missing, and comparing digest_result.generated_at instead is not an option: it
     # is a UTC timestamp, so it disagrees with the KST digest date on every pre-09:00 KST run.
     # An unreadable store raises MemoryReadError from here — never mistaken for an empty day.
-    data = bootstrap.memory_store().get_digest(digest_date.isoformat())
-    if not data:
+    snapshot = bootstrap.memory_store().get_digest(digest_date.isoformat())
+    if snapshot is None:
         # An invoke that NAMED its date was fired by a pipeline run that had just persisted the
         # snapshot, so a miss means the day's only delivery path has nothing to publish: RAISE, so
         # the Errors alarm fires and the invoke lands in the DLQ (retry_attempts=0, so re-raising
@@ -193,7 +192,6 @@ async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = 
             raise RuntimeError(f"No digest state for {digest_date} in AgentCore Memory; nothing to publish")
         logger.info("No digest state for %s yet; nothing to publish", digest_date)
         return
-    snapshot = DigestSnapshot.from_dict(data)
     ranked_items, content = snapshot.ranked_items, snapshot.content
 
     maker = bootstrap.daily_visual_maker(config)

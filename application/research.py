@@ -379,13 +379,13 @@ async def recall_digest(digest_date: str) -> str:
     max_chars = config.agent.search_content_preview_chars
     store = current_delivery_context().ports.memory_store
 
-    def _load() -> dict | None:
+    def _load():
         if store is None:
             raise RuntimeError("no digest store is configured for this run")
         return store().get_digest(day.isoformat())
 
     try:
-        data = await asyncio.to_thread(_load)
+        snapshot = await asyncio.to_thread(_load)
     except Exception as e:
         # Best-effort like every other tool (an exception must not end the run), but the sentence
         # must NOT read as "that day carried nothing": a throttled/denied/misconfigured store looked
@@ -397,14 +397,12 @@ async def recall_digest(digest_date: str) -> str:
             "day had no digest — do not claim anything about what that day covered."
         )
 
-    if not data:
+    if snapshot is None:
         # NEVER fall back to another date: a report citing the wrong day's stories as that day's
         # coverage is worse than no recall at all.
         return f"No digest stored for {day.isoformat()}."
 
-    from domain.digest_snapshot import DigestSnapshot
-
-    content = DigestSnapshot.from_dict(data).content
+    content = snapshot.content
     if content is None or not content.items:
         return f"The digest for {day.isoformat()} carries no stories."
     lines = [f"- {it.title[:max_chars]}" for it in content.items[:max_stories]]
