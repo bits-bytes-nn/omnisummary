@@ -175,7 +175,7 @@ class OmniSummaryApplicationStack(Stack):
             ),
             timeout=Duration.minutes(1),
             memory_size=256,
-            role=foundation.lambda_role,
+            role=foundation.token_refresh_role,
             # The handler re-raises on failure so the Errors alarm fires; without an explicit
             # value Lambda would retry the async (EventBridge) invoke twice, re-calling the
             # Threads refresh endpoint. One attempt + the alarm is what we want.
@@ -206,7 +206,7 @@ class OmniSummaryApplicationStack(Stack):
             # ladder alone can take 30s.
             timeout=Duration.minutes(10),
             memory_size=512,
-            role=foundation.lambda_role,
+            role=foundation.comment_reply_role,
             # One run at a time: two runs reading the same conversation would both answer a comment.
             reserved_concurrent_executions=1,
             # A transiently failed comment is retried by the next scheduled runs (see CommentReplyLedger).

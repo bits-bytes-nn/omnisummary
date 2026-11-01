@@ -125,6 +125,33 @@ class TestFoundationStack:
         assert "AmazonBedrockFullAccess" not in rendered
         assert "CloudWatchLogsFullAccess" not in rendered
 
+    def test_each_role_holds_only_what_its_lambda_calls(self, templates):
+        # The comment-reply Lambda reads strangers' text: it must not be able to rewrite the Threads
+        # token, fire the publish Lambda or write digest memory.
+        foundation, _ = templates
+        policies = foundation.find_resources("AWS::IAM::Policy")
+
+        def actions_of(role_fragment: str) -> set[str]:
+            found: set[str] = set()
+            for policy in policies.values():
+                roles = str(policy["Properties"].get("Roles"))
+                if role_fragment in roles:
+                    for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
+                        acts = statement["Action"]
+                        found |= {acts} if isinstance(acts, str) else set(acts)
+            return found
+
+        comment, refresh, pipeline = (
+            actions_of("CommentReplyRole"),
+            actions_of("TokenRefreshRole"),
+            actions_of("LambdaRole"),
+        )
+        assert comment and refresh and pipeline
+        forbidden = {"ssm:PutParameter", "lambda:InvokeFunction", "bedrock-agentcore:CreateEvent"}
+        assert not comment & forbidden
+        assert "ssm:PutParameter" in refresh and not refresh & {"lambda:InvokeFunction", "s3:PutObject"}
+        assert "ssm:PutParameter" not in pipeline and "lambda:InvokeFunction" in pipeline
+
     def test_scoped_logs_policy(self, templates):
         foundation, _ = templates
         rendered = str(foundation.find_resources("AWS::IAM::Policy"))

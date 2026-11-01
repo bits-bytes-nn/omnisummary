@@ -1980,8 +1980,13 @@ Lambda의 RSSHub 수집은 RSSHub에 연결을 시도하지 않고 "X park file 
 
 **IAM은 최소 권한으로 잡는다.**
 
+- 역할은 셋이다. 다이제스트와 비주얼 Lambda가 쓰는 `LambdaRole`, 댓글 답글 Lambda의 `CommentReplyRole`, 토큰 갱신
+  Lambda의 `TokenRefreshRole`이다. 낯선 사람의 댓글을 읽는 댓글 Lambda에는 토큰 쓰기(`ssm:PutParameter`)와 비주얼 Lambda
+  호출, Memory 쓰기가 없다(로그, SSM 읽기, Bedrock, 상태 prefix의 S3만). 토큰 쓰기는 갱신 역할에만 있다. 한 역할을
+  같이 쓰던 때에는 댓글 Lambda의 회귀 하나가 토큰을 덮어쓰거나 게시를 일으킬 수 있었다.
+
 - `ssm:GetParameter`는 `/{project}/{stage}/*`로 스코프한다. 코드는 `get_parameter`만 부른다. `ssm:PutParameter`는
-  Threads 토큰 파라미터 하나로 스코프한다.
+  Threads 토큰 파라미터 하나로, 토큰 갱신 역할에만 준다.
 - `bedrock:InvokeModel`과 `bedrock:CountTokens`는 foundation-model과 inference-profile,
   application-inference-profile ARN으로 스코프한다. Lambda는 스트리밍하지 않으니 스트리밍 호출 액션은 주지 않는다. 마지막 것은 별도 리소스 타입이며 필수다. 모델 리졸버가 비용 귀속용 application inference
   profile을 선호하니, 빠뜨리면 프로필이 존재하는 순간 모든 Bedrock 호출이 AccessDenied가 된다. 그날
