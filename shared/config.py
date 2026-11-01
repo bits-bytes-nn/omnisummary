@@ -312,16 +312,16 @@ class PipelineConfig(_StrictModel):
     # countdown_date — never the LLM — so it stays accurate and ticks down daily). The AI default quotes
     # Dario Amodei, Paris AI Action Summit statement (anthropic.com, 2025-02): "possibly by 2026 or 2027
     # (and almost certainly no later than 2030)"; counted to the end of 2027. An edition sets its own
-    # date and wording in the same "X 말대로라면 ... N일 전이다" shape. Empty date disables the intro.
+    # date and wording in the same "...까지 N일 남았다" shape; the dates follow the quoted predictions, the text names no one. Empty date disables the intro.
     countdown_date: str = "2027-12-31"
     # Plain declarative ('~다') to match the columnist body voice — not honorific ('~입니다').
     # Before the D-day it counts down; on/after it, countdown_after counts up (the prediction
     # blew past — a self-aware joke). Empty countdown_date disables the intro entirely.
-    countdown_template: str = "아모데이 말대로라면 AGI 등장까지 {days}일 남았다. "
+    countdown_template: str = "AGI 등장까지 {days}일 남았다. "
     # The gag OPENS the lead, which spends the root's first line (the one most feed readers see) on
     # the same sentence every day. That is deliberate: the countdown is the account's signature, and
     # the owner ranked recognisable branding above the first-line reach argument.
-    countdown_after: str = "아모데이 말대로라면 AGI 등장 예정일 D+{days}일째, 아직이다. "
+    countdown_after: str = "AGI 등장 예정일 D+{days}일째, 아직이다. "
     item_text_max_tokens: int = Field(default=8000, ge=1)
     # Each item's text as the RANKER sees it; unset is item_text_max_tokens. Scoring needs the gist, the
     # editor and the grounding check the full text: the investing pool (426 items, many with full article
