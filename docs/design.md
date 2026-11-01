@@ -241,7 +241,7 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | 트렌드 | `trend_retention_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존 기간, 증거와 active 캡, momentum 반감기 |
 | 전달 | `enable_threads_post`, `threads_topic_tag`(기본 `AI`) | Threads 게시 on/off. 코드 기본값은 off이고 배포 설정은 on이다. 데일리 비주얼 Lambda가 게시한다. 토픽 태그는 root 게시물에만 붙는다([§5.8](#58-threads-전달-adaptersthreadspy-enable_threads_post)) |
 | 댓글 답글 | `enable_comment_replies`, `comment_reply_lookback_days`(7), `comment_reply_max_per_run`(10), `comment_reply_max_per_commenter`(3) | 독자 댓글 자동 답글. 코드 기본값은 off이고 배포 설정은 on이다([§5.9](#59-댓글-답글-applicationcomment_repliespy-enable_comment_replies)) |
-| 카운트다운 | `countdown_date`(기본 `2027-12-31`), `countdown_template`, `countdown_after` | 다이제스트 lead 맨 앞에 코드가 붙이는 "아모데이 말대로라면 AGI 등장 N일 전이다" 인트로. 투자판은 "머스크 말대로라면 돈이 필요 없어지기 N일 전이다"([§5.7](#57-카운트다운-인트로-domainformattingpy-countdown_intro) 참조) |
+| 카운트다운 | `countdown_date`(기본 `2027-12-31`), `countdown_template`, `countdown_after` | 다이제스트 lead 맨 앞에 코드가 붙이는 "AGI 등장까지 N일 남았다" 인트로. 투자판은 "보편적 고소득 시대까지 N일 남았다"([§5.7](#57-카운트다운-인트로-domainformattingpy-countdown_intro) 참조) |
 | 시각화 | `image_model`(`gpt-image-2.5-sunburst`), `image_sizes`, `visual_image_quality`(`xhigh`), `visual_editor_source_max_tokens`, `visual_synopsis_source_max_tokens`, `visual_image_timeout_sec`(기본 300)과 `visual_image_max_retries`(기본 0), `visual_character_enabled`, `visual_character_sheet`, `visual_character_reference`(`assets/persona.jpg`) | 이미지 모델과 품질 등급, orientation에서 size로 가는 딕셔너리(키는 `VisualOrientation` 어휘로 고정이고 값만 튜닝한다), 입력 상한, 이미지 HTTP 호출 상한. SDK 기본값 600초씩 2회는 비주얼 Lambda의 15분 예산을 넘길 수 있어서 config로 고정했다 |
 | 프롬프트 주입 | `digest_language_rules`, `digest_voice_guidance`, `ranking_audience_description`, `digest_audience_description`, `visual_audience_description`, `visual_on_image_language`, `visual_synopsis_style_guidance`, `visual_synopsis_style_aesthetic`, `visual_guardrails`, `visual_moderation_softening_instruction` | 언어 규칙과 대상 독자, 톤, 미감, 가드레일, 모더레이션 완화 문구. 하드코딩 대신 템플릿 변수로 주입한다. `digest_language_rules`는 한국어 규칙과 번역 용어집을 튜닝하는 자리이고 언어 스위치가 아니다. 한국어 전용이 의도한 제품이다. `digest_voice_guidance`는 Gruber 톤이며, 단일 냉소 프레임으로 기본 고정하지 말고 그날 사실이 정당화할 때만 각을 세우도록 쓰여 있다 |
 
@@ -1119,14 +1119,14 @@ Lambda가 "다시 올리지 말라"는 Threads Delivery 알림을 보낸다. 상
 
 ### 5.7 카운트다운 인트로 (`domain/formatting.py` `countdown_intro`)
 
-"아모데이 말대로라면 AGI 등장 N일 전이다" 식의 인트로를 LLM이 아니라 코드가 계산한다(`countdown_date` 기본 `2027-12-31`,
+"AGI 등장까지 N일 남았다" 식의 인트로를 LLM이 아니라 코드가 계산한다(`countdown_date` 기본 `2027-12-31`,
 `countdown_template`). D-day 이전에는 카운트다운, D-day 당일과 이후에는 `countdown_after`로
 카운트업한다("…AGI 등장 예정일 D+N일째, 아직이다"). `countdown_date`가 비면 비활성이다. 기준일은 인용한 사람의 말에 맞춘다.
 아모데이는 2025-02 파리 AI 정상회의 성명(anthropic.com)에서 "빠르면 2026년이나 2027년(늦어도 거의 확실히 2030년)"이라고 했고,
 그 앞쪽 범위의 끝인 2027년 말을 쓴다(2026-11-01까지는 젠슨 황과 아모데이를 섞어 반올림한 2029-01-01을 인용 없이 썼다).
-투자판(`config/invest.yaml`)은 같은 틀("머스크 말대로라면 돈이 필요 없어지기 N일 전이다")로, 일론 머스크가 2025-11-19
+투자판(`config/invest.yaml`)은 같은 틀("보편적 고소득 시대까지 N일 남았다", 그가 쓴 말은 "universal high income")로, 일론 머스크가 2025-11-19
 미·사우디 투자 포럼에서 "10~20년 안에" 일은 선택이 되고 돈은 의미가 없어진다고 한 날까지 센다. 기준일은 그 범위의 이른 끝인
-2035-11-19다. 두 판의 첫 문장이 대구를 이루게 한 것은 운영자 결정이다. 템플릿은 운영자가
+2035-11-19다. 두 판의 첫 문장이 대구를 이루고 인용한 사람의 이름은 문장에 넣지 않는 것은 운영자 결정이다(날짜만 그들의 말을 따른다). 템플릿은 운영자가
 편집하는 config 문자열이니 `.format()`을 try/except로 감싼다. 잘못된 placeholder나 괄호 같은 오타가 있으면
 인트로를 비우고 생성 도중 크래시하지 않는다. 수집과 랭킹과 LLM 비용을 다 쓴 뒤에 죽는 것이 최악이다.
 
