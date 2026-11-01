@@ -130,7 +130,6 @@ class TestVisualRun:
         config = MagicMock()
         config.aws.timezone = "Asia/Seoul"
         store = MagicMock()
-        store.get_digest.return_value = {"some": "state"}
         ranked = [MagicMock()]
         mgr = MagicMock()
         mgr.ranked_items = ranked
@@ -157,7 +156,6 @@ class TestVisualRun:
         config = MagicMock()
         config.aws.timezone = "Asia/Seoul"
         store = MagicMock()
-        store.get_digest.return_value = {"some": "state"}
         maker_instance = MagicMock()
         maker_instance.run = AsyncMock(return_value=False)
         maker_instance.threads_outcome = ThreadsDelivery(0, 6)
@@ -176,7 +174,6 @@ class TestUnprotectedDay:
         config = MagicMock()
         config.aws.timezone = "Asia/Seoul"
         store = MagicMock()
-        store.get_digest.return_value = {"some": "state"}
         maker_instance = MagicMock()
         maker_instance.run = AsyncMock(return_value=True)
         maker_instance.threads_outcome = ThreadsDelivery(6, 6, with_image=True)
