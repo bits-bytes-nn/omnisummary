@@ -334,6 +334,16 @@ class PipelineConfig(_StrictModel):
     max_per_origin: int = Field(default=1, ge=1)
     # Score-calibration buckets the ranking prompt applies, injected as template text so
     # ops can retune the distribution without editing the prompt.
+    # The ranker's lenses, one per line; the investing edition swaps in its own.
+    ranking_criteria: str = (
+        "1. Technical Substance — real depth in content body, not headline. Thin content scores low.\n"
+        "2. Practitioner Value — would this change how an engineer works?\n"
+        "3. Novelty — first reports, original analysis, new releases over rehashes. A story already in a recent "
+        "digest (listed below) is a rehash unless the item reports a real new development on it.\n"
+        "4. Industry Impact — competitive landscape shifts, funding, policy.\n"
+        "5. Research Significance — notable papers with novel contributions.\n"
+        "6. Source Authority — recognized researchers/institutions get a small bonus."
+    )
     ranking_scoring_rubric: str = (
         "0.9+: field-defining. 0.8-0.89: very important. 0.7-0.79: notable. "
         "0.6-0.69: worth noting (digest bar). <0.6: low value."

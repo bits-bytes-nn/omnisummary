@@ -56,14 +56,18 @@ collectors:
     # Hosts never returned by any search, broad or refined (Tavily exclude_domains), e.g. content farms:
     # exclude_domains: ["example-content-farm.com"]
     trend_searches:
-      - name: frontier_models
+      - name: korea_markets
         queries:
-          - "frontier AI model release GPT Claude Gemini Llama"
-          - "LLM benchmark SOTA new results"
-      - name: industry
+          - "코스피 코스닥 증시 마감 외국인 수급"
+          - "국내 증권사 리포트 목표주가 상향 하향"
+      - name: us_global_markets
         queries:
-          - "AI lab acquisition or major funding news"
-          - "AI policy regulation open source"
+          - "stock market today S&P 500 Nasdaq earnings Fed"
+          - "analyst upgrade downgrade price target"
+      - name: crypto
+        queries:
+          - "bitcoin ethereum crypto market ETF flows regulation"
+    domain: "investing (Korean, US and global stocks, macro and markets, and crypto assets)"
     max_results_per_query: 10
     lookback_hours: 72
     refine_model: "anthropic.claude-sonnet-5-5"
@@ -92,6 +96,18 @@ collectors:
     # - "web_search"
 
 pipeline:
+  ranking_audience_description: "a daily Korean investing digest for individual investors who follow Korean, US and global markets and crypto"
+  digest_audience_description: "Korean individual investors who follow stocks, macro and crypto, from beginners to experienced traders"
+  visual_audience_description: "a daily Korean investing digest read by individual investors, beginners and experienced alike"
+  ranking_criteria: |-
+    1. Market Impact — does it move or explain prices, flows, rates or a sector, in Korea, the US, globally or in crypto?
+    2. Investor Value — would it change how an individual investor understands a holding, a sector or the market?
+    3. Novelty — first reports, earnings, filings, policy decisions, analyst actions over rehashes. A story already in a recent digest (listed below) is a rehash unless the item reports a real new development on it.
+    4. Evidence — concrete numbers, guidance, rating or target changes with reasons, not price-chasing or hype.
+    5. Breadth — macro, policy, regulation and flows that affect many holdings count more than one stock's chatter.
+    6. Source Authority — wire services, filings, named analysts and research houses get a small bonus.
+  agi_countdown_date: ""
+  threads_topic_tag: "투자"
   threads_footer: "투자 권유가 아닙니다. 투자 판단의 책임은 본인에게 있습니다."
   domain: "investing (Korean, US and global stocks, macro and markets, and crypto assets)"
   top_n: 5

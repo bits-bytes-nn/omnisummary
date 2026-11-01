@@ -42,6 +42,7 @@ class RankingPrompt(BasePrompt):
         "scoring_rubric",
         "audience",
         "recent_titles",
+        "criteria",
     ]
 
     system_prompt_template = """\
@@ -49,13 +50,7 @@ You are a content curator. Evaluate each item for {audience}.
 
 *Evaluation Criteria*
 Use these as lenses, not a formula. Apply holistic judgment.
-1. Technical Substance — real depth in content body, not headline. Thin content scores low.
-2. Practitioner Value — would this change how an engineer works?
-3. Novelty — first reports, original analysis, new releases over rehashes. A story already in a recent \
-digest (listed below) is a rehash unless the item reports a real new development on it.
-4. Industry Impact — competitive landscape shifts, funding, policy.
-5. Research Significance — notable papers with novel contributions.
-6. Source Authority — recognized researchers/institutions get a small bonus.
+{criteria}
 
 Judge an item on the SUBSTANCE of what it says, not on its FORM. A video/podcast/conference-talk \
 transcript reads as loose conversational prose rather than tight written prose — do NOT penalize \

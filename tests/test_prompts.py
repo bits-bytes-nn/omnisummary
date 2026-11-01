@@ -16,6 +16,7 @@ _INPUTS = {
     RankingPrompt: {
         "items_text": "x",
         "scoring_rubric": "s",
+        "criteria": "c",
         "audience": "a",
         "recent_titles": "r",
     },
