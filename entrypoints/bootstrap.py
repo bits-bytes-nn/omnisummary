@@ -16,7 +16,14 @@ import boto3
 
 from adapters.aws import available_boto_profile
 from adapters.bedrock import BedrockLanguageModelFactory
-from adapters.collectors import RedditCollector, RSSCollector, RSSHubCollector, WebSearchCollector, YouTubeCollector
+from adapters.collectors import (
+    NaverResearchCollector,
+    RedditCollector,
+    RSSCollector,
+    RSSHubCollector,
+    WebSearchCollector,
+    YouTubeCollector,
+)
 from adapters.memory import create_memory_store
 from adapters.openai_images import OpenAIImageRenderer
 from adapters.research_backends import WebResearchSources
@@ -58,6 +65,7 @@ def collector_registry(
     against — a source this registry names but that vocabulary doesn't could never be watched for
     going dark."""
     return {
+        "naver_research": (NaverResearchCollector, config.collectors.naver_research, {}),
         "reddit": (RedditCollector, config.collectors.reddit, {}),
         "rsshub": (RSSHubCollector, config.collectors.rsshub, {}),
         "rss": (RSSCollector, config.collectors.rss, {}),

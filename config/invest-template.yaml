@@ -59,7 +59,6 @@ collectors:
       - "https://www.yna.co.kr/rss/market.xml"
       - "https://biz.chosun.com/arc/outboundfeeds/rss/category/stock/?outputType=xml"
       - "https://news.einfomax.co.kr/rss/S1N2.xml"
-      - "https://news.einfomax.co.kr/rss/S1N15.xml"
       - "https://news.einfomax.co.kr/rss/S1N16.xml"
       - "https://www.mk.co.kr/rss/50200011/"
       - "https://www.bok.or.kr/portal/bbs/B0000552/news.rss?menuNo=200690"
@@ -81,6 +80,12 @@ collectors:
     lookback_hours: *lookback_hours
     # Feeds fetched at once (each fetch carries its own httpx timeout).
     max_concurrency: 5
+  # Korean broker research (company, industry, strategy and economy notes) as Naver 증권 lists it: the
+  # broker, analyst, rating and target price with a summary. Posts name the broker, not the Naver page.
+  naver_research:
+    enabled: true
+    lookback_hours: *lookback_hours
+    categories: [company, industry, invest, economy]
   web_search:
     enabled: true
     # Hosts never returned by any search, broad or refined (Tavily exclude_domains), e.g. content farms:
@@ -182,12 +187,12 @@ pipeline:
   digest_audience_description: "Korean individual investors who follow stocks, macro and crypto, from beginners to experienced traders"
   visual_audience_description: "a daily Korean investing digest read by individual investors, beginners and experienced alike"
   ranking_criteria: |-
-    1. Market Impact — does it move or explain prices, flows, rates or a sector, in Korea, the US, globally or in crypto?
-    2. Investor Value — would it change how an individual investor understands a holding, a sector or the market?
-    3. Novelty — first reports, earnings, filings, policy decisions, analyst actions over rehashes. A story already in a recent digest (listed below) is a rehash unless the item reports a real new development on it.
-    4. Evidence — concrete numbers, guidance, rating or target changes with reasons, not price-chasing or hype.
-    5. Breadth — macro, policy, regulation and flows that affect many holdings count more than one stock's chatter.
-    6. Source Authority — wire services, filings, named analysts and research houses get a small bonus.
+    1. Market Signal — does it read the market itself: prices, flows, positioning, earnings, rates or FX moving, with the numbers, and what they say about where money is going in Korea, the US, globally or in crypto?
+    2. Analysis — a named analyst's, strategist's or investor's reasoned view (a rating or target change, a thesis, a risk call, an earnings read) scores above a report of what happened; general economic, policy or corporate news with no read on what it means for prices scores low.
+    3. Investor Value — would it change how an individual investor understands a holding, a sector or the market?
+    4. Novelty — first reports, earnings, filings, rating and target changes over rehashes. A story already in a recent digest (listed below) is a rehash unless the item reports a real new development on it.
+    5. Evidence — concrete numbers and reasons, not price-chasing, hype or a sales pitch.
+    6. Source Authority — research houses, named analysts, wire services and filings get a small bonus.
     7. Korean Real Estate — housing and lending policy, official price, transaction and supply statistics, and listed builders' results count; one complex's 분양 or 견본주택, a builder's PR and a district's development promise are promotion, not news.
   # Elon Musk, U.S.-Saudi Investment Forum, 2025-11-19: work optional and money irrelevant in "10 to 20
   # years" ("universal high income"). Counted to the early end of his range; the gag quotes the money half.

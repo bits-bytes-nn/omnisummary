@@ -55,6 +55,8 @@ class DigestItem(BaseModel):
     metrics: str = ""  # e.g. "조회 12,000" — set by code
     body: str  # 2-4 sentences: what it is and why it matters
     implication: str = ""  # one sharp closing line (Gruber voice)
+    # False for a source whose page the post must not link (the source line still names it); set by code.
+    show_link: bool = True
 
 
 class DigestContent(BaseModel):

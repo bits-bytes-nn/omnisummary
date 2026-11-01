@@ -137,6 +137,23 @@ class RSSCollectorConfig(BaseCollectorConfig):
     max_concurrency: int = Field(default=5, ge=1)
 
 
+ResearchCategory = Literal["company", "industry", "invest", "economy", "market", "debenture"]
+_DEFAULT_RESEARCH_CATEGORIES: list[ResearchCategory] = ["company", "industry", "invest", "economy"]
+
+
+class NaverResearchCollectorConfig(BaseCollectorConfig):
+    """Korean broker research listed by Naver 증권 (stock.naver.com/research)."""
+
+    enabled: bool = False
+    # company, industry, invest (strategy), economy, market (daily wraps), debenture (fixed income).
+    categories: list[ResearchCategory] = Field(default_factory=lambda: list(_DEFAULT_RESEARCH_CATEGORIES))
+    # Pages of 50 per category; a weekday has about 100 company notes.
+    max_pages: int = Field(default=6, ge=1)
+    page_delay_sec: float = Field(default=1.0, ge=0.0)
+    # The post names the broker and the analyst; the Naver page is not linked unless this is set.
+    show_links: bool = False
+
+
 class TrendSearch(_StrictModel):
     name: str
     queries: list[str]
@@ -178,6 +195,7 @@ class CollectorsConfig(_StrictModel):
     rss: RSSCollectorConfig = Field(default_factory=RSSCollectorConfig)
     web_search: WebSearchCollectorConfig = Field(default_factory=WebSearchCollectorConfig)
     rsshub: RSSHubCollectorConfig = Field(default_factory=RSSHubCollectorConfig)
+    naver_research: NaverResearchCollectorConfig = Field(default_factory=NaverResearchCollectorConfig)
     # Sources whose EMPTY result is an INCIDENT worth an alert, by collector name (e.g.
     # ["rss", "web_search"]). A dark source produces no items, no exception and no stale park file,
     # so nothing else notices it; but reddit/x are legitimately quiet on many days, which is why
@@ -199,8 +217,8 @@ class CollectorsConfig(_StrictModel):
         return self
 
     def set_reference_time(self, reference_time: datetime) -> None:
-        for cfg in (self.youtube, self.reddit, self.rss, self.web_search, self.rsshub):
-            cfg.reference_time = reference_time
+        for name in COLLECTOR_NAMES:
+            getattr(self, name).reference_time = reference_time
 
 
 def _utc_offset_hours(timezone: str) -> int:
