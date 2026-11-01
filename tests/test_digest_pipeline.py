@@ -277,6 +277,11 @@ class TestRecentStoryTitles:
         older = snapshot(items=[{"title": "그제 1"}, {"title": "어제 1"}])
         assert runner._recent_story_titles([newest, older]) == ["어제 1", "어제 2", "그제 1"]
 
+    def test_recent_angles_carry_the_last_two_days_implications(self):
+        # The thesis shape repeated in the implications; shown them, the editor stopped ending leads on it.
+        days = [snapshot(lead=f"리드 {n}.", items=[{"title": f"t{n}", "implication": f"함의 {n}."}]) for n in range(3)]
+        assert runner._recent_leads(days, 5) == ["리드 0.", "리드 1.", "리드 2.", "함의 0.", "함의 1."]
+
     def test_a_story_less_or_missing_snapshot_degrades_to_nothing(self):
         assert runner._recent_story_titles([]) == []
         assert runner._recent_story_titles([DigestSnapshot()]) == []
