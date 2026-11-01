@@ -214,10 +214,17 @@ def _recent_story_titles(snapshots: list[DigestSnapshot]) -> list[str]:
 
 
 def _recent_leads(snapshots: list[DigestSnapshot], window: int) -> list[str]:
-    """The leads of the snapshots the cross-day dedup seed already fetched (newest first), so the next
-    lead avoids their angle. The editor is shown each lead's last sentence, its thesis, so the
-    countdown gag the lead opens with never reaches the comparison."""
-    return [snap.content.lead for snap in snapshots if snap.content and snap.content.lead.strip()][:window]
+    """The angles the next digest must not repeat, from the snapshots the cross-day dedup seed already
+    fetched (newest first): each recent lead (the editor is shown its last sentence, its thesis, so the
+    countdown gag never reaches the comparison) and the last RECENT_IMPLICATION_DAYS days' implications.
+    The thesis shape repeats in the implications more than in the leads: given them too, the editor ended
+    1 of 6 leads on the "누가 ~느냐" formula instead of 4 of 6, 6/3 blind over 9 days (2026-11-01)."""
+    leads = [snap.content.lead for snap in snapshots if snap.content and snap.content.lead.strip()][:window]
+    recent = [snap.content for snap in snapshots[:RECENT_IMPLICATION_DAYS] if snap.content]
+    return leads + [item.implication for content in recent for item in content.items if item.implication.strip()]
+
+
+RECENT_IMPLICATION_DAYS = 2
 
 
 def persist_digest(
