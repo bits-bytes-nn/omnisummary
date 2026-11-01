@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+import math
+import time
+from datetime import UTC, datetime, tzinfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from tavily import AsyncTavilyClient
@@ -278,9 +281,10 @@ async def yahoo_quote(symbol: str, period: str = "5d") -> str:
                 _QUOTE_URL.format(symbol=symbol), params={"range": period, "interval": QUOTE_PERIODS[period]}
             )
             resp.raise_for_status()
-        result = ((resp.json() or {}).get("chart") or {}).get("result") or [None]
-        return _format_quote(symbol, period, result[0]) if isinstance(result[0], dict) else ""
-    except (httpx.HTTPError, ValueError, TypeError, AttributeError, IndexError) as e:
+        result = ((resp.json() or {}).get("chart") or {}).get("result")
+        first = result[0] if isinstance(result, list) and result else None
+        return _format_quote(symbol, period, first) if isinstance(first, dict) else ""
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError, IndexError, KeyError, OverflowError, OSError) as e:
         # One odd payload must not cost the other tickers of the same call.
         logger.warning("Quote for '%s' failed: %s", symbol, e)
         return ""
@@ -288,13 +292,18 @@ async def yahoo_quote(symbol: str, period: str = "5d") -> str:
 
 def _format_quote(symbol: str, period: str, result: dict) -> str:
     meta = result.get("meta") or {}
-    offset = int(meta.get("gmtoffset") or 0)
+    # Each bar dated in the exchange's own zone, daylight saving included: one offset for every bar put
+    # summer bars stamped at local midnight (US monthly, FX and futures dailies) on the previous day.
+    try:
+        zone: tzinfo = ZoneInfo(str(meta.get("exchangeTimezoneName") or "UTC"))
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = UTC
     stamps = result.get("timestamp") or []
     closes = ((result.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
     days = [
-        (datetime.fromtimestamp(int(t) + offset, UTC).date().isoformat(), float(c))
+        (datetime.fromtimestamp(int(t), zone).date().isoformat(), float(c))
         for t, c in zip(stamps, closes, strict=False)
-        if isinstance(c, int | float)
+        if isinstance(c, int | float) and math.isfinite(c)
     ]
     if not days:
         return ""
@@ -308,11 +317,9 @@ def _format_quote(symbol: str, period: str, result: dict) -> str:
     # Still trading when the last trade falls inside the current regular session (crypto: always). On a
     # weekend the "current" session is the next one, which the last trade precedes.
     regular = (meta.get("currentTradingPeriod") or {}).get("regular") or {}
-    traded = meta.get("regularMarketTime")
-    live = period != "5y" and all(
-        isinstance(v, int | float) for v in (regular.get("start"), regular.get("end"), traded)
-    )
-    live = live and regular["start"] <= traded < regular["end"]
+    now = time.time()
+    live = period != "5y" and all(isinstance(v, int | float) for v in (regular.get("start"), regular.get("end")))
+    live = live and regular["start"] <= now < regular["end"]
     label = "Latest price (session open)" if live else "Last close"
     unit = "monthly" if QUOTE_PERIODS[period] == "1mo" else "daily"
     return _result_block(

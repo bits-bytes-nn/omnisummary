@@ -40,9 +40,8 @@ def main():
             if getattr(edition.aws, key) != getattr(config.aws, key)
         ]
         root = f"{config.aws.s3_prefix.strip('/')}/" if config.aws.s3_prefix.strip("/") else ""
-        if not edition.aws.s3_prefix.strip("/").startswith(root) or edition.aws.s3_prefix.strip("/") == root.rstrip(
-            "/"
-        ):
+        own = edition.aws.s3_prefix.strip("/")
+        if not own.startswith(root) or own == root.rstrip("/") or own.split("/")[-1] == "digest_state":
             problems.append(f"s3_prefix '{edition.aws.s3_prefix}' is not its own prefix under '{config.aws.s3_prefix}'")
         if not (CONFIG_PATH.parent / f"{edition.edition}{suffix}.yaml").exists():
             problems.append(f"it is not saved as config/{edition.edition}{suffix}.yaml")

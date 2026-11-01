@@ -102,12 +102,15 @@ collectors:
 pipeline:
   domain_rules: |
     - This is market commentary, not investment advice. Never tell the reader to buy, sell or hold a
-      specific security or coin, never give a price target of your own, and never promise a return.
+      specific security or coin, never give a price target or a valuation verdict ("cheap", "overvalued")
+      of your own, and never promise a return.
       Report analysts' ratings and targets as theirs, named and dated, with the source.
-    - Every price, index level, return or market-cap figure comes from a cited source or a tool result,
-      with its date; never state one from memory.
+    - Every price, index level, return or market-cap figure comes from a cited source, with its date;
+      never state one from memory.
     - Separate what happened (prices, filings, reported numbers) from what analysts or the community
       expect, and say whose view each forecast is.
+    - Look at a story from the sides it really has for someone who invests: earnings and valuation as
+      others assess them, macro and rates, flows and positioning, regulation, and sentiment.
   ranking_audience_description: "a daily Korean investing digest for individual investors who follow Korean, US and global markets and crypto"
   digest_audience_description: "Korean individual investors who follow stocks, macro and crypto, from beginners to experienced traders"
   visual_audience_description: "a daily Korean investing digest read by individual investors, beginners and experienced alike"

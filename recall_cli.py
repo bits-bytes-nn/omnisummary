@@ -45,11 +45,12 @@ class _Parser(argparse.ArgumentParser):
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     # No -h: argparse prints help to stdout and exits, which is not the one JSON object callers parse.
     parser = _Parser(description="Read back the OmniSummary digest memory (prints one JSON object)", add_help=False)
-    parser.add_argument("--edition", default="", help="Which edition to read (config/<edition>.yaml), e.g. 'invest'")
+    edition = _Parser(add_help=False)
+    edition.add_argument("--edition", default="", help="Which edition to read (config/<edition>.yaml), e.g. 'invest'")
     sub = parser.add_subparsers(dest="kind", required=True)
-    digest = sub.add_parser("digest", add_help=False)
+    digest = sub.add_parser("digest", add_help=False, parents=[edition])
     digest.add_argument("date", nargs="?", default="", help="YYYY-MM-DD (default: today in the digest timezone)")
-    sub.add_parser("trends", add_help=False)
+    sub.add_parser("trends", add_help=False, parents=[edition])
     return parser.parse_args(argv)
 
 

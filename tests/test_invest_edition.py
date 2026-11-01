@@ -128,8 +128,10 @@ async def test_the_quote_uses_exchange_dates_labels_a_live_session_and_survives_
     transport = httpx.MockTransport(lambda request: httpx.Response(200, content=json.dumps(payloads.pop(0))))
     real = httpx.AsyncClient
     monkeypatch.setattr(research_backends.httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw))
-    # 2026-10-30 15:00 UTC is 2026-10-31 in Seoul (gmtoffset 9h); the last trade sits inside the session.
-    stamp = 1793372400
+    # 2026-10-30 15:00 UTC is 2026-10-31 in Seoul; the session is open right now.
+    import time
+
+    stamp, now = 1793372400, int(time.time())
     payloads.append(
         {
             "chart": {
@@ -138,9 +140,8 @@ async def test_the_quote_uses_exchange_dates_labels_a_live_session_and_survives_
                         "meta": {
                             "symbol": "X",
                             "currency": "KRW",
-                            "gmtoffset": 32400,
-                            "regularMarketTime": stamp + 60,
-                            "currentTradingPeriod": {"regular": {"start": stamp, "end": stamp + 3600}},
+                            "exchangeTimezoneName": "Asia/Seoul",
+                            "currentTradingPeriod": {"regular": {"start": now - 60, "end": now + 3600}},
                         },
                         "timestamp": [stamp],
                         "indicators": {"quote": [{"close": [100.0]}]},
@@ -151,7 +152,14 @@ async def test_the_quote_uses_exchange_dates_labels_a_live_session_and_survives_
     )
     block = await research_backends.yahoo_quote("X.KS")
     assert "Latest price (session open): 100.00 KRW on 2026-10-31" in block
-    for odd in ([], {"chart": None}, {"chart": {"result": [{"indicators": {"quote": [{"close": "x"}]}}]}}):
+    odd_payloads = (
+        [],
+        {"chart": None},
+        {"chart": {"result": {"x": 1}}},
+        {"chart": {"result": [{"timestamp": [1e20], "indicators": {"quote": [{"close": [1.0]}]}}]}},
+        {"chart": {"result": [{"indicators": {"quote": [{"close": "x"}]}}]}},
+    )
+    for odd in odd_payloads:
         payloads.append(odd)
         assert await research_backends.yahoo_quote("AAPL") == ""
     assert await research_backends.yahoo_quote("삼성") == ""
