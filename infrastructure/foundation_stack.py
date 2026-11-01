@@ -109,9 +109,20 @@ class OmniSummaryFoundationStack(Stack):
             actions=["logs:CreateLogStream", "logs:PutLogEvents"],
             resources=[f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/lambda/{project_name}-{stage}-*:*"],
         )
+        # The comment-reply and refresh Lambdas read only the Threads token and user id, not the
+        # OpenAI/Tavily/YouTube keys under the same path.
+        threads_secrets_read = iam.PolicyStatement(
+            actions=["ssm:GetParameter"],
+            resources=[
+                f"arn:aws:ssm:{self.region}:{self.account}:parameter/{project_name}/{stage}/{name}"
+                for name in ("threads-access-token", "threads-user-id")
+            ],
+        )
         for role in (self.lambda_role, self.comment_reply_role, self.token_refresh_role):
             role.add_to_policy(logs_statement)
-            role.add_to_policy(ssm_read_statement)
+        self.lambda_role.add_to_policy(ssm_read_statement)
+        self.comment_reply_role.add_to_policy(threads_secrets_read)
+        self.token_refresh_role.add_to_policy(threads_secrets_read)
         for role in (self.lambda_role, self.comment_reply_role):
             role.add_to_policy(bedrock_invoke_statement)
             role.add_to_policy(bedrock_profile_statement)
@@ -127,13 +138,21 @@ class OmniSummaryFoundationStack(Stack):
         # AccessDenied. grant_read_write also handed out delete, legal-hold and retention actions.
         # An empty s3_prefix keeps the bucket-wide object scope.
         prefix = config.aws.s3_prefix.strip("/")
-        for role in (self.lambda_role, self.comment_reply_role):
+        root = f"{prefix}/" if prefix else ""
+        # The comment-reply Lambda writes one object, its own ledger: it cannot touch the post ledger,
+        # the published-URL ledger, trends or the park files. (COMMENT_REPLIES_KEY under digest_state.)
+        object_scopes = {
+            self.lambda_role: f"{root}*",
+            self.comment_reply_role: f"{root}digest_state/comment_replies.json",
+        }
+        for role, objects in object_scopes.items():
             role.add_to_policy(
                 iam.PolicyStatement(
                     actions=["s3:GetObject", "s3:PutObject"],
-                    resources=[self.state_bucket.arn_for_objects(f"{prefix}/*" if prefix else "*")],
+                    resources=[self.state_bucket.arn_for_objects(objects)],
                 )
             )
+        for role in (self.lambda_role, self.comment_reply_role):
             role.add_to_policy(
                 iam.PolicyStatement(
                     actions=["s3:ListBucket"],

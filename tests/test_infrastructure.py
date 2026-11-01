@@ -147,10 +147,32 @@ class TestFoundationStack:
             actions_of("LambdaRole"),
         )
         assert comment and refresh and pipeline
-        forbidden = {"ssm:PutParameter", "lambda:InvokeFunction", "bedrock-agentcore:CreateEvent"}
+        forbidden = {
+            "ssm:PutParameter",
+            "lambda:InvokeFunction",
+            "bedrock-agentcore:CreateEvent",
+            "bedrock-agentcore:ListEvents",
+            "sns:Publish",
+            "sqs:SendMessage",
+        }
         assert not comment & forbidden
-        assert "ssm:PutParameter" in refresh and not refresh & {"lambda:InvokeFunction", "s3:PutObject"}
+        assert "ssm:PutParameter" in refresh
+        assert not refresh & (forbidden - {"ssm:PutParameter"} | {"s3:PutObject", "bedrock:InvokeModel"})
         assert "ssm:PutParameter" not in pipeline and "lambda:InvokeFunction" in pipeline
+
+    def test_the_comment_role_reaches_only_its_own_ledger_and_threads_secrets(self, templates):
+        from application.history import COMMENT_REPLIES_KEY
+
+        foundation, _ = templates
+        rendered = [
+            str(p["Properties"]["PolicyDocument"])
+            for p in foundation.find_resources("AWS::IAM::Policy").values()
+            if "CommentReplyRole" in str(p["Properties"].get("Roles"))
+        ]
+        assert len(rendered) == 1
+        assert f"digest_state/{COMMENT_REPLIES_KEY}" in rendered[0]
+        assert "omnisummary/*" not in rendered[0].replace("log-group", "")
+        assert "threads-access-token" in rendered[0] and "openai" not in rendered[0].lower()
 
     def test_scoped_logs_policy(self, templates):
         foundation, _ = templates
