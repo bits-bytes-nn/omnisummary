@@ -129,7 +129,7 @@ def render_threads_posts(content: DigestContent, footer: str = "") -> tuple[str,
     for item in content.items:
         meta = _item_meta(item)
         implication = item.implication or ""
-        post = _fit_one_post(item.title, meta, item.body, implication, item.url)
+        post = _fit_one_post(item.title, meta, item.body, implication, item.url if item.show_link else "")
         replies.append(post)
         # _fit_one_post ships the prose as written whenever it fits, so a missing piece was trimmed.
         if item.body.strip() not in post or implication.strip() not in post:

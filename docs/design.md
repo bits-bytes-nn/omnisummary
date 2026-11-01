@@ -131,8 +131,13 @@ import하지 않는다. `domain`과 `shared`는 LangChain도 모른다. `applica
 사실 확인이 숫자를 대조한다. 규칙은 `pipeline.domain_rules`에 있고 리서치 프롬프트와 다이제스트 에디터의 목소리 지침이 함께 읽는다(AI/ML판은 비어 있어 프롬프트가 그대로다). 댓글 Lambda는 매수·매도·목표가·보유 종목 처리 질문을 거절 목록에 둔다. 특정 종목의 매수·매도 판단과 자체 목표가를 쓰지 않고, 애널리스트
 의견은 누구의 것인지 날짜와 함께 밝힌다. 네이버 증권과 한경 컨센서스는 robots.txt가 모든 수집을 막아서 수집기를 만들지 않았고,
 국내 증권사 리포트는 그것을 보도한 기사로 들어온다.
-투자판 소스(2026-11-01 측정, 같은 날 적대적 재검토)는 국내 통신사와 매체의 섹션 피드(연합뉴스 마켓, 조선비즈 증권, 연합인포맥스
-증권·정책금융·채권외환, 매경 증권), 중앙은행 보도자료(한국은행, 미 연준, ECB), 크립토(Decrypt, 블록미디어), 국내 부동산(인포맥스 부동산,
+투자판 랭킹 기준(`config/invest-template.yaml`)은 2026-11-02에 시장 신호(가격·수급·포지션·실적·금리·환율이 숫자와 함께 움직이고
+그것이 돈의 방향에 대해 말하는 것)와 분석(이름 있는 애널리스트·전략가·투자자의 근거 있는 견해)을 앞에 두고, 가격에 대한 해석이 없는
+일반 경제·정책·기업 뉴스를 낮게 두도록 다시 썼다. 이전 기준의 "Breadth"(여러 보유 종목에 걸치는 거시·정책 뉴스 우대)가 후보 풀을
+경제 신문처럼 만들었기 때문이다. 같은 날 시험 실행에서 후보 12개가 리포트, 목표주가, 채권 주간 전망, 시장 콜로 바뀌었다.
+
+투자판 소스(2026-11-01 측정, 같은 날 적대적 재검토)는 네이버 증권 리서치의 국내 증권사 리포트(2026-11-02 추가, [§4.4a](#44a-네이버-증권-리서치-naver_researchpy)), 국내 통신사와 매체의 섹션 피드(연합뉴스 마켓, 조선비즈 증권, 연합인포맥스
+증권·채권외환, 매경 증권), 중앙은행 보도자료(한국은행, 미 연준, ECB), 크립토(Decrypt, 블록미디어), 국내 부동산(인포맥스 부동산,
 조선비즈 부동산, 뉴스1·뉴시스·SBS Biz로 좁힌 웹 검색 한 묶음), 본문을 피드에 싣는 실명 경제학자·분석가의 블로그(뉴욕 연준 Liberty Street,
 Robin Brooks, Klement, Yardeni, Calculated Risk, Sahm, Damodaran, Glassnode, Coin Metrics), Reddit 세 곳, X 9개 계정(Reuters와 WSJ는
 X로만 들어온다), YouTube 3개 채널(월가아재, Patrick Boyle, 채부심)이다.
@@ -191,6 +196,7 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 | `youtube` | `channels`, `max_videos_per_channel`, `resolve_timeout`, `transcript_timeout`, `transcript_language`, `max_concurrency`, `park_required` | 채널, 영상 수, 자막 관련 설정, 동시 채널 상한, AWS에서 park 파일 부재를 DEGRADED로 볼지([§4.2](#42-s3-park-파일-로더)) |
 | `web_search` | `trend_searches`, `max_results_per_query`, `max_refine_queries`, `refine_model`(Sonnet 5.5), `max_concurrency` | Tavily 검색, 쿼리 정제 모델 |
 | `rsshub` | `base_url`, `accounts`, `max_concurrency` | X 계정(로컬 컨테이너 또는 S3)과 동시 fetch 상한 |
+| `naver_research` | `categories`(기본 company·industry·invest·economy), `max_pages`(기본 6, 쪽당 50건), `page_delay_sec`, `show_links`(기본 false) | 네이버 증권 리서치의 국내 증권사 리포트([§4.4a](#44a-네이버-증권-리서치-naver_researchpy)). 기본은 꺼짐이고 투자판이 켠다 |
 
 `lookback_hours`는 하루가 아니라 **직전 실행까지** 닿아야 한다. cutoff는 다이제스트 날짜의 **끝** 자정에
 앵커되는데(`resolve_digest_window`) cron은 그 자정보다 몇 시간 앞서 수집한다. 그래서 24는 윈도를 정확히
@@ -482,6 +488,18 @@ Lambda의 15분 예산 안에 넉넉히 들어가야 한다. 넘칠 만큼 피�
 **실패 신호.** 죽은 피드(HTTP 4xx/5xx, entries 없는 bozo)와 재시도를 소진한 타임아웃은 빈 결과가 아니라
 예외로 올린다. `gather_collector_results(raise_if_all_failed=True)`가 전 피드 실패일 때만 이를 승격시키니,
 일부 피드 장애는 로깅 후 건너뛰고 전면 장애만 FAILED로 알린다.
+
+### 4.4a 네이버 증권 리서치 (`naver_research.py`)
+
+stock.naver.com 리서치 페이지가 쓰는 공개 JSON(`/api/stockSecurity/researches/v2/{category}?index&size&startDate&endDate`)을
+읽는다. 증권사 기업·산업·투자전략·경제 리포트마다 증권사, (산업은) 애널리스트, (기업은) 종목, 투자의견, 목표주가,
+날짜와 요약 본문이 붙어 있어 본문 추출이 필요 없다. 평일 기업 리포트만 약 100건이라 투자판 후보 풀의 중심이 된다.
+요청 날짜는 실행 윈도의 서울 날짜이고, 리포트는 날짜만 있으니 그날의 끝(23:59:59)으로 찍어 아침 실행 윈도가 전날
+리포트를 자르지 않게 한다(내보내지 않은 반복은 괜찮고, 내보낸 것은 URL 장부가 막는다). 출처는 증권사마다 하나라서
+(`feed_url = naver-research:<증권사>`) `max_per_origin`이 한 증권사가 풀을 차지하지 못하게 한다. 게시글의 출처 줄은
+"<증권사> 리서치"이고 네이버 페이지 링크는 붙이지 않는다(`show_links: false` → `DigestItem.show_link`, Threads
+렌더러만 URL을 뺀다). robots.txt가 네이버 검색 봇 외에는 막고 네이버 약관이 AI 수집을 제한한다는 점은 운영자 판단으로
+받아들였고(§2 판), 그 대신 링크를 걸지 않는다.
 
 ### 4.4 Reddit (`reddit.py`)
 

@@ -298,6 +298,7 @@ class DigestGenerator:
             # or a tracking parameter); the prose budget was computed from this one too.
             item.url = src.url
             item.source_tag, item.metrics = self._source_tag_and_metrics(src)
+            item.show_link = not src.metadata.get("hide_link")
             kept.append(item)
             sources.append(src)
         if unmatched:
