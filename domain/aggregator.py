@@ -56,6 +56,29 @@ def normalize_url(url: str) -> str:
     return urlunsplit(("https", host, path, query, ""))
 
 
+_SHIPPED_TRACKING_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid"}
+
+
+def strip_tracking_params(url: str) -> str:
+    """The URL as collected, minus its marketing parameters (utm_*, fbclid, gclid, mc_*): this is the link
+    that ships. Unlike normalize_url it keeps everything else byte for byte (a ref= may pick a branch, and
+    a query value may be EUC-KR percent-encoding that a decode/re-encode round trip would mangle)."""
+    base, sep, query = url.partition("?")
+    if not sep:
+        return url
+    query, hash_mark, fragment = query.partition("#")
+    pieces = query.split("&")
+    kept = [
+        piece
+        for piece in pieces
+        if not (name := piece.split("=", 1)[0].lower()).startswith(_TRACKING_PARAM_PREFIXES)
+        and name not in _SHIPPED_TRACKING_PARAMS
+    ]
+    if len(kept) == len(pieces):
+        return url
+    return base + ("?" + "&".join(kept) if kept else "") + hash_mark + fragment
+
+
 class ContentAggregator:
 
     def aggregate(self, items: list[CollectedItem], exclude_urls: set[str] | None = None) -> list[CollectedItem]:
@@ -81,6 +104,7 @@ class ContentAggregator:
             logger.warning("Dropped %d item(s) missing a url or title before dedup", malformed)
 
         for item in usable:
+            item.url = strip_tracking_params(item.url)
             key = normalize_url(item.url)
             # Pinned items (user-specified via --pin-url) bypass cross-day dedup: the user
             # asked for this exact URL today, even if it was published in a recent digest.

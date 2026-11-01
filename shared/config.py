@@ -34,9 +34,12 @@ class _StrictModel(BaseModel):
 # translationese, or the colon-enumeration ban. Composed into digest_language_rules and the
 # research agent's <language> block.
 KOREAN_PROSE_RULES: str = (
-    "- Write natural, idiomatic Korean — NOT translationese. Avoid stiff translated-English "
-    "patterns: drop redundant pronouns (그것은/이것은), avoid overusing passive voice and "
-    "'~에 대해/~에 의해/~을 통해', don't calque English connectives.\n"
+    "- Write it in Korean first, not English thought put into Korean words. A Korean sentence has a "
+    "concrete subject that does something: the company, the person, the model, with a verb. "
+    "Machine-written Korean instead makes abstract nouns the actors ('관심이 성능에서 청구서로 옮겨 간다', "
+    "'승부는 소유권에서 갈린다', '~가 변수가 된다', '~의 비용을 정한다') and ends on a maxim; say the plain "
+    "thing a Korean reporter would say out loud. Drop redundant pronouns (그것은/이것은), passive voice "
+    "and '~에 대해/~에 의해/~을 통해'.\n"
     "- Say what IS, directly. Do not build a sentence on the 'A가 아니라 B' / 'A보다 B' contrast "
     "unless someone actually claimed A; it is the most worn formula in machine-written commentary.\n"
     "- Do NOT glue two complete sentences together with punctuation Korean does not use that way. "
@@ -306,18 +309,19 @@ class PipelineConfig(_StrictModel):
         "declarative '~다' register. Ground every take in the supplied facts and trends, never vibes."
     )
     # Tongue-in-cheek countdown intro prepended to the digest lead (code computes the day count from
-    # countdown_date — never the LLM — so it stays accurate and ticks down daily). The AI default is
-    # a fixed, defensible ~3-years-out AGI target (Jensen Huang's call / tail of Amodei's "1-3 years");
-    # an edition sets its own date and wording. Empty date disables the intro.
-    countdown_date: str = "2029-01-01"
+    # countdown_date — never the LLM — so it stays accurate and ticks down daily). The AI default quotes
+    # Dario Amodei, Paris AI Action Summit statement (anthropic.com, 2025-02): "possibly by 2026 or 2027
+    # (and almost certainly no later than 2030)"; counted to the end of 2027. An edition sets its own
+    # date and wording in the same "X 말대로라면 ... N일 전이다" shape. Empty date disables the intro.
+    countdown_date: str = "2027-12-31"
     # Plain declarative ('~다') to match the columnist body voice — not honorific ('~입니다').
     # Before the D-day it counts down; on/after it, countdown_after counts up (the prediction
     # blew past — a self-aware joke). Empty countdown_date disables the intro entirely.
-    countdown_template: str = "AGI 등장 {days}일 전이다. "
+    countdown_template: str = "아모데이 말대로라면 AGI 등장 {days}일 전이다. "
     # The gag OPENS the lead, which spends the root's first line (the one most feed readers see) on
     # the same sentence every day. That is deliberate: the countdown is the account's signature, and
     # the owner ranked recognisable branding above the first-line reach argument.
-    countdown_after: str = "AGI 등장 예정일 D+{days}일째, 아직이다. "
+    countdown_after: str = "아모데이 말대로라면 AGI 등장 예정일 D+{days}일째, 아직이다. "
     item_text_max_tokens: int = Field(default=8000, ge=1)
     # Each item's text as the RANKER sees it; unset is item_text_max_tokens. Scoring needs the gist, the
     # editor and the grounding check the full text: the investing pool (426 items, many with full article

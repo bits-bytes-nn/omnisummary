@@ -241,7 +241,7 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | 트렌드 | `trend_retention_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존 기간, 증거와 active 캡, momentum 반감기 |
 | 전달 | `enable_threads_post`, `threads_topic_tag`(기본 `AI`) | Threads 게시 on/off. 코드 기본값은 off이고 배포 설정은 on이다. 데일리 비주얼 Lambda가 게시한다. 토픽 태그는 root 게시물에만 붙는다([§5.8](#58-threads-전달-adaptersthreadspy-enable_threads_post)) |
 | 댓글 답글 | `enable_comment_replies`, `comment_reply_lookback_days`(7), `comment_reply_max_per_run`(10), `comment_reply_max_per_commenter`(3) | 독자 댓글 자동 답글. 코드 기본값은 off이고 배포 설정은 on이다([§5.9](#59-댓글-답글-applicationcomment_repliespy-enable_comment_replies)) |
-| 카운트다운 | `countdown_date`(기본 `2029-01-01`), `countdown_template`, `countdown_after` | 다이제스트 lead 맨 앞에 코드가 붙이는 "AGI N일 전" 인트로. 투자판은 머스크의 "보편적 고소득" 카운트다운([§5.7](#57-카운트다운-인트로-domainformattingpy-countdown_intro) 참조) |
+| 카운트다운 | `countdown_date`(기본 `2027-12-31`), `countdown_template`, `countdown_after` | 다이제스트 lead 맨 앞에 코드가 붙이는 "아모데이 말대로라면 AGI 등장 N일 전이다" 인트로. 투자판은 "머스크 말대로라면 돈이 필요 없어지기 N일 전이다"([§5.7](#57-카운트다운-인트로-domainformattingpy-countdown_intro) 참조) |
 | 시각화 | `image_model`(`gpt-image-2.5-sunburst`), `image_sizes`, `visual_image_quality`(`xhigh`), `visual_editor_source_max_tokens`, `visual_synopsis_source_max_tokens`, `visual_image_timeout_sec`(기본 300)과 `visual_image_max_retries`(기본 0), `visual_character_enabled`, `visual_character_sheet`, `visual_character_reference`(`assets/persona.jpg`) | 이미지 모델과 품질 등급, orientation에서 size로 가는 딕셔너리(키는 `VisualOrientation` 어휘로 고정이고 값만 튜닝한다), 입력 상한, 이미지 HTTP 호출 상한. SDK 기본값 600초씩 2회는 비주얼 Lambda의 15분 예산을 넘길 수 있어서 config로 고정했다 |
 | 프롬프트 주입 | `digest_language_rules`, `digest_voice_guidance`, `ranking_audience_description`, `digest_audience_description`, `visual_audience_description`, `visual_on_image_language`, `visual_synopsis_style_guidance`, `visual_synopsis_style_aesthetic`, `visual_guardrails`, `visual_moderation_softening_instruction` | 언어 규칙과 대상 독자, 톤, 미감, 가드레일, 모더레이션 완화 문구. 하드코딩 대신 템플릿 변수로 주입한다. `digest_language_rules`는 한국어 규칙과 번역 용어집을 튜닝하는 자리이고 언어 스위치가 아니다. 한국어 전용이 의도한 제품이다. `digest_voice_guidance`는 Gruber 톤이며, 단일 냉소 프레임으로 기본 고정하지 말고 그날 사실이 정당화할 때만 각을 세우도록 쓰여 있다 |
 
@@ -766,9 +766,9 @@ Claude Sonnet 5.5로 `DigestPrompt`를 호출해 구조화 `DigestContent`를 �
 헤드라인은 늘 `items[0]`이다.
 
 **항목 스펙은 메뉴가 아니다.** `implication`의 요구는 하나다. 업계 일반론이 아니라 **이 스토리에** 독자가 반대할 수
-있는 입장을 문장 전체로 단정하는 한국어 한 문장이고, 중요한 단서는 본문에 둔다(32일 160건 중 34건이 "시대·결국·언제나" 류의
+있는 입장을, 친구에게 설명하다 이어 덧붙이는 말처럼 본문과 같은 담백한 목소리로 쓰는 한국어 한 문장이고, 중요한 단서는 본문에 둔다(32일 160건 중 34건이 "시대·결국·언제나" 류의
 업계 경구로 흘렀다). 금지 목록(조건절, `~수 있다`)으로 정의했을 때는 단일 출처 주장 앞에서 모델이 단서 절로 방어해, 이틀치
-10건 중 7건이 "[단서]지만, [양보]" 꼴이었다. 긍정형 지시로 바꾼 뒤 같은 후보 묶음에서 5건 중 1건이었다. 그 뒤로는 단서 자체가 입장이 됐다. 2026-10-12~15의 20건 중 7건이 "자체 보고라 직접 검증해야 안다" 류의 판단 유보였다(이전 265건 중 15건). 그래서 '미검증', '자체 보고' 같은 단서도 본문에 둔다고 명시한다. 형태를 여러 개 제시하면(단정, 질문, 반증 가능한 예측, 결정적 수치 하나,
+10건 중 7건이 "[단서]지만, [양보]" 꼴이었다. 긍정형 지시로 바꾼 뒤 같은 후보 묶음에서 5건 중 1건이었다. 그 뒤로는 단서 자체가 입장이 됐다. 2026-10-12~15의 20건 중 7건이 "자체 보고라 직접 검증해야 안다" 류의 판단 유보였다(이전 265건 중 15건). 그래서 '미검증', '자체 보고' 같은 단서도 본문에 둔다고 명시한다. 2026-11-02에는 "입장을 문장 전체로 단정하라"던 문구가 표어형 마무리("…은 증거가 아니라 심판을 믿으라는 요구가 된다")를 매일 만들어서, 이를 '덧붙이는 말'로 바꾸고 `KOREAN_PROSE_RULES` 첫 줄을 "한국어로 먼저 쓴다: 구체적인 주어와 동사, 추상명사를 주어로 세우지 않는다"로 고쳐 썼다. 저장된 6일을 한국어만 보는 블라인드 판정(교열기자 역할의 Opus)에 부치니 6:0(점수 합 22 대 13), 보류 3일에서 3:0이었고, 전체 기준 판정도 4:2, 2:1로 앞섰다. 리드 마지막 문장에 같은 지시를 더한 변형은 한국어 판정에서 4:2로 근소하게 앞섰지만 전체 기준에서 2:4로 져서 넣지 않았다. 형태를 여러 개 제시하면(단정, 질문, 반증 가능한 예측, 결정적 수치 하나,
 반박 초대 같은 목록) 모델은 그중 가장 안전한 것을 고른다. 그런 목록을 준 상태로 보관된 20건에서 10건이
 '~다면/~라면 ... ~수 있다' 형태의 조건부 헤지였다. `body`도 같은 이유로 '2-3문장' 같은 고정 문장 수가 아니다. 고정 문장 수를 요구하면 20건 중 17건이 정확히 세 문장이 되고 가운데 문장이 매번
 '핵심은...'으로 시작해서, 다섯 항목이 한 템플릿을 다시 채운 것처럼 읽힌다. 2026-10-26부터 `body`는 분야 밖의 똑똑한 친구에게
@@ -785,7 +785,7 @@ Claude Sonnet 5.5로 `DigestPrompt`를 호출해 구조화 `DigestContent`를 �
 **LLM은 산문만 쓴다.** lead와 body, implication만 모델이 작성하고 source tag와 metrics는
 코드(`_fill_source_metadata`)가 URL로 매칭해 채운다. 매칭 키는 집계기의 `normalize_url`이다. 에디터가 URL을
 되쓸 때 생긴 trailing slash나 http에서 https로의 차이, utm 파라미터 때문에 소스 줄이 통째로 사라지면 안 되기
-때문이다. 매칭된 항목의 URL은 에디터가 되쓴 값이 아니라 수집한 URL로 바꿔 싣는다(산문 예산도 그 URL로 계산했다).
+때문이다. 매칭된 항목의 URL은 에디터가 되쓴 값이 아니라 수집한 URL로 바꿔 싣는다(산문 예산도 그 URL로 계산했다). 수집한 URL에서는 집계기가 마케팅 파라미터(`utm_*`, `fbclid`, `gclid`, `mc_*`)만 미리 떼어 낸다(`strip_tracking_params`). 나머지 쿼리는 바이트 그대로 둔다. 디코딩해 다시 인코딩하면 EUC-KR 쿼리가 깨지고, `ref=`가 브랜치를 고르는 링크도 있다.
 
 **매칭되지 않는 항목은 독자에게 가지 않는다.** 어떤 후보와도 매칭되지 않는 항목은 에디터가 만들어낸
 스토리이거나 URL을 정규화로도 복구 못 할 만큼 망친 것이다. 드롭하고 ERROR로 남긴다. 통과시키면 자기 host가
@@ -1119,11 +1119,14 @@ Lambda가 "다시 올리지 말라"는 Threads Delivery 알림을 보낸다. 상
 
 ### 5.7 카운트다운 인트로 (`domain/formatting.py` `countdown_intro`)
 
-"AGI 등장 N일 전이다" 식의 인트로를 LLM이 아니라 코드가 계산한다(`countdown_date` 기본 `2029-01-01`,
+"아모데이 말대로라면 AGI 등장 N일 전이다" 식의 인트로를 LLM이 아니라 코드가 계산한다(`countdown_date` 기본 `2027-12-31`,
 `countdown_template`). D-day 이전에는 카운트다운, D-day 당일과 이후에는 `countdown_after`로
-카운트업한다("AGI 등장 예정일 D+N일째, 아직이다"). `countdown_date`가 비면 비활성이다. 투자판(`config/invest.yaml`)은
-같은 장치로 일론 머스크가 2025-11-19 미·사우디 투자 포럼에서 "10~20년 안에" 온다고 한 "보편적 고소득"까지
-남은 날을 센다. 기준일은 그 범위의 이른 끝인 2035-11-19다. 템플릿은 운영자가
+카운트업한다("…AGI 등장 예정일 D+N일째, 아직이다"). `countdown_date`가 비면 비활성이다. 기준일은 인용한 사람의 말에 맞춘다.
+아모데이는 2025-02 파리 AI 정상회의 성명(anthropic.com)에서 "빠르면 2026년이나 2027년(늦어도 거의 확실히 2030년)"이라고 했고,
+그 앞쪽 범위의 끝인 2027년 말을 쓴다(2026-11-01까지는 젠슨 황과 아모데이를 섞어 반올림한 2029-01-01을 인용 없이 썼다).
+투자판(`config/invest.yaml`)은 같은 틀("머스크 말대로라면 돈이 필요 없어지기 N일 전이다")로, 일론 머스크가 2025-11-19
+미·사우디 투자 포럼에서 "10~20년 안에" 일은 선택이 되고 돈은 의미가 없어진다고 한 날까지 센다. 기준일은 그 범위의 이른 끝인
+2035-11-19다. 두 판의 첫 문장이 대구를 이루게 한 것은 운영자 결정이다. 템플릿은 운영자가
 편집하는 config 문자열이니 `.format()`을 try/except로 감싼다. 잘못된 placeholder나 괄호 같은 오타가 있으면
 인트로를 비우고 생성 도중 크래시하지 않는다. 수집과 랭킹과 LLM 비용을 다 쓴 뒤에 죽는 것이 최악이다.
 
