@@ -47,15 +47,17 @@ async def search_reports(query: str) -> str:
 
 
 @tool
-async def market_quote(symbols: str) -> str:
-    """The latest closes for up to 8 tickers: stocks (005930.KS, 000660.KS, AAPL, NVDA), indices
-    (^KS11, ^GSPC, ^IXIC), FX (KRW=X) and crypto (BTC-USD, ETH-USD). Use it for every price or
-    performance figure the report states, instead of a number from memory or an article.
+async def market_quote(symbols: str, period: Literal["5d", "1mo", "6mo", "1y", "5y"] = "5d") -> str:
+    """Closes over a period, with the period's high and low, for up to 8 tickers: stocks (005930.KS,
+    000660.KS, AAPL, NVDA), indices (^KS11, ^GSPC, ^IXIC), FX (KRW=X) and crypto (BTC-USD, ETH-USD).
+    Use it for every price, return or "from the peak" figure the report states, with the period that
+    figure needs, instead of a number from memory or an article.
 
     Args:
         symbols: Tickers separated by spaces or commas.
+        period: The span the figure is about: 5d, 1mo, 6mo, 1y or 5y.
     """
-    return await research.market_quote(symbols)
+    return await research.market_quote(symbols, period)
 
 
 @tool

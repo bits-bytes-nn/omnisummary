@@ -308,13 +308,13 @@ async def search_reports(query: str) -> str:
     return await web_search(query, include_domains=current_delivery_context().config.agent.report_search_domains)
 
 
-async def market_quote(symbols: str) -> str:
+async def market_quote(symbols: str, period: str = "5d") -> str:
     sources = _sources()
     if sources is None:
         return "Market data is not available in this run."
     blocks = []
     for symbol in list(dict.fromkeys(symbols.replace(",", " ").split()))[:8]:
-        block = await sources.market_quote(symbol)
+        block = await sources.market_quote(symbol, period)
         if block:
             # The quote page is the source of these numbers, for the citation check and the fact check.
             url = next((line.split("URL:", 1)[1].strip() for line in block.splitlines() if "URL:" in line), "")

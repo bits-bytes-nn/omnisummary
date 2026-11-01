@@ -239,8 +239,8 @@ class WebResearchSources:
     async def fetch_image(self, url: str) -> ImageAsset | None:
         return await fetch_og_image(url)
 
-    async def market_quote(self, symbol: str) -> str:
-        return await yahoo_quote(symbol)
+    async def market_quote(self, symbol: str, period: str = "5d") -> str:
+        return await yahoo_quote(symbol, period)
 
 
 _QUOTE_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
@@ -253,18 +253,26 @@ def _price(value: float) -> str:
     return f"{value:,.2f}" if abs(value) >= 1 else f"{value:.4g}"
 
 
-async def yahoo_quote(symbol: str) -> str:
-    """Daily closes for the last five sessions from Yahoo Finance's chart endpoint, which covers
+# Yahoo's chart ranges; the longer ones are sampled weekly so a 1y answer stays one short block.
+QUOTE_PERIODS = {"5d": "1d", "1mo": "1d", "6mo": "1wk", "1y": "1wk", "5y": "1mo"}
+
+
+async def yahoo_quote(symbol: str, period: str = "5d") -> str:
+    """Closes over `period` from Yahoo Finance's chart endpoint, with the period's high and low, for
     Korean (005930.KS), US (AAPL), index (^GSPC, ^KS11), FX (KRW=X) and crypto (BTC-USD) tickers alike."""
     symbol = symbol.strip().upper()
     if not symbol or len(symbol) > 20 or not all(c.isalnum() or c in "^.-=" for c in symbol):
         return ""
+    if period not in QUOTE_PERIODS:
+        period = "5d"
     config = get_config().agent
     try:
         async with httpx.AsyncClient(
             timeout=config.search_request_timeout, headers={"User-Agent": "Mozilla/5.0"}
         ) as client:
-            resp = await client.get(_QUOTE_URL.format(symbol=symbol), params={"range": "5d", "interval": "1d"})
+            resp = await client.get(
+                _QUOTE_URL.format(symbol=symbol), params={"range": period, "interval": QUOTE_PERIODS[period]}
+            )
             resp.raise_for_status()
         result = (resp.json().get("chart", {}).get("result") or [None])[0]
     except (httpx.HTTPError, ValueError) as e:
@@ -285,13 +293,17 @@ async def yahoo_quote(symbol: str) -> str:
     last_day, last = days[-1]
     first_day, first = days[0]
     change = (last / first - 1) * 100 if first else 0.0
+    high_day, high = max(days, key=lambda d: d[1])
+    low_day, low = min(days, key=lambda d: d[1])
+    shown = days if len(days) <= 8 else days[:: max(1, len(days) // 8)] + [days[-1]]
     return _result_block(
         f"{meta.get('longName') or meta.get('shortName') or symbol} ({symbol})",
         f"https://finance.yahoo.com/quote/{symbol}",
         [
             ("Last close", f"{_price(last)} {meta.get('currency', '')} on {last_day}"),
-            ("Closes", ", ".join(f"{d} {_price(c)}" for d, c in days)),
-            ("Change", f"{change:+.2f}% since {first_day}"),
+            ("Closes", ", ".join(f"{d} {_price(c)}" for d, c in dict(shown).items())),
+            ("Change", f"{change:+.2f}% since {first_day} ({period})"),
+            ("Period high / low", f"{_price(high)} on {high_day} / {_price(low)} on {low_day} (closes)"),
             ("Exchange", str(meta.get("exchangeName") or "")),
         ],
     )

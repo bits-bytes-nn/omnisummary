@@ -46,7 +46,9 @@ def test_the_investing_tools_are_bound_only_when_configured(monkeypatch):
     from adapters import research_agent
 
     captured = {}
-    monkeypatch.setattr(research_agent, "Agent", lambda **kw: captured.update(kw) or type("A", (), {"tool_names": []})())
+    monkeypatch.setattr(
+        research_agent, "Agent", lambda **kw: captured.update(kw) or type("A", (), {"tool_names": []})()
+    )
     monkeypatch.setattr(research_agent.BedrockCrossRegionModelHelper, "get_cross_region_model_id", lambda *a: "m")
     monkeypatch.setattr(research_agent, "BedrockModel", lambda **kw: object())
     monkeypatch.setattr(research_agent.boto3, "Session", lambda **kw: MagicMock())
@@ -56,7 +58,14 @@ def test_the_investing_tools_are_bound_only_when_configured(monkeypatch):
     assert not names() & {"market_quote", "search_reports"}
     assert "AI/ML topics" in captured["system_prompt"] and "<domain_rules>" not in captured["system_prompt"]
 
-    config = Config(agent={"market_quotes": True, "report_search_domains": ["x.com"], "domain": "investing", "domain_rules": "No calls."})
+    config = Config(
+        agent={
+            "market_quotes": True,
+            "report_search_domains": ["x.com"],
+            "domain": "investing",
+            "domain_rules": "No calls.",
+        }
+    )
     research_agent.create_research_agent(config)
     assert {"market_quote", "search_reports"} <= names()
     assert "investing topics" in captured["system_prompt"] and "No calls." in captured["system_prompt"]
@@ -96,4 +105,5 @@ async def test_the_quote_parser_reads_the_chart_payload(monkeypatch):
     block = await research_backends.yahoo_quote("005930.ks")
     assert "Samsung Electronics (005930.KS)" in block
     assert "225,000 KRW" in block and "+5.63%" in block
+    assert "Period high / low: 225,000 on" in block
     assert await research_backends.yahoo_quote("bad symbol!") == ""
