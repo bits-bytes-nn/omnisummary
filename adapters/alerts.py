@@ -5,6 +5,7 @@ import os
 import boto3
 
 from domain.formatting import format_alarm
+from shared.config import EDITION_ENV
 from shared.constants import DEFAULT_PROJECT_NAME
 from shared.logger import get_correlation_id, logger
 
@@ -28,7 +29,7 @@ def publish_alert(event: str, status: str, fields: dict[str, str]) -> None:
             status=status,
             fields=fields,
             project=os.environ.get("PROJECT_NAME", DEFAULT_PROJECT_NAME),
-            stage=os.environ.get("STAGE", ""),
+            stage="/".join(filter(None, (os.environ.get("STAGE", ""), os.environ.get(EDITION_ENV, "")))),
             correlation_id=get_correlation_id(),
         )
         boto3.client("sns").publish(TopicArn=topic_arn, Subject=subject, Message=message)

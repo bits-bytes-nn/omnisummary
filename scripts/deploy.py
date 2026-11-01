@@ -21,6 +21,13 @@ def main():
     if not CONFIG_PATH.exists():
         raise SystemExit(f"{CONFIG_PATH} is missing: deploying without it ships the template's placeholders")
     config = Config.from_yaml(str(CONFIG_PATH))
+    # Every other edition with a local config/<edition>.yaml gets its own digest and visual Lambdas.
+    editions = tuple(
+        edition
+        for path in sorted(CONFIG_PATH.parent.glob("*.yaml"))
+        if path != CONFIG_PATH and not path.stem.endswith("-template")
+        if (edition := Config.from_yaml(str(path))).edition
+    )
     load_dotenv(CONFIG_PATH.parent.parent / ".env")
     # The alert email lives only in .env: a deploy without it REMOVES the SNS subscription, and every
     # alert (a failed Threads post included) then reaches nobody, with no error anywhere.
@@ -41,6 +48,7 @@ def main():
         f"{config.aws.project_name}-{config.aws.stage}-foundation",
         config=config,
         alert_email=os.getenv("ALERT_EMAIL", ""),
+        editions=tuple(edition.edition for edition in editions),
         env=env,
     )
 
@@ -68,6 +76,7 @@ def main():
         # stack creates the parameters holding a placeholder; run scripts/put_secrets.py after the
         # deploy to write the real values as SecureStrings.
         digest_image_ref=image_ref,
+        editions=editions,
         env=env,
     )
 

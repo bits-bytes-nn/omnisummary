@@ -19,7 +19,8 @@ collectors:
     # the floor (48 - the run's local hour, i.e. 29h for a 19:00 run); 30 leaves an hour of margin.
     # Widening cannot re-run a story: cross-day repeats are excluded by URL identity
     # (PublishedUrlLedger + recent AgentCore snapshots), not by the window.
-    lookback_hours: &lookback_hours 30
+    # 07:30 KST run: the window must reach back past the previous morning's run (48 - 7 = 41h).
+    lookback_hours: &lookback_hours 42
     # Channels collected at once (each parks worker threads for the scrape/transcript fetches);
     # same bound as rss.max_concurrency.
     max_concurrency: 5
@@ -212,6 +213,9 @@ agent:
   research_max_output_tokens: 100000
 
 aws:
+  # 22:30 UTC = 07:30 KST, after the US close and before Korea opens.
+  digest_cron_hour: "22"
+  digest_cron_minute: "30"
   region: "ap-northeast-2"
   bedrock_region: "us-west-2"
   profile: ""

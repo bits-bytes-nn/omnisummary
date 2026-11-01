@@ -5,6 +5,7 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
+from shared.config import EDITION_ENV
 from shared.constants import DEFAULT_PROJECT_NAME, METRIC_NAMESPACE
 from shared.naming import metric_dimensions
 
@@ -21,6 +22,7 @@ def emit_emf(values: dict[str, int | float], extra: dict[str, Any] | None = None
     dimensions = metric_dimensions(
         os.environ.get("PROJECT_NAME", DEFAULT_PROJECT_NAME),
         os.environ.get("STAGE", ""),
+        os.environ.get(EDITION_ENV, ""),
     )
     record: dict[str, Any] = {
         "_aws": {
