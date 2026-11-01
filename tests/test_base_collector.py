@@ -723,3 +723,24 @@ class TestOffsetlessFeedDates:
             f"<rss><channel><item><title>x</title><pubDate>{stamp}</pubDate></item></channel></rss>"
         ).entries[0]
         assert parse_feed_published_date(entry, ZoneInfo("Asia/Seoul")) == datetime(2026, 11, 1, 10, 55, 54, tzinfo=UTC)
+
+
+def test_an_empty_content_element_does_not_hide_the_summary():
+    import feedparser
+
+    from adapters.collectors.base import parse_feed_entries
+
+    now = datetime.now(UTC)
+    xml = f"""<?xml version="1.0"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+    <channel><item><title>T</title><link>https://e.com/a</link><description>The real summary.</description>
+    <content:encoded><![CDATA[]]></content:encoded><pubDate>{now.strftime('%a, %d %b %Y %H:%M:%S +0000')}</pubDate>
+    </item></channel></rss>"""
+    items = parse_feed_entries(
+        feedparser.parse(xml),
+        source_type=SourceType.RSS,
+        lookback_hours=24,
+        reference_time=now,
+        description="t",
+        metadata={},
+    )
+    assert [it.text for it in items] == ["The real summary."]

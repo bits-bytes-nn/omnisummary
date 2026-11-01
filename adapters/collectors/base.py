@@ -40,6 +40,11 @@ def _stated_offset(published: str) -> bool:
         return True
 
 
+def feed_entry_content(entry) -> str:
+    """The entry's first non-empty full-content value, or ""."""
+    return next((c.get("value") for c in entry.get("content") or [] if (c.get("value") or "").strip()), "")
+
+
 def parse_feed_published_date(entry, local_tz: tzinfo | None = None) -> datetime | None:
     """The entry's publication time in UTC. A date string with no offset is read in `local_tz` (the run's
     own zone): feedparser reads it as UTC, which put a Korean wire's KST stamps nine hours in the future."""
@@ -651,11 +656,8 @@ def parse_feed_entries(
             title = entry.get("title", "")
             link = entry.get("link", "")
 
-            text = ""
-            if hasattr(entry, "content") and entry.content:
-                text = entry.content[0].get("value", "")
-            elif hasattr(entry, "summary"):
-                text = entry.summary or ""
+            # An empty <content> element (CoinDesk, The Block) must not hide the summary.
+            text = feed_entry_content(entry) or entry.get("summary") or ""
             if "<" in text:
                 text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
 

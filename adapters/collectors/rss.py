@@ -9,6 +9,7 @@ from shared.config import RSSCollectorConfig
 
 from .base import (
     BaseCollector,
+    feed_entry_content,
     fetch_feed_with_retry,
     gather_collector_results,
     parse_feed_entries,
@@ -104,7 +105,7 @@ class RSSCollector(BaseCollector):
                 description=f"RSS feed '{feed_url}'",
                 metadata={"feed_url": feed_url, "feed_title": feed.feed.get("title", "")},
             )
-            summary_only = {entry.get("link", "") for entry in feed.entries if not entry.get("content")}
+            summary_only = {entry.get("link", "") for entry in feed.entries if not feed_entry_content(entry)}
             for item in items:
                 if item.url in summary_only:
                     item.metadata = {**item.metadata, "summary_only": True}
