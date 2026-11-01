@@ -327,3 +327,18 @@ def test_encoded_reserved_characters_stay_encoded_and_normalizing_is_idempotent(
         once = normalize_url(url)
         assert normalize_url(once) == once
     assert normalize_url("https://e.com/a%2Fb") != normalize_url("https://e.com/a/b")
+
+
+def test_the_shipped_link_loses_only_its_tracking_params():
+    from domain.aggregator import strip_tracking_params
+
+    url = "https://www.blockmedia.co.kr/archives/1159673?utm_source=general&utm_medium=rss"
+    assert strip_tracking_params(url) == "https://www.blockmedia.co.kr/archives/1159673"
+    assert strip_tracking_params("https://e.com/a?id=3&fbclid=x#top") == "https://e.com/a?id=3#top"
+    assert strip_tracking_params("https://e.com/watch?v=abc") == "https://e.com/watch?v=abc"
+    # Kept values stay byte for byte: an EUC-KR query, a bare flag, a branch ref.
+    assert (
+        strip_tracking_params("http://k.co.kr/view.asp?q=%B0%A1&utm_source=rss") == "http://k.co.kr/view.asp?q=%B0%A1"
+    )
+    assert strip_tracking_params("https://e.com/a?flag&q=a%20b&utm_medium=x") == "https://e.com/a?flag&q=a%20b"
+    assert strip_tracking_params("https://github.com/o/r/x.py?ref=dev") == "https://github.com/o/r/x.py?ref=dev"
