@@ -2,7 +2,6 @@ import argparse
 import asyncio
 import sys
 from datetime import datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from application.digest_pipeline import (
@@ -15,7 +14,7 @@ from application.digest_pipeline import (
     run_pipeline,
 )
 from entrypoints import bootstrap
-from shared import Config, LocalPaths, logger
+from shared import Config, logger
 from shared.constants import COLLECTOR_NAMES
 
 
@@ -103,9 +102,7 @@ async def main() -> int:
     if not args.dry_run:
         # Persisted BEFORE the post: a store that fails after the post went up would leave the day's
         # posted digest stored nowhere, and a re-run would record a different one.
-        persist_digest(
-            ranked_items, digest, digest_date, bootstrap.memory_store(Path(LocalPaths.DIGEST_STATE_DIR.value))
-        )
+        persist_digest(ranked_items, digest, digest_date, bootstrap.memory_store())
         try:
             await publish_inline(
                 bootstrap.daily_visual_maker(config, models),

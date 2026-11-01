@@ -20,7 +20,7 @@ from application.ports import LanguageModels, MemoryStore, ResearchSources, Stat
 from domain.digest_snapshot import DigestSnapshot
 from domain.formatting import citation_key, extract_urls, normalize_citation_url
 from domain.models import ImageAsset
-from domain.renderers import render_threads_research, research_post_budget
+from domain.renderers import footer_overhead, render_threads_research, research_post_budget
 from shared import THREADS_MAX_POST_CHARS, Config, get_config, logger
 
 # The two places a research report can go. MARKDOWN is the report handed back to the caller (the CLI
@@ -323,7 +323,7 @@ async def market_quote(symbols: str, period: str = "5d") -> str:
         block = await sources.market_quote(symbol, period)
         if block:
             # The quote page is the source of these numbers, for the citation check and the fact check.
-            url = next((line.split("URL:", 1)[1].strip() for line in block.splitlines() if "URL:" in line), "")
+            url = (_RESULT_URL.findall(block) or [""])[0]
             record_seen_urls("", url)
             current_delivery_context().source_texts[normalize_citation_url(url)] = block
         blocks.append(block or f"- {symbol}: no quote found (check the ticker: 005930.KS, AAPL, ^GSPC, BTC-USD).")
@@ -537,7 +537,8 @@ async def deliver_thread(report: str, delivery: DeliveryContext) -> str:
         max_posts = delivery.config.agent.research_max_threads_posts
         return (
             f"NOT posted: as written the thread would lose text to the channel's limits ({stats.summary()}). "
-            f"Rewrite it as at most {max_posts} posts of at most {research_post_budget(max_posts)} characters "
+            f"Rewrite it as at most {max_posts} posts of at most "
+            f"{research_post_budget(max_posts) - footer_overhead(delivery.config.pipeline.threads_footer)} characters "
             "each, then call deliver_report again; the new text is checked again before it posts."
         )
     if outcome is DeliveryOutcome.FAILED:

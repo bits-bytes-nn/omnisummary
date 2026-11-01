@@ -262,8 +262,8 @@ def create_research_agent(config: Config | None = None, tools: list[Any] | None 
             tools_block=_render_tools_block(tools),
             domain=config.pipeline.domain,
             domain_rules=(
-                f"\n<domain_rules>\n{config.agent.domain_rules.strip()}\n</domain_rules>\n"
-                if config.agent.domain_rules.strip()
+                f"\n<domain_rules>\n{config.pipeline.domain_rules.strip()}\n</domain_rules>\n"
+                if config.pipeline.domain_rules.strip()
                 else ""
             ),
         ),

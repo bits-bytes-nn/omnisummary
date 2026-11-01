@@ -145,8 +145,12 @@ class WebSearchCollectorConfig(BaseCollectorConfig):
     max_results_per_query: int = Field(default=10, ge=1)
     refine_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
     max_refine_queries: int = Field(default=3, ge=1)
-    # The field the refine step asks for queries about (the edition's pipeline.domain).
+    # The field the refine step asks for queries about (the edition's pipeline.domain), and its rules.
     domain: str = "AI/ML"
+    refine_rules: str = (
+        "- Prefer: technical blog posts, paper analyses, benchmarks, tool releases, practitioner discussions\n"
+        '- No generic terms ("AI news", "machine learning update")'
+    )
     # Hosts never returned by any search, broad or refined (Tavily `exclude_domains`): content farms
     # that rewrite wire stories under SEO titles and kept winning picks over the original report.
     exclude_domains: list[str] = Field(default_factory=list)
@@ -260,6 +264,10 @@ class PipelineConfig(_StrictModel):
     # be reused across domains without forking the prompts.
     # The field this edition covers, as the prompts name it ("AI/ML", "investing (...)").
     domain: str = "AI/ML"
+    # Rules this edition adds to the digest editor's voice and to the research prompt (the investing
+    # edition: no buy/sell calls, no targets of its own). Empty for the AI/ML edition, whose prompts
+    # are then unchanged.
+    domain_rules: str = ""
     # Closes every Threads root and research thread this edition posts (the investing disclaimer).
     # Code-owned, never trimmed: the lead budget and the research post budget make room for it.
     threads_footer: str = ""
@@ -499,8 +507,6 @@ class PipelineConfig(_StrictModel):
 
 class AgentConfig(_StrictModel):
     model_id: LanguageModelId = LanguageModelId.CLAUDE_V5_5_OPUS
-    # Rules this edition adds to the research prompt (the investing edition: no buy/sell calls).
-    domain_rules: str = ""
     # Publishers of analyst and strategy research; non-empty enables the search_reports tool.
     report_search_domains: list[str] = Field(default_factory=list)
     # Enables the market_quote tool (prices for stocks, indices, FX and crypto).
@@ -573,7 +579,7 @@ EDITION_ENV = "OMNISUMMARY_EDITION"
 class Config(_StrictModel):
     # Which edition this config is ("" is the AI/ML digest). One codebase runs several editions, each
     # from its own config/<edition>.yaml with its own state prefix and memory sessions.
-    edition: str = ""
+    edition: str = Field(default="", pattern=r"^([a-z][a-z0-9]*)?$")
     collectors: CollectorsConfig = Field(default_factory=CollectorsConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
@@ -653,7 +659,7 @@ class Config(_StrictModel):
         if not template_path.exists():
             raise FileNotFoundError(
                 f"No config found: neither '{config_path}' nor '{template_path}' exists. "
-                "Copy config/config-template.yaml to config/config.yaml and fill it in."
+                f"Copy config/{stem}-template.yaml to config/{stem}.yaml and fill it in."
             )
         logger.warning(
             "'%s' is missing; falling back to the tracked template '%s'. Its source lists are "

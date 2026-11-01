@@ -142,6 +142,7 @@ class WebSearchCollector(BaseCollector):
                     "titles": titles,
                     "max_queries": self.config.max_refine_queries,
                     "domain": self.config.domain,
+                    "refine_rules": self.config.refine_rules,
                     # reference_time is midnight at the END of the digest date, so step back into that day.
                     "today": ((self.config.reference_time or datetime.now(UTC)) - timedelta(seconds=1))
                     .date()

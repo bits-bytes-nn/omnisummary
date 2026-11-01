@@ -59,8 +59,8 @@ def test_the_investing_tools_are_bound_only_when_configured(monkeypatch):
     assert "AI/ML topics" in captured["system_prompt"] and "<domain_rules>" not in captured["system_prompt"]
 
     config = Config(
-        pipeline={"domain": "investing"},
-        agent={"market_quotes": True, "report_search_domains": ["x.com"], "domain_rules": "No calls."},
+        pipeline={"domain": "investing", "domain_rules": "No calls."},
+        agent={"market_quotes": True, "report_search_domains": ["x.com"]},
     )
     research_agent.create_research_agent(config)
     assert {"market_quote", "search_reports"} <= names()
@@ -118,3 +118,40 @@ def test_the_footer_closes_the_root_and_the_research_thread_within_the_cap():
 
     render = render_threads_research("제목\n\n첫 글.\n---\n결론\n\n마지막 글.", max_posts=10, footer=footer)
     assert render.replies[-1].endswith(footer) and footer not in render.root
+
+
+@pytest.mark.asyncio
+async def test_the_quote_uses_exchange_dates_labels_a_live_session_and_survives_odd_payloads(monkeypatch):
+    from adapters import research_backends
+
+    payloads = []
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=json.dumps(payloads.pop(0))))
+    real = httpx.AsyncClient
+    monkeypatch.setattr(research_backends.httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw))
+    # 2026-10-30 15:00 UTC is 2026-10-31 in Seoul (gmtoffset 9h); the last trade sits inside the session.
+    stamp = 1793372400
+    payloads.append(
+        {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {
+                            "symbol": "X",
+                            "currency": "KRW",
+                            "gmtoffset": 32400,
+                            "regularMarketTime": stamp + 60,
+                            "currentTradingPeriod": {"regular": {"start": stamp, "end": stamp + 3600}},
+                        },
+                        "timestamp": [stamp],
+                        "indicators": {"quote": [{"close": [100.0]}]},
+                    }
+                ]
+            }
+        }
+    )
+    block = await research_backends.yahoo_quote("X.KS")
+    assert "Latest price (session open): 100.00 KRW on 2026-10-31" in block
+    for odd in ([], {"chart": None}, {"chart": {"result": [{"indicators": {"quote": [{"close": "x"}]}}]}}):
+        payloads.append(odd)
+        assert await research_backends.yahoo_quote("AAPL") == ""
+    assert await research_backends.yahoo_quote("삼성") == ""

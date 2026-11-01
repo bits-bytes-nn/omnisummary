@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from datetime import date, datetime
 from typing import Any
@@ -24,7 +25,8 @@ logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
 from domain.models import TrendMemory  # noqa: E402
 from entrypoints import bootstrap  # noqa: E402
-from shared import TRENDS_KEY, Config  # noqa: E402
+from shared import TRENDS_KEY, Config, get_config  # noqa: E402
+from shared.config import EDITION_ENV  # noqa: E402
 
 EXIT_OK, EXIT_FAILED, EXIT_REJECTED = 0, 1, 2
 
@@ -43,6 +45,7 @@ class _Parser(argparse.ArgumentParser):
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     # No -h: argparse prints help to stdout and exits, which is not the one JSON object callers parse.
     parser = _Parser(description="Read back the OmniSummary digest memory (prints one JSON object)", add_help=False)
+    parser.add_argument("--edition", default="", help="Which edition to read (config/<edition>.yaml), e.g. 'invest'")
     sub = parser.add_subparsers(dest="kind", required=True)
     digest = sub.add_parser("digest", add_help=False)
     digest.add_argument("date", nargs="?", default="", help="YYYY-MM-DD (default: today in the digest timezone)")
@@ -87,6 +90,9 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
         return {"status": "rejected", "kind": "", "error": str(e)}, EXIT_REJECTED
     result: dict[str, Any] = {"status": "failed", "kind": args.kind, "error": None}
     try:
+        if args.edition:
+            os.environ[EDITION_ENV] = args.edition
+            get_config.cache_clear()
         config = Config.load()
         today = datetime.now(ZoneInfo(config.aws.timezone)).date()
         if args.kind == "digest":

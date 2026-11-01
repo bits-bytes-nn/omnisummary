@@ -253,15 +253,19 @@ def _price(value: float) -> str:
     return f"{value:,.2f}" if abs(value) >= 1 else f"{value:.4g}"
 
 
-# Yahoo's chart ranges; the longer ones are sampled weekly so a 1y answer stays one short block.
-QUOTE_PERIODS = {"5d": "1d", "1mo": "1d", "6mo": "1wk", "1y": "1wk", "5y": "1mo"}
+# Yahoo's chart ranges. Up to a year the closes are DAILY, so the change and the period's high and low are
+# the real ones (weekly bars were dated by the week's first day and missed a mid-week peak); 5y is monthly.
+QUOTE_PERIODS = {"5d": "1d", "1mo": "1d", "6mo": "1d", "1y": "1d", "5y": "1mo"}
+_SHOWN_CLOSES = 8
 
 
 async def yahoo_quote(symbol: str, period: str = "5d") -> str:
     """Closes over `period` from Yahoo Finance's chart endpoint, with the period's high and low, for
-    Korean (005930.KS), US (AAPL), index (^GSPC, ^KS11), FX (KRW=X) and crypto (BTC-USD) tickers alike."""
+    Korean (005930.KS), US (AAPL), index (^GSPC, ^KS11), FX (KRW=X) and crypto (BTC-USD) tickers alike.
+    Dates are the exchange's local dates. A bar still trading (the Korean session, crypto at any hour) is
+    labelled the latest price, not a close."""
     symbol = symbol.strip().upper()
-    if not symbol or len(symbol) > 20 or not all(c.isalnum() or c in "^.-=" for c in symbol):
+    if not symbol or len(symbol) > 20 or not symbol.isascii() or not all(c.isalnum() or c in "^.-=" for c in symbol):
         return ""
     if period not in QUOTE_PERIODS:
         period = "5d"
@@ -274,19 +278,23 @@ async def yahoo_quote(symbol: str, period: str = "5d") -> str:
                 _QUOTE_URL.format(symbol=symbol), params={"range": period, "interval": QUOTE_PERIODS[period]}
             )
             resp.raise_for_status()
-        result = (resp.json().get("chart", {}).get("result") or [None])[0]
-    except (httpx.HTTPError, ValueError) as e:
+        result = ((resp.json() or {}).get("chart") or {}).get("result") or [None]
+        return _format_quote(symbol, period, result[0]) if isinstance(result[0], dict) else ""
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError, IndexError) as e:
+        # One odd payload must not cost the other tickers of the same call.
         logger.warning("Quote for '%s' failed: %s", symbol, e)
         return ""
-    if not result:
-        return ""
-    meta = result.get("meta", {})
+
+
+def _format_quote(symbol: str, period: str, result: dict) -> str:
+    meta = result.get("meta") or {}
+    offset = int(meta.get("gmtoffset") or 0)
     stamps = result.get("timestamp") or []
-    closes = ((result.get("indicators", {}).get("quote") or [{}])[0].get("close")) or []
+    closes = ((result.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
     days = [
-        (datetime.fromtimestamp(t, UTC).date().isoformat(), c)
+        (datetime.fromtimestamp(int(t) + offset, UTC).date().isoformat(), float(c))
         for t, c in zip(stamps, closes, strict=False)
-        if c is not None
+        if isinstance(c, int | float)
     ]
     if not days:
         return ""
@@ -295,15 +303,26 @@ async def yahoo_quote(symbol: str, period: str = "5d") -> str:
     change = (last / first - 1) * 100 if first else 0.0
     high_day, high = max(days, key=lambda d: d[1])
     low_day, low = min(days, key=lambda d: d[1])
-    shown = days if len(days) <= 8 else days[:: max(1, len(days) // 8)] + [days[-1]]
+    step = -(-len(days) // _SHOWN_CLOSES)
+    shown = dict(days[::step] + [days[-1]])
+    # Still trading when the last trade falls inside the current regular session (crypto: always). On a
+    # weekend the "current" session is the next one, which the last trade precedes.
+    regular = (meta.get("currentTradingPeriod") or {}).get("regular") or {}
+    traded = meta.get("regularMarketTime")
+    live = period != "5y" and all(
+        isinstance(v, int | float) for v in (regular.get("start"), regular.get("end"), traded)
+    )
+    live = live and regular["start"] <= traded < regular["end"]
+    label = "Latest price (session open)" if live else "Last close"
+    unit = "monthly" if QUOTE_PERIODS[period] == "1mo" else "daily"
     return _result_block(
         f"{meta.get('longName') or meta.get('shortName') or symbol} ({symbol})",
         f"https://finance.yahoo.com/quote/{symbol}",
         [
-            ("Last close", f"{_price(last)} {meta.get('currency', '')} on {last_day}"),
-            ("Closes", ", ".join(f"{d} {_price(c)}" for d, c in dict(shown).items())),
+            (label, f"{_price(last)} {meta.get('currency', '')} on {last_day}"),
+            ("Closes", ", ".join(f"{d} {_price(c)}" for d, c in shown.items())),
             ("Change", f"{change:+.2f}% since {first_day} ({period})"),
-            ("Period high / low", f"{_price(high)} on {high_day} / {_price(low)} on {low_day} (closes)"),
+            ("Period high / low", f"{_price(high)} on {high_day} / {_price(low)} on {low_day} ({unit} closes)"),
             ("Exchange", str(meta.get("exchangeName") or "")),
         ],
     )

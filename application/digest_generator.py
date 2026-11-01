@@ -85,7 +85,10 @@ class DigestGenerator:
             "trends_context": trends_context or "(No trend data available yet.)",
             "language_rules": self.config.digest_language_rules,
             "audience": self.config.digest_audience_description,
-            "voice_guidance": self.config.digest_voice_guidance,
+            # The edition's rules ride with the voice: the investing digest must make no buy/sell call.
+            "voice_guidance": "\n".join(
+                filter(None, (self.config.digest_voice_guidance, self.config.domain_rules.strip()))
+            ),
             "target_count": target_count,
             "recent_leads": _format_recent_leads(recent_leads),
             "recent_titles": format_recent_titles(recent_titles),

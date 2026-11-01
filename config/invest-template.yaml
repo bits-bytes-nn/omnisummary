@@ -69,6 +69,9 @@ collectors:
         queries:
           - "bitcoin ethereum crypto market ETF flows regulation"
     domain: "investing (Korean, US and global stocks, macro and markets, and crypto assets)"
+    refine_rules: |-
+      - Prefer: earnings and guidance, filings, central-bank and policy decisions, analyst actions, wire reports
+      - No generic terms ("stock market news", "crypto update")
     max_results_per_query: 10
     lookback_hours: 72
     refine_model: "anthropic.claude-sonnet-5-5"
@@ -97,6 +100,14 @@ collectors:
     # - "web_search"
 
 pipeline:
+  domain_rules: |
+    - This is market commentary, not investment advice. Never tell the reader to buy, sell or hold a
+      specific security or coin, never give a price target of your own, and never promise a return.
+      Report analysts' ratings and targets as theirs, named and dated, with the source.
+    - Every price, index level, return or market-cap figure comes from a cited source or a tool result,
+      with its date; never state one from memory.
+    - Separate what happened (prices, filings, reported numbers) from what analysts or the community
+      expect, and say whose view each forecast is.
   ranking_audience_description: "a daily Korean investing digest for individual investors who follow Korean, US and global markets and crypto"
   digest_audience_description: "Korean individual investors who follow stocks, macro and crypto, from beginners to experienced traders"
   visual_audience_description: "a daily Korean investing digest read by individual investors, beginners and experienced alike"
@@ -170,22 +181,12 @@ pipeline:
 agent:
   model_id: "anthropic.claude-opus-5-5"
   # Investing edition: the same narrator, reading markets in Korea, the US and globally, and crypto.
-  domain_rules: |
-    - This is market commentary, not investment advice. Never tell the reader to buy, sell or hold a
-      specific security or coin, never give a price target of your own, and never promise a return.
-      Report analysts' ratings and targets as theirs, named and dated, with the source.
-    - Every price, index level, return or market-cap figure comes from market_quote or a cited source,
-      with its date; never state one from memory.
-    - Separate what happened (prices, filings, reported numbers) from what analysts or the community
-      expect, and say whose view each forecast is.
-    - Open with why the topic matters to someone who invests, and look at it from the sides it really
-      has: earnings and valuation, macro and rates, flows and positioning, regulation, and sentiment.
   market_quotes: true
   # Only publishers whose robots.txt lets crawlers read their research pages (finance.naver.com,
   # consensus.hankyung.com and nhqv.com disallow everything): Korean broker notes arrive through the
   # news that reports on them.
   report_search_domains:
-    - "hankyung.com"
+    - "www.hankyung.com"
     - "goldmansachs.com"
     - "jpmorgan.com"
     - "morganstanley.com"
@@ -223,7 +224,7 @@ aws:
   profile: ""
   project_name: "omnisummary"
   stage: "dev"
-  state_bucket_name: ""    # Set BEFORE the first deploy if X/YouTube will ever be synced, and never change it after: empty makes the stack create <project>-<stage>-state, which a later value deletes on a non-prod stage
-  s3_prefix: "invest"            # its own state prefix, apart from the AI/ML edition
+  state_bucket_name: ""    # MUST equal config.yaml's: the stack is built from that one (deploy.py refuses a mismatch)
+  s3_prefix: "invest"            # its own prefix UNDER config.yaml's s3_prefix (deploy.py checks)
   # How often the comment-reply Lambda looks for new comments.
   comment_reply_interval_minutes: 60
