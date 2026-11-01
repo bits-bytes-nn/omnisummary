@@ -6,15 +6,11 @@ edition: "invest"
 collectors:
   youtube:
     enabled: true
-    # Measured 2026-11-01. Not here: 슈카월드 (general), Real Vision (median ~1.8k views, off-topic
-    # uploads), Coin Bureau (could not confirm the official channel), impersonators such as
-    # @월가아재의재테크tv and @내일은금투자왕김단테.
+    # Reviewed 2026-11-01. Low-cadence analysts only: max_videos_per_channel 1 takes a high-volume
+    # channel's latest upload at random. Not here: 삼프로TV and Bloomberg TV (~50 uploads a week, some
+    # sponsored), 김단테 (Shorts, runs a robo-adviser), 소수몽키, 슈카월드, Real Vision, Coin Bureau.
     channels:
       - "https://www.youtube.com/@wsaj"
-      - "https://www.youtube.com/@3protv"
-      - "https://www.youtube.com/@김단테"
-      - "https://www.youtube.com/@sosumonkey"
-      - "https://www.youtube.com/@markets"
       - "https://www.youtube.com/@PBoyle"
       # Real estate: 채상욱, ex-하나금융투자 construction/real-estate analyst; analysis, not buy calls.
       - "https://www.youtube.com/@chaeboosim"
@@ -52,34 +48,27 @@ collectors:
       - stocks
       - ValueInvesting
       - economics
-      - CryptoCurrency
     sort: hot
     limit: 20
     lookback_hours: *lookback_hours
   rss:
     enabled: true
-    # Measured 2026-11-01; docs/design.md (판) says what was left out and why. Wires and markets first,
-    # then real estate, then named economists' and analysts' blogs that ship their text in the feed.
+    # Reviewed 2026-11-01 (docs/design.md, 판): Korean wires by section, central banks, crypto, then real
+    # estate and named economists' and analysts' blogs that ship their text in the feed.
     feeds:
-      - "https://www.yna.co.kr/rss/economy.xml"
       - "https://www.yna.co.kr/rss/market.xml"
       - "https://biz.chosun.com/arc/outboundfeeds/rss/category/stock/?outputType=xml"
       - "https://news.einfomax.co.kr/rss/S1N2.xml"
+      - "https://news.einfomax.co.kr/rss/S1N15.xml"
+      - "https://news.einfomax.co.kr/rss/S1N16.xml"
       - "https://www.mk.co.kr/rss/50200011/"
-      - "https://news.einfomax.co.kr/rss/S1N17.xml"
-      - "https://biz.chosun.com/arc/outboundfeeds/rss/category/real_estate/?outputType=xml"
-      - "https://feeds.bloomberg.com/markets/news.rss"
-      - "https://www.ft.com/markets?format=rss"
-      - "https://feeds.content.dowjones.io/public/rss/mw_topstories"
-      - "https://www.investing.com/rss/news_25.rss"
-      - "https://seekingalpha.com/market_currents.xml"
+      - "https://www.bok.or.kr/portal/bbs/B0000552/news.rss?menuNo=200690"
       - "https://www.federalreserve.gov/feeds/press_all.xml"
       - "https://www.ecb.europa.eu/rss/press.html"
-      - "https://www.coindesk.com/arc/outboundfeeds/rss/"
-      - "https://www.theblock.co/rss.xml"
       - "https://decrypt.co/feed"
-      - "https://cointelegraph.com/rss"
       - "https://www.blockmedia.co.kr/feed"
+      - "https://news.einfomax.co.kr/rss/S1N17.xml"
+      - "https://biz.chosun.com/arc/outboundfeeds/rss/category/real_estate/?outputType=xml"
       - "https://libertystreeteconomics.newyorkfed.org/feed/"
       - "https://robinjbrooks.substack.com/feed"
       - "https://klementoninvesting.substack.com/feed"
@@ -87,18 +76,15 @@ collectors:
       - "https://calculatedrisk.substack.com/feed"
       - "https://stayathomemacro.substack.com/feed"
       - "https://aswathdamodaran.blogspot.com/feeds/posts/default"
-      - "https://raydalio.substack.com/feed"
       - "https://research.glassnode.com/rss/"
       - "https://coinmetrics.substack.com/feed"
-      - "https://reports.tiger-research.com/feed?section=korean"
-      - "https://uppity.co.kr/category/news/feed/"
     lookback_hours: *lookback_hours
     # Feeds fetched at once (each fetch carries its own httpx timeout).
     max_concurrency: 5
   web_search:
     enabled: true
     # Hosts never returned by any search, broad or refined (Tavily exclude_domains), e.g. content farms:
-    # exclude_domains: ["example-content-farm.com"]
+    exclude_domains: ["finance.biggo.com", "t.me", "telegram.me", "instagram.com", "facebook.com", "moomoo.com"]
     trend_searches:
       - name: korea_markets
         queries:
@@ -158,11 +144,9 @@ collectors:
       - "charliebilello"
       - "Schuldensuehner"
       - "elerianm"
-      - "jasonfurman"
       - "WuBlockchain"
       - "ReutersBiz"
       - "WSJmarkets"
-      - "federalreserve"
       - "glassnode"
     lookback_hours: 72
     max_concurrency: 5
