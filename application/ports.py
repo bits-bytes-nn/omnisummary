@@ -246,3 +246,8 @@ class ResearchSources(Protocol):
     async def fetch_image(self, url: str) -> ImageAsset | None:
         """The page's representative image (og:image), or None."""
         ...
+
+    async def market_quote(self, symbol: str, period: str = "5d") -> str:
+        """Closes over `period` (5d, 1mo, 6mo, 1y, 5y) with its high and low for one ticker, as one result
+        block, or "" if unknown."""
+        ...

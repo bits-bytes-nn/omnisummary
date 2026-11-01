@@ -16,6 +16,7 @@ _INPUTS = {
     RankingPrompt: {
         "items_text": "x",
         "scoring_rubric": "s",
+        "criteria": "c",
         "audience": "a",
         "recent_titles": "r",
     },
@@ -31,8 +32,8 @@ _INPUTS = {
         "prose_budget_rule": " title, body and implication together must stay under 380 characters.",
         "lead_budget": 470,
     },
-    TrendClassifyPrompt: {"existing_trends": "e", "todays_digest": "d"},
-    GroundingCheckPrompt: {"digest_text": "d", "sources": "s"},
+    TrendClassifyPrompt: {"existing_trends": "e", "todays_digest": "d", "domain": "AI/ML"},
+    GroundingCheckPrompt: {"digest_text": "d", "sources": "s", "domain": "AI/ML"},
     VisualEditorPrompt: {
         "audience": "a",
         "headline": "h",

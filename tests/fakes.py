@@ -62,8 +62,9 @@ def fake_models() -> MagicMock:
 class FakeSources:
     """ResearchSources answering canned text; each method is an AsyncMock to assert on."""
 
-    def __init__(self, *, search: str = "", papers: str = "", page: str = "", image=None) -> None:
+    def __init__(self, *, search: str = "", papers: str = "", page: str = "", image=None, quote: str = "") -> None:
         self.web_search = AsyncMock(return_value=search)
+        self.market_quote = AsyncMock(return_value=quote)
         self.paper_search = AsyncMock(return_value=papers)
         self.read_page = AsyncMock(return_value=page)
         self.fetch_image = AsyncMock(return_value=image)

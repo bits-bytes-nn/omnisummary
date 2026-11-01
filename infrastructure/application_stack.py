@@ -13,6 +13,7 @@ from aws_cdk import aws_ssm as ssm
 from constructs import Construct
 
 from shared import Config
+from shared.config import EDITION_ENV
 from shared.constants import DIGEST_ITEMS_METRIC, METRIC_NAMESPACE, SSM_PLACEHOLDER, SSM_SECRET_ENV_VARS
 from shared.naming import metric_dimensions
 
@@ -28,6 +29,7 @@ class OmniSummaryApplicationStack(Stack):
         config: Config,
         foundation: OmniSummaryFoundationStack,
         digest_image_ref: str = "",
+        editions: tuple[Config, ...] = (),
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -78,88 +80,11 @@ class OmniSummaryApplicationStack(Stack):
         # POST-publish timeout won't double-post; retry_attempts=0 keeps that belt-and-suspenders.
         async_dlq = foundation.async_dlq
 
-        # Daily-visual Lambda: invoked asynchronously by the digest Lambda so its
-        # LLM-editor + Tavily + gpt-image work (~1-2 min) stays off the digest's
-        # critical path. Same image, loads ranked items from AgentCore Memory.
-        visual_lambda = lambda_.DockerImageFunction(
-            self,
-            "DailyVisualLambda",
-            function_name=f"{project_name}-{stage}-visual",
-            code=lambda_.DockerImageCode.from_ecr(
-                foundation.ecr_repo,
-                tag_or_digest=digest_tag_or_digest,
-                cmd=["entrypoints.visual_handler.handler"],
-            ),
-            # gpt-image render + Threads root post + reply-indexing retries (an IMAGE
-            # root isn't addressable as a reply target for several MINUTES) can exceed 10 min; 15
-            # (the Lambda max) gives the flat reply chain room to finish so comments aren't cut off.
-            timeout=Duration.minutes(15),
-            memory_size=512,
-            role=foundation.lambda_role,
-            # No auto-retry: the ThreadsPostLedger idempotency marker already blocks a re-post,
-            # and retry_attempts=0 avoids re-running the costly gpt-image render on failure.
-            # Failures go to the DLQ for manual replay instead.
-            retry_attempts=0,
-            # One run at a time: the post ledger is a read-modify-write, so a duplicate async delivery
-            # of the same event running alongside could pass its check and post the day twice. A
-            # throttled async event waits in Lambda's queue and then finds the date marked.
-            reserved_concurrent_executions=1,
-            on_failure=destinations.SqsDestination(async_dlq),
-            log_group=self._log_group("DailyVisualLambdaLogGroup", f"{project_name}-{stage}-visual"),
-            environment={
-                "PROJECT_NAME": project_name,
-                "STAGE": stage,
-                "MEMORY_ID": foundation.memory_id,
-                # The visual Lambda is the Threads publish path, so it — not the digest Lambda —
-                # is what knows whether the post actually landed. It notifies on a partial reply
-                # chain / failed delivery; without this the notice is a silent no-op.
-                "ALERT_SNS_TOPIC_ARN": foundation.alerts_topic.topic_arn,
-                # The visual maker keeps the Threads post ledger and hosts the image in the state
-                # bucket; without these it falls through to the config-profile branch and crashes on
-                # the 'research' profile, which doesn't exist in Lambda.
-                "STATE_BUCKET": foundation.state_bucket.bucket_name,
-                "S3_PREFIX": state_prefix,
-            },
-        )
-
-        digest_lambda = lambda_.DockerImageFunction(
-            self,
-            "DigestPipelineLambda",
-            function_name=f"{project_name}-{stage}-digest",
-            code=lambda_.DockerImageCode.from_ecr(
-                foundation.ecr_repo,
-                tag_or_digest=digest_tag_or_digest,
-                cmd=["entrypoints.digest_handler.handler"],
-            ),
-            timeout=Duration.minutes(15),
-            memory_size=1024,
-            role=foundation.lambda_role,
-            # No auto-retry on the daily cron invoke: the pipeline is not idempotent (a retry
-            # re-posts the digest). A failure goes to the DLQ for inspection/manual replay.
-            retry_attempts=0,
-            on_failure=destinations.SqsDestination(async_dlq),
-            log_group=self._log_group("DigestPipelineLambdaLogGroup", f"{project_name}-{stage}-digest"),
-            environment={
-                "STATE_BUCKET": foundation.state_bucket.bucket_name,
-                "S3_PREFIX": state_prefix,
-                "PROJECT_NAME": project_name,
-                "STAGE": stage,
-                "ALERT_SNS_TOPIC_ARN": foundation.alerts_topic.topic_arn,
-                "MEMORY_ID": foundation.memory_id,
-                "VISUAL_FUNCTION_NAME": visual_lambda.function_name,
-            },
-        )
-
-        events.Rule(
-            self,
-            "DailyDigestRule",
-            rule_name=f"{project_name}-{stage}-daily-digest",
-            schedule=events.Schedule.cron(
-                hour=config.aws.digest_cron_hour,
-                minute=config.aws.digest_cron_minute,
-            ),
-            targets=[targets.LambdaFunction(digest_lambda)],
-        )
+        digest_lambda, visual_lambda = self._digest_edition(config, foundation, async_dlq, digest_tag_or_digest)
+        edition_lambdas = [
+            self._digest_edition(edition_config, foundation, async_dlq, digest_tag_or_digest)
+            for edition_config in editions
+        ]
 
         # Threads long-lived tokens expire after 60 days; refresh on a schedule well
         # inside that window so the self-posting token never lapses. Same image (carries
@@ -234,14 +159,123 @@ class OmniSummaryApplicationStack(Stack):
                 "Visual": visual_lambda,
                 "ThreadsRefresh": threads_refresh_lambda,
                 "CommentReply": comment_reply_lambda,
+                **{
+                    f"{edition_config.edition.capitalize()}{kind}": fn
+                    for edition_config, pair in zip(editions, edition_lambdas, strict=True)
+                    for kind, fn in zip(("Digest", "Visual"), pair, strict=True)
+                },
             },
             foundation,
             async_dlq,
             project_name=project_name,
             stage=stage,
+            editions=("", *(edition_config.edition for edition_config in editions)),
         )
 
         CfnOutput(self, "StateBucket", value=foundation.state_bucket.bucket_name)
+
+    def _digest_edition(
+        self,
+        config: Config,
+        foundation: OmniSummaryFoundationStack,
+        async_dlq: sqs.Queue,
+        digest_tag_or_digest: str,
+    ) -> tuple[lambda_.Function, lambda_.Function]:
+        """One edition's digest and visual Lambdas and its daily rule. The AI/ML edition (edition "")
+        keeps the construct ids and function names it was first deployed with; another edition prefixes
+        both (InvestDigestPipelineLambda, omnisummary-dev-invest-digest) and tells its functions which
+        config to load (OMNISUMMARY_EDITION), with its own state prefix."""
+        project_name, stage, edition = config.aws.project_name, config.aws.stage, config.edition
+        ids = edition.capitalize()
+        names = f"{project_name}-{stage}-{edition}" if edition else f"{project_name}-{stage}"
+        edition_env = {EDITION_ENV: edition} if edition else {}
+        state_prefix = f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state"
+
+        # Daily-visual Lambda: invoked asynchronously by the digest Lambda so its
+        # LLM-editor + Tavily + gpt-image work (~1-2 min) stays off the digest's
+        # critical path. Same image, loads ranked items from AgentCore Memory.
+        visual_lambda = lambda_.DockerImageFunction(
+            self,
+            f"{ids}DailyVisualLambda",
+            function_name=f"{names}-visual",
+            code=lambda_.DockerImageCode.from_ecr(
+                foundation.ecr_repo,
+                tag_or_digest=digest_tag_or_digest,
+                cmd=["entrypoints.visual_handler.handler"],
+            ),
+            # gpt-image render + Threads root post + reply-indexing retries (an IMAGE
+            # root isn't addressable as a reply target for several MINUTES) can exceed 10 min; 15
+            # (the Lambda max) gives the flat reply chain room to finish so comments aren't cut off.
+            timeout=Duration.minutes(15),
+            memory_size=512,
+            role=foundation.lambda_role,
+            # No auto-retry: the ThreadsPostLedger idempotency marker already blocks a re-post,
+            # and retry_attempts=0 avoids re-running the costly gpt-image render on failure.
+            # Failures go to the DLQ for manual replay instead.
+            retry_attempts=0,
+            # One run at a time: the post ledger is a read-modify-write, so a duplicate async delivery
+            # of the same event running alongside could pass its check and post the day twice. A
+            # throttled async event waits in Lambda's queue and then finds the date marked.
+            reserved_concurrent_executions=1,
+            on_failure=destinations.SqsDestination(async_dlq),
+            log_group=self._log_group(f"{ids}DailyVisualLambdaLogGroup", f"{names}-visual"),
+            environment={
+                "PROJECT_NAME": project_name,
+                "STAGE": stage,
+                **edition_env,
+                "MEMORY_ID": foundation.memory_id,
+                # The visual Lambda is the Threads publish path, so it — not the digest Lambda —
+                # is what knows whether the post actually landed. It notifies on a partial reply
+                # chain / failed delivery; without this the notice is a silent no-op.
+                "ALERT_SNS_TOPIC_ARN": foundation.alerts_topic.topic_arn,
+                # The visual maker keeps the Threads post ledger and hosts the image in the state
+                # bucket; without these it falls through to the config-profile branch and crashes on
+                # the 'research' profile, which doesn't exist in Lambda.
+                "STATE_BUCKET": foundation.state_bucket.bucket_name,
+                "S3_PREFIX": state_prefix,
+            },
+        )
+
+        digest_lambda = lambda_.DockerImageFunction(
+            self,
+            f"{ids}DigestPipelineLambda",
+            function_name=f"{names}-digest",
+            code=lambda_.DockerImageCode.from_ecr(
+                foundation.ecr_repo,
+                tag_or_digest=digest_tag_or_digest,
+                cmd=["entrypoints.digest_handler.handler"],
+            ),
+            timeout=Duration.minutes(15),
+            memory_size=1024,
+            role=foundation.lambda_role,
+            # No auto-retry on the daily cron invoke: the pipeline is not idempotent (a retry
+            # re-posts the digest). A failure goes to the DLQ for inspection/manual replay.
+            retry_attempts=0,
+            on_failure=destinations.SqsDestination(async_dlq),
+            log_group=self._log_group(f"{ids}DigestPipelineLambdaLogGroup", f"{names}-digest"),
+            environment={
+                "STATE_BUCKET": foundation.state_bucket.bucket_name,
+                "S3_PREFIX": state_prefix,
+                "PROJECT_NAME": project_name,
+                "STAGE": stage,
+                **edition_env,
+                "ALERT_SNS_TOPIC_ARN": foundation.alerts_topic.topic_arn,
+                "MEMORY_ID": foundation.memory_id,
+                "VISUAL_FUNCTION_NAME": visual_lambda.function_name,
+            },
+        )
+
+        events.Rule(
+            self,
+            f"{ids}DailyDigestRule",
+            rule_name=f"{names}-daily-digest",
+            schedule=events.Schedule.cron(
+                hour=config.aws.digest_cron_hour,
+                minute=config.aws.digest_cron_minute,
+            ),
+            targets=[targets.LambdaFunction(digest_lambda)],
+        )
+        return digest_lambda, visual_lambda
 
     def _add_alarms(
         self,
@@ -251,12 +285,12 @@ class OmniSummaryApplicationStack(Stack):
         *,
         project_name: str,
         stage: str,
+        editions: tuple[str, ...] = ("",),
     ) -> None:
         # The EMF-backed metrics below are published with these dimensions (adapters/metrics.py), so
         # the alarm MUST carry the same map: an undimensioned alarm reads every deployment's
         # datapoints as one series, which made a dev run of 5 items keep prod's empty-digest alarm
         # green on a day prod shipped nothing.
-        emf_dimensions = metric_dimensions(project_name, stage)
         alarm_action = cw_actions.SnsAction(foundation.alerts_topic)
         for name, fn in lambdas.items():
             # Crashes (raised exceptions) — Errors metric.
@@ -287,21 +321,23 @@ class OmniSummaryApplicationStack(Stack):
         # alarm at evaluation_periods * period <= 86400s (1 day), so this MUST stay <= 24h — 25h is
         # rejected by PutMetricAlarm at deploy. Missing-data=BREACHING already covers the skipped-run
         # case without needing extra slack.
-        empty_digest = cloudwatch.Metric(
-            namespace=METRIC_NAMESPACE,
-            metric_name=DIGEST_ITEMS_METRIC,
-            dimensions_map=emf_dimensions,
-            period=Duration.hours(24),
-            statistic="Maximum",
-        ).create_alarm(
-            self,
-            "EmptyDigestAlarm",
-            threshold=1,
-            comparison_operator=cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
-            evaluation_periods=1,
-            treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
-        )
-        empty_digest.add_alarm_action(alarm_action)
+        # One per edition, each on its own dimension map, so one edition's run cannot keep another's green.
+        for edition in editions:
+            empty_digest = cloudwatch.Metric(
+                namespace=METRIC_NAMESPACE,
+                metric_name=DIGEST_ITEMS_METRIC,
+                dimensions_map=metric_dimensions(project_name, stage, edition),
+                period=Duration.hours(24),
+                statistic="Maximum",
+            ).create_alarm(
+                self,
+                f"{edition.capitalize()}EmptyDigestAlarm",
+                threshold=1,
+                comparison_operator=cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+                evaluation_periods=1,
+                treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
+            )
+            empty_digest.add_alarm_action(alarm_action)
 
         # Any message in the async DLQ means a digest/visual run failed (retries are off) and is
         # waiting for inspection/replay — alarm so it doesn't sit unnoticed.

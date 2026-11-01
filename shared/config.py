@@ -1,3 +1,4 @@
+import os
 import re
 from datetime import datetime
 from functools import lru_cache
@@ -144,6 +145,12 @@ class WebSearchCollectorConfig(BaseCollectorConfig):
     max_results_per_query: int = Field(default=10, ge=1)
     refine_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
     max_refine_queries: int = Field(default=3, ge=1)
+    # The field the refine step asks for queries about (the edition's pipeline.domain), and its rules.
+    domain: str = "AI/ML"
+    refine_rules: str = (
+        "- Prefer: technical blog posts, paper analyses, benchmarks, tool releases, practitioner discussions\n"
+        '- No generic terms ("AI news", "machine learning update")'
+    )
     # Hosts never returned by any search, broad or refined (Tavily `exclude_domains`): content farms
     # that rewrite wire stories under SEO titles and kept winning picks over the original report.
     exclude_domains: list[str] = Field(default_factory=list)
@@ -255,6 +262,15 @@ class PipelineConfig(_StrictModel):
     )
     # Audience/domain the ranking and digest prompts target. Configurable so the pipeline can
     # be reused across domains without forking the prompts.
+    # The field this edition covers, as the prompts name it ("AI/ML", "investing (...)").
+    domain: str = "AI/ML"
+    # Rules this edition adds to the digest editor's voice and to the research prompt (the investing
+    # edition: no buy/sell calls, no targets of its own). Empty for the AI/ML edition, whose prompts
+    # are then unchanged.
+    domain_rules: str = ""
+    # Closes every Threads root and research thread this edition posts (the investing disclaimer).
+    # Code-owned, never trimmed: the lead budget and the research post budget make room for it.
+    threads_footer: str = ""
     ranking_audience_description: str = "a daily digest aimed at practicing ML engineers"
     digest_audience_description: str = "Korean readers who follow AI news, engineers and curious non-specialists alike"
     # Editorial voice for the digest lead/implications: a recurring narrator persona (a singularity-
@@ -326,6 +342,16 @@ class PipelineConfig(_StrictModel):
     max_per_origin: int = Field(default=1, ge=1)
     # Score-calibration buckets the ranking prompt applies, injected as template text so
     # ops can retune the distribution without editing the prompt.
+    # The ranker's lenses, one per line; the investing edition swaps in its own.
+    ranking_criteria: str = (
+        "1. Technical Substance — real depth in content body, not headline. Thin content scores low.\n"
+        "2. Practitioner Value — would this change how an engineer works?\n"
+        "3. Novelty — first reports, original analysis, new releases over rehashes. A story already in a recent "
+        "digest (listed below) is a rehash unless the item reports a real new development on it.\n"
+        "4. Industry Impact — competitive landscape shifts, funding, policy.\n"
+        "5. Research Significance — notable papers with novel contributions.\n"
+        "6. Source Authority — recognized researchers/institutions get a small bonus."
+    )
     ranking_scoring_rubric: str = (
         "0.9+: field-defining. 0.8-0.89: very important. 0.7-0.79: notable. "
         "0.6-0.69: worth noting (digest bar). <0.6: low value."
@@ -481,6 +507,10 @@ class PipelineConfig(_StrictModel):
 
 class AgentConfig(_StrictModel):
     model_id: LanguageModelId = LanguageModelId.CLAUDE_V5_5_OPUS
+    # Publishers of analyst and strategy research; non-empty enables the search_reports tool.
+    report_search_domains: list[str] = Field(default_factory=list)
+    # Enables the market_quote tool (prices for stocks, indices, FX and crypto).
+    market_quotes: bool = False
     community_search_domains: list[str] = Field(
         default_factory=lambda: ["twitter.com", "x.com", "reddit.com", "news.ycombinator.com", "substack.com"]
     )
@@ -543,7 +573,13 @@ class AWSConfig(_StrictModel):
     comment_reply_interval_minutes: int = Field(default=60, ge=10)
 
 
+EDITION_ENV = "OMNISUMMARY_EDITION"
+
+
 class Config(_StrictModel):
+    # Which edition this config is ("" is the AI/ML digest). One codebase runs several editions, each
+    # from its own config/<edition>.yaml with its own state prefix and memory sessions.
+    edition: str = Field(default="", pattern=r"^([a-z][a-z0-9]*)?$")
     collectors: CollectorsConfig = Field(default_factory=CollectorsConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
@@ -607,18 +643,23 @@ class Config(_StrictModel):
         placeholders, rank and publish a thin digest with only a log line to show for it."""
         load_dotenv()
         config_dir = Path(__file__).parent.parent / "config"
-        config_path = config_dir / "config.yaml"
+        edition = os.environ.get(EDITION_ENV, "").strip()
+        stem = edition or "config"
+        config_path = config_dir / f"{stem}.yaml"
         if config_path.exists():
-            return cls.from_yaml(str(config_path))
+            config = cls.from_yaml(str(config_path))
+            if config.edition != edition:
+                raise ValueError(f"'{config_path}' declares edition '{config.edition}', but {EDITION_ENV}='{edition}'")
+            return config
         if is_running_in_aws():
             raise FileNotFoundError(
                 f"'{config_path}' is missing from the deployed image; rebuild it from a checkout that has it."
             )
-        template_path = config_dir / "config-template.yaml"
+        template_path = config_dir / f"{stem}-template.yaml"
         if not template_path.exists():
             raise FileNotFoundError(
                 f"No config found: neither '{config_path}' nor '{template_path}' exists. "
-                "Copy config/config-template.yaml to config/config.yaml and fill it in."
+                f"Copy config/{stem}-template.yaml to config/{stem}.yaml and fill it in."
             )
         logger.warning(
             "'%s' is missing; falling back to the tracked template '%s'. Its source lists are "

@@ -55,15 +55,18 @@ class AgentCoreMemoryStore(MemoryStore):
         actor_id: str = DEFAULT_ACTOR_ID,
         region_name: str | None = None,
         session: boto3.Session | None = None,
+        edition: str = "",
     ) -> None:
         self.memory_id = memory_id
         self.actor_id = actor_id
+        # One memory, one session per digest date AND edition; the AI/ML edition keeps the original ids.
+        self.session_prefix = f"{self.DIGEST_SESSION_PREFIX}-{edition}" if edition else self.DIGEST_SESSION_PREFIX
         self._client = (session or boto3).client("bedrock-agentcore", region_name=region_name or aws_region())
 
     MAX_EVENT_TEXT = 100_000
 
     def put_raw(self, digest_date: str, state: dict[str, Any]) -> None:
-        session_id = f"{self.DIGEST_SESSION_PREFIX}-{digest_date}"
+        session_id = f"{self.session_prefix}-{digest_date}"
         payload_text = self._fit_to_limit(state)
         self._client.create_event(
             memoryId=self.memory_id,
@@ -199,7 +202,7 @@ class AgentCoreMemoryStore(MemoryStore):
         return stamp if isinstance(stamp, str) else ""
 
     def get_raw(self, digest_date: str) -> dict[str, Any] | None:
-        session_id = f"{self.DIGEST_SESSION_PREFIX}-{digest_date}"
+        session_id = f"{self.session_prefix}-{digest_date}"
         try:
             data = self._load_session(session_id)
         except Exception as e:
@@ -247,7 +250,7 @@ def create_memory_store(base_dir: Path | None = None) -> MemoryStore:
     session = boto3.Session(profile_name=available_boto_profile(config.aws.profile), region_name=config.aws.region)
     memory_id = os.environ.get("MEMORY_ID", "") or _deployed_memory_id(config, session)
     if memory_id:
-        return AgentCoreMemoryStore(memory_id, region_name=config.aws.region, session=session)
-    fallback = base_dir or Path("digest_state")
+        return AgentCoreMemoryStore(memory_id, region_name=config.aws.region, session=session, edition=config.edition)
+    fallback = base_dir or (Path("digest_state") / config.edition if config.edition else Path("digest_state"))
     logger.info("No AgentCore memory found — using LocalMemoryStore at '%s'", fallback)
     return LocalMemoryStore(fallback)

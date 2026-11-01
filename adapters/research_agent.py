@@ -11,10 +11,11 @@ from strands.models import BedrockModel
 from strands.models.bedrock import CacheConfig
 from strands.types.agent import Limits
 
+from adapters import research_tools
 from adapters.aws import available_boto_profile
 from adapters.bedrock import LANGUAGE_MODEL_INFO, BedrockCrossRegionModelHelper
 from adapters.research_tools import RESEARCH_TOOLS
-from domain.renderers import research_post_budget
+from domain.renderers import footer_overhead, research_post_budget
 from shared import KOREAN_STYLE_RULES, Config, logger
 
 
@@ -33,7 +34,7 @@ def research_run_limits(config: Config | None = None) -> Limits:
 
 SYSTEM_PROMPT_TEMPLATE: str = """\
 <role>
-You are a DEEP RESEARCH agent for AI/ML topics, invoked on demand. Given a free-form topic, \
+You are a DEEP RESEARCH agent for {domain} topics, invoked on demand. Given a free-form topic, \
 you independently research the open web, academic literature, and community discussion, then \
 deliver a synthesized, well-sourced report in Korean. Never ask the user to restate; infer the topic and angle from \
 their message and get to work.
@@ -165,7 +166,7 @@ bullet lists; no emoji.
 - If a search tool fails or returns nothing, \
 say so explicitly and fall back to your background knowledge, clearly labeled as such.
 </citations>
-"""
+{domain_rules}"""
 
 
 def _render_tools_block(tools: list[Any]) -> str:
@@ -234,6 +235,10 @@ def create_research_agent(config: Config | None = None, tools: list[Any] | None 
 
     if tools is None:
         tools = list(RESEARCH_TOOLS)
+        if config.agent.report_search_domains:
+            tools.insert(2, research_tools.search_reports)
+        if config.agent.market_quotes:
+            tools.insert(2, research_tools.market_quote)
 
     agent = Agent(
         model=bedrock_model,
@@ -251,9 +256,16 @@ def create_research_agent(config: Config | None = None, tools: list[Any] | None 
             research_max_threads_posts=config.agent.research_max_threads_posts,
             # The renderer's own per-post budget (the channel cap minus the "N/M" index it prepends);
             # interpolating it keeps the prompt from carrying a second, drifting copy of the limit.
-            threads_max_post_chars=research_post_budget(config.agent.research_max_threads_posts),
+            threads_max_post_chars=research_post_budget(config.agent.research_max_threads_posts)
+            - footer_overhead(config.pipeline.threads_footer),
             korean_style_rules=KOREAN_STYLE_RULES,
             tools_block=_render_tools_block(tools),
+            domain=config.pipeline.domain,
+            domain_rules=(
+                f"\n<domain_rules>\n{config.pipeline.domain_rules.strip()}\n</domain_rules>\n"
+                if config.pipeline.domain_rules.strip()
+                else ""
+            ),
         ),
     )
 

@@ -22,6 +22,7 @@ class OmniSummaryFoundationStack(Stack):
         *,
         config: Config,
         alert_email: str = "",
+        editions: tuple[str, ...] = (),
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -167,7 +168,10 @@ class OmniSummaryFoundationStack(Stack):
         self.lambda_role.add_to_policy(
             iam.PolicyStatement(
                 actions=["lambda:InvokeFunction"],
-                resources=[f"arn:aws:lambda:{self.region}:{self.account}:function:{project_name}-{stage}-visual"],
+                resources=[
+                    f"arn:aws:lambda:{self.region}:{self.account}:function:{project_name}-{stage}-{name}visual"
+                    for name in ("", *(f"{edition}-" for edition in editions))
+                ],
             )
         )
         # The Threads token-refresh Lambda writes the renewed token back to its own SSM param.

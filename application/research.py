@@ -20,7 +20,7 @@ from application.ports import LanguageModels, MemoryStore, ResearchSources, Stat
 from domain.digest_snapshot import DigestSnapshot
 from domain.formatting import citation_key, extract_urls, normalize_citation_url
 from domain.models import ImageAsset
-from domain.renderers import render_threads_research, research_post_budget
+from domain.renderers import footer_overhead, render_threads_research, research_post_budget
 from shared import THREADS_MAX_POST_CHARS, Config, get_config, logger
 
 # The two places a research report can go. MARKDOWN is the report handed back to the caller (the CLI
@@ -188,7 +188,11 @@ def sends_back_as_too_long(report: str, delivery: DeliveryContext) -> bool:
     """Whether this thread will be refused for losing text to the channel's limits. Every such text is,
     rewrites included: a rewrite that still overflowed went out cut, numbered "1/10 … 10/10" without the
     conclusion that was dropped, and read as complete. Not posting is the worst case now."""
-    _, _, dropped, trimmed = render_threads_research(report, max_posts=delivery.config.agent.research_max_threads_posts)
+    _, _, dropped, trimmed = render_threads_research(
+        report,
+        max_posts=delivery.config.agent.research_max_threads_posts,
+        footer=delivery.config.pipeline.threads_footer,
+    )
     return bool(dropped or trimmed)
 
 
@@ -210,7 +214,9 @@ async def deliver_research_report(report: str, *, channel: str, delivery: Delive
         logger.warning("Report already posted to '%s'; the text of this call was NOT published", channel)
         return DeliveryOutcome.NOT_POSTED
     root_text, replies, dropped, trimmed = render_threads_research(
-        report, max_posts=delivery.config.agent.research_max_threads_posts
+        report,
+        max_posts=delivery.config.agent.research_max_threads_posts,
+        footer=delivery.config.pipeline.threads_footer,
     )
     if dropped or trimmed:
         # Refuse before anything is public: the dropped tail is the conclusion and its sources, and
@@ -302,6 +308,26 @@ async def web_search(
 
 async def community_search(query: str) -> str:
     return await web_search(query, include_domains=current_delivery_context().config.agent.community_search_domains)
+
+
+async def search_reports(query: str) -> str:
+    return await web_search(query, include_domains=current_delivery_context().config.agent.report_search_domains)
+
+
+async def market_quote(symbols: str, period: str = "5d") -> str:
+    sources = _sources()
+    if sources is None:
+        return "Market data is not available in this run."
+    blocks = []
+    for symbol in list(dict.fromkeys(symbols.replace(",", " ").split()))[:8]:
+        block = await sources.market_quote(symbol, period)
+        if block:
+            # The quote page is the source of these numbers, for the citation check and the fact check.
+            url = (_RESULT_URL.findall(block) or [""])[0]
+            record_seen_urls("", url)
+            current_delivery_context().source_texts[normalize_citation_url(url)] = block
+        blocks.append(block or f"- {symbol}: no quote found (check the ticker: 005930.KS, AAPL, ^GSPC, BTC-USD).")
+    return "\n\n".join(blocks) or "No ticker given."
 
 
 async def search_papers(query: str) -> str:
@@ -511,7 +537,8 @@ async def deliver_thread(report: str, delivery: DeliveryContext) -> str:
         max_posts = delivery.config.agent.research_max_threads_posts
         return (
             f"NOT posted: as written the thread would lose text to the channel's limits ({stats.summary()}). "
-            f"Rewrite it as at most {max_posts} posts of at most {research_post_budget(max_posts)} characters "
+            f"Rewrite it as at most {max_posts} posts of at most "
+            f"{research_post_budget(max_posts) - footer_overhead(delivery.config.pipeline.threads_footer)} characters "
             "each, then call deliver_report again; the new text is checked again before it posts."
         )
     if outcome is DeliveryOutcome.FAILED:
@@ -549,7 +576,9 @@ async def check_thread_facts(report: str, delivery: DeliveryContext) -> list[dic
         return []
     try:
         config = delivery.config
-        root, replies, _, _ = render_threads_research(report, max_posts=config.agent.research_max_threads_posts)
+        root, replies, _, _ = render_threads_research(
+            report, max_posts=config.agent.research_max_threads_posts, footer=config.pipeline.threads_footer
+        )
         thread = "\n\n".join(f"POST {n}:\n{post}" for n, post in enumerate([root, *replies], start=1))
         # Cut by characters, not CountTokens: a character is at most about one token, so this bounds the
         # call, while token counting cost about 17 blocking round trips per long page.

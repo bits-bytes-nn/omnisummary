@@ -76,14 +76,14 @@ def _fit_one_post(
     return THREADS_POST_SEPARATOR.join([p for p in (truncate_at_word(title, max(0, room)), url.strip()) if p])
 
 
-def _fit_lead(lead: str) -> str:
+def _fit_lead(lead: str, cap: int = THREADS_MAX_POST_CHARS) -> str:
     """Fit the root text (the digest lead) into one Threads post, keeping whole sentences from the
     front, so the countdown gag that opens it survives. Logged at WARNING because a trimmed lead
     means the editor's prose budget was overrun."""
-    if len(lead) <= THREADS_MAX_POST_CHARS:
+    if len(lead) <= cap:
         return lead
-    logger.warning("Threads lead is %d chars (cap %d); trimming prose", len(lead), THREADS_MAX_POST_CHARS)
-    return _pack_sentences(lead, THREADS_MAX_POST_CHARS)
+    logger.warning("Threads lead is %d chars (cap %d); trimming prose", len(lead), cap)
+    return _pack_sentences(lead, cap)
 
 
 def _pack_sentences(text: str, max_len: int) -> str:
@@ -94,7 +94,7 @@ def _pack_sentences(text: str, max_len: int) -> str:
     return " ".join(kept) if kept else truncate_at_word(text, max_len)
 
 
-def _with_story_index(lead: str, titles: list[str]) -> str:
+def _with_story_index(lead: str, titles: list[str], cap: int = THREADS_MAX_POST_CHARS) -> str:
     """The root text with the day's other story titles listed under the lead. The story replies are
     read by 2-5% of the root's viewers, so without this a feed reader never learned what else the
     digest carried. Titles that do not fit the cap are dropped from the end; the lead itself is never
@@ -102,21 +102,28 @@ def _with_story_index(lead: str, titles: list[str]) -> str:
     lines = [f"{STORY_INDEX_BULLET}{title.strip()}" for title in titles if title.strip()]
     for kept in range(len(lines), 0, -1):
         root = THREADS_POST_SEPARATOR.join((lead, "\n".join(lines[:kept])))
-        if len(root) <= THREADS_MAX_POST_CHARS:
+        if len(root) <= cap:
             if kept < len(lines):
-                logger.info(
-                    "Threads root lists %d of %d other stories (cap %d)", kept, len(lines), THREADS_MAX_POST_CHARS
-                )
+                logger.info("Threads root lists %d of %d other stories (cap %d)", kept, len(lines), cap)
             return root
     return lead
 
 
-def render_threads_posts(content: DigestContent) -> tuple[str, list[str]]:
-    """Render DigestContent for Threads: a root text (the lead, then the other stories' titles) and a
-    reply chain with EXACTLY ONE reply per item (title + source line + body + implication + URL). Each
-    reply is trimmed to fit Threads' 500-char cap at a clean sentence boundary — never mid-word —
-    keeping the title, the source line and the URL. No markup (Threads renders none)."""
-    lead = _with_story_index(_fit_lead(content.lead.strip()), [item.title for item in content.items[1:]])
+def footer_overhead(footer: str) -> int:
+    """Characters a code-owned footer takes from the post it closes."""
+    return len(THREADS_POST_SEPARATOR) + len(footer.strip()) if footer.strip() else 0
+
+
+def render_threads_posts(content: DigestContent, footer: str = "") -> tuple[str, list[str]]:
+    """Render DigestContent for Threads: a root text (the lead, then the other stories' titles, then the
+    edition's footer, e.g. the investing edition's disclaimer) and a reply chain with EXACTLY ONE reply per
+    item (title + source line + body + implication + URL). Each reply is trimmed to fit Threads' 500-char
+    cap at a clean sentence boundary — never mid-word — keeping the title, the source line and the URL.
+    No markup (Threads renders none). The footer is never trimmed: the lead and the list make room."""
+    cap = THREADS_MAX_POST_CHARS - footer_overhead(footer)
+    lead = _with_story_index(_fit_lead(content.lead.strip(), cap), [item.title for item in content.items[1:]], cap)
+    if footer.strip():
+        lead = THREADS_POST_SEPARATOR.join((lead, footer.strip()))
     replies: list[str] = []
     trimmed = 0
     for item in content.items:
@@ -243,7 +250,7 @@ class ThreadsResearchRender(NamedTuple):
     trimmed: int = 0
 
 
-def render_threads_research(report: str, *, max_posts: int = 0) -> ThreadsResearchRender:
+def render_threads_research(report: str, *, max_posts: int = 0, footer: str = "") -> ThreadsResearchRender:
     """Render a Threads research report into a root post + flat reply chain, each <=500 chars.
     Markup is stripped (Threads renders none). The agent marks its own post boundaries with
     a line containing only '---', so a post's heading + body stay together; a report with no
@@ -267,6 +274,9 @@ def render_threads_research(report: str, *, max_posts: int = 0) -> ThreadsResear
         dropped = len(raw_posts) - max_posts
         logger.warning("Threads research: dropping %d post(s) over the cap of %d", dropped, max_posts)
         raw_posts = raw_posts[:max_posts]
+    # The edition's footer closes the last post, inside its 500-char guarantee (trimmed means refused).
+    if footer.strip():
+        raw_posts[-1] = THREADS_POST_SEPARATOR.join((raw_posts[-1], footer.strip()))
     # Number AFTER the cap, so the published indices describe the thread the reader actually gets.
     if len(raw_posts) > 1:
         raw_posts = _renumber_threads_posts(raw_posts)

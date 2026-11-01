@@ -108,4 +108,6 @@ def create_state_store(config: Config | None = None) -> StateStore:
         return S3StateStore(
             state_boto_session(config), bucket, prefix=f"{root}/digest_state" if root else "digest_state"
         )
-    return LocalStateStore(Path(LocalPaths.DIGEST_STATE_DIR.value))
+    local = Path(LocalPaths.DIGEST_STATE_DIR.value)
+    # Each edition its own local state too: with no bucket, the editions shared one post ledger.
+    return LocalStateStore(local / config.edition if config is not None and config.edition else local)

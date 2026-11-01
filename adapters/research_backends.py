@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import math
+import time
+from datetime import datetime, timedelta, timezone, tzinfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from tavily import AsyncTavilyClient
@@ -237,3 +241,111 @@ class WebResearchSources:
 
     async def fetch_image(self, url: str) -> ImageAsset | None:
         return await fetch_og_image(url)
+
+    async def market_quote(self, symbol: str, period: str = "5d") -> str:
+        return await yahoo_quote(symbol, period)
+
+
+_QUOTE_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+
+
+def _price(value: float) -> str:
+    """Thousands separators, cents below 1,000 and significant digits below 1 (225,000 / 344.60 / 0.0123)."""
+    if abs(value) >= 1000:
+        return f"{value:,.0f}"
+    return f"{value:,.2f}" if abs(value) >= 1 else f"{value:.4g}"
+
+
+# Yahoo's chart ranges. Up to a year the closes are DAILY, so the change and the period's high and low are
+# the real ones (weekly bars were dated by the week's first day and missed a mid-week peak); 5y is monthly.
+QUOTE_PERIODS = {"5d": "1d", "1mo": "1d", "6mo": "1d", "1y": "1d", "5y": "1mo"}
+_SHOWN_CLOSES = 8
+
+
+async def yahoo_quote(symbol: str, period: str = "5d") -> str:
+    """Closes over `period` from Yahoo Finance's chart endpoint, with the period's high and low, for
+    Korean (005930.KS), US (AAPL), index (^GSPC, ^KS11), FX (KRW=X) and crypto (BTC-USD) tickers alike.
+    Dates are the exchange's local dates. A bar still trading (the Korean session, crypto at any hour) is
+    labelled the latest price, not a close."""
+    symbol = symbol.strip().upper()
+    if not symbol or len(symbol) > 20 or not symbol.isascii() or not all(c.isalnum() or c in "^.-=" for c in symbol):
+        return ""
+    if period not in QUOTE_PERIODS:
+        period = "5d"
+    config = get_config().agent
+    try:
+        async with httpx.AsyncClient(
+            timeout=config.search_request_timeout, headers={"User-Agent": "Mozilla/5.0"}
+        ) as client:
+            resp = await client.get(
+                _QUOTE_URL.format(symbol=symbol), params={"range": period, "interval": QUOTE_PERIODS[period]}
+            )
+            resp.raise_for_status()
+        result = ((resp.json() or {}).get("chart") or {}).get("result")
+        first = result[0] if isinstance(result, list) and result else None
+        return _format_quote(symbol, period, first) if isinstance(first, dict) else ""
+    except (
+        httpx.HTTPError,
+        ValueError,
+        TypeError,
+        AttributeError,
+        IndexError,
+        KeyError,
+        OverflowError,
+        OSError,
+        RecursionError,
+    ) as e:
+        # One odd payload must not cost the other tickers of the same call.
+        logger.warning("Quote for '%s' failed: %s", symbol, e)
+        return ""
+
+
+def _format_quote(symbol: str, period: str, result: dict) -> str:
+    meta = result.get("meta") or {}
+    # Each bar dated in the exchange's own zone, daylight saving included: one offset for every bar put
+    # summer bars stamped at local midnight (US monthly, FX and futures dailies) on the previous day.
+    offset = timezone(timedelta(seconds=int(meta.get("gmtoffset") or 0)))
+    try:
+        name = meta.get("exchangeTimezoneName")
+        zone: tzinfo = ZoneInfo(str(name)) if name else offset
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = offset
+    stamps = result.get("timestamp") or []
+    closes = ((result.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
+    days = [
+        (datetime.fromtimestamp(int(t), zone).date().isoformat(), float(c))
+        for t, c in zip(stamps, closes, strict=False)
+        if isinstance(c, int | float) and math.isfinite(c)
+    ]
+    if not days:
+        return ""
+    last_day, last = days[-1]
+    first_day, first = days[0]
+    change = (last / first - 1) * 100 if first else 0.0
+    high_day, high = max(days, key=lambda d: d[1])
+    low_day, low = min(days, key=lambda d: d[1])
+    step = -(-len(days) // _SHOWN_CLOSES)
+    shown = dict(days[::step] + [days[-1]])
+    # Still trading when the last trade falls inside the current regular session (crypto: always). On a
+    # weekend the "current" session is the next one, which the last trade precedes.
+    regular = (meta.get("currentTradingPeriod") or {}).get("regular") or {}
+    now = time.time()
+    live = period != "5y" and all(isinstance(v, int | float) for v in (regular.get("start"), regular.get("end")))
+    live = (
+        live
+        and regular["start"] <= now < regular["end"]
+        and last_day == datetime.fromtimestamp(now, zone).date().isoformat()
+    )
+    label = "Latest price (session open)" if live else "Latest (month to date)" if period == "5y" else "Last close"
+    unit = "monthly" if QUOTE_PERIODS[period] == "1mo" else "daily"
+    return _result_block(
+        f"{meta.get('longName') or meta.get('shortName') or symbol} ({symbol})",
+        f"https://finance.yahoo.com/quote/{symbol}",
+        [
+            (label, f"{_price(last)} {meta.get('currency') or ''} on {last_day}"),
+            ("Closes", ", ".join(f"{d} {_price(c)}" for d, c in shown.items())),
+            ("Change", f"{change:+.2f}% since {first_day} ({period})"),
+            ("Period high / low", f"{_price(high)} on {high_day} / {_price(low)} on {low_day} ({unit} closes)"),
+            ("Exchange", str(meta.get("exchangeName") or "")),
+        ],
+    )

@@ -150,6 +150,7 @@ class TrendTracker:
             {
                 "existing_trends": existing_summary or "(No trends tracked yet.)",
                 "todays_digest": digest_text,
+                "domain": self.config.domain,
             }
         )
 

@@ -8,7 +8,7 @@ from aws_cdk.assertions import Match, Template
 from infrastructure.application_stack import OmniSummaryApplicationStack
 from infrastructure.foundation_stack import OmniSummaryFoundationStack
 from shared import Config
-from shared.constants import METRIC_NAMESPACE, SSM_PLACEHOLDER, SSM_SECRET_ENV_VARS
+from shared.constants import DIGEST_ITEMS_METRIC, METRIC_NAMESPACE, SSM_PLACEHOLDER, SSM_SECRET_ENV_VARS
 from shared.naming import metric_dimensions
 
 # The TRACKED config, matching what scripts/ci_synth.py synths: config/config.yaml is gitignored,
@@ -539,3 +539,45 @@ def test_every_lambda_command_names_a_callable_handler(templates):
     for command in commands:
         module, _, attr = command.rpartition(".")
         assert callable(getattr(importlib.import_module(module), attr)), command
+
+
+class TestAnotherEdition:
+    """A second edition gets its own digest and visual Lambdas, rule and empty-digest alarm, while the
+    AI/ML edition's resources keep their logical ids and names (a rename would replace live functions)."""
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def edition_templates(cls):
+        config = Config.from_yaml(str(CONFIG_TEMPLATE))
+        invest = Config.from_yaml(str(CONFIG_TEMPLATE.parent / "invest-template.yaml"))
+        env = Environment(account="123456789012", region=config.aws.region)
+        app = App()
+        foundation = OmniSummaryFoundationStack(app, "fnd", config=config, editions=("invest",), env=env)
+        application = OmniSummaryApplicationStack(
+            app, "app", config=config, foundation=foundation, editions=(invest,), env=env
+        )
+        return Template.from_stack(foundation), Template.from_stack(application), invest
+
+    def test_its_lambdas_rule_and_alarm(self, edition_templates):
+        foundation, application, invest = edition_templates
+        functions = application.find_resources("AWS::Lambda::Function")
+        names = {f["Properties"]["FunctionName"] for f in functions.values()}
+        prefix = f"{invest.aws.project_name}-{invest.aws.stage}"
+        assert {f"{prefix}-digest", f"{prefix}-visual", f"{prefix}-invest-digest", f"{prefix}-invest-visual"} <= names
+        assert {"DigestPipelineLambda", "DailyVisualLambda"} <= {k[:-8] for k in functions}  # logical ids kept
+        invest_digest = next(
+            f for f in functions.values() if f["Properties"]["FunctionName"] == f"{prefix}-invest-digest"
+        )
+        variables = invest_digest["Properties"]["Environment"]["Variables"]
+        assert variables["OMNISUMMARY_EDITION"] == "invest"
+        assert variables["S3_PREFIX"] == f"{invest.aws.s3_prefix}/digest_state"
+        rules = application.find_resources("AWS::Events::Rule")
+        schedules = {r["Properties"]["Name"]: r["Properties"]["ScheduleExpression"] for r in rules.values()}
+        assert schedules[f"{prefix}-invest-daily-digest"].startswith(
+            f"cron({invest.aws.digest_cron_minute} {invest.aws.digest_cron_hour} "
+        )
+        alarms = [a["Properties"] for a in application.find_resources("AWS::CloudWatch::Alarm").values()]
+        empty = [a for a in alarms if a.get("MetricName") == DIGEST_ITEMS_METRIC]
+        assert {"Edition", "invest"} <= {v for a in empty for d in a["Dimensions"] for v in d.values()}
+        assert len(empty) == 2
+        assert f"function:{prefix}-invest-visual" in str(foundation.find_resources("AWS::IAM::Policy"))

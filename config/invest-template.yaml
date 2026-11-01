@@ -1,0 +1,251 @@
+# Investing edition (OMNISUMMARY_EDITION=invest / research_cli.py --edition invest).
+edition: "invest"
+# OmniSummary Configuration Template
+# Copy to config.yaml and fill in your values.
+
+collectors:
+  youtube:
+    enabled: true
+    # Lists must stay valid YAML lists — a key with only a commented-out entry under it parses as
+    # null and fails config validation, so keep the `[]` and add entries inside it.
+    channels: []
+      # - "https://www.youtube.com/@channel_name"
+    max_videos_per_channel: 3
+    # The collection window, defined here and aliased by reddit and rss below (web_search and rsshub
+    # state their own, wider one — the code default is this floor for every source). The cutoff is anchored
+    # at midnight at the END of the digest date, but the cron collects hours before that midnight —
+    # so at 24 the window was exactly the digest date and everything published between the run and
+    # that midnight fell before the NEXT run's cutoff, appearing in no digest ever. Config validates
+    # the floor (48 - the run's local hour, i.e. 29h for a 19:00 run); 30 leaves an hour of margin.
+    # Widening cannot re-run a story: cross-day repeats are excluded by URL identity
+    # (PublishedUrlLedger + recent AgentCore snapshots), not by the window.
+    # 07:30 KST run: the window must reach back past the previous morning's run (48 - 7 = 41h).
+    lookback_hours: &lookback_hours 42
+    # Channels collected at once (each parks worker threads for the scrape/transcript fetches);
+    # same bound as rss.max_concurrency.
+    max_concurrency: 5
+    # YouTube/X items are collected locally (residential IP) and parked in S3; beyond this age the
+    # parked items are still used but the source is reported STALE, so a stopped local cron alerts
+    # instead of looking healthy. Every collector inherits this key. Keep it INSIDE one sync cadence
+    # (the local cron runs daily): at 36 a completely skipped sync day still read FRESH/OK, which is
+    # the very thing this budget exists to catch.
+    park_max_age_hours: 12
+    # In AWS this file is the ONLY transcript-carrying path (a datacenter IP cannot fetch
+    # transcripts), so an absent one is a DEGRADED source, not a quiet fall-through to live
+    # metadata-only collection.
+    park_required: true
+    # empty_rate_threshold is deliberately NOT armed for youtube (see rsshub below, where it is). The
+    # all-200-and-empty shape it targets has no YouTube analogue — a revoked key, an exhausted quota
+    # or a datacenter-IP block RAISES and already reports FAILED. Armed, it fires on a day when every
+    # low-cadence channel happens to be quiet, which is a normal day and pure alert fatigue.
+  reddit:
+    enabled: true
+    subreddits: []
+      # - "subreddit_name"
+    sort: hot
+    limit: 20
+    lookback_hours: *lookback_hours
+  rss:
+    enabled: true
+    feeds: []
+      # - "https://example.substack.com/feed"
+    lookback_hours: *lookback_hours
+    # Feeds fetched at once (each fetch carries its own httpx timeout).
+    max_concurrency: 5
+  web_search:
+    enabled: true
+    # Hosts never returned by any search, broad or refined (Tavily exclude_domains), e.g. content farms:
+    # exclude_domains: ["example-content-farm.com"]
+    trend_searches:
+      - name: korea_markets
+        queries:
+          - "코스피 코스닥 증시 마감 외국인 수급"
+          - "국내 증권사 리포트 목표주가 상향 하향"
+      - name: us_global_markets
+        queries:
+          - "stock market today S&P 500 Nasdaq earnings Fed"
+          - "analyst upgrade downgrade price target"
+      - name: crypto
+        queries:
+          - "bitcoin ethereum crypto market ETF flows regulation"
+      # Global IB and asset-manager research pages (no RSS); robots.txt allows their insight paths.
+      - name: ib_research
+        queries:
+          - "market outlook strategist view stocks rates"
+          - "economic outlook inflation Fed recession strategist"
+        domains:
+          - "goldmansachs.com"
+          - "jpmorgan.com"
+          - "morganstanley.com"
+          - "blackrock.com"
+          - "ubs.com"
+          - "pimco.com"
+          - "schroders.com"
+          - "invesco.com"
+    domain: "investing (Korean, US and global stocks, macro and markets, and crypto assets)"
+    refine_rules: |-
+      - Prefer: earnings and guidance, filings, central-bank and policy decisions, analyst actions, wire reports
+      - No generic terms ("stock market news", "crypto update")
+    max_results_per_query: 10
+    lookback_hours: 72
+    refine_model: "anthropic.claude-sonnet-5-5"
+    max_refine_queries: 3
+    # Search queries in flight at once; unbounded fan-out self-throttled and lost whole queries.
+    max_concurrency: 5
+  rsshub:
+    enabled: false
+    base_url: "http://localhost:1200"
+    accounts: []
+      # - "karpathy"
+    lookback_hours: 72
+    max_concurrency: 5
+    park_max_age_hours: 12
+    # Expired X session cookies make every account feed answer 200 with NO entries: no failure rate
+    # trips, and as long as one account still had a post the source reported a clean OK. Percent of
+    # inputs that may come back empty before the source is DEGRADED. Set per source — many RSS blogs
+    # legitimately publish nothing on a given day, whereas 40 X accounts going quiet is a broken
+    # session. Left unset (the code default) the check is off.
+    empty_rate_threshold: 90.0
+  # Sources whose EMPTY result is an incident worth an SNS alert. A dark source raises no exception
+  # and leaves no stale park file, so nothing else notices it — but reddit/x are legitimately quiet
+  # on many days, so this is an explicit opt-in list rather than "alert on any empty source".
+  alert_on_empty: []
+    # - "rss"
+    # - "web_search"
+
+pipeline:
+  domain_rules: |
+    - This is market commentary, not investment advice. Never tell the reader to buy, sell or hold a
+      specific security or coin, never give a price target or a valuation verdict ("cheap", "overvalued")
+      of your own, and never promise a return.
+      Report analysts' ratings and targets as theirs, named and dated, with the source.
+    - Every price, index level, return or market-cap figure comes from a cited source, with its date;
+      never state one from memory.
+    - Separate what happened (prices, filings, reported numbers) from what analysts or the community
+      expect, and say whose view each forecast is.
+    - Look at a story from the sides it really has for someone who invests: earnings and valuation as
+      others assess them, macro and rates, flows and positioning, regulation, and sentiment.
+  ranking_audience_description: "a daily Korean investing digest for individual investors who follow Korean, US and global markets and crypto"
+  digest_audience_description: "Korean individual investors who follow stocks, macro and crypto, from beginners to experienced traders"
+  visual_audience_description: "a daily Korean investing digest read by individual investors, beginners and experienced alike"
+  ranking_criteria: |-
+    1. Market Impact — does it move or explain prices, flows, rates or a sector, in Korea, the US, globally or in crypto?
+    2. Investor Value — would it change how an individual investor understands a holding, a sector or the market?
+    3. Novelty — first reports, earnings, filings, policy decisions, analyst actions over rehashes. A story already in a recent digest (listed below) is a rehash unless the item reports a real new development on it.
+    4. Evidence — concrete numbers, guidance, rating or target changes with reasons, not price-chasing or hype.
+    5. Breadth — macro, policy, regulation and flows that affect many holdings count more than one stock's chatter.
+    6. Source Authority — wire services, filings, named analysts and research houses get a small bonus.
+  agi_countdown_date: ""
+  threads_topic_tag: "투자"
+  threads_footer: "투자 권유가 아닙니다. 투자 판단의 책임은 본인에게 있습니다."
+  domain: "investing (Korean, US and global stocks, macro and markets, and crypto assets)"
+  top_n: 5
+  min_score: 0.6
+  # Any *_model / model_id takes a LanguageModelId value (shared/constants.py): Claude
+  # ("anthropic.claude-...") or GPT ("openai.gpt-6.1-sol", "openai.gpt-6.1-terra"), all on Bedrock.
+  ranking_model: "anthropic.claude-opus-5-5"
+  digest_model: "anthropic.claude-sonnet-5-5"
+  item_text_max_tokens: 10000
+  # Ranking robustness: cap the in-flight Bedrock batches (a big day self-throttled otherwise) and
+  # retry a failed batch instead of silently dropping its whole slice of candidates.
+  ranking_max_concurrency: 4
+  ranking_max_retries: 3
+  ranking_retry_backoff_sec: 5
+  source_slots:
+    web: 1
+    x: 1
+    rss: 1
+    reddit: 1
+    youtube: 1
+  trend_model: "anthropic.claude-sonnet-5-5"
+  trend_retention_days: 30
+  trend_max_evidence: 5
+  trend_max_active_trends: 10
+  trend_momentum_half_life_days: 7.0
+
+  # --- Delivery (values below are the code defaults) ---
+  # Threads is posted by the DAILY VISUAL Lambda (the image and the text ship as one post set).
+  enable_threads_post: false
+  # Answer readers' comments on the last comment_reply_lookback_days of posts (the comment-reply
+  # Lambda, every aws.comment_reply_interval_minutes). The model may decline a comment.
+  enable_comment_replies: false
+  comment_reply_lookback_days: 7
+  comment_reply_max_per_run: 10
+  comment_reply_max_per_commenter: 3
+
+  # --- Daily visual (values below are the code defaults) ---
+  image_model: "gpt-image-2.5-sunburst"
+  # orientation -> gpt-image size; a panel grid is `portrait` and `tall` is a stacked vertical strip
+  # (longest edge kept at or under 2560, where larger
+  # sizes turn experimental). Only the SIZES are tunable: the keys are the brief's orientation
+  # vocabulary, and config load rejects a renamed or missing one.
+  image_sizes:
+    tall: "848x2544"
+    portrait: "1024x1536"
+    square: "1024x1024"
+    landscape: "1536x1024"
+  # Bound the gpt-image HTTP call: the SDK defaults (600s x 2 retries) can outlive the visual
+  # Lambda's 15-minute budget.
+  visual_image_timeout_sec: 300
+  visual_image_max_retries: 0
+  # Pin the gpt-image quality tier rather than leaving OpenAI's "auto": prices differ several-fold
+  # between tiers, and it also decides how legible the panels' Korean lines come out. One of
+  # low/medium/high/xhigh/max/auto; empty sends nothing (OpenAI decides). xhigh drew noticeably more
+  # coherent hands, props and perspective than high on the same briefs.
+  visual_image_quality: "xhigh"
+  visual_character_enabled: true
+
+agent:
+  model_id: "anthropic.claude-opus-5-5"
+  # Investing edition: the same narrator, reading markets in Korea, the US and globally, and crypto.
+  market_quotes: true
+  # Only publishers whose robots.txt lets crawlers read their research pages (finance.naver.com,
+  # consensus.hankyung.com and nhqv.com disallow everything): Korean broker notes arrive through the
+  # news that reports on them.
+  report_search_domains:
+    - "www.hankyung.com"
+    - "goldmansachs.com"
+    - "jpmorgan.com"
+    - "morganstanley.com"
+    - "blackrock.com"
+    - "vanguard.com"
+    - "ubs.com"
+    - "pimco.com"
+    - "schroders.com"
+    - "invesco.com"
+    - "reuters.com"
+    - "cnbc.com"
+    - "marketwatch.com"
+    - "investing.com"
+    - "messari.io"
+    - "galaxy.com"
+    - "coinbase.com"
+    - "glassnode.com"
+  community_search_domains:
+    - "reddit.com"
+    - "x.com"
+    - "twitter.com"
+    - "stocktwits.com"
+    - "seekingalpha.com"
+    - "clien.net"
+    - "ppomppu.co.kr"
+  # Hard per-invocation bounds on the research tool loop, enforced by the Strands SDK at every turn
+  # boundary. A run that
+  # trips one is reported to the user as cut short.
+  research_max_turns: 40
+  research_max_total_tokens: 2000000
+  research_max_output_tokens: 100000
+
+aws:
+  # 22:30 UTC = 07:30 KST, after the US close and before Korea opens.
+  digest_cron_hour: "22"
+  digest_cron_minute: "30"
+  region: "ap-northeast-2"
+  bedrock_region: "us-west-2"
+  profile: ""
+  project_name: "omnisummary"
+  stage: "dev"
+  state_bucket_name: ""    # MUST equal config.yaml's: the stack is built from that one (deploy.py refuses a mismatch)
+  s3_prefix: "invest"            # its own prefix UNDER config.yaml's s3_prefix (deploy.py checks)
+  # How often the comment-reply Lambda looks for new comments.
+  comment_reply_interval_minutes: 60

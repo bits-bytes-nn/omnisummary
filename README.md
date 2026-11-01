@@ -68,6 +68,7 @@ uv run python main.py                                   # full run: save, draw, 
 uv run python research_cli.py "<topic>"
 uv run python research_cli.py "<topic>" --publish threads
 uv run python research_cli.py "<topic>" --publish threads-preview   # writes the thread into the JSON, posts nothing
+uv run python research_cli.py "<topic>" --edition invest   # the investing edition: markets, analysts, crypto; quotes
 
 # What the digest already published (free, read-only, JSON)
 uv run python recall_cli.py digest 2026-10-26

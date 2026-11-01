@@ -97,7 +97,7 @@ class DigestPublisher:
             # posted >= expected false, so the "nothing to report" early-return can't swallow it.
             self.threads_outcome = ThreadsDelivery(0, 1)
             return False
-        root_text, replies = render_threads_posts(content)
+        root_text, replies = render_threads_posts(content, self.config.pipeline.threads_footer)
 
         # Idempotency: a same-day re-run (manual `main.py`) or a replay of the visual Lambda must not
         # post the whole root+replies set again, so a date already on the ledger is skipped unless

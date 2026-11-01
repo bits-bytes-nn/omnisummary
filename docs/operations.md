@@ -14,6 +14,7 @@
 | 18:30 | X와 YouTube 자막을 모아 S3에 올린다 | 로컬 cron(`scripts/sync_all_to_s3.sh`) |
 | 19:00 | 수집, 랭킹, 다이제스트 작성, 스냅샷 저장 | digest Lambda |
 | 19:0x | 만화를 그리고 Threads에 첫 글과 답글 5개를 올린다 | visual Lambda |
+| 07:30 | 투자판: 수집, 랭킹, 다이제스트 작성, 스냅샷 저장, 만화와 게시 | invest-digest, invest-visual Lambda |
 | 매시간 | 최근 일주일 게시물의 새 댓글에 답한다(켜 두었을 때) | comment-replies Lambda |
 | 매주 | Threads 토큰을 갱신해 SSM에 쓴다 | threads-refresh Lambda |
 
@@ -23,7 +24,12 @@
 ```bash
 uv run python recall_cli.py digest            # 오늘 저장된 리드와 기사(JSON). 게시 여부는 Threads에서 본다
 uv run python recall_cli.py digest 2026-10-28 # 특정 날짜
+OMNISUMMARY_EDITION=invest uv run python recall_cli.py digest   # 투자판
 ```
+
+투자판 게시는 `config/invest.yaml`의 `pipeline.enable_threads_post`로 켠다. 처음 며칠은 꺼 두고 저장된 다이제스트를 위
+명령으로 읽은 뒤 켠다. 켜고 나서는 이미지를 다시 빌드하고 배포해야 반영된다. 투자판 알림 제목에는 `dev/invest`가 붙고, 재게시
+명령은 `omnisummary-dev-invest-visual`을 가리킨다.
 
 ## 알림을 받았을 때
 

@@ -220,6 +220,7 @@ class ContentRanker:
                     "scoring_rubric": self.config.ranking_scoring_rubric,
                     "audience": self.config.ranking_audience_description,
                     "recent_titles": recent_titles,
+                    "criteria": self.config.ranking_criteria,
                 }
             )
 

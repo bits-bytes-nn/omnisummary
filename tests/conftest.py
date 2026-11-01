@@ -10,6 +10,7 @@ from shared.config import get_config
 # a STATE_BUCKET sends a collector to the S3 park file instead of live collection. Cleared
 # for every test so the suite behaves the same on a laptop with a full .env and in CI without one.
 LEAKY_ENV_VARS = (
+    "OMNISUMMARY_EDITION",
     "TAVILY_API_KEY",
     "OPENAI_API_KEY",
     "YOUTUBE_API_KEY",
