@@ -135,7 +135,7 @@ import하지 않는다. `domain`과 `shared`는 LangChain도 모른다. `applica
 Markets, FT, MarketWatch, Investing.com, Seeking Alpha, 미 연준과 ECB 보도자료, 크립토 매체 다섯), 국내 부동산(인포맥스 부동산, 조선비즈
 부동산, 뉴스1·뉴시스·SBS Biz로 좁힌 웹 검색 한 묶음), 본문을 피드에 싣는 실명 경제학자·분석가의 블로그(뉴욕 연준 Liberty Street,
 Robin Brooks, Klement, Yardeni, Calculated Risk, Sahm, Damodaran, Dalio, Glassnode, Coin Metrics, Tiger Research 한국어판, UPPITY 뉴스),
-Reddit 네 곳, X 11개 계정과 YouTube 6개 채널이다. 수집 기준은 이렇다. 일반 독자처럼 공개 페이지를 읽고 요약과 출처 링크만 내보내며
+Reddit 네 곳, X 11개 계정과 YouTube 7개 채널(부동산은 채상욱의 채부심 하나)이다. 부동산 유튜브 대부분은 "사라"는 제목이거나 강의·컨설팅 판매로 이어지고, 부동산 블로그는 네이버 블로그(약관이 AI 수집을 금지)와 피드 없는 곳뿐이라 넣지 않았다. 수집 기준은 이렇다. 일반 독자처럼 공개 페이지를 읽고 요약과 출처 링크만 내보내며
 모델을 학습시키지 않으니, robots.txt가 학습용 AI 크롤러(GPTBot, ClaudeBot, CCBot)만 막은 곳은 쓴다. 사용자 요청형 AI까지 막은 곳,
 로그인·유료벽, 403과 봇 차단은 쓰지 않고 UA를 바꿔 우회하지 않는다. 그래서 한국경제(수집기 UA에 403)가 빠졌다. 국내 언론 기사 하단의
 "AI 학습 및 활용 금지" 문구와는 해석이 갈릴 수 있는 운영자 판단이다. 날짜 없는 피드(Apollo)는 수집 창 규칙상 매일 같은 글을 다시

@@ -65,3 +65,13 @@ async def test_batches_mix_sources_even_when_ids_cluster_by_source():
     await ranker.rank(items, select_count=8)
     assert len(captured) == 2
     assert all({it.source_type for it in batch} == {SourceType.RSS, SourceType.X} for batch in captured)
+
+
+@pytest.mark.parametrize(("ranking_cap", "expected"), [(None, 8000), (1500, 1500)])
+def test_the_ranker_reads_its_own_text_cap_or_the_item_cap(ranking_cap, expected):
+    factory = _factory()
+    ranker = ContentRanker(PipelineConfig(ranking_text_max_tokens=ranking_cap), factory)
+    ranker._format_items(_items(1, text="x" * 50))
+    assert {call.kwargs.get("max_tokens", call.args[-1]) for call in factory.truncate_to_tokens.call_args_list} == {
+        expected
+    }

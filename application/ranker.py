@@ -336,7 +336,7 @@ class ContentRanker:
                 format_collected_item(
                     item,
                     index=i + 1,
-                    max_tokens=self.config.item_text_max_tokens,
+                    max_tokens=self.config.ranking_text_max_tokens or self.config.item_text_max_tokens,
                     fields=fields,
                     truncate=self._truncate,
                 )

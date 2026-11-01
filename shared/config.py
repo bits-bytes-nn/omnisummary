@@ -319,6 +319,10 @@ class PipelineConfig(_StrictModel):
     # the owner ranked recognisable branding above the first-line reach argument.
     countdown_after: str = "AGI 등장 예정일 D+{days}일째, 아직이다. "
     item_text_max_tokens: int = Field(default=8000, ge=1)
+    # Each item's text as the RANKER sees it; unset is item_text_max_tokens. Scoring needs the gist, the
+    # editor and the grounding check the full text: the investing pool (426 items, many with full article
+    # pages or transcripts) sent the ranker 1.23M input tokens a run, eleven times the AI/ML edition's.
+    ranking_text_max_tokens: int | None = Field(default=None, ge=1)
     ranking_batch_size: int = Field(default=40, ge=1)
     # How many ranking batches may be in flight against Bedrock at once. Unbounded fan-out threw
     # every batch at Converse simultaneously, so a large day self-throttled (ThrottlingException)
