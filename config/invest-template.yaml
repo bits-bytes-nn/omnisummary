@@ -16,6 +16,8 @@ collectors:
       - "https://www.youtube.com/@sosumonkey"
       - "https://www.youtube.com/@markets"
       - "https://www.youtube.com/@PBoyle"
+      # Real estate: 채상욱, ex-하나금융투자 construction/real-estate analyst; analysis, not buy calls.
+      - "https://www.youtube.com/@chaeboosim"
     max_videos_per_channel: 3
     # The collection window, defined here and aliased by reddit and rss below (web_search and rsshub
     # state their own, wider one — the code default is this floor for every source). The cutoff is anchored
@@ -218,6 +220,8 @@ pipeline:
   ranking_model: "anthropic.claude-opus-5-5"
   digest_model: "anthropic.claude-sonnet-5-5"
   item_text_max_tokens: 10000
+  # The ranker scores on each item's opening; the editor still reads the full text.
+  ranking_text_max_tokens: 1500
   # Ranking robustness: cap the in-flight Bedrock batches (a big day self-throttled otherwise) and
   # retry a failed batch instead of silently dropping its whole slice of candidates.
   ranking_max_concurrency: 4
