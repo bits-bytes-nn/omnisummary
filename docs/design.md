@@ -137,10 +137,11 @@ import하지 않는다. `domain`과 `shared`는 LangChain도 모른다. `applica
 Robin Brooks, Klement, Yardeni, Calculated Risk, Sahm, Damodaran, Glassnode, Coin Metrics), Reddit 세 곳, X 9개 계정(Reuters와 WSJ는
 X로만 들어온다), YouTube 3개 채널(월가아재, Patrick Boyle, 채부심)이다.
 
-수집 기준은 이렇다. 일반 독자처럼 공개 페이지를 읽고 요약과 출처 링크만 내보내며 모델을 학습시키지 않으니, robots.txt가 학습용 AI
-크롤러(GPTBot, ClaudeBot, CCBot)만 막은 곳은 쓴다. 사용자 요청형 AI까지 막은 곳, 로그인·유료벽, 403과 봇 확인 페이지는 쓰지 않고, UA를
-바꾸거나 본문 추출 서비스를 거쳐 우회하지도 않는다. 국내 언론 기사 하단의 "AI 학습 및 활용 금지" 문구와는 해석이 갈릴 수 있는 운영자
-판단이다.
+수집 기준은 두 갈래다(두 판 공통). 일반 독자처럼 공개 페이지를 읽고 요약과 출처 링크만 내보내며 모델을 학습시키지 않는다.
+**기술적 접근 통제는 우회하지 않는다.** 유료벽, 봇 확인 페이지, 403·429, 남의 로그인 벽이 걸린 곳은 쓰지 않고, UA를 바꾸거나 본문 추출
+서비스를 거쳐 가져오지도 않는다. **정책 신호는 운영자가 판단하고 여기에 적는다.** robots.txt와 이용약관이 그렇다. robots.txt가 AI 크롤러를
+막은 국내 언론(연합뉴스, 조선비즈 등)과 기사 하단의 "AI 학습 및 활용 금지" 문구, 그리고 robots.txt와 약관이 수집을 제한하는 X(운영자
+계정 세션의 RSSHub)와 Reddit은 수집량이 적고 원문 링크를 남기는 조건으로 쓴다. 텔레그램은 약관 외에 사칭 채널 문제가 있어 쓰지 않는다.
 
 재검토에서 뺀 것과 이유는 이렇다.
 - 기사 페이지가 봇 확인이나 유료벽: Bloomberg, FT, MarketWatch, Seeking Alpha, Investing.com, CoinDesk, The Block. 피드 요약이 짧아 본문
