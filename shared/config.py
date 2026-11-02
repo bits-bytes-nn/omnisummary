@@ -147,8 +147,9 @@ class NaverResearchCollectorConfig(BaseCollectorConfig):
     enabled: bool = False
     # company, industry, invest (strategy), economy, market (daily wraps), debenture (fixed income).
     categories: list[ResearchCategory] = Field(default_factory=lambda: list(_DEFAULT_RESEARCH_CATEGORIES))
-    # Pages of 50 per category; a weekday has about 100 company notes.
-    max_pages: int = Field(default=6, ge=1)
+    # Pages of 50 per category, newest first; a peak earnings day had 121 company notes in one day. A
+    # category still paging at the cap is logged.
+    max_pages: int = Field(default=10, ge=1)
     page_delay_sec: float = Field(default=1.0, ge=0.0)
     # The post names the broker and the analyst; the Naver page is not linked unless this is set.
     show_links: bool = False

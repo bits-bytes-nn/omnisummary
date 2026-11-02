@@ -39,6 +39,7 @@ _INPUTS = {
         "headline": "h",
         "recent_comics": "c",
         "on_image_language": "ko",
+        "domain_rules": "",
     },
 }
 

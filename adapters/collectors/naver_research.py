@@ -5,7 +5,7 @@ date, a summary and, for company notes, the stock, the rating and the target pri
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, time, timedelta, tzinfo
+from datetime import datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -13,21 +13,30 @@ import httpx
 from bs4 import BeautifulSoup
 
 from domain.models import CollectedItem
-from shared import SourceType, logger
+from shared import SourceType, logger, retry_async
 from shared.config import NaverResearchCollectorConfig
 
-from .base import FEED_FETCH_HEADERS, BaseCollector, cutoff_datetime, gather_collector_results, in_collection_window
+from .base import (
+    FEED_FETCH_HEADERS,
+    RETRIABLE_STATUS_CODES,
+    BaseCollector,
+    TransientStatusError,
+    cutoff_datetime,
+    gather_collector_results,
+    in_collection_window,
+)
 
 API_BASE = "https://stock.naver.com/api/stockSecurity/researches/v2"
 PAGE_URL = "https://stock.naver.com/research/{category}/{nid}"
 # The API's own maximum page size.
 _PAGE_SIZE = 50
+# writeDate is a Seoul date whatever the deployment's zone.
 _SEOUL = ZoneInfo("Asia/Seoul")
 
 
 class NaverResearchCollector(BaseCollector):
     """One origin per broker (max_per_origin keeps one house from taking the pool), and the link is
-    withheld from the post by default: the story names the broker and the analyst instead."""
+    withheld from the post by default: the story names the broker instead."""
 
     config: NaverResearchCollectorConfig
 
@@ -37,21 +46,15 @@ class NaverResearchCollector(BaseCollector):
     async def collect(self) -> list[CollectedItem]:
         if not self.config.categories:
             return []
-        zone = self.config.reference_time.tzinfo if self.config.reference_time else None
-        zone = zone or _SEOUL
-        end = self.config.reference_time or datetime.now(zone)
-        start = cutoff_datetime(self.config.lookback_hours, end).astimezone(zone).date()
-        last = (end - timedelta(seconds=1)).astimezone(zone).date()
+        end = self.config.reference_time or datetime.now(_SEOUL)
+        start = cutoff_datetime(self.config.lookback_hours, end).astimezone(_SEOUL).date()
+        last = (end - timedelta(seconds=1)).astimezone(_SEOUL).date()
+        categories = [str(c) for c in self.config.categories]
         async with httpx.AsyncClient(
             headers=FEED_FETCH_HEADERS, timeout=self.config.request_timeout, follow_redirects=True
         ) as client:
-            tasks = [
-                self._collect_category(client, category, start.isoformat(), last.isoformat(), zone)
-                for category in self.config.categories
-            ]
-            result = await gather_collector_results(
-                tasks, labels=[str(c) for c in self.config.categories], raise_if_all_failed=True
-            )
+            tasks = [self._collect_category(client, c, start.isoformat(), last.isoformat()) for c in categories]
+            result = await gather_collector_results(tasks, labels=categories, raise_if_all_failed=True)
         logger.info(
             "Naver research gathered %d reports from %d/%d categories (%d failed)",
             len(result.items),
@@ -63,45 +66,69 @@ class NaverResearchCollector(BaseCollector):
         return result.items
 
     async def _collect_category(
-        self, client: httpx.AsyncClient, category: str, start: str, end: str, zone: tzinfo
+        self, client: httpx.AsyncClient, category: str, start: str, end: str
     ) -> list[CollectedItem]:
         items: list[CollectedItem] = []
+        rows_seen = dated = 0
         for index in range(self.config.max_pages):
+            payload = await self._page(client, category, index, start, end)
+            rows = payload.get("items") or []
+            rows_seen += len(rows)
+            dated += sum(1 for row in rows if _dated(row) is not None)
+            items += [item for row in rows if (item := self._to_item(category, row)) is not None]
+            if not payload.get("hasNext"):
+                break
+            await asyncio.sleep(self.config.page_delay_sec)
+        else:
+            logger.warning(
+                "Naver research '%s' still had more pages after %d; older reports in the window were not read",
+                category,
+                self.config.max_pages,
+            )
+        if rows_seen and not dated:
+            # Rows came back and none had a readable date: the API changed shape. Fail the category rather
+            # than report it empty, which is what a quiet Sunday looks like.
+            raise ValueError(f"Naver research '{category}' returned {rows_seen} rows with no readable writeDate")
+        return items
+
+    async def _page(self, client: httpx.AsyncClient, category: str, index: int, start: str, end: str) -> dict:
+        async def _call() -> dict:
             resp = await client.get(
                 f"{API_BASE}/{category}",
                 params={"index": index, "size": _PAGE_SIZE, "startDate": start, "endDate": end},
             )
+            if resp.status_code in RETRIABLE_STATUS_CODES:
+                raise TransientStatusError(f"Naver research '{category}' page {index} returned {resp.status_code}")
             resp.raise_for_status()
-            payload = resp.json()
-            for row in payload.get("items") or []:
-                item = self._to_item(category, row, zone)
-                if item is not None:
-                    items.append(item)
-            if not payload.get("hasNext"):
-                break
-            await asyncio.sleep(self.config.page_delay_sec)
-        return items
+            return resp.json()
 
-    def _to_item(self, category: str, row: dict[str, Any], zone: tzinfo) -> CollectedItem | None:
+        return await retry_async(
+            _call,
+            max_retries=self.config.max_retries,
+            backoff_sec=self.config.retry_backoff_sec,
+            retry_on=(httpx.TransportError, TransientStatusError),
+            description=f"Naver research '{category}' page {index}",
+        )
+
+    def _to_item(self, category: str, row: dict[str, Any]) -> CollectedItem | None:
         nid, title, broker = (
             str(row.get("nid") or ""),
             str(row.get("title") or "").strip(),
             str(row.get("brokerName") or ""),
         )
-        try:
-            day = datetime.strptime(str(row.get("writeDate")), "%Y-%m-%d").date()
-        except ValueError:
+        day = _dated(row)
+        if day is None or not (nid and title):
             return None
         # The API dates a report by day only: stamped at the END of that day, so a report from the day
         # before a morning run is not cut by a window that starts mid-morning (unshipped repeats are fine;
         # the shipped-URL ledger keeps a story from running twice).
-        published = datetime.combine(day, time(23, 59, 59), tzinfo=zone)
-        if not (nid and title) or not in_collection_window(
+        published = datetime.combine(day, time(23, 59, 59), tzinfo=_SEOUL)
+        if not in_collection_window(
             published, lookback_hours=self.config.lookback_hours, reference_time=self.config.reference_time
         ):
             return None
         stock = str(row.get("itemName") or "")
-        header = [broker]
+        header = [broker] if broker else []
         if row.get("analystName"):
             header.append(f"애널리스트 {row['analystName']}")
         if stock:
@@ -112,20 +139,22 @@ class NaverResearchCollector(BaseCollector):
             header.append(f"목표주가 {int(row['goalPrice']):,}원")
         if row.get("industryKoreanName"):
             header.append(f"업종 {row['industryKoreanName']}")
+        header.append(day.isoformat())
         summary = BeautifulSoup(str(row.get("content") or ""), "html.parser").get_text("\n", strip=True)
         return CollectedItem(
             item_id=f"naver-research-{category}-{nid}",
-            source_type=SourceType.RSS,
+            source_type=SourceType.RESEARCH,
             title=f"{stock}: {title}" if stock else title,
             url=PAGE_URL.format(category=category, nid=nid),
-            text=f"{' · '.join(header)} · {day.isoformat()}\n{summary}",
+            text=f"{' · '.join(header)}\n{summary}",
             author=broker,
             published_at=published,
-            metadata={
-                # One origin per broker, and the broker as the source line ("신한투자증권 리서치").
-                "feed_url": f"naver-research:{broker}",
-                "feed_title": f"{broker} 리서치",
-                "research_category": category,
-                "hide_link": not self.config.show_links,
-            },
+            metadata={"research_category": category, "hide_link": not self.config.show_links},
         )
+
+
+def _dated(row: dict[str, Any]):
+    try:
+        return datetime.strptime(str(row.get("writeDate")), "%Y-%m-%d").date()
+    except ValueError:
+        return None
