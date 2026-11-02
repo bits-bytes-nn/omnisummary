@@ -286,6 +286,13 @@ class DailyVisualMaker:
                 "recent_comics": _format_recent_comics(recent_comics),
                 "audience": self.config.pipeline.visual_audience_description,
                 "on_image_language": self.config.pipeline.visual_on_image_language,
+                # The edition's rules reach the cartoon too: a broker note's "Buy, target 580,000원" must
+                # not become the comic's own call. Empty for the AI/ML edition, whose prompt is unchanged.
+                "domain_rules": (
+                    f"\n\nRules for this edition, which the cartoon follows too:\n{rules}"
+                    if (rules := self.config.pipeline.domain_rules.strip())
+                    else ""
+                ),
             }
         )
         try:

@@ -48,6 +48,7 @@ collectors:
       - stocks
       - ValueInvesting
       - economics
+      - CryptoCurrency
     sort: hot
     limit: 20
     lookback_hours: *lookback_hours
@@ -60,10 +61,20 @@ collectors:
       - "https://biz.chosun.com/arc/outboundfeeds/rss/category/stock/?outputType=xml"
       - "https://news.einfomax.co.kr/rss/S1N2.xml"
       - "https://news.einfomax.co.kr/rss/S1N16.xml"
+      # New York wraps (stocks, FX, bonds, oil), Wall Street rating changes in Korean, named columnists.
+      - "https://news.einfomax.co.kr/rss/S1N9.xml"
+      - "https://news.einfomax.co.kr/rss/S1N21.xml"
+      - "https://news.einfomax.co.kr/rss/S1N12.xml"
+      # Analyst target changes, flows, US movers and the IPO/listing calendar in one Korean feed.
+      - "http://rss.edaily.co.kr/stock_news.xml"
       - "https://www.mk.co.kr/rss/50200011/"
       - "https://www.bok.or.kr/portal/bbs/B0000552/news.rss?menuNo=200690"
       - "https://www.federalreserve.gov/feeds/press_all.xml"
       - "https://www.ecb.europa.eu/rss/press.html"
+      # US earnings results and guidance; FactSet's weekly S&P 500 earnings scorecard; Sam Ro's TKer.
+      - "https://www.cnbc.com/id/15839135/device/rss/rss.html"
+      - "https://insight.factset.com/rss.xml"
+      - "https://www.tker.co/feed"
       - "https://decrypt.co/feed"
       - "https://www.blockmedia.co.kr/feed"
       - "https://news.einfomax.co.kr/rss/S1N17.xml"
@@ -85,6 +96,8 @@ collectors:
   naver_research:
     enabled: true
     lookback_hours: *lookback_hours
+    # Four categories: one failing (the company notes are most of the source) is already DEGRADED.
+    error_rate_threshold: 20.0
     categories: [company, industry, invest, economy]
   web_search:
     enabled: true
@@ -110,6 +123,17 @@ collectors:
           - "newsis.com"
           - "news.sbs.co.kr"
           - "biz.sbs.co.kr"
+      - name: korea_flows_events
+        queries:
+          - "외국인 기관 순매수 업종 프로그램 매매 공매도 잔고"
+          - "유상증자 자사주 소각 대규모 공급계약 공시 주가 급등 급락"
+          - "공모주 수요예측 경쟁률 신규상장 보호예수 해제"
+        domains: ["einfomax.co.kr", "edaily.co.kr", "news1.kr", "newsis.com"]
+      - name: us_earnings_vol
+        queries:
+          - "earnings beat miss guidance shares after hours"
+          - "VIX options positioning put call skew week"
+        domains: ["cnbc.com", "cboe.com"]
       - name: crypto
         queries:
           - "bitcoin ethereum crypto market ETF flows regulation"
@@ -153,6 +177,13 @@ collectors:
       - "ReutersBiz"
       - "WSJmarkets"
       - "glassnode"
+      # Market-data strategists: Carson, Schwab, Fidelity, Bianco Research; FactSet; earnings-call quotes.
+      - "RyanDetrick"
+      - "KevRGordon"
+      - "TimmerFidelity"
+      - "biancoresearch"
+      - "FactSet"
+      - "TheTranscript_"
     lookback_hours: 72
     max_concurrency: 5
     park_max_age_hours: 12
@@ -188,7 +219,7 @@ pipeline:
   visual_audience_description: "a daily Korean investing digest read by individual investors, beginners and experienced alike"
   ranking_criteria: |-
     1. Market Signal — does it read the market itself: prices, flows, positioning, earnings, rates or FX moving, with the numbers, and what they say about where money is going in Korea, the US, globally or in crypto?
-    2. Analysis — a named analyst's, strategist's or investor's reasoned view (a rating or target change, a thesis, a risk call, an earnings read) scores above a report of what happened; general economic, policy or corporate news with no read on what it means for prices scores low.
+    2. Analysis — a named analyst's, strategist's or investor's reasoned view (a rating or target change, a thesis, a risk call, an earnings read) scores above a report of what happened; general economic, policy or corporate news with no read on what it means for prices scores low. Central-bank decisions and official statistics are signals in themselves.
     3. Investor Value — would it change how an individual investor understands a holding, a sector or the market?
     4. Novelty — first reports, earnings, filings, rating and target changes over rehashes. A story already in a recent digest (listed below) is a rehash unless the item reports a real new development on it.
     5. Evidence — concrete numbers and reasons, not price-chasing, hype or a sales pitch.
@@ -222,6 +253,7 @@ pipeline:
     rss: 1
     reddit: 1
     youtube: 1
+    research: 1
   trend_model: "anthropic.claude-sonnet-5-5"
   trend_retention_days: 30
   trend_max_evidence: 5
@@ -264,9 +296,8 @@ agent:
   model_id: "anthropic.claude-opus-5-5"
   # Investing edition: the same narrator, reading markets in Korea, the US and globally, and crypto.
   market_quotes: true
-  # Only publishers whose robots.txt lets crawlers read their research pages (finance.naver.com,
-  # consensus.hankyung.com and nhqv.com disallow everything): Korean broker notes arrive through the
-  # news that reports on them.
+  # Research publishers the agent's search_reports tool is scoped to. Korean broker notes also arrive
+  # in the digest through collectors.naver_research.
   report_search_domains:
     - "www.hankyung.com"
     - "goldmansachs.com"

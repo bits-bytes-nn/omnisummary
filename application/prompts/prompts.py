@@ -211,7 +211,7 @@ class VisualEditorPrompt(BasePrompt):
     """Write the daily comic for the HEADLINE story. The headline is chosen upstream (the digest's
     lead is about it), so the editor doesn't pick the story; it writes the comic for it."""
 
-    input_variables = ["headline", "recent_comics", "audience", "on_image_language"]
+    input_variables = ["headline", "recent_comics", "audience", "on_image_language", "domain_rules"]
 
     system_prompt_template = """\
 You are the cartoonist for {audience}. Today's cartoon is about the HEADLINE story given below in full. \
@@ -241,7 +241,7 @@ Produce ONLY a JSON object:
 Rules:
 - Keep every frame drawable: at most three characters acting in the foreground (a background crowd \
 is fine) and one clear action, on a plausible set.
-- Return {{"skip": true}} only if the headline cannot be illustrated at all."""
+- Return {{"skip": true}} only if the headline cannot be illustrated at all.{domain_rules}"""
 
     human_prompt_template = "<headline>\n{headline}\n</headline>\n\n<recent_comics>\n{recent_comics}\n</recent_comics>"
 

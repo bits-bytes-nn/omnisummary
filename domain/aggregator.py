@@ -205,5 +205,8 @@ class ContentAggregator:
     def _fill_missing_metadata(kept: CollectedItem, dupe: CollectedItem) -> None:
         # Only fill keys the kept item lacks — never overwrite its own origin/engagement
         # metadata (feed_url, subreddit, channel_url, view_count) with a lower-priority dupe's.
+        # hide_link belongs to the dupe's SOURCE: a news item that wins a title tie with a research note
+        # must keep its own link.
         for k, v in dupe.metadata.items():
-            kept.metadata.setdefault(k, v)
+            if k != "hide_link":
+                kept.metadata.setdefault(k, v)

@@ -205,6 +205,12 @@ SOURCE_DESCRIPTORS: dict[SourceType, SourceDescriptor] = {
         tag=lambda item: f"r/{item.metadata['subreddit']}" if item.metadata.get("subreddit") else "",
         metrics=_no_metrics,
     ),
+    SourceType.RESEARCH: SourceDescriptor(
+        origin_key=lambda item: item.author or "",
+        label=lambda item: f"{item.author} 리서치" if item.author else "",
+        tag=lambda item: f"{item.author} 리서치" if item.author else "증권사 리서치",
+        metrics=_no_metrics,
+    ),
     SourceType.RSS: SourceDescriptor(
         origin_key=lambda item: item.metadata.get("feed_url", ""),
         label=lambda item: item.metadata.get("feed_title", "") or item.metadata.get("feed_url", ""),

@@ -4,6 +4,8 @@ from typing import Literal, get_args
 
 class SourceType(str, Enum):
     REDDIT = "reddit"
+    # Broker research notes (adapters/collectors/naver_research.py): their own pool seat and one origin per broker.
+    RESEARCH = "research"
     RSS = "rss"
     WEB = "web"
     X = "x"

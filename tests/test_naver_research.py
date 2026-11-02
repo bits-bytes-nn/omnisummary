@@ -58,7 +58,7 @@ async def test_a_company_note_is_attributed_dated_and_unlinked(monkeypatch):
     assert item.title == "현대모비스: 26.3Q Review: 4분기에는 더 좋은 그림"
     assert item.text.startswith("iM증권 · 현대모비스 · 투자의견 Buy · 목표주가 580,000원 · 2026-11-01\n")
     assert "영업이익 9,141억원" in item.text and "<p>" not in item.text
-    assert item.metadata["feed_url"] == "naver-research:iM증권" and item.metadata["hide_link"] is True
+    assert item.source_type.value == "research" and item.author == "iM증권" and item.metadata["hide_link"] is True
     # The window's dates go upstream; the reference is midnight at the end of 11-02.
     assert seen[0].url.params["startDate"] == "2026-11-01" and seen[0].url.params["endDate"] == "2026-11-02"
 
@@ -103,12 +103,68 @@ def test_the_generator_carries_the_hidden_link_from_the_source():
 
     src = CollectedItem(
         item_id="n",
-        source_type=SourceType.RSS,
+        source_type=SourceType.RESEARCH,
         title="t",
         url="https://stock.naver.com/research/company/1",
         text="x",
-        metadata={"feed_url": "naver-research:iM증권", "feed_title": "iM증권 리서치", "hide_link": True},
+        author="iM증권",
+        metadata={"hide_link": True},
     )
     content = DigestContent(lead="리드.", items=[DigestItem(title="t", url=src.url, body="b")])
     DigestGenerator(PipelineConfig(), MagicMock())._fill_source_metadata(content, [RankedItem(item=src, score=0.9)])
     assert content.items[0].show_link is False and content.items[0].source_tag == "iM증권 리서치"
+
+
+@pytest.mark.asyncio
+async def test_a_changed_date_format_fails_the_category_instead_of_reading_empty(monkeypatch):
+    rows = [{**COMPANY, "writeDate": "20261101"}]
+    collector, _ = _collector(monkeypatch, {"company": rows, "industry": [COMPANY]}, categories=["company", "industry"])
+    items = await collector.collect()
+    assert [i.metadata["research_category"] for i in items] == ["industry"]
+    assert collector.run_meta  # one of two categories failed
+
+
+@pytest.mark.asyncio
+async def test_a_transient_status_is_retried(monkeypatch):
+    calls = []
+
+    def answer(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(503)
+        return httpx.Response(200, content=json.dumps({"items": [COMPANY], "hasNext": False}))
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(
+        naver_research.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(answer), **kw)
+    )
+    config = NaverResearchCollectorConfig(
+        enabled=True,
+        lookback_hours=42,
+        page_delay_sec=0,
+        retry_backoff_sec=0,
+        categories=["company"],
+        reference_time=datetime(2026, 11, 3, tzinfo=SEOUL),
+    )
+    assert len(await NaverResearchCollector(config).collect()) == 1 and len(calls) == 2
+
+
+def test_a_news_item_that_wins_a_title_tie_keeps_its_own_link():
+    from domain.aggregator import ContentAggregator
+    from domain.models import CollectedItem
+    from shared.constants import SourceType
+
+    news = CollectedItem(
+        item_id="a", source_type=SourceType.RSS, title="같은 제목", url="https://e.com/a", text="긴 본문 " * 50
+    )
+    note = CollectedItem(
+        item_id="b",
+        source_type=SourceType.RESEARCH,
+        title="같은 제목",
+        url="https://stock.naver.com/research/company/1",
+        text="짧다",
+        author="iM증권",
+        metadata={"hide_link": True},
+    )
+    [kept] = ContentAggregator().aggregate([note, news])
+    assert kept.url == "https://e.com/a" and "hide_link" not in kept.metadata
