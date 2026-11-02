@@ -72,7 +72,9 @@ class NaverResearchCollector(BaseCollector):
         rows_seen = dated = 0
         for index in range(self.config.max_pages):
             payload = await self._page(client, category, index, start, end)
-            rows = payload.get("items") or []
+            if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+                raise ValueError(f"Naver research '{category}' answered without an items list")
+            rows = payload["items"]
             rows_seen += len(rows)
             dated += sum(1 for row in rows if _dated(row) is not None)
             items += [item for row in rows if (item := self._to_item(category, row)) is not None]
@@ -135,8 +137,9 @@ class NaverResearchCollector(BaseCollector):
             header.append(stock)
         if row.get("opinionText"):
             header.append(f"투자의견 {row['opinionText']}")
-        if str(row.get("goalPrice") or "").isdigit() and int(row["goalPrice"]) > 0:
-            header.append(f"목표주가 {int(row['goalPrice']):,}원")
+        target = _won(row.get("goalPrice"))
+        if target:
+            header.append(f"목표주가 {target:,}원")
         if row.get("industryKoreanName"):
             header.append(f"업종 {row['industryKoreanName']}")
         header.append(day.isoformat())
@@ -144,7 +147,9 @@ class NaverResearchCollector(BaseCollector):
         return CollectedItem(
             item_id=f"naver-research-{category}-{nid}",
             source_type=SourceType.RESEARCH,
-            title=f"{stock}: {title}" if stock else title,
+            # Strategy and economy notes share generic titles ("Weekly"); the broker keeps them apart in
+            # title dedup.
+            title=f"{stock}: {title}" if stock else f"{broker}: {title}" if broker else title,
             url=PAGE_URL.format(category=category, nid=nid),
             text=f"{' · '.join(header)}\n{summary}",
             author=broker,
@@ -155,9 +160,17 @@ class NaverResearchCollector(BaseCollector):
                 "stock": stock,
                 "day": day.isoformat(),
                 "opinion": str(row.get("opinionText") or ""),
-                "target": int(row["goalPrice"]) if str(row.get("goalPrice") or "").isdigit() else 0,
+                "target": target,
+                "broker": broker,
+                "nid": int(nid) if nid.isdigit() else 0,
             },
         )
+
+
+def _won(value: object) -> int:
+    """A target price in won (580000, "580,000", 580000.0), or 0."""
+    digits = str(value or "").split(".")[0].replace(",", "")
+    return int(digits) if digits.isdigit() else 0
 
 
 def _dated(row: dict[str, Any]):
@@ -184,6 +197,10 @@ def _one_item_per_stock_and_day(items: list[CollectedItem]) -> list[CollectedIte
         if len(notes) == 1:
             out.append(notes[0])
             continue
+        # The earliest note (lowest nid) stands for the group: its URL is what a run that saw only that
+        # note shipped, so the shipped-URL ledger still recognises the story when more notes arrive.
+        notes.sort(key=lambda n: n.metadata.get("nid", 0))
+        brokers = len({n.metadata.get("broker") or n.author for n in notes})
         targets = [n.metadata["target"] for n in notes if n.metadata.get("target")]
         calls = ", ".join(
             f"{n.author} {n.metadata.get('opinion') or '의견 없음'}"
@@ -196,9 +213,9 @@ def _one_item_per_stock_and_day(items: list[CollectedItem]) -> list[CollectedIte
             first.model_copy(
                 update={
                     "item_id": f"naver-research-company-{stock}-{day}",
-                    "title": f"{stock}: 증권사 {len(notes)}곳 리포트{span}",
+                    "title": f"{stock}: 증권사 {brokers}곳 리포트{span}",
                     "text": f"{stock} · {day} · {calls}\n\n" + "\n\n".join(n.text for n in notes),
-                    "author": f"{first.author} 외 {len(notes) - 1}곳",
+                    "author": f"{first.author} 외 {brokers - 1}곳" if brokers > 1 else first.author,
                     "metadata": {**first.metadata, "notes": len(notes)},
                 }
             )

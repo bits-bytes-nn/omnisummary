@@ -185,3 +185,33 @@ async def test_several_brokers_on_one_stock_and_day_become_one_consensus_item(mo
     assert merged.title == "현대모비스: 증권사 3곳 리포트, 목표주가 580,000~600,000원"
     assert "iM증권 Buy 580,000원, KB증권 매수 600,000원, 한국IR협의회 의견 없음" in merged.text
     assert merged.author == "iM증권 외 2곳" and merged.metadata["hide_link"] is True
+
+
+@pytest.mark.asyncio
+async def test_the_merged_item_keeps_the_first_notes_url_whatever_the_api_order(monkeypatch):
+    rows = [
+        {**COMPANY, "nid": "300", "brokerName": "KB증권"},
+        {**COMPANY, "nid": "100", "brokerName": "iM증권"},
+        {**COMPANY, "nid": "200", "brokerName": "iM증권"},  # the same broker twice
+    ]
+    collector, _ = _collector(monkeypatch, {"company": rows}, categories=["company"])
+    [merged] = await collector.collect()
+    # What an earlier run that saw only note 100 shipped, so the URL ledger still matches.
+    assert merged.url.endswith("/company/100")
+    assert merged.title.startswith("현대모비스: 증권사 2곳 리포트") and merged.author == "iM증권 외 1곳"
+
+
+def test_a_merged_items_origin_is_its_broker():
+    from domain.formatting import resolve_origin_key
+    from domain.models import CollectedItem
+    from shared.constants import SourceType
+
+    item = CollectedItem(
+        item_id="m",
+        source_type=SourceType.RESEARCH,
+        title="t",
+        url="https://e.com/1",
+        author="iM증권 외 2곳",
+        metadata={"broker": "iM증권"},
+    )
+    assert resolve_origin_key(item) == "iM증권"

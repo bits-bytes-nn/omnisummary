@@ -213,8 +213,8 @@ async def run_pipeline(
 
 
 def _recent_story_titles(snapshots: list[DigestSnapshot]) -> list[str]:
-    """Story titles from every snapshot the cross-day dedup seed already fetched (the ledger's
-    window, ages 1..published_url_ttl_days-1, newest first), so the editor sees what recent digests ran. One
+    """Story titles from the recent snapshots (RECENT_TITLE_DAYS, newest first), so the ranker and the
+    editor see what recent digests ran. One
     day was not enough: a weekly roundup brings a story back under a NEW URL the ledger cannot
     match, and on 2026-10-11 three of five stories had run 1-4 days earlier. The ranker reads it for
     Novelty and the editor for selection; it is information, not a filter."""

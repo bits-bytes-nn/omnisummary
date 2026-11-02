@@ -282,3 +282,14 @@ class TestOneSeatPerStory:
             factory.get_model.return_value = RunnableLambda(lambda _p, a=answer: AIMessage(content=a))
             ranker = ContentRanker(PipelineConfig(), factory)
             assert asyncio.run(ranker._story_groups(items)) == expected
+
+
+def test_a_story_takes_its_seat_with_its_best_copy_not_an_earlier_sources_weaker_one():
+    ranker = _ranker(source_slots={"x": 1, "web": 1}, max_per_origin=1)
+    article = _ranked(0.85, SourceType.WEB, item_id="article", url="http://a.com/x")
+    post = _ranked(0.65, SourceType.X, item_id="post", author="someone")
+    other = _ranked(0.6, SourceType.X, item_id="other-post", author="other")
+    picked = [
+        r.item.item_id for r in ranker._apply_source_slots([article, post, other], 2, [], {"article": 0, "post": 0})
+    ]
+    assert picked == ["article", "other-post"]

@@ -207,7 +207,8 @@ SOURCE_DESCRIPTORS: dict[SourceType, SourceDescriptor] = {
         metrics=_no_metrics,
     ),
     SourceType.RESEARCH: SourceDescriptor(
-        origin_key=lambda item: item.author or "",
+        # The broker, also for a merged "X 외 N곳" item, so max_per_origin still holds per broker.
+        origin_key=lambda item: item.metadata.get("broker") or item.author or "",
         label=lambda item: f"{item.author} 리서치" if item.author else "",
         tag=lambda item: f"{item.author} 리서치" if item.author else "증권사 리서치",
         metrics=_no_metrics,

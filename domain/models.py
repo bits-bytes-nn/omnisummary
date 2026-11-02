@@ -81,6 +81,8 @@ class RankingHealth(BaseModel):
     items_total: int = 0
     items_scored: int = 0
     items_lost: int = 0
+    # Batches that parsed to nothing and were split, with a half that still failed.
+    batches_partly_lost: int = 0
 
     @property
     def coverage(self) -> float:
@@ -96,7 +98,7 @@ class RankingHealth(BaseModel):
         silent — but the same commit made that case RAISE, so the arm was dead by its own docstring.
         Measured over 30 production runs, per-day coverage is bimodal (0.93-1.0 or 0.0), so the
         tuned ratio never separated anything the batches_failed count did not already catch."""
-        return self.batches_failed > 0
+        return self.batches_failed > 0 or self.batches_partly_lost > 0
 
     def summary(self) -> str:
         return (

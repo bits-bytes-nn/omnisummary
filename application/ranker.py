@@ -37,6 +37,7 @@ class ContentRanker:
         # How complete the last rank() was, for the caller to report/alert on. A digest built from a
         # pool that lost a whole batch of candidates must not read as a clean success.
         self.health = RankingHealth()
+        self._split_batches_lost = 0
 
     def _truncate(self, text: str, max_tokens: int) -> str:
         return self.models.truncate_to_tokens(text, max_tokens)
@@ -67,6 +68,7 @@ class ContentRanker:
             logger.warning("No items to rank")
             return []
         limit = select_count or self.config.top_n
+        self._split_batches_lost = 0
 
         logger.info("Ranking %d items with model '%s'", len(items), self.config.ranking_model.value)
 
@@ -114,6 +116,7 @@ class ContentRanker:
         self.health = RankingHealth(
             batches_total=len(batches),
             batches_failed=len(failures),
+            batches_partly_lost=self._split_batches_lost,
             items_total=len(items),
             items_scored=len(ranked_items),
             # Every candidate left unscored, a failed batch's and a split batch's bad half alike.
@@ -226,17 +229,21 @@ class ContentRanker:
         ranked = await self._score_batch(items, semaphore, recent_titles)
         if not ranked and len(items) > 1:
             # Nothing parsed (2 of 5 AI runs lost a whole batch this way, both attempts empty or prose).
-            # Re-asking the identical batch repeats whatever in it caused that, so score each half on
-            # its own: one bad item then costs itself, not 40 neighbours.
+            # Re-asking the identical batch repeats whatever in it caused that, so score each half once
+            # instead: a bad item then costs its half, not 40 neighbours. Once, not recursively: a
+            # failure that hits every batch (a model answering in prose) would otherwise cost 3n calls
+            # and outrun the Lambda instead of failing fast.
             half = len(items) // 2
             logger.warning("Ranking batch of %d items parsed to nothing; scoring its halves separately", len(items))
             outcomes = await asyncio.gather(
-                *(self._rank_batch(part, semaphore, recent_titles) for part in (items[:half], items[half:])),
+                *(self._score_batch(part, semaphore, recent_titles) for part in (items[:half], items[half:])),
                 return_exceptions=True,
             )
             scored = [r for outcome in outcomes if not isinstance(outcome, BaseException) for r in outcome]
             if not scored:
                 raise RuntimeError(f"Ranking batch of {len(items)} items produced no parsed rankings")
+            if len(scored) < len(items):
+                self._split_batches_lost += 1
             return scored
         scored_ids = {r.item.item_id for r in ranked}
         missing = [it for it in items if it.item_id not in scored_ids]
@@ -312,6 +319,13 @@ class ContentRanker:
         source_slots = self.config.source_slots
         stories = stories or {}
         stories_taken: set[int] = set()
+        # A story competes with its best-scored copy: in the guaranteed-slot pass an X post at 0.65 from
+        # an earlier source would otherwise take the seat its 0.85 article copy needed.
+        best_copy: dict[int, str] = {}
+        for candidate in above_threshold:
+            story = stories.get(candidate.item.item_id)
+            if story is not None:
+                best_copy.setdefault(story, candidate.item.item_id)
         # NOTE: an empty source_slots skips only the GUARANTEED-SLOT pass below (the loop simply has
         # nothing to iterate) — the origin-cap fill passes still run. Returning above_threshold[:limit]
         # here instead dropped max_per_origin along with the slots, so one feed could take every
@@ -364,7 +378,12 @@ class ContentRanker:
                     break
                 if item.item.source_type.value != source_key or item.item.item_id in selected_ids:
                     continue
-                if origin_at_cap(item) or story_taken(item):
+                story = stories.get(item.item.item_id)
+                if (
+                    origin_at_cap(item)
+                    or story_taken(item)
+                    or (story is not None and best_copy[story] != item.item.item_id)
+                ):
                     continue
                 record(item, source_key)
                 taken += 1

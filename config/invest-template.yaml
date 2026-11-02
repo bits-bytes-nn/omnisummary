@@ -86,7 +86,6 @@ collectors:
       - "https://calculatedrisk.substack.com/feed"
       - "https://stayathomemacro.substack.com/feed"
       - "https://aswathdamodaran.blogspot.com/feeds/posts/default"
-      - "https://research.glassnode.com/rss/"
       - "https://coinmetrics.substack.com/feed"
     lookback_hours: *lookback_hours
     # Feeds fetched at once (each fetch carries its own httpx timeout).
@@ -96,15 +95,15 @@ collectors:
   naver_research:
     enabled: true
     lookback_hours: *lookback_hours
-    # Four categories: one failing (the company notes are most of the source) is already DEGRADED.
-    error_rate_threshold: 20.0
+    # Five categories: one failing (the company notes are most of the source) is already DEGRADED.
+    error_rate_threshold: 15.0
     categories: [company, industry, invest, economy, debenture]
   web_search:
     enabled: true
     # Hosts never returned by any search, broad or refined (Tavily exclude_domains), e.g. content farms:
     # Article pages behind a bot check or paywall (docs/design.md, 판): a search result would hand us
     # their text fetched around it.
-    exclude_domains: ["finance.biggo.com", "t.me", "telegram.me", "instagram.com", "facebook.com", "moomoo.com", "bloomberg.com", "ft.com", "wsj.com", "barrons.com", "marketwatch.com", "seekingalpha.com", "investing.com", "coindesk.com", "theblock.co", "hankyung.com", "reuters.com", "globenewswire.com", "tipranks.com", "benzinga.com", "marketbeat.com", "farside.co.uk", "etf.com", "scanx.trade", "fool.com", "247wallst.com"]
+    exclude_domains: ["finance.biggo.com", "t.me", "telegram.me", "instagram.com", "facebook.com", "moomoo.com", "bloomberg.com", "ft.com", "wsj.com", "barrons.com", "marketwatch.com", "seekingalpha.com", "investing.com", "coindesk.com", "theblock.co", "hankyung.com", "reuters.com", "globenewswire.com", "tipranks.com", "benzinga.com", "marketbeat.com", "farside.co.uk", "etf.com", "scanx.trade", "fool.com", "247wallst.com", "businessinsider.com", "theinformation.com", "medium.com", "openai.com", "stratechery.com"]
     trend_searches:
       - name: us_global_markets
         queries:
