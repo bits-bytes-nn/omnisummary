@@ -755,7 +755,7 @@ GUID(RSS와 X는 기사 URL, 그 밖은 글이나 영상 id)라서 그대로 정
 나머지 풀은 점수 순으로 채우되 `max_per_origin`으로 하나의 origin 키가 차지하는 항목 수를 제한한다(①). 그래도
 모자라면 origin 캡을 풀고 채운다(②). 서로 다른 origin이 너무 적은 조용한 날에도 풀이 짧아지지 않게 하려는 것이다.
 수집기(소스) 단위 상한은 없다. "rss"는 13개 매체를 묶고, 매체 단위 다양성은 `max_per_origin`이 이미 지킨다.
-수집기당 2개 상한을 두었을 때 16일 중 9일, 0.72–0.80 항목이 풀 밖에 남고 0.60–0.68 항목이 들어갔다.
+수집기당 2개 상한을 두었을 때 16일 중 9일, 0.72–0.80 항목이 풀 밖에 남고 0.60–0.68 항목이 들어갔다. 슬롯은 운영 config에서 소스별로 뺄 수 있다. AI판은 2026-11-02에 Reddit 슬롯을 뺐다. r/LocalLLaMA의 개인 모델 튜닝 글이 매일 그 자리를 차지해서다. 같은 날 업계·시장 분석(SemiAnalysis, a16z, Exponential View, Epoch AI, Understanding AI, ChinaTalk 피드와 SemiAnalysis·a16z·Epoch AI·Ethan Mollick X 계정)을 넣고 랭킹 독자 설명을 "AI 업계의 연구소, 칩, 돈과 시장을 따라가는 독자와 그것으로 만드는 엔지니어"로 넓혔다. 같은 날 시험 실행에서 Reddit은 점수로 2건이 들어왔고, 후보 상위가 SemiAnalysis GDPx, 데이터센터 반발, Anthropic 신용등급 전망으로 바뀌었다.
 
 origin은 `resolve_origin_key`로 해석한다. YouTube는 channel_url, Reddit은 subreddit, RSS는 feed_url, X는
 author, Web은 URL 호스트(`urlparse().netloc`에서 `www.` 제거)다. PSL이나 등록가능도메인 휴리스틱을 쓰지 않으니
