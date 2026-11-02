@@ -119,7 +119,8 @@ class NaverResearchCollector(BaseCollector):
             str(row.get("brokerName") or ""),
         )
         day = _dated(row)
-        if day is None or not (nid and title):
+        # No broker, no attribution: the domain rules name every analyst view's source.
+        if day is None or not (nid and title and broker):
             return None
         # The API dates a report by day only: stamped at the END of that day, so a report from the day
         # before a morning run is not cut by a window that starts mid-morning (unshipped repeats are fine;
@@ -199,7 +200,7 @@ def _one_item_per_stock_and_day(items: list[CollectedItem]) -> list[CollectedIte
             continue
         # The earliest note (lowest nid) stands for the group: its URL is what a run that saw only that
         # note shipped, so the shipped-URL ledger still recognises the story when more notes arrive.
-        notes.sort(key=lambda n: n.metadata.get("nid", 0))
+        notes.sort(key=lambda n: (n.metadata.get("nid", 0), n.item_id))
         brokers = len({n.metadata.get("broker") or n.author for n in notes})
         targets = [n.metadata["target"] for n in notes if n.metadata.get("target")]
         calls = ", ".join(

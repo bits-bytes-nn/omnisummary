@@ -303,15 +303,20 @@ class BedrockLanguageModelFactory:
         if total <= max_tokens:
             return text
         cut = len(text) * max_tokens // total
+        if cut <= 0:
+            # A budget below one character's worth: nothing fits, and counting "" is an API error.
+            return ""
         for _ in range(_TRUNCATE_PASSES):
             counted = self.count_tokens(text[:cut])
             if counted <= max_tokens:
                 break
             # Over by the same ratio again, with a little slack so the next pass lands under.
             cut = cut * max_tokens * 95 // (counted * 100)
+            if cut <= 0:
+                return ""
         else:
             # Token density far from uniform: bisect below the last cut (rare; still bounded by log2).
-            lo, hi, cut = 0, cut, 0
+            lo, hi, cut = 1, cut, 0
             while lo <= hi:
                 mid = (lo + hi) // 2
                 if self.count_tokens(text[:mid]) <= max_tokens:

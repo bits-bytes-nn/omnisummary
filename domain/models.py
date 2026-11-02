@@ -91,7 +91,7 @@ class RankingHealth(BaseModel):
 
     @property
     def degraded(self) -> bool:
-        """True when candidates were LOST — a batch that failed every retry.
+        """True when candidates were LOST: a batch that failed every retry, or a split batch whose half did.
 
         A `coverage < min_coverage_ratio` arm sat beside this. It was added for the batch whose
         response never parsed twice over, leaving every counter at zero while the alerting stayed
@@ -102,7 +102,9 @@ class RankingHealth(BaseModel):
 
     def summary(self) -> str:
         return (
-            f"{self.batches_failed}/{self.batches_total} ranking batches failed permanently; "
+            f"{self.batches_failed}/{self.batches_total} ranking batches failed permanently"
+            + (f", {self.batches_partly_lost} lost half of a split batch" if self.batches_partly_lost else "")
+            + "; "
             f"{self.items_lost} of {self.items_total} candidates never reached the digest "
             f"({self.items_scored} scored, coverage {self.coverage:.0%})"
         )

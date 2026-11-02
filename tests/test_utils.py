@@ -193,6 +193,22 @@ class TestParseJsonFromLlmOutput:
         raw = 'sure:\n```json\n{"x": [1, 2]}\n```\ndone'
         assert parse_json_from_llm_output(raw) == {"x": [1, 2]}
 
+    def test_the_first_value_wins_when_more_follows(self):
+        # The extract spans first brace to last brace, so a note with braces after the answer, or a
+        # second object, made json.loads fail with "Extra data" (the same-story grouping call, 11-02).
+        assert parse_json_from_llm_output('{"same_story": [[1, 2]]}\n\nNote: {3} is separate.') == {
+            "same_story": [[1, 2]]
+        }
+        assert parse_json_from_llm_output('{"a": 1}\n{"b": 2}') == {"a": 1}
+
+    def test_genuinely_malformed_json_still_raises(self):
+        import json
+
+        import pytest
+
+        with pytest.raises(json.JSONDecodeError):
+            parse_json_from_llm_output('{"a": }')
+
     def test_raw_newline_in_string_value(self):
         # Sonnet 5 emits an unescaped newline inside a string literal; strict json.loads
         # would raise 'Invalid control character', strict=False must accept and preserve it.
