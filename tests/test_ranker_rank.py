@@ -548,7 +548,7 @@ class TestRankingHealthVerdict:
         assert ranker.health.degraded is True
 
     @pytest.mark.asyncio
-    async def test_a_batch_that_parses_to_nothing_is_scored_in_halves_so_one_bad_item_costs_itself(self):
+    async def test_a_batch_that_parses_to_nothing_is_scored_in_halves_once_and_alerts(self):
         items = _items([("a", SourceType.WEB), ("b", SourceType.WEB), ("c", SourceType.WEB), ("d", SourceType.WEB)])
         config = PipelineConfig(
             top_n=5, min_score=0.6, source_slots={}, ranking_batch_size=4, ranking_retry_backoff_sec=0
@@ -561,11 +561,14 @@ class TestRankingHealthVerdict:
                 return AIMessage(content="I cannot rank these.")
             return AIMessage(content=_rankings({k: 0.9 for k in "acd" if f"t-{k}" in text}))
 
-        factory.get_model.return_value = _numbered(RunnableLambda(_respond))
+        calls = []
+        factory.get_model.return_value = _numbered(RunnableLambda(lambda p: calls.append(p) or _respond(p)))
         ranker = ContentRanker(config, factory)
         result = await ranker.rank(items)
-        assert {r.item.item_id for r in result} == {"a", "c", "d"}
-        assert ranker.health.items_lost == 1
+        assert len(calls) <= 4  # the batch, its re-ask, two halves
+        # The half holding the bad item is lost, the other half survives; one split, never recursive.
+        assert {r.item.item_id for r in result} == {"c", "d"}
+        assert ranker.health.items_lost == 2 and ranker.health.degraded is True
 
     @pytest.mark.asyncio
     async def test_a_clean_run_is_not_degraded(self):
@@ -574,3 +577,20 @@ class TestRankingHealthVerdict:
         await ranker.rank(items)
         assert ranker.health.degraded is False
         assert ranker.health.items_lost == 0
+
+
+@pytest.mark.asyncio
+async def test_rank_asks_for_same_story_groups_and_caps_the_pool_with_them():
+    items = _items([(k, SourceType.WEB) for k in "abcd"])
+    config = PipelineConfig(top_n=2, min_score=0.6, source_slots={}, ranking_retry_backoff_sec=0)
+    factory = _mock_factory()
+
+    def _respond(prompt_value):
+        text = str(prompt_value)
+        if "same_story" in text:  # the grouping prompt: items 1 and 2 (a, b) are one story
+            return AIMessage(content='{"same_story": [[1, 2]]}')
+        return AIMessage(content=_rankings({"a": 0.9, "b": 0.85, "c": 0.8, "d": 0.7}))
+
+    factory.get_model.return_value = _numbered(RunnableLambda(_respond))
+    ranked = await ContentRanker(config, factory).rank(items, select_count=2)
+    assert [r.item.item_id for r in ranked] == ["a", "c"]
