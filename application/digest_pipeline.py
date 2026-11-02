@@ -139,7 +139,16 @@ async def run_pipeline(
     # Over-select (top_n + buffer): the editor picks the strongest top_n distinct stories from it.
     select_count = config.pipeline.top_n + config.pipeline.digest_candidate_buffer
     ranker = ContentRanker(config.pipeline, models)
-    recent_titles = _recent_story_titles(snapshots)
+    title_snapshots = snapshots
+    try:
+        # Titles reach further back than the URL ledger: Kimi K3.1 Pro shipped on 10-24 and again, as
+        # another outlet's take on the same release, on 11-02, eight days later.
+        title_snapshots = memory_store().get_recent_digests(digest_date, RECENT_TITLE_DAYS)
+    except Exception:
+        logger.warning(
+            "Could not read %d days of recent titles; using the dedup window", RECENT_TITLE_DAYS, exc_info=True
+        )
+    recent_titles = _recent_story_titles(title_snapshots)
     ranked_items = await ranker.rank(items, select_count=select_count, recent_titles=recent_titles)
     logger.info("Ranked %d items (from %d)", len(ranked_items), len(items))
 
@@ -225,6 +234,7 @@ def _recent_leads(snapshots: list[DigestSnapshot], window: int) -> list[str]:
 
 
 RECENT_IMPLICATION_DAYS = 2
+RECENT_TITLE_DAYS = 14
 
 
 def persist_digest(

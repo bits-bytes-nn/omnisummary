@@ -141,13 +141,13 @@ import하지 않는다. `domain`과 `shared`는 LangChain도 모른다. `applica
 증권·채권외환, 매경 증권), 중앙은행 보도자료(한국은행, 미 연준, ECB), 크립토(Decrypt, 블록미디어), 국내 부동산(인포맥스 부동산,
 조선비즈 부동산, 뉴스1·뉴시스·SBS Biz로 좁힌 웹 검색 한 묶음), 본문을 피드에 싣는 실명 경제학자·분석가의 블로그(뉴욕 연준 Liberty Street,
 Robin Brooks, Klement, Yardeni, Calculated Risk, Sahm, Damodaran, Glassnode, Coin Metrics), Reddit 네 곳, X 15개 계정(Reuters와 WSJ는
-X로만 들어온다), YouTube 3개 채널(월가아재, Patrick Boyle, 채부심)이다. 2026-11-02에 개인투자자 관점으로 다시 넓혀, 인포맥스 뉴욕 마감·해외주식·외부기고 섹션, 이데일리 증권(목표가 변경·수급·미국 특징주·공모 일정), CNBC 실적, FactSet 실적 점검, TKer, 시장 데이터를 다루는 전략가 X 계정 6개(Carson, Schwab, Fidelity, Bianco, FactSet, 실적 콜 인용), 수급·공시·공모주와 미국 실적·변동성 웹 검색 묶음을 더하고 r/CryptoCurrency를 되살렸다. 미국 투자의견 변경을 담은 공개 피드는 없어서(Benzinga 403, MarketBeat는 스크립트로만 그린다) 이데일리·인포맥스 해외주식과 리서치 도구 `analyst_ratings`가 대신하고, 공매도 잔고는 로그인 없는 출처가 없다.
+X로만 들어온다), YouTube 3개 채널(월가아재, Patrick Boyle, 채부심)이다. 2026-11-02에 개인투자자 관점으로 다시 넓혀, 인포맥스 뉴욕 마감·해외주식·외부기고 섹션, 이데일리 증권(목표가 변경·수급·미국 특징주·공모 일정), CNBC 실적, FactSet 실적 점검, TKer, 시장 데이터를 다루는 전략가 X 계정 6개(Carson, Schwab, Fidelity, Bianco, FactSet, 실적 콜 인용), 수급·공시·공모주와 미국 실적·변동성 웹 검색 묶음을 더하고 r/CryptoCurrency를 되살렸다. 미국 투자의견 변경을 담은 공개 피드는 없어서(Benzinga 403, MarketBeat는 스크립트로만 그린다) 이데일리·인포맥스 해외주식과 리서치 도구 `analyst_ratings`가 대신하고, 공매도 잔고는 로그인 없는 출처가 없다. 같은 날 두 번째 적대적 재검토에서 웹 검색을 미국 시장·크립토 두 묶음으로 줄였다. 국내 묶음(시장, 부동산, 수급·공시)은 결과가 없거나 피드와 겹쳤고, 나머지는 집단소송 공지(GlobeNewswire)와 랜딩 페이지였다. 그래서 웹 검색의 보장 자리와 Reddit 자리를 뺐고, r/economics(정치·일반 뉴스)와 RyanDetrick(팟캐스트 홍보와 계절성 통계)을 뺐다. 연준 피드는 은행 인가·제재가 섞인 전체 보도자료 대신 통화정책 보도자료와 연설로 바꿨고, 리서치 수집기에 채권(debenture) 분류를 더했다. 리서치 도구의 검색 도메인에서도 일반 독자에게 막힌 호스트(Reuters, 한국경제, MarketWatch, Investing.com, Seeking Alpha)를 뺐다.
 
 수집 기준은 두 갈래다(두 판 공통). 일반 독자처럼 공개 페이지를 읽고 요약과 출처 링크만 내보내며 모델을 학습시키지 않는다.
 **기술적 접근 통제는 우회하지 않는다.** 유료벽, 봇 확인 페이지, 403·429, 남의 로그인 벽이 걸린 곳은 쓰지 않고, UA를 바꾸거나 본문 추출
 서비스를 거쳐 가져오지도 않는다. 웹 검색도 마찬가지라 그런 호스트(Bloomberg, FT, WSJ, Barron's, MarketWatch, Seeking Alpha, Investing.com,
 CoinDesk, The Block, 한국경제)는 두 판 모두 `exclude_domains`에 둔다. 검색 결과에는 검색 서비스가 봇 확인을 넘어 가져온 본문이 실리기 때문이다
-(2026-11-02, 웹 검색으로 들어온 Bloomberg 기사가 투자판에 실린 뒤 추가). **정책 신호는 운영자가 판단하고 여기에 적는다.** robots.txt와 이용약관이 그렇다. robots.txt가 AI 크롤러를
+(2026-11-02, 웹 검색으로 들어온 Bloomberg 기사가 투자판에 실린 뒤 추가). 같은 날 AI판 헤드라인이 Business Insider 구독자 전용 기사로 나간 뒤 AI판에도 Business Insider, MarkTechPost, Crunchbase News, The Information, DCD, Stratechery, Medium, openai.com 등을 더했다. **정책 신호는 운영자가 판단하고 여기에 적는다.** robots.txt와 이용약관이 그렇다. robots.txt가 AI 크롤러를
 막은 국내 언론(연합뉴스, 조선비즈 등)과 기사 하단의 "AI 학습 및 활용 금지" 문구, 그리고 robots.txt와 약관이 수집을 제한하는 X(운영자
 계정 세션의 RSSHub)와 Reddit은 수집량이 적고 원문 링크를 남기는 조건으로 쓴다. 네이버 증권 리서치는 반대로 게시글에
 증권사 이름만 밝히고 네이버 페이지 링크는 걸지 않는다(운영자 결정, 2026-11-02). 텔레그램은 약관 외에 사칭 채널 문제가 있어 쓰지 않는다.
@@ -200,7 +200,7 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 | `youtube` | `channels`, `max_videos_per_channel`, `resolve_timeout`, `transcript_timeout`, `transcript_language`, `max_concurrency`, `park_required` | 채널, 영상 수, 자막 관련 설정, 동시 채널 상한, AWS에서 park 파일 부재를 DEGRADED로 볼지([§4.2](#42-s3-park-파일-로더)) |
 | `web_search` | `trend_searches`, `max_results_per_query`, `max_refine_queries`, `refine_model`(Sonnet 5.5), `max_concurrency` | Tavily 검색, 쿼리 정제 모델 |
 | `rsshub` | `base_url`, `accounts`, `max_concurrency` | X 계정(로컬 컨테이너 또는 S3)과 동시 fetch 상한 |
-| `naver_research` | `categories`(기본 company·industry·invest·economy), `max_pages`(기본 6, 쪽당 50건), `page_delay_sec`, `show_links`(기본 false) | 네이버 증권 리서치의 국내 증권사 리포트([§4.4a](#44a-네이버-증권-리서치-naver_researchpy)). 기본은 꺼짐이고 투자판이 켠다 |
+| `naver_research` | `categories`(기본 company·industry·invest·economy; 같은 종목·같은 날 기업 리포트는 한 건으로 묶는다), `max_pages`(기본 6, 쪽당 50건), `page_delay_sec`, `show_links`(기본 false) | 네이버 증권 리서치의 국내 증권사 리포트([§4.4a](#44a-네이버-증권-리서치-naver_researchpy)). 기본은 꺼짐이고 투자판이 켠다 |
 
 `lookback_hours`는 하루가 아니라 **직전 실행까지** 닿아야 한다. cutoff는 다이제스트 날짜의 **끝** 자정에
 앵커되는데(`resolve_digest_window`) cron은 그 자정보다 몇 시간 앞서 수집한다. 그래서 24는 윈도를 정확히
@@ -497,7 +497,7 @@ Lambda의 15분 예산 안에 넉넉히 들어가야 한다. 넘칠 만큼 피�
 
 stock.naver.com 리서치 페이지가 쓰는 공개 JSON(`/api/stockSecurity/researches/v2/{category}?index&size&startDate&endDate`)을
 읽는다. 증권사 기업·산업·투자전략·경제 리포트마다 증권사, (산업은) 애널리스트, (기업은) 종목, 투자의견, 목표주가,
-날짜와 요약 본문이 붙어 있어 본문 추출이 필요 없다. 평일 기업 리포트만 약 100건이라 투자판 후보 풀의 중심이 된다.
+날짜와 요약 본문이 붙어 있어 본문 추출이 필요 없다. 평일 기업 리포트만 약 100건이라 투자판 후보 풀의 중심이 된다. 한 종목에 같은 날 여러 증권사가 쓴 리포트는 한 건으로 묶어 증권사별 투자의견과 목표주가, 그 범위를 나열한다(11-02 기업 리포트 121건 중 95건이 18개 종목에 몰렸고 각자 랭킹 자리를 하나씩 차지했다).
 요청 날짜는 실행 윈도의 서울 날짜이고, 리포트는 날짜만 있으니 그날의 끝(23:59:59)으로 찍어 아침 실행 윈도가 전날
 리포트를 자르지 않게 한다(내보내지 않은 반복은 괜찮고, 내보낸 것은 URL 장부가 막는다). 출처는 증권사마다 하나라서
 (`feed_url = naver-research:<증권사>`) `max_per_origin`이 한 증권사가 풀을 차지하지 못하게 한다. 게시글의 출처 줄은
@@ -719,6 +719,8 @@ web-search 항목도 포함한다. URL 호스트를 쓰며 `resolve_origin_key`�
 `len(ranked) == len(items)`가 되어 커버리지가 1.0으로 읽힌다. 재질의가 뜨지 않고, `items_scored`가 실제 풀보다
 커지고, 에디터가 같은 스토리를 두 번 받는다.
 
+**아무것도 파싱되지 않은 배치는 반으로 나눠 다시 매긴다.** 같은 배치를 그대로 다시 물으면 원인이 된 항목도 그대로라 두 번 다 실패했다(10-29 32/127, 10-30 35/139 손실, 두 시도 모두 출력 0토큰이거나 산문). 반씩 나누면 문제 항목 하나만 잃는다. 파싱 실패한 출력은 앞부분을 WARNING으로 남기고, `items_lost`는 점수를 받지 못한 모든 후보를 센다.
+
 **빠진 항목은 한 번 다시 묻는다.** 모델이 배치의 일부 항목을 빠뜨리면 그 항목만 모아 한 번 재질의한다. 비율 임계를
 두지 않는다. 40개 중 1개가 빠지는 일이 운영 30회 중 5회 있었고, 그 1건은 재질의가 없으면 경고 한 줄과 함께
 사라진다. 재질의가 실패하거나 여전히 모자라도 첫 결과는 그대로 남는다.
@@ -755,12 +757,20 @@ GUID(RSS와 X는 기사 URL, 그 밖은 글이나 영상 id)라서 그대로 정
 나머지 풀은 점수 순으로 채우되 `max_per_origin`으로 하나의 origin 키가 차지하는 항목 수를 제한한다(①). 그래도
 모자라면 origin 캡을 풀고 채운다(②). 서로 다른 origin이 너무 적은 조용한 날에도 풀이 짧아지지 않게 하려는 것이다.
 수집기(소스) 단위 상한은 없다. "rss"는 13개 매체를 묶고, 매체 단위 다양성은 `max_per_origin`이 이미 지킨다.
-수집기당 2개 상한을 두었을 때 16일 중 9일, 0.72–0.80 항목이 풀 밖에 남고 0.60–0.68 항목이 들어갔다. 슬롯은 운영 config에서 소스별로 뺄 수 있다. AI판은 2026-11-02에 Reddit 슬롯을 뺐다. r/LocalLLaMA의 개인 모델 튜닝 글이 매일 그 자리를 차지해서다. 같은 날 업계·시장 분석(SemiAnalysis, a16z, Exponential View, Epoch AI, Understanding AI, ChinaTalk 피드와 SemiAnalysis·a16z·Epoch AI·Ethan Mollick X 계정)을 넣고 랭킹 독자 설명을 "AI 업계의 연구소, 칩, 돈과 시장을 따라가는 독자와 그것으로 만드는 엔지니어"로 넓혔다. 같은 날 시험 실행에서 Reddit은 점수로 2건이 들어왔고, 후보 상위가 SemiAnalysis GDPx, 데이터센터 반발, Anthropic 신용등급 전망으로 바뀌었다.
+수집기당 2개 상한을 두었을 때 16일 중 9일, 0.72–0.80 항목이 풀 밖에 남고 0.60–0.68 항목이 들어갔다. 슬롯은 운영 config에서 소스별로 뺄 수 있다. AI판은 2026-11-02에 Reddit 슬롯을 뺐다. r/LocalLLaMA의 개인 모델 튜닝 글이 매일 그 자리를 차지해서다. 같은 날 업계·시장 분석(SemiAnalysis, a16z, Exponential View, Epoch AI, Understanding AI, ChinaTalk 피드와 SemiAnalysis·a16z·Epoch AI·Ethan Mollick X 계정)을 넣고 랭킹 독자 설명을 "AI 업계의 연구소, 칩, 돈과 시장을 따라가는 독자와 그것으로 만드는 엔지니어"로 넓혔다. 같은 날 시험 실행에서 Reddit은 점수로 2건이 들어왔고, 후보 상위가 SemiAnalysis GDPx, 데이터센터 반발, Anthropic 신용등급 전망으로 바뀌었다. 그래도 같은 날 저녁 r/LocalLLaMA 글이 점수로 실려서, 재검토(32일 160건)를 거쳐 r/LocalLLaMA(22건, 대부분 개인 장비·튜닝), omarsar0와 그의 뉴스레터(한 큐레이터가 21건, 뉴스레터 기사는 유료 미리보기), 업로드가 주 40건이라 최신 1개가 무작위가 되는 aiDotEngineer, 기사 페이지가 Cloudflare 확인에 걸린 openai.com 피드(요약이 짧아 본문 추출이 그 확인을 넘어 가져왔다)를 뺐고, AI 정책(Transformer), AI·에너지(Latitude Media), 데이터센터·칩(The Next Platform), Mistral, TechCrunch AI를 더했다.
 
 origin은 `resolve_origin_key`로 해석한다. YouTube는 channel_url, Reddit은 subreddit, RSS는 feed_url, X는
 author, Web은 URL 호스트(`urlparse().netloc`에서 `www.` 제거)다. PSL이나 등록가능도메인 휴리스틱을 쓰지 않으니
 서브도메인은 별개 origin이다. 다섯 소스 전부에 키가 있어야 한다. 한 소스만 키가 비면 그 소스의 항목이 origin
 캡을 전부 우회해서 한 매체가 여러 슬롯을 차지한다.
+
+**한 이야기는 한 자리다 (`_story_groups`).** URL과 제목 중복 제거는 같은 이야기를 여러 매체가 쓴 경우를 잡지 못해서, 18회 실행의
+AI 풀 216석 중 27석이 같은 이야기의 사본이었고(10-23은 12석에 서로 다른 이야기 8개), 투자판 11-02 실행에서는 한국 10월 수출 기사
+하나가 웹 호스트 6곳으로 6석을 차지해 0.6을 넘은 52건 가운데 서로 다른 이야기 6개만 에디터에게 갔다. 랭킹 배치마다 같은 사건을
+깎는 방식은 배치 경계 때문에 일관되지 않아 버렸으니, 모든 배치가 끝난 뒤 기준을 넘은 후보 전체(점수순 상위 120)의 제목과 출처를
+Sonnet에 한 번 보내 같은 이야기 묶음만 받는다(`StoryGroupPrompt`). 묶음은 origin 캡처럼 자리 배정의 상한 키로만 쓴다. 한 이야기는
+한 자리이고, 조용한 날 풀이 모자라면 origin 캡보다 나중에 푼다. 풀이 이미 다 들어가는 날에는 부르지 않고, 실패하면 이전처럼 채운다.
+같은 점수는 id의 해시로 정렬한다. 원래 id 순서로는 Reddit id가 URL과 해시 키보다 앞서서, 풀 경계의 동점을 Reddit이 매번 가져갔다.
 
 **`source_slots: {}`도 origin 캡을 잃지 않는다.** 슬롯이 비었을 때 `above_threshold[:limit]`로 조기 반환하면
 `max_per_origin`이 슬롯과 함께 사라져서 한 피드가 그날 전부를 차지할 수 있다. origin 캡은 바로 그것을 막으려고
@@ -1424,7 +1434,7 @@ CountTokens가 없어 같은 Sonnet 4.6 카운트를 쓴다. 토크나이저가 
 초과 위험은 없고 보수적인 방향이다.
 
 cross-region `global.`이나 `us.` 같은 프리픽스는 베이스 id로 스트립하고, 오류가 나면 char/4 추정으로
-폴백한다. `truncate_to_tokens`는 문자 컷 지점을 이진 탐색으로 찾는다.
+폴백한다. `truncate_to_tokens`는 전체 토큰 수에 비례해 문자 컷 지점을 잡고, 넘치면 같은 비율로 다시 줄여 몇 번 안에 맞춘다(맞지 않을 때만 그 아래를 이진 탐색한다). 이진 탐색만 쓰던 때는 5만 자 페이지 하나에 약 17번을 불렀고, 투자판 랭커가 실행마다 150-170개 항목을 1,500토큰으로 자르자 CountTokens가 스로틀되고 첫 랭킹 응답이 4분 넘게 늦어졌다(2026-11-02). 비례 컷으로도 평일 700건(잘린 것 300건)에 호출이 약 1,600번이라 첫 응답이 3.5분 걸렸다. 그래서 랭커는 `pipeline.ranking_text_max_chars`(투자판 1,500자. 한국어는 글자당 약 1토큰이라 3,000자에서 평일 랭킹 입력이 118만 토큰이었다)가 있으면 CountTokens 없이 글자 수로 자른다. 점수는 앞부분으로 매기고, 에디터와 그라운딩은 `item_text_max_tokens`로 잰 전문을 읽는다.
 
 **메모이제이션.** 결과를 팩토리 인스턴스에 텍스트 해시로 캐시한다. 프롬프트 빌드가 같은 항목 텍스트를
 랭커와 다이제스트, 그라운딩 단계에서 반복 카운트하고 `truncate_to_tokens`의 이진 탐색이 겹치는 prefix를 여러

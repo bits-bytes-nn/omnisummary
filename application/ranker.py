@@ -11,11 +11,21 @@ from langchain_core.output_parsers import StrOutputParser
 
 from application.digest_generator import format_recent_titles
 from application.ports import LanguageModels
-from application.prompts import RankingPrompt
+from application.prompts import RankingPrompt, StoryGroupPrompt
 from domain.formatting import format_collected_item, format_origin_label, resolve_origin_key
 from domain.models import CollectedItem, RankedItem, RankingHealth
 from shared import SourceType, logger, parse_json_from_llm_output, retry_async
 from shared.config import PipelineConfig
+
+# The grouping call sees the top of the above-threshold list in score order; a candidate below it could
+# not have taken a pool seat ahead of its higher-scored copy anyway.
+_MAX_GROUPED = 120
+
+
+def _tiebreak(item_id: str) -> str:
+    """Equal scores ordered by a hash of the id: by the raw id, Reddit's ids sorted ahead of every URL-
+    and hash-keyed source, so Reddit won every tie at the pool's cutoff."""
+    return hashlib.sha256(item_id.encode()).hexdigest()
 
 
 class ContentRanker:
@@ -30,6 +40,18 @@ class ContentRanker:
 
     def _truncate(self, text: str, max_tokens: int) -> str:
         return self.models.truncate_to_tokens(text, max_tokens)
+
+    def _ranking_truncate(self, text: str, max_tokens: int) -> str:
+        """The ranker scores on the opening of each item. With ranking_text_max_chars set that cut is by
+        characters, with no CountTokens calls: measuring 300 of 700 weekday investing items cost about
+        1,600 calls and held the first ranking response back 3.5 minutes inside a 15-minute Lambda."""
+        chars = self.config.ranking_text_max_chars
+        if chars is None:
+            return self._truncate(text, max_tokens)
+        if len(text) <= chars:
+            return text
+        space = text.rfind(" ", 0, chars)
+        return text[: space if space > chars // 2 else chars].rstrip()
 
     async def rank(
         self, items: list[CollectedItem], select_count: int | None = None, recent_titles: Sequence[str] = ()
@@ -94,7 +116,8 @@ class ContentRanker:
             batches_failed=len(failures),
             items_total=len(items),
             items_scored=len(ranked_items),
-            items_lost=lost,
+            # Every candidate left unscored, a failed batch's and a split batch's bad half alike.
+            items_lost=max(lost, len(items) - len(ranked_items)),
         )
         # Pinned items (user-specified via --pin-url) are guaranteed a slot regardless of score
         # or diversity caps — they're kept aside and prepended after slotting fills the rest.
@@ -115,13 +138,13 @@ class ContentRanker:
                 RankedItem(item=it, score=self.config.min_score, reasoning="Pinned (not scored by ranker)")
                 for it in missing_pins
             )
-        pinned.sort(key=lambda r: (-r.score, r.item.item_id))
+        pinned.sort(key=lambda r: (-r.score, _tiebreak(r.item.item_id)))
         pinned_ids = {r.item.item_id for r in pinned}
 
         above_threshold = [
             r for r in ranked_items if r.score >= self.config.min_score and r.item.item_id not in pinned_ids
         ]
-        above_threshold.sort(key=lambda r: (-r.score, r.item.item_id))
+        above_threshold.sort(key=lambda r: (-r.score, _tiebreak(r.item.item_id)))
 
         source_scores: dict[str, list[float]] = {}
         for r in ranked_items:
@@ -141,7 +164,8 @@ class ContentRanker:
         # Reserve slots for the pinned items so the source-slotting fills only the remainder,
         # then prepend the pinned items so they always lead and never get crowded out.
         remaining = max(0, limit - len(pinned))
-        selected = pinned + self._apply_source_slots(above_threshold, remaining, pinned)
+        stories = await self._story_groups(above_threshold) if len(above_threshold) > remaining else {}
+        selected = pinned + self._apply_source_slots(above_threshold, remaining, pinned, stories)
 
         if pinned:
             logger.info("Force-included %d pinned item(s): %s", len(pinned), [r.item.url for r in pinned])
@@ -161,6 +185,37 @@ class ContentRanker:
             )
         return selected
 
+    async def _story_groups(self, candidates: list[RankedItem]) -> dict[str, int]:
+        """item_id -> story number for the candidates that report the same story as another one.
+
+        URL and title dedup miss the same story from several outlets, so one story took several of the
+        12 pool seats: 27 of 216 AI seats over 18 runs, and Korea's October exports took 6 seats from 6
+        hosts on 2026-11-02 while 52 items cleared the bar. Asked once over every candidate together, not
+        per ranking batch, whose boundaries made a same-event penalty inconsistent. Best-effort: on any
+        failure the pool is filled as before."""
+        shown = candidates[:_MAX_GROUPED]
+        items_text = "\n".join(
+            f"{n}. {r.item.title.strip()[:160]} ({format_origin_label(r.item)})" for n, r in enumerate(shown, start=1)
+        )
+        try:
+            llm = self.models.get_model(self.config.digest_model, stage="story-groups")
+            raw = await (StoryGroupPrompt.get_prompt() | llm | StrOutputParser()).ainvoke({"items_text": items_text})
+            groups = (parse_json_from_llm_output(raw) or {}).get("same_story") or []
+        except Exception as e:
+            logger.warning("Same-story grouping failed (%s); filling the pool without it", e)
+            return {}
+        stories: dict[str, int] = {}
+        for story, group in enumerate(groups if isinstance(groups, list) else []):
+            numbers = (
+                {n for n in group if isinstance(n, int) and 1 <= n <= len(shown)} if isinstance(group, list) else set()
+            )
+            if len(numbers) > 1:
+                for n in numbers:
+                    stories.setdefault(shown[n - 1].item.item_id, story)
+        if stories:
+            logger.info("Same-story groups: %d candidate(s) in %d stories", len(stories), len(set(stories.values())))
+        return stories
+
     async def _rank_batch(
         self, items: list[CollectedItem], semaphore: asyncio.Semaphore, recent_titles: str
     ) -> list[RankedItem]:
@@ -169,6 +224,20 @@ class ContentRanker:
         trace. Any omitted items get ONE extra re-ask covering exactly them (never more). A failed or
         still-short re-ask leaves the original outcome untouched — it can never fail the batch."""
         ranked = await self._score_batch(items, semaphore, recent_titles)
+        if not ranked and len(items) > 1:
+            # Nothing parsed (2 of 5 AI runs lost a whole batch this way, both attempts empty or prose).
+            # Re-asking the identical batch repeats whatever in it caused that, so score each half on
+            # its own: one bad item then costs itself, not 40 neighbours.
+            half = len(items) // 2
+            logger.warning("Ranking batch of %d items parsed to nothing; scoring its halves separately", len(items))
+            outcomes = await asyncio.gather(
+                *(self._rank_batch(part, semaphore, recent_titles) for part in (items[:half], items[half:])),
+                return_exceptions=True,
+            )
+            scored = [r for outcome in outcomes if not isinstance(outcome, BaseException) for r in outcome]
+            if not scored:
+                raise RuntimeError(f"Ranking batch of {len(items)} items produced no parsed rankings")
+            return scored
         scored_ids = {r.item.item_id for r in ranked}
         missing = [it for it in items if it.item_id not in scored_ids]
         if not missing:
@@ -238,8 +307,11 @@ class ContentRanker:
         above_threshold: list[RankedItem],
         limit: int,
         pinned: list[RankedItem] | None = None,
+        stories: dict[str, int] | None = None,
     ) -> list[RankedItem]:
         source_slots = self.config.source_slots
+        stories = stories or {}
+        stories_taken: set[int] = set()
         # NOTE: an empty source_slots skips only the GUARANTEED-SLOT pass below (the loop simply has
         # nothing to iterate) — the origin-cap fill passes still run. Returning above_threshold[:limit]
         # here instead dropped max_per_origin along with the slots, so one feed could take every
@@ -267,9 +339,15 @@ class ContentRanker:
                 return False
             return origin_counts[origin_key] >= max_per_origin
 
+        def story_taken(item: RankedItem) -> bool:
+            story = stories.get(item.item.item_id)
+            return story is not None and story in stories_taken
+
         def record(item: RankedItem, source_key: str) -> None:
             selected.append(item)
             selected_ids.add(item.item.item_id)
+            if item.item.item_id in stories:
+                stories_taken.add(stories[item.item.item_id])
             source_counts[source_key] += 1
             origin_key = resolve_origin_key(item.item)
             if origin_key:
@@ -286,26 +364,30 @@ class ContentRanker:
                     break
                 if item.item.source_type.value != source_key or item.item.item_id in selected_ids:
                     continue
-                if origin_at_cap(item):
+                if origin_at_cap(item) or story_taken(item):
                     continue
                 record(item, source_key)
                 taken += 1
 
-        def fill(*, respect_origin: bool) -> None:
-            """Walk the remaining candidates in score order and take what the origin cap allows."""
+        def fill(*, respect_origin: bool, respect_story: bool = True) -> None:
+            """Walk the remaining candidates in score order and take what the caps allow."""
             for item in above_threshold:
                 if len(selected) >= limit:
                     break
                 if item.item.item_id in selected_ids or (respect_origin and origin_at_cap(item)):
                     continue
+                if respect_story and story_taken(item):
+                    continue
                 record(item, item.item.source_type.value)
 
-        # The rest of the pool goes by score; max_per_origin keeps one publisher from taking it, and
-        # is relaxed only when a quiet day has too few distinct origins to fill the pool.
+        # The rest of the pool goes by score; max_per_origin keeps one publisher from taking it, and one
+        # story keeps one seat. The origin cap is relaxed first when a quiet day has too few distinct
+        # origins to fill the pool, the story cap last.
         fill(respect_origin=True)
         fill(respect_origin=False)
+        fill(respect_origin=False, respect_story=False)
 
-        selected.sort(key=lambda r: (-r.score, r.item.item_id))
+        selected.sort(key=lambda r: (-r.score, _tiebreak(r.item.item_id)))
         return selected[:limit]
 
     def _make_batches(self, ordered: list[CollectedItem]) -> list[list[CollectedItem]]:
@@ -336,9 +418,9 @@ class ContentRanker:
                 format_collected_item(
                     item,
                     index=i + 1,
-                    max_tokens=self.config.ranking_text_max_tokens or self.config.item_text_max_tokens,
+                    max_tokens=self.config.item_text_max_tokens,
                     fields=fields,
-                    truncate=self._truncate,
+                    truncate=self._ranking_truncate,
                 )
             )
         return "\n".join(parts)
@@ -357,7 +439,8 @@ class ContentRanker:
             rankings = data.get("rankings", []) if isinstance(data, dict) else []
         except (json.JSONDecodeError, KeyError) as exc:
             logger.error("Failed to parse ranking LLM output: '%s'", exc)
-            logger.debug("Raw LLM output:\n%s", raw_output[:500])
+            # WARNING, not DEBUG: an unparseable batch is the one case whose cause has to be read later.
+            logger.warning("Unparseable ranking output (%d chars): %r", len(raw_output), raw_output[:300])
             return []
 
         ranked_items: list[RankedItem] = []

@@ -36,6 +36,22 @@ class BasePrompt(ABC):
                 raise ValueError(f"Input variable '{var}' not found in any prompt template.")
 
 
+class StoryGroupPrompt(BasePrompt):
+    """Which candidates report the SAME story, so one story cannot take several pool seats."""
+
+    input_variables = ["items_text"]
+
+    system_prompt_template = """\
+Below are numbered news candidates (title and source). Some report the same underlying story: the same \
+event, release, filing, report or announcement, told by different outlets, accounts or analysts. Group \
+those. Two items about the same company or topic but different events are NOT the same story.
+
+Return ONLY JSON: {{"same_story": [[n, n, ...], ...]}}, one list per story that has two or more items, \
+using the numbers shown. Leave out every item that has no duplicate."""
+
+    human_prompt_template = "{items_text}"
+
+
 class RankingPrompt(BasePrompt):
     input_variables = [
         "items_text",

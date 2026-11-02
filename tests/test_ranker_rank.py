@@ -548,6 +548,26 @@ class TestRankingHealthVerdict:
         assert ranker.health.degraded is True
 
     @pytest.mark.asyncio
+    async def test_a_batch_that_parses_to_nothing_is_scored_in_halves_so_one_bad_item_costs_itself(self):
+        items = _items([("a", SourceType.WEB), ("b", SourceType.WEB), ("c", SourceType.WEB), ("d", SourceType.WEB)])
+        config = PipelineConfig(
+            top_n=5, min_score=0.6, source_slots={}, ranking_batch_size=4, ranking_retry_backoff_sec=0
+        )
+        factory = _mock_factory()
+
+        def _respond(prompt_value):
+            text = str(prompt_value)
+            if "t-b" in text:  # any batch holding b answers prose
+                return AIMessage(content="I cannot rank these.")
+            return AIMessage(content=_rankings({k: 0.9 for k in "acd" if f"t-{k}" in text}))
+
+        factory.get_model.return_value = _numbered(RunnableLambda(_respond))
+        ranker = ContentRanker(config, factory)
+        result = await ranker.rank(items)
+        assert {r.item.item_id for r in result} == {"a", "c", "d"}
+        assert ranker.health.items_lost == 1
+
+    @pytest.mark.asyncio
     async def test_a_clean_run_is_not_degraded(self):
         items = _items([("a", SourceType.WEB)])
         ranker = _ranker(_rankings({"a": 0.9}), min_score=0.6)

@@ -31,7 +31,7 @@ class TestCountTokens:
         f = _factory(client)
         assert f.count_tokens("x" * 40) == 10  # len//4 fallback
 
-    def test_truncate_to_tokens_binary_searches_to_fit(self):
+    def test_truncate_to_tokens_fits_in_a_few_calls(self):
         client = MagicMock()
         # token count ≈ chars/5 for this fake, so a 1000-char text over a 20-token budget truncates
         client.count_tokens.side_effect = lambda modelId, input: {
@@ -41,6 +41,19 @@ class TestCountTokens:
         out = f.truncate_to_tokens("가 " * 500, 20)
         assert len(out) < 1000
         assert f.count_tokens(out) <= 20
+        assert client.count_tokens.call_count <= 4  # the whole text, a cut or two; was ~11 for this text
+
+    def test_truncate_lands_under_when_tokens_are_denser_at_the_start(self):
+        client = MagicMock()
+
+        def count(modelId, input):
+            text = input["converse"]["messages"][0]["content"][0]["text"]
+            return {"inputTokens": len(text[:200]) + len(text[200:]) // 8}
+
+        client.count_tokens.side_effect = count
+        f = _factory(client)
+        out = f.truncate_to_tokens("가 " * 2000, 150)
+        assert f.count_tokens(out) <= 150
 
     def test_truncate_returns_text_when_within_budget(self):
         client = MagicMock()
