@@ -63,7 +63,7 @@ class NaverResearchCollector(BaseCollector):
             result.failed,
         )
         self.record_run_health(total=result.total, failed=result.failed, empty=result.empty, what="categories")
-        return result.items
+        return _one_item_per_stock_and_day(result.items)
 
     async def _collect_category(
         self, client: httpx.AsyncClient, category: str, start: str, end: str
@@ -149,7 +149,14 @@ class NaverResearchCollector(BaseCollector):
             text=f"{' · '.join(header)}\n{summary}",
             author=broker,
             published_at=published,
-            metadata={"research_category": category, "hide_link": not self.config.show_links},
+            metadata={
+                "research_category": category,
+                "hide_link": not self.config.show_links,
+                "stock": stock,
+                "day": day.isoformat(),
+                "opinion": str(row.get("opinionText") or ""),
+                "target": int(row["goalPrice"]) if str(row.get("goalPrice") or "").isdigit() else 0,
+            },
         )
 
 
@@ -158,3 +165,42 @@ def _dated(row: dict[str, Any]):
         return datetime.strptime(str(row.get("writeDate")), "%Y-%m-%d").date()
     except ValueError:
         return None
+
+
+def _one_item_per_stock_and_day(items: list[CollectedItem]) -> list[CollectedItem]:
+    """Several brokers' notes on one stock on one day become one item that lists every rating and target.
+
+    On 2026-11-02, 95 of 121 company notes fell on 18 stocks: each note took a ranking slot of its own,
+    and the pool filled with copies of one earnings day. Together they are the consensus a reader wants."""
+    groups: dict[tuple[str, str], list[CollectedItem]] = {}
+    out: list[CollectedItem] = []
+    for item in items:
+        stock = item.metadata.get("stock")
+        if item.metadata.get("research_category") == "company" and stock:
+            groups.setdefault((stock, item.metadata["day"]), []).append(item)
+        else:
+            out.append(item)
+    for (stock, day), notes in groups.items():
+        if len(notes) == 1:
+            out.append(notes[0])
+            continue
+        targets = [n.metadata["target"] for n in notes if n.metadata.get("target")]
+        calls = ", ".join(
+            f"{n.author} {n.metadata.get('opinion') or '의견 없음'}"
+            + (f" {n.metadata['target']:,}원" if n.metadata.get("target") else "")
+            for n in notes
+        )
+        span = f", 목표주가 {min(targets):,}~{max(targets):,}원" if targets else ""
+        first = notes[0]
+        out.append(
+            first.model_copy(
+                update={
+                    "item_id": f"naver-research-company-{stock}-{day}",
+                    "title": f"{stock}: 증권사 {len(notes)}곳 리포트{span}",
+                    "text": f"{stock} · {day} · {calls}\n\n" + "\n\n".join(n.text for n in notes),
+                    "author": f"{first.author} 외 {len(notes) - 1}곳",
+                    "metadata": {**first.metadata, "notes": len(notes)},
+                }
+            )
+        )
+    return out

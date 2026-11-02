@@ -67,11 +67,11 @@ async def test_batches_mix_sources_even_when_ids_cluster_by_source():
     assert all({it.source_type for it in batch} == {SourceType.RSS, SourceType.X} for batch in captured)
 
 
-@pytest.mark.parametrize(("ranking_cap", "expected"), [(None, 8000), (1500, 1500)])
-def test_the_ranker_reads_its_own_text_cap_or_the_item_cap(ranking_cap, expected):
+def test_the_ranker_cuts_by_characters_when_a_char_cap_is_set():
     factory = _factory()
-    ranker = ContentRanker(PipelineConfig(ranking_text_max_tokens=ranking_cap), factory)
-    ranker._format_items(_items(1, text="x" * 50))
-    assert {call.kwargs.get("max_tokens", call.args[-1]) for call in factory.truncate_to_tokens.call_args_list} == {
-        expected
-    }
+    ranker = ContentRanker(PipelineConfig(ranking_text_max_chars=20), factory)
+    text = ranker._format_items(_items(1, text="word " * 40))
+    assert "word word word word" in text and text.count("word") <= 4
+    factory.truncate_to_tokens.assert_not_called()
+    ContentRanker(PipelineConfig(), factory)._format_items(_items(1, text="x" * 50))
+    assert factory.truncate_to_tokens.call_args.args[1] == 8000  # unset: the token cap, as before

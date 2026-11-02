@@ -47,7 +47,6 @@ collectors:
     subreddits:
       - stocks
       - ValueInvesting
-      - economics
       - CryptoCurrency
     sort: hot
     limit: 20
@@ -69,7 +68,8 @@ collectors:
       - "http://rss.edaily.co.kr/stock_news.xml"
       - "https://www.mk.co.kr/rss/50200011/"
       - "https://www.bok.or.kr/portal/bbs/B0000552/news.rss?menuNo=200690"
-      - "https://www.federalreserve.gov/feeds/press_all.xml"
+      - "https://www.federalreserve.gov/feeds/press_monetary.xml"
+      - "https://www.federalreserve.gov/feeds/speeches.xml"
       - "https://www.ecb.europa.eu/rss/press.html"
       # US earnings results and guidance; FactSet's weekly S&P 500 earnings scorecard; Sam Ro's TKer.
       - "https://www.cnbc.com/id/15839135/device/rss/rss.html"
@@ -98,61 +98,21 @@ collectors:
     lookback_hours: *lookback_hours
     # Four categories: one failing (the company notes are most of the source) is already DEGRADED.
     error_rate_threshold: 20.0
-    categories: [company, industry, invest, economy]
+    categories: [company, industry, invest, economy, debenture]
   web_search:
     enabled: true
     # Hosts never returned by any search, broad or refined (Tavily exclude_domains), e.g. content farms:
     # Article pages behind a bot check or paywall (docs/design.md, 판): a search result would hand us
     # their text fetched around it.
-    exclude_domains: ["finance.biggo.com", "t.me", "telegram.me", "instagram.com", "facebook.com", "moomoo.com", "bloomberg.com", "ft.com", "wsj.com", "barrons.com", "marketwatch.com", "seekingalpha.com", "investing.com", "coindesk.com", "theblock.co", "hankyung.com"]
+    exclude_domains: ["finance.biggo.com", "t.me", "telegram.me", "instagram.com", "facebook.com", "moomoo.com", "bloomberg.com", "ft.com", "wsj.com", "barrons.com", "marketwatch.com", "seekingalpha.com", "investing.com", "coindesk.com", "theblock.co", "hankyung.com", "reuters.com", "globenewswire.com", "tipranks.com", "benzinga.com", "marketbeat.com", "farside.co.uk", "etf.com", "scanx.trade", "fool.com", "247wallst.com"]
     trend_searches:
-      - name: korea_markets
-        queries:
-          - "코스피 코스닥 증시 마감 외국인 수급"
-          - "국내 증권사 리포트 목표주가 상향 하향"
       - name: us_global_markets
         queries:
           - "stock market today S&P 500 Nasdaq earnings Fed"
           - "analyst upgrade downgrade price target"
-      # Korean housing policy and statistics from outlets with no real-estate feed; unscoped, these
-      # queries returned foreign news and social posts.
-      - name: korea_realestate
-        queries:
-          - "부동산 대책 주택담보대출 DSR 가계대출 규제 국토교통부 금융위원회"
-          - "서울 아파트값 전셋값 주간 동향 주택공급 착공 신규택지"
-        domains:
-          - "news1.kr"
-          - "newsis.com"
-          - "news.sbs.co.kr"
-          - "biz.sbs.co.kr"
-      - name: korea_flows_events
-        queries:
-          - "외국인 기관 순매수 업종 프로그램 매매 공매도 잔고"
-          - "유상증자 자사주 소각 대규모 공급계약 공시 주가 급등 급락"
-          - "공모주 수요예측 경쟁률 신규상장 보호예수 해제"
-        domains: ["einfomax.co.kr", "edaily.co.kr", "news1.kr", "newsis.com"]
-      - name: us_earnings_vol
-        queries:
-          - "earnings beat miss guidance shares after hours"
-          - "VIX options positioning put call skew week"
-        domains: ["cnbc.com", "cboe.com"]
       - name: crypto
         queries:
           - "bitcoin ethereum crypto market ETF flows regulation"
-      # Global IB and asset-manager research pages (no RSS); robots.txt allows their insight paths.
-      - name: ib_research
-        queries:
-          - "market outlook strategist view stocks rates"
-          - "economic outlook inflation Fed recession strategist"
-        domains:
-          - "goldmansachs.com"
-          - "jpmorgan.com"
-          - "morganstanley.com"
-          - "blackrock.com"
-          - "ubs.com"
-          - "pimco.com"
-          - "schroders.com"
-          - "invesco.com"
     domain: "investing (Korean, US and global stocks, macro and markets, crypto assets, and Korean real estate)"
     refine_rules: |-
       - Prefer: earnings and guidance, filings, central-bank and policy decisions, analyst actions, wire reports
@@ -180,7 +140,6 @@ collectors:
       - "WSJmarkets"
       - "glassnode"
       # Market-data strategists: Carson, Schwab, Fidelity, Bianco Research; FactSet; earnings-call quotes.
-      - "RyanDetrick"
       - "KevRGordon"
       - "TimmerFidelity"
       - "biancoresearch"
@@ -242,18 +201,19 @@ pipeline:
   ranking_model: "anthropic.claude-opus-5-5"
   digest_model: "anthropic.claude-sonnet-5-5"
   item_text_max_tokens: 10000
-  # The ranker scores on each item's opening; the editor still reads the full text.
-  ranking_text_max_tokens: 1500
+  # The ranker scores on each item's opening; the editor reads the full text. Korean runs about a token a
+  # character: at 3,000 the weekday pool sent the ranker 1.18M input tokens.
+  ranking_text_max_chars: 1500
   # Ranking robustness: cap the in-flight Bedrock batches (a big day self-throttled otherwise) and
   # retry a failed batch instead of silently dropping its whole slice of candidates.
   ranking_max_concurrency: 4
   ranking_max_retries: 3
   ranking_retry_backoff_sec: 5
   source_slots:
-    web: 1
+    # No guaranteed web seat: search results were mostly class-action notices and duplicates.
     x: 1
     rss: 1
-    reddit: 1
+    # No guaranteed Reddit seat: it went to a 0.60 post that never shipped in 3 of 4 runs.
     youtube: 1
     research: 1
   trend_model: "anthropic.claude-sonnet-5-5"
@@ -301,7 +261,6 @@ agent:
   # Research publishers the agent's search_reports tool is scoped to. Korean broker notes also arrive
   # in the digest through collectors.naver_research.
   report_search_domains:
-    - "www.hankyung.com"
     - "goldmansachs.com"
     - "jpmorgan.com"
     - "morganstanley.com"
@@ -311,10 +270,7 @@ agent:
     - "pimco.com"
     - "schroders.com"
     - "invesco.com"
-    - "reuters.com"
     - "cnbc.com"
-    - "marketwatch.com"
-    - "investing.com"
     - "messari.io"
     - "galaxy.com"
     - "coinbase.com"
@@ -324,7 +280,6 @@ agent:
     - "x.com"
     - "twitter.com"
     - "stocktwits.com"
-    - "seekingalpha.com"
     - "clien.net"
     - "ppomppu.co.kr"
   # Hard per-invocation bounds on the research tool loop, enforced by the Strands SDK at every turn

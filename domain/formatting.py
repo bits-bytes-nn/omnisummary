@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 import unicodedata
 from collections.abc import Callable
@@ -109,7 +110,7 @@ def normalize_title(title: str) -> str:
     """Normalize a title for the aggregator's title dedup: strip HTML and a retweet's "RT name:"
     prefix (an X retweet of a post otherwise survived as a second item), lowercase, drop
     punctuation, collapse whitespace."""
-    title = unicodedata.normalize("NFKC", title)
+    title = unicodedata.normalize("NFKC", html.unescape(title))
     title = re.sub(r"<[^>]+>", "", title)
     title = RETWEET_PREFIX.sub("", title)
     title = re.sub(r"[^\w\s]", "", title.lower())

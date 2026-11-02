@@ -66,7 +66,7 @@ async def test_a_company_note_is_attributed_dated_and_unlinked(monkeypatch):
 @pytest.mark.asyncio
 async def test_pages_are_followed_and_out_of_window_or_broken_rows_dropped(monkeypatch):
     rows = [
-        {**COMPANY, "nid": str(n), "writeDate": day}
+        {**COMPANY, "nid": str(n), "writeDate": day, "itemName": f"종목{n}"}
         for n, day in enumerate(["2026-11-02", "2026-11-02", "2026-11-01", "2026-10-30", "bad"])
     ]
     collector, seen = _collector(monkeypatch, {"company": rows}, categories=["company"])
@@ -168,3 +168,20 @@ def test_a_news_item_that_wins_a_title_tie_keeps_its_own_link():
     )
     [kept] = ContentAggregator().aggregate([note, news])
     assert kept.url == "https://e.com/a" and "hide_link" not in kept.metadata
+
+
+@pytest.mark.asyncio
+async def test_several_brokers_on_one_stock_and_day_become_one_consensus_item(monkeypatch):
+    rows = [
+        {**COMPANY, "nid": "1", "brokerName": "iM증권", "goalPrice": "580000"},
+        {**COMPANY, "nid": "2", "brokerName": "KB증권", "opinionText": "매수", "goalPrice": "600000"},
+        {**COMPANY, "nid": "3", "brokerName": "한국IR협의회", "opinionText": "", "goalPrice": "0"},
+        {**COMPANY, "nid": "4", "itemName": "기아"},
+    ]
+    collector, _ = _collector(monkeypatch, {"company": rows}, categories=["company"])
+    items = await collector.collect()
+    assert len(items) == 2
+    merged = next(i for i in items if i.metadata.get("notes") == 3)
+    assert merged.title == "현대모비스: 증권사 3곳 리포트, 목표주가 580,000~600,000원"
+    assert "iM증권 Buy 580,000원, KB증권 매수 600,000원, 한국IR협의회 의견 없음" in merged.text
+    assert merged.author == "iM증권 외 2곳" and merged.metadata["hide_link"] is True

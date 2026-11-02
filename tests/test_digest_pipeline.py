@@ -193,7 +193,8 @@ class TestRunPipelineDedup:
                 )
         assert [it.url for it in collected] == ["https://new.example/2"]
         # The ledger's window: ages 1..ttl-1, so a story is allowed back on the TTL day by both.
-        assert p.memory.get_recent_digests.call_args.args == (DIGEST_DATE, 5)
+        # The dedup seed reads the ledger window; the rehash titles reach 14 days back.
+        assert [c.args for c in p.memory.get_recent_digests.call_args_list] == [(DIGEST_DATE, 5), (DIGEST_DATE, 14)]
 
     @pytest.mark.asyncio
     async def test_memory_failure_is_non_fatal(self):

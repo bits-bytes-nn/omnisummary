@@ -229,6 +229,9 @@ class BedrockCrossRegionModelHelper:
             raise RuntimeError(f"Failed to check cross-region model availability: {e}") from e
 
 
+_TRUNCATE_PASSES = 4
+
+
 class BedrockLanguageModelFactory:
     DEFAULT_TEMPERATURE: ClassVar[float] = 0.0
     BOTO_READ_TIMEOUT: ClassVar[int] = 300
@@ -290,21 +293,33 @@ class BedrockLanguageModelFactory:
         return result
 
     def truncate_to_tokens(self, text: str, max_tokens: int) -> str:
-        """Truncate text to <= max_tokens, measured by the Bedrock CountTokens API. Binary-searches
-        the character cut point (O(log n) API calls) since CountTokens counts but can't decode token
-        boundaries. Cuts on a whitespace boundary near the found point so words aren't split."""
-        if not text or self.count_tokens(text) <= max_tokens:
+        """Truncate text to <= max_tokens, measured by the Bedrock CountTokens API, which counts but
+        cannot decode token boundaries. The cut is proportional to the measured count and re-measured
+        until it fits, a few calls per text: the binary search it replaces made ~17 calls for a 50k-char
+        page, and with the investing ranker capping 150-170 items a run that was thousands of calls,
+        throttled CountTokens and pushed the first ranking response past four minutes. Cuts on a
+        whitespace boundary near the found point so words aren't split."""
+        total = self.count_tokens(text) if text else 0
+        if total <= max_tokens:
             return text
-        lo, hi, best = 0, len(text), 0
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            if self.count_tokens(text[:mid]) <= max_tokens:
-                best = mid
-                lo = mid + 1
-            else:
-                hi = mid - 1
-        cut = text.rfind(" ", 0, best)
-        truncated = text[: cut if cut > best // 2 else best].rstrip()
+        cut = len(text) * max_tokens // total
+        for _ in range(_TRUNCATE_PASSES):
+            counted = self.count_tokens(text[:cut])
+            if counted <= max_tokens:
+                break
+            # Over by the same ratio again, with a little slack so the next pass lands under.
+            cut = cut * max_tokens * 95 // (counted * 100)
+        else:
+            # Token density far from uniform: bisect below the last cut (rare; still bounded by log2).
+            lo, hi, cut = 0, cut, 0
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                if self.count_tokens(text[:mid]) <= max_tokens:
+                    cut, lo = mid, mid + 1
+                else:
+                    hi = mid - 1
+        space = text.rfind(" ", 0, cut)
+        truncated = text[: space if space > cut // 2 else cut].rstrip()
         logger.warning("Text truncated to <=%d tokens (%d chars)", max_tokens, len(truncated))
         return truncated
 

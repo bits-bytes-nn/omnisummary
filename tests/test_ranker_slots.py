@@ -242,3 +242,43 @@ class TestFillPassOrder:
         ]
         scores = [s.score for s in r._apply_source_slots(items, 3)]
         assert scores == sorted(scores, reverse=True)
+
+
+class TestOneSeatPerStory:
+    """The same story from several outlets passed URL and title dedup and took several pool seats."""
+
+    def test_a_grouped_story_takes_one_seat_and_frees_the_rest(self):
+        ranker = _ranker(source_slots={}, max_per_origin=1)
+        items = [
+            _ranked(0.9 - i * 0.01, SourceType.WEB, item_id=f"copy{i}", url=f"http://h{i}.com/x") for i in range(4)
+        ]
+        items += [_ranked(0.7, SourceType.WEB, item_id="other", url="http://other.com/x")]
+        stories = {f"copy{i}": 0 for i in range(4)}
+        picked = [r.item.item_id for r in ranker._apply_source_slots(items, 2, [], stories)]
+        assert picked == ["copy0", "other"]
+
+    def test_the_story_cap_is_relaxed_last_when_the_pool_would_be_short(self):
+        ranker = _ranker(source_slots={}, max_per_origin=1)
+        items = [_ranked(0.9, SourceType.WEB, item_id=f"copy{i}", url=f"http://h{i}.com/x") for i in range(3)]
+        picked = ranker._apply_source_slots(items, 3, [], {f"copy{i}": 0 for i in range(3)})
+        assert len(picked) == 3
+
+    def test_grouping_reads_the_models_numbers_and_survives_garbage(self):
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from langchain_core.messages import AIMessage
+        from langchain_core.runnables import RunnableLambda
+
+        from application.ranker import ContentRanker
+
+        items = [_ranked(0.9, SourceType.WEB, item_id=k, url=f"http://{k}.com/x") for k in "abc"]
+        for answer, expected in (
+            ('{"same_story": [[1, 3], [2], [9, 1]]}', {"a": 0, "c": 0}),
+            ("not json", {}),
+            ('{"same_story": "x"}', {}),
+        ):
+            factory = MagicMock()
+            factory.get_model.return_value = RunnableLambda(lambda _p, a=answer: AIMessage(content=a))
+            ranker = ContentRanker(PipelineConfig(), factory)
+            assert asyncio.run(ranker._story_groups(items)) == expected
