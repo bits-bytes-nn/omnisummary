@@ -102,7 +102,9 @@ collectors:
   web_search:
     enabled: true
     # Hosts never returned by any search, broad or refined (Tavily exclude_domains), e.g. content farms:
-    exclude_domains: ["finance.biggo.com", "t.me", "telegram.me", "instagram.com", "facebook.com", "moomoo.com"]
+    # Article pages behind a bot check or paywall (docs/design.md, 판): a search result would hand us
+    # their text fetched around it.
+    exclude_domains: ["finance.biggo.com", "t.me", "telegram.me", "instagram.com", "facebook.com", "moomoo.com", "bloomberg.com", "ft.com", "wsj.com", "barrons.com", "marketwatch.com", "seekingalpha.com", "investing.com", "coindesk.com", "theblock.co", "hankyung.com"]
     trend_searches:
       - name: korea_markets
         queries:
