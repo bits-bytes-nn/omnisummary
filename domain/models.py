@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 from enum import Enum
 from typing import Any, NamedTuple
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, StrictInt, model_validator
 
 from shared.constants import SourceType, VisualOrientation
 
@@ -134,6 +134,15 @@ class VisualBrief(BaseModel):
     alt_text: str = Field(
         default="",
         description="The comic for a screen reader, in Korean: one sentence per panel, with its line of dialogue.",
+    )
+
+
+class StoryGroups(BaseModel):
+    """The same-story grouping verdict, as Bedrock constrained output."""
+
+    same_story: list[list[StrictInt]] = Field(
+        default_factory=list,
+        description="One list of candidate numbers per story that two or more candidates report.",
     )
 
 

@@ -271,6 +271,7 @@ class TestOneSeatPerStory:
         from langchain_core.runnables import RunnableLambda
 
         from application.ranker import ContentRanker
+        from tests.fakes import StructuredLambda
 
         items = [_ranked(0.9, SourceType.WEB, item_id=k, url=f"http://{k}.com/x") for k in "abc"]
         for answer, expected in (
@@ -279,7 +280,7 @@ class TestOneSeatPerStory:
             ('{"same_story": "x"}', {}),
         ):
             factory = MagicMock()
-            factory.get_model.return_value = RunnableLambda(lambda _p, a=answer: AIMessage(content=a))
+            factory.get_model.return_value = StructuredLambda(RunnableLambda(lambda _p, a=answer: AIMessage(content=a)))
             ranker = ContentRanker(PipelineConfig(), factory)
             assert asyncio.run(ranker._story_groups(items)) == expected
 
