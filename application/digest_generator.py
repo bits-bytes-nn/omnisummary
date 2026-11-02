@@ -162,7 +162,7 @@ class DigestGenerator:
 
     def _item_prose_budget(self, item: CollectedItem) -> int:
         """The budget for one ranked candidate, off the provenance line its post will really carry."""
-        return self._prose_budget(self._threads_meta_line(item), item.url)
+        return self._prose_budget(self._threads_meta_line(item), "" if item.metadata.get("hide_link") else item.url)
 
     def _lead_budget(self, intro: str) -> int:
         """Characters the editor may spend on the lead. The lead IS the Threads root post, and the
@@ -456,7 +456,7 @@ def render_digest_text(content: DigestContent) -> str:
         if meta:
             header += f" ({meta})"
         parts.append(header)
-        if item.url:
+        if item.url and item.show_link:
             parts.append(item.url)
         if item.body:
             parts.append(item.body.strip())

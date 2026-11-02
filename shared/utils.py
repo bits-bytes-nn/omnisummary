@@ -40,7 +40,16 @@ def parse_json_from_llm_output(raw: str) -> Any:
     multi-line prose survives without a lossy character-stripping pass. Callers still handle
     JSONDecodeError for genuinely malformed output.
     """
-    return json.loads(extract_json_from_llm_output(raw), strict=False)
+    text = extract_json_from_llm_output(raw)
+    try:
+        return json.loads(text, strict=False)
+    except json.JSONDecodeError as e:
+        # A second JSON value or a braced note after the first one ("Extra data"): the extract spans
+        # first brace to LAST brace, so take the first complete value, as documented. The same-story
+        # grouping call failed this way on a weekday investing run.
+        if not e.msg.startswith("Extra data"):
+            raise
+        return json.JSONDecoder(strict=False).raw_decode(text)[0]
 
 
 _FALSEY_STRINGS = frozenset({"false", "0", "no", "off", "none", "null", ""})

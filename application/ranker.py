@@ -210,7 +210,7 @@ class ContentRanker:
         stories: dict[str, int] = {}
         for story, group in enumerate(groups if isinstance(groups, list) else []):
             numbers = (
-                {n for n in group if isinstance(n, int) and 1 <= n <= len(shown)} if isinstance(group, list) else set()
+                {n for n in group if type(n) is int and 1 <= n <= len(shown)} if isinstance(group, list) else set()
             )
             if len(numbers) > 1:
                 for n in numbers:
@@ -242,7 +242,7 @@ class ContentRanker:
             scored = [r for outcome in outcomes if not isinstance(outcome, BaseException) for r in outcome]
             if not scored:
                 raise RuntimeError(f"Ranking batch of {len(items)} items produced no parsed rankings")
-            if len(scored) < len(items):
+            if any(isinstance(o, BaseException) or not o for o in outcomes):
                 self._split_batches_lost += 1
             return scored
         scored_ids = {r.item.item_id for r in ranked}
