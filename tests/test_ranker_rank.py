@@ -11,6 +11,7 @@ from application.ranker import ContentRanker
 from domain.models import CollectedItem
 from shared.config import PipelineConfig
 from shared.constants import SourceType
+from tests.fakes import StructuredLambda
 
 
 def _mock_factory() -> MagicMock:
@@ -43,7 +44,7 @@ def _numbered(llm):
     async def atranslate(prompt_value):
         return translate(prompt_value, await llm.ainvoke(prompt_value))
 
-    return RunnableLambda(func=lambda p: translate(p, llm.invoke(p)), afunc=atranslate)
+    return StructuredLambda(RunnableLambda(func=lambda p: translate(p, llm.invoke(p)), afunc=atranslate))
 
 
 def _ranker(raw_output: str, **overrides) -> ContentRanker:

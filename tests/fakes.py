@@ -78,3 +78,21 @@ def snapshot(lead: str = "리드.", items=()):
 
     stories = [DigestItem(**{"title": "t", "url": "https://e.com/x", "body": "b", **it}) for it in items]
     return DigestSnapshot([], DigestResult(digest_text="t", content=DigestContent(lead=lead, items=stories)))
+
+
+def StructuredLambda(runnable):  # noqa: N802 - reads as the wrapper it stands in for
+    """A stand-in chat model for code that may call `.with_structured_output(...)`: the runnable itself
+    answers AIMessages; the structured variant parses the same answer's JSON into a dict (None when it
+    is not JSON), as Bedrock constrained output would hand back."""
+    import json
+
+    from langchain_core.runnables import RunnableLambda
+
+    def parse(message):
+        try:
+            return json.loads(message.content)
+        except (TypeError, ValueError):
+            return None
+
+    runnable.with_structured_output = lambda schema, **kwargs: runnable | RunnableLambda(parse)
+    return runnable

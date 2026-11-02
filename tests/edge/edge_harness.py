@@ -11,6 +11,8 @@ from unittest.mock import MagicMock
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
+from tests.fakes import StructuredLambda
+
 ITEM_RE = re.compile(r"=== Item (\d+) ===\nTitle: (.*)")
 
 
@@ -37,7 +39,7 @@ class ScriptedModels:
         async def aanswer(prompt_value):
             return answer(prompt_value)
 
-        return RunnableLambda(func=answer, afunc=aanswer)
+        return StructuredLambda(RunnableLambda(func=answer, afunc=aanswer))
 
 
 def score_by_title(scores: dict[str, float], default: float = 0.7):

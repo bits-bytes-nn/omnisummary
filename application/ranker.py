@@ -13,7 +13,7 @@ from application.digest_generator import format_recent_titles
 from application.ports import LanguageModels
 from application.prompts import RankingPrompt, StoryGroupPrompt
 from domain.formatting import format_collected_item, format_origin_label, resolve_origin_key
-from domain.models import CollectedItem, RankedItem, RankingHealth
+from domain.models import CollectedItem, RankedItem, RankingHealth, StoryGroups
 from shared import SourceType, logger, parse_json_from_llm_output, retry_async
 from shared.config import PipelineConfig
 
@@ -201,9 +201,13 @@ class ContentRanker:
             f"{n}. {r.item.title.strip()[:160]} ({format_origin_label(r.item)})" for n, r in enumerate(shown, start=1)
         )
         try:
-            llm = self.models.get_model(self.config.digest_model, stage="story-groups")
-            raw = await (StoryGroupPrompt.get_prompt() | llm | StrOutputParser()).ainvoke({"items_text": items_text})
-            groups = (parse_json_from_llm_output(raw) or {}).get("same_story") or []
+            # json_schema is Bedrock's constrained output: free-form JSON came back malformed on two of
+            # three weekday investing runs (trailing notes, a missing comma) and the pool lost the cap.
+            llm = self.models.get_model(self.config.digest_model, stage="story-groups").with_structured_output(
+                StoryGroups, method="json_schema"
+            )
+            verdict = await (StoryGroupPrompt.get_prompt() | llm).ainvoke({"items_text": items_text})
+            groups = StoryGroups.model_validate(verdict).same_story if verdict is not None else []
         except Exception as e:
             logger.warning("Same-story grouping failed (%s); filling the pool without it", e)
             return {}
