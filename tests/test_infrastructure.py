@@ -610,8 +610,7 @@ class TestEditionsDoNotReachEachOther:
         ai = self._statements(foundation, "LambdaRole")
         rendered = str(ai)
         assert any(s.get("Effect") == "Deny" and "omnisummary/invest/*" in str(s["Resource"]) for s in ai)
-        assert "function:omnisummary-dev-visual" in rendered or "-visual" in rendered
-        assert "invest-visual" not in rendered
+        assert "function:omnisummary-dev-visual" in rendered and "invest-visual" not in rendered
 
     def test_the_investing_role_reaches_only_its_prefix_and_its_visual(self, foundation):
         inv = self._statements(foundation, "InvestLambdaRole")
@@ -623,3 +622,23 @@ class TestEditionsDoNotReachEachOther:
         ]
         assert objects and all("omnisummary/invest/*" in r for r in objects)
         assert "invest-visual" in rendered and "bedrock-agentcore:CreateEvent" in rendered
+
+
+def test_the_investing_lambdas_run_on_the_investing_role():
+    config = Config.from_yaml(str(CONFIG_TEMPLATE))
+    invest = Config.from_yaml(str(CONFIG_TEMPLATE.parent / "invest-template.yaml"))
+    env = Environment(account="123456789012", region=config.aws.region)
+    app = App()
+    foundation = OmniSummaryFoundationStack(app, "fnd", config=config, editions=("invest",), env=env)
+    application = Template.from_stack(
+        OmniSummaryApplicationStack(app, "app", config=config, foundation=foundation, editions=(invest,), env=env)
+    )
+    roles = {
+        f["Properties"]["FunctionName"]: str(f["Properties"]["Role"])
+        for f in application.find_resources("AWS::Lambda::Function").values()
+    }
+    prefix = f"{invest.aws.project_name}-{invest.aws.stage}"
+    for name in (f"{prefix}-invest-digest", f"{prefix}-invest-visual"):
+        assert "InvestLambdaRole" in roles[name], roles[name]
+    for name in (f"{prefix}-digest", f"{prefix}-visual"):
+        assert "InvestLambdaRole" not in roles[name]

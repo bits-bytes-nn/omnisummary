@@ -156,7 +156,9 @@ class OmniSummaryFoundationStack(Stack):
         # the published-URL ledger, trends or the park files. (COMMENT_REPLIES_KEY under digest_state.)
         # An edition lives under its own prefix inside the AI/ML one (deploy.py checks), so the AI/ML
         # role's grant would cover it: an explicit Deny keeps the AI/ML Lambdas out of it.
-        prefixes = dict(zip(editions, edition_prefixes, strict=False))
+        # deploy.py always passes each edition's own prefix; without them (tests, bootstrap) the edition
+        # is assumed to live at {s3_prefix}/{edition}, the layout deploy.py enforces.
+        prefixes = dict(zip(editions, edition_prefixes, strict=True)) if edition_prefixes else {}
         edition_roots = {
             edition: (prefixes.get(edition) or f"{root}{edition}").strip("/") + "/" for edition in editions
         }
