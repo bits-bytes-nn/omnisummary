@@ -252,7 +252,7 @@ class PipelineConfig(_StrictModel):
     published_url_ttl_days: int = Field(default=6, ge=2)
     # How many recent digest leads (and daily comics) to feed back into the prompts as "don't reuse these".
     recent_leads_window: int = Field(default=5, ge=0)
-    ranking_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_OPUS
+    ranking_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
     digest_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
     # A digest whose JSON the editor emits malformed (a stray bracket after the lead string cost
     # the 2026-08-13 and 2026-08-17 digests every story) is RE-ASKED before it is given up on.

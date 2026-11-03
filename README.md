@@ -123,7 +123,7 @@ The defaults were measured on real pools:
 
 | Stage | Default | Why |
 |-------|---------|-----|
-| Ranking | Claude Opus 5.5 | Picks within the usual model-to-model spread of Opus 4.8, slightly cheaper |
+| Ranking | Claude Sonnet 5.5 | Same pools vs Opus 5.5 (2026-11-03): AI the same top 5 at 46% of the cost, investing $1.92 vs $4.24; a blind pool judge found no loss |
 | Digest, grounding, comic editor, comment replies, research fact check | Claude Sonnet 5.5 | Keeps the length spec Opus overran, at under half the cost |
 | Trends, search-query refinement | Claude Sonnet 5.5 | |
 | Deep research | Claude Opus 5.5 | |
