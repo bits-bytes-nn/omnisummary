@@ -225,6 +225,16 @@ class TestRSSCollect:
         assert "3/4 feeds returned nothing" in c.degraded_detail
 
 
+class TestTitles:
+    @pytest.mark.asyncio
+    async def test_a_doubly_escaped_title_reaches_the_prompts_as_text(self):
+        entry = _entry()
+        entry["title"] = "&amp;quot;금리 인하&amp;quot; 기대"
+        with patch("adapters.collectors.base.fetch_feed", return_value=_feed([entry])):
+            items = await RSSCollector(_config()).collect()
+        assert items[0].title == '"금리 인하" 기대'
+
+
 class TestSummaryOnlyEntries:
     @pytest.mark.asyncio
     async def test_a_summary_only_entry_gets_the_page_text(self):
@@ -236,7 +246,8 @@ class TestSummaryOnlyEntries:
         ):
             items = await c.collect()
         pages.assert_awaited_once_with(["https://example.com/p/1"])
-        assert items[0].text == "the full article text"
+        # The feed's own summary stays first: the ranker reads the opening, and a news page opens on menus.
+        assert items[0].text == "body\n\nthe full article text"
 
     @pytest.mark.asyncio
     async def test_an_entry_with_full_content_is_not_fetched(self):

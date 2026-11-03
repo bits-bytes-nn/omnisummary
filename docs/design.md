@@ -145,14 +145,14 @@ import하지 않는다. `domain`과 `shared`는 LangChain도 모른다. `applica
 증권·채권외환, 매경 증권), 중앙은행 보도자료(한국은행, 미 연준, ECB), 크립토(Decrypt, 블록미디어), 국내 부동산(인포맥스 부동산,
 조선비즈 부동산, 뉴스1·뉴시스·SBS Biz로 좁힌 웹 검색 한 묶음), 본문을 피드에 싣는 실명 경제학자·분석가의 블로그(뉴욕 연준 Liberty Street,
 Robin Brooks, Klement, Yardeni, Calculated Risk, Sahm, Damodaran, Coin Metrics; Glassnode 리서치 피드는 Lambda에서 403이라 11-02에 뺐다), Reddit 네 곳, X 15개 계정(Reuters와 WSJ는
-X로만 들어온다), YouTube 3개 채널(월가아재, Patrick Boyle, 채부심)이다. 2026-11-02에 개인투자자 관점으로 다시 넓혀, 인포맥스 뉴욕 마감·해외주식·외부기고 섹션, 이데일리 증권(목표가 변경·수급·미국 특징주·공모 일정), CNBC 실적, FactSet 실적 점검, TKer, 시장 데이터를 다루는 전략가 X 계정 6개(Carson, Schwab, Fidelity, Bianco, FactSet, 실적 콜 인용), 수급·공시·공모주와 미국 실적·변동성 웹 검색 묶음을 더하고 r/CryptoCurrency를 되살렸다. 미국 투자의견 변경을 담은 공개 피드는 없어서(Benzinga 403, MarketBeat는 스크립트로만 그린다) 이데일리·인포맥스 해외주식과 리서치 도구 `analyst_ratings`가 대신하고, 공매도 잔고는 로그인 없는 출처가 없다. 같은 날 두 번째 적대적 재검토에서 웹 검색을 미국 시장·크립토 두 묶음으로 줄였다. 국내 묶음(시장, 부동산, 수급·공시)은 결과가 없거나 피드와 겹쳤고, 나머지는 집단소송 공지(GlobeNewswire)와 랜딩 페이지였다. 그래서 웹 검색의 보장 자리와 Reddit 자리를 뺐고, r/economics(정치·일반 뉴스)와 RyanDetrick(팟캐스트 홍보와 계절성 통계)을 뺐다. 연준 피드는 은행 인가·제재가 섞인 전체 보도자료 대신 통화정책 보도자료와 연설로 바꿨고, 리서치 수집기에 채권(debenture) 분류를 더했다. 리서치 도구의 검색 도메인에서도 일반 독자에게 막힌 호스트(Reuters, 한국경제, MarketWatch, Investing.com, Seeking Alpha)를 뺐다.
+X로만 들어온다), YouTube 3개 채널(월가아재, Patrick Boyle, 채부심)이다. 2026-11-02에 개인투자자 관점으로 다시 넓혀, 인포맥스 뉴욕 마감·해외주식·외부기고 섹션, 이데일리 증권(목표가 변경·수급·미국 특징주·공모 일정), CNBC 실적(11-03 제외, §2 판), FactSet 실적 점검, TKer, 시장 데이터를 다루는 전략가 X 계정 6개(Carson, Schwab, Fidelity, Bianco, FactSet, 실적 콜 인용), 수급·공시·공모주와 미국 실적·변동성 웹 검색 묶음을 더하고 r/CryptoCurrency를 되살렸다. 미국 투자의견 변경을 담은 공개 피드는 없어서(Benzinga 403, MarketBeat는 스크립트로만 그린다) 이데일리·인포맥스 해외주식과 리서치 도구 `analyst_ratings`가 대신하고, 공매도 잔고는 로그인 없는 출처가 없다. 같은 날 두 번째 적대적 재검토에서 웹 검색을 미국 시장·크립토 두 묶음으로 줄였다. 국내 묶음(시장, 부동산, 수급·공시)은 결과가 없거나 피드와 겹쳤고, 나머지는 집단소송 공지(GlobeNewswire)와 랜딩 페이지였다. 그래서 웹 검색의 보장 자리와 Reddit 자리를 뺐고, r/economics(정치·일반 뉴스)와 RyanDetrick(팟캐스트 홍보와 계절성 통계)을 뺐다. 연준 피드는 은행 인가·제재가 섞인 전체 보도자료 대신 통화정책 보도자료와 연설로 바꿨고, 리서치 수집기에 채권(debenture) 분류를 더했다. 리서치 도구의 검색 도메인에서도 일반 독자에게 막힌 호스트(Reuters, 한국경제, MarketWatch, Investing.com, Seeking Alpha)를 뺐다.
 
 수집 기준은 두 갈래다(두 판 공통). 일반 독자처럼 공개 페이지를 읽고 요약과 출처 링크만 내보내며 모델을 학습시키지 않는다.
 모든 서버 측 요청은 일반 브라우저 UA(`BROWSER_USER_AGENT`)로 보낸다. 운영자 결정이다(2026-11-01, "일반 UA로 읽어"). 금지하는 것은
 막힌 뒤 UA를 바꿔 다시 시도하는 일이다. **기술적 접근 통제는 우회하지 않는다.** 유료벽, 봇 확인 페이지, 403·429, 남의 로그인 벽이 걸린 곳은 쓰지 않고, UA를 바꾸거나 본문 추출
 서비스를 거쳐 가져오지도 않는다. 웹 검색도 마찬가지라 그런 호스트(Bloomberg, FT, WSJ, Barron's, MarketWatch, Seeking Alpha, Investing.com,
 CoinDesk, The Block, 한국경제)는 두 판 모두 `exclude_domains`에 둔다. 검색 결과에는 검색 서비스가 봇 확인을 넘어 가져온 본문이 실리기 때문이다
-(2026-11-02, 웹 검색으로 들어온 Bloomberg 기사가 투자판에 실린 뒤 추가). 같은 날 AI판 헤드라인이 Business Insider 구독자 전용 기사로 나간 뒤 AI판에도 Business Insider, MarkTechPost, Crunchbase News, The Information, DCD, Stratechery, Medium, openai.com 등을 더했다. **정책 신호는 운영자가 판단하고 여기에 적는다.** robots.txt와 이용약관이 그렇다. robots.txt가 AI 크롤러를
+(2026-11-02, 웹 검색으로 들어온 Bloomberg 기사가 투자판에 실린 뒤 추가). 같은 날 AI판 헤드라인이 Business Insider 구독자 전용 기사로 나간 뒤 AI판에도 Business Insider, MarkTechPost, Crunchbase News, The Information, DCD, Stratechery, Medium, openai.com 등을 더했다. 목록은 매번 한 건이 실린 뒤에야 늘었으므로, 2026-11-03부터 웹 검색 결과와 리서치의 `read_url`은 **페이지마다** 확인한다(`adapters.research_backends.access_controlled`). 일반 UA로 한 번 GET해서 401·403·429를 받거나 페이지가 스스로 유료라고 밝히면(schema.org `isAccessibleForFree: false`, 발행사 자신의 마크업) 읽지 않고 항목을 뺀다. 연결 자체가 안 되는 페이지는 통제가 아니라 장애이므로 통과시킨다. 마크업으로 밝히지 않는 유료 호스트(네이버 프리미엄 콘텐츠)와 콘텐츠 팜은 `exclude_domains`에 남는다. RSS 피드는 피드 단위로 사람이 검토하고 페이지마다 확인하지 않는다. 투자판 한 번에 요약 보충 페이지가 340개(인포맥스만 86개)라, 한 호스트에 요청을 두 배로 몰면 그 호스트의 WAF가 수집 IP를 막고 피드까지 403이 된다(점검 중 로컬 IP에서 실제로 일어났다). 그래서 무료 기사와 유료 글이 섞인 피드는 피드째 뺀다(CNBC 실적 피드에 CNBC Investing Club 글이 섞여 있어 2026-11-03 제외). **정책 신호는 운영자가 판단하고 여기에 적는다.** robots.txt와 이용약관이 그렇다. robots.txt가 AI 크롤러를
 막은 국내 언론(연합뉴스, 조선비즈 등)과 기사 하단의 "AI 학습 및 활용 금지" 문구, 그리고 robots.txt와 약관이 수집을 제한하는 X(운영자
 계정 세션의 RSSHub)와 Reddit은 수집량이 적고 원문 링크를 남기는 조건으로 쓴다. 네이버 증권 리서치는 반대로 게시글에
 증권사 이름만 밝히고 네이버 페이지 링크는 걸지 않는다(운영자 결정, 2026-11-02). 텔레그램은 약관 외에 사칭 채널 문제가 있어 쓰지 않는다.
@@ -460,7 +460,12 @@ Tavily의 X 프로필 쿼리처럼 결과가 대부분 프로필 페이지인 �
 **본문의 HTML은 수집 시점에 벗긴다.** `parse_feed_entries`가 `<`를 포함한 본문을 BeautifulSoup
 `get_text(" ", strip=True)`로 텍스트로 바꾼다. Substack 본문은 65~74%가 마크업이라(예: 122,215자 중 텍스트
 31,424자) 그대로 두면 `item_text_max_tokens` 절단이 산문 대신 태그를 남기고, 같은 이야기의 중복 쌍에서 마크업이
-많은 쪽이 "더 긴" 본문으로 살아남는다. 링크를 `item.text`에서 읽는 코드는 없다.
+많은 쪽이 "더 긴" 본문으로 살아남는다. 링크를 `item.text`에서 읽는 코드는 없다. 제목의 HTML 엔티티도 여기서 푼다(`unescape_html`). 인포맥스 제목 95개 중 23개가 `&amp;quot;`를 단 채 랭커와 에디터 프롬프트에 들어갔다.
+
+**자정 스탬프는 날짜다.** 시각이 자기 시간대 기준 정확히 00:00:00인 피드 날짜(Anthropic 피드는 모든 글, Hugging Face는 절반)는
+시각 없는 날짜로 보고 그날 23:59:59로 읽는다(`parse_feed_published_date`). 웹 검색과 리서치의 날짜만 있는 값과 같은 규칙이다. 자정 UTC로 읽으면
+그 글은 다음 날 19:00 KST 실행의 윈도(전날 18:00 KST부터)보다 앞이고 전날 실행보다 뒤라서, 10-22~11-02 날짜만 있는 Hugging Face 글 4건과
+11-02에 더한 Anthropic 피드 글이 한 건도 수집되지 않았다.
 
 **요약만 싣는 피드는 페이지 본문으로 채운다.** `content` 요소 없이 `summary`만 있는 RSS 엔트리는 랭킹 전에
 Tavily extract(`adapters.research_backends.extract_pages`, 요청당 20개)로 페이지 본문을 받아 더 길 때만 바꾼다. DeepMind,
@@ -469,7 +474,9 @@ Google Research, Hugging Face 피드는 설명이 비어 있거나 한 줄이고
 모두 지우자 한 문장짜리 스토리가 남았다. 하루 10건 안팎이다. 다만 `content` 없이 `summary`에 글 전체를 싣는
 피드도 있다(Simon Willison, 중앙값 1712자). 그 페이지를 받으면 깨끗한 본문이 내비게이션과 푸터가 섞인 텍스트로
 바뀌니, 요약이 500자(`THIN_SUMMARY_MAX_CHARS`) 미만일 때만 채운다. 얇은 피드의 중앙값은 19자(research.google)와
-149자(openai.com)였다. 읽기 실패나 더 짧은 페이지는 피드 문구를 그대로 둔다.
+149자(openai.com)였다. 읽기 실패나 더 짧은 페이지는 피드 문구를 그대로 둔다. 페이지 본문은 피드 요약을 **대신하지 않고 뒤에 붙는다.**
+뉴스 페이지는 메뉴와 다른 기사 제목으로 시작하는데(매경·이데일리 100건 중 81건은 기사가 1,500자 뒤에서 시작했다, 2026-11-03), 투자판 랭커는
+앞 1,500자(`ranking_text_max_chars`)만 읽어 남의 헤드라인으로 점수를 매겼다. 발행사가 쓴 100~200자 리드가 맨 앞에 남는다.
 
 **fan-out 상한(`max_concurrency`, 기본 5)이 필요한 이유.** 한 번에 도는 fetch 수를 묶어서 수집기의 최악
 wall time을 계산 가능하게 유지한다. 세마포어는 `collect()` 안에서, 다시 말해 실행 중인 루프에서 만든다
@@ -740,7 +747,7 @@ GUID(RSS와 X는 기사 URL, 그 밖은 글이나 영상 id)라서 그대로 정
 다른 배치에 몰렸다.
 
 **최근 다이제스트 제목을 랭커도 본다.** `rank(..., recent_titles=...)`는 `run_pipeline`이 에디터에게 주는 것과 같은
-`_recent_story_titles(snapshots)`(원장과 같은 창, 1일 전부터 `published_url_ttl_days`-1일 전까지의 출고 스토리 제목)를 받아 RankingPrompt의
+`_recent_story_titles(snapshots)`(1일 전부터 `RECENT_TITLE_DAYS`=14일 전까지의 출고 스토리 제목)를 받아 RankingPrompt의
 *Already in recent digests* 블록에 넣는다(`format_recent_titles`). Novelty 기준은 목록에 있는 스토리를 실질적
 새 진전이 없으면 재탕으로 본다. URL 원장은 정확한 URL만 맞추므로, 다른 매체나 주간 정리로 돌아온 같은 사건은
 랭커가 볼 근거가 없어 0.67–0.85를 받고 풀에 들어왔다. 2026-10-11 풀에서 기존 흐름은 1–4일 전에 나간 스토리 3개를
@@ -893,7 +900,7 @@ private 헬퍼를 부르면 파이프라인이 출력 채널의 내부 이름에
   2.67에서 3.67로 올랐다. 대신 보류 3일에서 쉬운 설명 점수는 4.33에서 3.67로 내려갔다. implication 지침을 "원문이 말하지
   않은 구체적 결과"로 다시 쓴 후보는 3 대 3이었다. 그 전에 지침을 짧게 줄인 후보는 0 대 6으로 졌는데, "원문에 없는
   것을 더하라" 구절이 insight 점수를 떠받쳤다.
-- `recent_titles`는 원장과 같은 창(1일 전부터 `published_url_ttl_days`-1일 전까지) 안 **모든** 스냅샷의 스토리 제목을 최신순으로 중복 없이 모은
+- `recent_titles`는 1일 전부터 `RECENT_TITLE_DAYS`=14일 전까지 **모든** 스냅샷의 스토리 제목을 최신순으로 중복 없이 모은
   목록이다. 주간 요약 글이 이미 실린 이야기를 새 URL로 다시 가져오면 URL 원장은 그것을 알아보지 못하고, 직전
   하루치 제목만 보여주던 때는 2026-10-11 다섯 이야기 중 셋이 1~4일 전에 실린 것이었다. 프레이밍은 한 줄이다.
   실질적 새 진전이 있을 때만 다시 싣고, 그때는 지난번 이후 무엇이 새로운지 본문에 말하라고 한다. 같은 목록을
@@ -1637,7 +1644,7 @@ append하고, `list_events`는 순서를 보장하지 않는다. 한 페이지�
 
 **시드와 기록(`application.digest_pipeline.run_pipeline`).** exclude 집합을 원장과 최근 AgentCore Memory 스냅샷 양쪽에서
 시드한다(`get_recent_digests(today, published_url_ttl_days - 1)`로 원장이 제외하는 것과 같은 창, 1일 전부터 TTL 하루 전까지를 읽는다. TTL 당일에는 둘 다 같은 스토리를 다시 허용한다). 생성 후에는 발행된 `content.items` URL을 원장에 기록한다. 최근 lead와 최근 스토리 제목은 따로 저장하지 않고
-이미 읽어 온 같은 스냅샷에서 꺼낸다(`_recent_leads`, `_recent_story_titles`).
+이미 읽어 온 스냅샷에서 꺼낸다. lead는 원장 창의 스냅샷(`_recent_leads`)에서, 제목은 그보다 긴 14일 창을 한 번 더 읽어(`_recent_story_titles`) 꺼낸다. 10-24에 실린 Kimi K3.1 Pro가 8일 뒤 다른 매체의 같은 출시 기사로 다시 실렸고, 원장 창(5일)으로는 막을 수 없었다. 스냅샷이 없는 날(에디션 시작 전, 건너뛴 날)은 INFO 로그만 남긴다.
 
 ### `recall_trends`는 어디를 보는가
 

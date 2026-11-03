@@ -71,8 +71,8 @@ collectors:
       - "https://www.federalreserve.gov/feeds/press_monetary.xml"
       - "https://www.federalreserve.gov/feeds/speeches.xml"
       - "https://www.ecb.europa.eu/rss/press.html"
-      # US earnings results and guidance; FactSet's weekly S&P 500 earnings scorecard; Sam Ro's TKer.
-      - "https://www.cnbc.com/id/15839135/device/rss/rss.html"
+      # FactSet's weekly S&P 500 earnings scorecard; Sam Ro's TKer. (CNBC's earnings feed was dropped
+      # 2026-11-03: it mixes CNBC Investing Club posts, paid, whose page the summary fill would extract.)
       - "https://insight.factset.com/rss.xml"
       - "https://www.tker.co/feed"
       - "https://decrypt.co/feed"
@@ -103,7 +103,7 @@ collectors:
     # Hosts never returned by any search, broad or refined (Tavily exclude_domains), e.g. content farms:
     # Article pages behind a bot check or paywall (docs/design.md, 판): a search result would hand us
     # their text fetched around it.
-    exclude_domains: ["finance.biggo.com", "t.me", "telegram.me", "instagram.com", "facebook.com", "moomoo.com", "bloomberg.com", "ft.com", "wsj.com", "barrons.com", "marketwatch.com", "seekingalpha.com", "investing.com", "coindesk.com", "theblock.co", "hankyung.com", "reuters.com", "globenewswire.com", "tipranks.com", "benzinga.com", "marketbeat.com", "farside.co.uk", "etf.com", "scanx.trade", "fool.com", "247wallst.com", "businessinsider.com", "theinformation.com", "medium.com", "openai.com", "stratechery.com", "stock.naver.com", "finance.naver.com"]
+    exclude_domains: ["finance.biggo.com", "t.me", "telegram.me", "instagram.com", "facebook.com", "moomoo.com", "bloomberg.com", "ft.com", "wsj.com", "barrons.com", "marketwatch.com", "seekingalpha.com", "investing.com", "coindesk.com", "theblock.co", "hankyung.com", "reuters.com", "globenewswire.com", "tipranks.com", "benzinga.com", "marketbeat.com", "farside.co.uk", "etf.com", "scanx.trade", "fool.com", "247wallst.com", "businessinsider.com", "theinformation.com", "medium.com", "openai.com", "stratechery.com", "stock.naver.com", "finance.naver.com", "contents.premium.naver.com"]
     trend_searches:
       - name: us_global_markets
         queries:

@@ -60,10 +60,10 @@ class RSSCollector(BaseCollector):
 
     @staticmethod
     async def _fill_summary_only(items: list[CollectedItem]) -> list[CollectedItem]:
-        """Swap in the page text for entries whose feed ships only a summary. Several primary-source
+        """Add the page text to entries whose feed ships only a summary. Several primary-source
         feeds (DeepMind, Google Research, Hugging Face) carry an empty or one-line description, and
         the ranker then scored a title alone: an empty "Gemini 4 Argon" post scored 0.84 and shipped
-        as a one-sentence story. The feed text stays when the page reads shorter or not at all."""
+        as a one-sentence story. The feed text alone stays when the page reads shorter or not at all."""
         thin = [it for it in items if it.metadata.get("summary_only") and len(it.text) < THIN_SUMMARY_MAX_CHARS]
         if not thin:
             return items
@@ -72,8 +72,11 @@ class RSSCollector(BaseCollector):
         for item in thin:
             page = pages.get(item.url, "")
             if len(page) > len(item.text):
-                added += len(page) - len(item.text)
-                item.text = page
+                added += len(page)
+                # The publisher's own summary stays first: a news page opens on menus and other stories'
+                # headlines (mk, edaily: the article began past char 1,500 on 81 of 100 pages), and the
+                # ranker reads only the opening of the text.
+                item.text = f"{item.text.strip()}\n\n{page}" if item.text.strip() else page
                 filled += 1
         logger.info(
             "RSS: replaced the feed summary with the page text for %d of %d summary-only items (+%d chars)",

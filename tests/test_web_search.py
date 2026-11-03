@@ -11,6 +11,11 @@ from shared.config import TrendSearch, WebSearchCollectorConfig
 from shared.constants import SourceType
 
 
+@pytest.fixture(autouse=True)
+def _every_page_is_open(monkeypatch):
+    monkeypatch.setattr("adapters.collectors.web_search.access_controlled", AsyncMock(return_value=set()))
+
+
 def _collector(**kwargs) -> WebSearchCollector:
     cfg = WebSearchCollectorConfig(**kwargs)
     cfg.reference_time = datetime(2026, 6, 3, tzinfo=UTC)
@@ -158,6 +163,22 @@ class TestCollect:
         assert last["include_domains"] == ["arxiv.org"] and last["topic"] == "news"
         # The window Tavily is asked about is the run's own, anchored to reference_time.
         assert (last["start_date"], last["end_date"]) == ("2026-06-02", "2026-06-03")
+
+    @pytest.mark.asyncio
+    async def test_a_paid_or_bot_checked_result_is_dropped(self, monkeypatch):
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        monkeypatch.setattr(
+            "adapters.collectors.web_search.access_controlled", AsyncMock(return_value={"https://a.example/1"})
+        )
+        c = _search_collector()
+        client = MagicMock()
+        client.search = AsyncMock(
+            return_value={
+                "results": [_result(0.9, url="https://a.example/1", title="A"), _result(0.9, url="https://b.example/2")]
+            }
+        )
+        c._client_instance = client
+        assert {i.url for i in await c.collect()} == {"https://b.example/2"}
 
     @pytest.mark.asyncio
     async def test_excluded_domains_reach_every_search_broad_and_refined(self, monkeypatch):

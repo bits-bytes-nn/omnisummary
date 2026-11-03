@@ -73,8 +73,8 @@ class OmniSummaryApplicationStack(Stack):
         # not redeploy the function after a new push; a digest forces the update.
         digest_tag_or_digest = (digest_image_ref or "latest").lstrip("@")
 
-        # DLQ for failed async Lambda invokes (defined in foundation so the on_failure send grant
-        # on the shared lambda_role stays intra-stack). With retry_attempts=0, a failed run lands
+        # DLQ for failed async Lambda invokes (defined in foundation, with the per-edition pipeline roles,
+        # so the on_failure send grant stays intra-stack). With retry_attempts=0, a failed run lands
         # here for inspection/replay instead of auto-retrying. The visual handler also carries a
         # per-date Threads idempotency marker (ThreadsPostLedger), so even a retry after a
         # POST-publish timeout won't double-post; retry_attempts=0 keeps that belt-and-suspenders.
@@ -192,7 +192,7 @@ class OmniSummaryApplicationStack(Stack):
         state_prefix = f"{config.aws.s3_prefix}/digest_state" if config.aws.s3_prefix else "digest_state"
 
         # Daily-visual Lambda: invoked asynchronously by the digest Lambda so its
-        # LLM-editor + Tavily + gpt-image work (~1-2 min) stays off the digest's
+        # LLM editor + art director + gpt-image work (~2-4 min) stays off the digest's
         # critical path. Same image, loads ranked items from AgentCore Memory.
         visual_lambda = lambda_.DockerImageFunction(
             self,

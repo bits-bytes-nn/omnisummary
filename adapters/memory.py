@@ -210,7 +210,7 @@ class AgentCoreMemoryStore(MemoryStore):
             # digest", so the visual Lambda skipped delivery and reported success.
             raise MemoryReadError(f"Failed to load digest session '{session_id}': {e}") from e
         if data is None:
-            logger.warning("No digest state in AgentCore Memory for session '%s'", session_id)
+            logger.info("No digest state in AgentCore Memory for session '%s'", session_id)
         else:
             logger.info("Loaded digest state from AgentCore Memory (session '%s')", session_id)
         return data
