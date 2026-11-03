@@ -125,6 +125,7 @@ aws sqs purge-queue --profile research --region ap-northeast-2 --queue-url "$Q" 
 | 추적 중인 트렌드 | `uv run python recall_cli.py trends` |
 | 지금 답할 댓글 초안(게시하지 않는다) | `uv run python scripts/sample_comment_replies.py` |
 | 저장된 날의 만화 계획(그리지 않는다) | `uv run python scripts/sample_visual_brief.py 2026-10-28 /tmp/vis` |
+| 최근 비용(일별, Lambda별 또는 단계별) | `uv run python scripts/cost_report.py --days 7 [--by stage]` |
 
 ## 하지 말 것
 

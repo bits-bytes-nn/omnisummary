@@ -95,7 +95,7 @@ class VisualGenerator:
         if not brief.prompt:
             raise ValueError("Visual brief has no image prompt")
         prompt = REFERENCE_NOTE + brief.prompt if references else brief.prompt
-        return self.renderer.render(prompt, self._resolve_size(brief), references, f"Rendered {brief.orientation}")
+        return self.renderer.render(prompt, self._resolve_size(brief), references, "visual-render")
 
     async def generate(
         self, instruction: str, source: str, *, references: Sequence[bytes] = (), deadline: float | None = None

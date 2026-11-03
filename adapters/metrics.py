@@ -41,3 +41,20 @@ def emit_emf(values: dict[str, int | float], extra: dict[str, Any] | None = None
     if extra:
         record.update(extra)
     print(json.dumps(record))
+
+
+# One metric per kind of spend, summed per day by CloudWatch: the bill's own split (Bedrock, OpenAI,
+# Tavily) rather than one number nobody could act on.
+SPEND_METRICS = {"llm": "LLMCostUSD", "image": "ImageCostUSD", "search": "TavilyCredits"}
+
+
+def emit_spend(kind: str, stage: str, model: str, amount: float | None, usage: dict[str, int]) -> None:
+    """One EMF record per billed call: the amount as a metric, the stage, model and raw usage as
+    properties a Logs Insights query groups by. Lambda only: locally stdout is a CLI's output (the
+    research CLI prints one JSON object there), and the `usage` log line already carries the figure."""
+    if amount is None or not os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+        return
+    emit_emf(
+        {SPEND_METRICS[kind]: round(amount, 6)},
+        {"spend_kind": kind, "spend_stage": stage, "spend_model": model, **usage},
+    )

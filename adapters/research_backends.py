@@ -12,6 +12,7 @@ import httpx
 from tavily import AsyncTavilyClient
 
 from adapters.aws import resolve_secret
+from adapters.metrics import emit_spend
 from adapters.og_image import fetch_og_image
 from domain.models import ImageAsset
 from shared import get_config, logger, retry_async
@@ -58,6 +59,18 @@ def _one_line(text: str) -> str:
     return " ".join(str(text).split())
 
 
+def record_tavily_usage(stage: str, operation: str, response: object) -> None:
+    """Log the credits one Tavily call spent (requested with include_usage). Tavily bills credits, and
+    the dollar value of one depends on the plan, so the credit count is what is measured."""
+    usage = response.get("usage") if isinstance(response, dict) else None
+    credits = usage.get("credits") if isinstance(usage, dict) else None
+    if not isinstance(credits, int | float):
+        logger.info("Search usage stage=%s operation=%s credits=unreported", stage, operation)
+        return
+    logger.info("Search usage stage=%s operation=%s credits=%s", stage, operation, credits)
+    emit_spend("search", stage, f"tavily-{operation}", float(credits), {})
+
+
 async def tavily_search(
     query: str,
     *,
@@ -83,7 +96,8 @@ async def tavily_search(
         kwargs["include_domains"] = include_domains
 
     try:
-        response = await client.search(**kwargs)
+        response = await client.search(**kwargs, include_usage=True)
+        record_tavily_usage("research-search", "search", response)
         results = response.get("results", [])
         if not results:
             return "No results found."
@@ -166,7 +180,8 @@ async def extract_url(url: str) -> str:
 
     cap = get_config().agent.research_content_cap_chars
     try:
-        response = await client.extract(urls=[url], format="text")
+        response = await client.extract(urls=[url], format="text", include_usage=True)
+        record_tavily_usage("research-read", "extract", response)
     except Exception as e:
         logger.warning("Tavily extract failed for '%s': %s", url, e)
         return ""
@@ -194,7 +209,10 @@ async def extract_pages(urls: list[str]) -> dict[str, str]:
     try:
         for start in range(0, len(urls), EXTRACT_BATCH_SIZE):
             try:
-                response = await client.extract(urls=urls[start : start + EXTRACT_BATCH_SIZE], format="text")
+                response = await client.extract(
+                    urls=urls[start : start + EXTRACT_BATCH_SIZE], format="text", include_usage=True
+                )
+                record_tavily_usage("page-fill", "extract", response)
             except Exception as e:
                 logger.warning(
                     "Tavily extract failed for %d URL(s): %s", len(urls[start : start + EXTRACT_BATCH_SIZE]), e

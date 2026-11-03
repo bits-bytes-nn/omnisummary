@@ -198,7 +198,9 @@ pipeline:
   min_score: 0.6
   # Any *_model / model_id takes a LanguageModelId value (shared/constants.py): Claude
   # ("anthropic.claude-...") or GPT ("openai.gpt-6.1-sol", "openai.gpt-6.1-terra"), all on Bedrock.
-  ranking_model: "anthropic.claude-opus-5-5"
+  # Sonnet, not the AI edition's Opus: on one 798-item weekday pool (2026-11-03) Sonnet cost $1.92 against
+  # Opus's $4.24 and its 12 won a blind pool comparison in both orders (7 of 12 shared).
+  ranking_model: "anthropic.claude-sonnet-5-5"
   digest_model: "anthropic.claude-sonnet-5-5"
   item_text_max_tokens: 10000
   # The ranker scores on each item's opening; the editor reads the full text. Korean runs about a token a

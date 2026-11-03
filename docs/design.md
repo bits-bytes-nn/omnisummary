@@ -1363,6 +1363,7 @@ GPT도 같은 Bedrock Converse API로 `global.` 프로필을 거쳐 호출하니
 | 단계 | 모델 | 근거 |
 |------|------|------|
 | 랭킹 | Opus 5.5 | 135건 실제 풀에서 Opus 4.8과 상위 5개 중 3개, 8개 중 5개가 겹쳤다(Sonnet과 Opus를 비교했을 때와 같은 수준). 한 번에 Opus 4.8 $0.49, Opus 5.5 $0.45로 더 싸다. 점수가 전반적으로 약 0.04 낮게 나오니 `min_score` 근처 항목 수를 지켜본다 |
+| 랭킹(투자판) | Sonnet 5.5 | 같은 평일 풀 798건(2026-11-03)에서 Opus 5.5 $4.24(입력 766k, 출력 59k), Sonnet 5.5 $1.92(출력 39k). 12개 중 7개, 상위 5개 중 3개가 겹쳤고, 두 풀을 순서를 바꿔 블라인드로 비교한 Opus 심사에서 두 번 다 Sonnet 풀이 이겼다(1차 출처가 많고 중복이 적었다). 하루치 비교라 전환 뒤 첫 주의 선정을 지켜본다 |
 | 다이제스트, 그라운딩, 비주얼 편집기와 아트 디렉터 | Sonnet 5.5 | 같은 후보 풀(2026-10-11)로 비교했다. Opus 5.5는 리드가 6문장(스펙 3-4), 본문이 5·4·4·3·3문장, 산문 1426자였고(다이제스트와 그라운딩 한 번에 약 $0.27), Sonnet 5.5는 리드 4문장, 본문 모두 3문장, 1186자로 스펙을 지켰다(약 $0.11). Opus 5.5의 비유는 더 생생했지만 리드에서 같은 논지를 되풀이했다. 네 단계가 모두 `digest_model`을 읽으니 함께 바뀌고, Sonnet 5.5가 쓴 4컷 브리프도 깔끔했다 |
 | 딥 리서치 | Opus 5.5 | 온디맨드 실행이고 품질이 결과물의 전부다. 실측 한 번에 3분 17초, 11 사이클, 출력 1.55만 토큰과 캐시 입력 약 76만 토큰(추정 약 $1.5) |
 | 트렌드, 쿼리 정제 | Sonnet 5.5 | 짧은 구조화 출력 |
@@ -1405,11 +1406,27 @@ docstring에도 같은 사실을 적어두었다.
 
 `get_model(model_id, stage="ranking"|"digest"|"grounding"|"trends"|"visual-editor"|"visual-synopsis"|"query-refine"|"comment-reply")`처럼
 단계를 함께 받는다. 붙은 콜백이 호출마다
-`LLM usage stage=... model=... input=... output=... cache_read=... cache_write=...`를 남긴다.
+`LLM usage stage=... model=... input=... output=... cache_read=... cache_write=... usd=...`를 남긴다.
 
 이유는 단순하다. 청구는 모델 단위인데 여러 단계가 한 모델을 공유한다(랭킹과 리서치는 Opus 5.5, 다이제스트와
 그라운딩, 비주얼, 트렌드, 쿼리 정제는 Sonnet 5.5). 이 태그 없이는 토큰 총량을 쓴 주체로 되짚을 수 없다. 리서치 에이전트는 `get_model`을 우회하니 대신
-CLI 결과 JSON의 `usage`가 같은 단위(입력, 출력, 캐시 읽기·쓰기 토큰)로 보고한다. 텔레메트리는 설계상 best-effort이며 어떤 읽기 실패도 생성을 막지 못한다.
+CLI 결과 JSON의 `usage`가 같은 단위(입력, 출력, 캐시 읽기·쓰기 토큰, `usd`)로 보고한다. 텔레메트리는 설계상 best-effort이며 어떤 읽기 실패도 생성을 막지 못한다.
+
+금액은 `LanguageModelInfo.price`(백만 토큰당 달러: 캐시 안 된 입력, 출력, 캐시 읽기, 캐시 쓰기)로 계산한다. 값은
+Bedrock Standard 티어의 global 교차 리전 프로필 가격(Anthropic 정가와 같다; geographic 프로필은 10% 비싸다)이다.
+langchain-aws의 `input_tokens`는 캐시 읽기·쓰기를 포함하므로 그만큼 빼고 각 단가를 곱한다. 가격이 없는 모델은
+`usd=unpriced`로 남는다. 파이프라인 단계의 기본 모델이 모두 가격을 갖는지 테스트가 고정한다.
+
+같은 방식으로 이미지는 `Image usage stage=visual-render model=... input_tokens=... text_input_tokens=...
+image_input_tokens=... output_tokens=... usd=...`(OpenAI 토큰 단가: 텍스트 입력 $5, 이미지 입력 $8, 이미지 출력 $30
+per MTok), Tavily는 `Search usage stage=web-search|page-fill|pin-extract|research-search|research-read credits=...`를
+남긴다. Tavily는 요금제마다 크레딧 단가가 달라 크레딧 수만 잰다(`include_usage=True`로 응답이 보고한다).
+
+Lambda에서는 호출마다 EMF 레코드도 하나 남긴다. `LLMCostUSD`·`ImageCostUSD`·`TavilyCredits` 지표가
+Project/Stage/Edition 차원으로 쌓이고, `spend_stage`·`spend_model`과 토큰 수는 속성으로 붙는다. 로컬에서는 stdout이
+CLI의 출력이라(리서치 CLI는 JSON 하나만 낸다) EMF를 내지 않는다. 두 판이 같은 태그의 inference profile을 쓰므로
+Cost Explorer로는 판별·단계별 비용을 가를 수 없다. 그 집계는 `scripts/cost_report.py [--days N] [--by stage|function]`가
+배포된 Lambda 로그를 Logs Insights로 읽어 낸다(읽기 전용).
 
 ### 비용 귀속 (application inference profile)
 

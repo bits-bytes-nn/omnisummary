@@ -280,3 +280,17 @@ class TestAccessControlled:
     @pytest.mark.asyncio
     async def test_no_urls_makes_no_request(self):
         assert await rb.access_controlled([]) == set()
+
+
+class TestTavilyUsage:
+    def test_credits_are_logged_and_a_missing_usage_says_so(self, monkeypatch):
+        from adapters import research_backends
+
+        logged = []
+        monkeypatch.setattr(research_backends.logger, "info", lambda msg, *a: logged.append(msg % a))
+        research_backends.record_tavily_usage("web-search", "search", {"results": [], "usage": {"credits": 2}})
+        research_backends.record_tavily_usage("page-fill", "extract", {"results": []})
+        assert logged == [
+            "Search usage stage=web-search operation=search credits=2",
+            "Search usage stage=page-fill operation=extract credits=unreported",
+        ]

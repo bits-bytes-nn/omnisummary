@@ -12,6 +12,7 @@ from langchain_aws import ChatBedrockConverse
 from langchain_core.callbacks import BaseCallbackHandler
 from pydantic import BaseModel
 
+from adapters.metrics import emit_spend
 from shared.constants import LanguageModelId
 from shared.logger import logger
 
@@ -20,6 +21,34 @@ from shared.logger import logger
 # with a supported model is accurate for all of them and avoids per-model failures. GPT models expose
 # no CountTokens either; for them the count is a close estimate, which is all a truncation budget needs.
 TOKEN_COUNT_MODEL = LanguageModelId.CLAUDE_V4_6_SONNET
+
+
+class TokenPrice(BaseModel):
+    """USD per million tokens. Bedrock bills an uncached input token, a cache read and a cache write
+    at different rates, so a cost from `input_tokens` alone overstates a cached call."""
+
+    input: float
+    output: float
+    cache_read: float
+    cache_write: float
+
+    def usd(self, *, input_tokens: int, output_tokens: int, cache_read: int = 0, cache_write: int = 0) -> float:
+        # langchain-aws reports input_tokens as uncached + cache read + cache write.
+        uncached = max(input_tokens - cache_read - cache_write, 0)
+        total = (
+            uncached * self.input
+            + output_tokens * self.output
+            + cache_read * self.cache_read
+            + cache_write * self.cache_write
+        )
+        return total / 1_000_000
+
+
+# Bedrock Standard tier through a GLOBAL cross-region profile (what the resolver picks first; the
+# application profiles copy it), which is Anthropic's list price; a geographic profile costs 10% more.
+# Checked 2026-11-03. Cache writes are the 5-minute rate (1.25x input).
+OPUS_5_5_PRICE = TokenPrice(input=4.0, output=20.0, cache_read=0.20, cache_write=5.0)
+SONNET_5_5_PRICE = TokenPrice(input=2.0, output=10.0, cache_read=0.10, cache_write=2.5)
 
 
 class LanguageModelInfo(BaseModel):
@@ -46,6 +75,8 @@ class LanguageModelInfo(BaseModel):
     supports_temperature: bool = False
     supports_forced_tool_choice: bool = True
     effort: str | None = None
+    # None for a model no pipeline stage runs on: its calls log tokens and no dollar figure.
+    price: TokenPrice | None = None
 
     def request_fields(self) -> dict[str, Any]:
         """The provider-specific Converse `additionalModelRequestFields` that pin the effort."""
@@ -64,9 +95,11 @@ LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
     LanguageModelId.CLAUDE_V4_8_OPUS: LanguageModelInfo(max_output_tokens=64000),
     LanguageModelId.CLAUDE_V5_OPUS: LanguageModelInfo(max_output_tokens=64000),
     LanguageModelId.CLAUDE_V5_5_HAIKU: LanguageModelInfo(max_output_tokens=64000, effort="high"),
-    LanguageModelId.CLAUDE_V5_5_SONNET: LanguageModelInfo(max_output_tokens=64000, supports_forced_tool_choice=False),
+    LanguageModelId.CLAUDE_V5_5_SONNET: LanguageModelInfo(
+        max_output_tokens=64000, supports_forced_tool_choice=False, price=SONNET_5_5_PRICE
+    ),
     LanguageModelId.CLAUDE_V5_5_OPUS: LanguageModelInfo(
-        max_output_tokens=64000, supports_forced_tool_choice=False, effort="high"
+        max_output_tokens=64000, supports_forced_tool_choice=False, effort="high", price=OPUS_5_5_PRICE
     ),
     LanguageModelId.GPT_V6_1_TERRA: LanguageModelInfo(provider="openai", max_output_tokens=64000, effort="high"),
     LanguageModelId.GPT_V6_1_SOL: LanguageModelInfo(provider="openai", max_output_tokens=64000, effort="high"),
@@ -82,9 +115,10 @@ class _TokenUsageLogger(BaseCallbackHandler):
     optimisation without this is a guess. Best-effort by construction — a callback must never be able
     to fail a generation, so every read is defensive."""
 
-    def __init__(self, stage: str, model_id: str) -> None:
+    def __init__(self, stage: str, model_id: str, price: TokenPrice | None = None) -> None:
         self.stage = stage
         self.model_id = model_id
+        self.price = price
 
     def on_llm_end(self, response: Any, **kwargs: Any) -> None:
         try:
@@ -100,15 +134,21 @@ class _TokenUsageLogger(BaseCallbackHandler):
             if not usage:
                 return
             details = usage.get("input_token_details") or {}
+            tokens = {
+                "input_tokens": int(usage.get("input_tokens") or 0),
+                "output_tokens": int(usage.get("output_tokens") or 0),
+                "cache_read": int(details.get("cache_read") or 0),
+                "cache_write": int(details.get("cache_creation") or 0),
+            }
+            usd = self.price.usd(**tokens) if self.price else None
             logger.info(
-                "LLM usage stage=%s model=%s input=%s output=%s cache_read=%s cache_write=%s",
+                "LLM usage stage=%s model=%s input=%d output=%d cache_read=%d cache_write=%d usd=%s",
                 self.stage,
                 self.model_id,
-                usage.get("input_tokens"),
-                usage.get("output_tokens"),
-                details.get("cache_read"),
-                details.get("cache_creation"),
+                *tokens.values(),
+                f"{usd:.4f}" if usd is not None else "unpriced",
             )
+            emit_spend("llm", self.stage, self.model_id, usd, tokens)
         except Exception:  # pragma: no cover - telemetry must never break a generation
             logger.debug("Could not read LLM usage metadata", exc_info=True)
 
@@ -354,7 +394,9 @@ class BedrockLanguageModelFactory:
             *(config.get("callbacks") or []),
             # The registry id, not the resolved ARN: an application-profile ARN names no model in the logs.
             _TokenUsageLogger(
-                str(kwargs.get("stage") or "unattributed"), str(kwargs.get("registry_id") or resolved_model_id)
+                str(kwargs.get("stage") or "unattributed"),
+                str(kwargs.get("registry_id") or resolved_model_id),
+                model_info.price,
             ),
         ]
         config["max_tokens"] = final_max_tokens
