@@ -20,6 +20,9 @@ from shared import coerce_bool, logger, parse_json_from_llm_output
 from shared.config import Config
 
 
+VISUAL_BRIEFS_PREFIX = "visual_briefs/"
+
+
 class DailyVisualMaker:
     """Renders the day's visual for the digest headline (the daily comic), then
     hands it to the digest publisher as an attachment.
@@ -48,6 +51,7 @@ class DailyVisualMaker:
         # What the last few comics drew, shown to the editor so today's does not repeat their sets,
         # props and gags (2026-10-13, -16 and -17 all locked a model in a glass case).
         self.comic_log = RollingLog(store, RECENT_COMICS_KEY, config.pipeline.recent_leads_window) if store else None
+        self.store = store
         self.generator = VisualGenerator(
             models,
             config.pipeline.digest_model,
@@ -108,6 +112,13 @@ class DailyVisualMaker:
         return published
 
     def _record_comic(self, post_date: date, brief: VisualBrief) -> None:
+        if self.store is not None:
+            try:
+                # The brief the image model got, beside the day: without it a drawing defect could be
+                # traced only to the brief's title (the 2026-11-03 image audit).
+                self.store.write_json(f"{VISUAL_BRIEFS_PREFIX}{post_date.isoformat()}.json", brief.model_dump())
+            except Exception:
+                logger.warning("Failed to keep the day's visual brief (non-fatal)", exc_info=True)
         if self.comic_log is None:
             return
         try:
