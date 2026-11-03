@@ -368,9 +368,10 @@ class PipelineConfig(_StrictModel):
         }
     )
     max_per_origin: int = Field(default=1, ge=1)
-    # Most candidate-pool seats one source type may take (e.g. {"rss": 2}), so the editor cannot ship
-    # more than that from it. Empty: no per-source cap, as the quality-first selection was measured.
-    max_pool_per_source: dict[str, int] = Field(default_factory=dict)
+    # An edition's extra sentence on how the editor picks its stories as a set (empty: the prompt is
+    # unchanged). The investing edition's: measured 3-0 on its stored days and the only variant that shipped
+    # an X post on 11-03's live pool; the same sentence lost 2-4 on AI days, which keep it empty.
+    selection_guidance: str = ""
     # Score-calibration buckets the ranking prompt applies, injected as template text so
     # ops can retune the distribution without editing the prompt.
     # The ranker's lenses, one per line; the investing edition swaps in its own.

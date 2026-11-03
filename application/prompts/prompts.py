@@ -114,6 +114,7 @@ class DigestPrompt(BasePrompt):
         "prose_budget_rule",
         "lead_budget",
         "criteria",
+        "selection_guidance",
     ]
 
     system_prompt_template = """\
@@ -149,7 +150,7 @@ the lenses below, with visual expressibility only breaking a tie. Order the rest
 few plain words where it first appears.
 - Pick the {target_count} strongest distinct stories from the candidates, judged by the same lenses they \
 were ranked on:
-{criteria}
+{criteria}{selection_guidance}
 - If two are the SAME \
 underlying story (same companies/event), keep only the more informative one and write the item from \
 its text alone. Emit fewer only when no distinct candidate is left — never pad with a near-identical take.

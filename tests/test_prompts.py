@@ -32,6 +32,7 @@ _INPUTS = {
         "prose_budget_rule": " title, body and implication together must stay under 380 characters.",
         "lead_budget": 470,
         "criteria": "1. c",
+        "selection_guidance": "",
     },
     TrendClassifyPrompt: {"existing_trends": "e", "todays_digest": "d", "domain": "AI/ML"},
     GroundingCheckPrompt: {"digest_text": "d", "sources": "s", "domain": "AI/ML"},

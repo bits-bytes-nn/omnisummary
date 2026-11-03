@@ -91,6 +91,7 @@ class DigestGenerator:
             ),
             "target_count": target_count,
             "criteria": self.config.ranking_criteria,
+            "selection_guidance": f"\n{g}" if (g := self.config.selection_guidance.strip()) else "",
             "recent_leads": _format_recent_leads(recent_leads),
             "recent_titles": format_recent_titles(recent_titles),
             "prose_budget_rule": _PROSE_BUDGET_RULE,
