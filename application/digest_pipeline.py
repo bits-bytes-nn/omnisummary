@@ -93,7 +93,7 @@ def already_published(config: Config, digest_date: date, state_store: StateStore
     so the record of the day became a digest nobody saw. With Threads posting off nothing can post, so a
     re-run is how a day's record is rebuilt."""
     if config.pipeline.enable_threads_post and ThreadsPostLedger(state_store).already_posted(digest_date):
-        logger.warning("The %s digest is already on Threads; this run persists and posts nothing", digest_date)
+        logger.warning("The %s digest is already on Threads; this run stops before collecting", digest_date)
         return True
     return False
 

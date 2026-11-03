@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 import time
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
@@ -13,6 +15,7 @@ from adapters.aws import resolve_secret
 from adapters.og_image import fetch_og_image
 from domain.models import ImageAsset
 from shared import get_config, logger, retry_async
+from shared.constants import BROWSER_USER_AGENT
 
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 
@@ -93,6 +96,62 @@ async def tavily_search(
         return f"Search failed ({type(e).__name__})."
     finally:
         await client.close()
+
+
+# A page that answers an ordinary reader this way has an access control in front of it: a bot check,
+# a login or a rate limit.
+_REFUSED_STATUS = frozenset({401, 403, 429})
+# schema.org's isAccessibleForFree, the publisher's own declaration that the page is paid content.
+_NOT_FREE = re.compile(r'"isAccessibleForFree"\s*:\s*"?false"?', re.IGNORECASE)
+_ACCESS_CHECK_CONCURRENCY = 10
+_ACCESS_CHECK_TIMEOUT_SEC = 10.0
+# The declaration sits in the page's JSON-LD; a result that is a large PDF is not downloaded whole.
+_ACCESS_CHECK_MAX_BYTES = 512_000
+
+
+async def access_controlled(urls: list[str]) -> set[str]:
+    """The URLs whose page refuses an ordinary reader (401/403/429) or declares itself paid. Tavily
+    reads a page from its own servers, so extracting one of these would get around the control the
+    publisher put in front of it (docs/design.md, 판). Checked per page, not per host: a host list only
+    ever learned of a paywall after a story from it had shipped. For web search results and research
+    reads, a few dozen pages over many hosts; RSS fill pages are not checked (hundreds per run on a few
+    hosts, enough to trip a publisher's WAF). A page that cannot be reached at all is an outage, not a
+    control, and passes."""
+    if not urls:
+        return set()
+    semaphore = asyncio.Semaphore(_ACCESS_CHECK_CONCURRENCY)
+
+    async def refused(client: httpx.AsyncClient, url: str) -> bool:
+        async with semaphore:
+            try:
+                async with client.stream("GET", url) as resp:
+                    if resp.status_code in _REFUSED_STATUS:
+                        return True
+                    head = b""
+                    async for chunk in resp.aiter_bytes():
+                        head += chunk
+                        if len(head) >= _ACCESS_CHECK_MAX_BYTES:
+                            break
+            except Exception as e:
+                # Unreachable, or a URL httpx cannot even form (a malformed IDN): not a control.
+                logger.debug("Access check could not read '%s': %s", url, e)
+                return False
+        return bool(_NOT_FREE.search(head.decode("utf-8", "ignore")))
+
+    async with httpx.AsyncClient(
+        headers={"User-Agent": BROWSER_USER_AGENT}, timeout=_ACCESS_CHECK_TIMEOUT_SEC, follow_redirects=True
+    ) as client:
+        unique = list(dict.fromkeys(urls))
+        verdicts = await asyncio.gather(*(refused(client, u) for u in unique))
+    blocked = {u for u, no in zip(unique, verdicts, strict=True) if no}
+    if blocked:
+        logger.info(
+            "Access check: %d of %d pages refuse a reader or declare themselves paid (%s)",
+            len(blocked),
+            len(unique),
+            ", ".join(sorted({urlsplit(u).hostname or u for u in blocked})),
+        )
+    return blocked
 
 
 async def extract_url(url: str) -> str:
@@ -237,6 +296,8 @@ class WebResearchSources:
         return await paper_search(query)
 
     async def read_page(self, url: str) -> str:
+        if await access_controlled([url]):
+            return ""
         return await extract_url(url)
 
     async def fetch_image(self, url: str) -> ImageAsset | None:

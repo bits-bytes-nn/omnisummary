@@ -128,14 +128,11 @@ class DigestPublisher:
                 deadline=deadline,
             )
         except Exception:
-            # Best-effort like the rest of this path: roll the claim back so the post stays
-            # retryable, log, and don't let a Threads failure escape into the caller. The verdict
-            # is still recorded (nothing landed of the posts we intended) so the caller can alert.
-            logger.warning("Threads post failed", exc_info=True)
-            self.threads_outcome = ThreadsDelivery(0, 1 + len([r for r in replies if r.strip()]))
-            if not was_marked:
-                self._release_threads_marker(post_date, run_id)
-            return False
+            # post_thread reports its own failures in the outcome, so an exception here broke that
+            # contract somewhere past the request: the root may be live. Uncertain, so the tail below
+            # keeps (or confirms) the marker and a replay cannot post a second root (the alert says so).
+            logger.error("Threads post raised; the root may be live, keeping the post marker", exc_info=True)
+            outcome = ThreadsDelivery(0, 1 + len([r for r in replies if r.strip()]), uncertain=True)
         # Expose the (posted, expected) counts so the caller can report/alert on a partial chain.
         # Branch on .published explicitly — the outcome tuple itself is ALWAYS truthy, so `if
         # outcome:` would treat a 0-of-6 post as a success and skip the ledger rollback.

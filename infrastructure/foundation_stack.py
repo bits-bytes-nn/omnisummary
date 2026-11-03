@@ -222,7 +222,7 @@ class OmniSummaryFoundationStack(Stack):
             self.alerts_topic.grant_publish(role)
 
         # Dead-letter queue for failed async (EventBridge / fire-and-forget) Lambda invokes. Lives
-        # here, with the shared lambda_role, so the on_failure send grant stays intra-stack (an
+        # here, with the per-edition pipeline roles, so the on_failure send grant stays intra-stack (an
         # app-stack DLQ would make foundation depend on the app stack — a cycle).
         self.async_dlq = sqs.Queue(
             self,

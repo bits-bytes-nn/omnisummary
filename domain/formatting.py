@@ -106,16 +106,21 @@ def place_countdown_intro(lead: str, intro: str) -> str:
 RETWEET_PREFIX = re.compile(r"^\s*RT\s+[^:]{1,60}:\s*")
 
 
+def unescape_html(text: str) -> str:
+    """Feeds escape titles once or twice (&amp;amp;, &amp;quot;); unescape until it settles."""
+    for _ in range(3):
+        unescaped = html.unescape(text)
+        if unescaped == text:
+            break
+        text = unescaped
+    return text
+
+
 def normalize_title(title: str) -> str:
     """Normalize a title for the aggregator's title dedup: strip HTML and a retweet's "RT name:"
     prefix (an X retweet of a post otherwise survived as a second item), lowercase, drop
     punctuation, collapse whitespace."""
-    # Feeds escape titles once or twice (&amp;amp;); unescape until it settles.
-    for _ in range(3):
-        unescaped = html.unescape(title)
-        if unescaped == title:
-            break
-        title = unescaped
+    title = unescape_html(title)
     title = unicodedata.normalize("NFKC", title)
     title = re.sub(r"<[^>]+>", "", title)
     title = RETWEET_PREFIX.sub("", title)
@@ -222,7 +227,9 @@ SOURCE_DESCRIPTORS: dict[SourceType, SourceDescriptor] = {
             else item.metadata.get("broker") or item.author or ""
         ),
         label=lambda item: f"{item.author} 리서치" if item.author else "",
-        tag=lambda item: f"{item.author} 리서치" if item.author else "증권사 리서치",
+        # The report's date rides in the source line: the investing rules name and DATE every analyst view.
+        tag=lambda item: f"{item.author or '증권사'} 리서치"
+        + (f" · {item.metadata['day'][5:]}" if item.metadata.get("day") else ""),
         metrics=_no_metrics,
     ),
     SourceType.RSS: SourceDescriptor(

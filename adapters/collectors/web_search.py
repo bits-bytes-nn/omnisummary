@@ -13,6 +13,7 @@ from tavily.errors import TimeoutError as TavilyTimeoutError
 from tavily.errors import UsageLimitExceededError
 
 from adapters.aws import resolve_secret
+from adapters.research_backends import access_controlled
 from application.ports import LanguageModels
 from application.prompts import RefineQueryPrompt
 from domain.models import CollectedItem, generate_item_id
@@ -101,6 +102,11 @@ class WebSearchCollector(BaseCollector):
         refined_items = await self._refine_search(broad_items, semaphore)
         # Duplicates across queries are left to the aggregator, which dedups every source by URL and title.
         all_items = broad_items + refined_items
+        # Tavily reads results from its own servers: a page that is paid or bot-checked for a reader
+        # would reach the digest around its control. Exclude lists only learned of each such host
+        # after a story from it shipped.
+        blocked = await access_controlled([it.url for it in all_items])
+        all_items = [it for it in all_items if it.url not in blocked]
         logger.info("Web search collector gathered %d items total (after refinement)", len(all_items))
 
         return all_items

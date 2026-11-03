@@ -385,7 +385,7 @@ class TestDailyVisualMaker:
             maker.threads.post_thread = AsyncMock(side_effect=RuntimeError("boom"))
             posted = await maker.run(_items(), content, today=date(2026, 6, 10))
         assert posted is False
-        assert maker.threads_outcome == ThreadsDelivery(0, 2)
+        assert maker.threads_outcome == ThreadsDelivery(0, 2, uncertain=True)
 
     @pytest.mark.asyncio
     async def test_caller_deadline_is_forwarded_to_the_publish_path(self):
@@ -625,8 +625,9 @@ class TestDailyVisualMaker:
         assert claimed_during_post == [True]
 
     @pytest.mark.asyncio
-    async def test_threads_marker_rolled_back_when_post_raises(self):
-        # An exception mid-post must roll the claim back so the date stays retryable.
+    async def test_threads_marker_kept_when_post_raises(self):
+        # post_thread reports its own failures; a raise means the root may already be live, so the claim
+        # stays and a replay cannot post a second root.
         from datetime import date
 
         from domain.models import DigestContent, DigestItem
@@ -641,7 +642,8 @@ class TestDailyVisualMaker:
             )
             maker.threads.post_thread = AsyncMock(side_effect=RuntimeError("boom"))
             await maker.run(_items(), content, today=date(2026, 6, 10))
-        assert not maker.threads_ledger.already_posted(date(2026, 6, 10))
+        assert maker.threads_ledger.already_posted(date(2026, 6, 10))
+        assert maker.threads_outcome.uncertain
 
     @pytest.mark.asyncio
     async def test_a_live_root_whose_replies_all_failed_keeps_the_date_marked(self):

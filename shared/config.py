@@ -46,8 +46,8 @@ KOREAN_PROSE_RULES: str = (
     "Not with a colon to introduce an enumeration ('핵심은 세 가지다: ...'), and not with a comma "
     "after a finished predicate ('성립한다, 그 순간이 오지 않으면 ...' / '시대다, 토큰이 곧 ...'). "
     "Once a clause ends in a final verb form the sentence is over: put a period and start a new "
-    "one ('핵심은 세 가지다. 첫째는 ...'), or restructure so the first clause connects properly "
-    "('성립하는데', '~라면', '~이므로'). A comma is fine INSIDE one sentence. "
+    "one ('핵심은 세 가지다. 첫째는 ...'), or restructure so the first clause connects properly. "
+    "A comma is fine INSIDE one sentence. "
     "Keep colons out of mid-prose entirely."
 )
 # The columnist register of the digest and the research report. Kept out of KOREAN_PROSE_RULES

@@ -227,6 +227,7 @@ class TestWebResearchSources:
             patch.object(rb, "tavily_search", new=AsyncMock(return_value="web")) as web,
             patch.object(rb, "paper_search", new=AsyncMock(return_value="papers")) as papers,
             patch.object(rb, "extract_url", new=AsyncMock(return_value="page")) as page,
+            patch.object(rb, "access_controlled", new=AsyncMock(return_value=set())),
             patch.object(rb, "fetch_og_image", new=AsyncMock(return_value=None)) as image,
         ):
             assert await sources.web_search("q", topic="news", time_range="week", include_domains=["x.com"]) == "web"
@@ -237,3 +238,45 @@ class TestWebResearchSources:
         papers.assert_awaited_once_with("p")
         page.assert_awaited_once_with("https://a")
         image.assert_awaited_once_with("https://b")
+
+    @pytest.mark.asyncio
+    async def test_a_paid_or_bot_checked_page_is_not_read(self):
+        sources = rb.WebResearchSources()
+        with (
+            patch.object(rb, "access_controlled", new=AsyncMock(return_value={"https://a"})),
+            patch.object(rb, "extract_url", new=AsyncMock(return_value="page")) as page,
+        ):
+            assert await sources.read_page("https://a") == ""
+        page.assert_not_awaited()
+
+
+class TestAccessControlled:
+    @pytest.mark.asyncio
+    async def test_refusals_and_paid_declarations_are_caught_and_outages_pass(self, monkeypatch):
+        import httpx
+
+        def answer(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if path == "/down":
+                raise httpx.ConnectError("unreachable")
+            return {
+                "/open": httpx.Response(
+                    200, text='<script type="application/ld+json">{"isAccessibleForFree": true}</script>'
+                ),
+                "/paid": httpx.Response(200, text='{"@type":"NewsArticle","isAccessibleForFree":"False"}'),
+                "/bot": httpx.Response(403, text="press and hold"),
+                "/limited": httpx.Response(429),
+                "/login": httpx.Response(401),
+                "/gone": httpx.Response(404),
+            }[path]
+
+        real = httpx.AsyncClient
+        monkeypatch.setattr(rb.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(answer), **kw))
+        urls = [f"https://site.example/{p}" for p in ("open", "paid", "bot", "limited", "login", "gone", "down")]
+        # A URL httpx cannot form (a malformed IDN) passes instead of failing the whole check.
+        blocked = await rb.access_controlled(urls + ["https://xn--a.com/"])
+        assert blocked == {f"https://site.example/{p}" for p in ("paid", "bot", "limited", "login")}
+
+    @pytest.mark.asyncio
+    async def test_no_urls_makes_no_request(self):
+        assert await rb.access_controlled([]) == set()

@@ -20,6 +20,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field, ValidationError
 
+from domain.formatting import unescape_html
 from domain.models import CollectedItem, SourceStatus, generate_item_id
 from shared import SourceType, is_running_in_aws, logger, retry_async
 from shared.config import BaseCollectorConfig
@@ -47,7 +48,34 @@ def feed_entry_content(entry) -> str:
 
 def parse_feed_published_date(entry, local_tz: tzinfo | None = None) -> datetime | None:
     """The entry's publication time in UTC. A date string with no offset is read in `local_tz` (the run's
-    own zone): feedparser reads it as UTC, which put a Korean wire's KST stamps nine hours in the future."""
+    own zone): feedparser reads it as UTC, which put a Korean wire's KST stamps nine hours in the future.
+
+    A stamp at exactly midnight is a date with no time (the Anthropic feeds stamp every post 00:00:00
+    +0000, Hugging Face half of its posts), read as the END of that day, as web search and broker
+    research read their dates: at midnight UTC the post fell before the next 19:00 KST run's window and
+    after the previous run, and no run collected it (0 of 4 such Hugging Face posts, 10-22 to 11-02)."""
+    instant = _feed_instant(entry, local_tz)
+    if instant is not None and _midnight(entry.get("published") or ""):
+        return instant + timedelta(days=1, seconds=-1)
+    return instant
+
+
+def _midnight(published: str) -> bool:
+    """Whether a feed's date string reads 00:00:00 on its own clock (an ISO date with no time counts).
+    A real post at exactly midnight arrives a run later; it is never lost."""
+    try:
+        parsed = parsedate_tz(published)
+    except (TypeError, ValueError):
+        parsed = None
+    if parsed is not None:
+        return parsed[3:6] == (0, 0, 0)
+    try:
+        return datetime.fromisoformat(published.strip().replace(" ", "T", 1)).time() == datetime.min.time()
+    except ValueError:
+        return False
+
+
+def _feed_instant(entry, local_tz: tzinfo | None) -> datetime | None:
     published_str = entry.get("published") or ""
     if local_tz is not None and published_str and not _stated_offset(published_str):
         try:
@@ -653,7 +681,7 @@ def parse_feed_entries(
             if not in_collection_window(published_at, lookback_hours=lookback_hours, reference_time=reference_time):
                 continue
 
-            title = entry.get("title", "")
+            title = unescape_html(entry.get("title", ""))
             link = entry.get("link", "")
 
             # An empty <content> element (CoinDesk, The Block) must not hide the summary.

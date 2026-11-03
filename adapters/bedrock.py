@@ -336,7 +336,9 @@ class BedrockLanguageModelFactory:
         resolved_model_id = BedrockCrossRegionModelHelper.get_cross_region_model_id(
             self.boto_session, model_id, self.region_name or ""
         )
-        model_config = self._build_model_config(model_info, resolved_model_id, stage=stage, **kwargs)
+        model_config = self._build_model_config(
+            model_info, resolved_model_id, stage=stage, registry_id=model_id.value, **kwargs
+        )
         model = ChatBedrockConverse(**model_config)
         logger.debug("Created language model: '%s'", resolved_model_id)
         return model
@@ -350,7 +352,10 @@ class BedrockLanguageModelFactory:
         # takes `callbacks` from kwargs, which is None when the caller passed none, so build the list.
         config["callbacks"] = [
             *(config.get("callbacks") or []),
-            _TokenUsageLogger(str(kwargs.get("stage") or "unattributed"), resolved_model_id),
+            # The registry id, not the resolved ARN: an application-profile ARN names no model in the logs.
+            _TokenUsageLogger(
+                str(kwargs.get("stage") or "unattributed"), str(kwargs.get("registry_id") or resolved_model_id)
+            ),
         ]
         config["max_tokens"] = final_max_tokens
         if model_info.supports_temperature:

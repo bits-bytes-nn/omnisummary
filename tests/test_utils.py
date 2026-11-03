@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -156,6 +157,26 @@ class TestParseFeedPublishedDate:
         result = parse_feed_published_date(entry)
         assert result is not None
         assert result.month == 3
+
+    def test_a_midnight_stamp_is_a_date_and_reads_as_the_end_of_that_day(self):
+        # The Anthropic feeds stamp every post 00:00:00 +0000: read as midnight UTC, no 19:00 KST run's
+        # window held it.
+        import feedparser
+
+        def entry(stamp):
+            rss = f"<rss><channel><item><title>t</title><pubDate>{stamp}</pubDate></item></channel></rss>"
+            return feedparser.parse(rss).entries[0]
+
+        assert parse_feed_published_date(entry("Mon, 02 Nov 2026 00:00:00 +0000")) == datetime(
+            2026, 11, 2, 23, 59, 59, tzinfo=UTC
+        )
+        assert parse_feed_published_date(entry("Mon, 02 Nov 2026 00:00:00 +0900")) == datetime(
+            2026, 11, 2, 14, 59, 59, tzinfo=UTC
+        )
+        # A stamp with a time is left alone.
+        assert parse_feed_published_date(entry("Mon, 02 Nov 2026 13:37:07 GMT")) == datetime(
+            2026, 11, 2, 13, 37, 7, tzinfo=UTC
+        )
 
     def test_none_when_no_date(self):
         entry = SimpleNamespace(published_parsed=None, updated_parsed=None)
