@@ -213,8 +213,14 @@ SOURCE_DESCRIPTORS: dict[SourceType, SourceDescriptor] = {
         metrics=_no_metrics,
     ),
     SourceType.RESEARCH: SourceDescriptor(
-        # The broker, also for a merged "X 외 N곳" item, so max_per_origin still holds per broker.
-        origin_key=lambda item: item.metadata.get("broker") or item.author or "",
+        # One broker's note: the broker, so max_per_origin holds per house. A merged consensus item is no
+        # one broker's view: its own origin per stock, so it does not crowd that day's other notes from
+        # whichever broker happened to be listed first.
+        origin_key=lambda item: (
+            f"consensus:{item.metadata['stock']}"
+            if item.metadata.get("notes")
+            else item.metadata.get("broker") or item.author or ""
+        ),
         label=lambda item: f"{item.author} 리서치" if item.author else "",
         tag=lambda item: f"{item.author} 리서치" if item.author else "증권사 리서치",
         metrics=_no_metrics,

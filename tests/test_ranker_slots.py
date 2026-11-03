@@ -302,3 +302,11 @@ def test_a_quiet_day_relaxes_the_origin_cap_only_up_to_top_n():
     items += [_ranked(0.7, SourceType.WEB, item_id="w", url="http://w.com/x")]
     picked = ranker._apply_source_slots(items, 12, [])
     assert [r.item.item_id for r in picked] == ["r0", "r1", "w"]
+
+
+def test_a_per_source_pool_cap_holds_through_every_fill_pass():
+    ranker = _ranker(source_slots={"rss": 1}, max_per_origin=1, max_pool_per_source={"rss": 2}, top_n=5)
+    rss = [_ranked(0.9 - i / 100, SourceType.RSS, item_id=f"r{i}", feed=f"https://f{i}.com/rss") for i in range(6)]
+    x = [_ranked(0.7, SourceType.X, item_id="x1", author="a"), _ranked(0.69, SourceType.X, item_id="x2", author="b")]
+    picked = [r.item.item_id for r in ranker._apply_source_slots(rss + x, 12, [])]
+    assert picked == ["r0", "r1", "x1", "x2"]  # rss capped at 2; the pool is short rather than over the cap
