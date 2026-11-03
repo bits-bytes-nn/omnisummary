@@ -46,7 +46,8 @@ class TokenPrice(BaseModel):
 
 # Bedrock Standard tier through a GLOBAL cross-region profile (what the resolver picks first; the
 # application profiles copy it), which is Anthropic's list price; a geographic profile costs 10% more.
-# Checked 2026-11-03. Cache writes are the 5-minute rate (1.25x input).
+# Checked 2026-11-03. Cache writes are the 5-minute rate (1.25x input); Sonnet 5.5's cache read is $0.10
+# since Bedrock halved it on 2026-10-07 (5% of input, where Opus 5.5's is $0.20).
 OPUS_5_5_PRICE = TokenPrice(input=4.0, output=20.0, cache_read=0.20, cache_write=5.0)
 SONNET_5_5_PRICE = TokenPrice(input=2.0, output=10.0, cache_read=0.10, cache_write=2.5)
 
@@ -138,7 +139,11 @@ class _TokenUsageLogger(BaseCallbackHandler):
                 "input_tokens": int(usage.get("input_tokens") or 0),
                 "output_tokens": int(usage.get("output_tokens") or 0),
                 "cache_read": int(details.get("cache_read") or 0),
-                "cache_write": int(details.get("cache_creation") or 0),
+                # With Bedrock's cacheDetails, langchain-aws reports the writes per TTL and cache_creation as 0.
+                "cache_write": int(
+                    details.get("cache_creation")
+                    or (details.get("ephemeral_5m_input_tokens") or 0) + (details.get("ephemeral_1h_input_tokens") or 0)
+                ),
             }
             usd = self.price.usd(**tokens) if self.price else None
             logger.info(

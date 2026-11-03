@@ -50,7 +50,7 @@ OpenClaw 스킬(`~/.openclaw/workspace/skills/omnisummary-research/SKILL.md`)이
 [EventBridge 크론] → [다이제스트 Lambda (Docker)]
    → 수집기 (RSS, Reddit, YouTube, WebSearch, X via RSSHub/S3)
    → 집계기 (URL + 제목 중복 제거)
-   → 랭커 (Claude Opus 5.5, 소스 슬롯과 origin 상한으로 후보 풀 구성)
+   → 랭커 (Claude Sonnet 5.5, 소스 슬롯과 origin 상한으로 후보 풀 구성)
    → 트렌드 트래커 (구조화 trends.json, StateStore)
    → 다이제스트 생성기 (Claude Sonnet 5.5, 후보 풀에서 가장 강한 5개를 골라 한국어 DigestContent 작성)
    → AgentCore Memory (다이제스트 스냅샷)
@@ -249,7 +249,7 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 
 | 영역 | 필드 | 설명 |
 |------|------|------|
-| 모델 | `ranking_model`(Opus 5.5), `digest_model`(Sonnet 5.5, 그라운딩과 비주얼 편집기·아트 디렉터도 이 모델을 쓴다), `trend_model`(Sonnet 5.5) | 단계별 모델([§6](#모델-팩토리)) |
+| 모델 | `ranking_model`(Sonnet 5.5), `digest_model`(Sonnet 5.5, 그라운딩과 비주얼 편집기·아트 디렉터도 이 모델을 쓴다), `trend_model`(Sonnet 5.5) | 단계별 모델([§6](#모델-팩토리)) |
 | 랭킹 | `ranking_batch_size`(기본 40), `ranking_max_concurrency`(기본 4), `ranking_max_retries`(기본 3), `ranking_retry_backoff_sec`(기본 5), `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치, Bedrock fan-out 상한, 배치 재시도, 점수 루브릭 |
 | 후보 풀 | `top_n`(기본 5), `min_score`(기본 0.6), `digest_candidate_buffer`(기본 7), `source_slots`(소스마다 1), `max_per_origin`(기본 1) | 에디터에게 넘기는 후보는 `top_n + digest_candidate_buffer`개이고, 소스 슬롯과 origin 상한은 이 풀을 채우는 데만 쓴다. 실제로 나가는 `top_n`개는 에디터가 고른다([§5.2](#52-랭커-rankerpy)) |
 | 중복 | `published_url_ttl_days`(기본 6, 최소 2), `recent_leads_window`(기본 5) | cross-day dedup 원장 TTL과 최근 다이제스트 제목을 읽는 창, 반복 방지용 최근 lead와 최근 만화의 윈도([§5.6](#56-데일리-비주얼-daily_visualpy)). TTL이 최소 2인 것은 날짜만 있는 웹 결과가 이틀 연속 윈도에 들어가고([§4.7](#47-websearch-web_searchpy)) 두 번째 게시를 원장이 막기 때문이다 |
@@ -703,7 +703,7 @@ web-search 항목도 포함한다. URL 호스트를 쓰며 `resolve_origin_key`�
 콘텐츠 팜과 통신사 기사가 구별되지 않았기 때문이다. 반면 Tavily의 relevance score는 의도적으로 넣지 않는다.
 검색 적합도는 소스 권위가 아니고, 검증되지 않은 신호를 랭킹 입력에 더하는 일이 된다.
 
-**점수 산출.** Claude Opus 5.5로 `RankingPrompt`를 병렬 배치 호출하고 JSON 점수를 파싱한다. 프롬프트는 점수와
+**점수 산출.** Claude Sonnet 5.5로 `RankingPrompt`를 병렬 배치 호출하고 JSON 점수를 파싱한다. 프롬프트는 점수와
 근거만 묻는다. 카테고리나 동일 사건 중복 페널티는 묻지 않는다. 같은 사건은 에디터가 하나만 고르고, 배치 경계에 따라
 달라지는 페널티는 배치가 다른 두 항목을 둘 다 통과시키곤 했다.
 
@@ -738,7 +738,7 @@ web-search 항목도 포함한다. URL 호스트를 쓰며 `resolve_origin_key`�
 사라진다. 재질의가 실패하거나 여전히 모자라도 첫 결과는 그대로 남는다.
 
 **배치 구성(`_make_batches`).** 항목 수(`ranking_batch_size`)만 상한으로 쓴다. `ranking_batch_size` x
-`item_text_max_tokens`(40 x 10k)는 Opus 5.5의 1M 창에 한참 못 미치므로 토큰 예산 상한은 걸릴 일이 없었고,
+`item_text_max_tokens`(40 x 10k)는 Sonnet 5.5의 1M 창에 한참 못 미치므로 토큰 예산 상한은 걸릴 일이 없었고,
 항목마다 CountTokens 호출만 늘렸다. 배치 본문 포맷(항목별 truncate)은 동기 CountTokens를 부르므로 `asyncio.to_thread`로
 돌린다. 루프에서 돌리면 병렬 배치가 사실상 직렬이 됐다(67초 중 약 30초). 수 상한은 배치마다 고르게 나눈다(`ceil(n / ceil(n / ranking_batch_size))`,
 41건이면 20/21). 꽉 채워 자르면 1건짜리 꼬리 배치가 비교 대상 없이 혼자 채점된다. 항목은 `item_id`의 **해시**
@@ -1362,8 +1362,7 @@ GPT도 같은 Bedrock Converse API로 `global.` 프로필을 거쳐 호출하니
 
 | 단계 | 모델 | 근거 |
 |------|------|------|
-| 랭킹 | Opus 5.5 | 135건 실제 풀에서 Opus 4.8과 상위 5개 중 3개, 8개 중 5개가 겹쳤다(Sonnet과 Opus를 비교했을 때와 같은 수준). 한 번에 Opus 4.8 $0.49, Opus 5.5 $0.45로 더 싸다. 점수가 전반적으로 약 0.04 낮게 나오니 `min_score` 근처 항목 수를 지켜본다 |
-| 랭킹(투자판) | Sonnet 5.5 | 같은 평일 풀 798건(2026-11-03)에서 Opus 5.5 $4.24(입력 766k, 출력 59k), Sonnet 5.5 $1.92(출력 39k). 12개 중 7개, 상위 5개 중 3개가 겹쳤고, 두 풀을 순서를 바꿔 블라인드로 비교한 Opus 심사에서 두 번 다 Sonnet 풀이 이겼다(1차 출처가 많고 중복이 적었다). 하루치 비교라 전환 뒤 첫 주의 선정을 지켜본다 |
+| 랭킹 | Sonnet 5.5 | 2026-11-03에 같은 풀로 Opus 5.5와 비교했다. AI판(113건)은 $0.80 대 $0.37에 상위 5개가 같았다(Opus끼리 두 번 돌리면 12개 중 11개가 겹친다). 투자판(798건)은 $4.24 대 $1.92, 12개 중 7개가 겹쳤다. 두 풀을 순서를 바꿔 블라인드로 비교한 Opus 심사에서 AI판은 위치 편향으로 갈렸고(무승부), 투자판은 두 번 다 Sonnet 풀이 이겼다. 다만 투자판 풀은 Sonnet을 두 번 돌려도 12개 중 6개만 겹치고 그 둘 사이에서도 심사가 한쪽을 두 번 골랐으니, 하루치 심사는 큰 차이만 가른다. 투자판의 랭킹 입력 컷 1,500자는 유지한다(800자는 $0.49를 아꼈지만 두 순서 모두 졌다). 이전(10-11): Opus 5.5가 Opus 4.8과 상위 5개 중 3개를 공유했다 |
 | 다이제스트, 그라운딩, 비주얼 편집기와 아트 디렉터 | Sonnet 5.5 | 같은 후보 풀(2026-10-11)로 비교했다. Opus 5.5는 리드가 6문장(스펙 3-4), 본문이 5·4·4·3·3문장, 산문 1426자였고(다이제스트와 그라운딩 한 번에 약 $0.27), Sonnet 5.5는 리드 4문장, 본문 모두 3문장, 1186자로 스펙을 지켰다(약 $0.11). Opus 5.5의 비유는 더 생생했지만 리드에서 같은 논지를 되풀이했다. 네 단계가 모두 `digest_model`을 읽으니 함께 바뀌고, Sonnet 5.5가 쓴 4컷 브리프도 깔끔했다 |
 | 딥 리서치 | Opus 5.5 | 온디맨드 실행이고 품질이 결과물의 전부다. 실측 한 번에 3분 17초, 11 사이클, 출력 1.55만 토큰과 캐시 입력 약 76만 토큰(추정 약 $1.5) |
 | 트렌드, 쿼리 정제 | Sonnet 5.5 | 짧은 구조화 출력 |
@@ -1408,9 +1407,9 @@ docstring에도 같은 사실을 적어두었다.
 단계를 함께 받는다. 붙은 콜백이 호출마다
 `LLM usage stage=... model=... input=... output=... cache_read=... cache_write=... usd=...`를 남긴다.
 
-이유는 단순하다. 청구는 모델 단위인데 여러 단계가 한 모델을 공유한다(랭킹과 리서치는 Opus 5.5, 다이제스트와
+이유는 단순하다. 청구는 모델 단위인데 여러 단계가 한 모델을 공유한다(리서치는 Opus 5.5, 랭킹과 다이제스트,
 그라운딩, 비주얼, 트렌드, 쿼리 정제는 Sonnet 5.5). 이 태그 없이는 토큰 총량을 쓴 주체로 되짚을 수 없다. 리서치 에이전트는 `get_model`을 우회하니 대신
-CLI 결과 JSON의 `usage`가 같은 단위(입력, 출력, 캐시 읽기·쓰기 토큰, `usd`)로 보고한다. 텔레메트리는 설계상 best-effort이며 어떤 읽기 실패도 생성을 막지 못한다.
+CLI 결과 JSON의 `usage`가 입력, 출력, 캐시 읽기·쓰기 토큰과 `usd`를 보고한다. 여기서 `input_tokens`는 캐시를 뺀 입력이다(Bedrock 원래 값). 파이프라인 로그의 `input=`은 langchain-aws 관례대로 캐시 읽기·쓰기를 포함한다. 텔레메트리는 설계상 best-effort이며 어떤 읽기 실패도 생성을 막지 못한다.
 
 금액은 `LanguageModelInfo.price`(백만 토큰당 달러: 캐시 안 된 입력, 출력, 캐시 읽기, 캐시 쓰기)로 계산한다. 값은
 Bedrock Standard 티어의 global 교차 리전 프로필 가격(Anthropic 정가와 같다; geographic 프로필은 10% 비싸다)이다.

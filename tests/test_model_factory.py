@@ -299,6 +299,19 @@ class TestTokenUsageAttribution:
         assert record["LLMCostUSD"] == pytest.approx(4.58)
         assert record["spend_stage"] == "ranking"
 
+    def test_cache_writes_reported_per_ttl_are_still_priced_as_writes(self, monkeypatch):
+        from adapters import bedrock
+
+        logged = []
+        monkeypatch.setattr(bedrock.logger, "info", lambda msg, *a: logged.append(msg % a))
+        handler = bedrock._TokenUsageLogger("digest", "anthropic.claude-sonnet-5-5", bedrock.SONNET_5_5_PRICE)
+        details = {"cache_read": 0, "cache_creation": 0, "ephemeral_5m_input_tokens": 1_000_000}
+        message = MagicMock(
+            usage_metadata={"input_tokens": 1_000_000, "output_tokens": 0, "input_token_details": details}
+        )
+        handler.on_llm_end(MagicMock(generations=[[MagicMock(message=message)]]))
+        assert logged[0].endswith("cache_write=1000000 usd=2.5000")
+
     def test_spend_is_not_printed_outside_lambda(self, monkeypatch, capsys):
         from adapters.metrics import emit_spend
 

@@ -83,8 +83,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def _usage(result: Any, model_id: Any) -> dict[str, Any]:
-    """Token usage the Strands run accumulated, in the same terms the pipeline logs (`LLM usage`), and
-    its price. Strands reports inputTokens WITHOUT the cache traffic, unlike langchain-aws."""
+    """Token usage the Strands run accumulated, and its price. `input_tokens` here is UNCACHED input
+    (Bedrock's raw count), where the pipeline's `LLM usage input=` includes cache reads and writes."""
     metrics = getattr(result, "metrics", None)
     usage = dict(getattr(metrics, "accumulated_usage", {}) or {})
     tool_metrics = getattr(metrics, "tool_metrics", {}) or {}
