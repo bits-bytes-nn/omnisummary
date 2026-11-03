@@ -19,7 +19,6 @@ from domain.models import DigestContent, DigestItem, RankedItem, ThreadsDelivery
 from shared import coerce_bool, logger, parse_json_from_llm_output
 from shared.config import Config
 
-
 VISUAL_BRIEFS_PREFIX = "visual_briefs/"
 
 
