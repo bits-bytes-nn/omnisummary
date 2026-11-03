@@ -201,7 +201,7 @@ async def test_the_merged_item_keeps_the_first_notes_url_whatever_the_api_order(
     assert merged.title.startswith("현대모비스: 증권사 2곳 리포트") and merged.author == "iM증권 외 1곳"
 
 
-def test_a_merged_items_origin_is_its_broker():
+def test_a_single_notes_origin_is_its_broker_and_a_consensus_has_its_own():
     from domain.formatting import resolve_origin_key
     from domain.models import CollectedItem
     from shared.constants import SourceType
@@ -215,6 +215,8 @@ def test_a_merged_items_origin_is_its_broker():
         metadata={"broker": "iM증권"},
     )
     assert resolve_origin_key(item) == "iM증권"
+    merged = item.model_copy(update={"metadata": {"broker": "iM증권", "stock": "기아", "notes": 8}})
+    assert resolve_origin_key(merged) == "consensus:기아"
 
 
 @pytest.mark.asyncio
