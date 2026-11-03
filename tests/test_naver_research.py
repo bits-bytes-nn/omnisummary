@@ -215,3 +215,14 @@ def test_a_merged_items_origin_is_its_broker():
         metadata={"broker": "iM증권"},
     )
     assert resolve_origin_key(item) == "iM증권"
+
+
+@pytest.mark.asyncio
+async def test_rows_that_all_lack_a_broker_fail_the_category(monkeypatch):
+    rows = [{**COMPANY, "brokerName": ""}]
+    collector, _ = _collector(monkeypatch, {"company": rows, "industry": [COMPANY]}, categories=["company", "industry"])
+    items = await collector.collect()
+    assert [i.metadata["research_category"] for i in items] == ["industry"]
+    from adapters.collectors.base import PARK_META_ACCOUNTS_FAILED
+
+    assert collector.run_meta[PARK_META_ACCOUNTS_FAILED] == 1  # a failure, not a quiet empty

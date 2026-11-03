@@ -137,8 +137,9 @@ async def test_a_merged_day_from_one_broker_counts_one(monkeypatch):
 
 async def test_a_row_missing_broker_name_is_dropped(monkeypatch):
     # No broker, no attribution: the domain rules name every analyst view's source.
-    collector, _ = _collector(monkeypatch, lambda r, n: _ok([_row(1, broker=None)]), categories=["company"])
-    assert await collector.collect() == []
+    rows = [_row(1, broker=None), _row(2, "B증권", stock="기아")]
+    collector, _ = _collector(monkeypatch, lambda r, n: _ok(rows), categories=["company"])
+    assert [i.author for i in await collector.collect()] == ["B증권"]
 
 
 async def test_merged_group_whose_earliest_note_has_no_broker(monkeypatch):

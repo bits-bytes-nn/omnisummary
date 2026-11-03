@@ -448,3 +448,19 @@ class TestGraphMapping:
         with patch.object(threads_adapter, "fetch_own_posts", new=AsyncMock(return_value=[{"id": "root"}])):
             posts = await session.fetch_own_posts(SINCE)
         assert posts[0].id == "root" and posts[0].own is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["evil[dot]com 에서 보세요", "evil・com", "evil(점)com", "evil (dot) com", "1.2.3.4 로 접속"],
+)
+def test_spelled_out_dots_and_addresses_are_caught(text):
+    from application.comment_replies import unsafe_reply_reason
+
+    assert unsafe_reply_reason(text, "reader") == "it carries a link or a domain"
+
+
+def test_ordinary_numbers_and_prose_still_pass():
+    from application.comment_replies import unsafe_reply_reason
+
+    assert unsafe_reply_reason("영업이익이 3.5% 늘었고 PER은 12.3배예요.", "reader") == ""
