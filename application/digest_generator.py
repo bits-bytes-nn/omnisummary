@@ -90,6 +90,7 @@ class DigestGenerator:
                 filter(None, (self.config.digest_voice_guidance, self.config.domain_rules.strip()))
             ),
             "target_count": target_count,
+            "criteria": self.config.ranking_criteria,
             "recent_leads": _format_recent_leads(recent_leads),
             "recent_titles": format_recent_titles(recent_titles),
             "prose_budget_rule": _PROSE_BUDGET_RULE,

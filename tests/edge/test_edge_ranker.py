@@ -36,7 +36,8 @@ async def test_a_pool_that_is_one_story_still_fills_via_the_relaxed_pass():
     one_story = {"same_story": [list(range(1, 16))]}
     ranker, _ = _ranker(_cfg(), {"ranking": score_by_title({}, 0.8), "story-groups": lambda _t: one_story})
     pool = await ranker.rank(items, select_count=12)
-    assert len(pool) == 12
+    # Relaxed only far enough for top_n stories, never to fill the buffer with copies.
+    assert len(pool) == ranker.config.top_n
 
 
 async def test_one_story_with_source_slots_does_not_lose_seats():
@@ -48,7 +49,8 @@ async def test_one_story_with_source_slots_does_not_lose_seats():
         _cfg(source_slots={"x": 1}), {"ranking": score_by_title(scores), "story-groups": lambda _t: groups}
     )
     pool = await ranker.rank(items, select_count=12)
-    assert len(pool) == 12
+    # Relaxed only far enough for top_n stories, never to fill the buffer with copies.
+    assert len(pool) == ranker.config.top_n
     assert pool[0].item.item_id == "i0"
 
 
@@ -166,7 +168,7 @@ async def test_best_copy_beyond_the_grouped_window_cannot_block_a_seat():
         _cfg(ranking_batch_size=200), {"ranking": score_by_title({}, 0.8), "story-groups": lambda _t: groups}
     )
     pool = await ranker.rank(items, select_count=12)
-    assert len(pool) == 12
+    assert len(pool) == 12  # distinct hosts: the capped passes fill the whole pool
 
 
 async def test_best_copy_at_origin_cap_slot_pass_skips_the_story_entirely():
