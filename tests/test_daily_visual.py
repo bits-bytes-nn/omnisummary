@@ -121,6 +121,15 @@ class TestRecentComics:
         assert "유리장 만화" in seen[0]
         assert "오늘 만화" not in seen[0]
 
+    def test_the_posted_brief_is_kept_beside_the_day(self):
+        from application.daily_visual import VISUAL_BRIEFS_PREFIX
+        from domain.models import VisualBrief
+
+        maker = _maker()
+        brief = VisualBrief(title="t", prompt="the full image prompt", alt_text="alt", orientation="portrait")
+        maker._record_comic(date(2026, 11, 3), brief)
+        assert maker.store.read_json(f"{VISUAL_BRIEFS_PREFIX}2026-11-03.json")["prompt"] == "the full image prompt"
+
     def test_no_state_store_means_no_history(self):
         maker = DailyVisualMaker(Config(), fake_models(), None, FakeThreads(), FakeRenderer())
         assert maker.comic_log is None
