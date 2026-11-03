@@ -208,3 +208,20 @@ class TestATooLongThreadNeverPosts:
         # One post over the cap and no dropped post: the trim alone sends it back.
         assert dlv.sends_back_as_too_long("소제목\n\n" + "문장이다. " * 120, DeliveryContext())
         assert not dlv.sends_back_as_too_long("소제목\n\n짧은 본문이다.", DeliveryContext())
+
+
+@pytest.mark.asyncio
+async def test_read_url_refuses_an_excluded_host_and_it_never_becomes_a_source():
+    from application.research import ResearchPorts, request_context
+    from shared import Config
+    from tests.fakes import FakeSources
+
+    config = Config(collectors={"web_search": {"exclude_domains": ["bloomberg.com"]}})
+    sources = FakeSources(page="article text")
+    delivery = DeliveryContext(ports=ResearchPorts(sources=sources), config=config)
+    with request_context(delivery):
+        out = await dlv.read_url("https://www.bloomberg.com/news/articles/x")
+        assert "not a source you can cite" in out
+        assert sources.read_page.await_count == 0
+        assert await dlv.read_url("https://example.com/a") == "article text"
+    assert not any("bloomberg" in u for u in delivery.seen_urls)

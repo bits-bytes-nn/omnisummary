@@ -14,7 +14,7 @@
 | [1. 개요](#1-개요) | 두 개의 실행 경로와 전체 흐름 |
 | [2. 저장소 구조](#2-저장소-구조) | 포트와 어댑터 계층, 디렉터리별 책임, 경계 검사 |
 | [3. 설정](#3-설정) | `config.yaml` 전체 필드와 시크릿 |
-| [4. 수집기](#4-수집기) | 다섯 소스, S3 park 파일, 실패 신호 |
+| [4. 수집기](#4-수집기) | 여섯 소스(네이버 증권 리서치 포함), S3 park 파일, 실패 신호 |
 | [5. 파이프라인](#5-파이프라인) | 집계에서 랭킹, 다이제스트, 렌더링, 비주얼, Threads까지 |
 | [6. LLM 팩토리](#6-llm-팩토리-adaptersbedrockpy) | 모델 구성, 비용 귀속, 토큰 카운트, 프롬프트 캐싱 |
 | [7. 메모리](#7-메모리-세-개의-분리된-저장소) | 트렌드, 다이제스트 스냅샷, cross-day dedup |
@@ -146,7 +146,8 @@ Robin Brooks, Klement, Yardeni, Calculated Risk, Sahm, Damodaran, Coin Metrics; 
 X로만 들어온다), YouTube 3개 채널(월가아재, Patrick Boyle, 채부심)이다. 2026-11-02에 개인투자자 관점으로 다시 넓혀, 인포맥스 뉴욕 마감·해외주식·외부기고 섹션, 이데일리 증권(목표가 변경·수급·미국 특징주·공모 일정), CNBC 실적, FactSet 실적 점검, TKer, 시장 데이터를 다루는 전략가 X 계정 6개(Carson, Schwab, Fidelity, Bianco, FactSet, 실적 콜 인용), 수급·공시·공모주와 미국 실적·변동성 웹 검색 묶음을 더하고 r/CryptoCurrency를 되살렸다. 미국 투자의견 변경을 담은 공개 피드는 없어서(Benzinga 403, MarketBeat는 스크립트로만 그린다) 이데일리·인포맥스 해외주식과 리서치 도구 `analyst_ratings`가 대신하고, 공매도 잔고는 로그인 없는 출처가 없다. 같은 날 두 번째 적대적 재검토에서 웹 검색을 미국 시장·크립토 두 묶음으로 줄였다. 국내 묶음(시장, 부동산, 수급·공시)은 결과가 없거나 피드와 겹쳤고, 나머지는 집단소송 공지(GlobeNewswire)와 랜딩 페이지였다. 그래서 웹 검색의 보장 자리와 Reddit 자리를 뺐고, r/economics(정치·일반 뉴스)와 RyanDetrick(팟캐스트 홍보와 계절성 통계)을 뺐다. 연준 피드는 은행 인가·제재가 섞인 전체 보도자료 대신 통화정책 보도자료와 연설로 바꿨고, 리서치 수집기에 채권(debenture) 분류를 더했다. 리서치 도구의 검색 도메인에서도 일반 독자에게 막힌 호스트(Reuters, 한국경제, MarketWatch, Investing.com, Seeking Alpha)를 뺐다.
 
 수집 기준은 두 갈래다(두 판 공통). 일반 독자처럼 공개 페이지를 읽고 요약과 출처 링크만 내보내며 모델을 학습시키지 않는다.
-**기술적 접근 통제는 우회하지 않는다.** 유료벽, 봇 확인 페이지, 403·429, 남의 로그인 벽이 걸린 곳은 쓰지 않고, UA를 바꾸거나 본문 추출
+모든 서버 측 요청은 일반 브라우저 UA(`BROWSER_USER_AGENT`)로 보낸다. 운영자 결정이다(2026-11-01, "일반 UA로 읽어"). 금지하는 것은
+막힌 뒤 UA를 바꿔 다시 시도하는 일이다. **기술적 접근 통제는 우회하지 않는다.** 유료벽, 봇 확인 페이지, 403·429, 남의 로그인 벽이 걸린 곳은 쓰지 않고, UA를 바꾸거나 본문 추출
 서비스를 거쳐 가져오지도 않는다. 웹 검색도 마찬가지라 그런 호스트(Bloomberg, FT, WSJ, Barron's, MarketWatch, Seeking Alpha, Investing.com,
 CoinDesk, The Block, 한국경제)는 두 판 모두 `exclude_domains`에 둔다. 검색 결과에는 검색 서비스가 봇 확인을 넘어 가져온 본문이 실리기 때문이다
 (2026-11-02, 웹 검색으로 들어온 Bloomberg 기사가 투자판에 실린 뒤 추가). 같은 날 AI판 헤드라인이 Business Insider 구독자 전용 기사로 나간 뒤 AI판에도 Business Insider, MarkTechPost, Crunchbase News, The Information, DCD, Stratechery, Medium, openai.com 등을 더했다. **정책 신호는 운영자가 판단하고 여기에 적는다.** robots.txt와 이용약관이 그렇다. robots.txt가 AI 크롤러를
@@ -202,7 +203,7 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 | `youtube` | `channels`, `max_videos_per_channel`, `resolve_timeout`, `transcript_timeout`, `transcript_language`, `max_concurrency`, `park_required` | 채널, 영상 수, 자막 관련 설정, 동시 채널 상한, AWS에서 park 파일 부재를 DEGRADED로 볼지([§4.2](#42-s3-park-파일-로더)) |
 | `web_search` | `trend_searches`, `max_results_per_query`, `max_refine_queries`, `refine_model`(Sonnet 5.5), `max_concurrency` | Tavily 검색, 쿼리 정제 모델 |
 | `rsshub` | `base_url`, `accounts`, `max_concurrency` | X 계정(로컬 컨테이너 또는 S3)과 동시 fetch 상한 |
-| `naver_research` | `categories`(기본 company·industry·invest·economy; 같은 종목·같은 날 기업 리포트는 한 건으로 묶는다), `max_pages`(기본 6, 쪽당 50건), `page_delay_sec`, `show_links`(기본 false) | 네이버 증권 리서치의 국내 증권사 리포트([§4.4a](#44a-네이버-증권-리서치-naver_researchpy)). 기본은 꺼짐이고 투자판이 켠다 |
+| `naver_research` | `categories`(기본 company·industry·invest·economy; 같은 종목·같은 날 기업 리포트는 한 건으로 묶는다), `max_pages`(기본 10, 쪽당 50건), `page_delay_sec`, `show_links`(기본 false) | 네이버 증권 리서치의 국내 증권사 리포트([§4.4a](#44a-네이버-증권-리서치-naver_researchpy)). 기본은 꺼짐이고 투자판이 켠다 |
 
 `lookback_hours`는 하루가 아니라 **직전 실행까지** 닿아야 한다. cutoff는 다이제스트 날짜의 **끝** 자정에
 앵커되는데(`resolve_digest_window`) cron은 그 자정보다 몇 시간 앞서 수집한다. 그래서 24는 윈도를 정확히
@@ -504,7 +505,7 @@ stock.naver.com 리서치 페이지가 쓰는 공개 JSON(`/api/stockSecurity/re
 리포트를 자르지 않게 한다(내보내지 않은 반복은 괜찮고, 내보낸 것은 URL 장부가 막는다). 출처는 증권사마다 하나라서
 (`feed_url = naver-research:<증권사>`) `max_per_origin`이 한 증권사가 풀을 차지하지 못하게 한다. 게시글의 출처 줄은
 "<증권사> 리서치"이고 네이버 페이지 링크는 붙이지 않는다(`show_links: false` → `DigestItem.show_link`, Threads
-렌더러만 URL을 뺀다). robots.txt가 네이버 검색 봇 외에는 막고 네이버 약관이 AI 수집을 제한한다는 점은 운영자 판단으로
+렌더러와 저장용 `digest_text`가 URL을 뺀다. 같은 URL이 다른 소스로 들어와 살아남아도 숨김은 유지되고, `stock.naver.com`과 `finance.naver.com`은 웹 검색과 리서치 도구의 `read_url`에서도 제외한다). robots.txt가 네이버 검색 봇 외에는 막고 네이버 약관이 AI 수집을 제한한다는 점은 운영자 판단으로
 받아들였고(§2 판), 그 대신 링크를 걸지 않는다.
 
 ### 4.4 Reddit (`reddit.py`)
@@ -757,13 +758,13 @@ GUID(RSS와 X는 기사 URL, 그 밖은 글이나 영상 id)라서 그대로 정
 
 **선정과 다양성 (`_apply_source_slots`).** 먼저 `source_slots`로 소스별 기본 슬롯을 config 순서대로 채운다.
 나머지 풀은 점수 순으로 채우되 `max_per_origin`으로 하나의 origin 키가 차지하는 항목 수를 제한한다(①). 그래도
-모자라면 origin 캡을 풀고 채운다(②). 서로 다른 origin이 너무 적은 조용한 날에도 풀이 짧아지지 않게 하려는 것이다.
+모자라면 origin 캡을 풀고 채우되(②), 실릴 `top_n`개까지만 푼다. 버퍼까지 채우려 풀던 때는 대량 발행처가 조용한 날의 풀을 차지했다(아래 2026-11-03 재검토).
 수집기(소스) 단위 상한은 없다. "rss"는 13개 매체를 묶고, 매체 단위 다양성은 `max_per_origin`이 이미 지킨다.
 수집기당 2개 상한을 두었을 때 16일 중 9일, 0.72–0.80 항목이 풀 밖에 남고 0.60–0.68 항목이 들어갔다. 슬롯은 운영 config에서 소스별로 뺄 수 있다. AI판은 2026-11-02에 Reddit 슬롯을 뺐다. r/LocalLLaMA의 개인 모델 튜닝 글이 매일 그 자리를 차지해서다. 같은 날 업계·시장 분석(SemiAnalysis, a16z, Exponential View, Epoch AI, Understanding AI, ChinaTalk 피드와 SemiAnalysis·a16z·Epoch AI·Ethan Mollick X 계정)을 넣고 랭킹 독자 설명을 "AI 업계의 연구소, 칩, 돈과 시장을 따라가는 독자와 그것으로 만드는 엔지니어"로 넓혔다. 같은 날 시험 실행에서 Reddit은 점수로 2건이 들어왔고, 후보 상위가 SemiAnalysis GDPx, 데이터센터 반발, Anthropic 신용등급 전망으로 바뀌었다. 그래도 같은 날 저녁 r/LocalLLaMA 글이 점수로 실려서, 재검토(32일 160건)를 거쳐 r/LocalLLaMA(22건, 대부분 개인 장비·튜닝), omarsar0와 그의 뉴스레터(한 큐레이터가 21건, 뉴스레터 기사는 유료 미리보기), 업로드가 주 40건이라 최신 1개가 무작위가 되는 aiDotEngineer, 기사 페이지가 Cloudflare 확인에 걸린 openai.com 피드(요약이 짧아 본문 추출이 그 확인을 넘어 가져왔다)를 뺐고, AI 정책(Transformer), AI·에너지(Latitude Media), 데이터센터·칩(The Next Platform), Mistral, TechCrunch AI를 더했다.
 
 origin은 `resolve_origin_key`로 해석한다. YouTube는 channel_url, Reddit은 subreddit, RSS는 feed_url, X는
 author, Web은 URL 호스트(`urlparse().netloc`에서 `www.` 제거)다. PSL이나 등록가능도메인 휴리스틱을 쓰지 않으니
-서브도메인은 별개 origin이다. 다섯 소스 전부에 키가 있어야 한다. 한 소스만 키가 비면 그 소스의 항목이 origin
+서브도메인은 별개 origin이다. 모든 소스(리서치는 증권사)에 키가 있어야 한다. 한 소스만 키가 비면 그 소스의 항목이 origin
 캡을 전부 우회해서 한 매체가 여러 슬롯을 차지한다.
 
 **한 이야기는 한 자리다 (`_story_groups`).** URL과 제목 중복 제거는 같은 이야기를 여러 매체가 쓴 경우를 잡지 못해서, 18회 실행의
@@ -2100,7 +2101,7 @@ Lambda의 RSSHub 수집은 RSSHub에 연결을 시도하지 않고 "X park file 
 Lambda(DockerImage), 댓글 답글 Lambda(DockerImage, 동시 실행 1), EventBridge 일일 다이제스트 크론(설정 기반
 시와 분), EventBridge Threads 토큰 갱신 스케줄(`threads_token_refresh_days` 기본 7일 주기로, 60일 만료 안쪽에서
 토큰을 갱신해 SSM에 재기록한다), EventBridge 댓글 답글 스케줄(`comment_reply_interval_minutes` 기본 60분), 시크릿용
-SSM 파라미터, 그리고 SNS로 향하는 CloudWatch 알람([§12](#12-관측성) 참조)을 만든다. 네 Lambda가 같은 이미지를 쓰고
+SSM 파라미터, 그리고 SNS로 향하는 CloudWatch 알람([§12](#12-관측성) 참조)을 만든다. 여섯 Lambda(판마다 digest·visual, comment-replies, threads-refresh)가 같은 이미지를 쓰고
 핸들러만 다르다.
 
 어느 Lambda도 VPC에 두지 않는다. 부르는 것이 전부 공개 엔드포인트이기 때문이다(Bedrock, S3, AgentCore Memory,
@@ -2117,7 +2118,7 @@ idempotency key가 없어서 재시도가 이중 게시를 일으키니, 자동 
 전달돼 동시에 돌면 둘 다 원장 검사를 통과해 그날을 두 번 게시할 수 있다. 동시 실행 1에서는 스로틀된 이벤트가
 Lambda 큐에서 기다렸다가, 차례가 오면 이미 마크된 날짜를 보고 건너뛴다.
 
-**로그 그룹은 선언한다.** 네 Lambda 모두 `log_group=logs.LogGroup(...)`(retention 30일, removal DESTROY)을
+**로그 그룹은 선언한다.** 여섯 Lambda 모두 `log_group=logs.LogGroup(...)`(retention 30일, removal DESTROY)을
 직접 받는다. deprecated된 `log_retention=` prop은 속성을 세우는 것이 아니라 함수마다 `Custom::LogRetention`
 Lambda를 하나씩 렌더하고, 그 각각이 자기 실행 역할에 `logs:PutRetentionPolicy`와 `logs:DeleteRetentionPolicy`를
 Resource `"*"`로 든다. 공유 계정에서는 아무 로그 그룹의 보존 기간이나 줄이거나 없앨 수 있는 권한이다.
@@ -2174,11 +2175,11 @@ id는 서비스 경계를 넘어 전달된다. 다이제스트 Lambda는 비주�
 
 ### 알람
 
-CloudWatch 알람 10개가 모두 SNS 알림 토픽으로, 그리고 이메일로 라우팅된다(`_add_alarms`).
+CloudWatch 알람 15개가 모두 SNS 알림 토픽으로, 그리고 이메일로 라우팅된다(`_add_alarms`).
 
-- **Lambda별 Errors 4개와 Timeout 4개** — digest와 visual, threads-refresh, comment-replies 각각에 대해 예외(Errors)와 타임아웃
+- **Lambda별 Errors 6개와 Timeout 6개** — digest와 visual(판마다), threads-refresh, comment-replies 각각에 대해 예외(Errors)와 타임아웃
   임박(max Duration이 설정 타임아웃의 90% 이상) 알람을 둔다. 타임아웃은 Errors로 집계되지 않으니 별도가 필요하다.
-- **EmptyDigestAlarm** — EMF `OmniSummary/DigestItemsPublished`(실행당 한 번)에 대한 24시간 윈도 알람이다.
+- **EmptyDigestAlarm**(판마다 하나, `Edition` 차원) — EMF `OmniSummary/DigestItemsPublished`(실행당 한 번)에 대한 24시간 윈도 알람이다.
   CloudWatch가 `evaluation_periods × period ≤ 86400s`로 제한하니 그 이상은 배포 시 거부된다. 0건 게시와 그날
   미실행을 모두 포착한다(missing-data=BREACHING).
 - **AsyncDLQAlarm** — async DLQ에 메시지가 쌓이면 알린다. 실패한 digest나 visual 실행이 대기 중이라는 뜻이다.

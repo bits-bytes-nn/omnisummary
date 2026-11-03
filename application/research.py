@@ -349,6 +349,10 @@ async def search_papers(query: str) -> str:
 
 
 async def read_url(url: str) -> str:
+    if _excluded_host(url, current_delivery_context().config.collectors.web_search.exclude_domains):
+        # Hosts behind a paywall or a bot check (docs/design.md, 판): an extractor would fetch the page
+        # around that control, and a read page becomes a citable source.
+        return f"{url} is on a host this project does not read; it is not a source you can cite."
     sources = _sources()
     text = await sources.read_page(url) if sources else ""
     if not text:
@@ -360,6 +364,16 @@ async def read_url(url: str) -> str:
     record_seen_urls("", url)
     current_delivery_context().source_texts[normalize_citation_url(url)] = text
     return text
+
+
+def _excluded_host(url: str, domains: list[str]) -> bool:
+    from urllib.parse import urlsplit
+
+    try:
+        host = (urlsplit(url).hostname or "").lower().removeprefix("www.")
+    except ValueError:
+        return False
+    return any(host == d or host.endswith("." + d) for d in (x.lower().removeprefix("www.") for x in domains))
 
 
 async def recall_trends() -> str:

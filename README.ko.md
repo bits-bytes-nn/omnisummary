@@ -269,7 +269,7 @@ uv run python scripts/put_inference_profiles.py # 단계의 모델을 바꾼 뒤
 | S3 | 트렌드, 원장, 적재 파일, Threads 이미지 |
 | SSM Parameter Store | 비밀값(SecureString) |
 | SQS | digest와 visual Lambda의 DLQ |
-| SNS + CloudWatch | 이메일 알림, 알람 10개(Lambda별 오류와 타임아웃 임박, 빈 다이제스트, DLQ) |
+| SNS + CloudWatch | 이메일 알림, 알람 15개(Lambda별 오류와 타임아웃 임박, 판마다 빈 다이제스트, DLQ) |
 | ECR | Lambda 이미지. 최근 30개를 보관한다 |
 
 모든 Lambda는 `retry_attempts=0`으로 돈다. Threads에는 멱등 키가 없어 자동 재시도로 같은 글이 두 번 올라갈 수 있기 때문이다. 실패는 DLQ에 쌓이거나 Errors 알람을 울린다.

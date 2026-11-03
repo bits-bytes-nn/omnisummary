@@ -342,3 +342,17 @@ def test_the_shipped_link_loses_only_its_tracking_params():
     )
     assert strip_tracking_params("https://e.com/a?flag&q=a%20b&utm_medium=x") == "https://e.com/a?flag&q=a%20b"
     assert strip_tracking_params("https://github.com/o/r/x.py?ref=dev") == "https://github.com/o/r/x.py?ref=dev"
+
+
+def test_the_same_url_from_a_research_note_stays_unlinked_whichever_copy_survives():
+    from domain.aggregator import ContentAggregator
+    from domain.models import CollectedItem
+    from shared.constants import SourceType
+
+    url = "https://stock.naver.com/research/company/1"
+    note = CollectedItem(
+        item_id="n", source_type=SourceType.RESEARCH, title="a", url=url, text="짧다", metadata={"hide_link": True}
+    )
+    web = CollectedItem(item_id="w", source_type=SourceType.WEB, title="b", url=url, text="긴 본문 " * 40)
+    [kept] = ContentAggregator().aggregate([note, web])
+    assert kept.item_id == "w" and kept.metadata.get("hide_link") is True

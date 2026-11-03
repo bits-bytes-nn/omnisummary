@@ -46,7 +46,7 @@ aws logs filter-log-events --profile research --region ap-northeast-2 --log-grou
 | 상태 | 뜻 | 할 일 |
 |------|----|-------|
 | `FAILED` | 소스가 아예 실패했다 | 보고서의 오류를 본다. 대개 일시적이라 다음 날 복구된다 |
-| `STALE` | X나 YouTube 적재 파일이 12시간보다 오래됐다(그날 18:30 동기화가 실패했거나 돌지 않았다) | Mac이 18:30에 깨어 있었는지, Docker Desktop과 `rsshub` 컨테이너가 떠 있었는지, cron 로그를 본다(README의 cron 줄은 `logs/sync.log`에 쓴다. 예전 줄은 재부팅하면 지워지는 `/tmp/omnisummary-sync.log`에 쓴다). 하루 건너뛴 것은 다음 정상 동기화가 다시 읽어 와 복구된다(이틀 연속이면 앞날은 잃는다) |
+| `STALE` | X나 YouTube 적재 파일이 12시간보다 오래됐다(그날 18:30 동기화, 투자판은 07:00 동기화가 실패했거나 돌지 않았다) | Mac이 그 시각에 깨어 있었는지(잠든 사이의 cron은 실행되지 않는다), Docker Desktop과 `rsshub` 컨테이너가 떠 있었는지, cron 로그를 본다(README의 cron 줄은 `logs/sync.log`에 쓴다. 예전 줄은 재부팅하면 지워지는 `/tmp/omnisummary-sync.log`에 쓴다). 하루 건너뛴 것은 다음 정상 동기화가 다시 읽어 와 복구된다(이틀 연속이면 앞날은 잃는다) |
 | `DEGRADED` | 입력의 일부만 응답했다 | X라면 쿠키 만료가 흔한 원인이다. README의 'RSSHub로 X 읽기' 절에 따라 쿠키를 새로 받아 컨테이너를 다시 만든다 |
 | `EMPTY` | 꼭 있어야 하는 소스가 0건이다 | 피드 주소나 API 키를 확인한다 |
 
@@ -76,7 +76,7 @@ aws logs filter-log-events --profile research --region ap-northeast-2 --log-grou
 |------|----|-------|
 | `DigestErrorsAlarm`, `VisualErrorsAlarm`, `CommentReplyErrorsAlarm`, `ThreadsRefreshErrorsAlarm` | 그 Lambda가 예외로 끝났다 | 로그 그룹 `/aws/lambda/omnisummary-dev-digest`, `-visual`, `-comment-replies`, `-threads-refresh`를 본다 |
 | 같은 이름의 `…TimeoutAlarm` | 실행 시간이 타임아웃의 90%에 닿았다 | 어느 단계가 느렸는지 로그를 본다 |
-| `EmptyDigestAlarm` | 하루 동안 게시할 기사가 0건이었거나 다이제스트가 돌지 않았다 | digest Lambda 로그를 본다 |
+| `EmptyDigestAlarm` / `InvestEmptyDigestAlarm` | 하루 동안 게시할 기사가 0건이었거나 다이제스트가 돌지 않았다 | 해당 판의 digest Lambda 로그(`omnisummary-dev-digest` / `omnisummary-dev-invest-digest`)를 본다 |
 | `AsyncDLQAlarm` | 실패한 digest·visual 실행이 DLQ에 쌓였다 | 아래 "그날을 다시 올리기"를 따른다 |
 
 댓글 답글이 실패하면 `CommentReplyErrorsAlarm`이 울린다. 일시적일 수 있는 게시 실패와 검증·파싱 실패는 세 번까지만 다시

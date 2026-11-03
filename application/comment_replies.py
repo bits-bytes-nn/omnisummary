@@ -97,6 +97,10 @@ _SPOKEN_DOT_DOMAIN = re.compile(
     r"(?i)(?<![a-z0-9-])[a-z][a-z0-9-]*(?:\s*[점쩜닷]\s*(?:com|net|org|io|ai|kr|co|me|dev|app|xyz)(?![a-z0-9-])|[점쩜닷]컴)"
 )
 _ZERO_WIDTH = re.compile("[\u200b-\u200f\u2060\ufeff]")
+# Dots a reader can spell to slip a domain past the URL checks: a katakana or hyphenation middle dot, and
+# "[dot]", "(점)". Not "·": Korean prose writes "AI·ML" with it. Not a spaced "닷 컴": "닷컴 버블" is prose.
+_SPELLED_DOT = re.compile(r"[・‧∙]|[\[(]\s*(?:dot|점|쩜|닷)\s*[\])]", re.IGNORECASE)
+_IP_ADDRESS = re.compile(r"(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?![\d.])")
 _HANDLE = re.compile(r"(?<![A-Za-z0-9_@])@([A-Za-z0-9._]+)")
 _HASHTAG = re.compile(r"(?<![\w#&])#[^\W\d_]")
 
@@ -104,7 +108,8 @@ _HASHTAG = re.compile(r"(?<![\w#&])#[^\W\d_]")
 def unsafe_reply_reason(text: str, commenter: str) -> str:
     """Why `text` must not be published as the account's reply to `commenter`; "" when it may."""
     text = _ZERO_WIDTH.sub("", unicodedata.normalize("NFKC", text)).replace("。", ".")
-    if URL_RE.search(text) or _BARE_DOMAIN.search(text) or _SPOKEN_DOT_DOMAIN.search(text):
+    text = _SPELLED_DOT.sub(".", text)
+    if URL_RE.search(text) or _BARE_DOMAIN.search(text) or _SPOKEN_DOT_DOMAIN.search(text) or _IP_ADDRESS.search(text):
         return "it carries a link or a domain"
     if any(handle.rstrip(".").lower() != commenter.lower() for handle in _HANDLE.findall(text)):
         return "it names another account"

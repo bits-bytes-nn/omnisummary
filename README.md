@@ -271,7 +271,7 @@ Later deploys repeat steps 3 and 4. CloudFormation does not redeploy a Lambda wh
 | S3 | Trends, ledgers, park files, Threads images |
 | SSM Parameter Store | The secrets, as SecureStrings |
 | SQS | Dead-letter queue for the digest and visual Lambdas |
-| SNS + CloudWatch | Email alerts; 10 alarms (errors and near-timeout duration per Lambda, empty digest, DLQ) |
+| SNS + CloudWatch | Email alerts; 15 alarms (errors and near-timeout duration per Lambda, an empty-digest alarm per edition, DLQ) |
 | ECR | The Lambda image; the last 30 images are kept |
 
 Every Lambda runs with `retry_attempts=0`: Threads has no idempotency key, so an automatic retry could post twice. Failures land in the DLQ or raise the Errors alarm.

@@ -69,7 +69,7 @@ class NaverResearchCollector(BaseCollector):
         self, client: httpx.AsyncClient, category: str, start: str, end: str
     ) -> list[CollectedItem]:
         items: list[CollectedItem] = []
-        rows_seen = dated = 0
+        rows_seen = dated = attributed = 0
         for index in range(self.config.max_pages):
             payload = await self._page(client, category, index, start, end)
             if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
@@ -77,6 +77,7 @@ class NaverResearchCollector(BaseCollector):
             rows = payload["items"]
             rows_seen += len(rows)
             dated += sum(1 for row in rows if _dated(row) is not None)
+            attributed += sum(1 for row in rows if row.get("brokerName"))
             items += [item for row in rows if (item := self._to_item(category, row)) is not None]
             if not payload.get("hasNext"):
                 break
@@ -91,6 +92,9 @@ class NaverResearchCollector(BaseCollector):
             # Rows came back and none had a readable date: the API changed shape. Fail the category rather
             # than report it empty, which is what a quiet Sunday looks like.
             raise ValueError(f"Naver research '{category}' returned {rows_seen} rows with no readable writeDate")
+        if rows_seen and not attributed:
+            # Every row without a broker: a renamed field, not a quiet day.
+            raise ValueError(f"Naver research '{category}' returned {rows_seen} rows with no brokerName")
         return items
 
     async def _page(self, client: httpx.AsyncClient, category: str, index: int, start: str, end: str) -> dict:

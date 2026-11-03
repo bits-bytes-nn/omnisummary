@@ -113,7 +113,11 @@ class ContentAggregator:
                 continue
             if key in seen_urls:
                 logger.debug("Duplicate URL skipped: '%s'", item.url)
+                hidden = seen_urls[key].metadata.get("hide_link") or item.metadata.get("hide_link")
                 seen_urls[key] = self._pick_survivor(seen_urls[key], item)
+                if hidden:
+                    # The same URL: a page that must not be linked stays unlinked whichever copy survives.
+                    seen_urls[key].metadata["hide_link"] = True
                 url_dupes += 1
             else:
                 seen_urls[key] = item
