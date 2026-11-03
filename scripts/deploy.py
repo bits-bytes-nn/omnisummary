@@ -68,6 +68,7 @@ def main():
         config=config,
         alert_email=os.getenv("ALERT_EMAIL", ""),
         editions=tuple(edition.edition for edition in editions),
+        edition_prefixes=tuple(edition.aws.s3_prefix for edition in editions),
         env=env,
     )
 

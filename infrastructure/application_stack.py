@@ -208,7 +208,7 @@ class OmniSummaryApplicationStack(Stack):
             # (the Lambda max) gives the flat reply chain room to finish so comments aren't cut off.
             timeout=Duration.minutes(15),
             memory_size=512,
-            role=foundation.lambda_role,
+            role=foundation.edition_roles[config.edition],
             # No auto-retry: the ThreadsPostLedger idempotency marker already blocks a re-post,
             # and retry_attempts=0 avoids re-running the costly gpt-image render on failure.
             # Failures go to the DLQ for manual replay instead.
@@ -247,7 +247,7 @@ class OmniSummaryApplicationStack(Stack):
             ),
             timeout=Duration.minutes(15),
             memory_size=1024,
-            role=foundation.lambda_role,
+            role=foundation.edition_roles[config.edition],
             # No auto-retry on the daily cron invoke: the pipeline is not idempotent (a retry
             # re-posts the digest). A failure goes to the DLQ for inspection/manual replay.
             retry_attempts=0,

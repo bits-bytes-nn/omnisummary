@@ -581,3 +581,45 @@ class TestAnotherEdition:
         assert {"Edition", "invest"} <= {v for a in empty for d in a["Dimensions"] for v in d.values()}
         assert len(empty) == 2
         assert f"function:{prefix}-invest-visual" in str(foundation.find_resources("AWS::IAM::Policy"))
+
+
+class TestEditionsDoNotReachEachOther:
+    """One edition's Lambdas cannot rewrite the other's ledgers and park files or fire its publish Lambda."""
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def foundation(cls):
+        config = Config.from_yaml(str(CONFIG_TEMPLATE)).model_copy(deep=True)
+        config.aws.s3_prefix = "omnisummary"
+        env = Environment(account="123456789012", region=config.aws.region)
+        stack = OmniSummaryFoundationStack(
+            App(), "fnd", config=config, editions=("invest",), edition_prefixes=("omnisummary/invest",), env=env
+        )
+        return Template.from_stack(stack)
+
+    @staticmethod
+    def _statements(template, role_fragment):
+        out = []
+        for policy in template.find_resources("AWS::IAM::Policy").values():
+            roles = str(policy["Properties"].get("Roles"))
+            if role_fragment in roles and ("Invest" in role_fragment) == ("InvestLambdaRole" in roles):
+                out += policy["Properties"]["PolicyDocument"]["Statement"]
+        return out
+
+    def test_the_ai_role_is_denied_the_investing_prefix_and_invokes_only_its_visual(self, foundation):
+        ai = self._statements(foundation, "LambdaRole")
+        rendered = str(ai)
+        assert any(s.get("Effect") == "Deny" and "omnisummary/invest/*" in str(s["Resource"]) for s in ai)
+        assert "function:omnisummary-dev-visual" in rendered or "-visual" in rendered
+        assert "invest-visual" not in rendered
+
+    def test_the_investing_role_reaches_only_its_prefix_and_its_visual(self, foundation):
+        inv = self._statements(foundation, "InvestLambdaRole")
+        rendered = str(inv)
+        objects = [
+            str(s["Resource"])
+            for s in inv
+            if "s3:PutObject" in str(s["Action"]) and s.get("Effect", "Allow") == "Allow"
+        ]
+        assert objects and all("omnisummary/invest/*" in r for r in objects)
+        assert "invest-visual" in rendered and "bedrock-agentcore:CreateEvent" in rendered

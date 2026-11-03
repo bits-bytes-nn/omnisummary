@@ -23,6 +23,7 @@ class OmniSummaryFoundationStack(Stack):
         config: Config,
         alert_email: str = "",
         editions: tuple[str, ...] = (),
+        edition_prefixes: tuple[str, ...] = (),
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -87,13 +88,23 @@ class OmniSummaryFoundationStack(Stack):
             resources=["*"],
         )
         # One role per kind of work, so the Lambda that reads strangers' comments holds neither the
-        # token write nor the publish fan-out: the digest and visual Lambdas share lambda_role, the
-        # comment-reply and token-refresh Lambdas get only what they call.
+        # token write nor the publish fan-out: each edition's digest and visual Lambdas share one role
+        # (lambda_role for AI/ML, edition_roles[name] otherwise), the comment-reply and token-refresh
+        # Lambdas get only what they call. Per edition, so one edition cannot rewrite the other's ledgers
+        # and park files or fire the other's publish Lambda.
         self.lambda_role = iam.Role(
             self,
             "LambdaRole",
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
         )
+        self.edition_roles: dict[str, iam.Role] = {"": self.lambda_role}
+        for edition in editions:
+            self.edition_roles[edition] = iam.Role(
+                self,
+                f"{edition.capitalize()}LambdaRole",
+                assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+            )
+        pipeline_roles = list(self.edition_roles.values())
         self.comment_reply_role = iam.Role(
             self,
             "CommentReplyRole",
@@ -119,12 +130,13 @@ class OmniSummaryFoundationStack(Stack):
                 for name in ("threads-access-token", "threads-user-id")
             ],
         )
-        for role in (self.lambda_role, self.comment_reply_role, self.token_refresh_role):
+        for role in (*pipeline_roles, self.comment_reply_role, self.token_refresh_role):
             role.add_to_policy(logs_statement)
-        self.lambda_role.add_to_policy(ssm_read_statement)
+        for role in pipeline_roles:
+            role.add_to_policy(ssm_read_statement)
         self.comment_reply_role.add_to_policy(threads_secrets_read)
         self.token_refresh_role.add_to_policy(threads_secrets_read)
-        for role in (self.lambda_role, self.comment_reply_role):
+        for role in (*pipeline_roles, self.comment_reply_role):
             role.add_to_policy(bedrock_invoke_statement)
             role.add_to_policy(bedrock_profile_statement)
         # Scope object access to the project's own prefix instead of the entire bucket. The bucket
@@ -142,9 +154,16 @@ class OmniSummaryFoundationStack(Stack):
         root = f"{prefix}/" if prefix else ""
         # The comment-reply Lambda writes one object, its own ledger: it cannot touch the post ledger,
         # the published-URL ledger, trends or the park files. (COMMENT_REPLIES_KEY under digest_state.)
+        # An edition lives under its own prefix inside the AI/ML one (deploy.py checks), so the AI/ML
+        # role's grant would cover it: an explicit Deny keeps the AI/ML Lambdas out of it.
+        prefixes = dict(zip(editions, edition_prefixes, strict=False))
+        edition_roots = {
+            edition: (prefixes.get(edition) or f"{root}{edition}").strip("/") + "/" for edition in editions
+        }
         object_scopes = {
             self.lambda_role: f"{root}*",
             self.comment_reply_role: f"{root}digest_state/comment_replies.json",
+            **{self.edition_roles[edition]: f"{edition_root}*" for edition, edition_root in edition_roots.items()},
         }
         for role, objects in object_scopes.items():
             role.add_to_policy(
@@ -153,7 +172,15 @@ class OmniSummaryFoundationStack(Stack):
                     resources=[self.state_bucket.arn_for_objects(objects)],
                 )
             )
-        for role in (self.lambda_role, self.comment_reply_role):
+        if edition_roots:
+            self.lambda_role.add_to_policy(
+                iam.PolicyStatement(
+                    effect=iam.Effect.DENY,
+                    actions=["s3:GetObject", "s3:PutObject"],
+                    resources=[self.state_bucket.arn_for_objects(f"{r}*") for r in edition_roots.values()],
+                )
+            )
+        for role in (*pipeline_roles, self.comment_reply_role):
             role.add_to_policy(
                 iam.PolicyStatement(
                     actions=["s3:ListBucket"],
@@ -165,15 +192,17 @@ class OmniSummaryFoundationStack(Stack):
         # (which included the token-refresh Lambda). Built from the literal name the application
         # stack assigns, so foundation takes NO dependency on it — importing the function object here
         # would create a foundation -> application cycle.
-        self.lambda_role.add_to_policy(
-            iam.PolicyStatement(
-                actions=["lambda:InvokeFunction"],
-                resources=[
-                    f"arn:aws:lambda:{self.region}:{self.account}:function:{project_name}-{stage}-{name}visual"
-                    for name in ("", *(f"{edition}-" for edition in editions))
-                ],
+        for edition, role in self.edition_roles.items():
+            role.add_to_policy(
+                iam.PolicyStatement(
+                    actions=["lambda:InvokeFunction"],
+                    resources=[
+                        f"arn:aws:lambda:{self.region}:{self.account}:function:{project_name}-{stage}-"
+                        + (f"{edition}-" if edition else "")
+                        + "visual"
+                    ],
+                )
             )
-        )
         # The Threads token-refresh Lambda writes the renewed token back to its own SSM param.
         self.token_refresh_role.add_to_policy(
             iam.PolicyStatement(
@@ -187,7 +216,8 @@ class OmniSummaryFoundationStack(Stack):
         self.alerts_topic = sns.Topic(self, "AlertsTopic", topic_name=f"{project_name}-{stage}-alerts")
         if alert_email:
             self.alerts_topic.add_subscription(subs.EmailSubscription(alert_email))
-        self.alerts_topic.grant_publish(self.lambda_role)
+        for role in pipeline_roles:
+            self.alerts_topic.grant_publish(role)
 
         # Dead-letter queue for failed async (EventBridge / fire-and-forget) Lambda invokes. Lives
         # here, with the shared lambda_role, so the on_failure send grant stays intra-stack (an
@@ -217,9 +247,10 @@ class OmniSummaryFoundationStack(Stack):
         # other projects' conversation state. The `/*` companion covers the per-session
         # sub-resources the data-plane actions address. Session ids are deterministic
         # (`digest-YYYY-MM-DD`), so no ListSessions.
-        self.lambda_role.add_to_policy(
-            iam.PolicyStatement(
-                actions=["bedrock-agentcore:CreateEvent", "bedrock-agentcore:ListEvents"],
-                resources=[self.memory.attr_memory_arn, f"{self.memory.attr_memory_arn}/*"],
+        for role in pipeline_roles:
+            role.add_to_policy(
+                iam.PolicyStatement(
+                    actions=["bedrock-agentcore:CreateEvent", "bedrock-agentcore:ListEvents"],
+                    resources=[self.memory.attr_memory_arn, f"{self.memory.attr_memory_arn}/*"],
+                )
             )
-        )
