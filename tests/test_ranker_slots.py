@@ -294,3 +294,11 @@ def test_a_story_takes_its_seat_with_its_best_copy_not_an_earlier_sources_weaker
         r.item.item_id for r in ranker._apply_source_slots([article, post, other], 2, [], {"article": 0, "post": 0})
     ]
     assert picked == ["article", "other-post"]
+
+
+def test_a_quiet_day_relaxes_the_origin_cap_only_up_to_top_n():
+    ranker = _ranker(source_slots={}, max_per_origin=1, top_n=3)
+    items = [_ranked(0.9 - i / 100, SourceType.REDDIT, item_id=f"r{i}", sub="LocalLLaMA") for i in range(8)]
+    items += [_ranked(0.7, SourceType.WEB, item_id="w", url="http://w.com/x")]
+    picked = ranker._apply_source_slots(items, 12, [])
+    assert [r.item.item_id for r in picked] == ["r0", "r1", "w"]

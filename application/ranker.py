@@ -392,10 +392,10 @@ class ContentRanker:
                 record(item, source_key)
                 taken += 1
 
-        def fill(*, respect_origin: bool, respect_story: bool = True) -> None:
-            """Walk the remaining candidates in score order and take what the caps allow."""
+        def fill(*, respect_origin: bool, respect_story: bool = True, until: int = limit) -> None:
+            """Walk the remaining candidates in score order and take what the caps allow, up to `until`."""
             for item in above_threshold:
-                if len(selected) >= limit:
+                if len(selected) >= until:
                     break
                 if item.item.item_id in selected_ids or (respect_origin and origin_at_cap(item)):
                     continue
@@ -404,11 +404,14 @@ class ContentRanker:
                 record(item, item.item.source_type.value)
 
         # The rest of the pool goes by score; max_per_origin keeps one publisher from taking it, and one
-        # story keeps one seat. The origin cap is relaxed first when a quiet day has too few distinct
-        # origins to fill the pool, the story cap last.
+        # story keeps one seat. On a quiet day the caps are relaxed only far enough for the editor to have
+        # top_n stories, never to fill the buffer: filling it let the highest-volume origins (r/LocalLLaMA,
+        # one X curator, GeekNews) take 27 extra seats on 7 of 15 AI days, and 4 of 11-01's 5 stories came
+        # from two origins. The origin cap is relaxed first, the story cap last.
+        enough = min(limit, self.config.top_n)
         fill(respect_origin=True)
-        fill(respect_origin=False)
-        fill(respect_origin=False, respect_story=False)
+        fill(respect_origin=False, until=enough)
+        fill(respect_origin=False, respect_story=False, until=enough)
 
         selected.sort(key=lambda r: (-r.score, _tiebreak(r.item.item_id)))
         return selected[:limit]

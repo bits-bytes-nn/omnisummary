@@ -113,6 +113,7 @@ class DigestPrompt(BasePrompt):
         "recent_titles",
         "prose_budget_rule",
         "lead_budget",
+        "criteria",
     ]
 
     system_prompt_template = """\
@@ -142,11 +143,14 @@ because the lead is a comment on stories you have already written:
 ```
 
 Rules:
-- `items[0]` is today's HEADLINE, the story the lead and the image are about: the most important \
-story, with visual expressibility only breaking a tie. Order the rest by importance.
+- `items[0]` is today's HEADLINE, the story the lead and the image are about: the strongest story by \
+the lenses below, with visual expressibility only breaking a tie. Order the rest the same way.
 - At most two numbers in a body, the ones the story rests on, and no technical term, benchmark name or acronym unless the story needs it, then glossed in a \
 few plain words where it first appears.
-- Pick the {target_count} strongest distinct stories from the candidates. If two are the SAME \
+- Pick the {target_count} strongest distinct stories from the candidates, judged by the same lenses they \
+were ranked on:
+{criteria}
+- If two are the SAME \
 underlying story (same companies/event), keep only the more informative one and write the item from \
 its text alone. Emit fewer only when no distinct candidate is left — never pad with a near-identical take.
 
