@@ -351,12 +351,6 @@ class ContentRanker:
             if pinned_origin:
                 origin_counts[pinned_origin] += 1
 
-        source_caps = self.config.max_pool_per_source
-
-        def source_at_cap(item: RankedItem) -> bool:
-            cap = source_caps.get(item.item.source_type.value)
-            return cap is not None and source_counts[item.item.source_type.value] >= cap
-
         def origin_at_cap(item: RankedItem) -> bool:
             origin_key = resolve_origin_key(item.item)
             if not origin_key:
@@ -390,8 +384,7 @@ class ContentRanker:
                     continue
                 story = stories.get(item.item.item_id)
                 if (
-                    source_at_cap(item)
-                    or origin_at_cap(item)
+                    origin_at_cap(item)
                     or story_taken(item)
                     or (story is not None and best_copy[story] != item.item.item_id)
                 ):
@@ -404,7 +397,7 @@ class ContentRanker:
             for item in above_threshold:
                 if len(selected) >= until:
                     break
-                if item.item.item_id in selected_ids or source_at_cap(item) or (respect_origin and origin_at_cap(item)):
+                if item.item.item_id in selected_ids or (respect_origin and origin_at_cap(item)):
                     continue
                 if respect_story and story_taken(item):
                     continue

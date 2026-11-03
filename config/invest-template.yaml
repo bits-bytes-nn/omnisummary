@@ -177,6 +177,8 @@ pipeline:
   ranking_audience_description: "a daily Korean investing digest for individual investors who follow Korean, US and global markets and crypto"
   digest_audience_description: "Korean individual investors who follow stocks, macro and crypto, from beginners to experienced traders"
   visual_audience_description: "a daily Korean investing digest read by individual investors, beginners and experienced alike"
+  # The editor reads its five as one set (measured 3-0 on the stored investing days).
+  selection_guidance: "Read the stories as one set: when two candidates are close, take the one that adds a kind of source or story the set lacks."
   ranking_criteria: |-
     1. Read of the Market — a reasoned read of where money is going: a named analyst's or house's thesis, a rating or target change with its reasons, a flows, positioning or earnings read, a central-bank decision or an official statistic. A report that a price moved or a deal was announced scores on what it explains, not on the size of the move.
     2. Investor Value — would it change how an individual investor understands a holding, a sector or the market, in Korea, the US, globally or in crypto?
