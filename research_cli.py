@@ -27,6 +27,7 @@ load_dotenv()
 logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
 from adapters.aws import SecretUnavailableError, resolve_secret  # noqa: E402
+from adapters.bedrock import BedrockLanguageModelFactory  # noqa: E402
 from adapters.research_agent import create_research_agent, research_run_limits  # noqa: E402
 from adapters.threads import ThreadsPreview  # noqa: E402
 from application.research import MARKDOWN, THREADS, DeliveryContext, request_context  # noqa: E402
@@ -81,16 +82,32 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _usage(result: Any) -> dict[str, Any]:
-    """Token usage the Strands run accumulated, in the same terms the pipeline logs (`LLM usage`)."""
+def _usage(result: Any, model_id: Any) -> dict[str, Any]:
+    """Token usage the Strands run accumulated, in the same terms the pipeline logs (`LLM usage`), and
+    its price. Strands reports inputTokens WITHOUT the cache traffic, unlike langchain-aws."""
     metrics = getattr(result, "metrics", None)
     usage = dict(getattr(metrics, "accumulated_usage", {}) or {})
     tool_metrics = getattr(metrics, "tool_metrics", {}) or {}
+    uncached = usage.get("inputTokens", 0)
+    cache_read = usage.get("cacheReadInputTokens", 0)
+    cache_write = usage.get("cacheWriteInputTokens", 0)
+    price = BedrockLanguageModelFactory.get_model_info(model_id).price
+    usd = (
+        price.usd(
+            input_tokens=uncached + cache_read + cache_write,
+            output_tokens=usage.get("outputTokens", 0),
+            cache_read=cache_read,
+            cache_write=cache_write,
+        )
+        if price
+        else None
+    )
     return {
-        "input_tokens": usage.get("inputTokens", 0),
+        "input_tokens": uncached,
         "output_tokens": usage.get("outputTokens", 0),
-        "cache_read_input_tokens": usage.get("cacheReadInputTokens", 0),
-        "cache_write_input_tokens": usage.get("cacheWriteInputTokens", 0),
+        "cache_read_input_tokens": cache_read,
+        "cache_write_input_tokens": cache_write,
+        "usd": round(usd, 4) if usd is not None else None,
         "cycles": int(getattr(metrics, "cycle_count", 0) or 0),
         "tool_calls": {name: getattr(m, "call_count", 0) for name, m in tool_metrics.items()},
     }
@@ -199,7 +216,7 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
             run_error = f"{type(e).__name__}: {e}"
             markdown = delivery.report if MARKDOWN in delivery.delivered_channels else ""
         else:
-            result["usage"] = _usage(run_result)
+            result["usage"] = _usage(run_result, config.agent.model_id)
             result["stop_reason"] = str(getattr(run_result, "stop_reason", "") or "")
             markdown = delivery.report
             if MARKDOWN not in delivery.delivered_channels:

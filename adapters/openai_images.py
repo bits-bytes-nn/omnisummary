@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from adapters.aws import SecretUnavailableError, resolve_secret
+from adapters.metrics import emit_spend
 from shared import logger
 
 
@@ -15,20 +16,42 @@ def _image_file(index: int, data: bytes) -> tuple[str, bytes, str]:
     return f"input{index}.png", data, "image/png"
 
 
-def _usage_summary(usage: Any) -> str:
-    """Compact token counts from an images.generate response, or "unknown".
+# USD per million tokens (text input, image input, image output), from OpenAI's model page, checked
+# 2026-11-03. gpt-image bills by token, not per image: the same render costs several times more at
+# xhigh than at medium, and an edit pays for its input images too.
+IMAGE_PRICES: dict[str, tuple[float, float, float]] = {
+    "gpt-image-2.5-sunburst": (5.0, 8.0, 30.0),
+    "gpt-image-2.5-flare": (5.0, 8.0, 30.0),
+    "gpt-image-2": (5.0, 8.0, 30.0),
+}
 
-    The image is billed on output image tokens, so this is the only number that turns spend from an
-    estimate (published per-image price x a log count) into a measurement. Tolerant of the field
-    being absent or renamed: a usage-shape change in the SDK must never break a render."""
+
+def image_usage(usage: Any) -> dict[str, int]:
+    """The token counts an images response is billed on. Tolerant of fields being absent or renamed: a
+    usage-shape change in the SDK must never break a render."""
     if usage is None:
-        return "unknown"
-    parts = []
-    for field in ("input_tokens", "output_tokens", "total_tokens"):
-        value = getattr(usage, field, None)
-        if value is not None:
-            parts.append(f"{field.split('_')[0]}={value}")
-    return " ".join(parts) or "unknown"
+        return {}
+    details = getattr(usage, "input_tokens_details", None)
+    counts = {
+        "input_tokens": getattr(usage, "input_tokens", None),
+        "text_input_tokens": getattr(details, "text_tokens", None),
+        "image_input_tokens": getattr(details, "image_tokens", None),
+        "output_tokens": getattr(usage, "output_tokens", None),
+    }
+    return {name: int(value) for name, value in counts.items() if isinstance(value, int)}
+
+
+def image_usd(model: str, counts: dict[str, int]) -> float | None:
+    """The render's price, or None for an unpriced model or a response without output tokens. Input
+    without a text/image split is priced as text (the cheaper rate; an edit's reference image is the
+    only image input)."""
+    price = IMAGE_PRICES.get(model)
+    if price is None or "output_tokens" not in counts:
+        return None
+    text_rate, image_rate, output_rate = price
+    image_in = counts.get("image_input_tokens", 0)
+    text_in = counts.get("text_input_tokens", counts.get("input_tokens", 0) - image_in)
+    return (text_in * text_rate + image_in * image_rate + counts["output_tokens"] * output_rate) / 1_000_000
 
 
 class OpenAIImageRenderer:
@@ -82,15 +105,20 @@ class OpenAIImageRenderer:
             raise RuntimeError("gpt-image returned no image data")
         # The token counts the image is billed on, and the quality the response reports (not just
         # the one requested), so spend is a measurement rather than an estimate.
+        counts = image_usage(getattr(response, "usage", None))
+        usd = image_usd(self.image_model, counts)
         logger.info(
-            "%s visual image (%s, quality=%s->%s, inputs=%d, tokens=%s)",
+            "Image usage stage=%s model=%s size=%s quality=%s->%s inputs=%d %s usd=%s",
             label,
+            self.image_model,
             size,
             self.image_quality or "auto",
             getattr(response, "quality", None) or "unreported",
             len(inputs),
-            _usage_summary(getattr(response, "usage", None)),
+            " ".join(f"{k}={v}" for k, v in counts.items()) or "tokens=unknown",
+            f"{usd:.4f}" if usd is not None else "unpriced",
         )
+        emit_spend("image", label, self.image_model, usd, counts)
         return base64.b64decode(b64)
 
     @staticmethod

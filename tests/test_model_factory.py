@@ -1,4 +1,5 @@
 import copy
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -273,6 +274,52 @@ class TestTokenUsageAttribution:
         handler = _TokenUsageLogger("digest", "global.anthropic.claude-sonnet-5")
         handler.on_llm_end(MagicMock(generations=[], llm_output=None))  # must not raise
         handler.on_llm_end(object())  # not even the expected shape
+
+    def test_usage_is_priced_with_cache_traffic_at_its_own_rate(self, monkeypatch, capsys):
+        from adapters import bedrock
+
+        logged = []
+        monkeypatch.setattr(bedrock.logger, "info", lambda msg, *a: logged.append(msg % a))
+        monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "fn")
+        handler = bedrock._TokenUsageLogger("ranking", "anthropic.claude-opus-5-5", bedrock.OPUS_5_5_PRICE)
+        message = MagicMock(
+            usage_metadata={
+                "input_tokens": 1_000_000,
+                "output_tokens": 100_000,
+                "input_token_details": {"cache_read": 400_000, "cache_creation": 100_000},
+            }
+        )
+        handler.on_llm_end(MagicMock(generations=[[MagicMock(message=message)]]))
+        # 500k uncached x $4 + 400k read x $0.20 + 100k write x $5 + 100k out x $20
+        assert logged == [
+            "LLM usage stage=ranking model=anthropic.claude-opus-5-5 input=1000000 output=100000 "
+            "cache_read=400000 cache_write=100000 usd=4.5800"
+        ]
+        record = json.loads(capsys.readouterr().out)
+        assert record["LLMCostUSD"] == pytest.approx(4.58)
+        assert record["spend_stage"] == "ranking"
+
+    def test_spend_is_not_printed_outside_lambda(self, monkeypatch, capsys):
+        from adapters.metrics import emit_spend
+
+        monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
+        emit_spend("llm", "fact-check", "m", 0.1, {})
+        assert capsys.readouterr().out == ""
+
+    def test_every_stage_model_is_priced(self):
+        # A stage on an unpriced model logs tokens with no dollar figure, and the report undercounts.
+        from pydantic import BaseModel
+
+        import shared.config as config_module
+
+        defaults = {
+            field.default
+            for model in vars(config_module).values()
+            if isinstance(model, type) and issubclass(model, BaseModel)
+            for field in model.model_fields.values()
+            if isinstance(field.default, LanguageModelId)
+        }
+        assert defaults and all(LANGUAGE_MODEL_INFO[m].price for m in defaults)
 
 
 class TestApplicationProfileResolution:

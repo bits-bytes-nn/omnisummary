@@ -288,7 +288,7 @@ Never add or change template properties on the secret parameters, tags included:
 
 ### Cost attribution
 
-Bedrock on-demand usage has no taggable resource. `scripts/put_inference_profiles.py` creates a tagged application inference profile per configured model, and model resolution prefers it, so Cost Explorer can attribute the spend (activate the `Project` cost-allocation tag in Billing). Each model call also logs `LLM usage stage=... model=... input=... output=...`, because several stages share one model on the bill.
+Bedrock on-demand usage has no taggable resource. `scripts/put_inference_profiles.py` creates a tagged application inference profile per configured model, and model resolution prefers it, so Cost Explorer can attribute the spend (activate the `Project` cost-allocation tag in Billing). Each model call also logs `LLM usage stage=... model=... input=... output=... usd=...`, because several stages share one model on the bill (and both editions share the profiles); renders log `Image usage ... usd=` and Tavily calls `Search usage ... credits=`. In Lambda each call also emits an EMF `LLMCostUSD` / `ImageCostUSD` / `TavilyCredits` datapoint (Project/Stage/Edition). `uv run python scripts/cost_report.py --days 7 [--by stage]` totals the deployed logs per day and Lambda or stage.
 
 ### Local sync for X and YouTube
 

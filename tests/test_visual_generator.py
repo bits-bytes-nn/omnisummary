@@ -158,9 +158,9 @@ class TestVisualGenerator:
         with patch("adapters.openai_images.logger") as log:
             with patch("openai.OpenAI", return_value=client):
                 _generator(image_quality="").render(brief)
-        rendered = [m for c in log.info.call_args_list if "Rendered" in (m := c.args[0] % c.args[1:])]
+        rendered = [m for c in log.info.call_args_list if "Image usage" in (m := c.args[0] % c.args[1:])]
         assert rendered, "no render log line"
-        assert "output=2222" in rendered[0]
+        assert "output_tokens=2222" in rendered[0] and "stage=visual-render" in rendered[0]
         # Requested -> resolved. With the tier left EMPTY we send no `quality` and OpenAI picks one
         # itself, so only the RESPONSE says which of the ~4x-apart prices was billed. config.yaml
         # pins the tier for exactly that reason; this covers the explicit opt-out.
@@ -180,7 +180,7 @@ class TestVisualGenerator:
         with patch("adapters.openai_images.logger") as log:
             with patch("openai.OpenAI", return_value=client):
                 assert _generator(image_quality="").render(brief) == b"P"
-        rendered = [m for c in log.info.call_args_list if "Rendered" in (m := c.args[0] % c.args[1:])]
+        rendered = [m for c in log.info.call_args_list if "Image usage" in (m := c.args[0] % c.args[1:])]
         assert "quality=auto->unreported" in rendered[0]
 
     def test_a_pinned_tier_is_sent_and_logged(self, monkeypatch):
@@ -199,15 +199,28 @@ class TestVisualGenerator:
             with patch("openai.OpenAI", return_value=client):
                 assert _generator(image_quality="high").render(brief) == b"P"
         assert client.images.generate.call_args.kwargs["quality"] == "high"
-        rendered = [m for c in log.info.call_args_list if "Rendered" in (m := c.args[0] % c.args[1:])]
+        rendered = [m for c in log.info.call_args_list if "Image usage" in (m := c.args[0] % c.args[1:])]
         assert "quality=high->" in rendered[0]
 
-    def test_usage_summary_tolerates_a_missing_or_reshaped_usage(self):
-        from adapters.openai_images import _usage_summary
+    def test_image_usage_tolerates_a_missing_or_reshaped_usage(self):
+        from adapters.openai_images import image_usage, image_usd
 
-        assert _usage_summary(None) == "unknown"
-        assert _usage_summary(MagicMock(spec=[])) == "unknown"  # no token fields at all
-        assert _usage_summary(MagicMock(spec=["output_tokens"], output_tokens=7)) == "output=7"
+        assert image_usage(None) == {}
+        assert image_usage(MagicMock(spec=[])) == {}  # no token fields at all
+        assert image_usage(MagicMock(spec=["output_tokens"], output_tokens=7)) == {"output_tokens": 7}
+        assert image_usd("gpt-image-2.5-sunburst", {}) is None
+        assert image_usd("unknown-model", {"output_tokens": 7}) is None
+
+    def test_image_usd_prices_text_and_image_input_apart(self):
+        from adapters.openai_images import image_usd
+
+        counts = {"input_tokens": 1676, "text_input_tokens": 790, "image_input_tokens": 886, "output_tokens": 1397}
+        expected = (790 * 5 + 886 * 8 + 1397 * 30) / 1_000_000
+        assert image_usd("gpt-image-2.5-sunburst", counts) == pytest.approx(expected)
+        # No split reported: the whole input at the text rate.
+        assert image_usd("gpt-image-2.5-sunburst", {"input_tokens": 790, "output_tokens": 1397}) == pytest.approx(
+            (790 * 5 + 1397 * 30) / 1_000_000
+        )
 
     def test_missing_usage_does_not_break_a_render(self, monkeypatch):
         # A usage-shape change in the SDK must never cost the day's image.

@@ -13,7 +13,7 @@ from tavily.errors import TimeoutError as TavilyTimeoutError
 from tavily.errors import UsageLimitExceededError
 
 from adapters.aws import resolve_secret
-from adapters.research_backends import access_controlled
+from adapters.research_backends import access_controlled, record_tavily_usage
 from application.ports import LanguageModels
 from application.prompts import RefineQueryPrompt
 from domain.models import CollectedItem, generate_item_id
@@ -188,6 +188,7 @@ class WebSearchCollector(BaseCollector):
                     topic="news",
                     start_date=start_date,
                     end_date=end_date,
+                    include_usage=True,
                 ),
                 timeout=self.config.request_timeout,
             )
@@ -210,6 +211,7 @@ class WebSearchCollector(BaseCollector):
         else:
             async with semaphore:
                 response = await _search_with_retries()
+        record_tavily_usage("web-search", "search", response)
         return self._parse_results(response, trend_name=trend_name)
 
     def _date_only_tz(self) -> tzinfo:
@@ -361,7 +363,8 @@ async def _fetch_tavily_pinned(urls: list[str]) -> list[CollectedItem]:
     client = AsyncTavilyClient(api_key=api_key)
     items: list[CollectedItem] = []
     try:
-        response = await client.extract(urls=urls, format="text")
+        response = await client.extract(urls=urls, format="text", include_usage=True)
+        record_tavily_usage("pin-extract", "extract", response)
     except Exception:
         logger.warning("Failed to extract pinned URLs", exc_info=True)
         return []
