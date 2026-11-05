@@ -94,9 +94,10 @@ pipeline:
   min_score: 0.6
   # Any *_model / model_id takes a LanguageModelId value (shared/constants.py): Claude
   # ("anthropic.claude-...") or GPT ("openai.gpt-6.1-sol", "openai.gpt-6.1-terra"), all on Bedrock.
-  # Sonnet 5.5 in both editions (2026-11-03): on the same pools it cost 45% of Opus 5.5 and a blind
-  # comparison found no loss (AI: the same top 5; investing: Sonnet's pool won both orders).
-  ranking_model: "anthropic.claude-sonnet-5-5"
+  # Opus 5.5 for the AI edition (2026-11-05): Sonnet 5.5 scores lower, and at min_score 0.6 it put 13 and 19
+  # items over the bar against Opus's 23 and 29 on the 11-03 and 11-05 pools, so the 12-seat pool filled
+  # only 9 (production: 6 and 10 on 11-04/05). The investing edition keeps Sonnet (100+ over the bar).
+  ranking_model: "anthropic.claude-opus-5-5"
   digest_model: "anthropic.claude-sonnet-5-5"
   item_text_max_tokens: 10000
   # Ranking robustness: cap the in-flight Bedrock batches (a big day self-throttled otherwise) and
