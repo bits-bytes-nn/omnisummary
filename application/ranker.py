@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from langchain_core.output_parsers import StrOutputParser
 
 from application.digest_generator import format_recent_titles
-from application.ports import LanguageModels
+from application.ports import LanguageModels, PaidPageCheck
 from application.prompts import RankingPrompt, StoryGroupPrompt
 from domain.formatting import format_collected_item, format_origin_label, resolve_origin_key
 from domain.models import CollectedItem, RankedItem, RankingHealth, StoryGroups
@@ -20,6 +20,9 @@ from shared.config import PipelineConfig
 # The grouping call sees the top of the above-threshold list in score order; a candidate below it could
 # not have taken a pool seat ahead of its higher-scored copy anyway.
 _MAX_GROUPED = 120
+# Feed posts checked for a paid page: the top of the above-threshold list, a few pools deep, so a paid
+# post is out before it takes its feed's or its story's seat.
+_PAID_CHECK_POOLS = 3
 
 
 def _tiebreak(item_id: str) -> str:
@@ -30,9 +33,10 @@ def _tiebreak(item_id: str) -> str:
 
 class ContentRanker:
 
-    def __init__(self, config: PipelineConfig, models: LanguageModels) -> None:
+    def __init__(self, config: PipelineConfig, models: LanguageModels, paid_check: PaidPageCheck | None = None) -> None:
         self.config = config
         self.models = models
+        self.paid_check = paid_check
         self.llm = models.get_model(config.ranking_model, stage="ranking")
         # How complete the last rank() was, for the caller to report/alert on. A digest built from a
         # pool that lost a whole batch of candidates must not read as a clean success.
@@ -148,6 +152,15 @@ class ContentRanker:
             r for r in ranked_items if r.score >= self.config.min_score and r.item.item_id not in pinned_ids
         ]
         above_threshold.sort(key=lambda r: (-r.score, _tiebreak(r.item.item_id)))
+        if self.paid_check is not None:
+            # A newsletter feed carries a paid post's free preview, so the post scores like any other and
+            # then links readers to a paywall (SemiAnalysis on 11-04, Interconnects on 11-05). Checked here,
+            # before the pool is built, so the post's feed and story seats go to a free copy; and only
+            # near the top, since checking every collected feed page puts hundreds of requests on a few
+            # hosts. Web results are checked at collection.
+            head = above_threshold[: _PAID_CHECK_POOLS * limit]
+            paid = await self.paid_check([r.item.url for r in head if r.item.source_type == SourceType.RSS])
+            above_threshold = [r for r in above_threshold if r.item.url not in paid]
 
         source_scores: dict[str, list[float]] = {}
         for r in ranked_items:

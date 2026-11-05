@@ -595,3 +595,32 @@ async def test_rank_asks_for_same_story_groups_and_caps_the_pool_with_them():
     factory.get_model.return_value = _numbered(RunnableLambda(_respond))
     ranked = await ContentRanker(config, factory).rank(items, select_count=2)
     assert [r.item.item_id for r in ranked] == ["a", "c"]
+
+
+@pytest.mark.asyncio
+async def test_a_paid_feed_post_leaves_before_the_pool_so_its_feed_seat_goes_to_a_free_post():
+    feed = {"feed_url": "https://news.example/feed"}
+    items = [
+        CollectedItem(
+            item_id="paid", source_type=SourceType.RSS, title="t-paid", url="https://news.example/p/paid", metadata=feed
+        ),
+        CollectedItem(
+            item_id="free", source_type=SourceType.RSS, title="t-free", url="https://news.example/p/free", metadata=feed
+        ),
+        CollectedItem(item_id="post", source_type=SourceType.X, title="t-post", url="https://x.com/a/status/1"),
+    ]
+    config = PipelineConfig(top_n=2, min_score=0.6, source_slots={}, max_per_origin=1, ranking_retry_backoff_sec=0)
+    factory = _mock_factory()
+    factory.get_model.return_value = _numbered(
+        RunnableLambda(lambda _: AIMessage(content=_rankings({"paid": 0.9, "free": 0.8, "post": 0.7})))
+    )
+    asked: list[list[str]] = []
+
+    async def paid_check(urls):
+        asked.append(urls)
+        return {"https://news.example/p/paid"}
+
+    ranked = await ContentRanker(config, factory, paid_check).rank(items, select_count=2)
+    # Only feed posts are checked: X, Reddit and YouTube links are platform pages, web is checked at collection.
+    assert asked == [["https://news.example/p/paid", "https://news.example/p/free"]]
+    assert [r.item.item_id for r in ranked] == ["free", "post"]

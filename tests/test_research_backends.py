@@ -276,6 +276,9 @@ class TestAccessControlled:
         # A URL httpx cannot form (a malformed IDN) passes instead of failing the whole check.
         blocked = await rb.access_controlled(urls + ["https://xn--a.com/"])
         assert blocked == {f"https://site.example/{p}" for p in ("paid", "bot", "limited", "login")}
+        # Without refusals only the publisher's own paid declaration counts: a 403 to a datacenter IP
+        # says nothing about a feed post a reader can open.
+        assert await rb.access_controlled(urls, refusals=False) == {"https://site.example/paid"}
 
     @pytest.mark.asyncio
     async def test_no_urls_makes_no_request(self):

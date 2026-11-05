@@ -145,26 +145,32 @@ import하지 않는다. `domain`과 `shared`는 LangChain도 모른다. `applica
 증권·채권외환, 매경 증권), 중앙은행 보도자료(한국은행, 미 연준, ECB), 크립토(Decrypt, 블록미디어), 국내 부동산(인포맥스 부동산,
 조선비즈 부동산, 뉴스1·뉴시스·SBS Biz로 좁힌 웹 검색 한 묶음), 본문을 피드에 싣는 실명 경제학자·분석가의 블로그(뉴욕 연준 Liberty Street,
 Robin Brooks, Klement, Yardeni, Calculated Risk, Sahm, Damodaran, Coin Metrics; Glassnode 리서치 피드는 Lambda에서 403이라 11-02에 뺐다), Reddit 네 곳, X 15개 계정(Reuters와 WSJ는
-X로만 들어온다), YouTube 3개 채널(월가아재, Patrick Boyle, 채부심)이다. 2026-11-02에 개인투자자 관점으로 다시 넓혀, 인포맥스 뉴욕 마감·해외주식·외부기고 섹션, 이데일리 증권(목표가 변경·수급·미국 특징주·공모 일정), CNBC 실적(11-03 제외, §2 판), FactSet 실적 점검, TKer, 시장 데이터를 다루는 전략가 X 계정 6개(Carson, Schwab, Fidelity, Bianco, FactSet, 실적 콜 인용), 수급·공시·공모주와 미국 실적·변동성 웹 검색 묶음을 더하고 r/CryptoCurrency를 되살렸다. 미국 투자의견 변경을 담은 공개 피드는 없어서(Benzinga 403, MarketBeat는 스크립트로만 그린다) 이데일리·인포맥스 해외주식과 리서치 도구 `analyst_ratings`가 대신하고, 공매도 잔고는 로그인 없는 출처가 없다. 같은 날 두 번째 적대적 재검토에서 웹 검색을 미국 시장·크립토 두 묶음으로 줄였다. 국내 묶음(시장, 부동산, 수급·공시)은 결과가 없거나 피드와 겹쳤고, 나머지는 집단소송 공지(GlobeNewswire)와 랜딩 페이지였다. 그래서 웹 검색의 보장 자리와 Reddit 자리를 뺐고, r/economics(정치·일반 뉴스)와 RyanDetrick(팟캐스트 홍보와 계절성 통계)을 뺐다. 연준 피드는 은행 인가·제재가 섞인 전체 보도자료 대신 통화정책 보도자료와 연설로 바꿨고, 리서치 수집기에 채권(debenture) 분류를 더했다. 리서치 도구의 검색 도메인에서도 일반 독자에게 막힌 호스트(Reuters, 한국경제, MarketWatch, Investing.com, Seeking Alpha)를 뺐다.
+X로만 들어온다), YouTube 3개 채널(월가아재, Patrick Boyle, 채부심)이다(11-05에 되살리고 더한 것은 아래 판 문단). 2026-11-02에 개인투자자 관점으로 다시 넓혀, 인포맥스 뉴욕 마감·해외주식·외부기고 섹션, 이데일리 증권(목표가 변경·수급·미국 특징주·공모 일정), CNBC 실적(11-03 제외, §2 판), FactSet 실적 점검, TKer, 시장 데이터를 다루는 전략가 X 계정 6개(Carson, Schwab, Fidelity, Bianco, FactSet, 실적 콜 인용), 수급·공시·공모주와 미국 실적·변동성 웹 검색 묶음을 더하고 r/CryptoCurrency를 되살렸다. 미국 투자의견 변경을 담은 공개 피드는 없어서(Benzinga 403, MarketBeat는 스크립트로만 그린다) 이데일리·인포맥스 해외주식과 리서치 도구 `analyst_ratings`가 대신하고, 공매도 잔고는 로그인 없는 출처가 없다. 같은 날 두 번째 적대적 재검토에서 웹 검색을 미국 시장·크립토 두 묶음으로 줄였다. 국내 묶음(시장, 부동산, 수급·공시)은 결과가 없거나 피드와 겹쳤고, 나머지는 집단소송 공지(GlobeNewswire)와 랜딩 페이지였다. 그래서 웹 검색의 보장 자리와 Reddit 자리를 뺐고, r/economics(정치·일반 뉴스)와 RyanDetrick(팟캐스트 홍보와 계절성 통계)을 뺐다. 연준 피드는 은행 인가·제재가 섞인 전체 보도자료 대신 통화정책 보도자료와 연설로 바꿨고, 리서치 수집기에 채권(debenture) 분류를 더했다. 리서치 도구의 검색 도메인에서도 일반 독자에게 막힌 호스트(Reuters, 한국경제, MarketWatch, Investing.com, Seeking Alpha)를 뺐다.
 
 수집 기준은 두 갈래다(두 판 공통). 일반 독자처럼 공개 페이지를 읽고 요약과 출처 링크만 내보내며 모델을 학습시키지 않는다.
 모든 서버 측 요청은 일반 브라우저 UA(`BROWSER_USER_AGENT`)로 보낸다. 운영자 결정이다(2026-11-01, "일반 UA로 읽어"). 금지하는 것은
 막힌 뒤 UA를 바꿔 다시 시도하는 일이다. **기술적 접근 통제는 우회하지 않는다.** 유료벽, 봇 확인 페이지, 403·429, 남의 로그인 벽이 걸린 곳은 쓰지 않고, UA를 바꾸거나 본문 추출
 서비스를 거쳐 가져오지도 않는다. 웹 검색도 마찬가지라 그런 호스트(Bloomberg, FT, WSJ, Barron's, MarketWatch, Seeking Alpha, Investing.com,
 CoinDesk, The Block, 한국경제)는 두 판 모두 `exclude_domains`에 둔다. 검색 결과에는 검색 서비스가 봇 확인을 넘어 가져온 본문이 실리기 때문이다
-(2026-11-02, 웹 검색으로 들어온 Bloomberg 기사가 투자판에 실린 뒤 추가). 같은 날 AI판 헤드라인이 Business Insider 구독자 전용 기사로 나간 뒤 AI판에도 Business Insider, MarkTechPost, Crunchbase News, The Information, DCD, Stratechery, Medium, openai.com 등을 더했다. 목록은 매번 한 건이 실린 뒤에야 늘었으므로, 2026-11-03부터 웹 검색 결과와 리서치의 `read_url`은 **페이지마다** 확인한다(`adapters.research_backends.access_controlled`). 일반 UA로 한 번 GET해서 401·403·429를 받거나 페이지가 스스로 유료라고 밝히면(schema.org `isAccessibleForFree: false`, 발행사 자신의 마크업) 읽지 않고 항목을 뺀다. 연결 자체가 안 되는 페이지는 통제가 아니라 장애이므로 통과시킨다. 마크업으로 밝히지 않는 유료 호스트(네이버 프리미엄 콘텐츠)와 콘텐츠 팜은 `exclude_domains`에 남는다. RSS 피드는 피드 단위로 사람이 검토하고 페이지마다 확인하지 않는다. 투자판 한 번에 요약 보충 페이지가 340개(인포맥스만 86개)라, 한 호스트에 요청을 두 배로 몰면 그 호스트의 WAF가 수집 IP를 막고 피드까지 403이 된다(점검 중 로컬 IP에서 실제로 일어났다). 그래서 무료 기사와 유료 글이 섞인 피드는 피드째 뺀다(CNBC 실적 피드에 CNBC Investing Club 글이 섞여 있어 2026-11-03 제외). **정책 신호는 운영자가 판단하고 여기에 적는다.** robots.txt와 이용약관이 그렇다. robots.txt가 AI 크롤러를
+(2026-11-02, 웹 검색으로 들어온 Bloomberg 기사가 투자판에 실린 뒤 추가). 같은 날 AI판 헤드라인이 Business Insider 구독자 전용 기사로 나간 뒤 AI판에도 Business Insider, MarkTechPost, Crunchbase News, The Information, DCD, Stratechery, Medium, openai.com 등을 더했다. 목록은 매번 한 건이 실린 뒤에야 늘었으므로, 2026-11-03부터 웹 검색 결과와 리서치의 `read_url`은 **페이지마다** 확인한다(`adapters.research_backends.access_controlled`). 일반 UA로 한 번 GET해서 401·403·429를 받거나 페이지가 스스로 유료라고 밝히면(schema.org `isAccessibleForFree: false`, 발행사 자신의 마크업) 읽지 않고 항목을 뺀다. 연결 자체가 안 되는 페이지는 통제가 아니라 장애이므로 통과시킨다. 마크업으로 밝히지 않는 유료 호스트(네이버 프리미엄 콘텐츠)와 콘텐츠 팜은 `exclude_domains`에 남는다. RSS 글은 수집 때 확인하지 않는다. 투자판 한 번에 요약 보충 페이지가 340개(인포맥스만 86개)라, 한 호스트에 요청을 두 배로 몰면 그 호스트의 WAF가 수집 IP를 막고 피드까지 403이 된다(점검 중 로컬 IP에서 실제로 일어났다). 대신 랭킹 점수가 나온 뒤 **기준을 넘은 상위 RSS 글만**(풀 크기의 3배 안, 호스트당 동시 2개) 확인해서, 페이지가 스스로 유료라고 밝히면 풀을 짜기 전에 뺀다(`ContentRanker`의 `paid_check`). 그래야 그 글이 차지했을 피드 자리와 같은 이야기 자리가 무료 글로 넘어간다. 여기서는 401·403·429를 이유로 빼지 않는다. 글은 발행사 피드가 준 것이고, Lambda IP에는 Wikipedia·GitHub도 403을 주므로 그 응답이 독자가 보는 것을 말해 주지 않는다. 무료 글과 유료 글이 섞인 뉴스레터 피드는 유료 글의 무료 미리보기를 싣고, 그 글이 점수를 받아 실리면 독자는 유료벽 앞에 선다. 2026-11-04 SemiAnalysis, 11-05 Interconnects 글이 그렇게 나갔다. 그래서 그런 피드도 피드째 빼지 않고 둔다. X, Reddit, YouTube 링크는 플랫폼 페이지라 확인하지 않는다. **정책 신호는 운영자가 판단하고 여기에 적는다.** robots.txt와 이용약관이 그렇다. robots.txt가 AI 크롤러를
 막은 국내 언론(연합뉴스, 조선비즈 등)과 기사 하단의 "AI 학습 및 활용 금지" 문구, 그리고 robots.txt와 약관이 수집을 제한하는 X(운영자
 계정 세션의 RSSHub)와 Reddit은 수집량이 적고 원문 링크를 남기는 조건으로 쓴다. 네이버 증권 리서치는 반대로 게시글에
 증권사 이름만 밝히고 네이버 페이지 링크는 걸지 않는다(운영자 결정, 2026-11-02). 텔레그램은 약관 외에 사칭 채널 문제가 있어 쓰지 않는다.
 
+**소스는 문제가 있을 때만 뺀다(운영자 결정, 2026-11-05).** 조용하거나 실린 기사가 적은 것은 문제가 아니다. 문제는 아래의 접근
+통제·유료벽, 죽은 피드나 계정, 순수한 잡음·홍보·이해상충이다. 후보 풀의 낭비는 랭킹, 슬롯, `max_per_origin`이 다룬다. 이 기준으로
+11-01~03에 뺀 소스를 다시 봤다. 투자판은 Dalio, Cointelegraph, 인포맥스 정책·금융, X의 jasonfurman·RyanDetrick, 소수몽키, 웹 검색의
+국내 시장·국내 부동산·IB 리서치 묶음을 되살렸고, 연준 은행규제·기타 보도자료, ECB 블로그, 영란은행, BIS 연설, 미 경제분석국(BEA),
+아시아경제 부동산, Apricitas를 더했다. AI판은 §5.2 랭커의 소스 문단에 적었다.
+
 재검토에서 뺀 것과 이유는 이렇다.
 - 기사 페이지가 봇 확인이나 유료벽: Bloomberg, FT, MarketWatch, Seeking Alpha, Investing.com, CoinDesk, The Block. 피드 요약이 짧아 본문
   추출이 이 페이지들을 가져오게 되므로 우회에 해당한다. 한국경제는 수집기 UA에 403이다.
-- 잡음과 중복: 연합뉴스 경제(42시간에 약 90건, 부고·지역 소식 등 약 42%, 마켓과 URL 18% 중복), Cointelegraph(마감 시황 위주, 2023년
-  BlackRock ETF 승인 오보).
+- 잡음과 중복: 연합뉴스 경제(42시간에 약 90건, 부고·지역 소식 등 약 42%, 마켓과 URL 18% 중복).
 - 이해상충: Tiger Research(보고서 20건 중 5건이 다루는 프로젝트의 비용 지원), 삼프로TV(상장사 협찬 영상), 김단테(로보어드바이저 운영).
-- 느리거나 재가공: UPPITY(통신 기사 재설명), Dalio(30일 중 하루), X의 federalreserve(보도자료 반복)와 jasonfurman(대부분 리트윗),
-  업로드가 주 50건 안팎인 채널(최신 영상 1개만 받으니 무작위가 된다).
+- 재가공과 반복: UPPITY(통신 기사 재설명), X의 federalreserve(보도자료 반복), Bloomberg TV(유료벽인 Bloomberg 기사의 영상판).
+- 표시 없는 유료 글: CNBC 실적 피드(11-03 제외). CNBC Investing Club 글이 섞여 있는데 페이지가 유료라고 밝히지 않아 후보 풀 검사로
+  가려낼 수 없다.
 - 부동산: 분양·건설사 홍보 비중이 높은 이데일리(약 38%)와 파이낸셜뉴스(약 36%), "사라"는 제목이나 강의 판매로 이어지는 부동산 유튜브,
   약관이 AI 수집을 금지하는 네이버 블로그·카페.
 - 날짜 없는 피드(Apollo)는 수집 창 규칙상 매일 같은 글을 다시 넣는다. 텔레그램은 이용약관이 AI 목적의 수집을 금지해서, 채널이 가리키는
@@ -605,7 +611,7 @@ LLM 쿼리 정제(`RefineQueryPrompt`)를 곁들인 Tavily 검색이다. `exclud
 검색에도 속하지 않아서 트렌드별 필드로는 그 검색에 닿지 않는다. 운영 config는 최근 게시 URL 33개 중 6개를
 차지한 `finance.biggo.com`과 `tech-insider.org`, 원문(The Decoder 등)을 AI로 다시 쓴 `ai-deep-signal.com`과 `kingy.ai`를
 제외한다(재작성본이 본문이 더 길어 원문을 이기고 실렸다). 트렌드 검색은 `frontier_models`와 `industry` 둘이다. 연구
-트렌드 쿼리는 결과가 채용 공고와 포럼 글이었고 32일에 3건만 실려 뺐다. 연구는 연구소 블로그 피드, Import AI와 omarsar0 X 계정이 덮는다.
+트렌드 쿼리는 결과가 채용 공고와 포럼 글이었고 32일에 3건만 실려 뺐다. 연구는 연구소 블로그 피드(Google, DeepMind, Microsoft, Apple, Ai2, BAIR, Thinking Machines), 연구자 글과 논문 리뷰(Import AI, Elvis Saravia, Lilian Weng, Cameron Wolfe, gonzo-ml), omarsar0·arankomatsuzaki X 계정이 덮는다.
 
 날짜 파싱에 주의점이 있다. `_parse_date`는 tz 없는 ISO 문자열을 UTC로 정규화한다. naive datetime을 tz-aware
 cutoff와 비교하면 TypeError가 나고, 그 예외는 결과를 조용히 드롭한다. 날짜만 있는 값(`2026-07-10`)은
@@ -769,7 +775,7 @@ GUID(RSS와 X는 기사 URL, 그 밖은 글이나 영상 id)라서 그대로 정
 나머지 풀은 점수 순으로 채우되 `max_per_origin`으로 하나의 origin 키가 차지하는 항목 수를 제한한다(①). 그래도
 모자라면 origin 캡을 풀고 채우되(②), 실릴 `top_n`개까지만 푼다. 버퍼까지 채우려 풀던 때는 대량 발행처가 조용한 날의 풀을 차지했다(아래 2026-11-03 재검토).
 수집기(소스) 단위 상한은 없다. "rss"는 13개 매체를 묶고, 매체 단위 다양성은 `max_per_origin`이 이미 지킨다.
-수집기당 2개 상한을 두었을 때 16일 중 9일, 0.72–0.80 항목이 풀 밖에 남고 0.60–0.68 항목이 들어갔다. 슬롯은 운영 config에서 소스별로 뺄 수 있다. AI판은 2026-11-02에 Reddit 슬롯을 뺐다. r/LocalLLaMA의 개인 모델 튜닝 글이 매일 그 자리를 차지해서다. 같은 날 업계·시장 분석(SemiAnalysis, a16z, Exponential View, Epoch AI, Understanding AI, ChinaTalk 피드와 SemiAnalysis·a16z·Epoch AI·Ethan Mollick X 계정)을 넣고 랭킹 독자 설명을 "AI 업계의 연구소, 칩, 돈과 시장을 따라가는 독자와 그것으로 만드는 엔지니어"로 넓혔다. 같은 날 시험 실행에서 Reddit은 점수로 2건이 들어왔고, 후보 상위가 SemiAnalysis GDPx, 데이터센터 반발, Anthropic 신용등급 전망으로 바뀌었다. 그래도 같은 날 저녁 r/LocalLLaMA 글이 점수로 실려서, 재검토(32일 160건)를 거쳐 r/LocalLLaMA(22건, 대부분 개인 장비·튜닝), omarsar0와 그의 뉴스레터(한 큐레이터가 21건, 뉴스레터 기사는 유료 미리보기), 업로드가 주 40건이라 최신 1개가 무작위가 되는 aiDotEngineer, 기사 페이지가 Cloudflare 확인에 걸린 openai.com 피드(요약이 짧아 본문 추출이 그 확인을 넘어 가져왔다)를 뺐고, AI 정책(Transformer), AI·에너지(Latitude Media), 데이터센터·칩(The Next Platform), Mistral, TechCrunch AI를 더했다. 그 뒤 실린 기사 중 논문·연구 결과가 10-25~11-01의 40건 중 약 14건에서 11-02~11-05의 20건 중 약 3건으로 줄었다(제목으로 센 값). 11-02·03은 아직 Opus 랭킹이었고 그날 후보 풀에는 0.70–0.80점 논문(주간 논문 정리, RLVR, JEPA)이 있었는데 에디터가 고르지 않았다. 2026-11-05에 omarsar0 X 계정을 되살렸다(제목으로 보면 그 주 논문 약 14건 중 6건의 출처). 뉴스레터는 유료 미리보기라 빠진 채다. '연구적 의의'를 1번 기준에 합치는 안은 11-05 풀에서 Sonnet으로 0-2로 졌고 Opus로 이긴 2-0도 정책 기사 때문이었으며, 에디터가 고른 연구 기사 수는 같아서(세 조합 모두 2건) 넣지 않았다. HF Daily Papers는 상위 논문이 대부분 영상 생성·이미지 복원 같은 점진적 논문이어서 넣지 않았다.
+수집기당 2개 상한을 두었을 때 16일 중 9일, 0.72–0.80 항목이 풀 밖에 남고 0.60–0.68 항목이 들어갔다. 슬롯은 운영 config에서 소스별로 뺄 수 있다. AI판은 2026-11-02에 Reddit 슬롯을 뺐다. r/LocalLLaMA의 개인 모델 튜닝 글이 매일 그 자리를 차지해서다. 같은 날 업계·시장 분석(SemiAnalysis, a16z, Exponential View, Epoch AI, Understanding AI, ChinaTalk 피드와 SemiAnalysis·a16z·Epoch AI·Ethan Mollick X 계정)을 넣고 랭킹 독자 설명을 "AI 업계의 연구소, 칩, 돈과 시장을 따라가는 독자와 그것으로 만드는 엔지니어"로 넓혔다. 같은 날 시험 실행에서 Reddit은 점수로 2건이 들어왔고, 후보 상위가 SemiAnalysis GDPx, 데이터센터 반발, Anthropic 신용등급 전망으로 바뀌었다. 그래도 같은 날 저녁 r/LocalLLaMA 글이 점수로 실려서, 재검토(32일 160건)를 거쳐 r/LocalLLaMA(22건, 대부분 개인 장비·튜닝), omarsar0와 그의 뉴스레터(한 큐레이터가 21건, 뉴스레터 기사는 유료 미리보기), 업로드가 주 40건이라 최신 1개가 무작위가 되는 aiDotEngineer, 기사 페이지가 Cloudflare 확인에 걸린 openai.com 피드(요약이 짧아 본문 추출이 그 확인을 넘어 가져왔다)를 뺐고, AI 정책(Transformer), AI·에너지(Latitude Media), 데이터센터·칩(The Next Platform), Mistral, TechCrunch AI를 더했다. 그 뒤 실린 기사 중 논문·연구 결과가 10-25~11-01의 40건 중 약 14건에서 11-02~11-05의 20건 중 약 3건으로 줄었다(제목으로 센 값). 11-02·03은 아직 Opus 랭킹이었고 그날 후보 풀에는 0.70–0.80점 논문(주간 논문 정리, RLVR, JEPA)이 있었는데 에디터가 고르지 않았다. 2026-11-05에 omarsar0 X 계정을 되살렸고(제목으로 보면 그 주 논문 약 14건 중 6건의 출처), 같은 날 "문제가 있을 때만 뺀다"는 기준(§2 판)으로 11-01~02에 뺀 소스를 다시 봤다. 문제가 아닌 이유(조용함, 실린 기사가 적음, 개인 튜닝 글 비중, 업로드가 많아 최신 1개가 무작위가 됨)로 뺀 X 계정 14개(arankomatsuzaki, huggingface, ilyasut, lilianweng, ylecun 등), r/LocalLLaMA, YouTube 5개(aiDotEngineer, Karpathy, 노정석, Dwarkesh, Lenny), elvissaravia·hyuni 뉴스레터를 되살렸다. 연구 소스로 Apple ML, Ai2, BAIR, Thinking Machines, Lilian Weng, Karpathy 블로그, Cameron Wolfe, gonzo-ml, Quanta CS를, 분석으로 Normal Tech, One Useful Thing을, X로 MistralAI와 Artificial Analysis를 더했다. 빠진 채인 것은 openai.com 피드(Cloudflare 확인), xai(계정 이전으로 빈 피드)다. 유료 글이 섞인 뉴스레터는 후보 풀의 페이지 검사가 유료 글을 뺀다. '연구적 의의'를 1번 기준에 합치는 안은 11-05 풀에서 Sonnet으로 0-2로 졌고 Opus로 이긴 2-0도 정책 기사 때문이었으며, 에디터가 고른 연구 기사 수는 같아서(세 조합 모두 2건) 넣지 않았다. HF Daily Papers는 상위 논문이 대부분 영상 생성·이미지 복원 같은 점진적 논문이어서 넣지 않았다.
 
 origin은 `resolve_origin_key`로 해석한다. YouTube는 channel_url, Reddit은 subreddit, RSS는 feed_url, X는
 author, Web은 URL 호스트(`urlparse().netloc`에서 `www.` 제거)다. PSL이나 등록가능도메인 휴리스틱을 쓰지 않으니

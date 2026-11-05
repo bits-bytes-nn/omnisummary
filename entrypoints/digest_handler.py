@@ -133,6 +133,7 @@ async def _run(event: dict[str, Any] | None = None) -> None:
         digest_date,
         state_store=state_store,
         memory_store=bootstrap.memory_store,
+        paid_check=bootstrap.paid_check(),
     )
 
     items, ranked_items, digest = result

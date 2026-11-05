@@ -18,7 +18,7 @@ from domain.digest_snapshot import DigestSnapshot
 from domain.models import CollectedItem, DigestContent, DigestItem, DigestResult, RankedItem
 from shared.config import Config
 from shared.constants import SourceType
-from tests.fakes import snapshot
+from tests.fakes import nothing_paid, snapshot
 
 DIGEST_DATE = date(2026, 6, 3)
 
@@ -98,7 +98,7 @@ async def _run(pipeline: _Pipeline, config: Config, items: list[CollectedItem], 
         DIGEST_DATE,
         state_store=pipeline.store,
         memory_store=lambda: pipeline.memory,
-        **kwargs,
+        **{"paid_check": nothing_paid, **kwargs},
     )
 
 

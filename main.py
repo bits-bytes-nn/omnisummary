@@ -94,6 +94,7 @@ async def main() -> int:
         digest_date,
         state_store=state_store,
         memory_store=bootstrap.memory_store,
+        paid_check=bootstrap.paid_check(),
         dry_run=args.dry_run,
     )
     if digest is None or ranked_items is None:
