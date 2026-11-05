@@ -133,6 +133,7 @@ async def _run(event: dict[str, Any] | None = None) -> None:
         digest_date,
         state_store=state_store,
         memory_store=bootstrap.memory_store,
+        sibling_memory=lambda: bootstrap.sibling_memory_stores(config),
         paid_check=bootstrap.paid_check(),
     )
 

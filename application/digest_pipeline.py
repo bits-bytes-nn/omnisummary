@@ -21,6 +21,7 @@ from application.ranker import ContentRanker
 from application.trend_tracker import TrendTracker
 from domain.aggregator import ContentAggregator, normalize_url
 from domain.digest_snapshot import DigestSnapshot
+from domain.formatting import resolve_origin_key
 from domain.models import CollectedItem, DigestResult, HealthReport, RankedItem, SourceHealth, SourceStatus
 from shared import Config, logger
 
@@ -106,6 +107,7 @@ async def run_pipeline(
     *,
     state_store: StateStore,
     memory_store: Callable[[], MemoryStore],
+    sibling_memory: Callable[[], list[MemoryStore]],
     paid_check: PaidPageCheck,
     dry_run: bool = False,
 ) -> tuple[list[CollectedItem], list[RankedItem], DigestResult] | tuple[None, None, None]:
@@ -149,7 +151,8 @@ async def run_pipeline(
         logger.warning(
             "Could not read %d days of recent titles; using the dedup window", RECENT_TITLE_DAYS, exc_info=True
         )
-    recent_titles = _recent_story_titles(title_snapshots)
+    sibling = sibling_snapshots(sibling_memory, digest_date)
+    recent_titles = list(dict.fromkeys(_recent_story_titles(title_snapshots) + _recent_story_titles(sibling)))
     ranked_items = await ranker.rank(items, select_count=select_count, recent_titles=recent_titles)
     logger.info("Ranked %d items (from %d)", len(ranked_items), len(items))
 
@@ -160,7 +163,9 @@ async def run_pipeline(
     trend_tracker = TrendTracker(config.pipeline, models, state_store)
     trends_context = trend_tracker.get_trends_context(today=digest_date)
 
-    recent_leads = _recent_leads(snapshots, config.pipeline.recent_leads_window)
+    recent_leads = _recent_leads(snapshots, config.pipeline.recent_leads_window) + _recent_leads(
+        sibling, config.pipeline.recent_leads_window
+    )
     generator = DigestGenerator(config.pipeline, models)
     digest = await generator.generate(
         ranked_items,
@@ -201,6 +206,26 @@ async def run_pipeline(
     except Exception:
         logger.error("Trend update failed (non-fatal; today's digest still ships)", exc_info=True)
 
+    try:
+        # Every scored item, not just the pool: the only way to replay a change to the slots, the caps or
+        # the threshold on a past day without paying for its ranking again.
+        state_store.write_json(
+            f"{SCORED_ITEMS_PREFIX}{digest_date.isoformat()}.json",
+            [
+                {
+                    "url": r.item.url,
+                    "title": r.item.title,
+                    "source": r.item.source_type.value,
+                    "origin": resolve_origin_key(r.item),
+                    "score": r.score,
+                    "reasoning": r.reasoning,
+                }
+                for r in ranker.scored
+            ],
+        )
+    except Exception:
+        logger.warning("Failed to keep the day's scored items (non-fatal)", exc_info=True)
+
     # Record the stories that became TODAY'S digest of record so future runs don't re-publish them.
     # Recorded at generation (post trend-update) — the same content.items the snapshot carries and
     # the visual Lambda delivers — not gated on downstream delivery, which is alarmed separately.
@@ -211,6 +236,20 @@ async def run_pipeline(
         logger.warning("Failed to update the published-URL ledger (non-fatal)", exc_info=True)
 
     return items, ranked_items, digest
+
+
+def sibling_snapshots(stores: Callable[[], list[MemoryStore]], digest_date: date) -> list[DigestSnapshot]:
+    """The other editions' snapshots for the digest date and the day before, newest first: what this
+    Threads account posted in the last day or so. The editions run at different hours (07:30 and 19:00),
+    so the same date can already be live. Best-effort: it only steers the ranker and the editor."""
+    out: list[DigestSnapshot] = []
+    try:
+        for store in stores():
+            today = store.get_digest(digest_date.isoformat())
+            out += ([today] if today else []) + store.get_recent_digests(digest_date, 1)
+    except Exception:
+        logger.warning("Could not read the other editions' recent digests (non-fatal)", exc_info=True)
+    return out
 
 
 def _recent_story_titles(snapshots: list[DigestSnapshot]) -> list[str]:
@@ -235,6 +274,7 @@ def _recent_leads(snapshots: list[DigestSnapshot], window: int) -> list[str]:
 
 
 RECENT_IMPLICATION_DAYS = 2
+SCORED_ITEMS_PREFIX = "scored_items/"
 RECENT_TITLE_DAYS = 14
 
 

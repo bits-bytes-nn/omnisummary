@@ -240,17 +240,19 @@ def _deployed_memory_id(config: Config, session: boto3.Session) -> str:
         raise MemoryReadError(f"Could not look up AgentCore memory '{prefix}*': {e}") from e
 
 
-def create_memory_store(base_dir: Path | None = None) -> MemoryStore:
+def create_memory_store(base_dir: Path | None = None, *, edition: str | None = None) -> MemoryStore:
     """The AgentCore-backed store when the stack's memory exists (MEMORY_ID, or looked up by name for
     a local run), else the local store. The lookup and the reads share ONE session on the configured
     profile and config.aws.region, where the stack lives: a shell's AWS_PROFILE / AWS_REGION may point
     at another account or the Bedrock region, and a read client on them found the memory by name and
-    then answered "Memory not found" for it."""
+    then answered "Memory not found" for it. `edition` reads another edition's snapshots (default: this
+    config's)."""
     config = get_config()
+    edition = config.edition if edition is None else edition
     session = boto3.Session(profile_name=available_boto_profile(config.aws.profile), region_name=config.aws.region)
     memory_id = os.environ.get("MEMORY_ID", "") or _deployed_memory_id(config, session)
     if memory_id:
-        return AgentCoreMemoryStore(memory_id, region_name=config.aws.region, session=session, edition=config.edition)
-    fallback = base_dir or (Path("digest_state") / config.edition if config.edition else Path("digest_state"))
+        return AgentCoreMemoryStore(memory_id, region_name=config.aws.region, session=session, edition=edition)
+    fallback = base_dir or (Path("digest_state") / edition if edition else Path("digest_state"))
     logger.info("No AgentCore memory found — using LocalMemoryStore at '%s'", fallback)
     return LocalMemoryStore(fallback)

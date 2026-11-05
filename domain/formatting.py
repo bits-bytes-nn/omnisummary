@@ -15,7 +15,7 @@ from shared.logger import logger
 # Text, not an emoji: Threads counts an emoji as its UTF-8 bytes against the 500-char cap ("▶️" is 6)
 # while the renderer budgets with len(), so a full-length YouTube reply could overrun and drop.
 YOUTUBE_VIEWS_LABEL = "조회"
-RSS_NAME_DELIMITERS = (" - ", " — ")
+RSS_NAME_DELIMITERS = (" - ", " — ", ": ")
 
 
 def format_alarm(
@@ -153,10 +153,12 @@ def format_collected_item(
 def clean_rss_feed_name(feed_title: str, feed_url: str) -> str:
     """Derive a short, human-readable source name from an RSS feed's title/URL.
 
-    Strips the common "Site Name - Section" / "Site Name — Section" suffixes, falling
+    Strips the common "Site Name - Section" / "Site Name: tagline" suffixes and the "Section | Site"
+    prefix, falling
     back to the feed's hostname (without www./feeds. prefixes) when no title exists.
     """
-    name = feed_title.strip()
+    # "Section | Site" puts the site last ("AI News & Artificial Intelligence | TechCrunch").
+    name = feed_title.strip().split(" | ")[-1]
     for delimiter in RSS_NAME_DELIMITERS:
         name = name.split(delimiter)[0]
     name = name.strip()

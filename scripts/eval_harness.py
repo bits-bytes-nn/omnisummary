@@ -91,6 +91,12 @@ _JUDGE = ChatPromptTemplate.from_messages(
 )
 
 
+def _other_editions(config: Config) -> list[str]:
+    """Every other edition with a config in config/ ("" is the AI/ML one): what shares the account."""
+    found = {"" if p.stem == "config" else p.stem for p in (ROOT.parent / "config").glob("*.yaml")}
+    return sorted(e for e in found if not e.endswith("-template") and e != config.edition)
+
+
 def _case_dir(kind: str, label: str) -> Path:
     path = ROOT / kind / label
     path.mkdir(parents=True, exist_ok=True)
@@ -103,7 +109,7 @@ def _slug(text: str) -> str:
 
 async def _digest(label: str, dates: list[str]) -> None:
     from application.digest_generator import DigestGenerator
-    from application.digest_pipeline import _recent_leads, _recent_story_titles
+    from application.digest_pipeline import _recent_leads, _recent_story_titles, sibling_snapshots
     from application.trend_tracker import TrendTracker
 
     config = Config.load()
@@ -118,18 +124,26 @@ async def _digest(label: str, dates: list[str]) -> None:
         # The same inputs a real run on that date had: the earlier snapshots and the trends before it.
         earlier = memory.get_recent_digests(today, config.pipeline.published_url_ttl_days - 1)
         trends = TrendTracker(config.pipeline, models, bootstrap.state_store(config)).get_trends_context(today=today)
+        window = config.pipeline.recent_leads_window
+        sibling = sibling_snapshots(lambda: bootstrap.sibling_memory_stores(config), today)
         result = await DigestGenerator(config.pipeline, models).generate(
             snapshot.ranked_items,
             today=today,
             trends_context=trends,
-            recent_leads=_recent_leads(earlier, config.pipeline.recent_leads_window),
-            recent_titles=_recent_story_titles(earlier),
+            recent_leads=_recent_leads(earlier, window) + _recent_leads(sibling, window),
+            recent_titles=list(dict.fromkeys(_recent_story_titles(earlier) + _recent_story_titles(sibling))),
+        )
+        # The judge always sees what the whole Threads account ran, the other editions included, whatever
+        # the arm under test was given.
+        account = _recent_leads(earlier, window) + _recent_leads(
+            sibling_snapshots(lambda: [bootstrap.memory_store(edition=e) for e in _other_editions(config)], today),
+            window,
         )
         sources = "\n\n".join(f"[{r.item.title}] {r.item.url}\n{r.item.text[:1500]}" for r in snapshot.ranked_items)
         out = {
             "case": day,
-            "context": f"CANDIDATES:\n{sources[:24000]}\n\nRECENT LEADS:\n"
-            + "\n".join(_recent_leads(earlier, config.pipeline.recent_leads_window)),
+            "context": f"CANDIDATES:\n{sources[:24000]}\n\nRECENT LEADS ON THIS THREADS ACCOUNT:\n"
+            + "\n".join(account),
             "artifact": result.digest_text,
         }
         (_case_dir("digest", label) / f"{day}.json").write_text(json.dumps(out, ensure_ascii=False, indent=1))

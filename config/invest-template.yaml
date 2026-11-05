@@ -256,6 +256,9 @@ pipeline:
     youtube: 1
     research: 1
   trend_model: "anthropic.claude-sonnet-5-5"
+  # The other editions on this Threads account ("" is the AI/ML one): their last day or two of titles,
+  # leads and implications join this edition's own.
+  sibling_editions: [""]
   trend_retention_days: 30
   trend_max_evidence: 5
   trend_max_active_trends: 10

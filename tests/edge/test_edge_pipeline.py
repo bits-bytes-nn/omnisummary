@@ -76,6 +76,7 @@ async def _run(config, models, items, memory, **kw):
             DAY,
             state_store=MemoryStateStore(),
             memory_store=lambda: memory,
+            sibling_memory=lambda: [],
             paid_check=nothing_paid,
             dry_run=True,
             **kw,
@@ -220,6 +221,7 @@ async def test_memory_factory_itself_raises():
             DAY,
             state_store=MemoryStateStore(),
             memory_store=factory,
+            sibling_memory=lambda: [],
             paid_check=nothing_paid,
             dry_run=True,
         ),
@@ -240,6 +242,7 @@ async def test_non_dry_run_records_the_ledger_and_trends_failure_is_non_fatal():
         DAY,
         state_store=store,
         memory_store=lambda: _memory(),
+        sibling_memory=lambda: [],
         paid_check=nothing_paid,
         dry_run=False,
     )
