@@ -8,6 +8,7 @@ CLI's Strands agent, main.py's --pin-url fetch."""
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -26,11 +27,11 @@ from adapters.collectors import (
 )
 from adapters.memory import create_memory_store
 from adapters.openai_images import OpenAIImageRenderer
-from adapters.research_backends import WebResearchSources
+from adapters.research_backends import WebResearchSources, access_controlled
 from adapters.state_store import create_state_store
 from adapters.threads import ThreadsGateway
 from application.daily_visual import DailyVisualMaker
-from application.ports import ContentSource, LanguageModels, MemoryStore, StateStore
+from application.ports import ContentSource, LanguageModels, MemoryStore, PaidPageCheck, StateStore
 from application.research import ResearchPorts
 from shared import Config, logger
 
@@ -42,6 +43,10 @@ def language_models(config: Config) -> BedrockLanguageModelFactory:
         profile_name=available_boto_profile(config.aws.profile), region_name=config.aws.bedrock_region
     )
     return BedrockLanguageModelFactory(boto_session=session, region_name=config.aws.bedrock_region)
+
+
+def paid_check() -> PaidPageCheck:
+    return functools.partial(access_controlled, refusals=False)
 
 
 def state_store(config: Config) -> StateStore:

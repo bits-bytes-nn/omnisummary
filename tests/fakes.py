@@ -51,6 +51,10 @@ class FakeRenderer:
         self.is_moderation_error = MagicMock(return_value=False)
 
 
+async def nothing_paid(urls: list[str]) -> set[str]:
+    return set()
+
+
 def fake_models() -> MagicMock:
     """A LanguageModels whose truncator is a real no-op: a bare MagicMock would put its repr into a
     prompt while every assertion still passed."""

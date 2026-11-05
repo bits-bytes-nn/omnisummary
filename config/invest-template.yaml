@@ -6,14 +6,15 @@ edition: "invest"
 collectors:
   youtube:
     enabled: true
-    # Reviewed 2026-11-01. Low-cadence analysts only: max_videos_per_channel 1 takes a high-volume
-    # channel's latest upload at random. Not here: 삼프로TV and Bloomberg TV (~50 uploads a week, some
-    # sponsored), 김단테 (Shorts, runs a robo-adviser), 소수몽키, 슈카월드, Real Vision, Coin Bureau.
+    # Low-cadence analysts: max_videos_per_channel 1 takes a high-volume channel's latest upload at
+    # random. Not here: 삼프로TV and Bloomberg TV (~50 uploads a week, 9 of 15 삼프로 uploads on 11-05
+    # marked 광고), 김단테 (Shorts, runs a robo-adviser).
     channels:
       - "https://www.youtube.com/@wsaj"
       - "https://www.youtube.com/@PBoyle"
       # Real estate: 채상욱, ex-하나금융투자 construction/real-estate analyst; analysis, not buy calls.
       - "https://www.youtube.com/@chaeboosim"
+      - "https://www.youtube.com/@sosumonkey"
     max_videos_per_channel: 3
     # The collection window, defined here and aliased by reddit and rss below (web_search and rsshub
     # state their own, wider one — the code default is this floor for every source). The cutoff is anchored
@@ -60,6 +61,7 @@ collectors:
       - "https://biz.chosun.com/arc/outboundfeeds/rss/category/stock/?outputType=xml"
       - "https://news.einfomax.co.kr/rss/S1N2.xml"
       - "https://news.einfomax.co.kr/rss/S1N16.xml"
+      - "https://news.einfomax.co.kr/rss/S1N15.xml"
       # New York wraps (stocks, FX, bonds, oil), Wall Street rating changes in Korean, named columnists.
       - "https://news.einfomax.co.kr/rss/S1N9.xml"
       - "https://news.einfomax.co.kr/rss/S1N21.xml"
@@ -71,14 +73,24 @@ collectors:
       - "https://www.federalreserve.gov/feeds/press_monetary.xml"
       - "https://www.federalreserve.gov/feeds/speeches.xml"
       - "https://www.ecb.europa.eu/rss/press.html"
-      # FactSet's weekly S&P 500 earnings scorecard; Sam Ro's TKer. (CNBC's earnings feed was dropped
-      # 2026-11-03: it mixes CNBC Investing Club posts, paid, whose page the summary fill would extract.)
+      - "https://www.federalreserve.gov/feeds/press_bcreg.xml"
+      - "https://www.federalreserve.gov/feeds/press_other.xml"
+      - "https://www.ecb.europa.eu/rss/blog.html"
+      - "https://www.bankofengland.co.uk/rss/news"
+      - "https://www.bis.org/doclist/mgmtspeeches.rss"
+      - "https://apps.bea.gov/rss/rss.xml"
+      # FactSet's weekly S&P 500 earnings scorecard; Sam Ro's TKer. Newsletters that mix free and paid
+      # posts stay: a paid post declares itself on its page and is dropped from the candidate pool
+      # (docs/design.md, 판). CNBC's earnings feed is out: its CNBC Investing Club posts are paid and
+      # declare nothing, so no check can tell them apart.
       - "https://insight.factset.com/rss.xml"
       - "https://www.tker.co/feed"
       - "https://decrypt.co/feed"
+      - "https://cointelegraph.com/rss"
       - "https://www.blockmedia.co.kr/feed"
       - "https://news.einfomax.co.kr/rss/S1N17.xml"
       - "https://biz.chosun.com/arc/outboundfeeds/rss/category/real_estate/?outputType=xml"
+      - "https://view.asiae.co.kr/rss/realestate.htm"
       - "https://libertystreeteconomics.newyorkfed.org/feed/"
       - "https://robinjbrooks.substack.com/feed"
       - "https://klementoninvesting.substack.com/feed"
@@ -86,6 +98,8 @@ collectors:
       - "https://calculatedrisk.substack.com/feed"
       - "https://stayathomemacro.substack.com/feed"
       - "https://aswathdamodaran.blogspot.com/feeds/posts/default"
+      - "https://raydalio.substack.com/feed"
+      - "https://www.apricitas.io/feed"
       - "https://coinmetrics.substack.com/feed"
     lookback_hours: *lookback_hours
     # Feeds fetched at once (each fetch carries its own httpx timeout).
@@ -103,15 +117,36 @@ collectors:
     # Hosts never returned by any search, broad or refined (Tavily exclude_domains), e.g. content farms:
     # Article pages behind a bot check or paywall (docs/design.md, 판): a search result would hand us
     # their text fetched around it.
-    exclude_domains: ["finance.biggo.com", "t.me", "telegram.me", "instagram.com", "facebook.com", "moomoo.com", "bloomberg.com", "ft.com", "wsj.com", "barrons.com", "marketwatch.com", "seekingalpha.com", "investing.com", "coindesk.com", "theblock.co", "hankyung.com", "reuters.com", "globenewswire.com", "tipranks.com", "benzinga.com", "marketbeat.com", "farside.co.uk", "etf.com", "scanx.trade", "fool.com", "247wallst.com", "businessinsider.com", "theinformation.com", "medium.com", "openai.com", "stratechery.com", "stock.naver.com", "finance.naver.com", "contents.premium.naver.com"]
+    exclude_domains: ["finance.biggo.com", "t.me", "telegram.me", "instagram.com", "facebook.com", "moomoo.com", "bloomberg.com", "ft.com", "wsj.com", "barrons.com", "marketwatch.com", "seekingalpha.com", "investing.com", "coindesk.com", "theblock.co", "hankyung.com", "reuters.com", "globenewswire.com", "tipranks.com", "benzinga.com", "marketbeat.com", "farside.co.uk", "etf.com", "scanx.trade", "fool.com", "247wallst.com", "businessinsider.com", "theinformation.com", "medium.com", "openai.com", "stratechery.com", "stock.naver.com", "finance.naver.com", "contents.premium.naver.com", "blog.naver.com", "m.blog.naver.com", "cafe.naver.com"]
     trend_searches:
+      - name: korea_markets
+        queries:
+          - "코스피 코스닥 증시 마감 외국인 수급"
+          - "국내 증권사 리포트 목표주가 상향 하향"
+        # Outlets the feeds do not cover; unscoped, results landed on the feeds' own hosts and every
+        # result costs a page check on that host.
+        domains: ["news1.kr", "mt.co.kr", "hankookilbo.com", "newsis.com"]
       - name: us_global_markets
         queries:
           - "stock market today S&P 500 Nasdaq earnings Fed"
           - "analyst upgrade downgrade price target"
+      # Korean housing policy and statistics from outlets with no real-estate feed; unscoped, these
+      # queries returned foreign news and social posts.
+      - name: korea_realestate
+        queries:
+          - "부동산 대책 주택담보대출 DSR 가계대출 규제 국토교통부 금융위원회"
+          - "서울 아파트값 전셋값 주간 동향 주택공급 착공 신규택지"
+        domains: ["news1.kr", "newsis.com", "news.sbs.co.kr", "biz.sbs.co.kr"]
       - name: crypto
         queries:
           - "bitcoin ethereum crypto market ETF flows regulation"
+      # Global IB and asset-manager research pages (no RSS). UBS is not here: its pages answer an
+      # ordinary browser with an Akamai 403.
+      - name: ib_research
+        queries:
+          - "market outlook strategist view stocks rates"
+          - "economic outlook inflation Fed recession strategist"
+        domains: ["goldmansachs.com", "jpmorgan.com", "morganstanley.com", "blackrock.com", "pimco.com", "schroders.com", "invesco.com"]
     domain: "investing (Korean, US and global stocks, macro and markets, crypto assets, and Korean real estate)"
     refine_rules: |-
       - Prefer: earnings and guidance, filings, central-bank and policy decisions, analyst actions, wire reports
@@ -144,6 +179,8 @@ collectors:
       - "biancoresearch"
       - "FactSet"
       - "TheTranscript_"
+      - "RyanDetrick"
+      - "jasonfurman"
     lookback_hours: 72
     max_concurrency: 5
     park_max_age_hours: 12

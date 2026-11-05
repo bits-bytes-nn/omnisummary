@@ -215,6 +215,12 @@ class ThreadsPublisher(Protocol):
     def comments(self) -> AbstractAsyncContextManager[ThreadsComments]: ...
 
 
+class PaidPageCheck(Protocol):
+    """Of the given URLs, the ones whose page declares itself paid (schema.org isAccessibleForFree)."""
+
+    async def __call__(self, urls: list[str]) -> set[str]: ...
+
+
 class ContentSource(Protocol):
     """One collector. After collect(), `health_issue` is (STALE or DEGRADED, why) when its items are
     usable but not healthy (a stalled sync, a fraction of its inputs answering), else None."""

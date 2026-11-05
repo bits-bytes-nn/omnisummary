@@ -60,6 +60,7 @@ async def main() -> None:
         digest_date,
         state_store=bootstrap.state_store(config),
         memory_store=bootstrap.memory_store,
+        paid_check=bootstrap.paid_check(),
         dry_run=True,
     )
     if digest is None:

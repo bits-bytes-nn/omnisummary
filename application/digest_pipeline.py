@@ -16,7 +16,7 @@ from application.history import (
     ThreadsPostLedger,
     published_urls_from_snapshots,
 )
-from application.ports import ContentSource, LanguageModels, MemoryStore, StateStore
+from application.ports import ContentSource, LanguageModels, MemoryStore, PaidPageCheck, StateStore
 from application.ranker import ContentRanker
 from application.trend_tracker import TrendTracker
 from domain.aggregator import ContentAggregator, normalize_url
@@ -106,6 +106,7 @@ async def run_pipeline(
     *,
     state_store: StateStore,
     memory_store: Callable[[], MemoryStore],
+    paid_check: PaidPageCheck,
     dry_run: bool = False,
 ) -> tuple[list[CollectedItem], list[RankedItem], DigestResult] | tuple[None, None, None]:
     """Aggregate, rank and write the day's digest, then record its stories and lead. `memory_store`
@@ -138,7 +139,7 @@ async def run_pipeline(
 
     # Over-select (top_n + buffer): the editor picks the strongest top_n distinct stories from it.
     select_count = config.pipeline.top_n + config.pipeline.digest_candidate_buffer
-    ranker = ContentRanker(config.pipeline, models)
+    ranker = ContentRanker(config.pipeline, models, paid_check)
     title_snapshots = snapshots
     try:
         # Titles reach further back than the URL ledger: Kimi K3.1 Pro shipped on 10-24 and again, as

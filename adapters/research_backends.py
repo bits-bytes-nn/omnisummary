@@ -4,6 +4,7 @@ import asyncio
 import math
 import re
 import time
+from collections import defaultdict
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -118,29 +119,34 @@ _REFUSED_STATUS = frozenset({401, 403, 429})
 # schema.org's isAccessibleForFree, the publisher's own declaration that the page is paid content.
 _NOT_FREE = re.compile(r'"isAccessibleForFree"\s*:\s*"?false"?', re.IGNORECASE)
 _ACCESS_CHECK_CONCURRENCY = 10
+# Requests in flight to one host: a burst on one publisher is what its WAF answers with a block.
+_ACCESS_CHECK_PER_HOST = 2
 _ACCESS_CHECK_TIMEOUT_SEC = 10.0
 # The declaration sits in the page's JSON-LD; a result that is a large PDF is not downloaded whole.
 _ACCESS_CHECK_MAX_BYTES = 512_000
 
 
-async def access_controlled(urls: list[str]) -> set[str]:
+async def access_controlled(urls: list[str], *, refusals: bool = True) -> set[str]:
     """The URLs whose page refuses an ordinary reader (401/403/429) or declares itself paid. Tavily
     reads a page from its own servers, so extracting one of these would get around the control the
     publisher put in front of it (docs/design.md, 판). Checked per page, not per host: a host list only
     ever learned of a paywall after a story from it had shipped. For web search results and research
     reads, a few dozen pages over many hosts; RSS fill pages are not checked (hundreds per run on a few
     hosts, enough to trip a publisher's WAF). A page that cannot be reached at all is an outage, not a
-    control, and passes."""
+    control, and passes. `refusals=False` keeps only the pages that declare themselves paid: for a feed
+    post, whose text the publisher's own feed handed us, a 403 from a datacenter IP (Lambda got one from
+    Wikipedia and GitHub) says nothing about what a reader sees."""
     if not urls:
         return set()
     semaphore = asyncio.Semaphore(_ACCESS_CHECK_CONCURRENCY)
+    per_host: dict[str, asyncio.Semaphore] = defaultdict(lambda: asyncio.Semaphore(_ACCESS_CHECK_PER_HOST))
 
     async def refused(client: httpx.AsyncClient, url: str) -> bool:
-        async with semaphore:
+        async with per_host[urlsplit(url).hostname or url], semaphore:
             try:
                 async with client.stream("GET", url) as resp:
                     if resp.status_code in _REFUSED_STATUS:
-                        return True
+                        return refusals
                     head = b""
                     async for chunk in resp.aiter_bytes():
                         head += chunk

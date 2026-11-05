@@ -22,7 +22,7 @@ from tests.edge.edge_harness import (
     prose,
     score_by_title,
 )
-from tests.fakes import MemoryStateStore
+from tests.fakes import MemoryStateStore, nothing_paid
 
 DAY = date(2026, 11, 2)
 
@@ -70,7 +70,15 @@ def _handlers(urls, **over):
 async def _run(config, models, items, memory, **kw):
     return await asyncio.wait_for(
         runner.run_pipeline(
-            config, models, items, DAY, state_store=MemoryStateStore(), memory_store=lambda: memory, dry_run=True, **kw
+            config,
+            models,
+            items,
+            DAY,
+            state_store=MemoryStateStore(),
+            memory_store=lambda: memory,
+            paid_check=nothing_paid,
+            dry_run=True,
+            **kw,
         ),
         timeout=20,
     )
@@ -206,7 +214,14 @@ async def test_memory_factory_itself_raises():
 
     result = await asyncio.wait_for(
         runner.run_pipeline(
-            config, models, items, DAY, state_store=MemoryStateStore(), memory_store=factory, dry_run=True
+            config,
+            models,
+            items,
+            DAY,
+            state_store=MemoryStateStore(),
+            memory_store=factory,
+            paid_check=nothing_paid,
+            dry_run=True,
         ),
         timeout=20,
     )
@@ -219,7 +234,14 @@ async def test_non_dry_run_records_the_ledger_and_trends_failure_is_non_fatal():
     store = MemoryStateStore()
     models = ScriptedModels(_handlers([items[0].url], trends=lambda _t: RuntimeError("trends down")))
     result = await runner.run_pipeline(
-        config, models, items, DAY, state_store=store, memory_store=lambda: _memory(), dry_run=False
+        config,
+        models,
+        items,
+        DAY,
+        state_store=store,
+        memory_store=lambda: _memory(),
+        paid_check=nothing_paid,
+        dry_run=False,
     )
     assert result[2].content.items
     assert any("published" in k for k in store.blobs), store.blobs.keys()
