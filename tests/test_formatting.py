@@ -1,3 +1,5 @@
+import pytest
+
 from domain.formatting import format_collected_item, format_origin_label, resolve_origin_key
 from domain.models import CollectedItem
 from shared.constants import SourceType
@@ -230,3 +232,22 @@ class TestFormatAlarm:
         _, message = self._alarm(fields={"Report": "line1\nline2"}, correlation_id="cid")
         assert "Report:" in message and "line1" in message
         assert "Correlation id: cid" in message
+
+
+class TestCleanRssFeedName:
+    @pytest.mark.parametrize(
+        ("feed_title", "expected"),
+        [
+            # The tag counts against the post budget; the stored pools carried these.
+            ("AI News & Artificial Intelligence | TechCrunch", "TechCrunch"),
+            ("The Next Platform: In-depth coverage of high end computing", "The Next Platform"),
+            ("매일경제 : 증권", "매일경제"),
+            ("연합인포맥스 - 해외주식", "연합인포맥스"),
+            ("Simon Willison's Weblog", "Simon Willison's Weblog"),
+            ("", "example.com"),
+        ],
+    )
+    def test_keeps_the_site_name(self, feed_title, expected):
+        from domain.formatting import clean_rss_feed_name
+
+        assert clean_rss_feed_name(feed_title, "https://www.example.com/feed") == expected

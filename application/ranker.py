@@ -41,6 +41,9 @@ class ContentRanker:
         # How complete the last rank() was, for the caller to report/alert on. A digest built from a
         # pool that lost a whole batch of candidates must not read as a clean success.
         self.health = RankingHealth()
+        # Every item the last rank() scored, kept so a run can store them: the pool alone cannot replay a
+        # change to the slots, the caps or the threshold.
+        self.scored: list[RankedItem] = []
         self._split_batches_lost = 0
 
     def _truncate(self, text: str, max_tokens: int) -> str:
@@ -117,6 +120,7 @@ class ContentRanker:
             raise RuntimeError(f"All {len(failures)} ranking batches failed: {failures[0]}")
 
         ranked_items: list[RankedItem] = [r for batch in results if not isinstance(batch, BaseException) for r in batch]
+        self.scored = ranked_items
         self.health = RankingHealth(
             batches_total=len(batches),
             batches_failed=len(failures),

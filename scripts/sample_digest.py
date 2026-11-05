@@ -60,6 +60,7 @@ async def main() -> None:
         digest_date,
         state_store=bootstrap.state_store(config),
         memory_store=bootstrap.memory_store,
+        sibling_memory=lambda: bootstrap.sibling_memory_stores(config),
         paid_check=bootstrap.paid_check(),
         dry_run=True,
     )

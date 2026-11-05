@@ -98,7 +98,7 @@ async def _run(pipeline: _Pipeline, config: Config, items: list[CollectedItem], 
         DIGEST_DATE,
         state_store=pipeline.store,
         memory_store=lambda: pipeline.memory,
-        **{"paid_check": nothing_paid, **kwargs},
+        **{"paid_check": nothing_paid, "sibling_memory": lambda: [], **kwargs},
     )
 
 
@@ -160,6 +160,53 @@ class TestRunPipelineHappyPath:
         assert p.generate_kwargs["recent_leads"] == ["어제의 리드다."]
         assert p.generate_kwargs["trends_context"] == "trends"
         assert p.generate_kwargs["today"] == DIGEST_DATE
+
+    @pytest.mark.asyncio
+    async def test_the_other_editions_last_day_joins_the_recent_context(self):
+        # Both editions post to one Threads account: this morning's investing digest and yesterday's are
+        # what tonight's AI digest must not repeat.
+        sibling = MagicMock()
+        sibling.get_digest.return_value = snapshot(
+            lead="오늘 아침 리드다.", items=[{"title": "S-1 공개", "implication": "함의다."}]
+        )
+        sibling.get_recent_digests.return_value = [snapshot(lead="어제 아침 리드다.")]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with _Pipeline(tmpdir) as p:
+                p.memory.get_recent_digests.return_value = [snapshot(lead="어제의 리드다.")]
+                await _run(p, _config(), [_item("https://a.example/1")], sibling_memory=lambda: [sibling])
+        sibling.get_digest.assert_called_once_with(DIGEST_DATE.isoformat())
+        sibling.get_recent_digests.assert_called_once_with(DIGEST_DATE, 1)
+        assert p.generate_kwargs["recent_leads"] == [
+            "어제의 리드다.",
+            "오늘 아침 리드다.",
+            "어제 아침 리드다.",
+            "함의다.",
+        ]
+        assert "S-1 공개" in p.ranker.rank.await_args.kwargs["recent_titles"]
+        assert "S-1 공개" in p.generate_kwargs["recent_titles"]
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_sibling_costs_only_its_context(self):
+        def broken():
+            raise RuntimeError("no memory")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with _Pipeline(tmpdir) as p:
+                _, _, digest = await _run(p, _config(), [_item("https://a.example/1")], sibling_memory=broken)
+        assert digest is not None
+
+    @pytest.mark.asyncio
+    async def test_every_scored_item_is_kept_for_replays(self):
+        items = [_item("https://a.example/1", "A"), _item("https://b.example/2", "B")]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with _Pipeline(tmpdir) as p:
+                p.ranker.scored = [RankedItem(item=it, score=0.4, reasoning="thin") for it in items]
+                await _run(p, _config(), items)
+                kept = p.store.read_json(f"{runner.SCORED_ITEMS_PREFIX}{DIGEST_DATE.isoformat()}.json")
+        assert [(k["url"], k["score"], k["reasoning"]) for k in kept] == [
+            ("https://a.example/1", 0.4, "thin"),
+            ("https://b.example/2", 0.4, "thin"),
+        ]
 
     @pytest.mark.asyncio
     async def test_select_count_over_selects_by_the_candidate_buffer(self):

@@ -94,6 +94,7 @@ async def main() -> int:
         digest_date,
         state_store=state_store,
         memory_store=bootstrap.memory_store,
+        sibling_memory=lambda: bootstrap.sibling_memory_stores(config),
         paid_check=bootstrap.paid_check(),
         dry_run=args.dry_run,
     )

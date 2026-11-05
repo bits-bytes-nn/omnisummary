@@ -252,6 +252,11 @@ class PipelineConfig(_StrictModel):
     published_url_ttl_days: int = Field(default=6, ge=2)
     # How many recent digest leads (and daily comics) to feed back into the prompts as "don't reuse these".
     recent_leads_window: int = Field(default=5, ge=0)
+    # The other editions posting to the same Threads account ("" is the AI/ML edition). Their last day or
+    # two of story titles, leads and implications join this edition's own, so one account does not run
+    # the same story and thesis twice in a day (2026-11-05: both editions led on the midterms and data
+    # centres, 12 hours apart; the Anthropic S-1 ran 7 times in 9 days across the two).
+    sibling_editions: list[str] = Field(default_factory=list)
     ranking_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
     digest_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
     # A digest whose JSON the editor emits malformed (a stray bracket after the lead string cost

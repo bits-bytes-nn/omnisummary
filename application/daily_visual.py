@@ -298,6 +298,8 @@ class DailyVisualMaker:
                 "on_image_language": self.config.pipeline.visual_on_image_language,
                 # The edition's rules reach the cartoon too: a broker note's "Buy, target 580,000원" must
                 # not become the comic's own call. Empty for the AI/ML edition, whose prompt is unchanged.
+                # Passing only the advice rules (no sourcing rules) lost 1-4 blind with lower fidelity
+                # (2026-11-06): the sourcing rules are what keep the comic's facts straight.
                 "domain_rules": (
                     f"\n\nRules for this edition, which the cartoon follows too:\n{rules}"
                     if (rules := self.config.pipeline.domain_rules.strip())
