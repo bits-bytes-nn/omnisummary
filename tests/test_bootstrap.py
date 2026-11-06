@@ -98,3 +98,17 @@ class TestResearchPorts:
         assert ports.models is models.return_value
         store.assert_not_called()  # the trend store is built on first use
         assert ports.memory_store is bootstrap.memory_store
+
+
+class TestPaidCheckWiring:
+    def test_feed_posts_are_checked_for_a_paid_declaration_only(self):
+        # A 403 from a datacenter IP (Wikipedia, GitHub on Lambda) is not a paywall on a feed post.
+        assert bootstrap.paid_check().keywords == {"refusals": False}
+
+
+class TestSiblingMemoryWiring:
+    def test_each_sibling_edition_gets_its_own_store(self):
+        config = MagicMock()
+        config.pipeline.sibling_editions = ["", "invest"]
+        with patch.object(bootstrap, "create_memory_store", side_effect=lambda base, *, edition: edition):
+            assert bootstrap.sibling_memory_stores(config) == ["", "invest"]

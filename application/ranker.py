@@ -6,6 +6,8 @@ import math
 from collections import defaultdict
 from collections.abc import Sequence
 
+from langchain_core.exceptions import OutputParserException
+
 from application.digest_generator import format_recent_titles
 from application.ports import LanguageModels, PaidPageCheck
 from application.prompts import RankingPrompt, StoryGroupPrompt
@@ -34,8 +36,6 @@ class ContentRanker:
         self.config = config
         self.models = models
         self.paid_check = paid_check
-        # json_schema is Bedrock's constrained output: free-form JSON came back unparseable for a whole
-        # batch on 3 of 30 AI runs (2026-10), and twice that batch never got a score.
         self.llm = models.get_model(config.ranking_model, stage="ranking").with_structured_output(
             Rankings, method="json_schema"
         )
@@ -219,21 +219,17 @@ class ContentRanker:
             f"{n}. {r.item.title.strip()[:160]} ({format_origin_label(r.item)})" for n, r in enumerate(shown, start=1)
         )
         try:
-            # json_schema is Bedrock's constrained output: free-form JSON came back malformed on two of
-            # three weekday investing runs (trailing notes, a missing comma) and the pool lost the cap.
             llm = self.models.get_model(self.config.digest_model, stage="story-groups").with_structured_output(
                 StoryGroups, method="json_schema"
             )
             verdict = await (StoryGroupPrompt.get_prompt() | llm).ainvoke({"items_text": items_text})
-            groups = StoryGroups.model_validate(verdict).same_story if verdict is not None else []
+            groups = StoryGroups.model_validate(verdict).same_story
         except Exception as e:
             logger.warning("Same-story grouping failed (%s); filling the pool without it", e)
             return {}
         stories: dict[str, int] = {}
-        for story, group in enumerate(groups if isinstance(groups, list) else []):
-            numbers = (
-                {n for n in group if type(n) is int and 1 <= n <= len(shown)} if isinstance(group, list) else set()
-            )
+        for story, group in enumerate(groups):
+            numbers = {n for n in group if 1 <= n <= len(shown)}
             if len(numbers) > 1:
                 for n in numbers:
                     stories.setdefault(shown[n - 1].item.item_id, story)
@@ -250,11 +246,8 @@ class ContentRanker:
         still-short re-ask leaves the original outcome untouched — it can never fail the batch."""
         ranked = await self._score_batch(items, semaphore, recent_titles)
         if not ranked and len(items) > 1:
-            # Nothing parsed (2 of 5 AI runs lost a whole batch this way, both attempts empty or prose).
-            # Re-asking the identical batch repeats whatever in it caused that, so score each half once
-            # instead: a bad item then costs its half, not 40 neighbours. Once, not recursively: a
-            # failure that hits every batch (a model answering in prose) would otherwise cost 3n calls
-            # and outrun the Lambda instead of failing fast.
+            # Nothing scored. Re-sending the same batch repeats its cause, so score each half once, not
+            # recursively: a bad item then costs its half, and a failure that hits every batch fails fast.
             half = len(items) // 2
             logger.warning("Ranking batch of %d items parsed to nothing; scoring its halves separately", len(items))
             outcomes = await asyncio.gather(
@@ -293,46 +286,45 @@ class ContentRanker:
         logger.info("Coverage re-ask recovered %d of %d omitted item(s)", len(recovered), len(missing))
         scored = ranked + recovered
         if not scored:
-            # NOTHING parsed, twice over (a malformed JSON response both times): returning [] left
-            # `failures` empty and items_lost at 0, so RankingHealth read clean and every ranking
-            # alert stayed silent while a whole batch of candidates vanished from the day's pool.
-            # Raising makes rank() count the batch as failed — one bad batch is still tolerated.
+            # Nothing scored, even on the re-ask: raise so rank() counts a failed batch instead of a clean one.
             raise RuntimeError(f"Ranking batch of {len(items)} items produced no parsed rankings")
         return scored
 
     async def _score_batch(
         self, items: list[CollectedItem], semaphore: asyncio.Semaphore, recent_titles: str
     ) -> list[RankedItem]:
-        """Score one batch, retrying the Converse call before giving up. The failure used to be
-        swallowed into [] — a single throttle or transient 5xx silently deleted a whole batch of
-        candidates from the day's pool. Now it retries, and a permanent failure PROPAGATES so
-        rank() can decide (one bad batch is tolerated; all of them is an outage)."""
+        """Score one batch, retrying a failed Converse call; a permanent failure propagates so rank() can
+        count it (one bad batch is tolerated, all of them is an outage). An answer outside the schema is []."""
         # Off the event loop: truncation makes blocking CountTokens calls, which serialized the batches.
         items_text = await asyncio.to_thread(self._format_items, items)
         chain = RankingPrompt.get_prompt() | self.llm
 
-        async def _invoke() -> object:
-            return await chain.ainvoke(
-                {
-                    "items_text": items_text,
-                    "scoring_rubric": self.config.ranking_scoring_rubric,
-                    "audience": self.config.ranking_audience_description,
-                    "recent_titles": recent_titles,
-                    "criteria": self.config.ranking_criteria,
-                }
-            )
+        async def _invoke() -> Rankings | None:
+            try:
+                result = await chain.ainvoke(
+                    {
+                        "items_text": items_text,
+                        "scoring_rubric": self.config.ranking_scoring_rubric,
+                        "audience": self.config.ranking_audience_description,
+                        "recent_titles": recent_titles,
+                        "criteria": self.config.ranking_criteria,
+                    }
+                )
+            except OutputParserException as e:
+                # An answer outside the schema (prose, empty) would come back the same on a re-send of
+                # the same batch; _rank_batch scores its halves instead.
+                logger.warning("Ranking batch of %d items returned no valid rankings: %s", len(items), e)
+                return None
+            return Rankings.model_validate(result)
 
         async with semaphore:
-            result = await retry_async(
+            rankings = await retry_async(
                 _invoke,
                 max_retries=self.config.ranking_max_retries,
                 backoff_sec=self.config.ranking_retry_backoff_sec,
                 description=f"Ranking batch of {len(items)} items",
             )
-        if result is None:
-            logger.warning("Ranking batch of %d items returned no %s", len(items), Rankings.__name__)
-            return []
-        return self._rankings_to_items(Rankings.model_validate(result).rankings, items)
+        return self._rankings_to_items(rankings.rankings, items) if rankings else []
 
     def _apply_source_slots(
         self,
@@ -482,10 +474,8 @@ class ContentRanker:
     @staticmethod
     def _rankings_to_items(entries: list[RankingEntry], items: list[CollectedItem]) -> list[RankedItem]:
         """Each entry names its item by the `=== Item N ===` number the batch was shown with."""
-        # One RankedItem per INPUT item, at most. A model that repeats an item (and, in practice, omits
-        # another to compensate) otherwise made len(ranked) == len(items): coverage read 1.0, the
-        # re-ask never fired, items_scored overstated the pool, and the editor was handed the same
-        # story twice. First entry wins — deterministic, and it is the one the model committed to.
+        # One RankedItem per input item, first entry wins: a repeat must not hide an omission from the coverage
+        # re-ask or hand the editor the same story twice.
         ranked_items: list[RankedItem] = []
         seen: set[int] = set()
         duplicates: list[int] = []

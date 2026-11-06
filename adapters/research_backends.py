@@ -126,6 +126,14 @@ _ACCESS_CHECK_TIMEOUT_SEC = 10.0
 _ACCESS_CHECK_MAX_BYTES = 512_000
 
 
+def _host(url: str) -> str:
+    try:
+        return urlsplit(url).hostname or url
+    except ValueError:
+        # A link urlsplit cannot parse (a stray bracket in the host): the check then fails to fetch it.
+        return url
+
+
 async def access_controlled(urls: list[str], *, refusals: bool = True) -> set[str]:
     """The URLs whose page refuses an ordinary reader (401/403/429) or declares itself paid. Tavily
     reads a page from its own servers, so extracting one of these would get around the control the
@@ -142,7 +150,7 @@ async def access_controlled(urls: list[str], *, refusals: bool = True) -> set[st
     per_host: dict[str, asyncio.Semaphore] = defaultdict(lambda: asyncio.Semaphore(_ACCESS_CHECK_PER_HOST))
 
     async def refused(client: httpx.AsyncClient, url: str) -> bool:
-        async with per_host[urlsplit(url).hostname or url], semaphore:
+        async with per_host[_host(url)], semaphore:
             try:
                 async with client.stream("GET", url) as resp:
                     if resp.status_code in _REFUSED_STATUS:
@@ -169,7 +177,7 @@ async def access_controlled(urls: list[str], *, refusals: bool = True) -> set[st
             "Access check: %d of %d pages refuse a reader or declare themselves paid (%s)",
             len(blocked),
             len(unique),
-            ", ".join(sorted({urlsplit(u).hostname or u for u in blocked})),
+            ", ".join(sorted({_host(u) for u in blocked})),
         )
     return blocked
 

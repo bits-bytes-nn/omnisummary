@@ -86,17 +86,15 @@ def snapshot(lead: str = "리드.", items=()):
 
 def StructuredLambda(runnable):  # noqa: N802 - reads as the wrapper it stands in for
     """A stand-in chat model for code that may call `.with_structured_output(...)`: the runnable itself
-    answers AIMessages; the structured variant parses the same answer's JSON into a dict (None when it
-    is not JSON), as Bedrock constrained output would hand back."""
-    import json
+    answers AIMessages; the structured variant runs them through the parser langchain-aws's json_schema
+    mode uses, so a Pydantic schema yields a model and an answer outside it raises OutputParserException."""
+    from langchain_core.output_parsers import JsonOutputParser, PydanticOutputParser
+    from pydantic import BaseModel
 
-    from langchain_core.runnables import RunnableLambda
+    def structured(schema, **kwargs):
+        if isinstance(schema, type) and issubclass(schema, BaseModel):
+            return runnable | PydanticOutputParser(pydantic_object=schema)
+        return runnable | JsonOutputParser()
 
-    def parse(message):
-        try:
-            return json.loads(message.content)
-        except (TypeError, ValueError):
-            return None
-
-    runnable.with_structured_output = lambda schema, **kwargs: runnable | RunnableLambda(parse)
+    runnable.with_structured_output = structured
     return runnable

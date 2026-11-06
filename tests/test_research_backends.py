@@ -284,6 +284,12 @@ class TestAccessControlled:
     async def test_no_urls_makes_no_request(self):
         assert await rb.access_controlled([]) == set()
 
+    @pytest.mark.asyncio
+    async def test_a_link_urlsplit_cannot_parse_passes_instead_of_failing_the_run(self):
+        # A stray bracket in a feed link raised ValueError out of the per-host key and failed the digest.
+        with patch.object(rb.httpx.AsyncClient, "stream", side_effect=rb.httpx.InvalidURL("bad host")):
+            assert await rb.access_controlled(["https://example.com]/a"], refusals=False) == set()
+
 
 class TestTavilyUsage:
     def test_credits_are_logged_and_a_missing_usage_says_so(self, monkeypatch):

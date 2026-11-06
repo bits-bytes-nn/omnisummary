@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from langchain_core.output_parsers import StrOutputParser  # noqa: E402
 from langchain_core.prompts import ChatPromptTemplate  # noqa: E402
 
+from domain.digest_snapshot import DigestSnapshot  # noqa: E402
 from entrypoints import bootstrap  # noqa: E402
 from shared import Config, logger, parse_json_from_llm_output  # noqa: E402
 from shared.constants import LanguageModelId  # noqa: E402
@@ -109,6 +110,15 @@ def _other_editions(config: Config) -> list[str]:
     return sorted(e for e in found if not e.endswith("-template") and e != config.edition)
 
 
+def _posted_before(snapshots: list[DigestSnapshot], replayed: DigestSnapshot) -> list[DigestSnapshot]:
+    """The other editions' snapshots the replayed run could have seen: written before it. Another edition's
+    digest for the same date that ran later in the day was not there yet."""
+    if replayed.digest is None:
+        return snapshots
+    cutoff = replayed.digest.generated_at
+    return [s for s in snapshots if s.digest is None or s.digest.generated_at <= cutoff]
+
+
 def _case_dir(kind: str, label: str) -> Path:
     path = ROOT / kind / label
     path.mkdir(parents=True, exist_ok=True)
@@ -121,7 +131,7 @@ def _slug(text: str) -> str:
 
 async def _digest(label: str, dates: list[str]) -> None:
     from application.digest_generator import DigestGenerator
-    from application.digest_pipeline import _recent_leads, _recent_story_titles, sibling_snapshots
+    from application.digest_pipeline import RECENT_TITLE_DAYS, _recent_leads, _recent_story_titles, sibling_snapshots
     from application.trend_tracker import TrendTracker
 
     config = Config.load()
@@ -135,20 +145,24 @@ async def _digest(label: str, dates: list[str]) -> None:
         today = date.fromisoformat(day)
         # The same inputs a real run on that date had: the earlier snapshots and the trends before it.
         earlier = memory.get_recent_digests(today, config.pipeline.published_url_ttl_days - 1)
+        title_snapshots = memory.get_recent_digests(today, RECENT_TITLE_DAYS)
         trends = TrendTracker(config.pipeline, models, bootstrap.state_store(config)).get_trends_context(today=today)
         window = config.pipeline.recent_leads_window
-        sibling = sibling_snapshots(lambda: bootstrap.sibling_memory_stores(config), today)
+        sibling = _posted_before(sibling_snapshots(lambda: bootstrap.sibling_memory_stores(config), today), snapshot)
         result = await DigestGenerator(config.pipeline, models).generate(
             snapshot.ranked_items,
             today=today,
             trends_context=trends,
             recent_leads=_recent_leads(earlier, window) + _recent_leads(sibling, window),
-            recent_titles=list(dict.fromkeys(_recent_story_titles(earlier) + _recent_story_titles(sibling))),
+            recent_titles=list(dict.fromkeys(_recent_story_titles(title_snapshots) + _recent_story_titles(sibling))),
         )
         # The judge always sees what the whole Threads account ran, the other editions included, whatever
         # the arm under test was given.
         account = _recent_leads(earlier, window) + _recent_leads(
-            sibling_snapshots(lambda: [bootstrap.memory_store(edition=e) for e in _other_editions(config)], today),
+            _posted_before(
+                sibling_snapshots(lambda: [bootstrap.memory_store(edition=e) for e in _other_editions(config)], today),
+                snapshot,
+            ),
             window,
         )
         # The editor's own view of each source (its token cap), not a shorter cut: at 1,500 characters the
@@ -177,6 +191,12 @@ async def _visual(label: str, dates: list[str]) -> None:
             logger.warning("No snapshot for %s; skipped", day)
             continue
         recent = [e for e in log if str(e.get("date", "")) < day][-config.pipeline.recent_leads_window :]
+        if len(recent) < config.pipeline.recent_leads_window:
+            # The deployed log keeps only the last few comics, so an older day replays with fewer of them
+            # than its real run had.
+            logger.warning(
+                "%s replays with %d recent comic(s), not %d", day, len(recent), config.pipeline.recent_leads_window
+            )
         plan, instruction, source = await maker._compose(
             snapshot.ranked_items, snapshot.content, date.fromisoformat(day), recent_comics=recent
         )
@@ -225,7 +245,9 @@ async def _judge(kind: str, label_a: str, label_b: str) -> None:
     chain = _JUDGE | llm | StrOutputParser()
     criteria = RUBRICS[kind] + EDITION_RUBRIC.get((kind, config.edition), [])
     rubric = "\n".join(f"- {name}: {text}" for name, text in criteria)
-    rows = []
+    rows: list[dict] = []
+    out = ROOT / kind / f"judge-{label_a}-vs-{label_b}.json"
+    out.write_text("[]")
     for path_a in sorted(_case_dir(kind, label_a).glob("*.json")):
         path_b = _case_dir(kind, label_b) / path_a.name
         if not path_b.exists():
@@ -237,19 +259,24 @@ async def _judge(kind: str, label_a: str, label_b: str) -> None:
         raw = await chain.ainvoke(
             {"context": a["context"], "first": first["artifact"], "second": second["artifact"], "rubric": rubric}
         )
-        verdict = parse_json_from_llm_output(raw)
-        scores_a, scores_b = (
-            (verdict["scores_1"], verdict["scores_2"]) if a_first else (verdict["scores_2"], verdict["scores_1"])
-        )
-        winner = {0: "tie", 1: label_a if a_first else label_b, 2: label_b if a_first else label_a}[
-            int(verdict["winner"])
-        ]
-        rows.append(
-            {"case": a["case"], "winner": winner, label_a: scores_a, label_b: scores_b, "reason": verdict["reason"]}
-        )
+        try:
+            verdict = parse_json_from_llm_output(raw)
+            scores_a, scores_b = (
+                (verdict["scores_1"], verdict["scores_2"]) if a_first else (verdict["scores_2"], verdict["scores_1"])
+            )
+            winner = {0: "tie", 1: label_a if a_first else label_b, 2: label_b if a_first else label_a}[
+                int(verdict["winner"])
+            ]
+            reason = str(verdict["reason"])
+            if not (isinstance(scores_a, dict) and isinstance(scores_b, dict)):
+                raise TypeError("scores are not per-criterion objects")
+        except (ValueError, KeyError, TypeError) as e:
+            # One unreadable verdict must not throw away the ones already paid for.
+            logger.warning("%s: unreadable verdict (%s); skipped", a["case"], e)
+            continue
+        rows.append({"case": a["case"], "winner": winner, label_a: scores_a, label_b: scores_b, "reason": reason})
         logger.info("%s: %s", a["case"], winner)
-    out = ROOT / kind / f"judge-{label_a}-vs-{label_b}.json"
-    out.write_text(json.dumps(rows, ensure_ascii=False, indent=1))
+        out.write_text(json.dumps(rows, ensure_ascii=False, indent=1))
     wins = {label: sum(r["winner"] == label for r in rows) for label in (label_a, label_b, "tie")}
     means = {
         label: {name: round(sum(r[label].get(name, 0) for r in rows) / max(1, len(rows)), 2) for name, _ in criteria}

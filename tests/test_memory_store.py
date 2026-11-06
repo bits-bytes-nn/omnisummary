@@ -317,3 +317,13 @@ class TestNewestEventWithinASession:
         client.list_events.return_value = {"events": [self._event("{not json")]}
         with pytest.raises(MemoryReadError, match="digest-2026-08-17"):
             store.get_raw("2026-08-17")
+
+
+class TestEditionSessions:
+    def test_the_ai_edition_is_read_from_the_investing_edition(self, monkeypatch):
+        # sibling_editions [""] in the investing config: "" must mean the AI edition, not "this one".
+        monkeypatch.setenv("MEMORY_ID", "mem-123")
+        with patch("adapters.memory.boto3.Session"), patch("adapters.memory.get_config") as config:
+            config.return_value.edition = "invest"
+            assert create_memory_store(edition="").session_prefix == AgentCoreMemoryStore.DIGEST_SESSION_PREFIX
+            assert create_memory_store().session_prefix == f"{AgentCoreMemoryStore.DIGEST_SESSION_PREFIX}-invest"
