@@ -2,19 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import math
 from collections import defaultdict
 from collections.abc import Sequence
-
-from langchain_core.output_parsers import StrOutputParser
 
 from application.digest_generator import format_recent_titles
 from application.ports import LanguageModels, PaidPageCheck
 from application.prompts import RankingPrompt, StoryGroupPrompt
 from domain.formatting import format_collected_item, format_origin_label, resolve_origin_key
-from domain.models import CollectedItem, RankedItem, RankingHealth, StoryGroups
-from shared import SourceType, logger, parse_json_from_llm_output, retry_async
+from domain.models import CollectedItem, RankedItem, RankingEntry, RankingHealth, Rankings, StoryGroups
+from shared import SourceType, logger, retry_async
 from shared.config import PipelineConfig
 
 # The grouping call sees the top of the above-threshold list in score order; a candidate below it could
@@ -37,7 +34,11 @@ class ContentRanker:
         self.config = config
         self.models = models
         self.paid_check = paid_check
-        self.llm = models.get_model(config.ranking_model, stage="ranking")
+        # json_schema is Bedrock's constrained output: free-form JSON came back unparseable for a whole
+        # batch on 3 of 30 AI runs (2026-10), and twice that batch never got a score.
+        self.llm = models.get_model(config.ranking_model, stage="ranking").with_structured_output(
+            Rankings, method="json_schema"
+        )
         # How complete the last rank() was, for the caller to report/alert on. A digest built from a
         # pool that lost a whole batch of candidates must not read as a clean success.
         self.health = RankingHealth()
@@ -308,9 +309,9 @@ class ContentRanker:
         rank() can decide (one bad batch is tolerated; all of them is an outage)."""
         # Off the event loop: truncation makes blocking CountTokens calls, which serialized the batches.
         items_text = await asyncio.to_thread(self._format_items, items)
-        chain = RankingPrompt.get_prompt() | self.llm | StrOutputParser()
+        chain = RankingPrompt.get_prompt() | self.llm
 
-        async def _invoke() -> str:
+        async def _invoke() -> object:
             return await chain.ainvoke(
                 {
                     "items_text": items_text,
@@ -322,13 +323,16 @@ class ContentRanker:
             )
 
         async with semaphore:
-            raw_output = await retry_async(
+            result = await retry_async(
                 _invoke,
                 max_retries=self.config.ranking_max_retries,
                 backoff_sec=self.config.ranking_retry_backoff_sec,
                 description=f"Ranking batch of {len(items)} items",
             )
-        return self._parse_rankings(raw_output, items)
+        if result is None:
+            logger.warning("Ranking batch of %d items returned no %s", len(items), Rankings.__name__)
+            return []
+        return self._rankings_to_items(Rankings.model_validate(result).rankings, items)
 
     def _apply_source_slots(
         self,
@@ -475,53 +479,36 @@ class ContentRanker:
             return f"{meta['view_count']:,} views"
         return ""
 
-    def _parse_rankings(self, raw_output: str, items: list[CollectedItem]) -> list[RankedItem]:
+    @staticmethod
+    def _rankings_to_items(entries: list[RankingEntry], items: list[CollectedItem]) -> list[RankedItem]:
         """Each entry names its item by the `=== Item N ===` number the batch was shown with."""
-        try:
-            data = parse_json_from_llm_output(raw_output)
-            rankings = data.get("rankings", []) if isinstance(data, dict) else []
-        except (json.JSONDecodeError, KeyError) as exc:
-            logger.error("Failed to parse ranking LLM output: '%s'", exc)
-            # WARNING, not DEBUG: an unparseable batch is the one case whose cause has to be read later.
-            logger.warning("Unparseable ranking output (%d chars): %r", len(raw_output), raw_output[:300])
-            return []
-
-        ranked_items: list[RankedItem] = []
         # One RankedItem per INPUT item, at most. A model that repeats an item (and, in practice, omits
         # another to compensate) otherwise made len(ranked) == len(items): coverage read 1.0, the
         # re-ask never fired, items_scored overstated the pool, and the editor was handed the same
         # story twice. First entry wins — deterministic, and it is the one the model committed to.
+        ranked_items: list[RankedItem] = []
         seen: set[int] = set()
         duplicates: list[int] = []
-        for entry in rankings:
+        for entry in entries:
+            if entry.item == 0:
+                # Zero-based: every other number points at the item before the one meant. Drop the
+                # whole answer so the coverage re-ask scores the batch again.
+                logger.warning("Ranking response numbered items from 0; discarding the response")
+                return []
+            if not 1 <= entry.item <= len(items):
+                logger.warning("Skipping ranking entry with item number %r", entry.item)
+                continue
+            if entry.item in seen:
+                duplicates.append(entry.item)
+                continue
             try:
-                number = entry["item"]
-                if isinstance(number, str) and number.isdigit():
-                    number = int(number)
-                elif isinstance(number, float) and number.is_integer():
-                    number = int(number)
-                if number == 0 and type(number) is int:
-                    # Zero-based: every other number points at the item before the one meant. Drop the
-                    # whole answer so the coverage re-ask scores the batch again.
-                    logger.warning("Ranking response numbered items from 0; discarding the response")
-                    return []
-                # A bool or a fraction is not an item number (int(True) and int(2.7) would map silently).
-                if type(number) is not int or not 1 <= number <= len(items):
-                    logger.warning("Skipping ranking entry with item number %r", entry["item"])
-                    continue
-                if number in seen:
-                    duplicates.append(number)
-                    continue
                 ranked_items.append(
-                    RankedItem(
-                        item=items[number - 1],
-                        score=float(entry["score"]),
-                        reasoning=entry.get("reasoning", ""),
-                    )
+                    RankedItem(item=items[entry.item - 1], score=entry.score, reasoning=entry.reasoning)
                 )
-                seen.add(number)
-            except (KeyError, ValueError, TypeError) as exc:
-                logger.warning("Skipping malformed ranking entry: %s (%s)", entry, exc)
+            except ValueError as exc:
+                logger.warning("Skipping ranking entry with score %r (%s)", entry.score, exc)
+                continue
+            seen.add(entry.item)
 
         if duplicates:
             logger.warning(
