@@ -137,6 +137,18 @@ class VisualBrief(BaseModel):
     )
 
 
+class RankingEntry(BaseModel):
+    item: StrictInt = Field(description="The `=== Item N ===` number the item was shown with.")
+    score: float
+    reasoning: str = ""
+
+
+class Rankings(BaseModel):
+    """One ranking batch's scores, as Bedrock constrained output."""
+
+    rankings: list[RankingEntry] = Field(default_factory=list)
+
+
 class StoryGroups(BaseModel):
     """The same-story grouping verdict, as Bedrock constrained output."""
 
