@@ -124,11 +124,13 @@ class TrendTracker:
                 len(capped),
                 len(visible),
             )
-        return self._render_ammunition(capped)
+        return self._render_ammunition(capped, notes=self.config.trend_context_notes)
 
     @staticmethod
-    def _render_ammunition(trends: list[Trend]) -> str:
-        """Each visible trend with its most recent note."""
+    def _render_ammunition(trends: list[Trend], *, notes: bool = True) -> str:
+        """Each visible trend, with its most recent note when `notes`."""
+        if not notes:
+            return "\n".join(f"- {t.title}" for t in trends)
         lines: list[str] = []
         for t in trends:
             gist = t.evidence[-1].summary if t.evidence else ""

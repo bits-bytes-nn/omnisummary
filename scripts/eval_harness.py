@@ -72,6 +72,18 @@ RUBRICS = {
     ],
 }
 
+# What an edition's owner asks of the set beyond the shared rubric. Investing (2026-11-06): the edition is
+# meant for market reads, analyst reports and expert insight, not an economics newspaper.
+EDITION_RUBRIC = {
+    ("digest", "invest"): [
+        (
+            "analysis",
+            "Where the candidates allow it, the set leans on named analysts', houses' and investors' reasoned "
+            "reads of the market over reports of events, decisions and statistics.",
+        )
+    ],
+}
+
 _JUDGE = ChatPromptTemplate.from_messages(
     [
         (
@@ -139,11 +151,16 @@ async def _digest(label: str, dates: list[str]) -> None:
             sibling_snapshots(lambda: [bootstrap.memory_store(edition=e) for e in _other_editions(config)], today),
             window,
         )
-        sources = "\n\n".join(f"[{r.item.title}] {r.item.url}\n{r.item.text[:1500]}" for r in snapshot.ranked_items)
+        # The editor's own view of each source (its token cap), not a shorter cut: at 1,500 characters the
+        # judge marked figures from further down the source as invented (2026-11-06: Evercore's 7,750 and
+        # Hana's 중립 sat at characters 1,981 and 2,297).
+        sources = "\n\n".join(
+            f"[{r.item.title}] {r.item.url}\n{models.truncate_to_tokens(r.item.text, config.pipeline.item_text_max_tokens)}"
+            for r in snapshot.ranked_items
+        )
         out = {
             "case": day,
-            "context": f"CANDIDATES:\n{sources[:24000]}\n\nRECENT LEADS ON THIS THREADS ACCOUNT:\n"
-            + "\n".join(account),
+            "context": f"CANDIDATES:\n{sources}\n\nRECENT LEADS ON THIS THREADS ACCOUNT:\n" + "\n".join(account),
             "artifact": result.digest_text,
         }
         (_case_dir("digest", label) / f"{day}.json").write_text(json.dumps(out, ensure_ascii=False, indent=1))
@@ -166,7 +183,7 @@ async def _visual(label: str, dates: list[str]) -> None:
         brief = await maker.generator.brief(instruction, source) if instruction else None
         out = {
             "case": day,
-            "context": f"HEADLINE ARTICLE:\n{source[:6000]}\n\nRECENT COMICS:\n{json.dumps(recent, ensure_ascii=False)}",
+            "context": f"HEADLINE ARTICLE:\n{source}\n\nRECENT COMICS:\n{json.dumps(recent, ensure_ascii=False)}",
             "artifact": json.dumps(
                 {"plan": plan, "brief": brief.model_dump() if brief else None}, ensure_ascii=False, indent=1
             ),
@@ -206,7 +223,8 @@ async def _judge(kind: str, label_a: str, label_b: str) -> None:
     config = Config.load()
     llm = bootstrap.language_models(config).get_model(JUDGE_MODEL, stage="eval-judge")
     chain = _JUDGE | llm | StrOutputParser()
-    rubric = "\n".join(f"- {name}: {text}" for name, text in RUBRICS[kind])
+    criteria = RUBRICS[kind] + EDITION_RUBRIC.get((kind, config.edition), [])
+    rubric = "\n".join(f"- {name}: {text}" for name, text in criteria)
     rows = []
     for path_a in sorted(_case_dir(kind, label_a).glob("*.json")):
         path_b = _case_dir(kind, label_b) / path_a.name
@@ -234,9 +252,7 @@ async def _judge(kind: str, label_a: str, label_b: str) -> None:
     out.write_text(json.dumps(rows, ensure_ascii=False, indent=1))
     wins = {label: sum(r["winner"] == label for r in rows) for label in (label_a, label_b, "tie")}
     means = {
-        label: {
-            name: round(sum(r[label].get(name, 0) for r in rows) / max(1, len(rows)), 2) for name, _ in RUBRICS[kind]
-        }
+        label: {name: round(sum(r[label].get(name, 0) for r in rows) / max(1, len(rows)), 2) for name, _ in criteria}
         for label in (label_a, label_b)
     }
     print(
