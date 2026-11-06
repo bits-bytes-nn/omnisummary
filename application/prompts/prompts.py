@@ -133,7 +133,7 @@ because the lead is a comment on stories you have already written:
 {{
   "items": [
     {{
-      "title": "the Korean display title for this story",
+      "title": "the Korean title a reader sees in the root post without the body, so plain words a stranger can follow",
       "url": "the item's URL exactly as provided",
       "body": "Korean sentences that explain this story the way you would to a smart friend outside the field, using the room its PROSE BUDGET leaves: the context they need (who this is, what problem it is about), what happened, and why it matters. Self-contained, so the whole item reads as ONE social post.{prose_budget_rule}",
       "implication": "ONE short Korean sentence that takes a stance on THIS story a reader could disagree with and adds what the source itself does not say, not a general truth about the industry. It is the remark you would add next when telling that friend, in the body's plain voice, not a tagline or maxim; caveats, 'unverified' and 'self-reported' included, belong in the body. Provocation is in the angle, never in invented facts."
@@ -146,7 +146,7 @@ because the lead is a comment on stories you have already written:
 Rules:
 - `items[0]` is today's HEADLINE, the story the lead and the image are about: the strongest story by \
 the lenses below, with visual expressibility only breaking a tie. Order the rest the same way.
-- At most two numbers in a body, the ones the story rests on, and no technical term, benchmark name or acronym unless the story needs it, then glossed in a \
+- No technical term, benchmark name or acronym unless the story needs it, then glossed in a \
 few plain words where it first appears.
 - Pick the {target_count} strongest distinct stories from the candidates, judged by the same lenses they \
 were ranked on:
@@ -157,8 +157,7 @@ its text alone. Emit fewer only when no distinct candidate is left — never pad
 
 *Trends*
 The trend context is there so the lead can place today's story in the arc it belongs to: name \
-what the pattern IS and what follows from it, in the argument's own words. That connection is the one \
-thing today's items cannot supply on their own, so make it.
+what the pattern IS and what follows from it, in the argument's own words.
 No separate list of trends. With no trend data, draw continuity from today's items alone and never \
 invent history.
 

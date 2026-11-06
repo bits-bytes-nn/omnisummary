@@ -444,3 +444,21 @@ def test_a_same_day_rerun_does_not_see_todays_first_run_as_history():
     ctx = TrendTracker(PipelineConfig(), MagicMock(), store).get_trends_context(today=today)
     assert "yesterday's note" in ctx
     assert "tonight's first run" not in ctx and "Born tonight" not in ctx
+
+
+def test_trend_context_without_notes_shows_titles_only():
+    # Given each trend's latest note, the AI/ML leads re-told yesterday's figures as the "wider arc".
+    day = (date.today() - timedelta(days=1)).isoformat()
+    trend = Trend(
+        id="t",
+        title="Compute costs",
+        first_seen=day,
+        last_seen=day,
+        evidence=[TrendEvidence(date=day, summary="compute rose to 58% of revenue")],
+    )
+    store = _FakeStore({TRENDS_KEY: TrendMemory(trends=[trend]).model_dump_json()})
+    assert TrendTracker(PipelineConfig(), MagicMock(), store).get_trends_context() == (
+        "- Compute costs: compute rose to 58% of revenue"
+    )
+    titles_only = TrendTracker(PipelineConfig(trend_context_notes=False), MagicMock(), store)
+    assert titles_only.get_trends_context() == "- Compute costs"

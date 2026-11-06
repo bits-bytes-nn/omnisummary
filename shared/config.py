@@ -397,6 +397,11 @@ class PipelineConfig(_StrictModel):
     trend_retention_days: int = Field(default=30, ge=1)
     trend_max_evidence: int = Field(default=5, ge=1)
     trend_max_active_trends: int = Field(default=10, ge=1)
+    # Whether the editor's trend context carries each trend's latest note or only its title. The AI/ML
+    # edition shows titles only (2026-11-06, blind on 6 stored days in both orders: 9-3, fidelity 2.8 to
+    # 3.9): given the notes, its leads re-told yesterday's figures as the "wider arc". Investing keeps the
+    # notes, whose market figures its editor uses (titles only lost 2-8 there).
+    trend_context_notes: bool = True
     trend_momentum_half_life_days: float = Field(default=7.0, gt=0)
     # The digest's delivery channel. Off until the Threads access token / user id are provisioned in SSM.
     enable_threads_post: bool = False
