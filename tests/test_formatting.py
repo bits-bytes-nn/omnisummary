@@ -243,6 +243,7 @@ class TestCleanRssFeedName:
             ("The Next Platform: In-depth coverage of high end computing", "The Next Platform"),
             ("매일경제 : 증권", "매일경제"),
             ("연합인포맥스 - 해외주식", "연합인포맥스"),
+            ("Latitude Media — Energy", "Latitude Media"),
             ("Simon Willison's Weblog", "Simon Willison's Weblog"),
             ("", "example.com"),
         ],

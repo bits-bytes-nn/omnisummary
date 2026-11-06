@@ -408,8 +408,12 @@ async def fetch_pinned_items(urls: list[str]) -> list[CollectedItem]:
     items: list[CollectedItem] = []
     yt_results = await asyncio.gather(*(_fetch_youtube_pinned(u, vid) for u, vid in youtube_pins.items()))
     items.extend(it for it in yt_results if it is not None)
-    if other_urls:
-        items.extend(await _fetch_tavily_pinned(other_urls))
+    # A pinned page goes through Tavily extract like any other, so it gets the same access check.
+    refused = await access_controlled(other_urls)
+    if refused:
+        logger.warning("Not fetching %d pinned URL(s) behind an access control: %s", len(refused), sorted(refused))
+    if readable := [u for u in other_urls if u not in refused]:
+        items.extend(await _fetch_tavily_pinned(readable))
 
     # Surface exactly which pinned URLs didn't come back, so a silently-missing pin is visible.
     fetched_urls = {it.url for it in items}

@@ -207,6 +207,15 @@ class TestRunPipelineHappyPath:
             ("https://a.example/1", 0.4, "thin"),
             ("https://b.example/2", 0.4, "thin"),
         ]
+        # What a replay of the slots and caps needs besides the score.
+        assert all(k["source"] and k["origin"] for k in kept)
+
+    @pytest.mark.asyncio
+    async def test_the_ranker_gets_the_paid_page_check(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with _Pipeline(tmpdir) as p:
+                await _run(p, _config(), [_item("https://a.example/1")], paid_check=nothing_paid)
+                assert runner.ContentRanker.call_args.args[2] is nothing_paid
 
     @pytest.mark.asyncio
     async def test_select_count_over_selects_by_the_candidate_buffer(self):

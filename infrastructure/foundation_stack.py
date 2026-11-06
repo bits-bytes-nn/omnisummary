@@ -90,8 +90,9 @@ class OmniSummaryFoundationStack(Stack):
         # One role per kind of work, so the Lambda that reads strangers' comments holds neither the
         # token write nor the publish fan-out: each edition's digest and visual Lambdas share one role
         # (lambda_role for AI/ML, edition_roles[name] otherwise), the comment-reply and token-refresh
-        # Lambdas get only what they call. Per edition, so one edition cannot rewrite the other's ledgers
-        # and park files or fire the other's publish Lambda.
+        # Lambdas get only what they call. Per edition, so one edition cannot rewrite the other's S3 ledgers
+        # and park files or fire the other's publish Lambda. The AgentCore memory is shared: editions keep
+        # apart by session prefix, not by IAM.
         self.lambda_role = iam.Role(
             self,
             "LambdaRole",

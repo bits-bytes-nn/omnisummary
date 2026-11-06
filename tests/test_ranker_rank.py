@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
 from application.ranker import ContentRanker
-from domain.models import CollectedItem
+from domain.models import CollectedItem, Rankings
 from shared.config import PipelineConfig
 from shared.constants import SourceType
 from tests.fakes import StructuredLambda
@@ -50,9 +50,7 @@ def _numbered(llm):
 def _ranker(raw_output: str, **overrides) -> ContentRanker:
     config = PipelineConfig(**overrides)
     factory = _mock_factory()
-    # The ranker builds: RankingPrompt.get_prompt() | self.llm | StrOutputParser().
-    # A RunnableLambda standing in for the LLM returns an AIMessage that the
-    # StrOutputParser unwraps to raw_output, exercising the real rank() path.
+    # The stand-in answers raw_output; StructuredLambda parses it as the json_schema parser would.
     factory.get_model.return_value = _numbered(RunnableLambda(lambda _: AIMessage(content=raw_output)))
     return ContentRanker(config, factory)
 
@@ -147,6 +145,20 @@ class TestRankEndToEnd:
         )
         result = await ranker.rank(items)
         assert len(result) == 3
+
+    @pytest.mark.asyncio
+    async def test_every_scored_item_is_kept_not_only_the_pool(self):
+        # A replay of the slots, the caps or the threshold needs the items below the bar too.
+        items = _items([("a", SourceType.RSS), ("b", SourceType.RSS)])
+        ranker = _ranker(_rankings({"a": 0.9, "b": 0.3}), top_n=5, min_score=0.6, source_slots={})
+        await ranker.rank(items)
+        assert {r.item.item_id: r.score for r in ranker.scored} == {"a": 0.9, "b": 0.3}
+
+    def test_scores_are_asked_for_as_json_schema_constrained_output(self):
+        # Opus 5.5 rejects forced tool_choice, so function calling would leave the schema to "auto".
+        factory = _mock_factory()
+        ContentRanker(PipelineConfig(), factory)
+        factory.get_model.return_value.with_structured_output.assert_called_once_with(Rankings, method="json_schema")
 
     @pytest.mark.asyncio
     async def test_pinned_item_force_included_below_min_score(self):

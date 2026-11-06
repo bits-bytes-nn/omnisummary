@@ -1050,11 +1050,14 @@ class TestALiveDayStaysProtected:
         assert publisher.unprotected is True
 
     @pytest.mark.asyncio
-    async def test_a_failed_post_whose_rollback_fails_still_returns(self):
+    async def test_a_failed_post_whose_rollback_fails_still_returns(self, caplog):
+        # Nothing went up, so the marker is released; a raise would instead keep it (the root may be live).
         publisher = self._publisher()
-        publisher.threads.post_thread = AsyncMock(side_effect=RuntimeError("Threads down"))
+        publisher.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(0, 2))
         publisher.threads_ledger.unmark = MagicMock(side_effect=RuntimeError("S3 PUT throttled"))
         assert await publisher.publish(_content(), today=date(2026, 10, 31)) is False
+        # The only signal that a replay of this day will skip without posting.
+        assert any(r.levelname == "ERROR" and "replay will skip" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.asyncio
     async def test_a_day_that_posted_nothing_is_not_reported_as_unprotected(self):

@@ -380,6 +380,22 @@ class TestCollect:
 
 class TestFetchPinnedItems:
     @pytest.mark.asyncio
+    async def test_a_pinned_page_behind_an_access_control_is_not_extracted(self):
+        client = MagicMock()
+        client.extract = AsyncMock(return_value={"results": [{"url": "https://free.example/a", "raw_content": "x"}]})
+        with (
+            patch("adapters.collectors.web_search.resolve_secret", return_value="key"),
+            patch("adapters.collectors.web_search.AsyncTavilyClient", return_value=client),
+            patch(
+                "adapters.collectors.web_search.access_controlled",
+                new=AsyncMock(return_value={"https://paid.example/b"}),
+            ),
+        ):
+            items = await fetch_pinned_items(["https://free.example/a", "https://paid.example/b"])
+        assert [it.url for it in items] == ["https://free.example/a"]
+        assert client.extract.await_args.kwargs["urls"] == ["https://free.example/a"]
+
+    @pytest.mark.asyncio
     async def test_returns_collected_items_marked_pinned(self):
         client = MagicMock()
         client.extract = AsyncMock(
