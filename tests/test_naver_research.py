@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime
+from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -257,8 +258,8 @@ class TestNoteText:
         transport = self._transport({"attachUrl": "https://stock.pstatic.net/stock-research/invest/1.pdf"})
         real = httpx.AsyncClient
         monkeypatch.setattr(naver_research.httpx, "AsyncClient", lambda **kw: real(transport=transport))
-        monkeypatch.setattr(naver_research, "_pdf_text", lambda data: "본문" if data.startswith(b"%PDF") else "")
-        assert await naver_research.note_text(self._note(), timeout=5) == "본문"
+        monkeypatch.setattr(naver_research, "_pdf_text", lambda data, cap: "본문" if data.startswith(b"%PDF") else "")
+        assert await naver_research.note_text(self._note(), timeout=5, max_chars=1000) == "본문"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("detail", "pdf_status"), [({}, 200), ({"attachUrl": "https://x/1.pdf"}, 403)])
@@ -266,8 +267,25 @@ class TestNoteText:
         transport = self._transport(detail, pdf_status)
         real = httpx.AsyncClient
         monkeypatch.setattr(naver_research.httpx, "AsyncClient", lambda **kw: real(transport=transport))
-        assert await naver_research.note_text(self._note(), timeout=5) == ""
+        assert await naver_research.note_text(self._note(), timeout=5, max_chars=1000) == ""
+
+    @pytest.mark.asyncio
+    async def test_a_parse_past_the_timeout_reads_as_nothing(self, monkeypatch):
+        import time as _time
+
+        transport = self._transport({"attachUrl": "https://stock.pstatic.net/stock-research/invest/1.pdf"})
+        real = httpx.AsyncClient
+        monkeypatch.setattr(naver_research.httpx, "AsyncClient", lambda **kw: real(transport=transport))
+        monkeypatch.setattr(naver_research, "_pdf_text", lambda data, cap: _time.sleep(0.5) or "late")
+        assert await naver_research.note_text(self._note(), timeout=0.05, max_chars=1000) == ""
 
     @pytest.mark.asyncio
     async def test_a_merged_consensus_item_has_no_single_note_to_read(self):
-        assert await naver_research.note_text(self._note(notes=3), timeout=5) == ""
+        assert await naver_research.note_text(self._note(notes=3), timeout=5, max_chars=1000) == ""
+
+
+def test_pdf_text_stops_at_its_character_budget(monkeypatch):
+    pages = [MagicMock(extract_text=MagicMock(return_value="가" * 600)) for _ in range(50)]
+    monkeypatch.setattr(naver_research, "PdfReader", lambda stream: MagicMock(pages=pages))
+    assert len(naver_research._pdf_text(b"", 1000)) == 1000
+    assert sum(p.extract_text.called for p in pages) == 2

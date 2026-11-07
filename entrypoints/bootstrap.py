@@ -51,7 +51,12 @@ def paid_check() -> PaidPageCheck:
 
 
 def note_text(config: Config) -> NoteText:
-    return functools.partial(research_note_text, timeout=config.collectors.naver_research.request_timeout)
+    # A character is at most about one token, so the editor's per-item token budget bounds what is worth reading.
+    return functools.partial(
+        research_note_text,
+        timeout=config.collectors.naver_research.request_timeout,
+        max_chars=config.pipeline.item_text_max_tokens,
+    )
 
 
 def state_store(config: Config) -> StateStore:

@@ -482,7 +482,7 @@ class ContentRanker:
         for entry in entries:
             if entry.item == 0:
                 # Zero-based: every other number points at the item before the one meant. Drop the
-                # whole answer so the coverage re-ask scores the batch again.
+                # whole answer; the batch is then scored again in halves.
                 logger.warning("Ranking response numbered items from 0; discarding the response")
                 return []
             if not 1 <= entry.item <= len(items):
