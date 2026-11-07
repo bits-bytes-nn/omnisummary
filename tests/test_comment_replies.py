@@ -343,8 +343,10 @@ class TestThreadsReads:
             seen.append(request)
             return httpx.Response(200, json=pages[len(seen) - 1])
 
-        client = threads_adapter.threads_client("secret-token", 5)
-        client._transport = httpx.MockTransport(respond)
+        # The token header comes from threads_client; the requests go to a mock transport (not the private
+        # _transport, which a proxy in the environment would bypass).
+        headers = threads_adapter.threads_client("secret-token", 5).headers
+        client = httpx.AsyncClient(transport=httpx.MockTransport(respond), headers=headers)
         async with client:
             posts = await threads_adapter.fetch_own_posts(client, SINCE)
         assert [p["id"] for p in posts] == ["a", "c"]

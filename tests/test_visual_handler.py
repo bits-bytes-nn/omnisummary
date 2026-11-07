@@ -326,3 +326,26 @@ class TestThreadsOutcomeAlert:
         with patch("adapters.alerts.boto3.client") as client:
             visual_handler._maybe_alert_threads_outcome(None, date(2026, 8, 18))
         client.assert_not_called()
+
+
+def test_the_replay_command_names_the_profile():
+    assert "--profile <profile> " in visual_handler._replay_command(date(2026, 11, 7), force=True)
+
+
+@pytest.mark.asyncio
+async def test_a_day_whose_marker_the_ledger_still_holds_is_alerted_with_the_forced_command():
+    config = MagicMock()
+    config.aws.timezone = "Asia/Seoul"
+    store = MagicMock()
+    maker = MagicMock()
+    maker.run = AsyncMock(return_value=False)
+    maker.threads_outcome = ThreadsDelivery(0, 6)
+    maker.threads_unprotected = False
+    maker.threads_ledger.already_posted.return_value = True
+    with patch("entrypoints.visual_handler.Config.load", return_value=config):
+        with patch("entrypoints.visual_handler.bootstrap.memory_store", return_value=store):
+            with patch("entrypoints.visual_handler.bootstrap.daily_visual_maker", return_value=maker):
+                with patch("entrypoints.visual_handler.publish_alert") as alert:
+                    with pytest.raises(RuntimeError, match="posted nothing"):
+                        await visual_handler._run({"digest_date": "2026-08-18"})
+    assert '"force_republish": true' in alert.call_args.args[2]["Detail"]

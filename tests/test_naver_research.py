@@ -279,13 +279,47 @@ class TestNoteText:
         monkeypatch.setattr(naver_research, "_pdf_text", lambda data, cap: _time.sleep(0.5) or "late")
         assert await naver_research.note_text(self._note(), timeout=0.05, max_chars=1000) == ""
 
-    @pytest.mark.asyncio
-    async def test_a_merged_consensus_item_has_no_single_note_to_read(self):
-        assert await naver_research.note_text(self._note(notes=3), timeout=5, max_chars=1000) == ""
-
 
 def test_pdf_text_stops_at_its_character_budget(monkeypatch):
     pages = [MagicMock(extract_text=MagicMock(return_value="가" * 600)) for _ in range(50)]
     monkeypatch.setattr(naver_research, "PdfReader", lambda stream: MagicMock(pages=pages))
     assert len(naver_research._pdf_text(b"", 1000)) == 1000
     assert sum(p.extract_text.called for p in pages) == 2
+
+
+def _serve(monkeypatch, pdf: bytes, seen: list | None = None):
+    def handle(request):
+        if seen is not None:
+            seen.append(request.url)
+        if request.url.host == "stock.naver.com":
+            return httpx.Response(200, json={"attachUrl": "https://stock.pstatic.net/r/1.pdf"})
+        return httpx.Response(200, content=pdf)
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(naver_research.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handle)))
+
+
+@pytest.mark.asyncio
+async def test_an_unparseable_pdf_reads_as_nothing(monkeypatch):
+    _serve(monkeypatch, b"%PDF-1.4 truncated")
+    monkeypatch.setattr(naver_research, "_pdf_text", MagicMock(side_effect=Exception("PdfReadError")))
+    assert await naver_research.note_text(TestNoteText._note(), timeout=5, max_chars=1000) == ""
+
+
+@pytest.mark.asyncio
+async def test_a_pdf_over_the_cap_is_not_parsed(monkeypatch):
+    monkeypatch.setattr(naver_research, "_NOTE_MAX_BYTES", 10)
+    _serve(monkeypatch, b"%PDF" + b"x" * 100)
+    parse = MagicMock(return_value="text")
+    monkeypatch.setattr(naver_research, "_pdf_text", parse)
+    assert await naver_research.note_text(TestNoteText._note(), timeout=5, max_chars=1000) == ""
+    parse.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_consensus_item_fetches_nothing(monkeypatch):
+    seen: list = []
+    _serve(monkeypatch, b"%PDF", seen)
+    monkeypatch.setattr(naver_research, "_pdf_text", lambda data, cap: "one broker's note")
+    assert await naver_research.note_text(TestNoteText._note(notes=3), timeout=5, max_chars=1000) == ""
+    assert seen == []
