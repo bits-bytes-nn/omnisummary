@@ -537,3 +537,16 @@ class TestGetModel:
         # Config fields are typed with LanguageModelId, so a registry gap would only surface as a
         # KeyError on the first call of the stage that uses it.
         assert set(LanguageModelId) == set(LANGUAGE_MODEL_INFO)
+
+
+def test_a_failed_cross_region_lookup_is_not_cached(monkeypatch):
+    from adapters.bedrock import BedrockCrossRegionModelHelper as H
+    from shared.constants import LanguageModelId
+
+    monkeypatch.setattr(H, "_resolution_cache", {})
+    monkeypatch.setattr(H, "_application_profile_arn", staticmethod(lambda session, model, region, resolved: resolved))
+    session = MagicMock()
+    session.client.side_effect = RuntimeError("ThrottlingException")
+    model = LanguageModelId.CLAUDE_V5_SONNET
+    assert H.get_cross_region_model_id(session, model, "us-west-2") == model.value
+    assert H._resolution_cache == {}

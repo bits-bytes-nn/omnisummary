@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import main
+from domain.models import CollectedItem
+from shared.constants import SourceType
 
 
 @pytest.fixture(autouse=True)
@@ -136,3 +138,23 @@ async def test_a_pin_that_could_not_be_fetched_writes_and_posts_nothing():
                             with patch.object(main, "run_pipeline", new=AsyncMock()) as pipeline:
                                 assert await main.main() == 1
     pipeline.assert_not_awaited()
+
+
+async def test_a_pin_fetched_under_its_canonical_url_is_not_reported_missing(monkeypatch):
+    config = MagicMock()
+    config.aws.timezone = "Asia/Seoul"
+    window = (date(2026, 10, 26), datetime(2026, 10, 26, 15, tzinfo=UTC))
+    fetched = CollectedItem(item_id="p", source_type=SourceType.WEB, title="p", url="https://example.com/a/")
+    argv = ["main.py", "--pin-url", "https://Example.com/a?utm_source=x", "--force-republish"]
+    with patch("sys.argv", argv):
+        with patch.object(main.Config, "load", return_value=config):
+            with patch.object(main, "resolve_digest_window", return_value=window):
+                with patch.object(main, "already_published", return_value=False):
+                    collect = AsyncMock(return_value=([], MagicMock()))
+                    with patch.object(main, "run_collectors_with_health", new=collect):
+                        with patch(
+                            "adapters.collectors.web_search.fetch_pinned_items", new=AsyncMock(return_value=[fetched])
+                        ):
+                            with patch.object(main, "run_pipeline", new=AsyncMock(side_effect=SystemExit(7))):
+                                with pytest.raises(SystemExit):
+                                    await main.main()

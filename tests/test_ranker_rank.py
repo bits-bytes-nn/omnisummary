@@ -636,3 +636,21 @@ async def test_a_paid_feed_post_leaves_before_the_pool_so_its_feed_seat_goes_to_
     # Only feed posts are checked: X, Reddit and YouTube links are platform pages, web is checked at collection.
     assert asked == [["https://news.example/p/paid", "https://news.example/p/free"]]
     assert [r.item.item_id for r in ranked] == ["free", "post"]
+
+
+def test_a_group_number_past_the_shown_list_is_ignored_not_crashed_on():
+    from langchain_core.messages import AIMessage
+    from langchain_core.runnables import RunnableLambda
+
+    from domain.models import RankedItem
+
+    items = [
+        RankedItem(
+            item=CollectedItem(item_id=k, source_type=SourceType.WEB, title=k, url=f"http://{k}.com/x"), score=0.9
+        )
+        for k in "abc"
+    ]
+    factory = MagicMock()
+    answer = '{"same_story": [[3, 4], [0, 1]]}'
+    factory.get_model.return_value = StructuredLambda(RunnableLambda(lambda _p: AIMessage(content=answer)))
+    assert asyncio.run(ContentRanker(PipelineConfig(), factory)._story_groups(items)) == {}

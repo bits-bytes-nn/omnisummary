@@ -1080,3 +1080,20 @@ async def test_a_publish_step_5xx_is_never_retried_even_when_it_names_code_24(mo
                 client, "u", "tok", "story", "root", indexing_deadline=time.monotonic() + 300
             )
     assert publishes == 1
+
+
+@pytest.mark.parametrize("body", [b"<html>busy</html>", b"[]"])
+async def test_a_status_body_that_is_not_a_status_object_still_publishes(body):
+    req = httpx.Request("GET", "https://graph.threads.net/v1.0/c1")
+    client = MagicMock()
+    client.get = AsyncMock(return_value=httpx.Response(200, request=req, content=body))
+    with patch.object(threads_handler, "_create_container", new=AsyncMock(return_value="c1")):
+        with patch.object(threads_handler, "_publish_container", new=AsyncMock(return_value="p1")) as publish:
+            assert await threads_handler._publish_post(client, "u", "tok", text="t") == "p1"
+    publish.assert_awaited_once()
+
+
+def test_the_publish_reserve_covers_one_full_reply_ladder():
+    t = threads_handler
+    ladder = t.THREADS_REPLY_RETRY_ATTEMPTS * (t.THREADS_MEDIA_PROCESS_WAIT_SEC + t.THREADS_REPLY_RETRY_BACKOFF_SEC)
+    assert t.THREADS_PUBLISH_RESERVE_SEC >= ladder
