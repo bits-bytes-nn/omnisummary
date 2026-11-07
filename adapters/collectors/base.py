@@ -94,7 +94,8 @@ def _feed_instant(entry, local_tz: tzinfo | None) -> datetime | None:
     if published_str:
         try:
             parsed_dt = parsedate_to_datetime(published_str)
-            # Naive only for -0000 here (a missing zone was handled above): Universal Time, not this host's.
+            # Naive for -0000 (Universal Time, RFC 5322) or for a zone-less stamp with no digest clock: read as
+            # UTC, never as this host's zone.
             return parsed_dt.replace(tzinfo=UTC) if parsed_dt.tzinfo is None else parsed_dt.astimezone(UTC)
         except (TypeError, ValueError) as e:
             logger.debug("Failed to parse feed published date '%s': %s", published_str, e)
