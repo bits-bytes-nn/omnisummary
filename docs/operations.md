@@ -67,7 +67,7 @@ aws logs filter-log-events --profile research --region ap-northeast-2 --log-grou
 | `the root is live but no story reply landed under it` | 첫 글만 올라갔다(답글이 실패했거나 별도 게시물로 올라갔다) | 첫 글(과 별도 게시물)을 지운 뒤 알림의 `force_republish: true` 명령을 실행한다. 지우지 않고 다시 올리면 첫 글이 둘이 된다 |
 | `the root MAY be live` | 첫 글 게시 요청이 오류로 끝났지만 실제로 올라갔는지 알 수 없다 | Threads 앱에서 그날 첫 글이 있는지 본다. **없을 때만** 알림에 적힌 명령(`force_republish: true`)을 실행한다 |
 | `the stored digest has NO stories` | 저장된 다이제스트에 기사가 없어 아무것도 올리지 않았다 | 다시 게시해도 같으니, 알림에 적힌 `main.py --date … --force-republish`로 새로 만든다 |
-| `could NOT be confirmed as recorded` | 게시는 됐는데 게시 기록(원장)에 그날이 남았는지 확인하지 못했다 | 그날은 다시 올리지도, 다시 돌리지도 않는다. 기록이 없으면 막을 장치가 없어 같은 글이 한 번 더 올라간다. 다음 날부터는 영향이 없다 |
+| `could NOT be confirmed as recorded` | 게시는 됐는데 게시 기록(원장)에 그날이 남았는지 확인하지 못했다 | 올라간 글이 남아 있는 동안은 그날을 다시 올리지도, 다시 돌리지도 않는다. 기록이 없으면 막을 장치가 없어 같은 글이 한 번 더 올라간다. 같은 실행의 다른 알림이 지우고 다시 올리라고 하면, 지운 뒤에는 다시 올려도 된다. 다음 날부터는 영향이 없다 |
 | `NOT published` | 아무것도 올라가지 않았다 | 알림에 적힌 명령을 실행한다. 게시 기록이 남아 있는 날이면 `force_republish: true`가 든 명령이 오니, 앱에서 첫 글이 없음을 확인한 뒤 실행한다 |
 
 ### CloudWatch 알람

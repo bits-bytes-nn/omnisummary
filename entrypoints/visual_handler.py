@@ -213,8 +213,8 @@ async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = 
             {
                 "Digest date": digest_date.isoformat(),
                 "Delivered": outcome.summary() if outcome else "-",
-                "Detail": "the post is live but its date could NOT be confirmed as recorded in the post ledger. Do NOT "
-                "replay or re-run this date: it may post the day again",
+                "Detail": "the post is live but its date could NOT be confirmed as recorded in the post ledger, so "
+                "nothing stops a replay or re-run from posting the day again: run one only after deleting what is live",
             },
         )
     if outcome is not None and outcome.posted == 0:

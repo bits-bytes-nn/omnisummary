@@ -186,7 +186,7 @@ class TestUnprotectedDay:
                             await visual_handler._run({"digest_date": "2026-10-31"})
         (event, status, fields), _ = alert.call_args
         assert (event, status) == ("Threads Delivery", "ALERT")
-        assert "Do NOT replay" in fields["Detail"]
+        assert "nothing stops a replay" in fields["Detail"] and "only after deleting what is live" in fields["Detail"]
 
 
 class TestRemainingDeadline:
