@@ -1227,6 +1227,12 @@ addressable해지지 않았다"는 **0번**인 반면 reply 재시도는 25일�
 돌려준다. 77건을 실제로 회복시키는 것은 reply 쪽 재시도(`_publish_reply_with_retry`, 기본 3회)와 위의 공유
 예산이다.
 
+**컨테이너는 FINISHED가 된 뒤에 게시한다(`_await_container`, 2026-11-07).** 재시도는 매번 새 컨테이너를 만들고 곧바로
+게시해서 같은 경쟁을 다시 했다. 11-06 두 판에서 code 24가 37번 나와 답글 3건이 빠졌는데, 그때 "없다"던 컨테이너 5개는 다음 날
+모두 `FINISHED`였다. 그래서 텍스트와 이미지 모두 만든 컨테이너의 상태(`GET /{container-id}?fields=status`)를
+`THREADS_CONTAINER_POLL_SEC` 간격으로 확인해 `IN_PROGRESS`를 벗어나면 게시한다. 아직 보이지 않는 컨테이너가 답하는 400도
+진행 중으로 본다. 이미지 컨테이너에 걸던 30초 고정 대기는 같은 상한(`THREADS_MEDIA_PROCESS_WAIT_SEC`)의 확인으로 바뀌었다.
+
 **per-reply best-effort와 전달량 회계(`ThreadsDelivery`).** reply 게시는 건별로 try/except다. 한 reply가
 실패해도 나머지를 포기하지 않아 댓글 chain이 중간에 끊기지 않는다. 반환값은 bool이 아니라 root를 포함한
 `(posted, expected)` NamedTuple이며, `published`(root와 reply chain이면 최소 1건)와 `partial`(게시됐지만 일부
