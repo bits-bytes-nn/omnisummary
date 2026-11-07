@@ -233,15 +233,20 @@ def _one_item_per_stock_and_day(items: list[CollectedItem]) -> list[CollectedIte
     return out
 
 
-async def note_text(item: CollectedItem, *, timeout: float) -> str:
-    """The text of a research note's attached PDF, which the detail API names (`attachUrl`); "" for a
-    merged consensus item (no single note), a note without an attachment, or anything unreadable. The
-    PDF is public; a refusal is not retried around."""
+async def note_text(item: CollectedItem, *, timeout: float, max_chars: int) -> str:
+    """The text of a research note's attached PDF, which the detail API names (`attachUrl`), at most
+    `max_chars`; "" for a merged consensus item (no single note), a note without an attachment, or anything
+    unreadable. The PDF is public; a refusal is not retried around."""
     category, nid = item.metadata.get("research_category"), item.metadata.get("nid")
     if not (category and nid) or item.metadata.get("notes"):
         return ""
     try:
-        async with httpx.AsyncClient(headers=FEED_FETCH_HEADERS, timeout=timeout, follow_redirects=True) as client:
+        # `timeout` bounds the download and, separately, the parse: httpx's own timeout is per read, and a
+        # pypdf parse in a thread cannot be cancelled, only left behind.
+        async with (
+            asyncio.timeout(timeout),
+            httpx.AsyncClient(headers=FEED_FETCH_HEADERS, timeout=timeout, follow_redirects=True) as client,
+        ):
             detail = await client.get(f"{API_BASE}/{category}/{nid}")
             detail.raise_for_status()
             url = detail.json().get("attachUrl")
@@ -255,11 +260,18 @@ async def note_text(item: CollectedItem, *, timeout: float) -> str:
                     if len(body) > _NOTE_MAX_BYTES:
                         logger.warning("Research note PDF over %d bytes, not read: %s", _NOTE_MAX_BYTES, url)
                         return ""
-        return await asyncio.to_thread(_pdf_text, bytes(body))
+        return await asyncio.wait_for(asyncio.to_thread(_pdf_text, bytes(body), max_chars), timeout)
     except Exception as e:
         logger.warning("Research note text unreadable for '%s' (%s)", item.title[:60], e)
         return ""
 
 
-def _pdf_text(data: bytes) -> str:
-    return "\n".join((page.extract_text() or "") for page in PdfReader(io.BytesIO(data)).pages).strip()
+def _pdf_text(data: bytes, max_chars: int) -> str:
+    """Pages in order until `max_chars`: a few kilobytes of shared, compressed page content can expand to
+    millions of characters (a 14.5 KB file gave 18.4M in 50 s), and the editor reads only its budget."""
+    text = ""
+    for page in PdfReader(io.BytesIO(data)).pages:
+        text += (page.extract_text() or "") + "\n"
+        if len(text) >= max_chars:
+            break
+    return text[:max_chars].strip()

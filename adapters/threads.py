@@ -26,10 +26,7 @@ THREADS_API_BASE = "https://graph.threads.net/v1.0"
 # of those containers read FINISHED the next day). Longest wait for FINISHED before publishing anyway.
 THREADS_MEDIA_PROCESS_WAIT_SEC = 30
 THREADS_CONTAINER_POLL_SEC = 3
-# After an image root is published it isn't immediately addressable as a reply target; replies
-# to it 400 with "media not found" (code 24) until Meta finishes indexing, which takes minutes for
-# image roots. Each reply retries against one shared deadline, so a never-indexing root can't blow
-# the 15-min Lambda timeout mid-chain. ~4.5 min: render (~4 min) + this leaves margin.
+# One digest's shared window for retrying a reply's code 24; a caller's deadline only shortens it.
 THREADS_INDEXING_BUDGET_SEC = 270
 # Retry cap on a reply's transient container-processing 400/429/5xx (a single such 400 dropped one
 # story from a 2026-07-17 digest). A genuine content rejection burns these attempts too, but is
@@ -150,8 +147,7 @@ def publish_may_be_live(exc: Exception) -> bool:
 
 
 def is_media_not_found(exc: httpx.HTTPStatusError) -> bool:
-    # A just-published post isn't instantly addressable as a reply target — Meta returns
-    # code 24 / subcode 4279009 ("media not found") until indexing completes.
+    # code 24 / subcode 4279009 ("media not found"): the container being published is not visible yet.
     try:
         err = exc.response.json().get("error", {})
         return err.get("code") == 24 or err.get("error_subcode") == 4279009
@@ -161,8 +157,8 @@ def is_media_not_found(exc: httpx.HTTPStatusError) -> bool:
 
 def is_transient_reply_error(exc: httpx.HTTPStatusError) -> bool:
     """True if a reply failure is worth another attempt. Meta's container-publish endpoint returns
-    transient 400s while it finishes processing a freshly-created container (distinct from the
-    'media not found' indexing case), plus the usual 429/5xx. A single such 400 silently dropped
+    transient 400s while it finishes processing a freshly-created container, code 24 included, plus the
+    usual 429/5xx. A single such 400 silently dropped
     one of five stories on 2026-07-17. Genuine content rejections also surface as 400 and will burn
     the retries, but they are now logged with the response body so the cause is identifiable."""
     if is_media_not_found(exc):
@@ -198,8 +194,8 @@ def _indexing_budget_sec(deadline: float | None) -> float:
 async def _publish_reply_with_retry(
     client: httpx.AsyncClient, user_id: str, token: str, text: str, reply_to_id: str, *, indexing_deadline: float = 0.0
 ) -> str:
-    """Publish one reply. The code-24 'media not found' case is the root still indexing, so it keeps
-    retrying until the SHARED indexing deadline (the first reply to land proves the root is ready);
+    """Publish one reply. A code-24 'media not found' (the container not visible yet) keeps retrying
+    until the SHARED indexing deadline;
     other transient 400/429/5xx errors cap at THREADS_REPLY_RETRY_ATTEMPTS, and a non-transient error
     (e.g. auth) raises immediately. The response body is logged on each retry."""
     attempt = 0
@@ -207,22 +203,21 @@ async def _publish_reply_with_retry(
         attempt += 1
         try:
             # Past a digest's indexing deadline a reply no longer waits for its container: five replies
-            # each waiting out a root that never indexed ran the visual Lambda past its timeout.
+            # each waiting 30 s past it could run the visual Lambda past its timeout.
             wait_until = indexing_deadline if indexing_deadline > 0 else None
             return await _publish_post(
                 client, user_id, token, text=text, reply_to_id=reply_to_id, wait_until=wait_until
             )
         except httpx.HTTPStatusError as e:
-            # code-24 is pure root-indexing lag: ride the shared deadline (once one reply lands the
-            # root is ready, so this only bites the first reply). Other transient errors keep the cap.
+            # code 24 rides the shared deadline; other transient errors keep the attempt cap.
             budget_left = indexing_deadline - time.monotonic()
             keep_for_indexing = is_media_not_found(e) and budget_left > THREADS_REPLY_RETRY_BACKOFF_SEC
             # A 5xx from the publish step may come back for a reply that went live, and a retry
             # creates a new container: the same story would post twice. A 4xx there is retried as it
             # long was (all 80 threads checked on 2026-10-27 carry five replies, none twice).
             maybe_live = publish_may_be_live(e)
-            # Past a digest's indexing deadline a code 24 is the root that never indexed: every further
-            # retry only pushes the chain past the Lambda's time.
+            # Past a digest's indexing deadline a further code 24 retry only pushes the chain past the
+            # Lambda's time.
             indexing_over = indexing_deadline > 0 and is_media_not_found(e) and not keep_for_indexing
             capped = (
                 maybe_live

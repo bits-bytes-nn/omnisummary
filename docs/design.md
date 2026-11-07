@@ -211,7 +211,7 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 | `youtube` | `channels`, `max_videos_per_channel`, `resolve_timeout`, `transcript_timeout`, `transcript_language`, `max_concurrency`, `park_required` | 채널, 영상 수, 자막 관련 설정, 동시 채널 상한, AWS에서 park 파일 부재를 DEGRADED로 볼지([§4.2](#42-s3-park-파일-로더)) |
 | `web_search` | `trend_searches`, `max_results_per_query`, `max_refine_queries`, `refine_model`(Sonnet 5.5), `max_concurrency` | Tavily 검색, 쿼리 정제 모델 |
 | `rsshub` | `base_url`, `accounts`, `max_concurrency` | X 계정(로컬 컨테이너 또는 S3)과 동시 fetch 상한 |
-| `naver_research` | `categories`(기본 company·industry·invest·economy; 같은 종목·같은 날 기업 리포트는 한 건으로 묶는다), `max_pages`(기본 10, 쪽당 50건), `page_delay_sec`, `show_links`(기본 false) | 네이버 증권 리서치의 국내 증권사 리포트([§4.4a](#44a-네이버-증권-리서치-naver_researchpy)). 기본은 꺼짐이고 투자판이 켠다 |
+| `naver_research` | `categories`(코드 기본 company·industry·invest·economy, 투자판은 debenture를 더한다; 같은 종목·같은 날 기업 리포트는 한 건으로 묶는다), `max_pages`(기본 10, 쪽당 50건), `page_delay_sec`, `show_links`(기본 false) | 네이버 증권 리서치의 국내 증권사 리포트([§4.4a](#44a-네이버-증권-리서치-naver_researchpy)). 기본은 꺼짐이고 투자판이 켠다 |
 
 `lookback_hours`는 하루가 아니라 **직전 실행까지** 닿아야 한다. cutoff는 다이제스트 날짜의 **끝** 자정에
 앵커되는데(`resolve_digest_window`) cron은 그 자정보다 몇 시간 앞서 수집한다. 그래서 24는 윈도를 정확히
@@ -525,6 +525,8 @@ stock.naver.com 리서치 페이지가 쓰는 공개 JSON(`/api/stockSecurity/re
 렌더러와 저장용 `digest_text`가 URL을 뺀다. 같은 URL이 다른 소스로 들어와 살아남아도 숨김은 유지되고, `stock.naver.com`과 `finance.naver.com`은 웹 검색과 리서치 도구의 `read_url`에서도 제외한다). robots.txt가 네이버 검색 봇 외에는 막고 네이버 약관이 AI 수집을 제한한다는 점은 운영자 판단으로
 받아들였고(§2 판), 그 대신 링크를 걸지 않는다.
 
+`pipeline.primary_quota`로 고른 노트는 상세 API(`/researches/v2/<분류>/<nid>`)가 알려 주는 첨부 PDF(`attachUrl`, stock.pstatic.net)의 본문을 읽어 붙인다(`note_text`). 거부나 실패는 우회하지 않고 요약만 남긴다(선정 절의 '투자판은 원문 두 건을 싣는다').
+
 ### 4.4 Reddit (`reddit.py`)
 
 공개 `.rss` 피드를 쓴다. Reddit이 셀프서비스 OAuth 앱 생성을 동결했고(Responsible Builder Policy, 2025-11)
@@ -732,7 +734,7 @@ web-search 항목도 포함한다. URL 호스트를 쓰며 `resolve_origin_key`�
 날에도 알림이 전부 침묵한다. 핀 복구 경로는 그대로 돌아 그 배치의 핀을 `min_score`로 되살린다.
 
 **응답은 배치 안 번호로 항목을 가리키고, 유일하게 접는다(`_rankings_to_items`).** 프롬프트는 항목마다 `=== Item N ===`
-머리만 붙이고 id 필드는 싣지 않는다. 모델은 `"item": N`으로 답한다. 응답은 Bedrock의 JSON 스키마 제약 출력(`Rankings`, `method="json_schema"`)으로 받아 번호는 항상 정수다. 자유 형식 JSON은 10월 AI판 30회 중 3회 한 배치 전체가 파싱되지 않았고, 같은 저장 풀에서 제약 출력 풀이 블라인드 판정 8회(두 판, 두 순서) 중 6승 2무였다. 스키마는 숫자 범위를 걸 수 없어 0..1 밖의 점수는 `RankedItem` 검증이 그 항목만 버린다. 범위를 벗어난 번호는 그 항목만 건너뛴다. 0번이 하나라도 있으면 0부터 센 응답으로 보고 응답 전체를 버린다. 0부터 세면 다른 번호가 모두 한 칸씩 어긋나기 때문이고, 재질의가 그 배치를 다시 채점한다.
+머리만 붙이고 id 필드는 싣지 않는다. 모델은 `"item": N`으로 답한다. 응답은 Bedrock의 JSON 스키마 제약 출력(`Rankings`, `method="json_schema"`)으로 받아 번호는 항상 정수다. 자유 형식 JSON은 10월 AI판 30회 중 3회 한 배치 전체가 파싱되지 않았고, 같은 저장 풀에서 제약 출력 풀이 블라인드 판정 8회(두 판, 두 순서) 중 6승 2무였다. 스키마는 숫자 범위를 걸 수 없어 0..1 밖의 점수는 `RankedItem` 검증이 그 항목만 버린다. 범위를 벗어난 번호는 그 항목만 건너뛴다. 0번이 하나라도 있으면 0부터 센 응답으로 보고 응답 전체를 버린다. 0부터 세면 다른 번호가 모두 한 칸씩 어긋나기 때문이고, 그 배치는 반으로 나뉘어 다시 채점된다.
 재질의는 빠진 항목만 1..k로 다시 번호를 매기므로 매핑이 계속 정확하다. 입력 항목당 `RankedItem`은 최대 하나이고
 첫 항목이 이긴다. 모델이 한 항목을 반복하고 다른 하나를 빠뜨리는 일이 실무에서 같이 오는데, 접지 않으면
 `len(ranked) == len(items)`가 되어 커버리지가 1.0으로 읽힌다. 재질의가 뜨지 않고, `items_scored`가 실제 풀보다
@@ -765,7 +767,7 @@ GUID(RSS와 X는 기사 URL, 그 밖은 글이나 영상 id)라서 그대로 정
 항목이 에디터 앞에 놓인다. 실제로 나가는 5개는 에디터가 풀에서 가장 강한 서로 다른 이야기를 골라 정한다.
 보장 자리를 출고분에 강제하지 않는 이유는 두 가지다. 운영 30회 중 14회 에디터가 약한 보장 항목을 더 강한
 후보로 바꿨고, 강제하면 0.62짜리 링크뿐인 Reddit 글이 0.70짜리 Anthropic 보고서를 밀어냈다. 다양성은 풀이
-보장하고 품질은 에디터가 정한다. 버퍼는 3에서 7로 늘렸다. 같은 출시를 연구소와 뉴스레터, X 계정 둘이 따로 올리면
+보장하고 품질은 에디터가 정한다. 예외는 운영자가 정한 투자판의 원문 두 건이다(`primary_quota`, 아래). 버퍼는 3에서 7로 늘렸다. 같은 출시를 연구소와 뉴스레터, X 계정 둘이 따로 올리면
 제목·URL 중복 제거로는 묶이지 않아서, 2026-10-13과 10-14에는 8개 풀에 서로 다른 이야기가 정확히 5개뿐이었다.
 에디터가 고를 것이 없었다.
 
@@ -1156,7 +1158,7 @@ AgentCore Memory에 저장된 그날의 스냅샷을 날짜로 읽어(비주얼 
 **올라간 날은 반드시 기록한다.** 게시 전의 날짜 선점이 원장 읽기 실패(S3 스로틀)로 기록되지 않으면, 게시가
 성공해도 그날을 막을 것이 없어 다음 트리거가 같은 글을 한 번 더 올린다. 그래서 무언가 올라갔거나 올라갔을 수 있는
 날(`posted > 0` 또는 `uncertain`)은 게시 뒤에 다시 기록하고, 그래도 원장에서 확인되지 않으면(읽기 실패 포함) `unprotected`로 표시해 visual
-Lambda가 "다시 올리지 말라"는 Threads Delivery 알림을 보낸다. 상태 저장소를 만들지 못해 원장 자체가 없을 때도 같다.
+Lambda가 "올라간 글을 지운 뒤에만 다시 올리라"는 Threads Delivery 알림을 보낸다. 상태 저장소를 만들지 못해 원장 자체가 없을 때도 같다.
 
 **텍스트만 나간 날도 알린다.** `outcome.published and not outcome.with_image`면 `adapters/alerts.publish_alert`
 경로로 ALERT를 보낸다. 렌더 실패와 키 부재는 그 밖에는 maker 안의 로그 한 줄만 남긴다.
@@ -1256,7 +1258,7 @@ Lambda가 넘긴 `deadline`이 답글 체인 몫(`THREADS_PUBLISH_RESERVE_SEC`)�
 **실패한 날의 마커와 알림.** 올라갔다고 알려진 것이 없는 날에는 비주얼 Lambda가 알림 뒤에 예외를 던져 Errors
 알람과 DLQ로 보낸다. 위의 확실한 경우로 아무것도 올라가지 않았으면 마커를 풀어 재실행이 게시한다. 그 밖의 게시 단계
 실패로 root가 올라갔을 수도 있으면(`uncertain`) 마커를 유지해 재실행이 건너뛴다. 그때 알림은 계정을 먼저 확인하라고
-적는다. root만 올라간 날의 알림은 `--force-republish`를 하지 말라고 적는다. 부분 전달과 전면 실패는 ERROR로 로깅되고,
+적는다. root만 올라간 날의 알림은 첫 글을 지운 뒤 `force_republish: true`로 다시 올리라고 적는다. 부분 전달과 전면 실패는 ERROR로 로깅되고,
 비주얼 Lambda가 `ALERT_SNS_TOPIC_ARN`이 있을 때 SNS 알림을 올린다. 없으면 no-op이다.
 
 **best-effort 계약.** API 오류는 로깅 후 건너뛰고 절대 raise하지 않는다. `application/research.py`의 리서치 경로가
@@ -1702,12 +1704,12 @@ append하고, `list_events`는 순서를 보장하지 않는다. 한 페이지�
 그래서 후보 풀의 증권사 리서치에 PDF 원문(상세 API의 `attachUrl`, stock.pstatic.net, 로그인 없이 공개)을 붙여 저장된
 투자판 7일 풀로 다시 쟀다. PDF가 붙은 5일에서 6:4였지만, 입력이 같았던 이틀(PDF 없음)도 4:0으로 갈려 편차 안이었다.
 실린 25건 중 언론 기사는 18 대 17, 리서치는 5 대 7(그중 2건이 하루)이었다. 상세 API 호출, PDF 다운로드와 파서를 들일
-만큼의 차이가 아니라서 넣지 않는다.
+만큼의 차이가 아니라서 PDF 본문만으로는 넣지 않았다(같은 날 원문 보장과 함께 넣었다, 아래).
 
 **투자판은 원문 두 건을 싣는다(`pipeline.primary_quota`, `primary_source_types`, 2026-11-07).** 랭킹이 끝난 후보 풀에서
 `primary_source_types`(증권사 리서치, X) 중 점수가 가장 높은 `primary_quota`(2)건을 반드시 실을 이야기로 표시하고
 (`require_primary`, `--pin-url`과 같은 `pinned` 경로), 그중 리서치 노트에는 첨부 PDF의 본문을 붙인다(`NoteText` 포트,
-`adapters.collectors.naver_research.note_text`). 같은 저장 7일에서 원문 2건만 보장하면 7:7에 사실 충실도가 4.00 → 3.57로
+`adapters.collectors.naver_research.note_text`). 읽는 양은 에디터가 한 항목에서 읽는 예산(`item_text_max_tokens`, 한 글자는 많아야 한 토큰)까지이고, 내려받기와 해석에는 각각 시간 상한을 둔다. 압축된 페이지 내용 몇 KB가 수백만 자로 풀릴 수 있다(14.5 KB 파일이 50초에 1,840만 자). 같은 저장 7일에서 원문 2건만 보장하면 7:7에 사실 충실도가 4.00 → 3.57로
 떨어졌다. 요약 500자와 트윗으로 본문을 쓰게 되기 때문이다. PDF 본문까지 붙이자 12:2(6일은 두 순서 모두), 충실도 3.21 → 3.86,
 통찰 3.50 → 4.00, 분석 3.29 → 4.14, 언론 기사 35건 중 22 → 17이었다. 원문은 소스 유형으로 정한다. 측정에서 보장된 14건 중
 13건이 리서치와 X였고, 유형으로 정하면 언론사 호스트 목록이 필요 없다. 여러 증권사 노트를 합친 컨센서스 항목에는 한 노트의 PDF만
@@ -1842,7 +1844,7 @@ no-op이다.
 - 아무것도 올라가지 않은 날에는 저장된 스냅샷을 그대로 다시 게시하는 명령을 실제 날짜로 적는다. 비주얼 Lambda를
   `{"digest_date": ..., "force_republish": true}`로 부르면 마커가 남아 있어도 같은 다이제스트를 다시 올린다. `main.py
   --force-republish`는 다시 수집하고 새로 쓰므로 다른 다이제스트가 나간다.
-- 글이 하나라도 올라간 날에는 다시 올리지 말라고 적는다. 첫 글이 둘이 된다.
+- 글이 하나라도 올라간 날에는 첫 글과 답글(별도 게시물 포함)을 앱에서 지운 뒤 `force_republish: true` 명령으로 저장된 다이제스트를 다시 올리라고 적는다. 지우지 않고 올리면 첫 글이 둘이 된다.
 
 로컬 실행에는 알림이 없으니 `main.py`가 종료 코드로 알린다. `main.py`는 스냅샷을 먼저 저장하고(`persist_digest`)
 `publish_inline`으로 그 자리에서 게시한다. 수집 0건, 다이제스트 없음, 게시 실패나 미완료(`PublishIncomplete`,

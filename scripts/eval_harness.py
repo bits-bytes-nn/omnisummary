@@ -6,7 +6,7 @@
     eval_harness.py research <label> <topic> [...]       # research run with a Threads PREVIEW (posts nothing)
     eval_harness.py judge <kind> <label_a> <label_b>     # Opus judges each case blind, A/B order shuffled
 
-Runs land in evals/<kind>/<label>/<case>.json. Generate the baseline BEFORE changing a prompt and the
+Runs land in evals/<kind>[/<edition>]/<label>/<case>.json. Generate the baseline BEFORE changing a prompt and the
 candidate after, on the same cases; keep a few cases aside and judge them once, at the end. Cost: a
 digest or visual case is two Sonnet calls (cents); a research case is a full research run (about $1.5); a judged
 pair is one Opus call.
