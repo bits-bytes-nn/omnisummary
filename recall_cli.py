@@ -65,7 +65,8 @@ def _digest(day: date) -> dict[str, Any]:
         "found": True,
         "lead": content.lead,
         "stories": [
-            {"title": it.title, "url": it.url, "body": it.body, "implication": it.implication} for it in content.items
+            {"title": it.title, "url": it.url if it.show_link else "", "body": it.body, "implication": it.implication}
+            for it in content.items
         ],
     }
 

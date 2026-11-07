@@ -100,6 +100,10 @@ collectors:
       - "https://aswathdamodaran.blogspot.com/feeds/posts/default"
       - "https://raydalio.substack.com/feed"
       - "https://www.apricitas.io/feed"
+      # Analysis in full text: Noah Smith on macro and markets (paid posts are dropped by the access check),
+      # Wolf Street on rates, housing and credit (summary feed, the page fill reads the rest).
+      - "https://www.noahpinion.blog/feed"
+      - "https://wolfstreet.com/feed/"
       - "https://coinmetrics.substack.com/feed"
     lookback_hours: *lookback_hours
     # Feeds fetched at once (each fetch carries its own httpx timeout).
@@ -170,8 +174,8 @@ collectors:
       - "Schuldensuehner"
       - "elerianm"
       - "WuBlockchain"
-      - "ReutersBiz"
-      - "WSJmarkets"
+      # ReutersBiz and WSJmarkets posted only links into reuters.com and wsj.com (20/20 and 18/20 on 11-07),
+      # both behind a paywall; the same stories come through Yonhap, Infomax and Yahoo.
       - "glassnode"
       # Market-data strategists: Carson, Schwab, Fidelity, Bianco Research; FactSet; earnings-call quotes.
       - "KevRGordon"

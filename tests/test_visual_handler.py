@@ -225,12 +225,15 @@ class TestThreadsOutcomeAlert:
             visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(0, 6), date(2026, 8, 18))
         assert "FAILED" in sns.publish.call_args.kwargs["Subject"]
 
-    def test_a_live_root_without_replies_warns_against_a_force_republish(self, monkeypatch):
+    @pytest.mark.parametrize("posted", [1, 4])
+    def test_a_live_root_is_deleted_before_the_stored_digest_is_re_posted(self, monkeypatch, posted):
+        # Re-posting beside the live root left the day twice on the account.
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
         sns = MagicMock()
         with patch("adapters.alerts.boto3.client", return_value=sns):
-            visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(1, 6), date(2026, 8, 18))
-        assert "do NOT re-post the day" in sns.publish.call_args.kwargs["Message"]
+            visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(posted, 6, root_id="r1"), date(2026, 8, 18))
+        message = sns.publish.call_args.kwargs["Message"]
+        assert message.index("Delete the day's root post r1") < message.index('"force_republish": true')
 
     def test_an_ambiguous_failure_says_the_root_may_be_live(self, monkeypatch):
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")

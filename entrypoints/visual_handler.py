@@ -138,22 +138,24 @@ def _replay_command(digest_date: date, *, force: bool) -> str:
     function = os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "<visual function>")
     region = os.environ.get("AWS_REGION", "<region>")
     return (
-        f"aws lambda invoke --region {region} --function-name {function} --invocation-type Event "
+        f"aws lambda invoke --profile <profile> --region {region} --function-name {function} --invocation-type Event "
         f"--cli-binary-format raw-in-base64-out --payload '{json.dumps(payload)}' /dev/null"
     )
 
 
 def _shortfall_detail(outcome: ThreadsDelivery, digest_date: date, *, marker_kept: bool = False) -> str:
     """What the operator should know about a post set that did not fully land, and what to run."""
-    if outcome.published:
-        return (
-            "reply chain incomplete — some stories are missing from the thread. Do NOT re-post the day (a second "
-            "root); reply the missing stories under the root by hand"
-        )
     if outcome.posted:
+        # Re-posting next to the live root would leave the day twice on the account; deleting it first is
+        # what the operator did on 2026-11-07, minutes after the post, before it had replies of its own.
+        missing = (
+            "reply chain incomplete — some stories are missing from the thread"
+            if outcome.published
+            else "the root is live but no story reply landed under it (failed, or went up standalone)"
+        )
         return (
-            "the root is live but no story reply landed under it (failed, or went up standalone) — do NOT "
-            "re-post the day (a second root)"
+            f"{missing}. Delete the day's root post{' ' + outcome.root_id if outcome.root_id else ''} in the Threads app (its replies go with "
+            f"it), then re-post the stored digest with: {_replay_command(digest_date, force=True)}"
         )
     if outcome.uncertain:
         return (

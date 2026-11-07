@@ -158,6 +158,14 @@ class _TokenUsageLogger(BaseCallbackHandler):
             logger.debug("Could not read LLM usage metadata", exc_info=True)
 
 
+class _LookupFailed(Exception):
+    """A model-id lookup that could not run: the caller uses `fallback` for this call and does not cache it."""
+
+    def __init__(self, fallback: str) -> None:
+        super().__init__(fallback)
+        self.fallback = fallback
+
+
 class BedrockCrossRegionModelHelper:
     # Resolution is identical for a given (model_id, region) within a process, but each
     # call hits list_inference_profiles. Cache it so ranker/digest/trend/refine model
@@ -174,13 +182,19 @@ class BedrockCrossRegionModelHelper:
         cached = BedrockCrossRegionModelHelper._resolution_cache.get(cache_key)
         if cached is not None:
             return cached
-        resolved = BedrockCrossRegionModelHelper._resolve(boto_session, model_id, region_name)
-        # Prefer this project's APPLICATION inference profile when one exists: it is the only way
-        # on-demand Bedrock token spend gets attributed to a cost-allocation tag (there is no
-        # taggable resource behind InvokeModel otherwise), and this account bills several workloads
-        # against the same models. Resolution goes through here, so BOTH the LangChain factory and
-        # the Strands research agent pick it up. Absent → today's system-defined id, unchanged.
-        resolved = BedrockCrossRegionModelHelper._application_profile_arn(boto_session, model_id, region_name, resolved)
+        try:
+            resolved = BedrockCrossRegionModelHelper._resolve(boto_session, model_id, region_name)
+            # Prefer this project's APPLICATION inference profile when one exists: it is the only way
+            # on-demand Bedrock token spend gets attributed to a cost-allocation tag (there is no
+            # taggable resource behind InvokeModel otherwise), and this account bills several workloads
+            # against the same models. Resolution goes through here, so BOTH the LangChain factory and
+            # the Strands research agent pick it up. Absent → today's system-defined id, unchanged.
+            resolved = BedrockCrossRegionModelHelper._application_profile_arn(
+                boto_session, model_id, region_name, resolved
+            )
+        except _LookupFailed as e:
+            # A throttled or denied lookup is not an answer: cached, it pinned a warm container to the fallback.
+            return e.fallback
         BedrockCrossRegionModelHelper._resolution_cache[cache_key] = resolved
         return resolved
 
@@ -218,7 +232,7 @@ class BedrockCrossRegionModelHelper:
                         return arn
         except Exception as e:
             logger.debug("Could not look up application inference profile '%s': %s", wanted, e)
-            return fallback
+            raise _LookupFailed(fallback) from e
         logger.debug("No application inference profile named '%s'; using '%s'", wanted, fallback)
         return fallback
 
@@ -253,7 +267,7 @@ class BedrockCrossRegionModelHelper:
                 model_id.value,
                 e,
             )
-            return model_id.value
+            raise _LookupFailed(model_id.value) from e
 
     @staticmethod
     def _build_cross_region_model_id(model_id: LanguageModelId, region_name: str, is_global: bool = False) -> str:

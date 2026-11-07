@@ -10,14 +10,6 @@ from adapters.threads import _landed_detached as real_landed_detached  # before 
 from adapters.threads import is_media_not_found, post_to_threads
 
 
-def _ctx(obj):
-    """Wrap an object as an async context manager (stand-in for httpx.AsyncClient(...))."""
-    cm = MagicMock()
-    cm.__aenter__ = AsyncMock(return_value=obj)
-    cm.__aexit__ = AsyncMock(return_value=False)
-    return cm
-
-
 class TestPostToThreads:
     @pytest.mark.asyncio
     async def test_skips_without_credentials(self):
@@ -412,6 +404,17 @@ class TestPublishPost:
         assert client.get.await_count == 3
         assert sleep.await_count == 2
         assert publish.await_args.args[3] == "c1"
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_status_publishes_as_before_and_keeps_the_token_out_of_the_url(self):
+        client = MagicMock()
+        client.get = AsyncMock(side_effect=httpx.ConnectTimeout("slow"))
+        with patch.object(threads_handler, "_create_container", new=AsyncMock(return_value="c1")):
+            with patch.object(threads_handler, "_publish_container", new=AsyncMock(return_value="p1")) as publish:
+                assert await threads_handler._publish_post(client, "u", "tok", text="t") == "p1"
+        publish.assert_awaited_once()
+        assert "access_token" not in client.get.await_args.kwargs["params"]
+        assert client.get.await_args.kwargs["headers"] == {"Authorization": "Bearer tok"}
 
     @pytest.mark.asyncio
     async def test_a_container_that_never_finishes_is_published_at_the_wait_cap(self):
@@ -945,3 +948,42 @@ class TestRootMayBeLive:
         request = httpx.Request("POST", "https://graph.threads.net/v1.0/me/threads_publish")
         limited = httpx.HTTPStatusError("429", request=request, response=httpx.Response(429, request=request))
         assert _root_may_be_live(limited) is False
+
+
+class TestLandedDetached:
+    @staticmethod
+    def _client(code: int, body: dict) -> MagicMock:
+        client = MagicMock()
+        client.get = AsyncMock(return_value=httpx.Response(code, json=body))
+        return client
+
+    @pytest.mark.asyncio
+    async def test_only_an_explicit_is_reply_false_reads_as_standalone(self):
+        # The operator is told to delete a standalone post: a reply Threads did not describe must not be one.
+        assert await real_landed_detached(self._client(200, {"is_reply": False}), "t", "m") is True
+        assert await real_landed_detached(self._client(200, {}), "t", "m") is False
+        assert await real_landed_detached(self._client(200, {"is_reply": True}), "t", "m") is False
+        assert await real_landed_detached(self._client(500, {}), "t", "m") is False
+
+
+@pytest.mark.asyncio
+async def test_a_publish_step_5xx_is_never_retried_even_when_it_names_code_24(monkeypatch):
+    # The reply may be live behind a 5xx; a retry inside the indexing budget would post the story twice.
+    monkeypatch.setattr(threads_handler, "THREADS_REPLY_RETRY_BACKOFF_SEC", 0)
+    publishes = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal publishes
+        if request.method == "GET":
+            return httpx.Response(200, json={"status": "FINISHED"})
+        if request.url.path.endswith("/threads_publish"):
+            publishes += 1
+            return httpx.Response(500, json={"error": {"code": 24, "error_subcode": 4279009}})
+        return httpx.Response(200, json={"id": "c1"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            await threads_handler._publish_reply_with_retry(
+                client, "u", "tok", "story", "root", indexing_deadline=time.monotonic() + 300
+            )
+    assert publishes == 1

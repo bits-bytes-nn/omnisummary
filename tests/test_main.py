@@ -119,3 +119,20 @@ async def test_a_dry_run_stores_and_posts_nothing():
                         assert main.run_pipeline.await_args.kwargs["dry_run"] is True
     persist.assert_not_called()
     publish.assert_not_awaited()
+
+
+async def test_a_pin_that_could_not_be_fetched_writes_and_posts_nothing():
+    # The operator asked for that story; a digest without it overwrote the day's record and posted.
+    config = MagicMock()
+    config.aws.timezone = "Asia/Seoul"
+    window = (date(2026, 10, 26), datetime(2026, 10, 26, 15, tzinfo=UTC))
+    with patch("sys.argv", ["main.py", "--pin-url", "https://paid.example/a", "--force-republish"]):
+        with patch.object(main.Config, "load", return_value=config):
+            with patch.object(main, "resolve_digest_window", return_value=window):
+                with patch.object(main, "already_published", return_value=False):
+                    collect = AsyncMock(return_value=([MagicMock()], MagicMock()))
+                    with patch.object(main, "run_collectors_with_health", new=collect):
+                        with patch("adapters.collectors.web_search.fetch_pinned_items", new=AsyncMock(return_value=[])):
+                            with patch.object(main, "run_pipeline", new=AsyncMock()) as pipeline:
+                                assert await main.main() == 1
+    pipeline.assert_not_awaited()

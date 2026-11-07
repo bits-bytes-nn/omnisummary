@@ -62,7 +62,7 @@ aws logs filter-log-events --profile research --region ap-northeast-2 --log-grou
 | Detail | 뜻 | 할 일 |
 |--------|----|-------|
 | `published TEXT-ONLY` | 만화 없이 글만 올라갔다 | 로그에서 렌더 실패 이유를 본다(OpenAI 키, 모더레이션, 시간 부족). 다시 올리지 않는다 |
-| `reply chain incomplete` | 첫 글은 있고 답글 일부가 빠졌다 | 그날을 다시 올리지 않는다(첫 글이 하나 더 생긴다). 빠진 기사는 Threads 앱에서 첫 글에 직접 답글로 단다 |
+| `reply chain incomplete` | 첫 글은 있고 답글 일부가 빠졌다 | 알림에 적힌 첫 글을 Threads 앱에서 지운 뒤(답글도 함께 지워진다) 알림의 `force_republish: true` 명령으로 저장된 다이제스트를 다시 올린다. 지우지 않고 다시 올리면 그날 글이 둘이 된다 |
 | `Standalone posts` 항목이 있다 | 답글이 첫 글 아래가 아니라 별도 게시물로 올라갔다(2026-10-27에 있었다) | 그 id의 게시물을 Threads 앱에서 지우고, 같은 기사를 첫 글에 직접 답글로 단다 |
 | `the root is live but no story reply landed under it` | 첫 글만 올라갔다(답글이 실패했거나 별도 게시물로 올라갔다) | `--force-republish`를 하지 않는다(첫 글이 하나 더 생긴다) |
 | `the root MAY be live` | 첫 글 게시 요청이 오류로 끝났지만 실제로 올라갔는지 알 수 없다 | Threads 앱에서 그날 첫 글이 있는지 본다. **없을 때만** 알림에 적힌 명령(`force_republish: true`)을 실행한다 |
@@ -74,7 +74,7 @@ aws logs filter-log-events --profile research --region ap-northeast-2 --log-grou
 
 | 알람 | 뜻 | 할 일 |
 |------|----|-------|
-| `DigestErrorsAlarm`, `VisualErrorsAlarm`, `CommentReplyErrorsAlarm`, `ThreadsRefreshErrorsAlarm` | 그 Lambda가 예외로 끝났다 | 로그 그룹 `/aws/lambda/omnisummary-dev-digest`, `-visual`, `-comment-replies`, `-threads-refresh`를 본다 |
+| `DigestErrorsAlarm`, `VisualErrorsAlarm`, `InvestDigestErrorsAlarm`, `InvestVisualErrorsAlarm`, `CommentReplyErrorsAlarm`, `ThreadsRefreshErrorsAlarm` | 그 Lambda가 예외로 끝났다 | 로그 그룹 `/aws/lambda/omnisummary-dev-digest`, `-visual`, `-invest-digest`, `-invest-visual`, `-comment-replies`, `-threads-refresh`를 본다 |
 | 같은 이름의 `…TimeoutAlarm` | 실행 시간이 타임아웃의 90%에 닿았다 | 어느 단계가 느렸는지 로그를 본다 |
 | `EmptyDigestAlarm` / `InvestEmptyDigestAlarm` | 하루 동안 게시할 기사가 0건이었거나 다이제스트가 돌지 않았다 | 해당 판의 digest Lambda 로그(`omnisummary-dev-digest` / `omnisummary-dev-invest-digest`)를 본다 |
 | `AsyncDLQAlarm` | 실패한 digest·visual 실행이 DLQ에 쌓였다 | 아래 "그날을 다시 올리기"를 따른다 |
@@ -85,7 +85,7 @@ aws logs filter-log-events --profile research --region ap-northeast-2 --log-grou
 
 ## 그날을 다시 올리기
 
-먼저 Threads 앱에서 그날 첫 글이 정말 없는지 확인한다. 하나라도 올라가 있으면 다시 올리지 않는다(첫 글이 둘이 된다).
+먼저 Threads 앱에서 그날 첫 글이 정말 없는지 확인한다. 일부만 올라간 첫 글이 있으면 먼저 지운다. 지우지 않고 다시 올리면 첫 글이 둘이 된다.
 
 **저장된 스냅샷으로 다시 게시한다(권장).** 다이제스트는 이미 만들어져 저장돼 있으니 visual Lambda만 다시 부른다. 같은
 글과 같은 기사가 나가고, 만화는 새로 그린다. Threads Delivery 알림에 날짜가 채워진 이 명령이 오니 `--profile research`를 붙여 실행한다.
