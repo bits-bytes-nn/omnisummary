@@ -377,6 +377,13 @@ class PipelineConfig(_StrictModel):
     # unchanged). The investing edition's: measured 3-0 on its stored days and the only variant that shipped
     # an X post on 11-03's live pool; the same sentence lost 2-4 on AI days, which keep it empty.
     selection_guidance: str = ""
+    # The editor must carry this many stories from these source types, the best-scored ones in the pool:
+    # an analyst's or investor's own note or post over the press report of it. Research notes among them
+    # get their full text (the note's PDF). Investing (2026-11-07, 7 stored days): research and X, 2 of
+    # 5 won 12-2 blind in both orders, fidelity 3.21 -> 3.86, press stories 22 -> 17 of 35; without the
+    # full text the same quota tied 7-7 and fidelity fell.
+    primary_quota: int = Field(default=0, ge=0)
+    primary_source_types: list[SourceType] = Field(default_factory=list)
     # Score-calibration buckets the ranking prompt applies, injected as template text so
     # ops can retune the distribution without editing the prompt.
     # The ranker's lenses, one per line; the investing edition swaps in its own.
@@ -513,6 +520,14 @@ class PipelineConfig(_StrictModel):
         "charming — never a dark-room hacker. Prefer a waist-up or medium shot so "
         "his face carries the moment; a full figure only when the composition needs it."
     )
+
+    @model_validator(mode="after")
+    def _a_primary_quota_names_its_sources(self) -> "PipelineConfig":
+        if self.primary_quota and not self.primary_source_types:
+            raise ValueError("pipeline.primary_quota needs pipeline.primary_source_types")
+        if self.primary_quota >= self.top_n:
+            raise ValueError("pipeline.primary_quota must leave the headline's choice open (below top_n)")
+        return self
 
     @model_validator(mode="after")
     def _source_slots_name_real_source_types(self) -> "PipelineConfig":

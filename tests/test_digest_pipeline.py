@@ -18,7 +18,7 @@ from domain.digest_snapshot import DigestSnapshot
 from domain.models import CollectedItem, DigestContent, DigestItem, DigestResult, RankedItem
 from shared.config import Config
 from shared.constants import SourceType
-from tests.fakes import nothing_paid, snapshot
+from tests.fakes import no_note_text, nothing_paid, snapshot
 
 DIGEST_DATE = date(2026, 6, 3)
 
@@ -98,7 +98,7 @@ async def _run(pipeline: _Pipeline, config: Config, items: list[CollectedItem], 
         DIGEST_DATE,
         state_store=pipeline.store,
         memory_store=lambda: pipeline.memory,
-        **{"paid_check": nothing_paid, "sibling_memory": lambda: [], **kwargs},
+        **{"paid_check": nothing_paid, "note_text": no_note_text, "sibling_memory": lambda: [], **kwargs},
     )
 
 
@@ -398,3 +398,39 @@ class TestAlreadyPublished:
             assert runner.already_published(config, date(2026, 10, 27), store) is False
             config.pipeline.enable_threads_post = False  # nothing can post: a re-run rebuilds the record
             assert runner.already_published(config, date(2026, 10, 26), store) is False
+
+
+class TestRequirePrimary:
+    @staticmethod
+    def _ranked(item_id: str, source: SourceType, score: float, **metadata) -> RankedItem:
+        item = CollectedItem(
+            item_id=item_id, source_type=source, title=item_id, url=f"https://{item_id}.example/", text="summary"
+        )
+        item.metadata.update(metadata)
+        return RankedItem(item=item, score=score)
+
+    @pytest.mark.asyncio
+    async def test_the_best_scored_primary_items_are_required_and_a_note_gets_its_full_text(self):
+        pool = [
+            self._ranked("press", SourceType.RSS, 0.9),
+            self._ranked("note", SourceType.RESEARCH, 0.8, nid=1),
+            self._ranked("post", SourceType.X, 0.7),
+            self._ranked("weak-note", SourceType.RESEARCH, 0.6, nid=2),
+        ]
+        read: list[str] = []
+
+        async def note_text(item):
+            read.append(item.item_id)
+            return "full note"
+
+        await runner.require_primary(pool, 2, [SourceType.RESEARCH, SourceType.X], note_text)
+        assert [r.item.item_id for r in pool if r.item.metadata.get("pinned")] == ["note", "post"]
+        assert read == ["note"]
+        assert pool[1].item.text == "summary\n\nfull note"
+        assert pool[0].item.text == "summary"
+
+    @pytest.mark.asyncio
+    async def test_no_quota_changes_nothing(self):
+        pool = [self._ranked("note", SourceType.RESEARCH, 0.8, nid=1)]
+        await runner.require_primary(pool, 0, [SourceType.RESEARCH], AsyncMock(side_effect=AssertionError))
+        assert not pool[0].item.metadata.get("pinned")

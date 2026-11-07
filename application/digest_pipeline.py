@@ -16,14 +16,14 @@ from application.history import (
     ThreadsPostLedger,
     published_urls_from_snapshots,
 )
-from application.ports import ContentSource, LanguageModels, MemoryStore, PaidPageCheck, StateStore
+from application.ports import ContentSource, LanguageModels, MemoryStore, NoteText, PaidPageCheck, StateStore
 from application.ranker import ContentRanker
 from application.trend_tracker import TrendTracker
 from domain.aggregator import ContentAggregator, normalize_url
 from domain.digest_snapshot import DigestSnapshot
 from domain.formatting import resolve_origin_key
 from domain.models import CollectedItem, DigestResult, HealthReport, RankedItem, SourceHealth, SourceStatus
-from shared import Config, logger
+from shared import Config, SourceType, logger
 
 if TYPE_CHECKING:
     from application.daily_visual import DailyVisualMaker
@@ -109,6 +109,7 @@ async def run_pipeline(
     memory_store: Callable[[], MemoryStore],
     sibling_memory: Callable[[], list[MemoryStore]],
     paid_check: PaidPageCheck,
+    note_text: NoteText,
     dry_run: bool = False,
 ) -> tuple[list[CollectedItem], list[RankedItem], DigestResult] | tuple[None, None, None]:
     """Aggregate, rank and write the day's digest, then record its stories and lead. `memory_store`
@@ -159,6 +160,8 @@ async def run_pipeline(
     if not ranked_items:
         logger.warning("No items passed ranking threshold")
         return None, None, None
+
+    await require_primary(ranked_items, config.pipeline.primary_quota, config.pipeline.primary_source_types, note_text)
 
     trend_tracker = TrendTracker(config.pipeline, models, state_store)
     trends_context = trend_tracker.get_trends_context(today=digest_date)
@@ -236,6 +239,26 @@ async def run_pipeline(
         logger.warning("Failed to update the published-URL ledger (non-fatal)", exc_info=True)
 
     return items, ranked_items, digest
+
+
+async def require_primary(
+    pool: list[RankedItem], quota: int, source_types: list[SourceType], note_text: NoteText
+) -> None:
+    """Mark the `quota` best-scored pool items of `source_types` as stories the editor must carry, and
+    give each research note among them its full text: the editor picked the press report of a view over
+    the view's own note or post, whose summary or post was too thin to write from."""
+    if not quota:
+        return
+    chosen = sorted((r for r in pool if r.item.source_type in source_types), key=lambda r: -r.score)[:quota]
+    for r in chosen:
+        r.item.metadata["pinned"] = True
+        if r.item.source_type == SourceType.RESEARCH:
+            text = await note_text(r.item)
+            if text:
+                r.item.text = f"{r.item.text}\n\n{text}"
+    logger.info(
+        "Primary stories the editor must carry: %s", ", ".join(f"{r.item.title[:50]!r} ({r.score:.2f})" for r in chosen)
+    )
 
 
 def sibling_snapshots(stores: Callable[[], list[MemoryStore]], digest_date: date) -> list[DigestSnapshot]:

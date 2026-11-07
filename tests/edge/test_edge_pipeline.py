@@ -22,7 +22,7 @@ from tests.edge.edge_harness import (
     prose,
     score_by_title,
 )
-from tests.fakes import MemoryStateStore, nothing_paid
+from tests.fakes import MemoryStateStore, no_note_text, nothing_paid
 
 DAY = date(2026, 11, 2)
 
@@ -78,6 +78,7 @@ async def _run(config, models, items, memory, **kw):
             memory_store=lambda: memory,
             sibling_memory=lambda: [],
             paid_check=nothing_paid,
+            note_text=no_note_text,
             dry_run=True,
             **kw,
         ),
@@ -223,6 +224,7 @@ async def test_memory_factory_itself_raises():
             memory_store=factory,
             sibling_memory=lambda: [],
             paid_check=nothing_paid,
+            note_text=no_note_text,
             dry_run=True,
         ),
         timeout=20,
@@ -244,6 +246,7 @@ async def test_non_dry_run_records_the_ledger_and_trends_failure_is_non_fatal():
         memory_store=lambda: _memory(),
         sibling_memory=lambda: [],
         paid_check=nothing_paid,
+        note_text=no_note_text,
         dry_run=False,
     )
     assert result[2].content.items

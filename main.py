@@ -103,6 +103,7 @@ async def main() -> int:
         memory_store=bootstrap.memory_store,
         sibling_memory=lambda: bootstrap.sibling_memory_stores(config),
         paid_check=bootstrap.paid_check(),
+        note_text=bootstrap.note_text(config),
         dry_run=args.dry_run,
     )
     if digest is None or ranked_items is None:
