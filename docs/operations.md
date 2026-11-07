@@ -62,9 +62,9 @@ aws logs filter-log-events --profile research --region ap-northeast-2 --log-grou
 | Detail | 뜻 | 할 일 |
 |--------|----|-------|
 | `published TEXT-ONLY` | 만화 없이 글만 올라갔다 | 로그에서 렌더 실패 이유를 본다(OpenAI 키, 모더레이션, 시간 부족). 다시 올리지 않는다 |
-| `reply chain incomplete` | 첫 글은 있고 답글 일부가 빠졌다 | 알림에 적힌 첫 글을 Threads 앱에서 지운 뒤(답글도 함께 지워진다) 알림의 `force_republish: true` 명령으로 저장된 다이제스트를 다시 올린다. 지우지 않고 다시 올리면 그날 글이 둘이 된다 |
-| `Standalone posts` 항목이 있다 | 답글이 첫 글 아래가 아니라 별도 게시물로 올라갔다(2026-10-27에 있었다) | 그 id의 게시물을 Threads 앱에서 지우고, 같은 기사를 첫 글에 직접 답글로 단다 |
-| `the root is live but no story reply landed under it` | 첫 글만 올라갔다(답글이 실패했거나 별도 게시물로 올라갔다) | `--force-republish`를 하지 않는다(첫 글이 하나 더 생긴다) |
+| `reply chain incomplete` | 첫 글은 있고 답글 일부가 빠졌다 | Threads 앱에서 그날 첫 글과 그 답글을 지운 뒤 알림의 `force_republish: true` 명령으로 저장된 다이제스트를 다시 올린다. 지우지 않고 다시 올리면 그날 글이 둘이 된다 |
+| `Standalone posts` 항목이 있다 | 답글이 첫 글 아래가 아니라 별도 게시물로 올라갔다(2026-10-27에 있었다) | 첫 글을 지워도 이 게시물은 남으니 함께 지운 뒤 다시 올린다 |
+| `the root is live but no story reply landed under it` | 첫 글만 올라갔다(답글이 실패했거나 별도 게시물로 올라갔다) | 첫 글(과 별도 게시물)을 지운 뒤 알림의 `force_republish: true` 명령을 실행한다. 지우지 않고 다시 올리면 첫 글이 둘이 된다 |
 | `the root MAY be live` | 첫 글 게시 요청이 오류로 끝났지만 실제로 올라갔는지 알 수 없다 | Threads 앱에서 그날 첫 글이 있는지 본다. **없을 때만** 알림에 적힌 명령(`force_republish: true`)을 실행한다 |
 | `the stored digest has NO stories` | 저장된 다이제스트에 기사가 없어 아무것도 올리지 않았다 | 다시 게시해도 같으니, 알림에 적힌 `main.py --date … --force-republish`로 새로 만든다 |
 | `could NOT be confirmed as recorded` | 게시는 됐는데 게시 기록(원장)에 그날이 남았는지 확인하지 못했다 | 그날은 다시 올리지도, 다시 돌리지도 않는다. 기록이 없으면 막을 장치가 없어 같은 글이 한 번 더 올라간다. 다음 날부터는 영향이 없다 |

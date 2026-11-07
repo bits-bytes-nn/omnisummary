@@ -178,9 +178,10 @@ class CommentResponder:
         except Exception:
             logger.warning("Could not record the failure on comment %s", comment_id, exc_info=True)
 
-    # A comment is started only with this much of the run's time left: a draft plus a publish takes well
-    # under it, and a run killed between the publish and the ledger write answers the comment again.
-    MIN_SECONDS_PER_COMMENT = 90
+    # A comment is started only with this much of the run's time left, a draft plus a publish's worst case
+    # (three attempts, each waiting up to 30 s for its container and 10 s before the next): a run killed
+    # between the publish and the ledger write answers the comment again.
+    MIN_SECONDS_PER_COMMENT = 180
 
     async def run(self, now: datetime, *, dry_run: bool = False, deadline: float | None = None) -> CommentReplyRun:
         """Answer what is pending. `dry_run` drafts the replies and posts and records nothing.

@@ -80,11 +80,16 @@ async def _publish_container(client: httpx.AsyncClient, user_id: str, token: str
     return resp.json()["id"]
 
 
-async def _await_container(client: httpx.AsyncClient, token: str, creation_id: str) -> None:
+async def _await_container(
+    client: httpx.AsyncClient, token: str, creation_id: str, wait_until: float | None = None
+) -> None:
     """Until the container's status (GET /{container-id}?fields=status) leaves IN_PROGRESS, at most
-    THREADS_MEDIA_PROCESS_WAIT_SEC. A container not visible yet answers 400; that is IN_PROGRESS too. The
-    check only times the publish: when it cannot be read at all, the publish goes ahead as it used to."""
+    THREADS_MEDIA_PROCESS_WAIT_SEC and never past `wait_until`. A container not visible yet answers 400;
+    that is IN_PROGRESS too. The check only times the publish: when it cannot be read at all, the publish
+    goes ahead as it used to."""
     deadline = time.monotonic() + THREADS_MEDIA_PROCESS_WAIT_SEC
+    if wait_until is not None:
+        deadline = min(deadline, wait_until)
     while True:
         try:
             resp = await client.get(
@@ -93,7 +98,7 @@ async def _await_container(client: httpx.AsyncClient, token: str, creation_id: s
                 headers={"Authorization": f"Bearer {token}"},
             )
             ready = resp.status_code == 200 and resp.json().get("status") != "IN_PROGRESS"
-        except (httpx.HTTPError, ValueError) as e:
+        except (httpx.HTTPError, ValueError, AttributeError) as e:
             logger.info("Container status unreadable (%s); publishing", type(e).__name__)
             return
         if ready or time.monotonic() >= deadline:
@@ -111,6 +116,7 @@ async def _publish_post(
     image_alt: str = "",
     topic_tag: str = "",
     reply_to_id: str = "",
+    wait_until: float | None = None,
 ) -> str:
     params: dict[str, Any] = {"media_type": "IMAGE" if image_url else "TEXT"}
     if text:
@@ -124,7 +130,7 @@ async def _publish_post(
     if reply_to_id:
         params["reply_to_id"] = reply_to_id
     creation_id = await _create_container(client, user_id, token, **params)
-    await _await_container(client, token, creation_id)
+    await _await_container(client, token, creation_id, wait_until)
     return await _publish_container(client, user_id, token, creation_id)
 
 
@@ -200,7 +206,12 @@ async def _publish_reply_with_retry(
     while True:
         attempt += 1
         try:
-            return await _publish_post(client, user_id, token, text=text, reply_to_id=reply_to_id)
+            # Past a digest's indexing deadline a reply no longer waits for its container: five replies
+            # each waiting out a root that never indexed ran the visual Lambda past its timeout.
+            wait_until = indexing_deadline if indexing_deadline > 0 else None
+            return await _publish_post(
+                client, user_id, token, text=text, reply_to_id=reply_to_id, wait_until=wait_until
+            )
         except httpx.HTTPStatusError as e:
             # code-24 is pure root-indexing lag: ride the shared deadline (once one reply lands the
             # root is ready, so this only bites the first reply). Other transient errors keep the cap.

@@ -308,3 +308,13 @@ def test_a_feed_date_with_its_own_offset_keeps_it():
 
     instant = _feed_instant({"published": "Mon, 02 Nov 2026 10:00:00 +0000"}, ZoneInfo("Asia/Seoul"))
     assert instant.isoformat() == "2026-11-02T10:00:00+00:00"
+
+
+def test_a_minus_zero_offset_is_universal_time():
+    # RFC 5322: "-0000" is UTC from a system that does not name its own zone (email.utils.formatdate's default).
+    from zoneinfo import ZoneInfo
+
+    from adapters.collectors.base import _feed_instant
+
+    instant = _feed_instant({"published": "Mon, 02 Nov 2026 10:00:00 -0000"}, ZoneInfo("Asia/Seoul"))
+    assert instant.isoformat() == "2026-11-02T10:00:00+00:00"

@@ -29,8 +29,11 @@ from shared.constants import BROWSER_USER_AGENT, DIGEST_PERIOD_HOURS
 
 def _stated_offset(published: str) -> bool:
     """Whether a feed's date string carries its own UTC offset ("+0900", "Z", "GMT", "+09:00")."""
+    if published.rstrip().endswith("-0000"):
+        # RFC 5322: Universal Time from a system that does not say its own zone, so it is stated.
+        return True
     try:
-        # Naive for no zone, an unknown one ("KST") or -0000; parsedate_tz reads all of those as UTC.
+        # Naive for no zone or an unknown one ("KST"); parsedate_tz reads both as UTC.
         return parsedate_to_datetime(published).tzinfo is not None
     except (TypeError, ValueError, IndexError):
         pass
@@ -90,7 +93,9 @@ def _feed_instant(entry, local_tz: tzinfo | None) -> datetime | None:
     published_str = entry.get("published")
     if published_str:
         try:
-            return parsedate_to_datetime(published_str).astimezone(UTC)
+            parsed_dt = parsedate_to_datetime(published_str)
+            # Naive only for -0000 here (a missing zone was handled above): Universal Time, not this host's.
+            return parsed_dt.replace(tzinfo=UTC) if parsed_dt.tzinfo is None else parsed_dt.astimezone(UTC)
         except (TypeError, ValueError) as e:
             logger.debug("Failed to parse feed published date '%s': %s", published_str, e)
 

@@ -13,6 +13,7 @@ from application.digest_pipeline import (
     run_collectors_with_health,
     run_pipeline,
 )
+from domain.aggregator import normalize_url
 from entrypoints import bootstrap
 from shared import Config, logger
 from shared.constants import COLLECTOR_NAMES
@@ -81,10 +82,11 @@ async def main() -> int:
 
         pinned = await fetch_pinned_items(args.pin_url)
         logger.info("Fetched %d pinned item(s) from %d URL(s)", len(pinned), len(args.pin_url))
-        missing = {u.strip() for u in args.pin_url if u.strip()} - {it.url for it in pinned}
+        fetched = {normalize_url(it.url) for it in pinned}
+        missing = sorted(u.strip() for u in args.pin_url if u.strip() and normalize_url(u.strip()) not in fetched)
         if missing and not args.dry_run:
             # A pin is the operator asking for that story: a digest without it is not the one asked for.
-            logger.error("Pinned URL(s) not fetched, nothing written or posted: %s", sorted(missing))
+            logger.error("Pinned URL(s) not fetched, nothing written or posted: %s", missing)
             return 1
         collected_items = pinned + collected_items
 

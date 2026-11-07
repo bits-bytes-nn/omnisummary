@@ -112,7 +112,7 @@ def _maybe_alert_threads_outcome(
         if outcome.detached:
             fields["Standalone posts"] = (
                 f"{', '.join(outcome.detached)} — Threads published these replies as their own posts, not under "
-                "the root: delete them in the app, then reply those stories under the root by hand"
+                "the root: deleting the root leaves them, so delete them in the app too before the re-post"
             )
         publish_alert("Threads Delivery", "ALERT" if outcome.published else "FAILED", fields)
         return
@@ -154,8 +154,9 @@ def _shortfall_detail(outcome: ThreadsDelivery, digest_date: date, *, marker_kep
             else "the root is live but no story reply landed under it (failed, or went up standalone)"
         )
         return (
-            f"{missing}. Delete the day's root post{' ' + outcome.root_id if outcome.root_id else ''} in the Threads app (its replies go with "
-            f"it), then re-post the stored digest with: {_replay_command(digest_date, force=True)}"
+            f"{missing}. In the Threads app delete the day's root post and its replies"
+            f"{', and the standalone posts listed below' if outcome.detached else ''}, then re-post the stored digest "
+            f"with: {_replay_command(digest_date, force=True)}"
         )
     if outcome.uncertain:
         return (
