@@ -233,7 +233,7 @@ class TestThreadsOutcomeAlert:
         with patch("adapters.alerts.boto3.client", return_value=sns):
             visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(posted, 6, root_id="r1"), date(2026, 8, 18))
         message = sns.publish.call_args.kwargs["Message"]
-        assert message.index("Delete the day's root post r1") < message.index('"force_republish": true')
+        assert message.index("delete the day's root post and its replies") < message.index('"force_republish": true')
 
     def test_an_ambiguous_failure_says_the_root_may_be_live(self, monkeypatch):
         monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")

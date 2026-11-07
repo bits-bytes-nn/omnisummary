@@ -33,6 +33,7 @@ from langchain_core.prompts import ChatPromptTemplate  # noqa: E402
 from domain.digest_snapshot import DigestSnapshot  # noqa: E402
 from entrypoints import bootstrap  # noqa: E402
 from shared import Config, logger, parse_json_from_llm_output  # noqa: E402
+from shared.config import get_config  # noqa: E402
 from shared.constants import LanguageModelId  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1] / "evals"
@@ -120,7 +121,10 @@ def _posted_before(snapshots: list[DigestSnapshot], replayed: DigestSnapshot) ->
 
 
 def _case_dir(kind: str, label: str) -> Path:
-    path = ROOT / kind / label
+    """evals/<kind>[/<edition>]/<label>: the editions replay the same dates, so a shared label would
+    overwrite one edition's cases with the other's."""
+    edition = get_config().edition
+    path = ROOT / kind / edition / label if edition else ROOT / kind / label
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -197,10 +201,15 @@ async def _visual(label: str, dates: list[str]) -> None:
             logger.warning(
                 "%s replays with %d recent comic(s), not %d", day, len(recent), config.pipeline.recent_leads_window
             )
-        plan, instruction, source = await maker._compose(
-            snapshot.ranked_items, snapshot.content, date.fromisoformat(day), recent_comics=recent
-        )
-        brief = await maker.generator.brief(instruction, source) if instruction else None
+        try:
+            plan, instruction, source = await maker._compose(
+                snapshot.ranked_items, snapshot.content, date.fromisoformat(day), recent_comics=recent
+            )
+            brief = await maker.generator.brief(instruction, source) if instruction else None
+        except Exception as e:
+            # One unusable answer must not end the run: the other days' cases are still comparable.
+            logger.warning("visual %s %s failed (%s); skipped", label, day, e)
+            continue
         out = {
             "case": day,
             "context": f"HEADLINE ARTICLE:\n{source}\n\nRECENT COMICS:\n{json.dumps(recent, ensure_ascii=False)}",
@@ -246,7 +255,7 @@ async def _judge(kind: str, label_a: str, label_b: str) -> None:
     criteria = RUBRICS[kind] + EDITION_RUBRIC.get((kind, config.edition), [])
     rubric = "\n".join(f"- {name}: {text}" for name, text in criteria)
     rows: list[dict] = []
-    out = ROOT / kind / f"judge-{label_a}-vs-{label_b}.json"
+    out = _case_dir(kind, label_a).parent / f"judge-{label_a}-vs-{label_b}.json"
     out.write_text("[]")
     for path_a in sorted(_case_dir(kind, label_a).glob("*.json")):
         path_b = _case_dir(kind, label_b) / path_a.name

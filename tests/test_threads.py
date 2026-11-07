@@ -23,7 +23,16 @@ class TestPostToThreads:
         published: list[dict] = []
 
         async def fake_publish(
-            client, user_id, token, *, text="", image_url="", image_alt="", topic_tag="", reply_to_id=""
+            client,
+            user_id,
+            token,
+            *,
+            text="",
+            image_url="",
+            image_alt="",
+            topic_tag="",
+            reply_to_id="",
+            wait_until=None,
         ):
             pid = f"id{len(published)}"
             published.append({"text": text, "image_url": image_url, "reply_to_id": reply_to_id, "id": pid})
@@ -107,7 +116,16 @@ class TestPostToThreads:
         calls = {"n": 0}
 
         async def fake_publish(
-            client, user_id, token, *, text="", image_url="", image_alt="", topic_tag="", reply_to_id=""
+            client,
+            user_id,
+            token,
+            *,
+            text="",
+            image_url="",
+            image_alt="",
+            topic_tag="",
+            reply_to_id="",
+            wait_until=None,
         ):
             if reply_to_id:
                 calls["n"] += 1
@@ -142,7 +160,16 @@ class TestPostToThreads:
         seen: list[str] = []
 
         async def fake_publish(
-            client, user_id, token, *, text="", image_url="", image_alt="", topic_tag="", reply_to_id=""
+            client,
+            user_id,
+            token,
+            *,
+            text="",
+            image_url="",
+            image_alt="",
+            topic_tag="",
+            reply_to_id="",
+            wait_until=None,
         ):
             if reply_to_id:
                 seen.append(text)
@@ -180,7 +207,16 @@ class TestPostToThreads:
         calls = {"n": 0}
 
         async def fake_publish(
-            client, user_id, token, *, text="", image_url="", image_alt="", topic_tag="", reply_to_id=""
+            client,
+            user_id,
+            token,
+            *,
+            text="",
+            image_url="",
+            image_alt="",
+            topic_tag="",
+            reply_to_id="",
+            wait_until=None,
         ):
             if reply_to_id:
                 calls["n"] += 1
@@ -215,7 +251,16 @@ class TestPostToThreads:
         calls = {"n": 0}
 
         async def fake_publish(
-            client, user_id, token, *, text="", image_url="", image_alt="", topic_tag="", reply_to_id=""
+            client,
+            user_id,
+            token,
+            *,
+            text="",
+            image_url="",
+            image_alt="",
+            topic_tag="",
+            reply_to_id="",
+            wait_until=None,
         ):
             if reply_to_id:
                 calls["n"] += 1
@@ -241,7 +286,16 @@ class TestPostToThreads:
         calls = {"n": 0}
 
         async def fake_publish(
-            client, user_id, token, *, text="", image_url="", image_alt="", topic_tag="", reply_to_id=""
+            client,
+            user_id,
+            token,
+            *,
+            text="",
+            image_url="",
+            image_alt="",
+            topic_tag="",
+            reply_to_id="",
+            wait_until=None,
         ):
             if reply_to_id:
                 calls["n"] += 1
@@ -288,7 +342,16 @@ class TestPostToThreads:
         calls = {"n": 0}
 
         async def fake_publish(
-            client, user_id, token, *, text="", image_url="", image_alt="", topic_tag="", reply_to_id=""
+            client,
+            user_id,
+            token,
+            *,
+            text="",
+            image_url="",
+            image_alt="",
+            topic_tag="",
+            reply_to_id="",
+            wait_until=None,
         ):
             if reply_to_id:
                 calls["n"] += 1
@@ -312,7 +375,16 @@ class TestPostToThreads:
         auth_err = httpx.HTTPStatusError("unauthorized", request=req, response=resp)
 
         async def fake_publish(
-            client, user_id, token, *, text="", image_url="", image_alt="", topic_tag="", reply_to_id=""
+            client,
+            user_id,
+            token,
+            *,
+            text="",
+            image_url="",
+            image_alt="",
+            topic_tag="",
+            reply_to_id="",
+            wait_until=None,
         ):
             if text == "second":
                 raise auth_err
@@ -415,6 +487,27 @@ class TestPublishPost:
         publish.assert_awaited_once()
         assert "access_token" not in client.get.await_args.kwargs["params"]
         assert client.get.await_args.kwargs["headers"] == {"Authorization": "Bearer tok"}
+
+    @pytest.mark.asyncio
+    async def test_past_its_wait_deadline_a_container_is_published_without_waiting(self):
+        # Five replies each waiting 30 s on a root that never indexed ran the visual Lambda past its timeout.
+        client = _status_client((200, {"status": "IN_PROGRESS"}))
+        with patch.object(threads_handler, "_create_container", new=AsyncMock(return_value="c1")):
+            with patch.object(threads_handler, "_publish_container", new=AsyncMock(return_value="p1")) as publish:
+                with patch.object(threads_handler.asyncio, "sleep", new=AsyncMock()) as sleep:
+                    await threads_handler._publish_post(client, "u", "tok", text="t", wait_until=time.monotonic() - 1)
+        sleep.assert_not_awaited()
+        publish.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_digest_reply_waits_no_longer_than_the_indexing_deadline(self):
+        publish = AsyncMock(return_value="rid")
+        with patch.object(threads_handler, "_publish_post", new=publish):
+            await threads_handler._publish_reply_with_retry(
+                MagicMock(), "u", "t", "story", "root", indexing_deadline=123.0
+            )
+            await threads_handler._publish_reply_with_retry(MagicMock(), "u", "t", "comment reply", "post")
+        assert [c.kwargs["wait_until"] for c in publish.await_args_list] == [123.0, None]
 
     @pytest.mark.asyncio
     async def test_a_container_that_never_finishes_is_published_at_the_wait_cap(self):
