@@ -21,8 +21,11 @@ from shared.config import Config
 THREADS_ALT_TEXT_MAX_CHARS = 1000
 
 THREADS_API_BASE = "https://graph.threads.net/v1.0"
-# Meta processes the media container asynchronously; publishing too early fails.
+# Meta processes every media container asynchronously, text replies too: a publish before the container
+# reads FINISHED answers code 24 for that container (2026-11-06: 20 such answers, two stories lost; each
+# of those containers read FINISHED the next day). Longest wait for FINISHED before publishing anyway.
 THREADS_MEDIA_PROCESS_WAIT_SEC = 30
+THREADS_CONTAINER_POLL_SEC = 3
 # After an image root is published it isn't immediately addressable as a reply target; replies
 # to it 400 with "media not found" (code 24) until Meta finishes indexing, which takes minutes for
 # image roots. Each reply retries against one shared deadline, so a never-indexing root can't blow
@@ -77,6 +80,18 @@ async def _publish_container(client: httpx.AsyncClient, user_id: str, token: str
     return resp.json()["id"]
 
 
+async def _await_container(client: httpx.AsyncClient, token: str, creation_id: str) -> None:
+    """Until the container's status (GET /{container-id}?fields=status) leaves IN_PROGRESS, at most
+    THREADS_MEDIA_PROCESS_WAIT_SEC. A container not visible yet answers 400; that is IN_PROGRESS too."""
+    deadline = time.monotonic() + THREADS_MEDIA_PROCESS_WAIT_SEC
+    while True:
+        resp = await client.get(f"{THREADS_API_BASE}/{creation_id}", params={"fields": "status", "access_token": token})
+        ready = resp.status_code == 200 and resp.json().get("status") != "IN_PROGRESS"
+        if ready or time.monotonic() >= deadline:
+            return
+        await asyncio.sleep(THREADS_CONTAINER_POLL_SEC)
+
+
 async def _publish_post(
     client: httpx.AsyncClient,
     user_id: str,
@@ -100,8 +115,7 @@ async def _publish_post(
     if reply_to_id:
         params["reply_to_id"] = reply_to_id
     creation_id = await _create_container(client, user_id, token, **params)
-    if image_url:
-        await asyncio.sleep(THREADS_MEDIA_PROCESS_WAIT_SEC)
+    await _await_container(client, token, creation_id)
     return await _publish_container(client, user_id, token, creation_id)
 
 

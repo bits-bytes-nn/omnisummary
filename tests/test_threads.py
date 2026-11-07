@@ -69,10 +69,11 @@ class TestPostToThreads:
         with patch.object(threads_handler, "_create_container", new=create):
             with patch.object(threads_handler, "_publish_container", new=AsyncMock(return_value="pid")):
                 with patch.object(threads_handler.asyncio, "sleep", new=AsyncMock()):
+                    client = _status_client((200, {"status": "FINISHED"}))
                     await threads_handler._publish_post(
-                        MagicMock(), "u", "t", text="x", image_url="https://i", image_alt="a" * 1200, topic_tag="AI"
+                        client, "u", "t", text="x", image_url="https://i", image_alt="a" * 1200, topic_tag="AI"
                     )
-                    await threads_handler._publish_post(MagicMock(), "u", "t", text="x", image_alt="ignored")
+                    await threads_handler._publish_post(client, "u", "t", text="x", image_alt="ignored")
         with_image, text_only = create.await_args_list
         assert len(with_image.kwargs["alt_text"]) == 1000 and with_image.kwargs["topic_tag"] == "AI"
         assert "alt_text" not in text_only.kwargs and "topic_tag" not in text_only.kwargs
@@ -270,6 +271,8 @@ class TestPostToThreads:
         hits = {"create": 0, "publish": 0}
 
         def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(200, json={"status": "FINISHED"})
             if request.url.path.endswith("/threads_publish"):
                 hits["publish"] += 1
                 return httpx.Response(500, json={"error": {"code": 2}})
@@ -371,10 +374,19 @@ class TestPostToThreads:
         assert not threads_handler.is_transient_reply_error(err(403))
 
 
+def _status_client(*answers: tuple[int, dict]) -> MagicMock:
+    """A client whose container-status GETs answer in turn, the last answer repeating."""
+    req = httpx.Request("GET", "https://graph.threads.net/v1.0/c1")
+    responses = [httpx.Response(code, request=req, json=body) for code, body in answers]
+    client = MagicMock()
+    client.get = AsyncMock(side_effect=lambda *a, **kw: responses.pop(0) if len(responses) > 1 else responses[0])
+    return client
+
+
 class TestPublishPost:
     @pytest.mark.asyncio
-    async def test_text_post_sends_text_media_type_and_no_wait(self):
-        client = MagicMock()
+    async def test_text_post_sends_text_media_type_and_publishes_a_finished_container(self):
+        client = _status_client((200, {"status": "FINISHED"}))
         with patch.object(threads_handler, "_create_container", new=AsyncMock(return_value="c1")) as create:
             with patch.object(threads_handler, "_publish_container", new=AsyncMock(return_value="p1")) as publish:
                 with patch.object(threads_handler.asyncio, "sleep", new=AsyncMock()) as sleep:
@@ -384,20 +396,41 @@ class TestPublishPost:
         assert create.await_args.kwargs["text"] == "hello"
         assert "image_url" not in create.await_args.kwargs
         publish.assert_awaited_once()
-        sleep.assert_not_awaited()  # only an image container needs the processing wait
+        sleep.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_image_post_waits_for_media_processing(self):
-        client = MagicMock()
+    async def test_a_container_is_published_only_once_it_leaves_in_progress(self):
+        # 2026-11-06: replies published right after creation answered code 24 for their own container,
+        # each of which read FINISHED later. A container not visible yet answers 400.
+        client = _status_client(
+            (400, {"error": {"code": 24}}), (200, {"status": "IN_PROGRESS"}), (200, {"status": "FINISHED"})
+        )
         with patch.object(threads_handler, "_create_container", new=AsyncMock(return_value="c1")):
-            with patch.object(threads_handler, "_publish_container", new=AsyncMock(return_value="p1")):
+            with patch.object(threads_handler, "_publish_container", new=AsyncMock(return_value="p1")) as publish:
                 with patch.object(threads_handler.asyncio, "sleep", new=AsyncMock()) as sleep:
-                    await threads_handler._publish_post(client, "u", "tok", text="t", image_url="https://s3/i.png")
-        sleep.assert_awaited_once_with(threads_handler.THREADS_MEDIA_PROCESS_WAIT_SEC)
+                    await threads_handler._publish_post(client, "u", "tok", text="t", reply_to_id="rid")
+        assert client.get.await_count == 3
+        assert sleep.await_count == 2
+        assert publish.await_args.args[3] == "c1"
+
+    @pytest.mark.asyncio
+    async def test_a_container_that_never_finishes_is_published_at_the_wait_cap(self):
+        client = _status_client((200, {"status": "IN_PROGRESS"}))
+        clock = iter(range(0, 10_000, threads_handler.THREADS_CONTAINER_POLL_SEC))
+        with patch.object(threads_handler, "_create_container", new=AsyncMock(return_value="c1")):
+            with patch.object(threads_handler, "_publish_container", new=AsyncMock(return_value="p1")) as publish:
+                with patch.object(threads_handler.asyncio, "sleep", new=AsyncMock()):
+                    with patch.object(threads_handler.time, "monotonic", side_effect=lambda: next(clock)):
+                        await threads_handler._publish_post(client, "u", "tok", text="t", image_url="https://s3/i.png")
+        publish.assert_awaited_once()
+        assert (
+            client.get.await_count
+            <= threads_handler.THREADS_MEDIA_PROCESS_WAIT_SEC // threads_handler.THREADS_CONTAINER_POLL_SEC + 2
+        )
 
     @pytest.mark.asyncio
     async def test_text_is_hard_capped_at_the_api_limit(self):
-        client = MagicMock()
+        client = _status_client((200, {"status": "FINISHED"}))
         with patch.object(threads_handler, "_create_container", new=AsyncMock(return_value="c1")) as create:
             with patch.object(threads_handler, "_publish_container", new=AsyncMock(return_value="p1")):
                 await threads_handler._publish_post(client, "u", "tok", text="x" * 900, reply_to_id="rid")
@@ -422,6 +455,8 @@ class TestWireProtocol:
     @staticmethod
     def _client_factory(recorded: list[httpx.Request]):
         def handle(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(200, json={"status": "FINISHED"})
             recorded.append(request)
             if request.url.path.endswith("/threads_publish"):
                 return httpx.Response(200, json={"id": f"published-{len(recorded)}"})
@@ -797,8 +832,10 @@ async def test_e2e_a_retried_reply_that_lands_standalone_is_counted_and_named(mo
             media_id = f"m{len(media)}"
             media[media_id] = len(media) != 2  # root m0, reply m1 ok, reply m2 lands standalone
             return httpx.Response(200, json={"id": media_id})
-        if request.method == "GET":
+        if request.method == "GET" and path.rsplit("/", 1)[-1] in media:
             return httpx.Response(200, json={"is_reply": media[path.rsplit("/", 1)[-1]]})
+        if request.method == "GET":
+            return httpx.Response(200, json={"status": "FINISHED"})
         return httpx.Response(404)
 
     real_client = httpx.AsyncClient
