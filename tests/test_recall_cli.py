@@ -36,6 +36,16 @@ class TestDigest:
         }
         store.get_digest.assert_called_once_with("2026-10-11")
 
+    def test_a_story_that_must_not_link_comes_back_without_its_url(self):
+        # Broker research from Naver: the post names the broker and never links the Naver page.
+        data = _snapshot()
+        data["digest_result"]["content"]["items"][0].update(url="https://stock.naver.com/research/1", show_link=False)
+        store = MagicMock()
+        store.get_digest.return_value = DigestSnapshot.from_dict(data)
+        with patch.object(recall_cli.bootstrap, "memory_store", return_value=store):
+            result, _ = recall_cli.run(["digest", "2026-11-06"])
+        assert result["stories"][0]["url"] == ""
+
     def test_an_unstored_day_succeeds_with_nothing_found(self):
         store = MagicMock()
         store.get_digest.return_value = None

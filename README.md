@@ -80,7 +80,7 @@ uv run python recall_cli.py trends
 
 | `main.py` flag | Effect |
 |----------------|--------|
-| `--sources rss reddit youtube web_search rsshub` | Collect from these sources only (`rsshub` is X) |
+| `--sources rss reddit youtube web_search rsshub naver_research` | Collect from these sources only (`rsshub` is X; `naver_research` is the investing edition's broker research) |
 | `--dry-run` | Print the digest; save and post nothing |
 | `--top-n 5` | Number of stories |
 | `--date 2026-03-28` | Digest date (default: today in `aws.timezone`, KST by default) |

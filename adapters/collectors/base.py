@@ -30,11 +30,10 @@ from shared.constants import BROWSER_USER_AGENT, DIGEST_PERIOD_HOURS
 def _stated_offset(published: str) -> bool:
     """Whether a feed's date string carries its own UTC offset ("+0900", "Z", "GMT", "+09:00")."""
     try:
-        parsed = parsedate_tz(published)
-    except (TypeError, ValueError):
-        parsed = None
-    if parsed is not None:
-        return parsed[9] is not None
+        # Naive for no zone, an unknown one ("KST") or -0000; parsedate_tz reads all of those as UTC.
+        return parsedate_to_datetime(published).tzinfo is not None
+    except (TypeError, ValueError, IndexError):
+        pass
     try:
         return datetime.fromisoformat(published.strip().replace(" ", "T", 1)).tzinfo is not None
     except ValueError:

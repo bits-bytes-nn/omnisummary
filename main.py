@@ -81,6 +81,11 @@ async def main() -> int:
 
         pinned = await fetch_pinned_items(args.pin_url)
         logger.info("Fetched %d pinned item(s) from %d URL(s)", len(pinned), len(args.pin_url))
+        missing = {u.strip() for u in args.pin_url if u.strip()} - {it.url for it in pinned}
+        if missing and not args.dry_run:
+            # A pin is the operator asking for that story: a digest without it is not the one asked for.
+            logger.error("Pinned URL(s) not fetched, nothing written or posted: %s", sorted(missing))
+            return 1
         collected_items = pinned + collected_items
 
     if not collected_items:

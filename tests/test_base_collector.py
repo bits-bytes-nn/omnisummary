@@ -222,7 +222,6 @@ class _FakeClient:
         return False
 
     async def get(self, url):
-        self.requested = url
         if isinstance(self.outcome, Exception):
             raise self.outcome
         return self.outcome

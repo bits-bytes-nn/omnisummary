@@ -399,15 +399,17 @@ class TestApplicationProfileResolution:
             == "global.anthropic.x"
         )
 
-    def test_a_denied_lookup_keeps_the_system_defined_id(self):
+    def test_a_failed_lookup_keeps_the_system_defined_id_and_is_not_cached(self, monkeypatch):
+        # Cached, one throttled lookup pinned a warm container to an id Converse may refuse.
         from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
+        monkeypatch.setattr(H, "_resolution_cache", {})
+        monkeypatch.setattr(H, "_resolve", staticmethod(lambda *a: "global.anthropic.x"))
         session = MagicMock()
-        session.client.side_effect = RuntimeError("AccessDenied")
-        assert (
-            H._application_profile_arn(session, LanguageModelId.CLAUDE_V5_SONNET, "us-west-2", "global.anthropic.x")
-            == "global.anthropic.x"
-        )
+        session.client.side_effect = RuntimeError("ThrottlingException")
+        model = LanguageModelId.CLAUDE_V5_SONNET
+        assert H.get_cross_region_model_id(session, model, "us-west-2") == "global.anthropic.x"
+        assert H._resolution_cache == {}
 
     def test_an_arn_model_id_names_its_provider(self):
         # ChatBedrockConverse refuses an ARN without a provider ("Model provider should be supplied

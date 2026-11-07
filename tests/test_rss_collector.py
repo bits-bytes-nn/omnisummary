@@ -288,3 +288,23 @@ class TestSummaryOnlyEntries:
             items = await c.collect()
         pages.assert_not_awaited()
         assert items[0].text.startswith("a whole post.")
+
+
+@pytest.mark.parametrize("stamp", ["Mon, 02 Nov 2026 10:00:00", "Mon, 02 Nov 2026 10:00:00 KST"])
+def test_a_feed_date_with_no_known_zone_is_read_on_the_digest_clock(stamp):
+    # parsedate_tz reads a missing or unknown zone as UTC: 10:00 KST landed nine hours in the future.
+    from zoneinfo import ZoneInfo
+
+    from adapters.collectors.base import _feed_instant
+
+    instant = _feed_instant({"published": stamp}, ZoneInfo("Asia/Seoul"))
+    assert instant.isoformat() == "2026-11-02T01:00:00+00:00"
+
+
+def test_a_feed_date_with_its_own_offset_keeps_it():
+    from zoneinfo import ZoneInfo
+
+    from adapters.collectors.base import _feed_instant
+
+    instant = _feed_instant({"published": "Mon, 02 Nov 2026 10:00:00 +0000"}, ZoneInfo("Asia/Seoul"))
+    assert instant.isoformat() == "2026-11-02T10:00:00+00:00"

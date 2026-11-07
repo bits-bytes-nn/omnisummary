@@ -464,3 +464,10 @@ def test_ordinary_numbers_and_prose_still_pass():
     from application.comment_replies import unsafe_reply_reason
 
     assert unsafe_reply_reason("영업이익이 3.5% 늘었고 PER은 12.3배예요.", "reader") == ""
+
+
+@pytest.mark.parametrize("hidden", ["­", "͏", "⁡", "᠎", "️", "\U000e0020"])
+def test_a_domain_split_by_an_invisible_character_is_refused(hidden):
+    from application.comment_replies import unsafe_reply_reason
+
+    assert unsafe_reply_reason(f"여기 보세요 evil{hidden}.com", "reader") == "it carries a link or a domain"

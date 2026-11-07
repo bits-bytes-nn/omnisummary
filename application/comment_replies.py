@@ -63,7 +63,7 @@ def pending_comments(
         ):
             continue
         if replies_to.get(c.username, 0) >= max_per_commenter:
-            logger.info("Not answering @%s again under post %s: already answered", c.username, post.id)
+            logger.debug("Not answering @%s again under post %s: already answered", c.username, post.id)
             continue
         if c.parent_id == post.id:
             # A comment on the root may be about any story: the root only lists their titles.
@@ -96,7 +96,14 @@ _BARE_DOMAIN = re.compile(r"(?i)[\w-]+(?:\.|\s+\.\s*|\s*(?:\[\.\]|\(\.\)|\(dot\)
 _SPOKEN_DOT_DOMAIN = re.compile(
     r"(?i)(?<![a-z0-9-])[a-z][a-z0-9-]*(?:\s*[점쩜닷]\s*(?:com|net|org|io|ai|kr|co|me|dev|app|xyz)(?![a-z0-9-])|[점쩜닷]컴)"
 )
-_ZERO_WIDTH = re.compile("[\u200b-\u200f\u2060\ufeff]")
+
+
+def _invisible(ch: str) -> bool:
+    """A character that renders as nothing and can sit inside a domain: every format character (zero
+    widths, soft hyphen, tag characters), the combining grapheme joiner and variation selectors."""
+    return unicodedata.category(ch) == "Cf" or ch == "\u034f" or "\ufe00" <= ch <= "\ufe0f"
+
+
 # Dots a reader can spell to slip a domain past the URL checks: a katakana or hyphenation middle dot, and
 # "[dot]", "(점)". Not "·": Korean prose writes "AI·ML" with it. Not a spaced "닷 컴": "닷컴 버블" is prose.
 _SPELLED_DOT = re.compile(r"[・‧∙]|[\[(]\s*(?:dot|점|쩜|닷)\s*[\])]", re.IGNORECASE)
@@ -107,7 +114,7 @@ _HASHTAG = re.compile(r"(?<![\w#&])#[^\W\d_]")
 
 def unsafe_reply_reason(text: str, commenter: str) -> str:
     """Why `text` must not be published as the account's reply to `commenter`; "" when it may."""
-    text = _ZERO_WIDTH.sub("", unicodedata.normalize("NFKC", text)).replace("。", ".")
+    text = "".join(ch for ch in unicodedata.normalize("NFKC", text) if not _invisible(ch)).replace("。", ".")
     text = _SPELLED_DOT.sub(".", text)
     if URL_RE.search(text) or _BARE_DOMAIN.search(text) or _SPOKEN_DOT_DOMAIN.search(text) or _IP_ADDRESS.search(text):
         return "it carries a link or a domain"

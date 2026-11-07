@@ -36,12 +36,12 @@ THREADS_INDEXING_BUDGET_SEC = 270
 # logged with its body.
 THREADS_REPLY_RETRY_ATTEMPTS = 3
 THREADS_REPLY_RETRY_BACKOFF_SEC = 10
-# Seconds the publish path still needs AFTER the indexing wait: the media-processing sleep the root
-# already paid for plus one reply's full retry ladder. Derived from the constants above — never a
-# second hand-written number that could drift from them — and used only to shorten the indexing
-# budget when the caller supplied a deadline that cannot cover the full 270s.
-THREADS_PUBLISH_RESERVE_SEC = THREADS_MEDIA_PROCESS_WAIT_SEC + THREADS_REPLY_RETRY_ATTEMPTS * (
-    THREADS_REPLY_RETRY_BACKOFF_SEC
+# Seconds the publish path still needs AFTER the indexing wait: one reply's full retry ladder, each
+# attempt waiting for its container. Derived from the constants above — never a second hand-written
+# number that could drift from them — and used only to shorten the indexing budget when the caller
+# supplied a deadline that cannot cover the full 270s.
+THREADS_PUBLISH_RESERVE_SEC = THREADS_REPLY_RETRY_ATTEMPTS * (
+    THREADS_MEDIA_PROCESS_WAIT_SEC + THREADS_REPLY_RETRY_BACKOFF_SEC
 )
 # How long the hosted-image presigned URL stays valid — must outlast the
 # create-container + media-processing window with margin.
@@ -82,11 +82,20 @@ async def _publish_container(client: httpx.AsyncClient, user_id: str, token: str
 
 async def _await_container(client: httpx.AsyncClient, token: str, creation_id: str) -> None:
     """Until the container's status (GET /{container-id}?fields=status) leaves IN_PROGRESS, at most
-    THREADS_MEDIA_PROCESS_WAIT_SEC. A container not visible yet answers 400; that is IN_PROGRESS too."""
+    THREADS_MEDIA_PROCESS_WAIT_SEC. A container not visible yet answers 400; that is IN_PROGRESS too. The
+    check only times the publish: when it cannot be read at all, the publish goes ahead as it used to."""
     deadline = time.monotonic() + THREADS_MEDIA_PROCESS_WAIT_SEC
     while True:
-        resp = await client.get(f"{THREADS_API_BASE}/{creation_id}", params={"fields": "status", "access_token": token})
-        ready = resp.status_code == 200 and resp.json().get("status") != "IN_PROGRESS"
+        try:
+            resp = await client.get(
+                f"{THREADS_API_BASE}/{creation_id}",
+                params={"fields": "status"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            ready = resp.status_code == 200 and resp.json().get("status") != "IN_PROGRESS"
+        except (httpx.HTTPError, ValueError) as e:
+            logger.info("Container status unreadable (%s); publishing", type(e).__name__)
+            return
         if ready or time.monotonic() >= deadline:
             return
         await asyncio.sleep(THREADS_CONTAINER_POLL_SEC)
@@ -311,7 +320,7 @@ async def _publish_root(
             status = e.response.status_code
             retryable = is_media_not_found(e) or status == 429 or status >= 500
             # Room for one more attempt too, or the retry itself eats the reply chain's reserve.
-            attempt_cost = THREADS_REPLY_RETRY_BACKOFF_SEC + (THREADS_MEDIA_PROCESS_WAIT_SEC if image_url else 0)
+            attempt_cost = THREADS_REPLY_RETRY_BACKOFF_SEC + THREADS_MEDIA_PROCESS_WAIT_SEC
             time_left = deadline is None or deadline - time.monotonic() > THREADS_PUBLISH_RESERVE_SEC + attempt_cost
             if retryable and attempt < THREADS_REPLY_RETRY_ATTEMPTS and time_left:
                 logger.info("Threads root attempt %d failed (%s), retrying: %s", attempt, status, error_detail(e))

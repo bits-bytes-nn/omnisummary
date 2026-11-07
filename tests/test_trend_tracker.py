@@ -462,3 +462,14 @@ def test_trend_context_without_notes_shows_titles_only():
     )
     titles_only = TrendTracker(PipelineConfig(trend_context_notes=False), MagicMock(), store)
     assert titles_only.get_trends_context() == "- Compute costs"
+
+
+@pytest.mark.parametrize("blob", ['{"trends": null}', "[]", '[{"title": "x"}]'])
+def test_a_blob_without_a_trend_list_is_kept_aside_not_crashed_on(blob):
+    from tests.fakes import MemoryStateStore
+
+    store = MemoryStateStore()
+    store.write(TRENDS_KEY, blob)
+    tracker = TrendTracker(PipelineConfig(), MagicMock(), store)
+    assert tracker.get_trends_context() == ""
+    assert any(key.startswith("trends.unrecovered-") for key in store.blobs)

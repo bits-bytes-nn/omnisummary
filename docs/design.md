@@ -726,8 +726,8 @@ web-search 항목도 포함한다. URL 호스트를 쓰며 `resolve_origin_key`�
 `gather_collector_results(raise_if_all_failed=True)`와 같은 규칙이다. 같은 판정을
 `ContentRanker.health`(`RankingHealth`)에 남겨 `run_pipeline`이 `DigestResult.ranking_health`로 실어 보내고,
 다이제스트 Lambda가 파이프라인 이후에 별도 SNS 알림으로 게시한다. 배치 하나가 사라진 다이제스트도 겉보기엔
-완전히 정상이기 때문이다. 응답이 스키마 밖이면 빈 결과로 모두 실패한
-것으로 집계한다. 첫 응답과 커버리지 재질의가 둘 다 비면 그 배치를 RuntimeError로 올린다. 여기서
+완전히 정상이기 때문이다. 응답이 스키마 밖이면 그 배치를 반으로 나눠 다시 매기고(아래), 그래도 아무것도 채점되지 않으면
+그 배치를 RuntimeError로 올린다. 여기서
 `[]`를 반환하면 `failures`가 비고 `items_lost`가 0이라 `RankingHealth`가 깨끗해 보이고, 후보 한 배치가 사라진
 날에도 알림이 전부 침묵한다. 핀 복구 경로는 그대로 돌아 그 배치의 핀을 `min_score`로 되살린다.
 
@@ -1216,22 +1216,13 @@ config가 형식을 검증한다)를 싣고 reply에는 붙이지 않는다. 다
 **이미지 호스팅.** Threads는 바이트 업로드를 받지 않고 공개 URL만 fetch하니, PNG를 S3에 올리고 단기 presigned
 URL을 Meta에 한 번 넘긴다(`_upload_image_for_hosting`).
 
-**인덱싱 지연.** 방금 게시된 이미지 root는 곧바로 reply 대상이 되지 못해서 Meta가 "media not found"(code 24 /
-subcode 4279009)를 반환할 수 있다. reply마다 create-container를 하나의 공유 예산
-(`THREADS_INDEXING_BUDGET_SEC`, 약 270초) 안에서 재시도한다. 비주얼 Lambda의 15분 타임아웃이 총량을 bound한다.
-
-**root 준비 상태를 먼저 폴링하지는 않는다.** 값싼 GET으로 root가 addressable해질 때까지 기다리는 단계는 이
-지연을 구조적으로 막지 못한다. 82건의 code-24 실패에서 `error_user_msg`를 디코딩해보면 Meta가 지목하는 media
-id는 root가 아니라 **reply 자신의 create-container**다. 실측도 같은 방향이다. 30회 실행에서 "root가 예산 안에
-addressable해지지 않았다"는 **0번**인 반면 reply 재시도는 25일간 **77번** 발생했고, 그 GET은 매번 첫 시도에 200을
-돌려준다. 77건을 실제로 회복시키는 것은 reply 쪽 재시도(`_publish_reply_with_retry`, 기본 3회)와 위의 공유
-예산이다.
-
-**컨테이너는 FINISHED가 된 뒤에 게시한다(`_await_container`, 2026-11-07).** 재시도는 매번 새 컨테이너를 만들고 곧바로
-게시해서 같은 경쟁을 다시 했다. 11-06 두 판에서 code 24가 37번 나와 답글 3건이 빠졌는데, 그때 "없다"던 컨테이너 5개는 다음 날
-모두 `FINISHED`였다. 그래서 텍스트와 이미지 모두 만든 컨테이너의 상태(`GET /{container-id}?fields=status`)를
-`THREADS_CONTAINER_POLL_SEC` 간격으로 확인해 `IN_PROGRESS`를 벗어나면 게시한다. 아직 보이지 않는 컨테이너가 답하는 400도
-진행 중으로 본다. 이미지 컨테이너에 걸던 30초 고정 대기는 같은 상한(`THREADS_MEDIA_PROCESS_WAIT_SEC`)의 확인으로 바뀌었다.
+**컨테이너는 처리가 끝난 뒤에 게시한다(`_await_container`).** 텍스트든 이미지든 만든 컨테이너의 상태
+(`GET /{container-id}?fields=status`)를 `THREADS_CONTAINER_POLL_SEC`(3초) 간격으로, 최대 `THREADS_MEDIA_PROCESS_WAIT_SEC`(30초)
+확인해 `IN_PROGRESS`를 벗어나면 게시한다. 아직 보이지 않는 컨테이너가 답하는 400도 진행 중으로 보고, 상태를 읽지 못하면
+기다리지 않고 게시한다. code 24 / subcode 4279009("media not found")가 지목하는 id는 root가 아니라 reply 자신의 컨테이너다.
+만들자마자 게시하던 때에는 재시도가 새 컨테이너를 또 곧바로 게시해서 같은 경쟁을 반복했다(2026-11-06 두 판에서 37번, 답글 3건
+누락. 그 컨테이너들은 다음 날 모두 `FINISHED`였다). 그래도 code 24가 오면 reply는 하나의 공유 예산
+(`THREADS_INDEXING_BUDGET_SEC`, 270초) 안에서 다시 시도하고, 다른 일시 오류는 `THREADS_REPLY_RETRY_ATTEMPTS`(3)번에서 멈춘다.
 
 **per-reply best-effort와 전달량 회계(`ThreadsDelivery`).** reply 게시는 건별로 try/except다. 한 reply가
 실패해도 나머지를 포기하지 않아 댓글 chain이 중간에 끊기지 않는다. 반환값은 bool이 아니라 root를 포함한
@@ -1842,7 +1833,7 @@ no-op이다.
 `run(deadline=...)`에서 `_post_threads`, `post_to_threads`로, 그리고 이미지 생성기로 흘린다.
 `deadline=None`이면(로컬 실행과 `main.py`, `research_cli.py`) 아무것도 깎지 않는다. 딜라인이 있을 때만 인덱싱 예산이
 `min(270초, 남은 시간 − 게시 예비분)`으로 줄고(예비분 `THREADS_PUBLISH_RESERVE_SEC`은
-`THREADS_MEDIA_PROCESS_WAIT_SEC`과 reply 재시도 상수에서 산출한다), 남은 시간이 충분하면 270초를 절대 깎지
+reply 한 건의 재시도 사다리이고, 시도마다 컨테이너 대기 `THREADS_MEDIA_PROCESS_WAIT_SEC`을 더해 산출한다), 남은 시간이 충분하면 270초를 절대 깎지
 않는다. 스토리를 잃는 쪽은 인덱싱을 오래 기다리는 것이 아니라 일찍 포기하는 것이다. 이미지 쪽에서는 moderation
 재렌더(추가 `visual_image_timeout_sec` 한 판)를 시간이 없으면 포기한다.
 
@@ -2103,8 +2094,8 @@ content_type이 다운스트림까지 일관되게 전달되게 한다.
 **품질 등급은 config가 못박는다.** `quality`를 비우면 OpenAI의 `auto`가 장당 단가가 몇 배 다른 등급 중 하나를
 골라 청구가 불확정이고, 렌더 로그도 무엇을 샀는지 말하지 못한다. 등급은 컷 안 한국어 문장의 가독성도 정한다.
 그래서 `visual_image_quality`를 `"xhigh"`로 고정하고, 타입을 low/medium/high/xhigh/max/auto와 빈 문자열로 좁혀 오타가 config
-로드에서 걸리게 한다. 렌더는 응답이 보고하는 실제 등급과 과금 토큰 수를 로그에 남긴다(`_usage_summary`. usage가
-없거나 필드명이 바뀌면 `"unknown"`으로 degrade한다).
+로드에서 걸리게 한다. 렌더는 응답이 보고하는 실제 등급과 과금 토큰 수를 로그에 남긴다(`image_usage`. usage가
+없거나 필드명이 바뀌면 `tokens=unknown`으로 남긴다).
 
 OpenAI 키(`resolve_secret`으로 env를 먼저, 그다음 SSM에서 해석한다)가 없으면 우아하게 비활성화된다.
 

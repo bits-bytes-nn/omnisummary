@@ -1,4 +1,4 @@
-"""Deep research on one AI/ML topic, for OpenClaw and other local callers.
+"""Deep research on one AI/ML or investing topic (`--edition invest`), for OpenClaw and other local callers.
 
 Prints exactly ONE JSON object on stdout; every log line goes to stderr. Exit codes: 0 succeeded,
 1 failed, 2 rejected input. Publishes to Threads only with `--publish threads`.

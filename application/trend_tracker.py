@@ -80,9 +80,13 @@ class TrendTracker:
         """(the trends that still validate, whether anything was lost)."""
         try:
             data = json.loads(raw)
-            raw_trends = data.get("trends", []) if isinstance(data, dict) else []
         except (json.JSONDecodeError, ValueError):
             logger.error("Trends blob is not valid JSON (%s); running without trend history", err)
+            return TrendMemory(), True
+        raw_trends = data.get("trends") if isinstance(data, dict) else None
+        if not isinstance(raw_trends, list):
+            # Not the shape recovery reads (a null list, a bare array): kept aside like any unreadable blob.
+            logger.error("Trends blob has no trend list (%s); running without trend history", err)
             return TrendMemory(), True
         recovered: list[Trend] = []
         for rt in raw_trends:
