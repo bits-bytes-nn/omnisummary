@@ -222,6 +222,10 @@ pipeline:
   # the market comes before the event report (2026-11-06: 7-5 blind in both orders on 6 days, with an
   # "analysis" criterion; 5 analysis items were in the 11-06 pool and 1 shipped).
   selection_guidance: "Read the stories as one set: when two candidates are close, take the one where a named analyst, house or investor reads the market over a report of the event itself, then the one that adds a story the set lacks."
+  # Two of the five are the best-scored broker research note or X post in the pool, a note with its PDF's
+  # full text (2026-11-07, 7 stored days: 12-2 blind in both orders, press stories 22 -> 17 of 35).
+  primary_quota: 2
+  primary_source_types: ["research", "x"]
   ranking_criteria: |-
     1. Read of the Market — a reasoned read of where money is going: a named analyst's or house's thesis, a rating or target change with its reasons, a flows, positioning or earnings read, a central-bank decision or an official statistic. A report that a price moved or a deal was announced scores on what it explains, not on the size of the move.
     2. Investor Value — would it change how an individual investor understands a holding, a sector or the market, in Korea, the US, globally or in crypto?

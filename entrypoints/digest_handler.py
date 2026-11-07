@@ -135,6 +135,7 @@ async def _run(event: dict[str, Any] | None = None) -> None:
         memory_store=bootstrap.memory_store,
         sibling_memory=lambda: bootstrap.sibling_memory_stores(config),
         paid_check=bootstrap.paid_check(),
+        note_text=bootstrap.note_text(config),
     )
 
     items, ranked_items, digest = result

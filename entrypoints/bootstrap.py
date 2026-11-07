@@ -25,13 +25,14 @@ from adapters.collectors import (
     WebSearchCollector,
     YouTubeCollector,
 )
+from adapters.collectors.naver_research import note_text as research_note_text
 from adapters.memory import create_memory_store
 from adapters.openai_images import OpenAIImageRenderer
 from adapters.research_backends import WebResearchSources, access_controlled
 from adapters.state_store import create_state_store
 from adapters.threads import ThreadsGateway
 from application.daily_visual import DailyVisualMaker
-from application.ports import ContentSource, LanguageModels, MemoryStore, PaidPageCheck, StateStore
+from application.ports import ContentSource, LanguageModels, MemoryStore, NoteText, PaidPageCheck, StateStore
 from application.research import ResearchPorts
 from shared import Config, logger
 
@@ -47,6 +48,10 @@ def language_models(config: Config) -> BedrockLanguageModelFactory:
 
 def paid_check() -> PaidPageCheck:
     return functools.partial(access_controlled, refusals=False)
+
+
+def note_text(config: Config) -> NoteText:
+    return functools.partial(research_note_text, timeout=config.collectors.naver_research.request_timeout)
 
 
 def state_store(config: Config) -> StateStore:

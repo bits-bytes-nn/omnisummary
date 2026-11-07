@@ -9,9 +9,10 @@ import pytest
 
 from adapters.collectors import naver_research
 from adapters.collectors.naver_research import NaverResearchCollector
-from domain.models import DigestContent, DigestItem
+from domain.models import CollectedItem, DigestContent, DigestItem
 from domain.renderers import render_threads_posts
 from shared.config import NaverResearchCollectorConfig
+from shared.constants import SourceType
 
 SEOUL = ZoneInfo("Asia/Seoul")
 COMPANY = {
@@ -228,3 +229,45 @@ async def test_rows_that_all_lack_a_broker_fail_the_category(monkeypatch):
     from adapters.collectors.base import PARK_META_ACCOUNTS_FAILED
 
     assert collector.run_meta[PARK_META_ACCOUNTS_FAILED] == 1  # a failure, not a quiet empty
+
+
+class TestNoteText:
+    @staticmethod
+    def _note(**metadata) -> CollectedItem:
+        return CollectedItem(
+            item_id="naver-research-invest-1",
+            source_type=SourceType.RESEARCH,
+            title="한화투자증권: 11월 전략",
+            url="https://stock.naver.com/research/invest/1",
+            metadata={"research_category": "invest", "nid": 1, **metadata},
+        )
+
+    @staticmethod
+    def _transport(detail: dict, pdf_status: int = 200):
+        def handle(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "stock.naver.com":
+                assert request.url.path.endswith("/researches/v2/invest/1")
+                return httpx.Response(200, json=detail)
+            return httpx.Response(pdf_status, content=b"%PDF-1.4 fake")
+
+        return httpx.MockTransport(handle)
+
+    @pytest.mark.asyncio
+    async def test_the_attached_pdf_is_read(self, monkeypatch):
+        transport = self._transport({"attachUrl": "https://stock.pstatic.net/stock-research/invest/1.pdf"})
+        real = httpx.AsyncClient
+        monkeypatch.setattr(naver_research.httpx, "AsyncClient", lambda **kw: real(transport=transport))
+        monkeypatch.setattr(naver_research, "_pdf_text", lambda data: "본문" if data.startswith(b"%PDF") else "")
+        assert await naver_research.note_text(self._note(), timeout=5) == "본문"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("detail", "pdf_status"), [({}, 200), ({"attachUrl": "https://x/1.pdf"}, 403)])
+    async def test_no_attachment_or_a_refusal_reads_as_nothing(self, monkeypatch, detail, pdf_status):
+        transport = self._transport(detail, pdf_status)
+        real = httpx.AsyncClient
+        monkeypatch.setattr(naver_research.httpx, "AsyncClient", lambda **kw: real(transport=transport))
+        assert await naver_research.note_text(self._note(), timeout=5) == ""
+
+    @pytest.mark.asyncio
+    async def test_a_merged_consensus_item_has_no_single_note_to_read(self):
+        assert await naver_research.note_text(self._note(notes=3), timeout=5) == ""

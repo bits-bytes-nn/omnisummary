@@ -221,6 +221,12 @@ class PaidPageCheck(Protocol):
     async def __call__(self, urls: list[str]) -> set[str]: ...
 
 
+class NoteText(Protocol):
+    """The full text of a research note (its attached document), "" when it cannot be read."""
+
+    async def __call__(self, item: CollectedItem) -> str: ...
+
+
 class ContentSource(Protocol):
     """One collector. After collect(), `health_issue` is (STALE or DEGRADED, why) when its items are
     usable but not healthy (a stalled sync, a fraction of its inputs answering), else None."""

@@ -55,6 +55,10 @@ async def nothing_paid(urls: list[str]) -> set[str]:
     return set()
 
 
+async def no_note_text(item) -> str:
+    return ""
+
+
 def fake_models() -> MagicMock:
     """A LanguageModels whose truncator is a real no-op: a bare MagicMock would put its repr into a
     prompt while every assertion still passed."""

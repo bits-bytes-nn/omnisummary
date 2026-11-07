@@ -339,3 +339,9 @@ class TestCollectionWindowCoversTheGapBetweenRuns:
         # A 06:00 KST run is 42h from the previous run's clock time to this run's reference midnight.
         with pytest.raises(ValidationError, match="42h"):
             Config(aws={"digest_cron_hour": "21"})  # 21:00 UTC = 06:00 KST
+
+
+@pytest.mark.parametrize(("quota", "types"), [(2, []), (5, ["research"])])
+def test_a_primary_quota_needs_its_sources_and_leaves_room(quota, types):
+    with pytest.raises(ValueError):
+        PipelineConfig(primary_quota=quota, primary_source_types=types, top_n=5)

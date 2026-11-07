@@ -5,12 +5,14 @@ date, a summary and, for company notes, the stock, the rating and the target pri
 from __future__ import annotations
 
 import asyncio
+import io
 from datetime import datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
 from bs4 import BeautifulSoup
+from pypdf import PdfReader
 
 from domain.models import CollectedItem
 from shared import SourceType, logger, retry_async
@@ -32,6 +34,9 @@ PAGE_URL = "https://stock.naver.com/research/{category}/{nid}"
 _PAGE_SIZE = 50
 # writeDate is a Seoul date whatever the deployment's zone.
 _SEOUL = ZoneInfo("Asia/Seoul")
+# A note's attached PDF (stock.pstatic.net, public) is read at most this large; a chart-heavy outlook runs
+# to a few MB.
+_NOTE_MAX_BYTES = 30_000_000
 
 
 class NaverResearchCollector(BaseCollector):
@@ -226,3 +231,35 @@ def _one_item_per_stock_and_day(items: list[CollectedItem]) -> list[CollectedIte
             )
         )
     return out
+
+
+async def note_text(item: CollectedItem, *, timeout: float) -> str:
+    """The text of a research note's attached PDF, which the detail API names (`attachUrl`); "" for a
+    merged consensus item (no single note), a note without an attachment, or anything unreadable. The
+    PDF is public; a refusal is not retried around."""
+    category, nid = item.metadata.get("research_category"), item.metadata.get("nid")
+    if not (category and nid) or item.metadata.get("notes"):
+        return ""
+    try:
+        async with httpx.AsyncClient(headers=FEED_FETCH_HEADERS, timeout=timeout, follow_redirects=True) as client:
+            detail = await client.get(f"{API_BASE}/{category}/{nid}")
+            detail.raise_for_status()
+            url = detail.json().get("attachUrl")
+            if not url:
+                return ""
+            body = bytearray()
+            async with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                async for chunk in resp.aiter_bytes():
+                    body += chunk
+                    if len(body) > _NOTE_MAX_BYTES:
+                        logger.warning("Research note PDF over %d bytes, not read: %s", _NOTE_MAX_BYTES, url)
+                        return ""
+        return await asyncio.to_thread(_pdf_text, bytes(body))
+    except Exception as e:
+        logger.warning("Research note text unreadable for '%s' (%s)", item.title[:60], e)
+        return ""
+
+
+def _pdf_text(data: bytes) -> str:
+    return "\n".join((page.extract_text() or "") for page in PdfReader(io.BytesIO(data)).pages).strip()

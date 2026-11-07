@@ -17,6 +17,8 @@ dependencies = [
     "openai>=1.55.0",
     "langchain-core>=1.4.7,<2.0.0",
     "pydantic>=2.12.0",
+    # Research notes' attached PDFs (the investing edition's primary stories): text only, pure Python.
+    "pypdf>=6.0.0",
     "python-dotenv>=1.1.1",
     # Declared because adapters/collectors/youtube.py imports it directly: youtube-transcript-api's fetch is
     # synchronous and builds a Session with NO socket timeout, so the only real bound is a Session
