@@ -342,6 +342,11 @@ class TestDeclaresPaid:
         # Each read as paid under the old pattern match; failing open lets Tavily extract a paid page.
         assert rb.declares_paid(html, self.PAGE)
 
+    def test_an_unparseable_entity_url_does_not_raise(self):
+        # A ValueError here would abort the whole ranking run, not just this page.
+        html = self._ld({"@type": "NewsArticle", "isAccessibleForFree": False, "url": "https://[bad"})
+        assert rb.declares_paid(html, self.PAGE) is False
+
     def test_a_related_articles_entity_or_text_mentioning_the_field_is_not_the_page(self):
         # A paid related-story card on a free page, and the field named in body text, both read as paid
         # under the old pattern match over the raw HTML.

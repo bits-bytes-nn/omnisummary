@@ -157,10 +157,18 @@ def declares_paid(html: str, page_url: str) -> bool:
             if not _is_false(entity.get("isAccessibleForFree")):
                 continue
             named = [_ld_url(entity.get(key)) for key in ("url", "mainEntityOfPage")]
-            named = [normalize_url(urljoin(page_url, u)) for u in named if u]
+            named = [_resolve(page_url, u) for u in named if u]
             if not named or page in named:
                 return True
     return False
+
+
+def _resolve(page_url: str, url: str) -> str:
+    try:
+        return normalize_url(urljoin(page_url, url))
+    except ValueError:
+        # A URL urljoin cannot parse names no page this one could be.
+        return url
 
 
 # Only for a JSON-LD block that does not parse: the declaration as text.
