@@ -225,7 +225,7 @@ Exit codes for both CLIs: `0` succeeded, `1` failed, `2` rejected input (also re
 
 ### Steps
 
-Before you start: `config/config.yaml` must exist, `.env` must hold `ALERT_EMAIL`, and `<region>` below is your `aws.region`. If you will ever use X or YouTube transcripts, create a bucket yourself and set `aws.state_bucket_name` before the first deploy: the local sync writes only to that bucket. Never switch the key after the first deploy, because on a non-prod stage the bucket the stack created is then deleted.
+Before you start: `config/config.yaml` must exist, `.env` must hold `ALERT_EMAIL`, and `<region>` below is your `aws.region`. The stack creates and keeps the state bucket (`aws.state_bucket_name`, or `<project>-<stage>-state` when empty; versioned, private, TLS-only, retained when the stack is deleted). Name it in the config if you will ever use X or YouTube transcripts: the local sync and local runs write only to a bucket named there.
 
 Use the repo's pinned CDK CLI (`npm install`, then `npx cdk`), not a global `cdk`. On a fresh account the order matters, because the foundation stack owns the ECR repository the Lambdas pull from.
 
@@ -292,7 +292,7 @@ Bedrock on-demand usage has no taggable resource. `scripts/put_inference_profile
 
 ### Local sync for X and YouTube
 
-X and YouTube transcripts block datacenter IPs, so collect them on your machine shortly before the digest runs. The sync writes to `aws.state_bucket_name`, which must have been set before the first deploy (see Deploying to AWS); do not add it to a stack that created its own bucket. For X also set `collectors.rsshub.enabled: true` and its `accounts`. An unattended cron should use the `S3_SYNC_*` keys in `.env`, since SSO sessions expire.
+X and YouTube transcripts block datacenter IPs, so collect them on your machine shortly before the digest runs. The sync writes to `aws.state_bucket_name` (see Deploying to AWS). For X also set `collectors.rsshub.enabled: true` and its `accounts`. An unattended cron should use the `S3_SYNC_*` keys in `.env`, since SSO sessions expire.
 
 ```bash
 crontab -e

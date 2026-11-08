@@ -2132,8 +2132,7 @@ OpenAI 키(`resolve_secret`으로 env를 먼저, 그다음 SSM에서 해석한�
 
 ### `foundation_stack`
 
-ECR 리포(`{project}-{stage}-agent`, 다이제스트 이미지가 들어간다), S3 상태 버킷(CDK가 생성하는 경우
-S3-managed 암호화와 버저닝, 퍼블릭 차단, SSL 강제; prod가 아닌 스테이지에서는 DESTROY와 auto_delete_objects라 나중에 `state_bucket_name`을 넣으면 삭제된다), SNS 알림
+ECR 리포(`{project}-{stage}-agent`, 다이제스트 이미지가 들어간다), S3 상태 버킷(스택이 항상 만들고 소유한다. `state_bucket_name` 또는 `<project>-<stage>-state`, S3-managed 암호화와 버저닝(이전 버전 30일), 퍼블릭 차단, SSL 강제, 스택을 지워도 남는다. 계정 공용 버킷을 쓰던 때에는 이 보호가 하나도 걸리지 않았다), SNS 알림
 토픽과 선택적 이메일 구독, 비동기 DLQ, AgentCore Memory 리소스(전략 없음, 실행 역할 없음), 그리고 Lambda 실행
 역할을 만든다.
 

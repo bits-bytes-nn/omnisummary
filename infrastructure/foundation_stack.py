@@ -11,7 +11,7 @@ from aws_cdk.aws_bedrockagentcore import CfnMemory
 from constructs import Construct
 
 from shared import Config
-from shared.naming import digest_memory_name
+from shared.naming import digest_memory_name, state_bucket_name
 
 
 class OmniSummaryFoundationStack(Stack):
@@ -30,25 +30,24 @@ class OmniSummaryFoundationStack(Stack):
 
         project_name = config.aws.project_name
         stage = config.aws.stage
-        is_prod = stage == "prod"
 
         Tags.of(self).add("Project", project_name)
         Tags.of(self).add("Stage", stage)
 
-        if config.aws.state_bucket_name:
-            self.state_bucket = s3.Bucket.from_bucket_name(self, "StateBucket", config.aws.state_bucket_name)
-        else:
-            self.state_bucket = s3.Bucket(
-                self,
-                "StateBucket",
-                bucket_name=f"{project_name}-{stage}-state",
-                removal_policy=RemovalPolicy.RETAIN if is_prod else RemovalPolicy.DESTROY,
-                auto_delete_objects=not is_prod,
-                encryption=s3.BucketEncryption.S3_MANAGED,
-                block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
-                enforce_ssl=True,
-                versioned=True,
-            )
+        # The stack owns the state bucket, on every stage: it holds the post ledger that stops a second
+        # post, so it is versioned (old versions kept 30 days), retained when the stack goes, private and
+        # TLS-only. A shared pre-existing bucket carried none of that.
+        self.state_bucket = s3.Bucket(
+            self,
+            "StateBucket",
+            bucket_name=state_bucket_name(config.aws.state_bucket_name, project_name, stage),
+            removal_policy=RemovalPolicy.RETAIN,
+            encryption=s3.BucketEncryption.S3_MANAGED,
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            enforce_ssl=True,
+            versioned=True,
+            lifecycle_rules=[s3.LifecycleRule(noncurrent_version_expiration=Duration.days(30))],
+        )
 
         self.ecr_repo = ecr.Repository(
             self,
@@ -142,9 +141,8 @@ class OmniSummaryFoundationStack(Stack):
         for role in (*pipeline_roles, self.comment_reply_role):
             role.add_to_policy(bedrock_invoke_statement)
             role.add_to_policy(bedrock_profile_statement)
-        # Scope object access to the project's own prefix instead of the entire bucket. The bucket
-        # can be a pre-existing shared one (config.aws.state_bucket_name), so a bucket-wide
-        # grant hands every other tenant's objects to this role. The root prefix provably covers
+        # Scope object access to the project's own prefix instead of the entire bucket, and per edition
+        # below. The root prefix provably covers
         # everything the project touches: {prefix}/digest_state/* (state_store), {prefix}/<file>
         # park files (adapters.collectors.base.park_file_key) and {prefix}/threads/*.png (daily visual).
         # Exactly the calls the code makes: get_object/put_object (and the presigned GET Threads
