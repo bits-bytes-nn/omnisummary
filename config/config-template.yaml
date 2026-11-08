@@ -168,6 +168,7 @@ aws:
   stage: "dev"
   state_bucket_name: ""    # The bucket the stack creates and owns for state (empty: <project>-<stage>-state). Local runs use S3 only when it is named here; never change it after the first deploy
   monthly_budget_usd: 0    # Monthly budget on spend tagged Project=<project_name> (0: none); alerts go to ALERT_EMAIL
+  s3_sync_user: ""        # The IAM user the local X/YouTube sync runs as; the stack grants it PutObject on the state prefix
   s3_prefix: ""            # S3 key prefix (e.g., "omnisummary")
   # How often the comment-reply Lambda looks for new comments.
   comment_reply_interval_minutes: 60

@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 import time
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
@@ -136,34 +137,45 @@ def _host(url: str) -> str:
 
 def declares_paid(html: str, page_url: str) -> bool:
     """Whether the page declares ITSELF paid: schema.org isAccessibleForFree false on its own entity, in
-    JSON-LD (an entity naming no URL, or naming this page) or in microdata. A related article's entity on
-    the same page names another URL and does not count."""
+    JSON-LD (an entity naming no URL, or naming this page, relative URLs resolved) or in microdata. A
+    related article's entity on the same page names another URL and does not count. A JSON-LD block that
+    does not parse (a raw newline, a trailing comma, a comment wrapper) is read for the declaration as
+    text: failing open there would let a paid page through."""
     soup = BeautifulSoup(html, "html.parser")
     if any(_is_false(m.get("content")) for m in soup.find_all("meta", attrs={"itemprop": "isAccessibleForFree"})):
         return True
     page = normalize_url(page_url)
-    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+    for script in soup.find_all("script", type=lambda t: bool(t) and t.split(";")[0].strip() == "application/ld+json"):
+        text = (script.string or "").strip().removeprefix("<!--").removesuffix("-->")
         try:
-            data = json.loads(script.string or "")
+            data = json.loads(text, strict=False)
         except ValueError:
+            if _NOT_FREE.search(text):
+                return True
             continue
         for entity in _ld_entities(data):
             if not _is_false(entity.get("isAccessibleForFree")):
                 continue
             named = [_ld_url(entity.get(key)) for key in ("url", "mainEntityOfPage")]
-            named = [normalize_url(u) for u in named if u]
+            named = [normalize_url(urljoin(page_url, u)) for u in named if u]
             if not named or page in named:
                 return True
     return False
+
+
+# Only for a JSON-LD block that does not parse: the declaration as text.
+_NOT_FREE = re.compile(r'"isAccessibleForFree"\s*:\s*"?(?:https?://schema\.org/)?false"?', re.IGNORECASE)
 
 
 def _ld_entities(data: object) -> list[dict]:
     if isinstance(data, list):
         return [e for item in data for e in _ld_entities(item)]
     if isinstance(data, dict):
-        # The page's own entities: the top level, a @graph's members, and the article a WebPage names as
-        # its mainEntity (Nature marks a paid article only there).
-        return [data, *_ld_entities(data.get("@graph", [])), *_ld_entities(data.get("mainEntity", []))]
+        # The page's own entities: the top level, a @graph's members, the article a WebPage names as its
+        # mainEntity (Nature marks a paid article only there) and the parts it declares (a paywalled
+        # section as hasPart, Google's documented form).
+        nested = [data.get("@graph", []), data.get("mainEntity", []), data.get("hasPart", [])]
+        return [data, *(e for n in nested for e in _ld_entities(n))]
     return []
 
 
@@ -174,7 +186,9 @@ def _ld_url(value: object) -> str:
 
 
 def _is_false(value: object) -> bool:
-    return value is False or (isinstance(value, str) and value.strip().lower() == "false")
+    if value is False:
+        return True
+    return isinstance(value, str) and value.strip().lower().rsplit("/", 1)[-1] == "false"
 
 
 async def access_controlled(urls: list[str], *, refusals: bool = True) -> set[str]:
