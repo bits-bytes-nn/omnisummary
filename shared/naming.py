@@ -19,3 +19,8 @@ def metric_dimensions(project: str, stage: str, edition: str = "") -> dict[str, 
     edition (edition "") keeps exactly the map its alarms were built with, and another edition adds one."""
     pairs = (("Project", project), ("Stage", stage), ("Edition", edition))
     return {name: value for name, value in pairs if value}
+
+
+def state_bucket_name(configured: str, project_name: str, stage: str) -> str:
+    """The state bucket the foundation stack creates and owns: the configured name, else <project>-<stage>-state."""
+    return configured or f"{project_name}-{stage}-state"

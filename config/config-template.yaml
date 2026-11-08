@@ -166,7 +166,7 @@ aws:
   profile: ""
   project_name: "omnisummary"
   stage: "dev"
-  state_bucket_name: ""    # Set BEFORE the first deploy if X/YouTube will ever be synced, and never change it after: empty makes the stack create <project>-<stage>-state, which a later value deletes on a non-prod stage
+  state_bucket_name: ""    # The bucket the stack creates and owns for state (empty: <project>-<stage>-state). Local runs use S3 only when it is named here; never change it after the first deploy
   s3_prefix: ""            # S3 key prefix (e.g., "omnisummary")
   # How often the comment-reply Lambda looks for new comments.
   comment_reply_interval_minutes: 60

@@ -107,6 +107,31 @@ class TestFoundationStack:
             {"Protocol": "email", "Endpoint": "alerts@example.com"},
         )
 
+    def test_a_named_state_bucket_is_created_and_kept_not_imported(self):
+        # A pre-existing shared bucket carried none of the protections below and could be written by any
+        # other role in the account; the stack owns the bucket it names.
+        config = Config.from_yaml(str(CONFIG_TEMPLATE))
+        config.aws.state_bucket_name = "omnisummary-test-state"
+        foundation = Template.from_stack(
+            OmniSummaryFoundationStack(
+                App(), "fnd-named", config=config, env=Environment(account="123456789012", region=config.aws.region)
+            )
+        )
+        foundation.has_resource(
+            "AWS::S3::Bucket",
+            {
+                "Properties": Match.object_like(
+                    {
+                        "BucketName": "omnisummary-test-state",
+                        "VersioningConfiguration": {"Status": "Enabled"},
+                        "LifecycleConfiguration": Match.any_value(),
+                    }
+                ),
+                "DeletionPolicy": "Retain",
+                "UpdateReplacePolicy": "Retain",
+            },
+        )
+
     def test_s3_bucket_encrypted_and_versioned(self, templates):
         foundation, _ = templates
         foundation.has_resource_properties(
