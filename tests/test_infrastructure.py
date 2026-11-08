@@ -701,3 +701,25 @@ def test_no_budget_is_created_without_an_amount():
         )
     )
     foundation.resource_count_is("AWS::Budgets::Budget", 0)
+
+
+def test_the_sync_user_gets_put_object_on_the_state_prefix_only():
+    # Managed by hand, the sync user's grant still pointed at the old bucket after the state moved.
+    config = Config.from_yaml(str(CONFIG_TEMPLATE))
+    config.aws.s3_sync_user = "sync-user"
+    config.aws.s3_prefix = "omnisummary"
+    foundation = Template.from_stack(
+        OmniSummaryFoundationStack(
+            App(), "fnd-sync", config=config, env=Environment(account="123456789012", region=config.aws.region)
+        )
+    )
+    foundation.has_resource_properties(
+        "AWS::IAM::Policy",
+        {
+            "Users": ["sync-user"],
+            "PolicyDocument": {
+                "Statement": [Match.object_like({"Action": "s3:PutObject", "Resource": Match.any_value()})],
+                "Version": "2012-10-17",
+            },
+        },
+    )

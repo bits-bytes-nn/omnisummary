@@ -5,8 +5,11 @@
 # config/*.yaml and .env (they are baked in / read by deploy.py) and AWS credentials for the profile.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-PROFILE="${AWS_PROFILE_NAME:-research}"
+# The account and region come from the config (aws.profile, aws.region), as for every other tool here: a shell's
+# AWS_PROFILE is often the model-calling one and may be another account.
+PROFILE="$(uv run python -c 'from shared import Config; print(Config.load().aws.profile)')"
 REGION="$(uv run python -c 'from shared import Config; print(Config.load().aws.region)')"
+[ -n "$PROFILE" ] || { echo "aws.profile is empty in config/config.yaml" >&2; exit 1; }
 
 [ -z "$(git status --porcelain)" ] || { echo "Working tree is not clean" >&2; exit 1; }
 git fetch -q origin main

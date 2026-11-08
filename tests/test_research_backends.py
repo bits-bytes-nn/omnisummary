@@ -326,6 +326,22 @@ class TestDeclaresPaid:
         assert rb.declares_paid('<meta itemprop="isAccessibleForFree" content="false">', self.PAGE)
         assert rb.declares_paid(self._ld({"@type": "WebPage", "mainEntity": {"isAccessibleForFree": False}}), self.PAGE)
 
+    @pytest.mark.parametrize(
+        "html",
+        [
+            '<script type="application/ld+json; charset=utf-8">{"isAccessibleForFree": false}</script>',
+            '<script type="application/ld+json">{"headline": "a\nb", "isAccessibleForFree": false,}</script>',
+            '<script type="application/ld+json"><!-- {"isAccessibleForFree": "False"} --></script>',
+            '<script type="application/ld+json">{"@type": "NewsArticle", "hasPart": {"@type": "WebPageElement",'
+            ' "isAccessibleForFree": false, "cssSelector": ".paywall"}}</script>',
+            '<script type="application/ld+json">{"isAccessibleForFree": false, "url": "/a"}</script>',
+            '<script type="application/ld+json">{"isAccessibleForFree": "https://schema.org/False"}</script>',
+        ],
+    )
+    def test_real_world_shapes_of_a_paid_declaration_are_read(self, html):
+        # Each read as paid under the old pattern match; failing open lets Tavily extract a paid page.
+        assert rb.declares_paid(html, self.PAGE)
+
     def test_a_related_articles_entity_or_text_mentioning_the_field_is_not_the_page(self):
         # A paid related-story card on a free page, and the field named in body text, both read as paid
         # under the old pattern match over the raw HTML.
