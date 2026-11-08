@@ -54,10 +54,10 @@ class DigestGenerator:
         # The ranker hands over top_n + buffer candidates; the editor picks the strongest
         # target_count distinct stories, keeping one of any same-event pair.
         target_count = min(self.config.top_n, len(ranked_items))
-        # A user can pin more URLs than top_n. Both the headline (items[0]) and every pinned item
-        # must survive the trim, so raise the target to fit them all rather than silently dropping
-        # pins (violating the --pin-url guarantee) or the headline (desyncing lead/visual).
-        pin_count = sum(1 for r in ranked_items if r.item.metadata.get("pinned"))
+        # Items the editor must carry (--pin-url pins and the edition's primary quota) can outnumber
+        # top_n. Both the headline (items[0]) and each of them must survive the trim, so the target
+        # rises to fit them rather than dropping one or the headline (desyncing lead/visual).
+        pin_count = sum(1 for r in ranked_items if must_carry(r.item))
         min_needed = min(len(ranked_items), pin_count + 1)  # +1 reserves the headline slot
         if min_needed > target_count:
             logger.info("Raising digest target %d → %d to fit %d pinned item(s)", target_count, min_needed, pin_count)
@@ -113,15 +113,15 @@ class DigestGenerator:
                 content.items = self._trim_keeping_pinned(content.items, target_count, ranked_items)
                 sources = [source_of[id(it)] for it in content.items]
             shipped = {normalize_url(src.url) for src in sources}
-            missing = [
-                r.item.url
-                for r in ranked_items
-                if r.item.metadata.get("pinned") and normalize_url(r.item.url) not in shipped
-            ]
-            if missing:
-                # ERROR: --pin-url is an explicit request, and an editor that left the story out
-                # otherwise ships a digest that looks complete.
-                logger.error("Pinned URL(s) missing from the digest: %s", ", ".join(missing))
+            for flag, what in (("pinned", "Pinned URL(s)"), ("primary", "Primary-quota stories")):
+                missing = [
+                    r.item.url
+                    for r in ranked_items
+                    if r.item.metadata.get(flag) and normalize_url(r.item.url) not in shipped
+                ]
+                if missing:
+                    # ERROR: an explicit requirement, and a digest without the story looks complete.
+                    logger.error("%s missing from the digest: %s", what, ", ".join(missing))
             return content, sources
 
         # Re-ask on a malformed emission (or a transient Bedrock error) instead of degrading.
@@ -133,8 +133,9 @@ class DigestGenerator:
             description="Digest content generation",
         )
 
+        grounding_skipped = False
         if self.config.enable_grounding_check:
-            content = await self._verify_grounding(content, shipped_sources, trends_context)
+            content, grounding_skipped = await self._verify_grounding(content, shipped_sources, trends_context)
 
         # Attach the AGI countdown to the lead at generation time, using the digest's own date
         # (the single KST clock for the run) so the countdown is consistent with trend stamps and
@@ -149,6 +150,7 @@ class DigestGenerator:
             ranked_items=ranked_items,
             content=content,
             generated_at=datetime.now(UTC),
+            grounding_skipped=grounding_skipped,
         )
 
     def _prose_budget(self, meta: str, url: str) -> int:
@@ -235,7 +237,7 @@ class DigestGenerator:
 
     @staticmethod
     def _trim_keeping_pinned(items: list, target_count: int, ranked_items: list[RankedItem]) -> list:
-        """Trim to target_count but never drop the headline (items[0]) nor a user-pinned item.
+        """Trim to target_count but never drop the headline (items[0]) nor an item it must carry.
         items[0] is the headline the lead prose and the daily visual are both written about, so it
         MUST survive the trim — otherwise the lead/visual describe a story no longer in the digest.
         The headline is kept first; the remaining slots preserve every pinned item, walking the
@@ -243,7 +245,7 @@ class DigestGenerator:
         needed by pinned items still ahead."""
         if len(items) <= target_count:
             return items[:target_count]
-        pinned_urls = {normalize_url(r.item.url) for r in ranked_items if r.item.metadata.get("pinned")}
+        pinned_urls = {normalize_url(r.item.url) for r in ranked_items if must_carry(r.item)}
         # Always retain the headline; fill the rest from items[1:] preserving pins.
         kept: list = items[:1]
         rest = items[1:]
@@ -316,9 +318,9 @@ class DigestGenerator:
 
     async def _verify_grounding(
         self, content: DigestContent, sources_items: list[CollectedItem], trends_context: str = ""
-    ) -> DigestContent:
+    ) -> tuple[DigestContent, bool]:
         """Check the digest's specific claims against the source items and surgically revise
-        unsupported ones. The trend notes the editor was given are passed as a
+        unsupported ones; the flag is True when the check did not land and the content ships unchecked. The trend notes the editor was given are passed as a
         valid source — otherwise grounding would strip the lead's link to the arc it belongs to. Runs over a plain-text serialization
         of the content; on success the corrected text is re-parsed back into the structured fields.
         Best-effort: any failure keeps the original content.
@@ -344,14 +346,15 @@ class DigestGenerator:
             corrected = data.get("corrected_digest", "")
             if not violations or not corrected:
                 logger.info("Grounding check: no unsupported claims found")
-                return content
+                return content, False
             for v in violations:
                 logger.info("Grounding check revised claim: %s (%s)", v.get("claim", "")[:80], v.get("issue", "")[:80])
             logger.info("Grounding check revised %d unsupported claim(s)", len(violations))
-            return _apply_grounding_payload(content, corrected)
+            revised = _apply_grounding_payload(content, corrected)
+            return (content, True) if revised is None else (revised, False)
         except Exception:
             logger.warning("Grounding check failed; keeping original content", exc_info=True)
-            return content
+            return content, True
 
     def _format_ranked_items(self, ranked_items: list[RankedItem]) -> str:
         parts: list[str] = []
@@ -368,9 +371,9 @@ class DigestGenerator:
                 ("Source Detail", " · ".join(p for p in (tag, metrics) if p) or item.source_type.value),
                 ("Author", item.author or "Unknown"),
             ]
-            # A pinned item (user-requested via --pin-url) must appear in the digest regardless
-            # of its score, so flag it for the editor; code also protects it from the trim below.
-            if item.metadata.get("pinned"):
+            # An item the editor must carry is flagged; code also protects it from the trim. One label for
+            # both kinds: the primary quota was measured (12-2) with this one.
+            if must_carry(item):
                 fields.insert(0, ("MUST INCLUDE", "user-pinned — keep this item in the digest, do not drop it"))
             # This item's OWN prose budget, code-owned like MUST INCLUDE: the fixed parts of a Threads
             # post differ per item, so one worst-case number for the whole pool charged every
@@ -480,11 +483,16 @@ def _grounding_payload(content: DigestContent) -> str:
     return "\n".join(lines)
 
 
-def _apply_grounding_payload(content: DigestContent, corrected: str) -> DigestContent:
+def must_carry(item: CollectedItem) -> bool:
+    """An item the digest must carry: an operator's --pin-url or the edition's primary quota."""
+    return bool(item.metadata.get("pinned") or item.metadata.get("primary"))
+
+
+def _apply_grounding_payload(content: DigestContent, corrected: str) -> DigestContent | None:
     """Parse the corrected labelled lines back onto the content. A field whose marker is missing
-    OR empty keeps its original value (an empty marker would otherwise ship a blank field); a
-    malformed payload leaves content unchanged, and so does one carrying a label that was never sent
-    (a renumbered ITEM 1..5 would write item 0's text onto item 1)."""
+    OR empty keeps its original value (an empty marker would otherwise ship a blank field); None for a
+    malformed payload or one carrying a label that was never sent (a renumbered ITEM 1..5 would write
+    item 0's text onto item 1): the check did not land."""
     updated = content.model_copy(deep=True)
     current_key: tuple[str, int | None] | None = None
     buffers: dict[tuple[str, int | None], list[str]] = {}
@@ -499,7 +507,7 @@ def _apply_grounding_payload(content: DigestContent, corrected: str) -> DigestCo
     sent = {key for line in _grounding_payload(content).splitlines() if (key := _match_grounding_marker(line)[0])}
     if not text or not text.keys() <= sent:
         logger.error("Grounding correction labels do not match the draft's; keeping the original content")
-        return content
+        return None
 
     updated.lead = text.get(("LEAD", None)) or updated.lead
     for i, item in enumerate(updated.items):

@@ -211,7 +211,7 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 | `youtube` | `channels`, `max_videos_per_channel`, `resolve_timeout`, `transcript_timeout`, `transcript_language`, `max_concurrency`, `park_required` | 채널, 영상 수, 자막 관련 설정, 동시 채널 상한, AWS에서 park 파일 부재를 DEGRADED로 볼지([§4.2](#42-s3-park-파일-로더)) |
 | `web_search` | `trend_searches`, `max_results_per_query`, `max_refine_queries`, `refine_model`(Sonnet 5.5), `max_concurrency` | Tavily 검색, 쿼리 정제 모델 |
 | `rsshub` | `base_url`, `accounts`, `max_concurrency` | X 계정(로컬 컨테이너 또는 S3)과 동시 fetch 상한 |
-| `naver_research` | `categories`(코드 기본 company·industry·invest·economy, 투자판은 debenture를 더한다; 같은 종목·같은 날 기업 리포트는 한 건으로 묶는다), `max_pages`(기본 10, 쪽당 50건), `page_delay_sec`, `show_links`(기본 false) | 네이버 증권 리서치의 국내 증권사 리포트([§4.4a](#44a-네이버-증권-리서치-naver_researchpy)). 기본은 꺼짐이고 투자판이 켠다 |
+| `naver_research` | `categories`(코드 기본 company·industry·invest·economy, 투자판은 debenture를 더한다; 같은 종목·같은 날 기업 리포트는 한 건으로 묶는다), `max_pages`(기본 10, 쪽당 50건), `page_delay_sec` | 네이버 증권 리서치의 국내 증권사 리포트([§4.4a](#44a-네이버-증권-리서치-naver_researchpy)). 기본은 꺼짐이고 투자판이 켠다 |
 
 `lookback_hours`는 하루가 아니라 **직전 실행까지** 닿아야 한다. cutoff는 다이제스트 날짜의 **끝** 자정에
 앵커되는데(`resolve_digest_window`) cron은 그 자정보다 몇 시간 앞서 수집한다. 그래서 24는 윈도를 정확히
@@ -292,7 +292,6 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | `community_search_domains` | `community_search`의 도메인 허용 목록(reddit, x, HN, substack 등) |
 | `search_result_limit`, `search_content_preview_chars`, `search_request_timeout`, `search_max_retries`, `search_retry_backoff_sec` | 검색 결과 수, 미리보기, 타임아웃, 재시도 |
 | `search_paper_max_authors`, `search_paper_abstract_max_chars` | OpenAlex 논문 결과 포맷 |
-| `boto_read_timeout`, `boto_connect_timeout`, `boto_max_attempts` | 에이전트 Bedrock 클라이언트의 boto 설정 |
 
 ### 3.4 `aws`
 
@@ -521,7 +520,7 @@ stock.naver.com 리서치 페이지가 쓰는 공개 JSON(`/api/stockSecurity/re
 요청 날짜는 실행 윈도의 서울 날짜이고, 리포트는 날짜만 있으니 그날의 끝(23:59:59)으로 찍어 아침 실행 윈도가 전날
 리포트를 자르지 않게 한다(내보내지 않은 반복은 괜찮고, 내보낸 것은 URL 장부가 막는다). 출처는 증권사마다 하나라서
 (`feed_url = naver-research:<증권사>`) `max_per_origin`이 한 증권사가 풀을 차지하지 못하게 한다. 게시글의 출처 줄은
-"<증권사> 리서치"이고 네이버 페이지 링크는 붙이지 않는다(`show_links: false` → `DigestItem.show_link`, Threads
+"<증권사> 리서치"이고 네이버 페이지 링크는 붙이지 않는다(항상 `hide_link` → `DigestItem.show_link`, Threads
 렌더러와 저장용 `digest_text`가 URL을 뺀다. 같은 URL이 다른 소스로 들어와 살아남아도 숨김은 유지되고, `stock.naver.com`과 `finance.naver.com`은 웹 검색과 리서치 도구의 `read_url`에서도 제외한다). robots.txt가 네이버 검색 봇 외에는 막고 네이버 약관이 AI 수집을 제한한다는 점은 운영자 판단으로
 받아들였고(§2 판), 그 대신 링크를 걸지 않는다.
 
@@ -1924,7 +1923,7 @@ inference-profile id는 `BedrockCrossRegionModelHelper`로 해석한다. 에이�
 (`callback_handler=None`). stdout은 JSON 한 개의 자리다.
 
 boto 세션은 `config.aws.bedrock_region`과, 해석되는 경우의 `config.aws.profile`로
-만들고 `boto_read_timeout`, `boto_connect_timeout`, `boto_max_attempts`(재시도 모드 `adaptive`, 파이프라인 팩토리와 같다)를
+만들고 파이프라인 팩토리와 같은 boto 제한(`BedrockLanguageModelFactory.BOTO_*`, 재시도 모드 `adaptive`)을
 적용한다. 실행마다
 `research_run_limits(config)`가 `Limits`(`research_max_turns`, `research_max_total_tokens`,
 `research_max_output_tokens`)를 넘긴다. 상한에 걸린 실행도 텍스트를 반환하니, CLI가 `stop_reason`으로 경고를 단다.

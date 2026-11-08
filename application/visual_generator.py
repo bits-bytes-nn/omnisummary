@@ -46,10 +46,12 @@ class VisualGenerator:
         self.models = models
         self.renderer = renderer
         self.brief_model = brief_model
-        # Bind the VisualBrief schema as a tool so Bedrock returns a validated object instead
-        # of free text: the brief's `prompt` is thousands of chars of free-form copy that often
-        # contains unescaped quotes/newlines, which broke hand-parsing the model's JSON.
-        self.llm = models.get_model(brief_model, stage="visual-synopsis").with_structured_output(VisualBrief)
+        # Bedrock's json_schema constrained output, as every schema-shaped answer here: the brief's `prompt`
+        # is thousands of characters of free-form copy that broke hand-parsed JSON, and under the tool
+        # binding's "auto" choice Sonnet 5.5 may answer in prose.
+        self.llm = models.get_model(brief_model, stage="visual-synopsis").with_structured_output(
+            VisualBrief, method="json_schema"
+        )
         # orientation -> gpt-image size; the brief picks the orientation that fits the visual.
         self.image_sizes = image_sizes
         self.image_timeout_sec = image_timeout_sec
@@ -70,12 +72,6 @@ class VisualGenerator:
                 "style_aesthetic": self.style_aesthetic,
             }
         )
-        # Models that reject forced tool_choice (Opus 5.5 / Sonnet 5.5) get the schema
-        # tool under "auto", so a reply without the tool call parses to None; name that failure.
-        if result is None:
-            raise ValueError(f"Visual brief model returned no {VisualBrief.__name__} tool call")
-        # with_structured_output is typed as returning dict | BaseModel; re-validate so the
-        # type is concretely VisualBrief (and a dict-shaped return is coerced consistently).
         brief = VisualBrief.model_validate(result)
         logger.info("Generated visual brief '%s'", brief.title[:60])
         return brief

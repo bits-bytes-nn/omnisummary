@@ -63,7 +63,7 @@ collectors:
           - "AI lab acquisition or major funding news"
           - "AI policy regulation open source"
     max_results_per_query: 10
-    lookback_hours: 72
+    lookback_hours: *lookback_hours
     refine_model: "anthropic.claude-sonnet-5-5"
     max_refine_queries: 3
     # Search queries in flight at once; unbounded fan-out self-throttled and lost whole queries.
@@ -73,7 +73,7 @@ collectors:
     base_url: "http://localhost:1200"
     accounts: []
       # - "karpathy"
-    lookback_hours: 72
+    lookback_hours: *lookback_hours
     max_concurrency: 5
     park_max_age_hours: 12
     # Expired X session cookies make every account feed answer 200 with NO entries: no failure rate
@@ -161,6 +161,8 @@ agent:
 aws:
   region: "ap-northeast-2"
   bedrock_region: "us-west-2"
+  # The digest date and the cron's local hour are read on this clock.
+  timezone: "Asia/Seoul"
   profile: ""
   project_name: "omnisummary"
   stage: "dev"

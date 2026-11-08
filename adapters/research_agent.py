@@ -13,7 +13,7 @@ from strands.types.agent import Limits
 
 from adapters import research_tools
 from adapters.aws import available_boto_profile
-from adapters.bedrock import LANGUAGE_MODEL_INFO, BedrockCrossRegionModelHelper
+from adapters.bedrock import LANGUAGE_MODEL_INFO, BedrockCrossRegionModelHelper, BedrockLanguageModelFactory
 from adapters.research_tools import RESEARCH_TOOLS
 from domain.renderers import footer_overhead, research_post_budget
 from shared import KOREAN_STYLE_RULES, Config, logger
@@ -196,10 +196,11 @@ def create_research_agent(config: Config | None = None, tools: list[Any] | None 
         profile_name=available_boto_profile(config.aws.profile),
     )
 
+    # The same Bedrock client limits as every other stage (one definition, the factory's).
     boto_config = BotoConfig(
-        read_timeout=config.agent.boto_read_timeout,
-        connect_timeout=config.agent.boto_connect_timeout,
-        retries={"max_attempts": config.agent.boto_max_attempts, "mode": "adaptive"},
+        read_timeout=BedrockLanguageModelFactory.BOTO_READ_TIMEOUT,
+        connect_timeout=BedrockLanguageModelFactory.BOTO_CONNECT_TIMEOUT,
+        retries={"max_attempts": BedrockLanguageModelFactory.BOTO_MAX_ATTEMPTS, "mode": "adaptive"},
     )
 
     model_id = config.agent.model_id

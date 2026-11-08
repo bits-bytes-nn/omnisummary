@@ -30,7 +30,7 @@ class TestCountTokens:
         client = MagicMock()
         client.count_tokens.side_effect = RuntimeError("throttled")
         f = _factory(client)
-        assert f.count_tokens("x" * 40) == 10  # len//4 fallback
+        assert f.count_tokens("x" * 40) == 40  # one token per character: Korean counts about that
 
     def test_truncate_to_tokens_fits_in_a_few_calls(self):
         client = MagicMock()
@@ -79,9 +79,9 @@ class TestCountTokens:
         client = MagicMock()
         client.count_tokens.side_effect = RuntimeError("throttled")
         f = _factory(client)
-        assert f.count_tokens("a" * 40) == 10  # first: tries API, fails, estimates
-        assert f.count_tokens("b" * 80) == 20  # second: short-circuits to estimate
-        assert f.count_tokens("c" * 12) == 3
+        assert f.count_tokens("a" * 40) == 40  # first: tries API, fails, estimates
+        assert f.count_tokens("b" * 80) == 80  # second: short-circuits to estimate
+        assert f.count_tokens("c" * 12) == 12
         assert client.count_tokens.call_count == 1  # API called only once, then degraded
 
 

@@ -85,16 +85,10 @@ class TestBrief:
         brief = await gen.brief("a 1-page slide", "source text")
         assert brief == out
 
-    @pytest.mark.asyncio
-    async def test_a_reply_without_the_tool_call_is_a_named_failure(self):
-        # Models that reject forced tool_choice get the schema tool under "auto"; a text-only reply
-        # parses to None, which must not surface as an opaque pydantic error.
+    def test_the_brief_is_asked_for_as_json_schema_constrained_output(self):
         factory = MagicMock()
-        factory.get_model.return_value.with_structured_output.return_value = RunnableLambda(lambda _: None)
-        factory.truncate_to_tokens.side_effect = lambda text, _: text
-        gen = VisualGenerator(factory, LanguageModelId.CLAUDE_V5_5_SONNET, _renderer(), **_visual_kwargs())
-        with pytest.raises(ValueError, match="no VisualBrief tool call"):
-            await gen.brief("a 1-page slide", "source text")
+        VisualGenerator(factory, LanguageModelId.CLAUDE_V5_5_SONNET, _renderer(), **_visual_kwargs())
+        factory.get_model.return_value.with_structured_output.assert_called_once_with(VisualBrief, method="json_schema")
 
 
 class TestVisualGenerator:
@@ -252,8 +246,12 @@ class TestVisualGenerator:
         ok_resp.data = [MagicMock(b64_json=fake_img)]
         client = MagicMock()
         # first render raises moderation, second succeeds
+        from openai import BadRequestError
+
+        blocked = BadRequestError.__new__(BadRequestError)
+        blocked.body = {"code": "moderation_blocked"}
         client.images.generate.side_effect = [
-            Exception("Your request was rejected by the safety system: moderation_blocked"),
+            blocked,
             ok_resp,
         ]
 
@@ -304,9 +302,9 @@ class TestVisualGenerator:
                 with pytest.raises(RuntimeError):
                     gen.render(VisualBrief(title="t", prompt="draw", orientation="portrait"))
 
-    def test_is_moderation_error_string_fallback(self):
-        assert OpenAIImageRenderer.is_moderation_error(Exception("... moderation_blocked ..."))
-        assert OpenAIImageRenderer.is_moderation_error(Exception("rejected by the safety system"))
+    def test_an_untyped_error_is_not_read_as_moderation(self):
+        # Message text is not a signal: only the SDK's typed answer is.
+        assert not OpenAIImageRenderer.is_moderation_error(Exception("... moderation_blocked ..."))
         assert not OpenAIImageRenderer.is_moderation_error(RuntimeError("network down"))
 
     def test_is_moderation_error_typed_openai_exception(self):

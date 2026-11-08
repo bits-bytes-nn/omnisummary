@@ -166,7 +166,8 @@ class NaverResearchCollector(BaseCollector):
             published_at=published,
             metadata={
                 "research_category": category,
-                "hide_link": not self.config.show_links,
+                # Never linked: the post names the broker (owner's call, docs/design.md 판).
+                "hide_link": True,
                 "stock": stock,
                 "day": day.isoformat(),
                 "opinion": str(row.get("opinionText") or ""),
