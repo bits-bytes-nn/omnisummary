@@ -713,12 +713,19 @@ def test_the_sync_user_gets_put_object_on_the_state_prefix_only():
             App(), "fnd-sync", config=config, env=Environment(account="123456789012", region=config.aws.region)
         )
     )
+    bucket_id = next(iter(foundation.find_resources("AWS::S3::Bucket")))
     foundation.has_resource_properties(
         "AWS::IAM::Policy",
         {
             "Users": ["sync-user"],
             "PolicyDocument": {
-                "Statement": [Match.object_like({"Action": "s3:PutObject", "Resource": Match.any_value()})],
+                "Statement": [
+                    {
+                        "Action": "s3:PutObject",
+                        "Effect": "Allow",
+                        "Resource": {"Fn::Join": ["", [{"Fn::GetAtt": [bucket_id, "Arn"]}, "/omnisummary/*"]]},
+                    }
+                ],
                 "Version": "2012-10-17",
             },
         },
