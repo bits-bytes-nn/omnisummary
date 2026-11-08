@@ -177,6 +177,6 @@ aws sqs purge-queue --profile research --region ap-northeast-2 --queue-url "$Q" 
 
 - 첫 글이 이미 올라간 날에 `--force-republish`를 쓰지 않는다.
 - 배포된 계정에서 `FOUNDATION_ONLY=1`을 쓰지 않는다.
-- `aws.state_bucket_name`은 스택이 만들고 보존하는 상태 버킷이다(버전 관리, 이전 버전 30일 보관). 이름을 바꾸면 새 버킷이 생기고 기존 버킷은 남으니, 바꿀 때는 `aws s3 sync`로 `omnisummary/` 접두사를 옮긴 뒤 객체 수를 확인한다.
+- `aws.state_bucket_name`은 스택이 만들고 보존하는 상태 버킷이다(버전 관리, 이전 버전 30일 보관). 이름을 바꾸면 새 버킷이 생기고 기존 버킷은 남으니, 바꿀 때는 `config.yaml`과 `invest.yaml`을 함께 바꾸고(deploy.py가 불일치를 거부한다) 배포한 뒤 `aws s3 sync`로 `omnisummary/` 접두사를 옮기고 객체 수를 확인한다. 로컬 동기화 사용자(`aws.s3_sync_user`)의 쓰기 권한은 스택이 새 버킷으로 옮긴다.
 - SSM 비밀값 파라미터의 템플릿 속성(태그 포함)을 바꾸지 않는다. CloudFormation이 실제 비밀값을 자리표시자로 덮는다.
 - `put_secrets.py --force`로 Threads 토큰을 덮어쓰지 않는다. Lambda가 갱신한 토큰이 오래된 로컬 값으로 돌아간다.

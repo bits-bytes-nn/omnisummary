@@ -58,7 +58,7 @@ uv run pre-commit install                       # once — ruff, black, file che
 # when the image tag string is unchanged, which is why deploy.py requires DIGEST_IMAGE_REF (the script sets it;
 # FOUNDATION_ONLY=1 is only for bootstrap and a fresh account's first foundation deploy). Uses the repo-pinned
 # CDK CLI (npx cdk): a global cdk can lag aws-cdk-lib and fail with a cloud-assembly schema mismatch.
-scripts/release.sh
+scripts/release.sh   # account from aws.profile (not the shell's AWS_PROFILE)
 # Secrets are NOT in the template (a CFN template can't hold a SecureString). The stack creates each
 # SSM parameter holding a placeholder; write the real values right after:
 AWS_PROFILE=research uv run python scripts/put_secrets.py    # --dry-run / --verify / --force
@@ -82,7 +82,7 @@ byte-identical to before. `pipeline.domain`, `pipeline.ranking_criteria` and `pi
 (code-owned disclaimer, never trimmed) and `pipeline.countdown_*` (the lead's opening gag, paired: "AGI 등장까지 N일 남았다" to 2027-12-31 by default,
 "보편적 고소득 시대까지 N일 남았다" to 2035-11-19 for investing) are the edition's knobs; research gets `market_quote` + `analyst_ratings` and
 `search_reports` via `agent.market_quotes` / `agent.report_search_domains`. No buy/sell calls or own
-price targets (`pipeline.domain_rules`; the comment prompt declines such questions). Korean real estate is one lens of the investing edition (policy, lending, official statistics; 분양/견본주택 promotion is not news). Sources (both editions): technical access controls are never circumvented (paywall, bot check, 403/429, someone else's login wall; not via a UA swap or Tavily extraction either), while policy signals (robots.txt, ToS) are the owner's documented call: Korean press, X and Reddit are used, Telegram is not (docs/design.md, 판). Korean broker research comes
+price targets (`pipeline.domain_rules`; the comment prompt declines such questions). Korean real estate is one lens of the investing edition (policy, lending, official statistics; 분양/견본주택 promotion is not news). Sources (both editions): technical access controls are never circumvented (paywall, bot check, 403/429, someone else's login wall; not via a UA swap or Tavily extraction either), while policy signals (robots.txt, ToS) are the owner's documented call: Korean press, X and Reddit are used, Telegram is not (docs/design.md, 수집 원칙). Korean broker research comes
 from `collectors.naver_research` (Naver 증권 JSON; SourceType.RESEARCH, one origin per broker): the post names the broker and
 never links the Naver page (`DigestItem.show_link`); same-stock same-day notes collapse into one consensus item. Two of the investing five are the pool's best research note or X post (`pipeline.primary_quota`), a note with its attached PDF's text (stock.pstatic.net, public; owner's call 11-07): 12-2 blind on 7 stored days. consensus.hankyung.com and nhqv.com are not collected.
 Investing posting is ON in the local `config/invest.yaml` since 2026-11-01 (the tracked template keeps it off).

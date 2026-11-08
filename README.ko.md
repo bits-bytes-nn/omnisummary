@@ -89,7 +89,7 @@ uv run python recall_cli.py trends
 
 Threads 게시를 켜 둔 상태에서 이미 올라간 날짜로 실행하면 수집 전에 멈춘다. dry run과 `--force-republish`는 예외다. 미래 날짜의 `--date`와 모르는 소스 이름은 거부한다. `main.py`는 수집이 0건이거나, 다이제스트가 만들어지지 않았거나, Threads 게시가 다 올라가지 않으면 1로 끝난다(로컬에는 알림이 없다).
 
-> 로컬에서 전체 실행을 해도 운영 데이터에 기록된다. 그날 스냅샷이 배포된 AgentCore Memory에 저장된다. 원장은 상태 버킷에 둔다. `STATE_BUCKET`을 지정하면 그 버킷, 아니면 `aws.state_bucket_name`이다. 둘 다 없으면 로컬 파일이라 운영에서 게시한 기록을 보지 못하고, 같은 날이 Threads에 두 번 올라갈 수 있다. 스택이 버킷을 직접 만들었다면(첫 배포 때 `aws.state_bucket_name`이 비어 있었다면) `.env`에 `STATE_BUCKET=<project>-<stage>-state`를 두고(`aws.s3_prefix`가 있으면 `S3_PREFIX=<s3_prefix>/digest_state`도) 로컬 실행을 그 버킷에 연결한다. `aws.state_bucket_name`에 넣으면 prod가 아닌 스테이지에서는 다음 배포 때 그 버킷이 삭제된다.
+> 로컬에서 전체 실행을 해도 운영 데이터에 기록된다. 그날 스냅샷이 배포된 AgentCore Memory에 저장된다. 원장은 상태 버킷에 둔다. `STATE_BUCKET`을 지정하면 그 버킷, 아니면 `aws.state_bucket_name`이다. 둘 다 없으면 로컬 파일이라 운영에서 게시한 기록을 보지 못하고, 같은 날이 Threads에 두 번 올라갈 수 있다. 로컬 실행은 `aws.state_bucket_name`에 스택의 버킷 이름을 넣어 연결한다(첫 배포 때 비어 있었다면 `<project>-<stage>-state`. 이름이 같으므로 다음 배포에서 바뀌는 것은 없다). 스택은 모든 스테이지에서 버킷을 보존하고, 이름을 바꾸면 새 버킷이 생긴다(docs/operations.md).
 
 ## 설정
 
@@ -257,7 +257,7 @@ uv run python scripts/put_secrets.py            # .env의 값을 쓴다. 읽기 
 uv run python scripts/put_inference_profiles.py # 단계의 모델을 바꾼 뒤에도 다시 실행
 ```
 
-이후 배포는 `scripts/release.sh`로 한다. 푸시했고 CI가 통과한 `main`의 HEAD로 3, 4단계를 돌린다. 작업 트리가 깨끗하지 않거나, HEAD를 푸시하지 않았거나, CI가 실패했으면 거부하고, 이미지에 커밋 태그를 단다. 이미지 태그 문자열이 같으면 CloudFormation이 Lambda를 다시 배포하지 않으므로 이미지 digest(sha256)로 고정한다. `put_inference_profiles.py`는 설정의 `aws.profile`을 쓰므로 `AWS_PROFILE`과 같은 계정이어야 한다. zsh에서는 `"${ECR_URI}:latest"`처럼 중괄호를 쓴다. `$ECR_URI:l`은 zsh 수식어로 해석된다.
+이후 배포는 `scripts/release.sh`로 한다. 푸시했고 CI가 통과한 `main`의 HEAD로 3, 4단계를 돌린다. 작업 트리가 깨끗하지 않거나, HEAD를 푸시하지 않았거나, CI가 실패했으면 거부하고, 이미지에 커밋 태그를 단다. 이미지 태그 문자열이 같으면 CloudFormation이 Lambda를 다시 배포하지 않으므로 이미지 digest(sha256)로 고정한다. `release.sh`와 `put_inference_profiles.py`는 셸의 `AWS_PROFILE`(대개 모델 호출용)이 아니라 설정의 `aws.profile`로 계정을 정하므로, 배포 계정으로 맞춰 둔다. zsh에서는 `"${ECR_URI}:latest"`처럼 중괄호를 쓴다. `$ECR_URI:l`은 zsh 수식어로 해석된다.
 
 ### 만들어지는 리소스
 

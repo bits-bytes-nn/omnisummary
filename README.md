@@ -89,7 +89,7 @@ uv run python recall_cli.py trends
 
 With Threads posting on, a run for a date that is already on Threads stops before collecting, unless it is a dry run or `--force-republish`. A future `--date` and an unknown source name are refused. `main.py` exits 1 when it collected nothing, produced no digest, or the Threads post did not fully land (locally there is no alert to say so).
 
-> A full local run writes to production state: the day's snapshot goes to the deployed AgentCore Memory. Its ledgers live in the state bucket: `STATE_BUCKET` when that is set, else `aws.state_bucket_name`; with neither they are local files that can't see what production posted, and Threads may get the day twice. If the stack created its own bucket (`aws.state_bucket_name` was empty at the first deploy), point local runs at it with `STATE_BUCKET=<project>-<stage>-state` in `.env` (plus `S3_PREFIX=<s3_prefix>/digest_state` when `aws.s3_prefix` is set), never by setting `aws.state_bucket_name`: on a non-prod stage the next deploy would delete that bucket.
+> A full local run writes to production state: the day's snapshot goes to the deployed AgentCore Memory. Its ledgers live in the state bucket: `STATE_BUCKET` when that is set, else `aws.state_bucket_name`; with neither they are local files that can't see what production posted, and Threads may get the day twice. Point local runs at the stack's bucket by setting `aws.state_bucket_name` to its name (`<project>-<stage>-state` if it was empty at the first deploy: the name is unchanged, so the next deploy changes nothing). The stack retains the bucket on every stage; renaming it creates a new one (docs/operations.md).
 
 ## Configuration
 
@@ -257,7 +257,7 @@ uv run python scripts/put_secrets.py            # writes the values in .env; --v
 uv run python scripts/put_inference_profiles.py # again after changing a stage's model
 ```
 
-Later deploys run `scripts/release.sh` (steps 3 and 4 for the pushed, CI-green HEAD of `main`: it refuses a dirty tree, an unpushed HEAD or a red CI run, and tags the image with the commit). CloudFormation does not redeploy a Lambda whose image tag string is unchanged, which is why the image is pinned by its sha256 digest. `put_inference_profiles.py` uses `aws.profile` from the config, so make it the same account as `AWS_PROFILE`. In zsh, write `"${ECR_URI}:latest"` with braces: `$ECR_URI:l` is a zsh modifier.
+Later deploys run `scripts/release.sh` (steps 3 and 4 for the pushed, CI-green HEAD of `main`: it refuses a dirty tree, an unpushed HEAD or a red CI run, and tags the image with the commit). CloudFormation does not redeploy a Lambda whose image tag string is unchanged, which is why the image is pinned by its sha256 digest. `release.sh` and `put_inference_profiles.py` take the account from `aws.profile` in the config, not from a shell's `AWS_PROFILE` (often the model-calling one), so set it to the deploy account. In zsh, write `"${ECR_URI}:latest"` with braces: `$ECR_URI:l` is a zsh modifier.
 
 ### What gets created
 
