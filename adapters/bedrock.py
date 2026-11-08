@@ -13,6 +13,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from pydantic import BaseModel
 
 from adapters.metrics import emit_spend
+from shared.config import get_config
 from shared.constants import LanguageModelId
 from shared.logger import logger
 
@@ -218,8 +219,11 @@ class BedrockCrossRegionModelHelper:
         Best-effort by design: cost attribution must never be able to stop a generation, so a
         missing profile, a denied ListInferenceProfiles or any unexpected error keeps the
         system-defined id the caller would have used anyway."""
+        # The Lambdas carry PROJECT_NAME/STAGE; a local run (research, evals, judges) bills to its own
+        # `<stage>-local` profiles, so its spend is not read as production's.
+        aws = get_config().aws
         wanted = BedrockCrossRegionModelHelper.application_profile_name(
-            model_id, os.getenv("PROJECT_NAME", "omnisummary"), os.getenv("STAGE", "dev")
+            model_id, os.getenv("PROJECT_NAME") or aws.project_name, os.getenv("STAGE") or f"{aws.stage}-local"
         )
         try:
             client = boto_session.client("bedrock", region_name=region_name)

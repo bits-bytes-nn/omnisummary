@@ -667,3 +667,37 @@ def test_the_investing_lambdas_run_on_the_investing_role():
         assert "InvestLambdaRole" in roles[name], roles[name]
     for name in (f"{prefix}-digest", f"{prefix}-visual"):
         assert "InvestLambdaRole" not in roles[name]
+
+
+def test_a_monthly_budget_guards_the_projects_tagged_spend():
+    config = Config.from_yaml(str(CONFIG_TEMPLATE))
+    config.aws.monthly_budget_usd = 300
+    foundation = Template.from_stack(
+        OmniSummaryFoundationStack(
+            App(),
+            "fnd-budget",
+            config=config,
+            alert_email="alerts@example.com",
+            env=Environment(account="123456789012", region=config.aws.region),
+        )
+    )
+    foundation.has_resource_properties(
+        "AWS::Budgets::Budget",
+        {"Budget": Match.object_like({"CostFilters": {"TagKeyValue": [f"user:Project${config.aws.project_name}"]}})},
+    )
+    foundation.resource_count_is("AWS::CE::AnomalyMonitor", 1)
+    foundation.resource_count_is("AWS::CE::AnomalySubscription", 1)
+
+
+def test_no_budget_is_created_without_an_amount():
+    config = Config.from_yaml(str(CONFIG_TEMPLATE))
+    foundation = Template.from_stack(
+        OmniSummaryFoundationStack(
+            App(),
+            "fnd-nobudget",
+            config=config,
+            alert_email="a@example.com",
+            env=Environment(account="123456789012", region=config.aws.region),
+        )
+    )
+    foundation.resource_count_is("AWS::Budgets::Budget", 0)

@@ -550,3 +550,25 @@ def test_a_failed_cross_region_lookup_is_not_cached(monkeypatch):
     model = LanguageModelId.CLAUDE_V5_SONNET
     assert H.get_cross_region_model_id(session, model, "us-west-2") == model.value
     assert H._resolution_cache == {}
+
+
+@pytest.mark.parametrize(
+    ("env", "expected_stage"), [({}, "dev-local"), ({"PROJECT_NAME": "omnisummary", "STAGE": "dev"}, "dev")]
+)
+def test_a_local_run_bills_to_its_own_application_profiles(monkeypatch, env, expected_stage):
+    # Research, eval and judge runs were billed to the Lambdas' profiles, so 90% of a month's spend
+    # read as production's.
+    from adapters.bedrock import BedrockCrossRegionModelHelper as H
+
+    monkeypatch.delenv("PROJECT_NAME", raising=False)
+    monkeypatch.delenv("STAGE", raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    seen: list[str] = []
+    session = MagicMock()
+    paginator = session.client.return_value.get_paginator.return_value
+    paginator.paginate.side_effect = lambda **_: [{"inferenceProfileSummaries": []}]
+    model = LanguageModelId.CLAUDE_V5_5_SONNET
+    with patch.object(H, "application_profile_name", side_effect=lambda m, p, s: seen.append(s) or "x"):
+        H._application_profile_arn(session, model, "us-west-2", "fallback")
+    assert seen == [expected_stage]

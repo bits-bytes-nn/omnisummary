@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+
 from aws_cdk import Duration, RemovalPolicy, Stack, Tags
+from aws_cdk import aws_budgets as budgets
+from aws_cdk import aws_ce as ce
 from aws_cdk import aws_ecr as ecr
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_s3 as s3
@@ -219,6 +223,8 @@ class OmniSummaryFoundationStack(Stack):
         self.alerts_topic = sns.Topic(self, "AlertsTopic", topic_name=f"{project_name}-{stage}-alerts")
         if alert_email:
             self.alerts_topic.add_subscription(subs.EmailSubscription(alert_email))
+        if alert_email and config.aws.monthly_budget_usd:
+            self._spend_guards(project_name, stage, config.aws.monthly_budget_usd, alert_email)
         for role in pipeline_roles:
             self.alerts_topic.grant_publish(role)
 
@@ -257,3 +263,53 @@ class OmniSummaryFoundationStack(Stack):
                     resources=[self.memory.attr_memory_arn, f"{self.memory.attr_memory_arn}/*"],
                 )
             )
+
+    def _spend_guards(self, project_name: str, stage: str, monthly_usd: float, email: str) -> None:
+        """A budget and an anomaly monitor on everything tagged Project=<project_name>: the account-wide
+        budget could not tell this project's spend from the account's."""
+        subscriber = budgets.CfnBudget.SubscriberProperty(subscription_type="EMAIL", address=email)
+        budgets.CfnBudget(
+            self,
+            "SpendBudget",
+            budget=budgets.CfnBudget.BudgetDataProperty(
+                budget_name=f"{project_name}-{stage}-monthly",
+                budget_type="COST",
+                time_unit="MONTHLY",
+                budget_limit=budgets.CfnBudget.SpendProperty(amount=monthly_usd, unit="USD"),
+                cost_filters={"TagKeyValue": [f"user:Project${project_name}"]},
+            ),
+            notifications_with_subscribers=[
+                budgets.CfnBudget.NotificationWithSubscribersProperty(
+                    notification=budgets.CfnBudget.NotificationProperty(
+                        notification_type=kind, comparison_operator="GREATER_THAN", threshold=percent
+                    ),
+                    subscribers=[subscriber],
+                )
+                for kind, percent in (("ACTUAL", 80), ("FORECASTED", 100))
+            ],
+        )
+        monitor = ce.CfnAnomalyMonitor(
+            self,
+            "SpendAnomalyMonitor",
+            monitor_name=f"{project_name}-{stage}",
+            monitor_type="CUSTOM",
+            monitor_specification=json.dumps({"Tags": {"Key": "Project", "Values": [project_name]}}),
+        )
+        ce.CfnAnomalySubscription(
+            self,
+            "SpendAnomalySubscription",
+            subscription_name=f"{project_name}-{stage}",
+            frequency="DAILY",
+            monitor_arn_list=[monitor.attr_monitor_arn],
+            subscribers=[ce.CfnAnomalySubscription.SubscriberProperty(type="EMAIL", address=email)],
+            # An anomaly worth a day of the monthly budget.
+            threshold_expression=json.dumps(
+                {
+                    "Dimensions": {
+                        "Key": "ANOMALY_TOTAL_IMPACT_ABSOLUTE",
+                        "MatchOptions": ["GREATER_THAN_OR_EQUAL"],
+                        "Values": [str(round(monthly_usd / 30, 2))],
+                    }
+                }
+            ),
+        )
