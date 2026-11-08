@@ -1,6 +1,9 @@
-# CI passes a mirror: GitHub's shared runners hit public.ecr.aws's anonymous pull limit (429).
-ARG BASE_IMAGE=public.ecr.aws/docker/library/python:3.12-slim
+# Pinned by digest, so CI (which pulls the same manifest through a mirror: GitHub's shared runners hit
+# public.ecr.aws's anonymous pull limit) and the deployed image build on the same base.
+ARG BASE_IMAGE=public.ecr.aws/docker/library/python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 FROM ${BASE_IMAGE}
+ARG GIT_REVISION=unknown
+LABEL org.opencontainers.image.revision=${GIT_REVISION}
 
 WORKDIR /app
 
