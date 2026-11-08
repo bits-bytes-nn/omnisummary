@@ -6,6 +6,7 @@ import pytest
 
 from adapters.memory import AgentCoreMemoryStore, LocalMemoryStore, create_memory_store
 from application.ports import MemoryReadError
+from shared import get_config
 
 
 def _store() -> AgentCoreMemoryStore:
@@ -110,7 +111,7 @@ class TestCreateMemoryStore:
     def test_local_when_no_memory_is_deployed(self, monkeypatch, tmp_path):
         monkeypatch.delenv("MEMORY_ID", raising=False)
         with patch("adapters.memory._deployed_memory_id", return_value=""), patch("adapters.memory.boto3.Session"):
-            store = create_memory_store(tmp_path)
+            store = create_memory_store(get_config(), tmp_path)
         assert isinstance(store, LocalMemoryStore)
 
     def test_a_failed_lookup_raises_instead_of_reading_the_local_store(self, monkeypatch, tmp_path):
@@ -121,7 +122,7 @@ class TestCreateMemoryStore:
         session.client.return_value.get_paginator.return_value.paginate.side_effect = RuntimeError("expired token")
         with patch("adapters.memory.boto3.Session", return_value=session):
             with pytest.raises(MemoryReadError, match="expired token"):
-                create_memory_store(tmp_path)
+                create_memory_store(get_config(), tmp_path)
 
     def test_a_local_run_finds_the_stacks_memory_by_name(self, monkeypatch):
         # Without MEMORY_ID (set only on the Lambdas) a local run read none of production's
@@ -132,7 +133,7 @@ class TestCreateMemoryStore:
             {"memories": [{"id": "other_dev_digest_state-AAA"}, {"id": "omnisummary_dev_digest_state-9GEp6f8MtL"}]}
         ]
         with patch("adapters.memory.boto3.Session", return_value=session):
-            store = create_memory_store()
+            store = create_memory_store(get_config())
         assert isinstance(store, AgentCoreMemoryStore)
         assert store.memory_id == "omnisummary_dev_digest_state-9GEp6f8MtL"
         # The READ client comes from the same profiled session as the lookup: a default client on the
@@ -143,7 +144,7 @@ class TestCreateMemoryStore:
         monkeypatch.setenv("MEMORY_ID", "mem-123")
         session = MagicMock()
         with patch("adapters.memory.boto3.Session", return_value=session):
-            store = create_memory_store()
+            store = create_memory_store(get_config())
         assert isinstance(store, AgentCoreMemoryStore)
         assert store.memory_id == "mem-123"
         session.client.assert_called_once_with("bedrock-agentcore", region_name=store_region())
@@ -323,7 +324,8 @@ class TestEditionSessions:
     def test_the_ai_edition_is_read_from_the_investing_edition(self, monkeypatch):
         # sibling_editions [""] in the investing config: "" must mean the AI edition, not "this one".
         monkeypatch.setenv("MEMORY_ID", "mem-123")
-        with patch("adapters.memory.boto3.Session"), patch("adapters.memory.get_config") as config:
-            config.return_value.edition = "invest"
-            assert create_memory_store(edition="").session_prefix == AgentCoreMemoryStore.DIGEST_SESSION_PREFIX
-            assert create_memory_store().session_prefix == f"{AgentCoreMemoryStore.DIGEST_SESSION_PREFIX}-invest"
+        config = MagicMock()
+        config.edition = "invest"
+        with patch("adapters.memory.boto3.Session"):
+            assert create_memory_store(config, edition="").session_prefix == AgentCoreMemoryStore.DIGEST_SESSION_PREFIX
+            assert create_memory_store(config).session_prefix == f"{AgentCoreMemoryStore.DIGEST_SESSION_PREFIX}-invest"

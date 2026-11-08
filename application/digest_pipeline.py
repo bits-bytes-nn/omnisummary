@@ -229,6 +229,16 @@ async def run_pipeline(
     except Exception:
         logger.warning("Failed to keep the day's scored items (non-fatal)", exc_info=True)
 
+    try:
+        # The pool exactly as the editor read it (full text, quota flags, a note's PDF text): the stored
+        # snapshot cuts each item to its share of the AgentCore event limit, so a replay from it judged
+        # a shorter source than production wrote from.
+        state_store.write_json(
+            f"{POOLS_PREFIX}{digest_date.isoformat()}.json", [r.model_dump(mode="json") for r in ranked_items]
+        )
+    except Exception:
+        logger.warning("Failed to keep the day's candidate pool (non-fatal)", exc_info=True)
+
     # Record the stories that became TODAY'S digest of record so future runs don't re-publish them.
     # Recorded at generation (post trend-update) — the same content.items the snapshot carries and
     # the visual Lambda delivers — not gated on downstream delivery, which is alarmed separately.
@@ -298,6 +308,7 @@ def _recent_leads(snapshots: list[DigestSnapshot], window: int) -> list[str]:
 
 RECENT_IMPLICATION_DAYS = 2
 SCORED_ITEMS_PREFIX = "scored_items/"
+POOLS_PREFIX = "pools/"
 RECENT_TITLE_DAYS = 14
 
 

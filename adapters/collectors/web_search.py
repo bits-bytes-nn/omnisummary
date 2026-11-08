@@ -13,7 +13,7 @@ from tavily.errors import TimeoutError as TavilyTimeoutError
 from tavily.errors import UsageLimitExceededError
 
 from adapters.aws import resolve_secret
-from adapters.research_backends import access_controlled, record_tavily_usage
+from adapters.research_backends import access_controlled, record_tavily_usage, tavily_client
 from application.ports import LanguageModels
 from application.prompts import RefineQueryPrompt
 from domain.models import CollectedItem, generate_item_id
@@ -355,12 +355,10 @@ async def _fetch_youtube_pinned(url: str, video_id: str) -> CollectedItem | None
 
 async def _fetch_tavily_pinned(urls: list[str]) -> list[CollectedItem]:
     """Resolve non-YouTube pinned URLs via Tavily extract (page text)."""
-    api_key = await asyncio.to_thread(resolve_secret, "TAVILY_API_KEY", "tavily-api-key")
-    if not api_key:
+    client = await asyncio.to_thread(tavily_client)
+    if client is None:
         logger.warning("TAVILY_API_KEY not set, cannot fetch pinned URLs")
         return []
-
-    client = AsyncTavilyClient(api_key=api_key)
     items: list[CollectedItem] = []
     try:
         response = await client.extract(urls=urls, format="text", include_usage=True)

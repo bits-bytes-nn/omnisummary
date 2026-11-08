@@ -135,17 +135,31 @@ def _slug(text: str) -> str:
 
 async def _digest(label: str, dates: list[str]) -> None:
     from application.digest_generator import DigestGenerator
-    from application.digest_pipeline import RECENT_TITLE_DAYS, _recent_leads, _recent_story_titles, sibling_snapshots
+    from application.digest_pipeline import (
+        POOLS_PREFIX,
+        RECENT_TITLE_DAYS,
+        _recent_leads,
+        _recent_story_titles,
+        sibling_snapshots,
+    )
     from application.trend_tracker import TrendTracker
+    from domain.models import RankedItem
 
     config = Config.load()
     models = bootstrap.language_models(config)
-    memory = bootstrap.memory_store()
+    memory = bootstrap.memory_store(config)
+    store = bootstrap.state_store(config)
     for day in dates:
         snapshot = memory.get_digest(day)
         if snapshot is None:
             logger.warning("No snapshot for %s; skipped", day)
             continue
+        # The pool as production's editor read it; days before it was kept replay the snapshot's, whose
+        # items are cut to a share of the AgentCore event limit.
+        stored = store.read_json(f"{POOLS_PREFIX}{day}.json")
+        pool = [RankedItem.model_validate(r) for r in stored] if stored else snapshot.ranked_items
+        if not stored:
+            logger.warning("%s has no stored pool; replaying the snapshot's shortened items", day)
         today = date.fromisoformat(day)
         # The same inputs a real run on that date had: the earlier snapshots and the trends before it.
         earlier = memory.get_recent_digests(today, config.pipeline.published_url_ttl_days - 1)
@@ -154,7 +168,7 @@ async def _digest(label: str, dates: list[str]) -> None:
         window = config.pipeline.recent_leads_window
         sibling = _posted_before(sibling_snapshots(lambda: bootstrap.sibling_memory_stores(config), today), snapshot)
         result = await DigestGenerator(config.pipeline, models).generate(
-            snapshot.ranked_items,
+            pool,
             today=today,
             trends_context=trends,
             recent_leads=_recent_leads(earlier, window) + _recent_leads(sibling, window),
@@ -164,7 +178,9 @@ async def _digest(label: str, dates: list[str]) -> None:
         # the arm under test was given.
         account = _recent_leads(earlier, window) + _recent_leads(
             _posted_before(
-                sibling_snapshots(lambda: [bootstrap.memory_store(edition=e) for e in _other_editions(config)], today),
+                sibling_snapshots(
+                    lambda: [bootstrap.memory_store(config, edition=e) for e in _other_editions(config)], today
+                ),
                 snapshot,
             ),
             window,
@@ -174,7 +190,7 @@ async def _digest(label: str, dates: list[str]) -> None:
         # Hana's 중립 sat at characters 1,981 and 2,297).
         sources = "\n\n".join(
             f"[{r.item.title}] {r.item.url}\n{models.truncate_to_tokens(r.item.text, config.pipeline.item_text_max_tokens)}"
-            for r in snapshot.ranked_items
+            for r in pool
         )
         out = {
             "case": day,
@@ -190,7 +206,7 @@ async def _visual(label: str, dates: list[str]) -> None:
     maker = bootstrap.daily_visual_maker(config)
     log = maker.comic_log.entries() if maker.comic_log else []
     for day in dates:
-        snapshot = bootstrap.memory_store().get_digest(day)
+        snapshot = bootstrap.memory_store(config).get_digest(day)
         if snapshot is None:
             logger.warning("No snapshot for %s; skipped", day)
             continue

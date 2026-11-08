@@ -185,7 +185,7 @@ async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = 
     # snapshot was missing, and comparing digest_result.generated_at instead is not an option: it
     # is a UTC timestamp, so it disagrees with the KST digest date on every pre-09:00 KST run.
     # An unreadable store raises MemoryReadError from here — never mistaken for an empty day.
-    snapshot = bootstrap.memory_store().get_digest(digest_date.isoformat())
+    snapshot = bootstrap.memory_store(config).get_digest(digest_date.isoformat())
     if snapshot is None:
         # An invoke that NAMED its date was fired by a pipeline run that had just persisted the
         # snapshot, so a miss means the day's only delivery path has nothing to publish: RAISE, so

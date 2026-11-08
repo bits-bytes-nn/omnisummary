@@ -56,8 +56,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _digest(day: date) -> dict[str, Any]:
-    snapshot = bootstrap.memory_store().get_digest(day.isoformat())
+def _digest(config: Config, day: date) -> dict[str, Any]:
+    snapshot = bootstrap.memory_store(config).get_digest(day.isoformat())
     content = snapshot.content if snapshot else None
     if content is None or not content.items:
         return {"found": False, "lead": "", "stories": []}
@@ -105,7 +105,7 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
             except ValueError:
                 result.update(status="rejected", error=f'"{args.date}" is not a YYYY-MM-DD date.')
                 return result, EXIT_REJECTED
-            result.update(date=day.isoformat(), **_digest(day))
+            result.update(date=day.isoformat(), **_digest(config, day))
         else:
             result["trends"] = _trends(config, today)
     except Exception as e:

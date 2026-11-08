@@ -211,6 +211,15 @@ class TestRunPipelineHappyPath:
         assert all(k["source"] and k["origin"] for k in kept)
 
     @pytest.mark.asyncio
+    async def test_the_pool_is_kept_as_the_editor_read_it(self):
+        items = [_item("https://a.example/1", "A")]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with _Pipeline(tmpdir) as p:
+                await _run(p, _config(), items)
+                kept = p.store.read_json(f"{runner.POOLS_PREFIX}{DIGEST_DATE.isoformat()}.json")
+        assert [RankedItem.model_validate(r).item.url for r in kept] == ["https://a.example/1"]
+
+    @pytest.mark.asyncio
     async def test_the_ranker_gets_the_paid_page_check(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:

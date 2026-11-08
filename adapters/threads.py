@@ -45,16 +45,17 @@ THREADS_PUBLISH_RESERVE_SEC = THREADS_REPLY_RETRY_ATTEMPTS * (
 THREADS_IMAGE_URL_TTL_SEC = 900
 
 
-def _upload_image_for_hosting(image_bytes: bytes, bucket: str, key: str, content_type: str = "image/png") -> str:
+def _upload_image_for_hosting(
+    config: Config, image_bytes: bytes, bucket: str, key: str, content_type: str = "image/png"
+) -> str:
     """Threads can only fetch images from a public URL (no byte upload), so host the image on
     S3 and hand back a short-lived presigned URL Meta can cURL once. The ContentType must match
     the real image type or Meta may reject/mis-render it. The client is on the state store's session
     (configured profile + region): a local shell's inherited AWS_PROFILE / AWS_REGION may be another
     account, or sign the URL for a region Meta cannot fetch from."""
     from adapters.state_store import state_boto_session
-    from shared.config import get_config
 
-    s3 = state_boto_session(get_config()).client("s3")
+    s3 = state_boto_session(config).client("s3")
     s3.put_object(Bucket=bucket, Key=key, Body=image_bytes, ContentType=content_type)
     return s3.generate_presigned_url(
         "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=THREADS_IMAGE_URL_TTL_SEC
@@ -340,6 +341,7 @@ async def _publish_root(
 
 async def post_to_threads(
     *,
+    config: Config | None = None,
     root_text: str,
     replies: list[str] | None = None,
     image_bytes: bytes | None = None,
@@ -372,10 +374,10 @@ async def post_to_threads(
         return ThreadsDelivery(0, expected)
 
     image_url = ""
-    if image_bytes and image_bucket and image_key:
+    if image_bytes and image_bucket and image_key and config is not None:
         try:
             image_url = await asyncio.to_thread(
-                _upload_image_for_hosting, image_bytes, image_bucket, image_key, image_content_type
+                _upload_image_for_hosting, config, image_bytes, image_bucket, image_key, image_content_type
             )
         except Exception as e:
             logger.warning("Failed to host Threads image on S3, posting text-only: %s", e)
@@ -565,6 +567,7 @@ class ThreadsGateway:
             else:
                 logger.warning("No state bucket configured; the Threads image is skipped (text-only post)")
         return await post_to_threads(
+            config=self.config,
             root_text=root_text,
             replies=replies,
             image_bytes=image_bytes,

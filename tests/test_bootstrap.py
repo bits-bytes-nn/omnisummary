@@ -91,13 +91,19 @@ class TestResearchPorts:
         from adapters.research_backends import WebResearchSources
 
         config = Config()
-        with patch.object(bootstrap, "language_models") as models, patch.object(bootstrap, "state_store") as store:
+        with (
+            patch.object(bootstrap, "language_models") as models,
+            patch.object(bootstrap, "state_store") as store,
+            patch.object(bootstrap, "memory_store") as memory,
+        ):
             ports = bootstrap.research_ports(config)
-        assert isinstance(ports.sources, WebResearchSources)
-        assert isinstance(ports.threads, ThreadsGateway)
-        assert ports.models is models.return_value
-        store.assert_not_called()  # the trend store is built on first use
-        assert ports.memory_store is bootstrap.memory_store
+            assert isinstance(ports.sources, WebResearchSources)
+            assert isinstance(ports.threads, ThreadsGateway)
+            assert ports.models is models.return_value
+            store.assert_not_called()  # the stores are built on first use
+            memory.assert_not_called()
+            ports.memory_store()
+        memory.assert_called_once_with(config)
 
 
 class TestPaidCheckWiring:
@@ -110,5 +116,5 @@ class TestSiblingMemoryWiring:
     def test_each_sibling_edition_gets_its_own_store(self):
         config = MagicMock()
         config.pipeline.sibling_editions = ["", "invest"]
-        with patch.object(bootstrap, "create_memory_store", side_effect=lambda base, *, edition: edition):
+        with patch.object(bootstrap, "create_memory_store", side_effect=lambda config, base, *, edition: edition):
             assert bootstrap.sibling_memory_stores(config) == ["", "invest"]

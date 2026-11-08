@@ -385,7 +385,7 @@ class TestFetchPinnedItems:
         client.extract = AsyncMock(return_value={"results": [{"url": "https://free.example/a", "raw_content": "x"}]})
         with (
             patch("adapters.collectors.web_search.resolve_secret", return_value="key"),
-            patch("adapters.collectors.web_search.AsyncTavilyClient", return_value=client),
+            patch("adapters.collectors.web_search.tavily_client", return_value=client),
             patch(
                 "adapters.collectors.web_search.access_controlled",
                 new=AsyncMock(return_value={"https://paid.example/b"}),
@@ -406,7 +406,7 @@ class TestFetchPinnedItems:
             }
         )
         with patch("adapters.collectors.web_search.resolve_secret", return_value="key"):
-            with patch("adapters.collectors.web_search.AsyncTavilyClient", return_value=client):
+            with patch("adapters.collectors.web_search.tavily_client", return_value=client):
                 items = await fetch_pinned_items(["https://darioamodei.com/post/policy-on-the-ai-exponential"])
         assert len(items) == 1
         assert items[0].metadata["pinned"] is True
@@ -483,7 +483,7 @@ class TestFetchPinnedItems:
         with patch("adapters.collectors.web_search.resolve_secret", return_value="key"):
             with patch("adapters.collectors.web_search.httpx.AsyncClient", return_value=ctx):
                 with patch("adapters.collectors.web_search.fetch_youtube_transcript", return_value=""):
-                    with patch("adapters.collectors.web_search.AsyncTavilyClient", return_value=tavily):
+                    with patch("adapters.collectors.web_search.tavily_client", return_value=tavily):
                         items = await fetch_pinned_items(
                             ["https://www.youtube.com/watch?v=4pG3SJQPAwk", "https://example.com/post"]
                         )
@@ -541,7 +541,7 @@ class TestFetchPinnedItems:
         client = MagicMock()
         client.extract = AsyncMock(side_effect=RuntimeError("boom"))
         with patch("adapters.collectors.web_search.resolve_secret", return_value="key"):
-            with patch("adapters.collectors.web_search.AsyncTavilyClient", return_value=client):
+            with patch("adapters.collectors.web_search.tavily_client", return_value=client):
                 assert await fetch_pinned_items(["https://x.com/a"]) == []
 
 

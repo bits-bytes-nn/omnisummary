@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
-import re
 import time
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
@@ -10,11 +10,13 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
+from bs4 import BeautifulSoup
 from tavily import AsyncTavilyClient
 
 from adapters.aws import resolve_secret
 from adapters.metrics import emit_spend
 from adapters.og_image import fetch_og_image
+from domain.aggregator import normalize_url
 from domain.models import ImageAsset
 from shared import get_config, logger, retry_async
 from shared.constants import BROWSER_USER_AGENT
@@ -22,7 +24,7 @@ from shared.constants import BROWSER_USER_AGENT
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 
 
-def _get_tavily_client() -> AsyncTavilyClient | None:
+def tavily_client() -> AsyncTavilyClient | None:
     # env first, then SSM SecureString — so search works in the Lambdas, which carry the key in SSM
     # rather than the environment.
     api_key = resolve_secret("TAVILY_API_KEY", "tavily-api-key")
@@ -79,7 +81,7 @@ async def tavily_search(
     time_range: str | None = None,
     include_domains: list[str] | None = None,
 ) -> str:
-    client = _get_tavily_client()
+    client = tavily_client()
     if not client:
         return "TAVILY_API_KEY not configured."
 
@@ -116,8 +118,6 @@ async def tavily_search(
 # A page that answers an ordinary reader this way has an access control in front of it: a bot check,
 # a login or a rate limit.
 _REFUSED_STATUS = frozenset({401, 403, 429})
-# schema.org's isAccessibleForFree, the publisher's own declaration that the page is paid content.
-_NOT_FREE = re.compile(r'"isAccessibleForFree"\s*:\s*"?false"?', re.IGNORECASE)
 _ACCESS_CHECK_CONCURRENCY = 10
 # Requests in flight to one host: a burst on one publisher is what its WAF answers with a block.
 _ACCESS_CHECK_PER_HOST = 2
@@ -132,6 +132,49 @@ def _host(url: str) -> str:
     except ValueError:
         # A link urlsplit cannot parse (a stray bracket in the host): the check then fails to fetch it.
         return url
+
+
+def declares_paid(html: str, page_url: str) -> bool:
+    """Whether the page declares ITSELF paid: schema.org isAccessibleForFree false on its own entity, in
+    JSON-LD (an entity naming no URL, or naming this page) or in microdata. A related article's entity on
+    the same page names another URL and does not count."""
+    soup = BeautifulSoup(html, "html.parser")
+    if any(_is_false(m.get("content")) for m in soup.find_all("meta", attrs={"itemprop": "isAccessibleForFree"})):
+        return True
+    page = normalize_url(page_url)
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            data = json.loads(script.string or "")
+        except ValueError:
+            continue
+        for entity in _ld_entities(data):
+            if not _is_false(entity.get("isAccessibleForFree")):
+                continue
+            named = [_ld_url(entity.get(key)) for key in ("url", "mainEntityOfPage")]
+            named = [normalize_url(u) for u in named if u]
+            if not named or page in named:
+                return True
+    return False
+
+
+def _ld_entities(data: object) -> list[dict]:
+    if isinstance(data, list):
+        return [e for item in data for e in _ld_entities(item)]
+    if isinstance(data, dict):
+        # The page's own entities: the top level, a @graph's members, and the article a WebPage names as
+        # its mainEntity (Nature marks a paid article only there).
+        return [data, *_ld_entities(data.get("@graph", [])), *_ld_entities(data.get("mainEntity", []))]
+    return []
+
+
+def _ld_url(value: object) -> str:
+    if isinstance(value, dict):
+        value = value.get("@id") or value.get("url")
+    return value if isinstance(value, str) else ""
+
+
+def _is_false(value: object) -> bool:
+    return value is False or (isinstance(value, str) and value.strip().lower() == "false")
 
 
 async def access_controlled(urls: list[str], *, refusals: bool = True) -> set[str]:
@@ -164,7 +207,7 @@ async def access_controlled(urls: list[str], *, refusals: bool = True) -> set[st
                 # Unreachable, or a URL httpx cannot even form (a malformed IDN): not a control.
                 logger.debug("Access check could not read '%s': %s", url, e)
                 return False
-        return bool(_NOT_FREE.search(head.decode("utf-8", "ignore")))
+        return declares_paid(head.decode("utf-8", "ignore"), str(resp.url))
 
     async with httpx.AsyncClient(
         headers={"User-Agent": BROWSER_USER_AGENT}, timeout=_ACCESS_CHECK_TIMEOUT_SEC, follow_redirects=True
@@ -187,7 +230,7 @@ async def extract_url(url: str) -> str:
     capped at the configured research content limit. Used by the deep-research agent's
     read_url tool to pull a primary source it found via search. "" when nothing readable came
     back (the reason is logged), so the caller can tell a read page from a failed one."""
-    client = _get_tavily_client()
+    client = tavily_client()
     if not client:
         logger.warning("TAVILY_API_KEY not configured; cannot read '%s'", url)
         return ""
@@ -216,7 +259,7 @@ EXTRACT_BATCH_SIZE = 20
 async def extract_pages(urls: list[str]) -> dict[str, str]:
     """Page text for each URL Tavily could read, keyed by URL. Best-effort: a failed batch or a
     missing key yields fewer entries, never an error, so a caller keeps whatever text it had."""
-    client = await asyncio.to_thread(_get_tavily_client)
+    client = await asyncio.to_thread(tavily_client)
     if not client or not urls:
         return {}
     pages: dict[str, str] = {}
@@ -382,7 +425,7 @@ async def yahoo_quote(symbol: str, period: str = "5d") -> str:
     config = get_config().agent
     try:
         async with httpx.AsyncClient(
-            timeout=config.search_request_timeout, headers={"User-Agent": "Mozilla/5.0"}
+            timeout=config.search_request_timeout, headers={"User-Agent": BROWSER_USER_AGENT}
         ) as client:
             resp = await client.get(
                 _QUOTE_URL.format(symbol=symbol), params={"range": period, "interval": QUOTE_PERIODS[period]}
@@ -468,7 +511,7 @@ async def yahoo_analyst_ratings(symbol: str) -> str:
     config = get_config().agent
     try:
         async with httpx.AsyncClient(
-            timeout=config.search_request_timeout, headers={"User-Agent": "Mozilla/5.0"}, follow_redirects=True
+            timeout=config.search_request_timeout, headers={"User-Agent": BROWSER_USER_AGENT}, follow_redirects=True
         ) as client:
             # quoteSummary wants the session cookie and its crumb, the same handshake the quote page does.
             await client.get("https://fc.yahoo.com")

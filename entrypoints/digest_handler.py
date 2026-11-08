@@ -126,7 +126,7 @@ async def _run(event: dict[str, Any] | None = None) -> None:
     state_store = bootstrap.state_store(config)
     if already_published(config, digest_date, state_store):
         # The EmptyDigest alarm reads a missing metric as a failed day.
-        _emit_digest_items_metric(_stored_story_count(digest_date))
+        _emit_digest_items_metric(_stored_story_count(config, digest_date))
         return
 
     models = bootstrap.language_models(config)
@@ -146,7 +146,7 @@ async def _run(event: dict[str, Any] | None = None) -> None:
         collected_items,
         digest_date,
         state_store=state_store,
-        memory_store=bootstrap.memory_store,
+        memory_store=lambda: bootstrap.memory_store(config),
         sibling_memory=lambda: bootstrap.sibling_memory_stores(config),
         paid_check=bootstrap.paid_check(),
         note_text=bootstrap.note_text(config),
@@ -167,7 +167,7 @@ async def _run(event: dict[str, Any] | None = None) -> None:
 
     if items and ranked_items and digest:
         try:
-            persist_digest(ranked_items, digest, digest_date, bootstrap.memory_store())
+            persist_digest(ranked_items, digest, digest_date, bootstrap.memory_store(config))
         except Exception as e:
             # The visual Lambda publishes off this snapshot and is the only Threads delivery path,
             # so a failed persist means the day produces NOTHING. Don't trigger the visual (it
@@ -181,10 +181,10 @@ async def _run(event: dict[str, Any] | None = None) -> None:
     logger.info("Digest pipeline completed for %s", digest_date)
 
 
-def _stored_story_count(digest_date: date) -> int:
+def _stored_story_count(config: Config, digest_date: date) -> int:
     """How many stories the date's stored digest carries; 0 when it can't be read."""
     try:
-        snapshot = bootstrap.memory_store().get_digest(digest_date.isoformat())
+        snapshot = bootstrap.memory_store(config).get_digest(digest_date.isoformat())
         content = snapshot.content if snapshot else None
     except Exception:
         logger.warning("Could not read the stored digest for %s", digest_date, exc_info=True)
