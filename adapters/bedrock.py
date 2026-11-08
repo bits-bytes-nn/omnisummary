@@ -111,11 +111,10 @@ LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
 class _TokenUsageLogger(BaseCallbackHandler):
     """Log the token usage of every LLM call, tagged with the pipeline stage that made it.
 
-    Cost Explorer bills per MODEL, not per stage, so a bill of "Sonnet 5: 4.7M input tokens / 30d"
-    could not be attributed: the digest, the grounding pass, trend classification, the visual editor,
-    the visual synopsis, query refinement and the ad-hoc research agent all share that one model. Any
-    optimisation without this is a guess. Best-effort by construction — a callback must never be able
-    to fail a generation, so every read is defensive."""
+    Cost Explorer bills per MODEL, not per stage, and several stages share one model (Sonnet 5.5 runs
+    the digest, grounding, visual editor and art director, trends, query refinement, story groups and
+    comment replies), so the per-stage line (with its list-price `usd`) is what attributes the spend.
+    Best-effort by construction: a callback must never fail a generation, so every read is defensive."""
 
     def __init__(self, stage: str, model_id: str, price: TokenPrice | None = None) -> None:
         self.stage = stage

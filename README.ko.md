@@ -67,6 +67,8 @@ uv run python main.py                                   # 전체 실행: 저장,
 # 딥 리서치: stdout에 JSON 한 개, 리포트는 reports/ 아래
 uv run python research_cli.py "<주제>"
 uv run python research_cli.py "<주제>" --publish threads
+uv run python research_cli.py "<주제>" --publish threads-preview   # 스레드를 JSON에 쓰고 게시하지 않는다
+uv run python research_cli.py "<주제>" --edition invest   # 투자판: 시장, 애널리스트, 가상화폐, 시세
 
 # 다이제스트가 이미 게시한 내용(무료, 읽기 전용, JSON)
 uv run python recall_cli.py digest 2026-10-26
@@ -78,7 +80,7 @@ uv run python recall_cli.py trends
 
 | `main.py` 옵션 | 효과 |
 |----------------|------|
-| `--sources rss reddit youtube web_search rsshub` | 이 소스만 수집한다(`rsshub`이 X다) |
+| `--sources rss reddit youtube web_search rsshub naver_research` | 이 소스만 수집한다(`rsshub`이 X이고, `naver_research`는 투자판의 증권사 리서치다) |
 | `--dry-run` | 다이제스트를 출력만 하고 저장도 게시도 하지 않는다 |
 | `--top-n 5` | 기사 개수 |
 | `--date 2026-03-28` | 다이제스트 날짜(기본: `aws.timezone` 기준 오늘, 기본값은 KST) |
@@ -87,7 +89,7 @@ uv run python recall_cli.py trends
 
 Threads 게시를 켜 둔 상태에서 이미 올라간 날짜로 실행하면 수집 전에 멈춘다. dry run과 `--force-republish`는 예외다. 미래 날짜의 `--date`와 모르는 소스 이름은 거부한다. `main.py`는 수집이 0건이거나, 다이제스트가 만들어지지 않았거나, Threads 게시가 다 올라가지 않으면 1로 끝난다(로컬에는 알림이 없다).
 
-> 로컬에서 전체 실행을 해도 운영 데이터에 기록된다. 그날 스냅샷이 배포된 AgentCore Memory에 저장된다. 원장은 상태 버킷에 둔다. `STATE_BUCKET`을 지정하면 그 버킷, 아니면 `aws.state_bucket_name`이다. 둘 다 없으면 로컬 파일이라 운영에서 게시한 기록을 보지 못하고, 같은 날이 Threads에 두 번 올라갈 수 있다. 스택이 버킷을 직접 만들었다면(첫 배포 때 `aws.state_bucket_name`이 비어 있었다면) `.env`에 `STATE_BUCKET=<project>-<stage>-state`를 두고(`aws.s3_prefix`가 있으면 `S3_PREFIX=<s3_prefix>/digest_state`도) 로컬 실행을 그 버킷에 연결한다. `aws.state_bucket_name`에 넣으면 prod가 아닌 스테이지에서는 다음 배포 때 그 버킷이 삭제된다.
+> 로컬에서 전체 실행을 해도 운영 데이터에 기록된다. 그날 스냅샷이 배포된 AgentCore Memory에 저장된다. 원장은 상태 버킷에 둔다. `STATE_BUCKET`을 지정하면 그 버킷, 아니면 `aws.state_bucket_name`이다. 둘 다 없으면 로컬 파일이라 운영에서 게시한 기록을 보지 못하고, 같은 날이 Threads에 두 번 올라갈 수 있다. 로컬 실행은 `aws.state_bucket_name`에 스택의 버킷 이름을 넣어 연결한다(첫 배포 때 비어 있었다면 `<project>-<stage>-state`. 이름이 같으므로 다음 배포에서 바뀌는 것은 없다). 스택은 모든 스테이지에서 버킷을 보존하고, 이름을 바꾸면 새 버킷이 생긴다(docs/operations.md).
 
 ## 설정
 
@@ -117,16 +119,17 @@ agent:
 | Claude | `anthropic.claude-opus-5-5`, `anthropic.claude-sonnet-5-5`, `anthropic.claude-haiku-5-5`와 이전 모델 |
 | GPT | `openai.gpt-6.1-sol`, `openai.gpt-6.1-terra` |
 
-기본값은 실제 후보 풀로 측정해 정했다.
+단계별 기본값은 다음과 같다(근거와 측정값은 [design.md §6](docs/design.md#모델-팩토리)에 있다).
 
-| 단계 | 기본값 | 근거 |
-|------|--------|------|
-| 랭킹 | Claude Opus 5.5 | Opus 4.8과 고른 결과의 차이가 다른 모델끼리 비교할 때와 비슷한 수준이고, 비용은 조금 낮다 |
-| 다이제스트, 그라운딩, 만화 에디터, 댓글 답글, 리서치 사실 확인 | Claude Sonnet 5.5 | Opus가 넘겨 쓰던 분량 규격을 지키고, 비용은 절반 이하다 |
-| 트렌드, 검색어 다듬기 | Claude Sonnet 5.5 | |
-| 딥 리서치 | Claude Opus 5.5 | |
-
-다이제스트 모델로 GPT-6.1 Sol과 Sonnet 5.5를 저장된 6일치(2026-10-21~10-26)로 비교했다. 맥락, 명료성, 정확성, 인사이트, Threads 글자 수 한도 준수, 한국어를 블라인드로 채점한 결과 Sonnet이 137점 대 133점으로 6일 중 4일을 이겼고, 출처에 없는 주장을 넣은 쪽은 GPT뿐이었다. 그래서 기본값은 Sonnet으로 두고, GPT는 설정만 바꾸면 쓸 수 있게 했다.
+| 단계 | 설정 키 | 기본값 |
+|------|---------|--------|
+| 랭킹 | `pipeline.ranking_model` | `anthropic.claude-sonnet-5-5`(코드 기본값. AI판 설정은 `anthropic.claude-opus-5-5`) |
+| 다이제스트, 그라운딩, 만화 에디터와 아트 디렉터, 같은 이야기 묶기, 댓글 답글, 리서치 사실 확인 | `pipeline.digest_model` | `anthropic.claude-sonnet-5-5` |
+| 트렌드 | `pipeline.trend_model` | `anthropic.claude-sonnet-5-5` |
+| 검색어 다듬기 | `collectors.web_search.refine_model` | `anthropic.claude-sonnet-5-5` |
+| 딥 리서치 | `agent.model_id` | `anthropic.claude-opus-5-5` |
+| 토큰 수 계산 | (고정) | `anthropic.claude-sonnet-4-6` |
+| 만화 이미지 | `pipeline.image_model` | `gpt-image-2.5-sunburst` |
 
 `adapters/bedrock.py`의 등록부가 모델마다 받는 요청 형태를 적어 둔다. `temperature`는 토큰 수 계산용 Sonnet 4.6만 받는다. 기본 effort가 더 낮은 모델은 `high`로 고정한다(Claude는 `output_config`, GPT는 `reasoning`으로 보낸다). 강제 도구 선택은 되는 모델에만 쓴다. 리서치 에이전트는 Claude에서만 Converse 프롬프트 캐싱을 쓰고, GPT는 자체적으로 캐싱한다. Claude Fable 5.1은 등록하지 않았다. 계정의 기본 데이터 보존 모드에서 Bedrock이 이 모델을 거부한다.
 
@@ -163,7 +166,7 @@ curl -s "http://localhost:1200/twitter/user/karpathy" | head   # 동작 확인
 
 1. **수집.** 수집기는 각자 정한 기간의 글을 동시에 모으고 상태(`OK`, `EMPTY`, `FAILED`, `STALE`, `DEGRADED`)를 보고한다. X와 YouTube 자막은 로컬에서 모아 S3에 적재하고, Lambda는 그 파일을 읽는다. 동기화는 다이제스트가 읽는 범위보다 넓게 적재하고 읽는 쪽은 직전 다이제스트가 읽은 정상 동기화 시점까지 거슬러 올라가므로, 동기화를 한 번 빠뜨리거나 늦게 돌리거나 일부만 성공해도 잃는 항목이 없다(이틀 연속이면 앞날은 잃는다).
 2. **중복 제거.** 정규화한 URL(`youtu.be`나 `twitter.com` 같은 공유 링크 변형은 같은 항목으로 본다)과 제목으로 맞춘다. 겹치면 더 나은 쪽을 남긴다. 고정한 항목, 리트윗보다 원문, 더 긴 본문 순이다.
-3. **랭킹.** Claude Opus 5.5가 기술적 깊이, 실무 가치, 새로움, 파급력, 연구 의의, 출처 권위로 채점하고 홍보성 글과 내용이 빈약한 글을 거른다. 최근 다이제스트 제목도 보므로 URL만 바꿔 돌아온 기사는 재탕으로 채점된다. `min_score` 이상인 후보가 최대 12개(`top_n` + `digest_candidate_buffer`)까지 다음 단계로 간다. 소스마다 가장 좋은 항목에 한 자리를 주고, 채널, 작성자, 사이트마다 한 항목까지만 받는다.
+3. **랭킹.** 랭킹 모델(AI판은 Claude Opus 5.5)이 기술적 깊이, 실무 가치, 새로움, 파급력, 연구 의의, 출처 권위로 채점하고 홍보성 글과 내용이 빈약한 글을 거른다. 최근 다이제스트 제목도 보므로 URL만 바꿔 돌아온 기사는 재탕으로 채점된다. `min_score` 이상인 후보가 최대 12개(`top_n` + `digest_candidate_buffer`)까지 다음 단계로 간다. 소스마다 가장 좋은 항목에 한 자리를 주고, 채널, 작성자, 사이트마다 한 항목까지만 받는다. 페이지가 스스로 유료라고 밝히는 피드 글은 후보 풀을 짜기 전에 뺀다(뉴스레터 피드는 유료 글의 무료 미리보기를 싣는다).
 4. **트렌드 추적.** 모델은 오늘 항목을 기존 트렌드나 새 트렌드로 분류만 한다. 날짜, 활성·냉각 상태, 모멘텀, 상한은 `trends.json`을 다루는 일반 Python 코드가 맡고, 활성 트렌드 덕분에 다음 날 리드가 앞선 흐름을 이어 간다.
 5. **작성.** 에디터가 주제가 겹치지 않는 가장 좋은 기사 다섯 개를 골라 리드와 기사별 제목, 본문, 시사점을 평문으로 쓴다. 이어서 근거 확인 단계(grounding)가 구체적 주장을 원문과 하나씩 대조한다. 글자 수 예산은 코드가 계산하므로 어떤 게시물도 Threads의 500자 한도를 넘지 않는다.
 6. **렌더링.** 게시물 형태는 프롬프트가 아니라 코드가 정한다. 첫 글은 리드와 다른 기사들의 제목이고(답글 조회수는 루트의 2~5%다), 답글은 기사마다 하나이며, 주제 태그를 하나 단다.
@@ -223,7 +226,7 @@ OpenClaw 스킬(`~/.openclaw/workspace/skills/omnisummary-research/SKILL.md`)이
 
 ### 절차
 
-시작하기 전에 `config/config.yaml`이 있어야 하고 `.env`에 `ALERT_EMAIL`이 있어야 하며, 아래 `<region>`은 `aws.region`과 같아야 한다. X나 YouTube 자막을 쓸 계획이면 첫 배포 전에 버킷을 직접 만들고 `aws.state_bucket_name`을 정한다. 로컬 동기화는 이 버킷에만 쓴다. 첫 배포 뒤에는 바꾸지 않는다. prod가 아닌 스테이지에서 바꾸면 스택이 만든 버킷이 삭제된다.
+시작하기 전에 `config/config.yaml`이 있어야 하고 `.env`에 `ALERT_EMAIL`이 있어야 하며, 아래 `<region>`은 `aws.region`과 같아야 한다. 스택이 상태 버킷(`aws.state_bucket_name`, 비어 있으면 `<project>-<stage>-state`)을 만들고 유지한다. 버전 관리, 비공개, TLS 전용이며 스택을 지워도 남는다. X나 YouTube 자막을 쓸 계획이면 설정에 버킷 이름을 적는다. 로컬 동기화와 로컬 실행은 설정에 적힌 버킷에만 쓴다.
 
 전역 `cdk`가 아니라 저장소에 고정한 CDK CLI(`npm install` 후 `npx cdk`)를 쓴다. 새 계정에서는 순서가 중요하다. Lambda가 이미지를 받는 ECR 저장소를 foundation 스택이 만들기 때문이다.
 
@@ -254,7 +257,7 @@ uv run python scripts/put_secrets.py            # .env의 값을 쓴다. 읽기 
 uv run python scripts/put_inference_profiles.py # 단계의 모델을 바꾼 뒤에도 다시 실행
 ```
 
-이후 배포는 3, 4단계만 반복한다. 이미지 태그 문자열이 같으면 CloudFormation이 Lambda를 다시 배포하지 않으므로 이미지 digest(sha256)로 고정한다. `put_inference_profiles.py`는 설정의 `aws.profile`을 쓰므로 `AWS_PROFILE`과 같은 계정이어야 한다. zsh에서는 `"${ECR_URI}:latest"`처럼 중괄호를 쓴다. `$ECR_URI:l`은 zsh 수식어로 해석된다.
+이후 배포는 `scripts/release.sh`로 한다. 푸시했고 CI가 통과한 `main`의 HEAD로 3, 4단계를 돌린다. 작업 트리가 깨끗하지 않거나, HEAD를 푸시하지 않았거나, CI가 실패했으면 거부하고, 이미지에 커밋 태그를 단다. 이미지 태그 문자열이 같으면 CloudFormation이 Lambda를 다시 배포하지 않으므로 이미지 digest(sha256)로 고정한다. `release.sh`와 `put_inference_profiles.py`는 셸의 `AWS_PROFILE`(대개 모델 호출용)이 아니라 설정의 `aws.profile`로 계정을 정하므로, 배포 계정으로 맞춰 둔다. zsh에서는 `"${ECR_URI}:latest"`처럼 중괄호를 쓴다. `$ECR_URI:l`은 zsh 수식어로 해석된다.
 
 ### 만들어지는 리소스
 
@@ -286,11 +289,11 @@ CloudFormation 템플릿은 SecureString을 담을 수 없다. 그래서 스택�
 
 ### 비용 추적
 
-Bedrock 온디맨드 사용량에는 태그를 달 리소스가 없다. `scripts/put_inference_profiles.py`가 설정한 모델마다 태그를 단 애플리케이션 추론 프로필을 만들고 모델을 호출할 때 이 프로필을 먼저 쓰므로, Cost Explorer에서 비용을 나눠 볼 수 있다(Billing에서 `Project` 비용 할당 태그를 활성화한다). 여러 단계가 한 모델을 공유하므로 호출마다 `LLM usage stage=... model=... input=... output=...` 로그도 남긴다.
+Bedrock 온디맨드 사용량에는 태그를 달 리소스가 없다. `scripts/put_inference_profiles.py`가 설정한 모델마다 태그를 단 애플리케이션 추론 프로필을 만들고 모델을 호출할 때 이 프로필을 먼저 쓰므로, Cost Explorer에서 비용을 나눠 볼 수 있다(Billing에서 `Project` 비용 할당 태그를 활성화한다). 여러 단계가 청구서에서 한 모델을 공유하므로(두 판도 프로필을 공유한다) 호출마다 `LLM usage stage=... model=... input=... output=... usd=...` 로그도 남긴다. 이미지 렌더는 `Image usage ... usd=`, Tavily 호출은 `Search usage ... credits=`를 남긴다. Lambda에서는 호출마다 EMF `LLMCostUSD` / `ImageCostUSD` / `TavilyCredits` 데이터포인트(Project/Stage/Edition)도 낸다. `uv run python scripts/cost_report.py --days 7 [--by stage]`는 배포된 로그를 날짜와 Lambda 또는 단계별로 합산한다.
 
 ### X와 YouTube의 로컬 동기화
 
-X와 YouTube 자막은 데이터센터 IP를 막으므로 다이제스트 실행 직전에 로컬에서 모은다. 동기화는 `aws.state_bucket_name` 버킷에 쓰고, 이 키는 첫 배포 전에 정해 둬야 한다(AWS 배포 참고). 스택이 버킷을 만든 배포에 나중에 추가하지 않는다. X를 쓰려면 `collectors.rsshub.enabled: true`와 `accounts`도 설정한다. SSO 세션은 만료되므로 무인 cron에는 `.env`의 `S3_SYNC_*` 키를 쓴다.
+X와 YouTube 자막은 데이터센터 IP를 막으므로 다이제스트 실행 직전에 로컬에서 모은다. 동기화는 `aws.state_bucket_name` 버킷에 쓴다(AWS 배포 참고). X를 쓰려면 `collectors.rsshub.enabled: true`와 `accounts`도 설정한다. SSO 세션은 만료되므로 무인 cron에는 `.env`의 `S3_SYNC_*` 키를 쓰고, 그 IAM 사용자를 `aws.s3_sync_user`에 적어 스택이 상태 접두사에 대한 PutObject를 주게 한다.
 
 ```bash
 crontab -e
