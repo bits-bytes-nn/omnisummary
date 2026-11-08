@@ -70,6 +70,10 @@ aws logs filter-log-events --profile research --region ap-northeast-2 --log-grou
 | `could NOT be confirmed as recorded` | 게시는 됐는데 게시 기록(원장)에 그날이 남았는지 확인하지 못했다 | 올라간 글이 남아 있는 동안은 그날을 다시 올리지도, 다시 돌리지도 않는다. 기록이 없으면 막을 장치가 없어 같은 글이 한 번 더 올라간다. 같은 실행의 다른 알림이 지우고 다시 올리라고 하면, 지운 뒤에는 다시 올려도 된다. 다음 날부터는 영향이 없다 |
 | `NOT published` | 아무것도 올라가지 않았다 | 알림에 적힌 명령을 실행한다. 게시 기록이 남아 있는 날이면 `force_republish: true`가 든 명령이 오니, 앱에서 첫 글이 없음을 확인한 뒤 실행한다 |
 
+### 비용 알림
+
+`aws.monthly_budget_usd`가 0보다 크면 스택이 `Project` 태그 기준 월 예산(실제 80%, 예측 100%)과 비용 이상 탐지(하루 예산만큼의 이상)를 만들고 알림 주소로 메일을 보낸다. 로컬 실행(리서치, 평가, 판정)은 `<stage>-local` 추론 프로파일로 청구돼 Cost Explorer에서 `Stage` 태그로 운영과 나뉜다. 모델을 바꾸거나 프로파일을 새로 만들 때는 `scripts/put_inference_profiles.py`를 다시 실행한다. 확인: Cost Explorer에서 태그 `Stage`로 묶어 `dev`와 `dev-local`이 따로 보이는지 본다.
+
 ### CloudWatch 알람
 
 | 알람 | 뜻 | 할 일 |

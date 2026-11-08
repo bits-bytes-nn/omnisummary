@@ -627,6 +627,10 @@ class AWSConfig(_StrictModel):
     # How often the comment-reply Lambda looks for new comments. At least its 10-minute timeout, so
     # runs never queue behind the single concurrency slot.
     comment_reply_interval_minutes: int = Field(default=60, ge=10)
+    # Monthly spend budget on everything tagged Project=<project_name> (0: none). The foundation stack
+    # emails the alert address at 80% actual and 100% forecast, and on a daily cost anomaly worth a
+    # day of this budget.
+    monthly_budget_usd: float = Field(default=0.0, ge=0.0)
 
 
 EDITION_ENV = "OMNISUMMARY_EDITION"

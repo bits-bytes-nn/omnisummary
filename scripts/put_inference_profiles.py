@@ -82,10 +82,15 @@ def main() -> int:
     models = _configured_models(config)
     print(f"region {region} | {len(models)} configured model(s) | {len(existing)} existing application profile(s)\n")
 
-    for model, settings in sorted(models.items(), key=lambda kv: kv[0].value):
+    # One set for the Lambdas (the stage) and one for local runs (`<stage>-local`, what the resolver picks
+    # outside AWS), so research, eval and judge spend is told apart from production by its Stage tag.
+    stages = (config.aws.stage, f"{config.aws.stage}-local")
+    for (model, settings), stage in (
+        (m, st) for m in sorted(models.items(), key=lambda kv: kv[0].value) for st in stages
+    ):
         # Named from the config it tags with, not the PROJECT_NAME/STAGE env (unset locally, so a
         # prod config used to create dev-named profiles the prod Lambdas never found).
-        name = BedrockCrossRegionModelHelper.application_profile_name(model, config.aws.project_name, config.aws.stage)
+        name = BedrockCrossRegionModelHelper.application_profile_name(model, config.aws.project_name, stage)
         arn = existing.get(name)
         if args.delete:
             if not arn:
@@ -114,7 +119,7 @@ def main() -> int:
             modelSource={"copyFrom": source_arn},
             tags=[
                 {"key": "Project", "value": config.aws.project_name},
-                {"key": "Stage", "value": config.aws.stage},
+                {"key": "Stage", "value": stage},
             ],
         )
         print(f"  created : {name}  -> {created['inferenceProfileArn']}  ({settings})")
