@@ -60,15 +60,9 @@ KOREAN_STYLE_RULES: str = (
 
 class BaseCollectorConfig(_StrictModel):
     enabled: bool = True
-    # Must reach back to the PREVIOUS run, not just cover one day: the cutoff is anchored at midnight
-    # at the END of the digest date while the cron collects hours before that midnight, so at 24 the
-    # slice between the run and midnight was unpublished when that day's run collected and already
-    # before the next run's cutoff. Config._lookback_reaches_the_previous_run validates the floor
-    # (48 - the run's local hour); this default is the floor for the shipped 19:00 KST cron plus
-    # an hour of margin. Declared ONCE here: web_search and rsshub used to re-declare it as a bare
-    # `lookback_hours: int = 72`, which replaces the FieldInfo wholesale and took the ge=1 with it —
-    # those two sources accepted a negative window while the other three failed loudly. A source that
-    # wants a wider window states it in the YAML, where every other per-source value lives.
+    # Must reach back to the PREVIOUS run (floor 48 - run's local hour, checked by
+    # Config._lookback_reaches_the_previous_run); 30 is the 19:00 KST floor plus an hour. Declared ONCE:
+    # a subclass re-declaration replaces the FieldInfo and drops ge=1. Wider windows go in the YAML.
     lookback_hours: int = Field(default=30, ge=1)
     reference_time: datetime | None = None
     request_timeout: int = Field(default=30, ge=1)
@@ -76,9 +70,8 @@ class BaseCollectorConfig(_StrictModel):
     retry_backoff_sec: int = Field(default=5, ge=0)
     # Age budget for a source's S3 park file (written by the local sync scripts). Beyond it the
     # items are still used — stale beats empty — but the source is reported STALE so a stopped
-    # local cron is visible instead of looking like a healthy run. A healthy park is about half an hour
-    # old at the digest (18:30 sync, 19:00 run); at 24h a stray daytime sync made the next day's FAILED
-    # 18:30 sync read FRESH (2026-10-28: X lost about 17h of posts with health OK).
+    # local cron is visible. A healthy park is ~30 min old at the digest; a looser budget let a stray
+    # daytime sync hide the next evening's failed one.
     park_max_age_hours: int = Field(default=12, ge=1)
     # Whether the park file is this source's PRIMARY path in AWS. When it is, an ABSENT file is a
     # DEGRADED source rather than a quiet fall-through: YouTube transcripts cannot be fetched from a
@@ -478,12 +471,8 @@ class PipelineConfig(_StrictModel):
         "passing through anything else, natural anatomy with five-fingered hands, and a drawn face with "
         "eyes and an expression on every person, background figures included"
     )
-    # Appended to every art-director instruction: something the image must not DO. A 2026-08-15
-    # visual cast the model race as four athletes whose ethnicity stood in for their lab's country.
-    # Depicting real, identifiable people IS allowed and wanted (normal editorial-cartoon practice),
-    # but a company or a country is not a race. The tone guardrail that once sat here went with the
-    # angle it guarded: the art director no longer gets the angle, the editor matches its tone.
-    # Empty disables it.
+    # Appended to every art-director instruction. Real people may be drawn (editorial-cartoon
+    # practice), but a company or country is never an ethnically-coded human. Empty disables it.
     visual_guardrails: str = (
         "Recognisable depictions of real people are fine. Do NOT, however, personify a company or "
         "a country as an ethnically-coded human; use the real people involved, or the company's "
@@ -589,13 +578,8 @@ class AgentConfig(_StrictModel):
     research_max_total_tokens: int = Field(default=2_000_000, ge=10_000)
     research_max_output_tokens: int = Field(default=100_000, ge=1_000)
     # Hard cap on the number of Threads posts (root + replies) a research report may become.
-    # Code-enforced so a too-long report can't fan out into dozens of public posts even if the
-    # agent ignores the prompt's post-count instruction.
-    #
-    # 10, not 6: the cap sets the whole thread's ceiling (6 * 500 = 3000 chars gross, ~2500 of prose
-    # after subheadings and citation URLs) against a full report of ~8700 chars (research_target_words
-    # 1500 * 5.8 chars/word in this repo's Korean). At 3.5:1 a thread could only keep the facts by
-    # cutting the explanation, so it read as an assertion list; ~2:1 is what a narrowed scope fills.
+    # Code-enforced so a report can't fan out into dozens of public posts. 10 keeps the thread at
+    # about half a full report (~8700 chars); at 6 it could only keep facts by cutting explanation.
     research_max_threads_posts: int = Field(default=10, ge=1)
     # Hard cap on a single page's extracted text (read_url tool).
     research_content_cap_chars: int = Field(default=50000, ge=1000)
@@ -651,12 +635,11 @@ class Config(_StrictModel):
         single day appears in no digest ever.
 
         The cutoff is anchored at midnight at the END of the digest date (`resolve_digest_window`),
-        but the run happens hours BEFORE that midnight. All five sources shipped `lookback_hours: 24`
-        against a 10:00 UTC (19:00 KST) cron, so the window was exactly the digest date while the
-        collectors ran at 19:00 — and everything published 19:00-24:00 KST was still unpublished when
-        that day's run collected and already before the next run's cutoff. Five hours of every day,
-        permanently. The required minimum is therefore `48 - <run hour, local>`: the span from the
-        previous run's clock time to this run's reference time.
+        but the run happens hours BEFORE that midnight. With `lookback_hours: 24` on all six sources
+        (COLLECTOR_NAMES) against a 19:00 KST cron, everything published 19:00-24:00 KST was still
+        unpublished when that day's run collected and already before the next run's cutoff. The
+        required minimum is therefore `48 - <run hour, local>`: the span from the previous run's
+        clock time to this run's reference time.
 
         Widening is safe rather than duplicative because cross-day repeats are excluded by identity,
         not by the window (`PublishedUrlLedger` plus recent AgentCore snapshots), and it restores the

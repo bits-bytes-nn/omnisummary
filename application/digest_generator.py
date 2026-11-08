@@ -266,7 +266,8 @@ class DigestGenerator:
 
     def _fill_source_metadata(self, content: DigestContent, ranked_items: list[RankedItem]) -> list[CollectedItem]:
         """Code owns the source tag/metrics (not the LLM): match each item to its ranked source and
-        stamp the backtick tag + emoji metrics the renderers display. Returns the source item behind
+        stamp the plain source label and ' · '-joined metric text (`source_tag_and_metrics`) the
+        renderers put in the title line's parentheses. Returns the source item behind
         each SURVIVING story, so the grounding check can be scoped to what actually shipped.
 
         Matched on the aggregator's normalize_url, not an exact string: the editor echoes the URL
@@ -398,8 +399,7 @@ class DigestGenerator:
         return "\n".join(parts)
 
     # The per-SourceType tag/metrics table lives in domain/formatting.py beside the origin key and
-    # the origin label it has to agree with — three if/elif chains over the same five SourceTypes
-    # each fell through to its own silent default, and only one of them was ever fixed at a time.
+    # origin label it must agree with: one table, so no SourceType falls through to a silent default.
     _source_tag_and_metrics = staticmethod(source_tag_and_metrics)
 
 

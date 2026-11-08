@@ -146,8 +146,7 @@ def _replay_command(digest_date: date, *, force: bool) -> str:
 def _shortfall_detail(outcome: ThreadsDelivery, digest_date: date, *, marker_kept: bool = False) -> str:
     """What the operator should know about a post set that did not fully land, and what to run."""
     if outcome.posted:
-        # Re-posting next to the live root would leave the day twice on the account; deleting it first is
-        # what the operator did on 2026-11-07, minutes after the post, before it had replies of its own.
+        # The operator deletes the live root before re-posting, or the day appears twice on the account.
         missing = (
             "reply chain incomplete — some stories are missing from the thread"
             if outcome.published
@@ -181,10 +180,8 @@ def _shortfall_detail(outcome: ThreadsDelivery, digest_date: date, *, marker_kep
 async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = None) -> None:
     config = Config.load()
     digest_date, dated_invoke = _requested_date(event or {}, ZoneInfo(config.aws.timezone))
-    # Load the snapshot BY DATE. 'Load the latest' published yesterday's stories whenever today's
-    # snapshot was missing, and comparing digest_result.generated_at instead is not an option: it
-    # is a UTC timestamp, so it disagrees with the KST digest date on every pre-09:00 KST run.
-    # An unreadable store raises MemoryReadError from here — never mistaken for an empty day.
+    # Load the snapshot BY DATE ('latest' posted yesterday's stories when today's was missing, and
+    # generated_at is UTC, so it disagrees with the KST date before 09:00). Unreadable store raises.
     snapshot = bootstrap.memory_store(config).get_digest(digest_date.isoformat())
     if snapshot is None:
         # An invoke that NAMED its date was fired by a pipeline run that had just persisted the

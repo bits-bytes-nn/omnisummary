@@ -80,13 +80,9 @@ class ContentRanker:
 
         logger.info("Ranking %d items with model '%s'", len(items), self.config.ranking_model.value)
 
-        # Scoring is absolute (the prompt calibrates each item to fixed 0-1 criteria), so
-        # large inputs are split into batches scored CONCURRENTLY and merged — a single
-        # call over 100+ items dominated the Lambda runtime. Results are independent.
-        # Ordered by a HASH of item_id so batch membership is deterministic and every batch mixes
-        # sources and scripts. item_id itself is the feed GUID (an article URL for RSS/X, a post or
-        # video id elsewhere), and sorting on it put 33 GeekNews items in one batch and all of X in
-        # another.
+        # Scores are absolute (fixed 0-1 criteria), so batches run concurrently and merge. Batches are
+        # ordered by a hash of item_id: deterministic, and every batch mixes sources (sorting on the
+        # raw feed GUID clustered one feed or all of X into a single batch).
         ordered = sorted(items, key=lambda it: hashlib.sha256(it.item_id.encode()).hexdigest())
         batches = self._make_batches(ordered)
         if len(batches) > 1:

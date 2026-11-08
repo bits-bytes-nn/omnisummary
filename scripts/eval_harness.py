@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Blind A/B evaluation of the daily comic and the research thread. Nothing is published.
+"""Blind A/B evaluation of the digest, the daily comic plan and the research thread. Nothing is published.
 
     eval_harness.py digest <label> <date> [<date> ...]   # the digest re-written from a stored day's candidate pool
     eval_harness.py visual <label> <date> [<date> ...]   # editor plan + art-director brief per stored day

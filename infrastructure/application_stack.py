@@ -41,25 +41,10 @@ class OmniSummaryApplicationStack(Stack):
         Tags.of(self).add("Project", project_name)
         Tags.of(self).add("Stage", stage)
 
-        # The parameter PATHS are stack-managed (so the scoped ssm:GetParameter* policy and the
-        # names stay in one place) but the VALUES never are. CloudFormation cannot create
-        # SecureString parameters, so this stack used to pass the real tokens in as `string_value`
-        # — which wrote the live Tavily/OpenAI/YouTube keys and the Threads access token in
-        # PLAINTEXT into the template, and therefore into cdk.out/*.template.json, the CDK
-        # staging bucket and every cloudformation:GetTemplate response.
-        #
-        # Each parameter is created holding SSM_PLACEHOLDER instead, and `scripts/put_secrets.py`
-        # replaces it with the real value as a SecureString after the deploy (it DELETES the
-        # placeholder String and re-creates it encrypted, because SSM rejects a type change on an
-        # overwrite). Re-deploys do NOT clobber it: CloudFormation only updates a resource whose
-        # template properties changed, and the placeholder never changes — so the SecureString value
-        # and type survive.
-        #
-        # Therefore: NEVER add, rename or re-value a property of these resources (not even a
-        # Description). Any property change makes CloudFormation PutParameter this resource again,
-        # writing the placeholder over the live secret — every affected feature then reads its
-        # secret as unset until put_secrets.py is re-run. tests/test_infrastructure.py pins the
-        # rendered property set for exactly this reason.
+        # Paths are stack-managed, values never are: a template value would sit in plaintext in cdk.out,
+        # the staging bucket and GetTemplate. Each starts as SSM_PLACEHOLDER; scripts/put_secrets.py
+        # writes the SecureString. NEVER change a property here (not even a Description): CloudFormation
+        # would re-put the placeholder over the live secret. tests/test_infrastructure.py pins this.
         for name in SSM_SECRET_ENV_VARS:
             ssm.StringParameter(
                 self,
@@ -315,12 +300,8 @@ class OmniSummaryApplicationStack(Stack):
                 )
                 duration.add_alarm_action(alarm_action)
 
-        # Symptomless failure: the digest ran with no error/timeout but published an empty digest,
-        # OR didn't run at all that day. The EMF metric appears once per daily run; a 24h window with
-        # missing-data=BREACHING catches both a 0 count and a skipped run. NOTE: CloudWatch caps an
-        # alarm at evaluation_periods * period <= 86400s (1 day), so this MUST stay <= 24h — 25h is
-        # rejected by PutMetricAlarm at deploy. Missing-data=BREACHING already covers the skipped-run
-        # case without needing extra slack.
+        # Catches an empty digest AND a skipped run: the EMF metric lands once a day, so a 24h window
+        # with missing-data=BREACHING fires on both. CloudWatch caps period * evaluations at 24h.
         # One per edition, each on its own dimension map, so one edition's run cannot keep another's green.
         for edition in editions:
             empty_digest = cloudwatch.Metric(
