@@ -82,7 +82,7 @@ async def test_a_local_run_stores_the_digest_before_posting_it_inline():
                                 assert await main.main() == 0
     assert order == ["persist", "publish"]
     assert publish.await_args.kwargs["force_republish"] is True
-    main.bootstrap.memory_store.assert_any_call()  # the edition-scoped default, never a shared path
+    main.bootstrap.memory_store.assert_any_call(config)  # this edition's config, never a shared path
 
 
 async def test_an_incomplete_local_post_exits_nonzero():

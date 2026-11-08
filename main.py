@@ -100,7 +100,7 @@ async def main() -> int:
         collected_items,
         digest_date,
         state_store=state_store,
-        memory_store=bootstrap.memory_store,
+        memory_store=lambda: bootstrap.memory_store(config),
         sibling_memory=lambda: bootstrap.sibling_memory_stores(config),
         paid_check=bootstrap.paid_check(),
         note_text=bootstrap.note_text(config),
@@ -112,7 +112,7 @@ async def main() -> int:
     if not args.dry_run:
         # Persisted BEFORE the post: a store that fails after the post went up would leave the day's
         # posted digest stored nowhere, and a re-run would record a different one.
-        persist_digest(ranked_items, digest, digest_date, bootstrap.memory_store())
+        persist_digest(ranked_items, digest, digest_date, bootstrap.memory_store(config))
         try:
             await publish_inline(
                 bootstrap.daily_visual_maker(config, models),

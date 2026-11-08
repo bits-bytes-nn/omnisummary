@@ -33,7 +33,7 @@ async def main() -> None:
     args = parser.parse_args()
 
     config = Config.load()
-    snapshot = bootstrap.memory_store().get_digest(args.digest_date.isoformat())
+    snapshot = bootstrap.memory_store(config).get_digest(args.digest_date.isoformat())
     if snapshot is None:
         raise SystemExit(f"No digest snapshot for {args.digest_date}")
 

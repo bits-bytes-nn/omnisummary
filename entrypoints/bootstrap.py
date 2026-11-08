@@ -65,16 +65,16 @@ def state_store(config: Config) -> StateStore:
     return create_state_store(config)
 
 
-def memory_store(base_dir: Path | None = None, *, edition: str | None = None) -> MemoryStore:
+def memory_store(config: Config, base_dir: Path | None = None, *, edition: str | None = None) -> MemoryStore:
     """The stack's AgentCore Memory (MEMORY_ID, or found by name for a local run), else the local
     store under `base_dir`; `edition` reads another edition's snapshots. Raises MemoryReadError when the
     lookup itself fails."""
-    return create_memory_store(base_dir, edition=edition)
+    return create_memory_store(config, base_dir, edition=edition)
 
 
 def sibling_memory_stores(config: Config) -> list[MemoryStore]:
     """The memory stores of the other editions on this Threads account (pipeline.sibling_editions)."""
-    return [memory_store(edition=edition) for edition in config.pipeline.sibling_editions]
+    return [memory_store(config, edition=edition) for edition in config.pipeline.sibling_editions]
 
 
 def collector_registry(
@@ -155,5 +155,5 @@ def research_ports(config: Config) -> ResearchPorts:
         threads=threads(config),
         models=language_models(config),
         state_store=lambda: state_store(config),
-        memory_store=memory_store,
+        memory_store=lambda: memory_store(config),
     )
