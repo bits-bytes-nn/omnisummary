@@ -615,6 +615,9 @@ class AWSConfig(_StrictModel):
     # emails the alert address at 80% actual and 100% forecast, and on a daily cost anomaly worth a
     # day of this budget.
     monthly_budget_usd: float = Field(default=0.0, ge=0.0)
+    # The IAM user the local X/YouTube sync runs as (its keys are the S3_SYNC_* in .env); the stack grants it
+    # PutObject on the state prefix. Managed by hand, its policy pointed at the old bucket after the move.
+    s3_sync_user: str = ""
 
 
 EDITION_ENV = "OMNISUMMARY_EDITION"

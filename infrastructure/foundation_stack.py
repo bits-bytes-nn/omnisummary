@@ -223,6 +223,18 @@ class OmniSummaryFoundationStack(Stack):
         self.alerts_topic = sns.Topic(self, "AlertsTopic", topic_name=f"{project_name}-{stage}-alerts")
         if alert_email:
             self.alerts_topic.add_subscription(subs.EmailSubscription(alert_email))
+        if config.aws.s3_sync_user:
+            # The local sync writes the park files (X, YouTube) under the project's prefix and nothing else.
+            iam.Policy(
+                self,
+                "S3SyncPolicy",
+                statements=[
+                    iam.PolicyStatement(
+                        actions=["s3:PutObject"], resources=[self.state_bucket.arn_for_objects(f"{root}*")]
+                    )
+                ],
+                users=[iam.User.from_user_name(self, "S3SyncUser", config.aws.s3_sync_user)],
+            )
         if alert_email and config.aws.monthly_budget_usd:
             self._spend_guards(project_name, stage, config.aws.monthly_budget_usd, alert_email)
         for role in pipeline_roles:
