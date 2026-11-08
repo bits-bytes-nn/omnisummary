@@ -120,6 +120,8 @@ class DigestResult(BaseModel):
     # Set by the pipeline after ranking, so the delivery/alerting layer can report a digest built on
     # an incomplete candidate pool. None means "not recorded" (older snapshots, direct construction).
     ranking_health: RankingHealth | None = None
+    # The grounding check failed or its answer could not be applied: the content shipped unchecked.
+    grounding_skipped: bool = False
 
 
 class VisualBrief(BaseModel):

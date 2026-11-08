@@ -251,7 +251,7 @@ async def require_primary(
         return
     chosen = sorted((r for r in pool if r.item.source_type in source_types), key=lambda r: -r.score)[:quota]
     for r in chosen:
-        r.item.metadata["pinned"] = True
+        r.item.metadata["primary"] = True
         if r.item.source_type == SourceType.RESEARCH:
             text = await note_text(r.item)
             if text:

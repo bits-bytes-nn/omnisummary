@@ -103,21 +103,22 @@ class TestGroundingCheck:
                 "corrected_digest": "LEAD: 대규모 투자.\nITEM 0 BODY: 본문.\nITEM 0 IMPLICATION: 시사점.",
             }
         )
-        result = await _generator(out)._verify_grounding(_content(), _sources())
-        assert result.lead.startswith("대규모 투자")
+        result, skipped = await _generator(out)._verify_grounding(_content(), _sources())
+        assert result.lead.startswith("대규모 투자") and not skipped
 
     @pytest.mark.asyncio
     async def test_no_violation_keeps_original(self):
         content = _content(lead="근거 있는 문장.")
         out = json.dumps({"violations": [], "corrected_digest": "should be ignored"})
-        result = await _generator(out)._verify_grounding(content, _sources())
-        assert result.lead == "근거 있는 문장."
+        result, skipped = await _generator(out)._verify_grounding(content, _sources())
+        assert result.lead == "근거 있는 문장." and not skipped
 
     @pytest.mark.asyncio
     async def test_malformed_check_keeps_original(self):
         content = _content(lead="원본 다이제스트.")
-        result = await _generator("not json")._verify_grounding(content, _sources())
-        assert result.lead == "원본 다이제스트."
+        result, skipped = await _generator("not json")._verify_grounding(content, _sources())
+        # The original ships, and says it shipped unchecked.
+        assert result.lead == "원본 다이제스트." and skipped
 
 
 class TestParseContent:
@@ -512,7 +513,7 @@ class TestTargetCountTrim:
         ]
         with patch("application.digest_generator.logger") as log:
             await DigestGenerator(config, factory).generate(ranked, today=date(2030, 1, 1))
-        assert any("Pinned URL(s) missing" in str(c.args[0]) for c in log.error.call_args_list)
+        assert any(c.args[1:2] == ("Pinned URL(s)",) for c in log.error.call_args_list)
 
     def test_trim_keeping_pinned_no_pins_is_plain_slice(self):
         ranked = [
@@ -890,7 +891,7 @@ def test_grounding_corrections_with_labels_never_sent_are_not_applied():
         ],
     )
     corrected = "LEAD: 리드.\nITEM 1 BODY: 고친 본문 0.\nITEM 2 BODY: 본문 1."
-    assert _apply_grounding_payload(original, corrected) is original
+    assert _apply_grounding_payload(original, corrected) is None
 
 
 def test_grounding_checks_and_corrects_the_editors_titles():
@@ -901,3 +902,13 @@ def test_grounding_checks_and_corrects_the_editors_titles():
     assert "ITEM 0 TITLE: 72% 향상" in _grounding_payload(original)
     out = _apply_grounding_payload(original, "LEAD: 리드.\nITEM 0 TITLE: 27% 향상\nITEM 0 BODY: 본문.")
     assert out.items[0].title == "27% 향상"
+
+
+def test_a_primary_quota_story_is_carried_and_labelled_like_a_pin():
+    from application.digest_generator import must_carry
+
+    primary = CollectedItem(
+        item_id="p", source_type=SourceType.RESEARCH, title="T", url="u", metadata={"primary": True}
+    )
+    plain = CollectedItem(item_id="q", source_type=SourceType.RSS, title="T", url="v")
+    assert must_carry(primary) and not must_carry(plain)

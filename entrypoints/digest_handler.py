@@ -69,6 +69,20 @@ def _maybe_alert_ranking(digest: DigestResult | None, digest_date: date) -> None
     publish_alert("Ranking Health", "ALERT", {"Digest date": digest_date.isoformat(), "Detail": health.summary()})
 
 
+def _maybe_alert_grounding(digest: DigestResult | None, digest_date: date) -> None:
+    """Notice when the day's digest shipped without its claims checked against the sources."""
+    if digest is None or not digest.grounding_skipped:
+        return
+    publish_alert(
+        "Grounding",
+        "ALERT",
+        {
+            "Digest date": digest_date.isoformat(),
+            "Detail": "the grounding check did not run; the digest shipped unchecked",
+        },
+    )
+
+
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     request_id = getattr(context, "aws_request_id", "") if context else ""
     set_correlation_id(request_id or None)
@@ -149,6 +163,7 @@ async def _run(event: dict[str, Any] | None = None) -> None:
     # digest built on a pool that lost a whole ranking batch is reported even though the digest
     # itself looks entirely normal.
     _maybe_alert_ranking(digest, digest_date)
+    _maybe_alert_grounding(digest, digest_date)
 
     if items and ranked_items and digest:
         try:

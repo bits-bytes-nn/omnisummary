@@ -294,6 +294,7 @@ _TRUNCATE_PASSES = 4
 class BedrockLanguageModelFactory:
     DEFAULT_TEMPERATURE: ClassVar[float] = 0.0
     BOTO_READ_TIMEOUT: ClassVar[int] = 300
+    BOTO_CONNECT_TIMEOUT: ClassVar[int] = 60
     BOTO_MAX_ATTEMPTS: ClassVar[int] = 3
     MAX_POOL_CONNECTIONS: ClassVar[int] = 50
 
@@ -306,7 +307,7 @@ class BedrockLanguageModelFactory:
         self.region_name = region_name or self.boto_session.region_name
         boto_config = BotoConfig(
             read_timeout=self.BOTO_READ_TIMEOUT,
-            connect_timeout=60,
+            connect_timeout=self.BOTO_CONNECT_TIMEOUT,
             retries={"max_attempts": self.BOTO_MAX_ATTEMPTS, "mode": "adaptive"},
             max_pool_connections=self.MAX_POOL_CONNECTIONS,
         )
@@ -320,19 +321,21 @@ class BedrockLanguageModelFactory:
     def count_tokens(self, text: str) -> int:
         """Authoritative token count via the Bedrock CountTokens API (not a local heuristic).
 
-        Only some base models expose CountTokens (e.g. Sonnet does; Opus 4.8 returns
-        'doesn't support counting tokens'). The Claude family shares a tokenizer, so we always
-        count with TOKEN_COUNT_MODEL regardless of the caller's model — accurate for all of them
-        and avoids per-model 'unsupported' failures. Falls back to a char estimate on error.
+        Only Sonnet 4.6 exposes CountTokens on bedrock-runtime (the 5.5 models answer 'doesn't support
+        counting tokens'), so every count uses TOKEN_COUNT_MODEL. Its tokenizer is not the 5.5 models':
+        measured 2026-11-08, Korean 600 characters 705 vs 687 actual Sonnet 5.5 input tokens, English 1,440
+        characters 345 vs 588 — a budget in these counts lets English text run about 1.7x long. Falls back
+        to one token per character on error.
         Results are memoized on the factory instance keyed by a text hash: prompt-building counts
         the same item text across ranker/digest/grounding stages, and truncate_to_tokens binary-
         searches many overlapping prefixes — each an identical repeat call otherwise billed anew."""
         # Once CountTokens has failed this run, stop calling it: the estimate is deterministic, so
         # a transient throttle/region error otherwise turns truncate_to_tokens' ~log2(n)-call binary
         # search — repeated per oversized item across ranker/digest/grounding — into a self-inflicted
-        # storm of failing round-trips + warnings. Degrade to the char estimate for the rest of the run.
+        # storm of failing round-trips + warnings. Degrade to the char estimate for the rest of the run:
+        # one token per character, as long as the measured counts for Korean, longer for English.
         if self.__dict__.get("_count_tokens_degraded"):
-            return len(text) // 4
+            return len(text)
         cache = self.__dict__.setdefault("_token_count_cache", {})
         key = hashlib.sha256(text.encode("utf-8")).hexdigest()
         cached = cache.get(key)
@@ -345,9 +348,9 @@ class BedrockLanguageModelFactory:
             )
             result = int(resp["inputTokens"])
         except Exception as e:
-            logger.warning("Bedrock count_tokens failed (%s); using char/4 estimate for the rest of the run", e)
+            logger.warning("Bedrock count_tokens failed (%s); counting characters for the rest of the run", e)
             self.__dict__["_count_tokens_degraded"] = True
-            return len(text) // 4
+            return len(text)
         cache[key] = result
         return result
 

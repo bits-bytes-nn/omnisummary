@@ -280,3 +280,15 @@ class TestRequestedDate:
 
 def test_a_non_object_event_means_today():
     assert digest_handler._requested_date(["x"], "Asia/Seoul") is None  # type: ignore[arg-type]
+
+
+def test_a_digest_that_shipped_unchecked_is_alerted():
+    from datetime import date
+
+    from domain.models import DigestResult
+    from entrypoints import digest_handler
+
+    with patch.object(digest_handler, "publish_alert") as alert:
+        digest_handler._maybe_alert_grounding(DigestResult(digest_text="x", grounding_skipped=True), date(2026, 11, 8))
+        digest_handler._maybe_alert_grounding(DigestResult(digest_text="x"), date(2026, 11, 8))
+    assert alert.call_count == 1 and alert.call_args.args[0] == "Grounding"

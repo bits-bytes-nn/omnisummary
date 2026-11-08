@@ -152,7 +152,6 @@ class NaverResearchCollectorConfig(BaseCollectorConfig):
     max_pages: int = Field(default=10, ge=1)
     page_delay_sec: float = Field(default=1.0, ge=0.0)
     # The post names the broker and the analyst; the Naver page is not linked unless this is set.
-    show_links: bool = False
 
 
 class TrendSearch(_StrictModel):
@@ -346,7 +345,7 @@ class PipelineConfig(_StrictModel):
     # the same sentence every day. That is deliberate: the countdown is the account's signature, and
     # the owner ranked recognisable branding above the first-line reach argument.
     countdown_after: str = "AGI 등장 예정일 D+{days}일째, 아직이다. "
-    item_text_max_tokens: int = Field(default=8000, ge=1)
+    item_text_max_tokens: int = Field(default=10000, ge=1)
     # Each item's text as the RANKER sees it, cut by characters (no CountTokens calls); unset is
     # item_text_max_tokens. Scoring needs the gist, the editor and the grounding check the full text: the
     # investing pool (426 items, many with full article pages or transcripts) sent the ranker 1.23M input
@@ -579,9 +578,6 @@ class AgentConfig(_StrictModel):
     search_retry_backoff_sec: int = Field(default=2, ge=0)
     search_paper_max_authors: int = Field(default=3, ge=1)
     search_paper_abstract_max_chars: int = Field(default=200, ge=1)
-    boto_read_timeout: int = Field(default=300, ge=1)
-    boto_connect_timeout: int = Field(default=60, ge=1)
-    boto_max_attempts: int = Field(default=3, ge=1)
     # Report length the agent follows as guidance (interpolated into its prompt; not a bound).
     research_target_words: int = Field(default=1500, ge=200)
     # HARD per-invocation bounds handed to the Strands agent loop (strands.types.agent.Limits),
@@ -611,7 +607,9 @@ class AgentConfig(_StrictModel):
 
 
 class AWSConfig(_StrictModel):
-    region: str = "us-east-1"
+    # The templates' region: every resource (state, memory, Lambdas) lives in one region, and the old
+    # us-east-1 default sent a config without the key to look for the memory and the state there.
+    region: str = "ap-northeast-2"
     bedrock_region: str = "us-west-2"
     profile: str = ""
     project_name: str = "omnisummary"

@@ -424,7 +424,8 @@ class TestRequirePrimary:
             return "full note"
 
         await runner.require_primary(pool, 2, [SourceType.RESEARCH, SourceType.X], note_text)
-        assert [r.item.item_id for r in pool if r.item.metadata.get("pinned")] == ["note", "post"]
+        assert [r.item.item_id for r in pool if r.item.metadata.get("primary")] == ["note", "post"]
+        assert not any(r.item.metadata.get("pinned") for r in pool)
         assert read == ["note"]
         assert pool[1].item.text == "summary\n\nfull note"
         assert pool[0].item.text == "summary"
@@ -433,4 +434,4 @@ class TestRequirePrimary:
     async def test_no_quota_changes_nothing(self):
         pool = [self._ranked("note", SourceType.RESEARCH, 0.8, nid=1)]
         await runner.require_primary(pool, 0, [SourceType.RESEARCH], AsyncMock(side_effect=AssertionError))
-        assert not pool[0].item.metadata.get("pinned")
+        assert not pool[0].item.metadata.get("primary")

@@ -74,4 +74,4 @@ def test_the_ranker_cuts_by_characters_when_a_char_cap_is_set():
     assert "word word word word" in text and text.count("word") <= 4
     factory.truncate_to_tokens.assert_not_called()
     ContentRanker(PipelineConfig(), factory)._format_items(_items(1, text="x" * 50))
-    assert factory.truncate_to_tokens.call_args.args[1] == 8000  # unset: the token cap, as before
+    assert factory.truncate_to_tokens.call_args.args[1] == PipelineConfig().item_text_max_tokens  # unset: the token cap

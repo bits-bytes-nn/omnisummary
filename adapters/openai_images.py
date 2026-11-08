@@ -4,6 +4,8 @@ import base64
 from collections.abc import Sequence
 from typing import Any
 
+from openai import BadRequestError
+
 from adapters.aws import SecretUnavailableError, resolve_secret
 from adapters.metrics import emit_spend
 from shared import logger
@@ -123,20 +125,8 @@ class OpenAIImageRenderer:
 
     @staticmethod
     def is_moderation_error(exc: Exception) -> bool:
-        # Prefer the typed OpenAI exception / structured error code, which survives API
-        # version changes; fall back to substring matching only as a documented last resort.
-        try:
-            from openai import BadRequestError
-
-            if isinstance(exc, BadRequestError):
-                body = getattr(exc, "body", None)
-                code = body.get("code") if isinstance(body, dict) else None
-                error_type = body.get("type") if isinstance(body, dict) else None
-                if code == "moderation_blocked" or error_type == "image_generation_user_error":
-                    return True
-        except ImportError:
-            # openai SDK lacks BadRequestError (older/partial install): fall through to the
-            # documented last-resort substring detection below.
-            pass
-        msg = str(exc).lower()
-        return "moderation_blocked" in msg or "safety system" in msg
+        """The OpenAI SDK's typed answer for a prompt its moderation blocked."""
+        if not isinstance(exc, BadRequestError):
+            return False
+        body = exc.body if isinstance(exc.body, dict) else {}
+        return body.get("code") == "moderation_blocked" or body.get("type") == "image_generation_user_error"
