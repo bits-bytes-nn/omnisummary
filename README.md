@@ -256,7 +256,7 @@ uv run python scripts/put_secrets.py            # writes the values in .env; --v
 uv run python scripts/put_inference_profiles.py # again after changing a stage's model
 ```
 
-Later deploys repeat steps 3 and 4. CloudFormation does not redeploy a Lambda whose image tag string is unchanged, which is why the image is pinned by its sha256 digest. `put_inference_profiles.py` uses `aws.profile` from the config, so make it the same account as `AWS_PROFILE`. In zsh, write `"${ECR_URI}:latest"` with braces: `$ECR_URI:l` is a zsh modifier.
+Later deploys run `scripts/release.sh` (steps 3 and 4 for the pushed, CI-green HEAD of `main`: it refuses a dirty tree, an unpushed HEAD or a red CI run, and tags the image with the commit). CloudFormation does not redeploy a Lambda whose image tag string is unchanged, which is why the image is pinned by its sha256 digest. `put_inference_profiles.py` uses `aws.profile` from the config, so make it the same account as `AWS_PROFILE`. In zsh, write `"${ECR_URI}:latest"` with braces: `$ECR_URI:l` is a zsh modifier.
 
 ### What gets created
 

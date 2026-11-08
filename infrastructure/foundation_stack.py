@@ -57,6 +57,8 @@ class OmniSummaryFoundationStack(Stack):
             removal_policy=RemovalPolicy.DESTROY,
             # Headroom over the pushes between deploys: an expired image is the digest the Lambdas run on.
             lifecycle_rules=[ecr.LifecycleRule(max_image_count=30)],
+            # Basic scanning (no charge): an OS package CVE in the base image is otherwise invisible.
+            image_scan_on_push=True,
         )
 
         ssm_read_statement = iam.PolicyStatement(
