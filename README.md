@@ -119,16 +119,17 @@ Every LLM stage takes a Claude or a GPT model, all served by Bedrock through the
 | Claude | `anthropic.claude-opus-5-5`, `anthropic.claude-sonnet-5-5`, `anthropic.claude-haiku-5-5`, and older |
 | GPT | `openai.gpt-6.1-sol`, `openai.gpt-6.1-terra` |
 
-The defaults were measured on real pools:
+Defaults per stage ([design.md §6](docs/design.md#모델-팩토리) has the reasons and the measurements):
 
-| Stage | Default | Why |
-|-------|---------|-----|
-| Ranking | Claude Opus 5.5 (AI), Sonnet 5.5 (investing) | Investing (2026-11-03): $1.92 vs $4.24 and a blind pool judge picked Sonnet. AI: Sonnet scores lower, so at min_score 0.6 the 12-seat pool filled only 9 on two measured pools (2026-11-05) |
-| Digest, grounding, comic editor, comment replies, research fact check | Claude Sonnet 5.5 | Keeps the length spec Opus overran, at under half the cost |
-| Trends, search-query refinement | Claude Sonnet 5.5 | |
-| Deep research | Claude Opus 5.5 | |
-
-GPT-6.1 Sol was compared with Sonnet 5.5 as the digest model on six stored days (2026-10-21 to 10-26), judged blind on context, clarity, accuracy, insight, fit within the Threads limit, and Korean. Sonnet scored 137 against 133, won four days of six, and only GPT added a claim its source did not support. Sonnet stays the default; GPT is a config change away.
+| Stage | Config key | Default |
+|-------|------------|---------|
+| Ranking | `pipeline.ranking_model` | `anthropic.claude-sonnet-5-5` (code default; the AI edition's config sets `anthropic.claude-opus-5-5`) |
+| Digest, grounding, comic editor and art director, same-story grouping, comment replies, research fact check | `pipeline.digest_model` | `anthropic.claude-sonnet-5-5` |
+| Trends | `pipeline.trend_model` | `anthropic.claude-sonnet-5-5` |
+| Search-query refinement | `collectors.web_search.refine_model` | `anthropic.claude-sonnet-5-5` |
+| Deep research | `agent.model_id` | `anthropic.claude-opus-5-5` |
+| Token counting | (fixed) | `anthropic.claude-sonnet-4-6` |
+| Comic image | `pipeline.image_model` | `gpt-image-2.5-sunburst` |
 
 The registry in `adapters/bedrock.py` records what each model accepts: no `temperature` (only Sonnet 4.6, used for token counting, takes one), effort pinned to `high` where a model defaults lower (Claude through `output_config`, GPT through `reasoning`), and forced tool choice where it works. The research agent uses Converse prompt caching for Claude only; GPT caches on its own. Claude Fable 5.1 is not registered, because Bedrock rejects it under the account's default data-retention mode.
 
@@ -165,7 +166,7 @@ Without the cookies the feeds come back empty. When the RSSHub failure rate clim
 
 1. **Collect.** Each collector runs in parallel with its own time window and reports its health (`OK`, `EMPTY`, `FAILED`, `STALE`, `DEGRADED`). X and YouTube transcripts are collected on your machine and parked in S3, and the Lambda reads the parked file. The sync parks a wider window than the digest reads, and the reader reaches back to the healthy sync whose file the last digest read, so one skipped, late or degraded sync loses nothing (two in a row lose the earlier day).
 2. **Deduplicate.** Items are matched by normalized URL (share-link variants such as `youtu.be` or `twitter.com` count as the same item) and by title. The better copy wins: a pinned one, the original over its retweet, the longer body.
-3. **Rank.** Claude Opus 5.5 scores each item on technical substance, practitioner value, novelty, impact, research significance and source authority, and filters promos and thin posts. It sees recent digest titles, so a story back under a new URL scores as a rehash. Up to 12 candidates above `min_score` (`top_n` + `digest_candidate_buffer`) go on: each source's best item gets a seat, and any one channel, author or site gets at most one. A feed post whose page declares itself paid is dropped before the pool is built (a newsletter feed carries the free preview of its paid posts).
+3. **Rank.** The ranking model (Claude Opus 5.5 in the AI edition) scores each item on technical substance, practitioner value, novelty, impact, research significance and source authority, and filters promos and thin posts. It sees recent digest titles, so a story back under a new URL scores as a rehash. Up to 12 candidates above `min_score` (`top_n` + `digest_candidate_buffer`) go on: each source's best item gets a seat, and any one channel, author or site gets at most one. A feed post whose page declares itself paid is dropped before the pool is built (a newsletter feed carries the free preview of its paid posts).
 4. **Track trends.** The model only sorts today's items into existing or new trends. Dates, lifecycle, momentum and caps are plain Python, kept in `trends.json`, and the active trends give the next day's lead its continuity.
 5. **Write.** The editor picks the five strongest distinct stories and writes a lead plus a title, body and takeaway for each, as plain prose. A grounding pass then checks every specific claim against the source text. Character budgets are computed in code, so no post overflows Threads' 500-character limit.
 6. **Render.** Code, not the prompt, lays out the posts: the root is the lead plus the other stories' titles (replies get 2-5% of the root's views), one reply per story, and a topic tag.
