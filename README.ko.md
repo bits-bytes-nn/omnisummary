@@ -293,7 +293,7 @@ Bedrock 온디맨드 사용량에는 태그를 달 리소스가 없다. `scripts
 
 ### X와 YouTube의 로컬 동기화
 
-X와 YouTube 자막은 데이터센터 IP를 막으므로 다이제스트 실행 직전에 로컬에서 모은다. 동기화는 `aws.state_bucket_name` 버킷에 쓴다(AWS 배포 참고). X를 쓰려면 `collectors.rsshub.enabled: true`와 `accounts`도 설정한다. SSO 세션은 만료되므로 무인 cron에는 `.env`의 `S3_SYNC_*` 키를 쓴다.
+X와 YouTube 자막은 데이터센터 IP를 막으므로 다이제스트 실행 직전에 로컬에서 모은다. 동기화는 `aws.state_bucket_name` 버킷에 쓴다(AWS 배포 참고). X를 쓰려면 `collectors.rsshub.enabled: true`와 `accounts`도 설정한다. SSO 세션은 만료되므로 무인 cron에는 `.env`의 `S3_SYNC_*` 키를 쓰고, 그 IAM 사용자를 `aws.s3_sync_user`에 적어 스택이 상태 접두사에 대한 PutObject를 주게 한다.
 
 ```bash
 crontab -e

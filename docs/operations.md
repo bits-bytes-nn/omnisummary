@@ -76,7 +76,7 @@ curl -s http://localhost:1200/twitter/user/karpathy | grep -c '<item>'   # 0보�
 ./scripts/sync_all_to_s3.sh
 aws s3api head-object --profile research --region ap-northeast-2 --bucket <상태 버킷> --key omnisummary/rsshub_items.json \
   --query LastModified --output text   # 방금 실행한 시각이어야 한다
-tail -1 digest_state/last_park_sync_rsshub.txt   # 정상 동기화로 기록된 시작·업로드 시각
+tail -1 digest_state/last_park_sync_rsshub.txt   # 정상 동기화로 기록된 시작·업로드 시각(투자 판은 digest_state/invest/)
 ```
 
 `last_park_sync_rsshub.txt`에 새 줄이 없으면 그 동기화는 실패율이나 빈 응답률 임계를 넘은 비정상 동기화다. 쿠키와 계정 목록을 다시 본다.
@@ -166,7 +166,7 @@ aws sqs purge-queue --profile research --region ap-northeast-2 --queue-url "$Q" 
 |--------|------|
 | 비밀값이 모두 들어 있는지 | `uv run python scripts/put_secrets.py --verify` |
 | X 수집기가 살아 있는지 | `curl -s http://localhost:1200/twitter/user/karpathy \| head` |
-| 최근 정상 동기화 시각(시작, 업로드) | `cat digest_state/last_park_sync_rsshub.txt digest_state/last_park_sync_youtube.txt` |
+| 최근 정상 동기화 시각(시작, 업로드) | `cat digest_state/last_park_sync_rsshub.txt digest_state/last_park_sync_youtube.txt`(투자 판은 `digest_state/invest/`) |
 | 동기화 로그 | `tail -50 logs/sync.log`(cron이 그 경로에 쓸 때) |
 | 추적 중인 트렌드 | `uv run python recall_cli.py trends` |
 | 지금 답할 댓글 초안(게시하지 않는다) | `uv run python scripts/sample_comment_replies.py` |

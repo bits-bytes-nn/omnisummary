@@ -278,6 +278,8 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | `threads_token_refresh_days` | Threads 장기 토큰(60일 만료, 발급 하루 뒤부터 갱신 가능)의 갱신 주기(기본 7일, 59 이하). 50일이던 때는 한 번 실패하면 다음 시도 전에 토큰이 만료됐다 |
 | `comment_reply_interval_minutes` | 댓글 답글 Lambda의 실행 주기(기본 60분, Lambda 타임아웃인 10 이상) |
 | `state_bucket_name`, `s3_prefix` | 상태 버킷 |
+| `s3_sync_user` | 로컬 동기화용 IAM 사용자. 설정하면 스택이 `<s3_prefix>/*`에 대한 PutObject만 준다 |
+| `monthly_budget_usd` | `Project` 태그 기준 월 예산(실제 80%, 예측 100%에서 알림)과 비용 이상 탐지. 비우면 만들지 않는다 |
 
 ### 3.5 시크릿과 환경 변수
 

@@ -293,7 +293,7 @@ Bedrock on-demand usage has no taggable resource. `scripts/put_inference_profile
 
 ### Local sync for X and YouTube
 
-X and YouTube transcripts block datacenter IPs, so collect them on your machine shortly before the digest runs. The sync writes to `aws.state_bucket_name` (see Deploying to AWS). For X also set `collectors.rsshub.enabled: true` and its `accounts`. An unattended cron should use the `S3_SYNC_*` keys in `.env`, since SSO sessions expire.
+X and YouTube transcripts block datacenter IPs, so collect them on your machine shortly before the digest runs. The sync writes to `aws.state_bucket_name` (see Deploying to AWS). For X also set `collectors.rsshub.enabled: true` and its `accounts`. An unattended cron should use the `S3_SYNC_*` keys in `.env`, since SSO sessions expire; set `aws.s3_sync_user` to that IAM user so the stack grants it PutObject on the state prefix.
 
 ```bash
 crontab -e
