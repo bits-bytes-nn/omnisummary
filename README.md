@@ -196,7 +196,7 @@ Before anything goes public, `deliver_report` checks the thread:
 - it must fit the Threads limits, or it is sent back to be rewritten;
 - the image it carries must come from a page the thread cites.
 
-The OpenClaw skill (`~/.openclaw/workspace/skills/omnisummary-research/SKILL.md`) calls the CLI and relays its JSON:
+The OpenClaw skill (`~/Projects/agent-config/skills/omnisummary-research/SKILL.md`) calls the CLI and relays its JSON:
 
 ```json
 {

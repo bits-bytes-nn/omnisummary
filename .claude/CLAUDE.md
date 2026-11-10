@@ -1,7 +1,7 @@
 # OmniSummary Development Guidelines
 
 ## Project Overview
-Proactive AI/ML daily digest: collects from 6 sources (RSS, Reddit, YouTube, X/Twitter via RSSHub, Web Search via Tavily, and for investing Naver 증권 broker research), scores them into a candidate pool, lets the editor LLM pick the strongest 5 stories, writes a Korean editorial digest, and publishes it to Threads with a Korean comic of the headline. A local deep-research CLI (`research_cli.py`, used by the OpenClaw skill at `~/.openclaw/workspace/skills/omnisummary-research/SKILL.md`) researches a topic across web/papers/community and returns a persona-voiced, cited Markdown report as JSON on stdout; it publishes to Threads only with `--publish threads`. The same skill reads back past digests and trends for free with `recall_cli.py`. Slack is gone entirely.
+Proactive AI/ML daily digest: collects from 6 sources (RSS, Reddit, YouTube, X/Twitter via RSSHub, Web Search via Tavily, and for investing Naver 증권 broker research), scores them into a candidate pool, lets the editor LLM pick the strongest 5 stories, writes a Korean editorial digest, and publishes it to Threads with a Korean comic of the headline. A local deep-research CLI (`research_cli.py`, used by the OpenClaw skill at `~/Projects/agent-config/skills/omnisummary-research/SKILL.md`) researches a topic across web/papers/community and returns a persona-voiced, cited Markdown report as JSON on stdout; it publishes to Threads only with `--publish threads`. The same skill reads back past digests and trends for free with `recall_cli.py`. Slack is gone entirely.
 
 ## Architecture
 ```
