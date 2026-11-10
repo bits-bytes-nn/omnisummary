@@ -45,7 +45,7 @@ OmniSummary는 능동형(proactive) AI/ML 일일 다이제스트 시스템이다
 
 **둘째는 로컬 딥 리서치다.** `research_cli.py`가 Strands 에이전트를 로컬에서 실행한다. 에이전트는 자유형 토픽을
 받아 웹과 논문과 커뮤니티를 스스로 조사하고, 한국어로 합성한 출처 표기 리포트를 JSON으로 stdout에 돌려준다.
-OpenClaw 스킬(`~/.openclaw/workspace/skills/omnisummary-research/SKILL.md`)이 이 CLI를 호출하고, Threads 게시는
+OpenClaw 스킬(`~/Projects/agent-config/skills/omnisummary-research/SKILL.md`)이 이 CLI를 호출하고, Threads 게시는
 `--publish threads`를 줄 때만 한다. 다이제스트와 분리된 독립 리서치라서 다이제스트가 다룬 항목에 묶이지 않는다. 같은 스킬이
 `recall_cli.py`로 그날 다이제스트가 다룬 것과 추적 중인 트렌드를 모델 호출 없이 되읽는다.
 
@@ -1845,7 +1845,7 @@ Threads에서 드롭되거나 잘린 게시물이 있으면 그 수를 적는다
 **로그 보안.** `.env`가 `LOG_LEVEL=DEBUG`여도 서드파티 로거는 WARNING으로 고정한다. botocore DEBUG는 세션
 토큰이 담긴 요청 헤더를 남기고, 호출자(OpenClaw)는 stderr를 보관할 수 있다. `LOG_LEVEL`은 앱 로거만 움직인다.
 
-**OpenClaw 스킬.** 정본은 `~/.openclaw/workspace/skills/omnisummary-research/SKILL.md`이고 저장소에는 두지 않는다
+**OpenClaw 스킬.** 정본은 `~/Projects/agent-config/skills/omnisummary-research/SKILL.md`이고 저장소에는 두지 않는다
 (사용자 정의 스킬은 워크스페이스 한 곳에만 둔다). scholar-lens 스킬과 같은 구성으로 외부 효과와 경계, 사전 점검,
 명령, 출력, 검증과 보고, 실패와 재시도 정책을 적는다. 핵심 규칙은 둘이다. `--publish threads`는 사용자가 그
 요청에서 Threads 게시를 명시했을 때만 붙이고, Threads에 게시한 실행은 다시 돌리지 않는다(`--publish` 없이 실패한

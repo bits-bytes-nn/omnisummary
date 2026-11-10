@@ -196,7 +196,7 @@ curl -s "http://localhost:1200/twitter/user/karpathy" | head   # 동작 확인
 - Threads 한도 안에 들어가야 하고, 넘치면 고쳐 쓰도록 돌려보낸다.
 - 함께 올리는 이미지는 스레드가 인용한 페이지의 것이어야 한다.
 
-OpenClaw 스킬(`~/.openclaw/workspace/skills/omnisummary-research/SKILL.md`)이 CLI를 호출하고 JSON 결과를 전달한다.
+OpenClaw 스킬(`~/Projects/agent-config/skills/omnisummary-research/SKILL.md`)이 CLI를 호출하고 JSON 결과를 전달한다.
 
 ```json
 {
