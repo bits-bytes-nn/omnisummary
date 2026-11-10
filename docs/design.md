@@ -1846,7 +1846,7 @@ Threads에서 드롭되거나 잘린 게시물이 있으면 그 수를 적는다
 토큰이 담긴 요청 헤더를 남기고, 호출자(OpenClaw)는 stderr를 보관할 수 있다. `LOG_LEVEL`은 앱 로거만 움직인다.
 
 **OpenClaw 스킬.** 정본은 `~/Projects/agent-config/skills/omnisummary-research/SKILL.md`이고 저장소에는 두지 않는다
-(사용자 정의 스킬은 워크스페이스 한 곳에만 둔다). scholar-lens 스킬과 같은 구성으로 외부 효과와 경계, 사전 점검,
+(사용자 정의 스킬은 agent-config 한 곳에만 둔다). scholar-lens 스킬과 같은 구성으로 외부 효과와 경계, 사전 점검,
 명령, 출력, 검증과 보고, 실패와 재시도 정책을 적는다. 핵심 규칙은 둘이다. `--publish threads`는 사용자가 그
 요청에서 Threads 게시를 명시했을 때만 붙이고, Threads에 게시한 실행은 다시 돌리지 않는다(`--publish` 없이 실패한
 실행은 한 번 재시도할 수 있다).
