@@ -62,6 +62,15 @@ class VisualGenerator:
         self.style_aesthetic = style_aesthetic
 
     async def brief(self, instruction: str, source: str) -> VisualBrief:
+        brief = await self._ask_brief(instruction, source)
+        if not brief.alt_text.strip():
+            # A brief with no alt text was a degenerate answer that dropped the synopsis too: on 2026-11-11 it
+            # shipped a generic strip with English captions. A second answer was a normal brief on every replay.
+            logger.warning("Visual brief came back without alt text; asking once more")
+            brief = await self._ask_brief(instruction, source)
+        return brief
+
+    async def _ask_brief(self, instruction: str, source: str) -> VisualBrief:
         chain = VisualSynopsisPrompt.get_prompt() | self.llm
         result = await chain.ainvoke(
             {
