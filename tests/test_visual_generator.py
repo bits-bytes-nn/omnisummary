@@ -100,6 +100,23 @@ class TestBrief:
         assert (await gen.brief("synopsis", "source")).prompt == "still no alt text"
         assert len(answers) == 1
 
+    @pytest.mark.asyncio
+    async def test_a_failed_re_ask_keeps_the_first_brief(self):
+        factory = MagicMock()
+        first = VisualBrief(prompt="first", orientation="tall")
+        answers: list = [first, RuntimeError("Bedrock down")]
+
+        def answer(_):
+            a = answers.pop(0)
+            if isinstance(a, Exception):
+                raise a
+            return a
+
+        factory.get_model.return_value.with_structured_output.return_value = RunnableLambda(answer)
+        factory.truncate_to_tokens.side_effect = lambda text, _: text
+        gen = VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET, _renderer(), **_visual_kwargs())
+        assert await gen.brief("synopsis", "source") == first
+
     def test_the_brief_is_asked_for_as_json_schema_constrained_output(self):
         factory = MagicMock()
         VisualGenerator(factory, LanguageModelId.CLAUDE_V5_5_SONNET, _renderer(), **_visual_kwargs())

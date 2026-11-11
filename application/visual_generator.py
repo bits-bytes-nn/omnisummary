@@ -64,10 +64,12 @@ class VisualGenerator:
     async def brief(self, instruction: str, source: str) -> VisualBrief:
         brief = await self._ask_brief(instruction, source)
         if not brief.alt_text.strip():
-            # A brief with no alt text was a degenerate answer that dropped the synopsis too: on 2026-11-11 it
-            # shipped a generic strip with English captions. A second answer was a normal brief on every replay.
+            # A brief with no alt text has been a degenerate answer that also dropped the synopsis.
             logger.warning("Visual brief came back without alt text; asking once more")
-            brief = await self._ask_brief(instruction, source)
+            try:
+                brief = await self._ask_brief(instruction, source)
+            except Exception:
+                logger.warning("Re-asked visual brief failed; keeping the first one", exc_info=True)
         return brief
 
     async def _ask_brief(self, instruction: str, source: str) -> VisualBrief:
