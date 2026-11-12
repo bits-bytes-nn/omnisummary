@@ -9,7 +9,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from domain.models import ImageAsset
-from shared import get_config, logger
+from shared import logger
 from shared.constants import BROWSER_USER_AGENT
 
 _BROWSER_HEADERS = {"User-Agent": BROWSER_USER_AGENT}
@@ -113,16 +113,12 @@ def _extract_image_url(html: str, page_url: str) -> tuple[str, str]:
     return "", ""
 
 
-async def fetch_og_image(url: str, *, timeout: int | None = None, max_bytes: int | None = None) -> ImageAsset | None:
+async def fetch_og_image(url: str, *, timeout: int, max_bytes: int) -> ImageAsset | None:
     """Fetch a page's representative image (og:image / twitter:image) and download its bytes.
     Best-effort: any network error, missing tag, non-image content-type, or oversize image
     returns None. Never raises to the caller. `timeout` bounds the page fetch and the image download
     EACH as a whole: httpx's timeout is per read, so a server trickling a byte at a time held the
     agent's tool call indefinitely."""
-    cfg = get_config().agent
-    timeout = timeout if timeout is not None else cfg.og_image_timeout_sec
-    max_bytes = max_bytes if max_bytes is not None else cfg.og_image_max_bytes
-
     try:
         return await _fetch(url, timeout=timeout, max_bytes=max_bytes)
     except Exception as e:

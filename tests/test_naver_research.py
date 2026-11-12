@@ -47,10 +47,9 @@ def _collector(monkeypatch, pages: dict[str, list[dict]], **cfg) -> tuple[NaverR
         enabled=True,
         lookback_hours=42,
         page_delay_sec=0,
-        reference_time=datetime(2026, 11, 3, tzinfo=SEOUL),
         **cfg,
     )
-    return NaverResearchCollector(config), seen
+    return NaverResearchCollector(config, reference_time=datetime(2026, 11, 3, tzinfo=SEOUL)), seen
 
 
 @pytest.mark.asyncio
@@ -60,7 +59,7 @@ async def test_a_company_note_is_attributed_dated_and_unlinked(monkeypatch):
     assert item.title == "현대모비스: 26.3Q Review: 4분기에는 더 좋은 그림"
     assert item.text.startswith("iM증권 · 현대모비스 · 투자의견 Buy · 목표주가 580,000원 · 2026-11-01\n")
     assert "영업이익 9,141억원" in item.text and "<p>" not in item.text
-    assert item.source_type.value == "research" and item.author == "iM증권" and item.metadata["hide_link"] is True
+    assert item.source_type.value == "research" and item.author == "iM증권" and item.show_link is False
     # The window's dates go upstream; the reference is midnight at the end of 11-02.
     assert seen[0].url.params["startDate"] == "2026-11-01" and seen[0].url.params["endDate"] == "2026-11-02"
 
@@ -110,7 +109,7 @@ def test_the_generator_carries_the_hidden_link_from_the_source():
         url="https://stock.naver.com/research/company/1",
         text="x",
         author="iM증권",
-        metadata={"hide_link": True},
+        show_link=False,
     )
     content = DigestContent(lead="리드.", items=[DigestItem(title="t", url=src.url, body="b")])
     DigestGenerator(PipelineConfig(), MagicMock())._fill_source_metadata(content, [RankedItem(item=src, score=0.9)])
@@ -146,9 +145,11 @@ async def test_a_transient_status_is_retried(monkeypatch):
         page_delay_sec=0,
         retry_backoff_sec=0,
         categories=["company"],
-        reference_time=datetime(2026, 11, 3, tzinfo=SEOUL),
     )
-    assert len(await NaverResearchCollector(config).collect()) == 1 and len(calls) == 2
+    assert (
+        len(await NaverResearchCollector(config, reference_time=datetime(2026, 11, 3, tzinfo=SEOUL)).collect()) == 1
+        and len(calls) == 2
+    )
 
 
 def test_a_news_item_that_wins_a_title_tie_keeps_its_own_link():
@@ -166,10 +167,10 @@ def test_a_news_item_that_wins_a_title_tie_keeps_its_own_link():
         url="https://stock.naver.com/research/company/1",
         text="짧다",
         author="iM증권",
-        metadata={"hide_link": True},
+        show_link=False,
     )
     [kept] = ContentAggregator().aggregate([note, news])
-    assert kept.url == "https://e.com/a" and "hide_link" not in kept.metadata
+    assert kept.url == "https://e.com/a" and kept.show_link is True
 
 
 @pytest.mark.asyncio
@@ -186,7 +187,7 @@ async def test_several_brokers_on_one_stock_and_day_become_one_consensus_item(mo
     merged = next(i for i in items if i.metadata.get("notes") == 3)
     assert merged.title == "현대모비스: 증권사 3곳 리포트, 목표주가 580,000~600,000원"
     assert "iM증권 Buy 580,000원, KB증권 매수 600,000원, 한국IR협의회 의견 없음" in merged.text
-    assert merged.author == "iM증권 외 2곳" and merged.metadata["hide_link"] is True
+    assert merged.author == "iM증권 외 2곳" and merged.show_link is False
 
 
 @pytest.mark.asyncio

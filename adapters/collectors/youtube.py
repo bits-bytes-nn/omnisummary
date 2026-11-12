@@ -69,8 +69,8 @@ def _latest_within_window(items: list[CollectedItem], limit: int) -> list[Collec
 class YouTubeCollector(BaseCollector):
     config: YouTubeCollectorConfig
 
-    def __init__(self, config: YouTubeCollectorConfig):
-        self.config = config
+    def __init__(self, config: YouTubeCollectorConfig, *, reference_time: datetime | None = None) -> None:
+        super().__init__(config, reference_time=reference_time)
         # Resolved once per collect() (see _resolve_api_key), never lazily per access: the SSM
         # lookup is a blocking boto3 call, and reading it from a property inside the async fan-out
         # stalled the whole event loop for the duration of every channel's first access.
@@ -110,7 +110,12 @@ class YouTubeCollector(BaseCollector):
         # collects videos WITH transcripts on a residential IP and parks them in S3 (same pattern
         # as RSSHub/X). In AWS we read that file; live collection from Lambda still works for the
         # metadata but yields transcript-less items, so the S3 file is strongly preferred.
-        parked = load_items_from_s3("youtube_items.json", max_age_hours=self.config.park_max_age_hours)
+        parked = await asyncio.to_thread(
+            load_items_from_s3,
+            "youtube_items.json",
+            max_age_hours=self.config.park_max_age_hours,
+            timeout=self.config.request_timeout,
+        )
         self.park_status = parked
         if parked.usable:
             # A FRESH park file says nothing about a sync that collected from 2 of 12 channels;
@@ -126,9 +131,9 @@ class YouTubeCollector(BaseCollector):
                 lookback_hours=park_read_lookback_hours(
                     parked,
                     lookback_hours=self.config.lookback_hours,
-                    reference_time=self.config.reference_time,
+                    reference_time=self.reference_time,
                 ),
-                reference_time=self.config.reference_time,
+                reference_time=self.reference_time,
                 description="YouTube park file",
             )
 
@@ -276,7 +281,7 @@ class YouTubeCollector(BaseCollector):
                     if not in_collection_window(
                         published_at,
                         lookback_hours=self.config.lookback_hours,
-                        reference_time=self.config.reference_time,
+                        reference_time=self.reference_time,
                     ):
                         continue
 
@@ -340,7 +345,7 @@ class YouTubeCollector(BaseCollector):
             feed,
             source_type=SourceType.YOUTUBE,
             lookback_hours=self.config.lookback_hours,
-            reference_time=self.config.reference_time,
+            reference_time=self.reference_time,
             description=description,
             metadata={"channel_url": channel_url},
             item_id_of=_entry_video_id,

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +44,7 @@ def language_models(config: Config) -> BedrockLanguageModelFactory:
     session = boto3.Session(
         profile_name=available_boto_profile(config.aws.profile), region_name=config.aws.bedrock_region
     )
-    return BedrockLanguageModelFactory(boto_session=session, region_name=config.aws.bedrock_region)
+    return BedrockLanguageModelFactory(aws=config.aws, boto_session=session, region_name=config.aws.bedrock_region)
 
 
 def paid_check() -> PaidPageCheck:
@@ -90,16 +91,24 @@ def collector_registry(
         "reddit": (RedditCollector, config.collectors.reddit, {}),
         "rsshub": (RSSHubCollector, config.collectors.rsshub, {}),
         "rss": (RSSCollector, config.collectors.rss, {}),
-        "web_search": (WebSearchCollector, config.collectors.web_search, {"models": models}),
+        "web_search": (
+            WebSearchCollector,
+            config.collectors.web_search,
+            {"models": models, "domain": config.pipeline.domain},
+        ),
         "youtube": (YouTubeCollector, config.collectors.youtube, {}),
     }
 
 
 def collectors(
-    config: Config, models: LanguageModels, sources: list[str] | None = None
+    config: Config,
+    models: LanguageModels,
+    sources: list[str] | None = None,
+    *,
+    reference_time: datetime | None = None,
 ) -> list[tuple[str, ContentSource]]:
     """The (name, collector) pairs to run: the enabled ones, or the named ones that are enabled, in
-    the order named."""
+    the order named. Each gets the run's reference time (None: now)."""
     registry = collector_registry(config, models)
     names = [name for name, (_, cfg, _kw) in registry.items() if cfg.enabled] if sources is None else sources
     built: list[tuple[str, ContentSource]] = []
@@ -111,7 +120,7 @@ def collectors(
         if not collector_cfg.enabled:
             logger.info("Skipping disabled source: '%s'", name)
             continue
-        built.append((name, collector_cls(collector_cfg, **kwargs)))
+        built.append((name, collector_cls(collector_cfg, **kwargs, reference_time=reference_time)))
     return built
 
 
@@ -149,11 +158,11 @@ def daily_visual_maker(config: Config, models: BedrockLanguageModelFactory | Non
 
 def research_ports(config: Config) -> ResearchPorts:
     """A research run's reading, its Threads account, the fact check's model and the read-only stores
-    its recall tools use. The models are built here, the stores on first use."""
+    its recall tools use. The models are built here, each store once, on first use."""
     return ResearchPorts(
-        sources=WebResearchSources(),
+        sources=WebResearchSources(config),
         threads=threads(config),
         models=language_models(config),
-        state_store=lambda: state_store(config),
-        memory_store=lambda: memory_store(config),
+        state_store=functools.cache(lambda: state_store(config)),
+        memory_store=functools.cache(lambda: memory_store(config)),
     )

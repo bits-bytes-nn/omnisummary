@@ -8,6 +8,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from langchain_core.output_parsers import StrOutputParser
+from pydantic import ValidationError
 
 from application.digest_publisher import DigestPublisher
 from application.history import RECENT_COMICS_KEY, RollingLog, ThreadsPostLedger
@@ -15,8 +16,8 @@ from application.ports import ImageRenderer, LanguageModels, StateStore, Threads
 from application.prompts import VisualEditorPrompt
 from application.visual_generator import VisualGenerator
 from domain.aggregator import normalize_url
-from domain.models import DigestContent, DigestItem, RankedItem, ThreadsDelivery, VisualBrief
-from shared import coerce_bool, logger, parse_json_from_llm_output
+from domain.models import DigestContent, DigestItem, RankedItem, RecentComic, ThreadsDelivery, VisualBrief, VisualPlan
+from shared import logger, parse_json_from_llm_output
 from shared.config import Config
 
 VISUAL_BRIEFS_PREFIX = "visual_briefs/"
@@ -48,7 +49,7 @@ class DailyVisualMaker:
         self.llm = models.get_model(config.pipeline.digest_model, stage="visual-editor")
         self.publisher = DigestPublisher(config, store, threads)
         # What the last few comics drew, shown to the editor so today's does not repeat their sets,
-        # props and gags (2026-10-13, -16 and -17 all locked a model in a glass case).
+        # props and gags (docs/decisions.md).
         self.comic_log = RollingLog(store, RECENT_COMICS_KEY, config.pipeline.recent_leads_window) if store else None
         self.store = store
         self.generator = VisualGenerator(
@@ -114,7 +115,7 @@ class DailyVisualMaker:
         if self.store is not None:
             try:
                 # The brief the image model got, beside the day: without it a drawing defect could be
-                # traced only to the brief's title (the 2026-11-03 image audit).
+                # traced only to the brief's title.
                 self.store.write_json(f"{VISUAL_BRIEFS_PREFIX}{post_date.isoformat()}.json", brief.model_dump())
             except Exception:
                 logger.warning("Failed to keep the day's visual brief (non-fatal)", exc_info=True)
@@ -122,17 +123,15 @@ class DailyVisualMaker:
             return
         try:
             self.comic_log.append(
-                {
-                    "date": post_date.isoformat(),
-                    "orientation": brief.orientation,
-                    "comic": brief.alt_text or brief.title,
-                },
+                RecentComic(
+                    date=post_date.isoformat(), orientation=brief.orientation, comic=brief.alt_text or brief.title
+                ).model_dump(),
                 dedup_key="date",
             )
         except Exception:
             logger.warning("Failed to record the day's comic in the recent-comics log (non-fatal)", exc_info=True)
 
-    def _recent_comics(self, post_date: date) -> list[dict]:
+    def _recent_comics(self, post_date: date) -> list[RecentComic]:
         """The logged comics of the days before `post_date`, oldest first. Best-effort: the history
         only steers the editor, so a store that cannot be read must not cost the day's comic."""
         try:
@@ -140,7 +139,7 @@ class DailyVisualMaker:
         except Exception:
             logger.warning("Recent-comics log unreadable; writing the comic without it", exc_info=True)
             return []
-        return [e for e in entries if isinstance(e, dict) and str(e.get("date", "")) < post_date.isoformat()]
+        return [e for e in recent_comics(entries) if e.date < post_date.isoformat()]
 
     @property
     def threads_outcome(self) -> ThreadsDelivery | None:
@@ -200,8 +199,8 @@ class DailyVisualMaker:
         ranked_items: list[RankedItem],
         content: DigestContent | None,
         post_date: date,
-        recent_comics: list[dict] | None = None,
-    ) -> tuple[dict, str, str]:
+        recent_comics: list[RecentComic] | None = None,
+    ) -> tuple[VisualPlan, str, str]:
         """(editor plan, art-director instruction, source material): everything the render is made
         from, shared with scripts/sample_visual_brief.py so the sampler grades what production sends.
         `recent_comics` defaults to the log's; the sampler passes its own to replay a past day. The
@@ -210,18 +209,16 @@ class DailyVisualMaker:
         if recent_comics is None:
             recent_comics = self._recent_comics(post_date)
         plan = await self._write_synopsis(source, recent_comics)
-        # coerce_bool, not truthiness: an editor that writes the STRING "false" here silently
-        # killed the day's visual, with no error anywhere.
-        if coerce_bool(plan.get("skip")) or not str(plan.get("instruction") or "").strip():
+        if plan.skip or not plan.instruction.strip():
             # A plan with no synopsis is skipped like an unparseable one: rendering a generic
             # "comic about <title>" paid for an image nobody wrote.
             return plan, "", source
         return plan, self._build_instruction(plan), source
 
-    def _build_instruction(self, plan: dict) -> str:
+    def _build_instruction(self, plan: VisualPlan) -> str:
         """The editor's synopsis plus what the art director must keep: the guardrails and, when the
         narrator appears, his sheet."""
-        instruction = plan["instruction"]
+        instruction = plan.instruction
         if self.config.pipeline.visual_guardrails:
             instruction += f"\n\nGUARDRAILS: {self.config.pipeline.visual_guardrails}"
         # The sheet is written into the brief; his exact look rides along as the reference image.
@@ -238,10 +235,10 @@ class DailyVisualMaker:
         still needs afterwards, so a slow render can never eat the day's post."""
         return None if deadline is None else deadline - self.threads.publish_budget_sec
 
-    def _features_character(self, plan: dict) -> bool:
-        return self.config.pipeline.visual_character_enabled and coerce_bool(plan.get("use_character"), default=False)
+    def _features_character(self, plan: VisualPlan) -> bool:
+        return self.config.pipeline.visual_character_enabled and plan.use_character
 
-    def _references(self, plan: dict) -> list[bytes]:
+    def _references(self, plan: VisualPlan) -> list[bytes]:
         """The input images the render carries: the narrator's reference sheet when he appears."""
         return [self.character_reference] if self._features_character(plan) and self.character_reference else []
 
@@ -283,10 +280,10 @@ class DailyVisualMaker:
         # Not the implication: it is a recommendation, and given it the editor's panel 4 turned into a moral.
         return f"{curated.title}\n\n{curated.body.strip()}"
 
-    async def _write_synopsis(self, headline_source: str, recent_comics: list[dict]) -> dict:
+    async def _write_synopsis(self, headline_source: str, recent_comics: list[RecentComic]) -> VisualPlan:
         """The editor's plan for the comic about the headline (it does not choose the story). It does not
-        see the digest's lead: given the lead, it drew the lead's argument one sentence per panel (four
-        comics, 2026-10-18 to 10-21), each panel adding a fact, a company and a new set."""
+        see the digest's lead: given the lead, it drew the lead's argument one sentence per panel, each
+        panel adding a fact, a company and a new set (docs/decisions.md)."""
         chain = VisualEditorPrompt.get_prompt() | self.llm | StrOutputParser()
         raw = await chain.ainvoke(
             {
@@ -297,9 +294,8 @@ class DailyVisualMaker:
                 "audience": self.config.pipeline.visual_audience_description,
                 "on_image_language": self.config.pipeline.visual_on_image_language,
                 # The edition's rules reach the cartoon too: a broker note's "Buy, target 580,000원" must
-                # not become the comic's own call. Empty for the AI/ML edition, whose prompt is unchanged.
-                # Passing only the advice rules (no sourcing rules) lost 1-4 blind with lower fidelity
-                # (2026-11-06): the sourcing rules are what keep the comic's facts straight.
+                # not become the comic's own call, and the sourcing rules keep its facts straight
+                # (docs/decisions.md). Empty for the AI/ML edition, whose prompt is unchanged.
                 "domain_rules": (
                     f"\n\nRules for this edition, which the cartoon follows too:\n{rules}"
                     if (rules := self.config.pipeline.domain_rules.strip())
@@ -308,17 +304,26 @@ class DailyVisualMaker:
             }
         )
         try:
-            return parse_json_from_llm_output(raw)
-        except json.JSONDecodeError:
+            return VisualPlan.model_validate(parse_json_from_llm_output(raw))
+        except (json.JSONDecodeError, ValidationError):
             # Treat an unparseable plan as a skip. Returning {} let run() fall through with a
             # generic fallback instruction and pay for a full gpt-image render off a plan nobody
             # could read; skipping costs nothing extra (no second LLM call either).
-            logger.warning("Daily visual editor returned unparseable JSON; skipping", exc_info=True)
-            return {"skip": True}
+            logger.warning("Daily visual editor returned an unusable plan; skipping", exc_info=True)
+            return VisualPlan(skip=True)
 
 
-def _format_recent_comics(entries: list[dict]) -> str:
-    lines = [
-        f"- {e.get('date', '')} ({e.get('orientation', '')}): {e.get('comic', '')}" for e in entries if e.get("comic")
-    ]
+def recent_comics(entries: list) -> list[RecentComic]:
+    """The readable entries of a recent-comics log; one malformed entry costs only itself."""
+    comics = []
+    for entry in entries:
+        try:
+            comics.append(RecentComic.model_validate(entry))
+        except ValidationError:
+            logger.warning("Skipping an unreadable recent-comics entry: %r", entry)
+    return comics
+
+
+def _format_recent_comics(entries: list[RecentComic]) -> str:
+    lines = [f"- {e.date} ({e.orientation}): {e.comic}" for e in entries if e.comic]
     return "\n".join(lines) or "(none yet)"

@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from application.digest_pipeline import PipelineRun
 from domain.models import HealthReport, SourceHealth, SourceStatus
 from entrypoints import digest_handler
 from shared.constants import METRIC_NAMESPACE
@@ -90,7 +91,7 @@ class TestRun:
         digest = MagicMock()
         digest.content = DigestContent(lead="리드.", items=[DigestItem(title="t", url="http://e/1", body="b")])
         ranked = [MagicMock(), MagicMock(), MagicMock()]
-        result = (items, ranked, digest)
+        result = PipelineRun(items, ranked, digest)
         with patch("entrypoints.digest_handler.Config.load", return_value=config):
             with patch(
                 "entrypoints.digest_handler.run_collectors_with_health",
@@ -122,7 +123,7 @@ class TestRun:
         health = HealthReport(sources=[SourceHealth(name="rss", item_count=1, status=SourceStatus.OK)])
         digest = MagicMock()
         digest.content = DigestContent(lead="l", items=[DigestItem(title="t", url="http://e/1", body="b")])
-        result = (items, [MagicMock() for _ in range(8)], digest)  # 8 ranked candidates, 1 story
+        result = PipelineRun(items, [MagicMock() for _ in range(8)], digest)  # 8 ranked candidates, 1 story
         with patch("entrypoints.digest_handler.Config.load", return_value=config):
             with patch(
                 "entrypoints.digest_handler.run_collectors_with_health",
@@ -142,7 +143,7 @@ class TestRun:
         health = HealthReport(sources=[SourceHealth(name="rss", item_count=1, status=SourceStatus.OK)])
         digest = MagicMock()
         digest.content = None  # the 08-17 failure mode: content that could not be parsed
-        result = (items, [MagicMock()], digest)
+        result = PipelineRun(items, [MagicMock()], digest)
         with patch("entrypoints.digest_handler.Config.load", return_value=config):
             with patch(
                 "entrypoints.digest_handler.run_collectors_with_health",
@@ -163,7 +164,7 @@ class TestRun:
         config = _config()
         items = [MagicMock()]
         health = HealthReport(sources=[SourceHealth(name="rss", item_count=1, status=SourceStatus.OK)])
-        result = (items, [MagicMock()], MagicMock())
+        result = PipelineRun(items, [MagicMock()], MagicMock())
         with patch("entrypoints.digest_handler.Config.load", return_value=config):
             with patch(
                 "entrypoints.digest_handler.run_collectors_with_health",

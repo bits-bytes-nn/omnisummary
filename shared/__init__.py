@@ -13,7 +13,6 @@ from .constants import (
 )
 from .logger import get_correlation_id, is_running_in_aws, logger, set_correlation_id
 from .utils import (
-    coerce_bool,
     parse_json_from_llm_output,
     retry_async,
 )
@@ -27,7 +26,6 @@ __all__ = [
     "THREADS_POST_SEPARATOR",
     "LanguageModelId",
     "Config",
-    "coerce_bool",
     "get_config",
     "KOREAN_PROSE_RULES",
     "KOREAN_STYLE_RULES",

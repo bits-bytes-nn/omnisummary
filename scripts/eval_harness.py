@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
 import hashlib
 import json
 import os
@@ -30,10 +31,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from langchain_core.output_parsers import StrOutputParser  # noqa: E402
 from langchain_core.prompts import ChatPromptTemplate  # noqa: E402
 
+from application.daily_visual import recent_comics  # noqa: E402
 from domain.digest_snapshot import DigestSnapshot  # noqa: E402
 from entrypoints import bootstrap  # noqa: E402
 from shared import Config, logger, parse_json_from_llm_output  # noqa: E402
-from shared.config import get_config  # noqa: E402
 from shared.constants import LanguageModelId  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1] / "evals"
@@ -120,10 +121,15 @@ def _posted_before(snapshots: list[DigestSnapshot], replayed: DigestSnapshot) ->
     return [s for s in snapshots if s.digest is None or s.digest.generated_at <= cutoff]
 
 
+@functools.cache
+def _edition() -> str:
+    return Config.load().edition
+
+
 def _case_dir(kind: str, label: str) -> Path:
     """evals/<kind>[/<edition>]/<label>: the editions replay the same dates, so a shared label would
     overwrite one edition's cases with the other's."""
-    edition = get_config().edition
+    edition = _edition()
     path = ROOT / kind / edition / label if edition else ROOT / kind / label
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -134,13 +140,13 @@ def _slug(text: str) -> str:
 
 
 async def _digest(label: str, dates: list[str]) -> None:
-    from application.digest_generator import DigestGenerator
     from application.digest_pipeline import (
         POOLS_PREFIX,
-        RECENT_TITLE_DAYS,
-        _recent_leads,
-        _recent_story_titles,
+        editor_context,
+        load_recent_history,
+        recent_angles,
         sibling_snapshots,
+        write_digest,
     )
     from application.trend_tracker import TrendTracker
     from domain.models import RankedItem
@@ -161,29 +167,23 @@ async def _digest(label: str, dates: list[str]) -> None:
         if not stored:
             logger.warning("%s has no stored pool; replaying the snapshot's shortened items", day)
         today = date.fromisoformat(day)
-        # The same inputs a real run on that date had: the earlier snapshots and the trends before it.
-        earlier = memory.get_recent_digests(today, config.pipeline.published_url_ttl_days - 1)
-        title_snapshots = memory.get_recent_digests(today, RECENT_TITLE_DAYS)
+        # The same inputs a real run on that date had: the earlier snapshots and the trends before it. A store that
+        # cannot be read raises: a replay without them is a different input from the run it stands for.
+        history = load_recent_history(config, memory, today)
         trends = TrendTracker(config.pipeline, models, bootstrap.state_store(config)).get_trends_context(today=today)
-        window = config.pipeline.recent_leads_window
         sibling = _posted_before(sibling_snapshots(lambda: bootstrap.sibling_memory_stores(config), today), snapshot)
-        result = await DigestGenerator(config.pipeline, models).generate(
-            pool,
-            today=today,
-            trends_context=trends,
-            recent_leads=_recent_leads(earlier, window) + _recent_leads(sibling, window),
-            recent_titles=list(dict.fromkeys(_recent_story_titles(title_snapshots) + _recent_story_titles(sibling))),
-        )
+        recent = editor_context(history, sibling, config.pipeline)
+        result = await write_digest(config.pipeline, models, pool, recent, trends_context=trends, today=today)
         # The judge always sees what the whole Threads account ran, the other editions included, whatever
         # the arm under test was given.
-        account = _recent_leads(earlier, window) + _recent_leads(
+        account = recent_angles(history.dedup, config.pipeline) + recent_angles(
             _posted_before(
                 sibling_snapshots(
                     lambda: [bootstrap.memory_store(config, edition=e) for e in _other_editions(config)], today
                 ),
                 snapshot,
             ),
-            window,
+            config.pipeline,
         )
         # The editor's own view of each source (its token cap), not a shorter cut: at 1,500 characters the
         # judge marked figures from further down the source as invented (2026-11-06: Evercore's 7,750 and
@@ -204,13 +204,13 @@ async def _digest(label: str, dates: list[str]) -> None:
 async def _visual(label: str, dates: list[str]) -> None:
     config = Config.load()
     maker = bootstrap.daily_visual_maker(config)
-    log = maker.comic_log.entries() if maker.comic_log else []
+    log = recent_comics(maker.comic_log.entries() if maker.comic_log else [])
     for day in dates:
         snapshot = bootstrap.memory_store(config).get_digest(day)
         if snapshot is None:
             logger.warning("No snapshot for %s; skipped", day)
             continue
-        recent = [e for e in log if str(e.get("date", "")) < day][-config.pipeline.recent_leads_window :]
+        recent = [e for e in log if e.date < day][-config.pipeline.recent_leads_window :]
         if len(recent) < config.pipeline.recent_leads_window:
             # The deployed log keeps only the last few comics, so an older day replays with fewer of them
             # than its real run had.
@@ -228,9 +228,11 @@ async def _visual(label: str, dates: list[str]) -> None:
             continue
         out = {
             "case": day,
-            "context": f"HEADLINE ARTICLE:\n{source}\n\nRECENT COMICS:\n{json.dumps(recent, ensure_ascii=False)}",
+            "context": f"HEADLINE ARTICLE:\n{source}\n\nRECENT COMICS:\n{json.dumps([e.model_dump() for e in recent], ensure_ascii=False)}",
             "artifact": json.dumps(
-                {"plan": plan, "brief": brief.model_dump() if brief else None}, ensure_ascii=False, indent=1
+                {"plan": plan.model_dump(), "brief": brief.model_dump() if brief else None},
+                ensure_ascii=False,
+                indent=1,
             ),
         }
         (_case_dir("visual", label) / f"{day}.json").write_text(json.dumps(out, ensure_ascii=False, indent=1))
@@ -246,7 +248,14 @@ def _research(label: str, topics: list[str]) -> None:
             text=True,
             cwd=Path(__file__).resolve().parents[1],
         )
-        result = json.loads(proc.stdout)
+        if proc.returncode != 0:
+            logger.warning("research %s '%s' exited %d: %s", label, topic, proc.returncode, proc.stderr[-2000:])
+        try:
+            result = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            # A crash before the CLI's one JSON object leaves nothing to judge: the other topics still are.
+            logger.warning("research %s '%s' printed no result; skipped", label, topic)
+            continue
         posts = (result.get("threads") or {}).get("posts") or []
         out = {
             "case": topic,

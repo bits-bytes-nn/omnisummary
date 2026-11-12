@@ -48,12 +48,12 @@ def test_news_item_and_research_note_with_the_same_title():
     news = _it(SourceType.WEB, "삼성전자: 3Q 실적 리뷰", "https://news.example/a", "짧음")
     [kept] = ContentAggregator().aggregate([news, note])
     # The longer research note wins: its hidden link must stay hidden.
-    assert kept.source_type == SourceType.RESEARCH and kept.metadata["hide_link"] is True
+    assert kept.source_type == SourceType.RESEARCH and kept.show_link is False
 
     note2 = note.model_copy(deep=True)
     news2 = _it(SourceType.WEB, "삼성전자: 3Q 실적 리뷰", "https://news.example/a", "긴 기사 본문" * 50)
     [kept] = ContentAggregator().aggregate([note2, news2])
-    assert kept.source_type == SourceType.WEB and "hide_link" not in kept.metadata
+    assert kept.source_type == SourceType.WEB and kept.show_link is True
     # The research note's broker/stock metadata rides onto the news item.
     leaked = {k for k in ("broker", "stock", "research_category") if k in kept.metadata}
     assert not leaked, f"research metadata copied onto a news item: {leaked}"

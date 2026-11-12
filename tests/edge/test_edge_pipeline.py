@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import date, timedelta
 from unittest.mock import MagicMock
 
 import pytest
@@ -49,9 +49,11 @@ def _items(n: int, source=SourceType.WEB) -> list[CollectedItem]:
 def _memory(snapshots=None, *, raises: Exception | None = None):
     memory = MagicMock()
     if raises:
-        memory.get_recent_digests.side_effect = raises
+        memory.get_recent_digests_dated.side_effect = raises
     else:
-        memory.get_recent_digests.return_value = snapshots or []
+        memory.get_recent_digests_dated.return_value = [
+            (DAY - timedelta(days=age), snap) for age, snap in enumerate(snapshots or [], start=1)
+        ]
     return memory
 
 
@@ -101,7 +103,7 @@ async def test_every_collector_returns_nothing():
     items, health = await runner.run_collectors_with_health(config, [("rss", _Source()), ("web_search", _Source())])
     assert items == [] and [s.status for s in health.sources] == [SourceStatus.EMPTY, SourceStatus.EMPTY]
     models = ScriptedModels({})
-    assert await _run(config, models, items, _memory()) == (None, None, None)
+    assert await _run(config, models, items, _memory()) is None
     assert sum(models.calls.values()) == 0
 
 
@@ -229,7 +231,7 @@ async def test_memory_factory_itself_raises():
         ),
         timeout=20,
     )
-    assert result[2].content.items
+    assert result is not None and result.digest.content.items
 
 
 async def test_non_dry_run_records_the_ledger_and_trends_failure_is_non_fatal():
@@ -249,5 +251,5 @@ async def test_non_dry_run_records_the_ledger_and_trends_failure_is_non_fatal():
         note_text=no_note_text,
         dry_run=False,
     )
-    assert result[2].content.items
+    assert result is not None and result.digest.content.items
     assert any("published" in k for k in store.blobs), store.blobs.keys()

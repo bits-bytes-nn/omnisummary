@@ -85,6 +85,16 @@ class TestCollectors:
         models.get_model.assert_called_once()
         assert models.get_model.call_args.kwargs["stage"] == "query-refine"
 
+    def test_every_collector_gets_the_runs_window_and_web_search_the_editions_domain(self):
+        from datetime import UTC, datetime
+
+        config = self._config()
+        config.pipeline.domain = "investing"
+        moment = datetime(2026, 11, 12, tzinfo=UTC)
+        built = dict(bootstrap.collectors(config, MagicMock(), reference_time=moment))
+        assert {c.reference_time for c in built.values()} == {moment}
+        assert built["web_search"].domain == "investing"
+
 
 class TestResearchPorts:
     def test_a_research_run_gets_every_port_and_builds_the_stores_only_when_asked(self):
@@ -102,8 +112,11 @@ class TestResearchPorts:
             assert ports.models is models.return_value
             store.assert_not_called()  # the stores are built on first use
             memory.assert_not_called()
-            ports.memory_store()
+            assert ports.memory_store() is ports.memory_store()
+            assert ports.state_store() is ports.state_store()
         memory.assert_called_once_with(config)
+        store.assert_called_once_with(config)
+        assert ports.sources.agent is config.agent
 
 
 class TestPaidCheckWiring:

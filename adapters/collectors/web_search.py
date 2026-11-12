@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from datetime import UTC, datetime, timedelta, tzinfo
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
@@ -16,9 +15,10 @@ from adapters.aws import resolve_secret
 from adapters.research_backends import access_controlled, record_tavily_usage, tavily_client
 from application.ports import LanguageModels
 from application.prompts import RefineQueryPrompt
+from domain.aggregator import youtube_video_id
 from domain.models import CollectedItem, generate_item_id
-from shared import DOMAIN_TO_SOURCE, SourceType, get_config, logger, parse_json_from_llm_output, retry_async
-from shared.config import WebSearchCollectorConfig
+from shared import DOMAIN_TO_SOURCE, SourceType, logger, parse_json_from_llm_output, retry_async
+from shared.config import WebSearchCollectorConfig, YouTubeCollectorConfig
 
 from .base import BaseCollector, collection_window_dates, gather_collector_results, in_collection_window
 from .youtube import YOUTUBE_API_BASE, fetch_youtube_transcript
@@ -39,8 +39,17 @@ _RETRIABLE_SEARCH_ERRORS: tuple[type[BaseException], ...] = (
 class WebSearchCollector(BaseCollector):
     config: WebSearchCollectorConfig
 
-    def __init__(self, config: WebSearchCollectorConfig, models: LanguageModels | None = None):
-        self.config = config
+    def __init__(
+        self,
+        config: WebSearchCollectorConfig,
+        models: LanguageModels | None = None,
+        *,
+        domain: str = "",
+        reference_time: datetime | None = None,
+    ) -> None:
+        super().__init__(config, reference_time=reference_time)
+        # The field the refine step asks for queries about: the edition's pipeline.domain.
+        self.domain = domain
         self._api_key = ""
         self._client_instance: AsyncTavilyClient | None = None
         self._llm = models.get_model(config.refine_model, stage="query-refine") if models else None
@@ -67,18 +76,20 @@ class WebSearchCollector(BaseCollector):
         # timeout measures the search rather than the queue wait. Mirrors rss.max_concurrency.
         semaphore = asyncio.Semaphore(self.config.max_concurrency)
         tasks: list[asyncio.Task] = []
+        labels: list[str] = []
 
         for trend in self.config.trend_searches:
             for query in trend.queries:
                 tasks.append(
                     asyncio.ensure_future(self._search_trend(query, trend.domains, trend.name, semaphore=semaphore))
                 )
+                labels.append(f"{trend.name}: {query}")
 
         if not tasks:
             logger.info("No web search queries configured, skipping")
             return []
 
-        broad = await gather_collector_results(tasks, raise_if_all_failed=True)
+        broad = await gather_collector_results(tasks, labels=labels, raise_if_all_failed=True)
         broad_items = broad.items
         logger.info(
             "Web search collector gathered %d items (broad phase) from %d/%d queries (%d failed)",
@@ -128,10 +139,12 @@ class WebSearchCollector(BaseCollector):
         ]
         # Refinement is intentionally non-fatal (broad results are the floor), but a total
         # failure should be visible to ops so degraded refinement isn't silent.
-        refined_items = (await gather_collector_results(tasks)).items
-        if tasks and not refined_items:
+        refined = await gather_collector_results(tasks, labels=[f"refined: {query}" for query in queries])
+        if refined.failed:
+            logger.warning("%d/%d refined web-search queries failed", refined.failed, refined.total)
+        if tasks and not refined.items:
             logger.warning("All %d refined web-search queries returned no items; using broad results only", len(tasks))
-        return refined_items
+        return refined.items
 
     async def _generate_refined_queries(self, items: list[CollectedItem]) -> list[str]:
         if not self._llm:
@@ -144,12 +157,10 @@ class WebSearchCollector(BaseCollector):
                 {
                     "titles": titles,
                     "max_queries": self.config.max_refine_queries,
-                    "domain": self.config.domain,
+                    "domain": self.domain,
                     "refine_rules": self.config.refine_rules,
                     # reference_time is midnight at the END of the digest date, so step back into that day.
-                    "today": ((self.config.reference_time or datetime.now(UTC)) - timedelta(seconds=1))
-                    .date()
-                    .isoformat(),
+                    "today": ((self.reference_time or datetime.now(UTC)) - timedelta(seconds=1)).date().isoformat(),
                 }
             )
             queries = parse_json_from_llm_output(raw)
@@ -172,7 +183,7 @@ class WebSearchCollector(BaseCollector):
         # The window Tavily is asked about is the run's OWN window, not a day count derived from it:
         # `days = lookback_hours // 24` truncated a 30-hour window to 1 day for the largest source,
         # and `days` is anchored to now, so a `--date` backfill searched today either way.
-        start_date, end_date = collection_window_dates(self.config.lookback_hours, self.config.reference_time)
+        start_date, end_date = collection_window_dates(self.config.lookback_hours, self.reference_time)
 
         async def _search() -> dict:
             return await asyncio.wait_for(
@@ -212,7 +223,7 @@ class WebSearchCollector(BaseCollector):
         return self._parse_results(response, trend_name=trend_name)
 
     def _date_only_tz(self) -> tzinfo:
-        reference = self.config.reference_time
+        reference = self.reference_time
         return reference.tzinfo if reference is not None and reference.tzinfo is not None else UTC
 
     def _parse_results(
@@ -240,7 +251,7 @@ class WebSearchCollector(BaseCollector):
                 if not in_collection_window(
                     published_at,
                     lookback_hours=self.config.lookback_hours,
-                    reference_time=self.config.reference_time,
+                    reference_time=self.reference_time,
                 ):
                     continue
 
@@ -285,23 +296,7 @@ def _title_from_url(url: str) -> str:
     return slug.replace("-", " ").replace("_", " ").strip() or host or url
 
 
-_YOUTUBE_ID_RE = re.compile(r"(?:v=|/shorts/|youtu\.be/|/embed/)([A-Za-z0-9_-]{11})")
-_YOUTUBE_HOSTS = {"youtube.com", "m.youtube.com", "youtu.be"}
-
-
-def _youtube_video_id(url: str) -> str:
-    """Pull the 11-char video id out of any YouTube URL form (watch?v=, youtu.be/, /shorts/,
-    /embed/). Returns "" for a non-YouTube or id-less URL so the caller routes it to Tavily.
-    (DOMAIN_TO_SOURCE doesn't map youtube.com — it's the collector's own source — so match on
-    the host directly rather than _detect_source_type.)"""
-    host = urlparse(url).netloc.lower().removeprefix("www.")
-    if host not in _YOUTUBE_HOSTS:
-        return ""
-    match = _YOUTUBE_ID_RE.search(url)
-    return match.group(1) if match else ""
-
-
-async def _fetch_youtube_pinned(url: str, video_id: str) -> CollectedItem | None:
+async def _fetch_youtube_pinned(url: str, video_id: str, youtube: YouTubeCollectorConfig) -> CollectedItem | None:
     """Resolve a pinned YouTube URL through the YouTube Data API + transcript API instead of
     Tavily. Tavily's extractor only returns a video page's metadata, never the spoken content,
     and YouTube videos are a common pin target — so go to the source: title + description from
@@ -312,7 +307,7 @@ async def _fetch_youtube_pinned(url: str, video_id: str) -> CollectedItem | None
         logger.warning("YOUTUBE_API_KEY not set, cannot fetch pinned YouTube URL '%s'", url)
         return None
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=youtube.request_timeout) as client:
             resp = await client.get(
                 f"{YOUTUBE_API_BASE}/videos",
                 params={"part": "snippet", "id": video_id},
@@ -332,10 +327,7 @@ async def _fetch_youtube_pinned(url: str, video_id: str) -> CollectedItem | None
 
     title = (snippet.get("title") or "").strip() or _title_from_url(url)
     body = snippet.get("description", "")
-    # The socket timeout is the only real bound on this blocking fetch, so it comes from the YouTube
-    # collector's own knob rather than a second literal here.
-    transcript_timeout = get_config().collectors.youtube.transcript_timeout
-    transcript = await asyncio.to_thread(fetch_youtube_transcript, video_id, timeout_sec=transcript_timeout)
+    transcript = await asyncio.to_thread(fetch_youtube_transcript, video_id, timeout_sec=youtube.transcript_timeout)
     if transcript:
         body = transcript
     logger.info("Fetched pinned YouTube URL: '%s' (%s)", url, title)
@@ -346,7 +338,7 @@ async def _fetch_youtube_pinned(url: str, video_id: str) -> CollectedItem | None
         url=url,
         text=body,
         author=snippet.get("channelTitle", ""),
-        metadata={"pinned": True},
+        pinned=True,
     )
 
 
@@ -379,29 +371,29 @@ async def _fetch_tavily_pinned(urls: list[str]) -> list[CollectedItem]:
                 title=title,
                 url=url,
                 text=content,
-                metadata={"pinned": True},
+                pinned=True,
             )
         )
         logger.info("Fetched pinned URL: '%s' (%s)", url, title)
     return items
 
 
-async def fetch_pinned_items(urls: list[str]) -> list[CollectedItem]:
+async def fetch_pinned_items(urls: list[str], youtube: YouTubeCollectorConfig) -> list[CollectedItem]:
     """Fetch user-specified URLs (via `--pin-url`) as CollectedItems so the pipeline can force
     them into the digest regardless of ranking score. YouTube URLs go through the YouTube Data
     API (Tavily only sees a video page's metadata, never its content); everything else goes
     through Tavily extract. Best-effort: a URL that can't be fetched is logged and skipped,
-    never aborting the run. Returned items carry metadata['pinned']=True so the ranker
+    never aborting the run. Returned items carry pinned=True so the ranker
     guarantees them a slot."""
     urls = [u.strip() for u in (urls or []) if u and u.strip()]
     if not urls:
         return []
 
-    youtube_pins = {u: vid for u in urls if (vid := _youtube_video_id(u))}
+    youtube_pins = {u: vid for u in urls if (vid := youtube_video_id(u))}
     other_urls = [u for u in urls if u not in youtube_pins]
 
     items: list[CollectedItem] = []
-    yt_results = await asyncio.gather(*(_fetch_youtube_pinned(u, vid) for u, vid in youtube_pins.items()))
+    yt_results = await asyncio.gather(*(_fetch_youtube_pinned(u, vid, youtube) for u, vid in youtube_pins.items()))
     items.extend(it for it in yt_results if it is not None)
     # A pinned page goes through Tavily extract like any other, so it gets the same access check.
     refused = await access_controlled(other_urls)

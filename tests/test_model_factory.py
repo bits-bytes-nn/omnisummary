@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from adapters.bedrock import LANGUAGE_MODEL_INFO, TOKEN_COUNT_MODEL, BedrockLanguageModelFactory
+from shared.config import AWSConfig
 from shared.constants import LanguageModelId
 
 
@@ -13,7 +14,7 @@ def _factory(client=None):
         session.return_value.client.return_value = client or MagicMock()
         session.return_value.region_name = "us-west-2"
         session.return_value.profile_name = None
-        return BedrockLanguageModelFactory(region_name="us-west-2")
+        return BedrockLanguageModelFactory(aws=AWSConfig(), region_name="us-west-2")
 
 
 class TestCountTokens:
@@ -364,7 +365,29 @@ class TestApplicationProfileResolution:
         ]
         session = MagicMock()
         session.client.return_value = client
-        assert H._application_profile_arn(session, LanguageModelId.CLAUDE_V5_5_OPUS, "us-west-2", "fb") == "arn:prod"
+        assert (
+            H._application_profile_arn(session, LanguageModelId.CLAUDE_V5_5_OPUS, "us-west-2", "fb", AWSConfig())
+            == "arn:prod"
+        )
+
+    def test_a_local_run_bills_to_the_injected_configs_local_profile(self, monkeypatch):
+        # The project and stage come from the config the composition root hands in, not a second,
+        # edition-less Config.load() inside the adapter.
+        from adapters.bedrock import BedrockCrossRegionModelHelper as H
+
+        monkeypatch.delenv("PROJECT_NAME", raising=False)
+        monkeypatch.delenv("STAGE", raising=False)
+        wanted = H.application_profile_name(LanguageModelId.CLAUDE_V5_5_OPUS, "other", "prod-local")
+        client = MagicMock()
+        client.get_paginator.return_value.paginate.return_value = [
+            {"inferenceProfileSummaries": [{"inferenceProfileName": wanted, "inferenceProfileArn": "arn:local"}]}
+        ]
+        session = MagicMock()
+        session.client.return_value = client
+        aws = AWSConfig(project_name="other", stage="prod")
+        assert (
+            H._application_profile_arn(session, LanguageModelId.CLAUDE_V5_5_OPUS, "us-west-2", "fb", aws) == "arn:local"
+        )
 
     def test_matching_profile_is_preferred(self, monkeypatch):
         from adapters.bedrock import BedrockCrossRegionModelHelper as H
@@ -383,7 +406,9 @@ class TestApplicationProfileResolution:
         ]
         session = MagicMock()
         session.client.return_value = client
-        got = H._application_profile_arn(session, LanguageModelId.CLAUDE_V4_8_OPUS, "us-west-2", "fallback-id")
+        got = H._application_profile_arn(
+            session, LanguageModelId.CLAUDE_V4_8_OPUS, "us-west-2", "fallback-id", AWSConfig()
+        )
         assert got == arn
 
     def test_absent_profile_keeps_the_system_defined_id(self, monkeypatch):
@@ -395,7 +420,9 @@ class TestApplicationProfileResolution:
         session = MagicMock()
         session.client.return_value = client
         assert (
-            H._application_profile_arn(session, LanguageModelId.CLAUDE_V5_SONNET, "us-west-2", "global.anthropic.x")
+            H._application_profile_arn(
+                session, LanguageModelId.CLAUDE_V5_SONNET, "us-west-2", "global.anthropic.x", AWSConfig()
+            )
             == "global.anthropic.x"
         )
 
@@ -408,7 +435,7 @@ class TestApplicationProfileResolution:
         session = MagicMock()
         session.client.side_effect = RuntimeError("ThrottlingException")
         model = LanguageModelId.CLAUDE_V5_SONNET
-        assert H.get_cross_region_model_id(session, model, "us-west-2") == "global.anthropic.x"
+        assert H.get_cross_region_model_id(session, model, "us-west-2", AWSConfig()) == "global.anthropic.x"
         assert H._resolution_cache == {}
 
     def test_an_arn_model_id_names_its_provider(self):
@@ -451,13 +478,19 @@ class TestCrossRegionResolution:
         from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
         client = _resolution_client(f"global.{self.MODEL.value}", f"us.{self.MODEL.value}")
-        assert H.get_cross_region_model_id(_session(client), self.MODEL, "us-west-2") == f"global.{self.MODEL.value}"
+        assert (
+            H.get_cross_region_model_id(_session(client), self.MODEL, "us-west-2", AWSConfig())
+            == f"global.{self.MODEL.value}"
+        )
 
     def test_the_regional_profile_is_the_second_choice(self):
         from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
         client = _resolution_client(f"us.{self.MODEL.value}")
-        assert H.get_cross_region_model_id(_session(client), self.MODEL, "us-west-2") == f"us.{self.MODEL.value}"
+        assert (
+            H.get_cross_region_model_id(_session(client), self.MODEL, "us-west-2", AWSConfig())
+            == f"us.{self.MODEL.value}"
+        )
 
     def test_asia_pacific_regions_use_the_apac_prefix(self):
         # ap-northeast-2's profiles are named apac.*, not ap.* — the one region family whose prefix
@@ -465,19 +498,25 @@ class TestCrossRegionResolution:
         from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
         client = _resolution_client(f"apac.{self.MODEL.value}")
-        assert H.get_cross_region_model_id(_session(client), self.MODEL, "ap-northeast-2") == f"apac.{self.MODEL.value}"
+        assert (
+            H.get_cross_region_model_id(_session(client), self.MODEL, "ap-northeast-2", AWSConfig())
+            == f"apac.{self.MODEL.value}"
+        )
 
     def test_other_regions_use_their_two_letter_prefix(self):
         from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
         client = _resolution_client(f"eu.{self.MODEL.value}")
-        assert H.get_cross_region_model_id(_session(client), self.MODEL, "eu-west-1") == f"eu.{self.MODEL.value}"
+        assert (
+            H.get_cross_region_model_id(_session(client), self.MODEL, "eu-west-1", AWSConfig())
+            == f"eu.{self.MODEL.value}"
+        )
 
     def test_no_cross_region_profile_falls_back_to_the_standard_id(self):
         from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
         client = _resolution_client()
-        assert H.get_cross_region_model_id(_session(client), self.MODEL, "us-west-2") == self.MODEL.value
+        assert H.get_cross_region_model_id(_session(client), self.MODEL, "us-west-2", AWSConfig()) == self.MODEL.value
 
     def test_a_denied_listing_falls_back_to_the_standard_id(self):
         # ListInferenceProfiles is denied / throttled: the digest must still run against the plain
@@ -487,7 +526,7 @@ class TestCrossRegionResolution:
         client = MagicMock()
         client.list_inference_profiles.side_effect = RuntimeError("AccessDenied")
         client.get_paginator.return_value.paginate.return_value = [{"inferenceProfileSummaries": []}]
-        assert H.get_cross_region_model_id(_session(client), self.MODEL, "us-west-2") == self.MODEL.value
+        assert H.get_cross_region_model_id(_session(client), self.MODEL, "us-west-2", AWSConfig()) == self.MODEL.value
 
     def test_resolution_is_cached_per_model_and_region(self):
         # ranker/digest/trend/refine each build a model; without the cache every build pays the
@@ -496,10 +535,10 @@ class TestCrossRegionResolution:
 
         client = _resolution_client(f"global.{self.MODEL.value}")
         session = _session(client)
-        H.get_cross_region_model_id(session, self.MODEL, "us-west-2")
-        H.get_cross_region_model_id(session, self.MODEL, "us-west-2")
+        H.get_cross_region_model_id(session, self.MODEL, "us-west-2", AWSConfig())
+        H.get_cross_region_model_id(session, self.MODEL, "us-west-2", AWSConfig())
         assert client.list_inference_profiles.call_count == 1
-        H.get_cross_region_model_id(session, self.MODEL, "eu-west-1")  # a different region is not cached
+        H.get_cross_region_model_id(session, self.MODEL, "eu-west-1", AWSConfig())  # a different region is not cached
         assert client.list_inference_profiles.call_count > 1
 
 
@@ -548,7 +587,7 @@ def test_a_failed_cross_region_lookup_is_not_cached(monkeypatch):
     session = MagicMock()
     session.client.side_effect = RuntimeError("ThrottlingException")
     model = LanguageModelId.CLAUDE_V5_SONNET
-    assert H.get_cross_region_model_id(session, model, "us-west-2") == model.value
+    assert H.get_cross_region_model_id(session, model, "us-west-2", AWSConfig()) == model.value
     assert H._resolution_cache == {}
 
 
@@ -570,5 +609,5 @@ def test_a_local_run_bills_to_its_own_application_profiles(monkeypatch, env, exp
     paginator.paginate.side_effect = lambda **_: [{"inferenceProfileSummaries": []}]
     model = LanguageModelId.CLAUDE_V5_5_SONNET
     with patch.object(H, "application_profile_name", side_effect=lambda m, p, s: seen.append(s) or "x"):
-        H._application_profile_arn(session, model, "us-west-2", "fallback")
+        H._application_profile_arn(session, model, "us-west-2", "fallback", AWSConfig())
     assert seen == [expected_stage]

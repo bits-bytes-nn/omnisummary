@@ -6,11 +6,11 @@ Proactive AI/ML daily digest: collects from 6 sources (RSS, Reddit, YouTube, X/T
 ## Architecture
 ```
 [EventBridge Cron] → [Digest Lambda (Docker)]
-  → Collectors (RSS, Reddit, YouTube, WebSearch, X/S3)
+  → Collectors (RSS, Reddit, YouTube, WebSearch, X/S3; NaverResearch for investing)
   → Aggregator (URL + title dedup)
   → Ranker (Claude Opus 5.5 for AI, Sonnet 5.5 for investing; parallel batches) → candidate pool (top_n + buffer; source slots shape the POOL)
-  → TrendTracker (structured trends.json)
   → DigestGenerator (Claude Sonnet 5.5 picks the strongest top_n and writes DigestContent)
+  → TrendTracker (structured trends.json from the written stories; skipped on --dry-run)
   → AgentCore Memory (digest snapshot) → Daily Visual Lambda (async)
        → Korean comic, form picked per story (gpt-image-2.5-sunburst) + Threads root/reply chain
 [EventBridge hourly] → [Comment-reply Lambda] → answers readers' new comments (Sonnet 5.5, or declines)
@@ -61,11 +61,11 @@ uv run pre-commit install                       # once — ruff, black, file che
 scripts/release.sh   # account from aws.profile (not the shell's AWS_PROFILE)
 # Secrets are NOT in the template (a CFN template can't hold a SecureString). The stack creates each
 # SSM parameter holding a placeholder; write the real values right after:
-AWS_PROFILE=research uv run python scripts/put_secrets.py    # --dry-run / --verify / --force
+uv run python scripts/put_secrets.py    # --dry-run / --verify / --force; account from aws.profile
 # Tagged APPLICATION inference profiles make Bedrock spend attributable; the resolver prefers them and
 # falls back to the system-defined profile. Names come from config (project/stage). Once per account/stage,
 # and again after changing a stage model:
-AWS_PROFILE=research uv run python scripts/put_inference_profiles.py   # --dry-run / --delete
+uv run python scripts/put_inference_profiles.py   # --dry-run / --delete; account from aws.profile
 # put_secrets SKIPS parameters that are already SecureStrings: the Threads token is rotated in place by
 # the refresh Lambda, so reasserting the local .env copy would restore an expired token.
 # Lockfile: regenerate with `uvx --from uv==0.6.14 uv lock` (CI and the Dockerfile pin uv 0.6.14; a newer
@@ -97,7 +97,7 @@ Ports and adapters (hexagonal). Dependencies point inward only, checked in CI by
 - `shared/` - the kernel: config, constants, logger, naming (names CDK and code share), utils (retry, LLM-JSON parsing)
 - `research_cli.py`, `recall_cli.py`, `main.py` - local CLIs; they get their adapters from `entrypoints/bootstrap.py`
 - `infrastructure/` - CDK stacks (foundation + application)
-- `scripts/` - deploy, put_secrets, put_inference_profiles, ci_synth, sync_to_s3 + sync_all_to_s3.sh, sample_digest, sample_visual_brief, sample_comment_replies, cost_report, render_excalidraw.mjs
+- `scripts/` - release.sh, deploy, put_secrets, put_inference_profiles, ci_synth, sync_to_s3 + sync_all_to_s3.sh, sample_digest, sample_visual_brief, sample_comment_replies, cost_report, eval_harness, render_excalidraw.mjs
 - Tests hand the core fakes (`tests/fakes.py`: FakeThreads, FakeRenderer, FakeSources, MemoryStateStore) instead of patching clients. A new outside dependency goes behind a port in `application/ports.py`, an adapter, and one line in `bootstrap.py`.
 
 ## Config

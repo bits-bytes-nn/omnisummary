@@ -3,11 +3,22 @@ tool spec the model reads, and its rules live in application/research.py."""
 
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Callable
+from typing import Any, Literal
 
 from strands import tool
 
 from application import research
+
+
+def _spec(**values: Any) -> Callable[[Callable], Callable]:
+    """Fill a tool's docstring from the values its rules use, so the spec cannot drift from them."""
+
+    def fill(fn: Callable) -> Callable:
+        fn.__doc__ = (fn.__doc__ or "").format(**values)
+        return fn
+
+    return fill
 
 
 @tool
@@ -47,8 +58,9 @@ async def search_reports(query: str) -> str:
 
 
 @tool
+@_spec(limit=research.MAX_QUOTE_TICKERS)
 async def market_quote(symbols: str, period: Literal["5d", "1mo", "6mo", "1y", "5y"] = "5d") -> str:
-    """Closes over a period, with the period's high and low, for up to 8 tickers: stocks (005930.KS,
+    """Closes over a period, with the period's high and low, for up to {limit} tickers: stocks (005930.KS,
     000660.KS, AAPL, NVDA), indices (^KS11, ^GSPC, ^IXIC), FX (KRW=X) and crypto (BTC-USD, ETH-USD).
     Use it for every price, return or "from the peak" figure the report states, with the period that
     figure needs, instead of a number from memory or an article.
@@ -61,8 +73,9 @@ async def market_quote(symbols: str, period: Literal["5d", "1mo", "6mo", "1y", "
 
 
 @tool
+@_spec(limit=research.MAX_RATINGS_TICKERS)
 async def analyst_ratings(symbols: str) -> str:
-    """Analyst consensus for up to 5 stocks (number of analysts, mean/high/low price target, this
+    """Analyst consensus for up to {limit} stocks (number of analysts, mean/high/low price target, this
     month's buy/hold/sell counts) and the last 90 days of dated rating and target changes by firm (US
     stocks; Korean tickers such as 005930.KS have the consensus only). Use it for any rating or target the
     report states, attributed to the firm and date it gives.

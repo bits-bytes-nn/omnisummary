@@ -58,8 +58,8 @@ aws logs filter-log-events --profile research --region ap-northeast-2 --log-grou
 | 상태 | 뜻 | 할 일 |
 |------|----|-------|
 | `FAILED` | 소스가 아예 실패했다 | 보고서의 오류를 본다. 대개 일시적이라 다음 날 복구된다 |
-| `STALE` | X나 YouTube 적재 파일이 12시간보다 오래됐다(그날 18:30 동기화, 투자판은 07:00 동기화가 실패했거나 돌지 않았다) | Mac이 그 시각에 깨어 있었는지(잠든 사이의 cron은 실행되지 않는다), Docker Desktop과 `rsshub` 컨테이너가 떠 있었는지, cron 로그를 본다(README의 cron 줄은 `logs/sync.log`에 쓴다. 예전 줄은 재부팅하면 지워지는 `/tmp/omnisummary-sync.log`에 쓴다). 하루 건너뛴 것은 다음 정상 동기화가 다시 읽어 와 복구된다(이틀 연속이면 앞날은 잃는다) |
-| `DEGRADED` | 입력의 일부만 응답했다 | X라면 쿠키 만료가 흔한 원인이다. README의 'RSSHub로 X 읽기' 절에 따라 쿠키를 새로 받아 컨테이너를 다시 만들고, 아래 'X 쿠키를 갱신한 뒤'로 확인한다 |
+| `STALE` | X나 YouTube 적재 파일이 12시간보다 오래됐다(그날 18:30 동기화, 투자판은 07:00 동기화가 실패했거나 돌지 않았다). 그 동기화의 일부 실패도 상세에 함께 적힌다 | Mac이 그 시각에 깨어 있었는지(잠든 사이의 cron은 실행되지 않는다), Docker Desktop과 `rsshub` 컨테이너가 떠 있었는지, cron 로그(`logs/sync.log`)를 본다. 하루 건너뛴 것은 다음 정상 동기화가 다시 읽어 와 복구된다(이틀 연속이면 앞날은 잃는다) |
+| `DEGRADED` | 입력의 일부만 응답했다 | 보고서의 상세를 본다. X라면 쿠키 만료가 흔한 원인이다. README의 'RSSHub로 X 읽기' 절에 따라 쿠키를 새로 받아 컨테이너를 다시 만들고, 아래 'X 쿠키를 갱신한 뒤'로 확인한다 |
 | `EMPTY` | 꼭 있어야 하는 소스가 0건이다 | 피드 주소나 API 키를 확인한다 |
 
 ### X 쿠키를 갱신한 뒤
@@ -67,7 +67,7 @@ aws logs filter-log-events --profile research --region ap-northeast-2 --log-grou
 1. 설정의 계정 하나로 RSSHub 경로가 항목을 돌려주는지 본다. 빈 채널(`<item>`이 0개)이면 쿠키가 아직 맞지 않는다.
 
 ```bash
-curl -s http://localhost:1200/twitter/user/karpathy | grep -c '<item>'   # 0보다 커야 한다
+curl -s http://localhost:1200/twitter/user/<collectors.rsshub.accounts의 계정> | grep -c '<item>'   # 0보다 커야 한다
 ```
 
 2. 동기화를 한 번 돌리고 적재 파일이 새로 올라갔는지 본다. 키는 `aws.s3_prefix` 아래의 `omnisummary/rsshub_items.json`(투자판은 `omnisummary/invest/rsshub_items.json`)이고 버킷은 `aws.state_bucket_name`(비어 있으면 `omnisummary-dev-state`)이다.
@@ -76,7 +76,7 @@ curl -s http://localhost:1200/twitter/user/karpathy | grep -c '<item>'   # 0보�
 ./scripts/sync_all_to_s3.sh
 aws s3api head-object --profile research --region ap-northeast-2 --bucket <상태 버킷> --key omnisummary/rsshub_items.json \
   --query LastModified --output text   # 방금 실행한 시각이어야 한다
-tail -1 digest_state/last_park_sync_rsshub.txt   # 정상 동기화로 기록된 시작·업로드 시각(투자 판은 digest_state/invest/)
+tail -1 digest_state/last_park_sync_rsshub.txt   # 정상 동기화로 기록된 시작·업로드 시각(투자판은 digest_state/invest/)
 ```
 
 `last_park_sync_rsshub.txt`에 새 줄이 없으면 그 동기화는 실패율이나 빈 응답률 임계를 넘은 비정상 동기화다. 쿠키와 계정 목록을 다시 본다.
@@ -152,21 +152,34 @@ aws logs filter-log-events --profile research --region ap-northeast-2 --log-grou
 `main.py --date <날짜> --force-republish`는 다시 수집하고 새로 쓰므로 그날 게시된 것과 다른 다이제스트가 나가고, 저장된
 기록도 그것으로 바뀐다. 저장된 스냅샷이 없거나 기사가 0건일 때만 쓴다.
 
-DLQ에 쌓인 메시지는 다시 올리고 위 확인을 마친 뒤에만 지운다. digest Lambda 메시지를 다시 넣으면 그 메시지가 실행됐던 날짜의 다이제스트를 다시 만든다(이벤트의 `time`을 읽는다). 그날 비주얼 Lambda가 아직 게시 중이면 새로 만든 스냅숏이 그날의 기록을 덮어써서, 게시된 글과 회상·재게시 기준이 달라진다. 저장된 다이제스트가 있고 게시만 실패했다면 digest 메시지를 다시 넣지 말고 비주얼 Lambda에 `{"digest_date": "YYYY-MM-DD"}`를 넘겨 저장된 것을 게시한다.
+DLQ에 쌓인 메시지는 다시 올리고 위 확인을 마친 뒤에만 지운다. digest Lambda 메시지를 다시 넣으면 그 메시지가 실행됐던 날짜의 다이제스트를 다시 만든다(이벤트의 `time`을 읽는다). 그날 비주얼 Lambda가 아직 게시 중이면 새로 만든 스냅샷이 그날의 기록을 덮어써서, 게시된 글과 회상·재게시 기준이 달라진다. 저장된 다이제스트가 있고 게시만 실패했다면 digest 메시지를 다시 넣지 말고 비주얼 Lambda에 `{"digest_date": "YYYY-MM-DD"}`를 넘겨 저장된 것을 게시한다.
+
+DLQ는 두 판이 함께 쓴다. 큐를 통째로 비우지 말고, 메시지마다 `functionArn`과 `requestPayload`로 어느 Lambda의 어느 날짜인지
+확인한 뒤 다시 올리고 확인까지 마친 메시지만 수신 핸들로 지운다. 수신한 메시지는 `--visibility-timeout` 동안만 핸들이 유효하다.
 
 ```bash
 Q=$(aws sqs get-queue-url --profile research --region ap-northeast-2 --queue-name omnisummary-dev-async-dlq --query QueueUrl --output text)
-aws sqs receive-message --profile research --region ap-northeast-2 --queue-url "$Q" --max-number-of-messages 10
-aws sqs purge-queue --profile research --region ap-northeast-2 --queue-url "$Q"   # 위 두 확인을 마친 뒤에만
+aws sqs receive-message --profile research --region ap-northeast-2 --queue-url "$Q" --max-number-of-messages 10 \
+  --visibility-timeout 900 --output json \
+  | jq -r '.Messages[] | (.Body | fromjson) as $b | [.ReceiptHandle, $b.requestContext.functionArn, ($b.requestPayload | tostring)] | @tsv'
+aws sqs delete-message --profile research --region ap-northeast-2 --queue-url "$Q" --receipt-handle '<위에서 확인한 핸들>'
 ```
+
+## 배포
+
+`scripts/release.sh`는 origin/main에 올라가 CI를 통과한 HEAD만 배포한다. 이미지를 빌드한 뒤 올리기 전에 CI의 docker 작업과 같은
+가져오기·설정 검사를 그 이미지로 다시 돌린다(`config/invest.yaml`이 있으면 투자판도). CI가 보는 이미지에는 운영자 설정이 없기
+때문이다. CDK 배포는 승인을 묻지 않는다(`--require-approval never`, 운영자가 TTY 없는 셸에서 배포한다). 배포가 끝나면 스테이지의 이미지 Lambda가 모두 방금 올린
+digest로 돌고(`ResolvedImageUri`), `State`가 `Active`, `LastUpdateStatus`가 `Successful`인지 읽기만 해서 확인하고, 하나라도 다르면
+실패로 끝난다.
 
 ## 자주 하는 점검
 
 | 무엇을 | 명령 |
 |--------|------|
 | 비밀값이 모두 들어 있는지 | `uv run python scripts/put_secrets.py --verify` |
-| X 수집기가 살아 있는지 | `curl -s http://localhost:1200/twitter/user/karpathy \| head` |
-| 최근 정상 동기화 시각(시작, 업로드) | `cat digest_state/last_park_sync_rsshub.txt digest_state/last_park_sync_youtube.txt`(투자 판은 `digest_state/invest/`) |
+| X 수집기가 살아 있는지 | `curl -s http://localhost:1200/twitter/user/<설정의 X 계정> \| head` |
+| 최근 정상 동기화 시각(시작, 업로드) | `cat digest_state/last_park_sync_rsshub.txt digest_state/last_park_sync_youtube.txt`(투자판은 `digest_state/invest/`) |
 | 동기화 로그 | `tail -50 logs/sync.log`(cron이 그 경로에 쓸 때) |
 | 추적 중인 트렌드 | `uv run python recall_cli.py trends` |
 | 지금 답할 댓글 초안(게시하지 않는다) | `uv run python scripts/sample_comment_replies.py` |

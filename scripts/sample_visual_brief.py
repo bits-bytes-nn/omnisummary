@@ -20,6 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from application.daily_visual import recent_comics
 from entrypoints import bootstrap
 from shared import Config, logger
 
@@ -39,8 +40,8 @@ async def main() -> None:
 
     maker = bootstrap.daily_visual_maker(config)
     if args.recent_comics:
-        logged = json.loads(args.recent_comics.read_text(encoding="utf-8"))
-        recent = [e for e in logged if e["date"] < args.digest_date.isoformat()][-config.pipeline.recent_leads_window :]
+        logged = recent_comics(json.loads(args.recent_comics.read_text(encoding="utf-8")))
+        recent = [e for e in logged if e.date < args.digest_date.isoformat()][-config.pipeline.recent_leads_window :]
     else:
         recent = maker._recent_comics(args.digest_date)
     # The log keeps only the last few comics, so a date older than that window replays with less
@@ -50,7 +51,7 @@ async def main() -> None:
     plan, instruction, source = await maker._compose(
         snapshot.ranked_items, snapshot.content, args.digest_date, recent_comics=recent
     )
-    out: dict = {"editor_plan": plan, "instruction": instruction}
+    out: dict = {"editor_plan": plan.model_dump(), "instruction": instruction}
     args.out_dir.mkdir(parents=True, exist_ok=True)
     if instruction:
         if args.render:

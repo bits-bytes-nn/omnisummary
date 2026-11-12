@@ -29,7 +29,8 @@ def _research() -> CollectedItem:
         text="A증권 Buy 550,000원",
         author="A증권 외 2곳",
         published_at=datetime(2026, 11, 2, 23, 59, 59, tzinfo=ZoneInfo("Asia/Seoul")),
-        metadata={"hide_link": True, "broker": "A증권", "research_category": "company", "stock": "현대모비스"},
+        show_link=False,
+        metadata={"broker": "A증권", "research_category": "company", "stock": "현대모비스"},
     )
 
 
@@ -141,5 +142,5 @@ def test_countdown_with_a_bad_template_degrades():
 async def test_hidden_link_item_budget_is_charged_for_a_url_it_never_shows():
     gen, _ = _generator([RESEARCH_URL])
     hidden = gen._item_prose_budget(_research())
-    shown_item = _research().model_copy(update={"metadata": {}})
+    shown_item = _research().model_copy(update={"show_link": True})
     assert hidden > gen._item_prose_budget(shown_item), "a hidden link should not cost prose budget"

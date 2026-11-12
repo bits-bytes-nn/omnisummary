@@ -25,9 +25,6 @@ THIN_SUMMARY_MAX_CHARS = 500
 class RSSCollector(BaseCollector):
     config: RSSCollectorConfig
 
-    def __init__(self, config: RSSCollectorConfig):
-        self.config = config
-
     async def collect(self) -> list[CollectedItem]:
         if not self.config.feeds:
             logger.info("No RSS feeds configured, skipping")
@@ -104,7 +101,7 @@ class RSSCollector(BaseCollector):
                 feed,
                 source_type=SourceType.RSS,
                 lookback_hours=self.config.lookback_hours,
-                reference_time=self.config.reference_time,
+                reference_time=self.reference_time,
                 description=f"RSS feed '{feed_url}'",
                 metadata={"feed_url": feed_url, "feed_title": feed.feed.get("title", "")},
             )

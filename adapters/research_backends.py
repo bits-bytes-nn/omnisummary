@@ -19,7 +19,8 @@ from adapters.metrics import emit_spend
 from adapters.og_image import fetch_og_image
 from domain.aggregator import normalize_url
 from domain.models import ImageAsset
-from shared import get_config, logger, retry_async
+from shared import Config, logger, retry_async
+from shared.config import AgentConfig
 from shared.constants import BROWSER_USER_AGENT
 
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
@@ -78,6 +79,8 @@ def record_tavily_usage(stage: str, operation: str, response: object) -> None:
 async def tavily_search(
     query: str,
     *,
+    agent: AgentConfig,
+    exclude_domains: list[str],
     topic: str | None = None,
     time_range: str | None = None,
     include_domains: list[str] | None = None,
@@ -86,12 +89,10 @@ async def tavily_search(
     if not client:
         return "TAVILY_API_KEY not configured."
 
-    config = get_config()
-    agent_config = config.agent
-    kwargs: dict = {"query": query, "max_results": agent_config.search_result_limit}
+    kwargs: dict = {"query": query, "max_results": agent.search_result_limit}
     # The digest's content-farm list applies here too, or copy sites reach the research reports.
-    if config.collectors.web_search.exclude_domains:
-        kwargs["exclude_domains"] = config.collectors.web_search.exclude_domains
+    if exclude_domains:
+        kwargs["exclude_domains"] = exclude_domains
     if topic:
         kwargs["topic"] = topic
     if time_range:
@@ -106,7 +107,7 @@ async def tavily_search(
         if not results:
             return "No results found."
         logger.info("Tavily search found %d results for query '%s'", len(results), query)
-        return _format_search_results(results, agent_config.search_content_preview_chars)
+        return _format_search_results(results, agent.search_content_preview_chars)
     except Exception as e:
         logger.warning("Tavily search failed: %s", e)
         # The exception text is logged, not returned: it can carry the request URL, which the agent
@@ -247,7 +248,7 @@ async def access_controlled(urls: list[str], *, refusals: bool = True) -> set[st
     return blocked
 
 
-async def extract_url(url: str) -> str:
+async def extract_url(url: str, *, cap: int) -> str:
     """Fetch and extract the full readable text of a single page via Tavily extract,
     capped at the configured research content limit. Used by the deep-research agent's
     read_url tool to pull a primary source it found via search. "" when nothing readable came
@@ -257,7 +258,6 @@ async def extract_url(url: str) -> str:
         logger.warning("TAVILY_API_KEY not configured; cannot read '%s'", url)
         return ""
 
-    cap = get_config().agent.research_content_cap_chars
     try:
         response = await client.extract(urls=[url], format="text", include_usage=True)
         record_tavily_usage("research-read", "extract", response)
@@ -314,10 +314,9 @@ def _openalex_abstract(inverted: dict[str, list[int]] | None) -> str:
     return " ".join(word for _, word in words)
 
 
-async def paper_search(query: str) -> str:
+async def paper_search(query: str, *, agent_config: AgentConfig) -> str:
     """Scholarly works from OpenAlex (keyless, natural-language search). It replaced Semantic Scholar,
     whose keyless API answered 429 to every call from this machine, so papers never reached a report."""
-    agent_config = get_config().agent
     params: dict[str, str | int] = {
         "search": query,
         # A work without an abstract gives the agent a title and nothing to judge it by.
@@ -377,7 +376,11 @@ async def paper_search(query: str) -> str:
 
 class WebResearchSources:
     """The research agent's reading: Tavily for the web and community search and page reads, OpenAlex
-    for papers, and a source page's og:image."""
+    for papers, and a source page's og:image, each bounded by the run's own config."""
+
+    def __init__(self, config: Config) -> None:
+        self.agent = config.agent
+        self.exclude_domains = config.collectors.web_search.exclude_domains
 
     async def web_search(
         self,
@@ -387,24 +390,33 @@ class WebResearchSources:
         time_range: str | None = None,
         include_domains: list[str] | None = None,
     ) -> str:
-        return await tavily_search(query, topic=topic, time_range=time_range, include_domains=include_domains)
+        return await tavily_search(
+            query,
+            agent=self.agent,
+            exclude_domains=self.exclude_domains,
+            topic=topic,
+            time_range=time_range,
+            include_domains=include_domains,
+        )
 
     async def paper_search(self, query: str) -> str:
-        return await paper_search(query)
+        return await paper_search(query, agent_config=self.agent)
 
     async def read_page(self, url: str) -> str:
         if await access_controlled([url]):
             return ""
-        return await extract_url(url)
+        return await extract_url(url, cap=self.agent.research_content_cap_chars)
 
     async def fetch_image(self, url: str) -> ImageAsset | None:
-        return await fetch_og_image(url)
+        return await fetch_og_image(
+            url, timeout=self.agent.og_image_timeout_sec, max_bytes=self.agent.og_image_max_bytes
+        )
 
     async def market_quote(self, symbol: str, period: str = "5d") -> str:
-        return await yahoo_quote(symbol, period)
+        return await yahoo_quote(symbol, period, timeout=self.agent.search_request_timeout)
 
     async def analyst_ratings(self, symbol: str) -> str:
-        return await yahoo_analyst_ratings(symbol)
+        return await yahoo_analyst_ratings(symbol, timeout=self.agent.search_request_timeout)
 
 
 _QUOTE_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
@@ -434,7 +446,7 @@ QUOTE_PERIODS = {"5d": "1d", "1mo": "1d", "6mo": "1d", "1y": "1d", "5y": "1mo"}
 _SHOWN_CLOSES = 8
 
 
-async def yahoo_quote(symbol: str, period: str = "5d") -> str:
+async def yahoo_quote(symbol: str, period: str = "5d", *, timeout: float) -> str:
     """Closes over `period` from Yahoo Finance's chart endpoint, with the period's high and low, for
     Korean (005930.KS), US (AAPL), index (^GSPC, ^KS11), FX (KRW=X) and crypto (BTC-USD) tickers alike.
     Dates are the exchange's local dates. A bar still trading (the Korean session, crypto at any hour) is
@@ -444,11 +456,8 @@ async def yahoo_quote(symbol: str, period: str = "5d") -> str:
         return ""
     if period not in QUOTE_PERIODS:
         period = "5d"
-    config = get_config().agent
     try:
-        async with httpx.AsyncClient(
-            timeout=config.search_request_timeout, headers={"User-Agent": BROWSER_USER_AGENT}
-        ) as client:
+        async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": BROWSER_USER_AGENT}) as client:
             resp = await client.get(
                 _QUOTE_URL.format(symbol=symbol), params={"range": period, "interval": QUOTE_PERIODS[period]}
             )
@@ -523,17 +532,16 @@ def _format_quote(symbol: str, period: str, result: dict) -> str:
     )
 
 
-async def yahoo_analyst_ratings(symbol: str) -> str:
+async def yahoo_analyst_ratings(symbol: str, *, timeout: float) -> str:
     """Yahoo Finance's analyst consensus for one stock (analyst count, mean/high/low target, this month's
     rating counts) and its dated rating and target actions of the last _RATING_DAYS days, newest first.
     Korean tickers carry the consensus but no per-firm actions."""
     symbol = _ticker(symbol)
     if not symbol:
         return ""
-    config = get_config().agent
     try:
         async with httpx.AsyncClient(
-            timeout=config.search_request_timeout, headers={"User-Agent": BROWSER_USER_AGENT}, follow_redirects=True
+            timeout=timeout, headers={"User-Agent": BROWSER_USER_AGENT}, follow_redirects=True
         ) as client:
             # quoteSummary wants the session cookie and its crumb, the same handshake the quote page does.
             await client.get("https://fc.yahoo.com")

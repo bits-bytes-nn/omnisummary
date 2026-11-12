@@ -1,8 +1,8 @@
 <div align="center">
 
-# 🗞️ OmniSummary
+# OmniSummary
 
-**An AI/ML daily digest in Korean, published to Threads with a comic of the headline, plus a deep-research CLI that writes cited reports on any topic.**
+**A daily AI/ML digest in Korean, posted to Threads with a comic of the headline, plus a deep-research CLI that writes cited reports.**
 
 Runs on AWS · Amazon Bedrock (Claude, GPT) · Bedrock AgentCore Memory
 
@@ -11,333 +11,234 @@ Runs on AWS · Amazon Bedrock (Claude, GPT) · Bedrock AgentCore Memory
 ![AWS CDK](https://img.shields.io/badge/IaC-AWS%20CDK-orange)
 ![Bedrock](https://img.shields.io/badge/LLM-Amazon%20Bedrock-green)
 
-🇰🇷 [한국어 README](./README.ko.md) · 🛠️ [Operations guide (Korean)](./docs/operations.md) · 📐 [Design doc](./docs/design.md)
+[한국어 README](./README.ko.md) · [Operations guide (Korean)](./docs/operations.md) · [Design doc](./docs/design.md)
 
 ![OmniSummary architecture](docs/diagrams/architecture.png)
 
 </div>
 
----
-
 ## What it does
 
-OmniSummary has two independent parts.
-
-- **Daily digest (AWS, on a schedule).** It collects AI news from RSS/Substack, Reddit, YouTube, X and web search, scores every item, and lets an editor model pick the five best stories. It then writes a Korean digest and draws the headline as a Korean comic. Everything goes out as one Threads thread: the root carries the comic, the lead and the other stories' titles, then one reply per story.
-- **Deep research (local CLI).** Give it a topic and an agent searches the web, papers and community discussion, reads the primary sources, and writes a cited Korean report in the digest's voice. It prints one JSON object (the contract an OpenClaw skill reads) and publishes to Threads only with `--publish threads`.
-
-When turned on, an hourly job also answers readers' comments on the last week's posts, and declines spam and empty praise. A reply carrying a link, a domain, another account's handle or a hashtag is never posted, so a comment cannot make the account say what its writer wants.
+- **Daily digest (AWS, scheduled).** Collects AI news from RSS/Substack, Reddit, YouTube, X and web search, scores every item, and lets an editor model pick the five best stories. It writes a Korean digest, draws the headline as a Korean comic, and posts one Threads thread: the comic, the lead and the other titles in the root, then one reply per story.
+- **Deep research (local CLI).** Give it a topic and an agent reads the web, papers and community discussion, then writes a cited Korean report in the digest's voice. It prints one JSON object and posts to Threads only with `--publish threads`.
+- **Comment replies (optional).** An hourly job answers readers' comments on the last week's posts. A reply with a link, domain, handle or hashtag is never posted.
 
 ![How the digest works](docs/diagrams/concept-pipeline.png)
 
 ## Quick start
 
-You need Python 3.12+ with [uv](https://docs.astral.sh/uv/), an AWS account with Bedrock access, and Docker (only for X/Twitter and for deploying).
+You need Python 3.12+ with [uv](https://docs.astral.sh/uv/) and AWS credentials that reach Bedrock in `aws.bedrock_region` (default `us-west-2`). Docker is only for X and for deploying.
 
 ```bash
 git clone <repo-url> && cd omnisummary
-uv sync --extra dev        # the dev extra adds the test, lint, type-check and CDK tools
+uv sync --extra dev
 cp config/config-template.yaml config/config.yaml
-cp .env.template .env      # then set TAVILY_API_KEY
+cp .env.template .env      # set TAVILY_API_KEY
+
+uv run python main.py --dry-run --sources web_search   # prints a digest; saves and posts nothing
 ```
 
-Make sure your AWS credentials reach Bedrock in `aws.bedrock_region` (default `us-west-2`). Every LLM stage runs on Bedrock, even locally. Then print a digest without saving or posting anything:
+Web search is the only source that works out of the box. Turn on the rest one at a time:
 
-```bash
-uv run python main.py --dry-run --sources web_search
-```
-
-The template ships no feeds or subreddits but does carry trend searches, so web search is the one source that works out of the box. Add the rest one at a time:
-
-| To get | Set | Notes |
-|--------|-----|-------|
-| RSS, Reddit, YouTube | Feeds, subreddits, channels in `config.yaml` | `YOUTUBE_API_KEY` is optional (channel RSS otherwise) |
-| YouTube transcripts, X posts | The local sync below | Both block datacenter IPs |
-| The daily comic | `OPENAI_API_KEY` | Rendered by `gpt-image-2.5-sunburst` |
-| Threads posting | `THREADS_ACCESS_TOKEN`, `THREADS_USER_ID`, `pipeline.enable_threads_post: true` | Without a comic the post goes out text-only |
-| Comment replies | The Threads credentials + `pipeline.enable_comment_replies: true` | `scripts/sample_comment_replies.py` drafts replies without posting |
+| To get | Set |
+|--------|-----|
+| RSS, Reddit, YouTube | Feeds, subreddits and channels in `config.yaml` (`YOUTUBE_API_KEY` optional) |
+| X posts, YouTube transcripts | The [local sync](#local-sync-for-x-and-youtube) (both block datacenter IPs) |
+| The daily comic | `OPENAI_API_KEY` |
+| Threads posting | `THREADS_ACCESS_TOKEN`, `THREADS_USER_ID`, `pipeline.enable_threads_post: true` |
+| Comment replies | The Threads credentials and `pipeline.enable_comment_replies: true` |
 
 ## Usage
 
 ```bash
 # Digest
-uv run python main.py --dry-run --sources rss reddit    # print only
-uv run python main.py                                   # full run: save, draw, post (when enabled)
+uv run python main.py --dry-run --sources rss reddit   # print only
+uv run python main.py                                  # save, draw and post (when enabled)
 
 # Deep research: one JSON object on stdout, the report under reports/
 uv run python research_cli.py "<topic>"
-uv run python research_cli.py "<topic>" --publish threads
-uv run python research_cli.py "<topic>" --publish threads-preview   # writes the thread into the JSON, posts nothing
-uv run python research_cli.py "<topic>" --edition invest   # the investing edition: markets, analysts, crypto; quotes
+uv run python research_cli.py "<topic>" --publish threads           # or threads-preview: no post
+uv run python research_cli.py "<topic>" --edition invest            # markets, stocks, crypto
 
-# What the digest already published (free, read-only, JSON)
+# What the digest already published (free, read-only)
 uv run python recall_cli.py digest 2026-10-26
 uv run python recall_cli.py trends
-
-# Local → S3 sync for X and YouTube transcripts
-./scripts/sync_all_to_s3.sh
 ```
 
 | `main.py` flag | Effect |
 |----------------|--------|
-| `--sources rss reddit youtube web_search rsshub naver_research` | Collect from these sources only (`rsshub` is X; `naver_research` is the investing edition's broker research) |
+| `--sources ...` | Collect only from `rss reddit youtube web_search rsshub naver_research` (`rsshub` is X; `naver_research` is the investing edition's Korean broker research) |
 | `--dry-run` | Print the digest; save and post nothing |
 | `--top-n 5` | Number of stories |
-| `--date 2026-03-28` | Digest date (default: today in `aws.timezone`, KST by default) |
+| `--date 2026-03-28` | Digest date (default: today in `aws.timezone`) |
 | `--pin-url <url> [...]` | Force these URLs into the stories |
 | `--force-republish` | Post again for a date that already went out |
 
-With Threads posting on, a run for a date that is already on Threads stops before collecting, unless it is a dry run or `--force-republish`. A future `--date` and an unknown source name are refused. `main.py` exits 1 when it collected nothing, produced no digest, or the Threads post did not fully land (locally there is no alert to say so).
+`main.py` exits 1 when it collected nothing, produced no digest, or the post did not fully land.
 
-> A full local run writes to production state: the day's snapshot goes to the deployed AgentCore Memory. Its ledgers live in the state bucket: `STATE_BUCKET` when that is set, else `aws.state_bucket_name`; with neither they are local files that can't see what production posted, and Threads may get the day twice. Point local runs at the stack's bucket by setting `aws.state_bucket_name` to its name (`<project>-<stage>-state` if it was empty at the first deploy: the name is unchanged, so the next deploy changes nothing). The stack retains the bucket on every stage; renaming it creates a new one (docs/operations.md).
+> **A full local run writes to production.** The snapshot goes to the deployed AgentCore Memory. Set `aws.state_bucket_name` to the stack's bucket so local runs share its ledgers; without it they can't see what production posted, and a day may go out twice.
 
 ## Configuration
 
-`config/config.yaml` holds everything that isn't a secret. Every config section rejects unknown keys, so remove a key from your `config.yaml` when the code drops it. The main knobs:
+Everything that isn't a secret lives in `config/config.yaml`. Every section rejects unknown keys, so drop a key from your file when the code drops it. [design.md §3](docs/design.md#3-설정) describes every field.
 
-```yaml
-pipeline:
-  top_n: 5
-  min_score: 0.6
-  ranking_model: "anthropic.claude-opus-5-5"
-  digest_model: "anthropic.claude-sonnet-5-5"   # also the comic editor, grounding, comment replies
-  trend_model: "anthropic.claude-sonnet-5-5"
-  source_slots: {web: 1, x: 1, rss: 1, reddit: 1, youtube: 1}
-  max_per_origin: 1
-agent:
-  model_id: "anthropic.claude-opus-5-5"         # deep research
-```
+### Editions
 
-[design.md §3](docs/design.md#3-설정) describes every field.
+One codebase runs more than one edition. The investing edition (stocks, macro, crypto and Korean real estate) runs at 07:30 KST, the AI/ML one at 19:00 KST. To run it, `cp config/invest-template.yaml config/invest.yaml` and set `OMNISUMMARY_EDITION=invest` (the CLIs take `--edition invest`). It posts to the same Threads account but keeps its own S3 prefix (`omnisummary/invest`) and its own Lambdas.
 
 ### Models
 
-Every LLM stage takes a Claude or a GPT model, all served by Bedrock through the same Converse API, the same IAM role and the same cost-attribution profiles. Set the stage's `*_model` (or `agent.model_id`) to one of the ids in `shared/constants.py`:
-
-| Family | Ids |
-|--------|-----|
-| Claude | `anthropic.claude-opus-5-5`, `anthropic.claude-sonnet-5-5`, `anthropic.claude-haiku-5-5`, and older |
-| GPT | `openai.gpt-6.1-sol`, `openai.gpt-6.1-terra` |
-
-Defaults per stage ([design.md §6](docs/design.md#모델-팩토리) has the reasons and the measurements):
+Every LLM stage runs on Bedrock through the Converse API and takes any id from `shared/constants.py` (Claude, or GPT `openai.gpt-6.1-sol` / `-terra`). [design.md §6](docs/design.md#모델-팩토리) has the reasons and measurements.
 
 | Stage | Config key | Default |
 |-------|------------|---------|
-| Ranking | `pipeline.ranking_model` | `anthropic.claude-sonnet-5-5` (code default; the AI edition's config sets `anthropic.claude-opus-5-5`) |
-| Digest, grounding, comic editor and art director, same-story grouping, comment replies, research fact check | `pipeline.digest_model` | `anthropic.claude-sonnet-5-5` |
-| Trends | `pipeline.trend_model` | `anthropic.claude-sonnet-5-5` |
-| Search-query refinement | `collectors.web_search.refine_model` | `anthropic.claude-sonnet-5-5` |
-| Deep research | `agent.model_id` | `anthropic.claude-opus-5-5` |
-| Token counting | (fixed) | `anthropic.claude-sonnet-4-6` |
+| Ranking | `pipeline.ranking_model` | Sonnet 5.5 (the AI edition's config sets Opus 5.5) |
+| Digest, grounding, comic, comment replies, research fact check | `pipeline.digest_model` | Sonnet 5.5 |
+| Trends | `pipeline.trend_model` | Sonnet 5.5 |
+| Search-query refinement | `collectors.web_search.refine_model` | Sonnet 5.5 |
+| Deep research | `agent.model_id` | Opus 5.5 |
 | Comic image | `pipeline.image_model` | `gpt-image-2.5-sunburst` |
-
-The registry in `adapters/bedrock.py` records what each model accepts: no `temperature` (only Sonnet 4.6, used for token counting, takes one), effort pinned to `high` where a model defaults lower (Claude through `output_config`, GPT through `reasoning`), and forced tool choice where it works. The research agent uses Converse prompt caching for Claude only; GPT caches on its own. Claude Fable 5.1 is not registered, because Bedrock rejects it under the account's default data-retention mode.
 
 ### Secrets
 
-Secrets live in `.env` locally; on AWS the API keys and Threads credentials live in SSM Parameter Store (`ALERT_EMAIL` and the sync keys stay in `.env`). Only Tavily is required; every other key turns on one feature, which logs a line and is skipped when its key is missing.
+Locally in `.env`; on AWS in SSM Parameter Store. Only Tavily is required; a missing key skips its feature with a log line.
 
 | Variable | Turns on |
 |----------|----------|
-| `TAVILY_API_KEY` | Web search, and the research CLI's searches |
+| `TAVILY_API_KEY` | Web search and the research CLI's searches |
 | `YOUTUBE_API_KEY` | The YouTube Data API (channel RSS otherwise) |
 | `OPENAI_API_KEY` | The daily comic |
-| `THREADS_ACCESS_TOKEN`, `THREADS_USER_ID` | Threads posting (the token is refreshed weekly into SSM on AWS) |
-| `ALERT_EMAIL` | Email alerts. Required to deploy: a deploy without it removes the subscription |
-| `S3_SYNC_ACCESS_KEY_ID`, `S3_SYNC_SECRET_ACCESS_KEY` | Optional dedicated keys for the local sync |
+| `THREADS_ACCESS_TOKEN`, `THREADS_USER_ID` | Threads posting (refreshed weekly on AWS) |
+| `ALERT_EMAIL` | Email alerts; required to deploy |
+| `S3_SYNC_ACCESS_KEY_ID`, `S3_SYNC_SECRET_ACCESS_KEY` | Optional keys for an unattended local sync |
 
-### X/Twitter through RSSHub
+### X through RSSHub
 
-X is read through a local [RSSHub](https://docs.rsshub.app/) container. It needs the `auth_token` and `ct0` cookies of a logged-in x.com session (browser devtools → Application/Storage → Cookies → x.com).
+X is read through a local [RSSHub](https://docs.rsshub.app/) container with the `auth_token` and `ct0` cookies of a logged-in x.com session. Without them the feeds come back empty.
 
 ```bash
 docker run -d --name rsshub --restart unless-stopped -p 1200:1200 \
   -e NODE_ENV=production -e CACHE_TYPE=memory \
   -e TWITTER_AUTH_TOKEN='<auth_token>' -e TWITTER_CT0='<ct0>' \
   diygod/rsshub:latest
-curl -s "http://localhost:1200/twitter/user/karpathy" | head   # smoke test
 ```
-
-Without the cookies the feeds come back empty. When the RSSHub failure rate climbs, refresh the cookies and recreate the container. The sync script starts the container if nothing answers on port 1200.
 
 ## How the digest is made
 
-[design.md](docs/design.md) is the line-by-line reference, including why each piece is shaped the way it is.
+1. **Collect.** Collectors run in parallel and report their health (`OK`, `EMPTY`, `FAILED`, `STALE`, `DEGRADED`). X and YouTube transcripts are collected locally and parked in S3 for the Lambda.
+2. **Deduplicate** by normalized URL and title, keeping the better copy.
+3. **Rank.** The ranking model scores each item and drops promos and thin posts. The candidate pool holds `top_n + digest_candidate_buffer` items, at most `max_per_origin` per channel, author or site.
+4. **Write.** The editor picks the `top_n` strongest stories and writes a lead plus a title, body and takeaway for each. A grounding pass checks every claim against the source.
+5. **Track trends.** After the write (and not on a dry run), the model sorts the day's stories into trends; dates and lifecycle are plain Python in `trends.json`.
+6. **Render.** Code, not the prompt, lays out the posts within Threads' 500-character limit.
+7. **Draw and post.** A separate Lambda draws the headline as a Korean comic and posts the thread. A failed render still ships the text.
 
-1. **Collect.** Each collector runs in parallel with its own time window and reports its health (`OK`, `EMPTY`, `FAILED`, `STALE`, `DEGRADED`). X and YouTube transcripts are collected on your machine and parked in S3, and the Lambda reads the parked file. The sync parks a wider window than the digest reads, and the reader reaches back to the healthy sync whose file the last digest read, so one skipped, late or degraded sync loses nothing (two in a row lose the earlier day).
-2. **Deduplicate.** Items are matched by normalized URL (share-link variants such as `youtu.be` or `twitter.com` count as the same item) and by title. The better copy wins: a pinned one, the original over its retweet, the longer body.
-3. **Rank.** The ranking model (Claude Opus 5.5 in the AI edition) scores each item on technical substance, practitioner value, novelty, impact, research significance and source authority, and filters promos and thin posts. It sees recent digest titles, so a story back under a new URL scores as a rehash. Up to 12 candidates above `min_score` (`top_n` + `digest_candidate_buffer`) go on: each source's best item gets a seat, and any one channel, author or site gets at most one. A feed post whose page declares itself paid is dropped before the pool is built (a newsletter feed carries the free preview of its paid posts).
-4. **Track trends.** The model only sorts today's items into existing or new trends. Dates, lifecycle, momentum and caps are plain Python, kept in `trends.json`, and the active trends give the next day's lead its continuity.
-5. **Write.** The editor picks the five strongest distinct stories and writes a lead plus a title, body and takeaway for each, as plain prose. A grounding pass then checks every specific claim against the source text. Character budgets are computed in code, so no post overflows Threads' 500-character limit.
-6. **Render.** Code, not the prompt, lays out the posts: the root is the lead plus the other stories' titles (replies get 2-5% of the root's views), one reply per story, and a topic tag.
-7. **Draw.** A separate Lambda draws the headline as a Korean comic in the form the story needs (a single cartoon, a 2-6 panel strip or an illustrated explainer): one idea, the story's real people and companies in literal scenes, and the story's own twist in the last frame. The owner-persona narrator joins only when the editor asks for him. The same Lambda posts to Threads, so a failed render still ships the text.
-
-> ⚠️ **DigestPrompt's JSON key order matters.** It asks for `items` first and `lead` last, so the lead comments on stories already written (word overlap with the headline reply fell from 0.21-0.41 to 0.03-0.21). Do not reorder the keys to match `DigestContent`.
+[design.md](docs/design.md) explains each step and why it is shaped that way.
 
 ## Deep research
 
-`research_cli.py` runs a Strands agent that combines eight tools as it sees fit:
+`research_cli.py` runs a Strands agent with eight tools: `web_search`, `community_search` (Reddit, X, HN, Substack), `search_papers` (OpenAlex), `read_url`, `recall_trends`, `recall_digest`, `attach_image` and `deliver_report`.
 
-| Tool | What it does |
-|------|--------------|
-| `web_search(query, news, time_range)` | Tavily web or news search, with published dates |
-| `community_search(query)` | Reddit, X, HN, Substack |
-| `search_papers(query)` | OpenAlex: date, citations, abstract |
-| `read_url(url)` | A primary source's full text |
-| `recall_trends()` / `recall_digest(digest_date)` | What the digest has tracked and published |
-| `attach_image(source_url)` | Stage a source's OG image |
-| `deliver_report(report, channel)` | Hand over the report, or post it to Threads |
+Before a thread goes public, `deliver_report` checks that every cited URL came from a tool call, that a separate model finds each claim supported by its source, that the thread fits Threads' limits, and that its image comes from a cited page. A failed check sends the thread back to be rewritten.
 
-Before anything goes public, `deliver_report` checks the thread:
+The OpenClaw skill (`~/Projects/agent-config/skills/omnisummary-research/SKILL.md`) relays the JSON, whose main fields are `status`, `title`, `markdown`, `markdown_path`, `sources`, `threads`, `usage` and `error`. Both CLIs exit `0` on success, `1` on failure and `2` on rejected input; logs go to stderr.
 
-- every URL it cites must have come back from a tool call;
-- it must cite at least one source;
-- a separate model reads each cited source and sends back claims the source does not support, and every rewrite is checked again (if the check call itself fails, the thread posts without it);
-- it must fit the Threads limits, or it is sent back to be rewritten;
-- the image it carries must come from a page the thread cites.
+## Operations
 
-The OpenClaw skill (`~/Projects/agent-config/skills/omnisummary-research/SKILL.md`) calls the CLI and relays its JSON:
-
-```json
-{
-  "status": "succeeded",
-  "topic": "Mixture-of-Experts 추론 비용 — 최근 반년 동향",
-  "title": "…",
-  "markdown_path": "/…/omnisummary/reports/2026-10-11-180202-f1a02d61.md",
-  "markdown": "# …",
-  "sources": ["https://…"],
-  "images": [],
-  "threads": null,
-  "model": "anthropic.claude-opus-5-5",
-  "stop_reason": "end_turn",
-  "usage": {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_write_input_tokens": 0, "cycles": 0, "tool_calls": {}},
-  "warnings": [],
-  "error": null
-}
-```
-
-Exit codes for both CLIs: `0` succeeded, `1` failed, `2` rejected input (also returned as JSON with `status: "rejected"`). For `recall_cli.py`, `found: false` means nothing is stored for that date, while `status: "failed"` means the store could not be read. Logs go to stderr.
-
-## Running it day to day
-
-[docs/operations.md](docs/operations.md) (Korean) is the operator's guide: the daily schedule, what each alert means and what to run, how to re-post a failed day from its stored snapshot, and what never to do. An alert for a day that posted nothing carries the exact re-post command with the real date.
+[docs/operations.md](docs/operations.md) (Korean) is the operator's guide: the daily schedule, what each alert means, how to re-post a failed day from its stored snapshot, and what never to do.
 
 ## Deploying to AWS
 
-### Steps
+### First deploy
 
-Before you start: `config/config.yaml` must exist, `.env` must hold `ALERT_EMAIL`, and `<region>` below is your `aws.region`. The stack creates and keeps the state bucket (`aws.state_bucket_name`, or `<project>-<stage>-state` when empty; versioned, private, TLS-only, retained when the stack is deleted). Name it in the config if you will ever use X or YouTube transcripts: the local sync and local runs write only to a bucket named there.
-
-Use the repo's pinned CDK CLI (`npm install`, then `npx cdk`), not a global `cdk`. On a fresh account the order matters, because the foundation stack owns the ECR repository the Lambdas pull from.
+You need `config/config.yaml`, `ALERT_EMAIL` in `.env`, and `<region>` set to your `aws.region`. Use the repo's pinned CDK CLI (`npx cdk`), not a global `cdk`. The foundation stack goes first because it owns the ECR repository.
 
 ```bash
 npm install
+# Steps 1-3 (CDK, aws, docker login) use the shell's profile; step 4's scripts read aws.profile.
+# Point both at the same account: <profile> is your aws.profile.
 export AWS_PROFILE=<profile>
 
-# 1. Once per account and region (no image exists yet, hence FOUNDATION_ONLY)
+# 1. Bootstrap and the foundation stack (no image exists yet)
 export FOUNDATION_ONLY=1
 npx cdk bootstrap -a "uv run python scripts/deploy.py"
-
-# 2. Foundation first: it creates the ECR repository
 npx cdk deploy '*-foundation' -a "uv run python scripts/deploy.py"
-unset FOUNDATION_ONLY   # never set it on an account where the application stack is deployed
+unset FOUNDATION_ONLY   # never set it once the application stack exists
 
-# 3. Build and push the image
+# 2. Build and push the image
 ECR_URI="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.<region>.amazonaws.com/omnisummary-<stage>-agent"
 aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin "${ECR_URI%%/*}"
 docker build --platform linux/amd64 --provenance=false -t "${ECR_URI}:latest" . && docker push "${ECR_URI}:latest"
 
-# 4. Deploy, pinned to the pushed image's sha256 digest (deploy.py refuses to run without it)
+# 3. Deploy, pinned to the image's sha256 digest
 export DIGEST_IMAGE_REF=$(aws ecr describe-images --region <region> --repository-name omnisummary-<stage>-agent \
   --image-ids imageTag=latest --query 'imageDetails[0].imageDigest' --output text)
 npx cdk deploy --all -a "uv run python scripts/deploy.py"
 
-# 5. Secrets and cost attribution
-uv run python scripts/put_secrets.py            # writes the values in .env; --verify for a read-only check
-uv run python scripts/put_inference_profiles.py # again after changing a stage's model
+# 4. Secrets and cost attribution
+uv run python scripts/put_secrets.py              # --verify for a read-only check
+uv run python scripts/put_inference_profiles.py   # again after changing a stage's model
 ```
 
-Later deploys run `scripts/release.sh` (steps 3 and 4 for the pushed, CI-green HEAD of `main`: it refuses a dirty tree, an unpushed HEAD or a red CI run, and tags the image with the commit). CloudFormation does not redeploy a Lambda whose image tag string is unchanged, which is why the image is pinned by its sha256 digest. `release.sh` and `put_inference_profiles.py` take the account from `aws.profile` in the config, not from a shell's `AWS_PROFILE` (often the model-calling one), so set it to the deploy account. In zsh, write `"${ECR_URI}:latest"` with braces: `$ECR_URI:l` is a zsh modifier.
+### Later deploys
+
+```bash
+scripts/release.sh
+```
+
+It builds, pushes and deploys the pushed, CI-green HEAD of `main`, and refuses a dirty tree, an unpushed HEAD or a red CI run. It takes the account from `aws.profile` in the config, not from the shell's `AWS_PROFILE`.
 
 ### What gets created
 
 | Resource | Purpose |
 |----------|---------|
-| Lambda: digest | Collects, ranks and writes; 15 min timeout |
-| Lambda: visual | Draws the comic and posts to Threads; the only publish path; one run at a time |
-| Lambda: Threads token refresh | Weekly; writes the renewed token back to SSM |
-| Lambda: comment replies | Hourly; one run at a time |
-| EventBridge | The daily digest (`aws.digest_cron_hour` / `digest_cron_minute`, in **UTC**; the default 10:00 UTC is 19:00 KST) and the two schedules above |
-| AgentCore Memory | One digest snapshot per date; retained if the stack is deleted |
-| S3 | Trends, ledgers, park files, Threads images |
-| SSM Parameter Store | The secrets, as SecureStrings |
-| SQS | Dead-letter queue for the digest and visual Lambdas |
-| SNS + CloudWatch | Email alerts; 15 alarms (errors and near-timeout duration per Lambda, an empty-digest alarm per edition, DLQ) |
-| ECR | The Lambda image; the last 30 images are kept |
+| Lambda: digest | Collects, ranks and writes (daily, `aws.digest_cron_hour` in UTC) |
+| Lambda: visual | Draws the comic and posts to Threads; the only publish path |
+| Lambda: token refresh | Renews the Threads token weekly |
+| Lambda: comment replies | Hourly |
+| AgentCore Memory | One digest snapshot per date |
+| S3, SSM, SQS, SNS, CloudWatch, ECR | State, secrets, dead-letter queue, alerts and alarms, the image |
 
-Every Lambda runs with `retry_attempts=0`: Threads has no idempotency key, so an automatic retry could post twice. Failures land in the DLQ or raise the Errors alarm.
+Every Lambda runs with `retry_attempts=0`, because Threads has no idempotency key and a retry could post twice. Spend is attributed by tagged inference profiles and a `usd=` log line per call; `uv run python scripts/cost_report.py --days 7 [--by stage]` totals it.
 
-### Secrets on AWS
-
-A CloudFormation template cannot hold a SecureString, so the stack creates each parameter with a placeholder and `scripts/put_secrets.py` writes the real values after the deploy. Re-deploys never overwrite them. The script:
-
-- skips parameters that are already SecureStrings, because the Threads token is rotated in place (`--force` overwrites);
-- never blanks a parameter whose variable is empty;
-- keeps going when one parameter fails, and exits non-zero at the end.
-
-Never add or change template properties on the secret parameters, tags included: CloudFormation would put the placeholder back over the live secret. A test pins them.
-
-### Cost attribution
-
-Bedrock on-demand usage has no taggable resource. `scripts/put_inference_profiles.py` creates a tagged application inference profile per configured model, and model resolution prefers it, so Cost Explorer can attribute the spend (activate the `Project` cost-allocation tag in Billing). Each model call also logs `LLM usage stage=... model=... input=... output=... usd=...`, because several stages share one model on the bill (and both editions share the profiles); renders log `Image usage ... usd=` and Tavily calls `Search usage ... credits=`. In Lambda each call also emits an EMF `LLMCostUSD` / `ImageCostUSD` / `TavilyCredits` datapoint (Project/Stage/Edition). `uv run python scripts/cost_report.py --days 7 [--by stage]` totals the deployed logs per day and Lambda or stage.
+> **Never add or change template properties on the SSM secret parameters.** CloudFormation would write the placeholder back over the live secret.
 
 ### Local sync for X and YouTube
 
-X and YouTube transcripts block datacenter IPs, so collect them on your machine shortly before the digest runs. The sync writes to `aws.state_bucket_name` (see Deploying to AWS). For X also set `collectors.rsshub.enabled: true` and its `accounts`. An unattended cron should use the `S3_SYNC_*` keys in `.env`, since SSO sessions expire; set `aws.s3_sync_user` to that IAM user so the stack grants it PutObject on the state prefix.
+X and YouTube transcripts block datacenter IPs, so sync them from your machine shortly before the digest runs. Set `collectors.rsshub.enabled: true` and its `accounts` for X, and `aws.s3_sync_user` when cron uses the `S3_SYNC_*` keys.
 
 ```bash
-crontab -e
-# 18:30 KST, 30 minutes before a 19:00 KST (10:00 UTC) digest; cron uses the machine's local time zone
-30 18 * * * AWS_PROFILE=<profile> /path/to/omnisummary/scripts/sync_all_to_s3.sh >> /path/to/omnisummary/logs/sync.log 2>&1   # not /tmp: a reboot clears it
-# An edition syncs its own park files before its own run (investing: 07:30 KST)
+# crontab, in the machine's local time: 30 minutes before the 19:00 KST digest
+30 18 * * * AWS_PROFILE=<profile> /path/to/omnisummary/scripts/sync_all_to_s3.sh >> /path/to/omnisummary/logs/sync.log 2>&1
+# The investing edition (07:30 KST run)
 0 7 * * * OMNISUMMARY_EDITION=invest AWS_PROFILE=<profile> /path/to/omnisummary/scripts/sync_all_to_s3.sh >> /path/to/omnisummary/logs/sync.log 2>&1
 ```
 
-A park file older than `park_max_age_hours` (12h; a healthy one is about 30 minutes old at the digest) makes the source report `STALE`, so a stopped cron can't look healthy.
+A park file older than `park_max_age_hours` (12h) reports `STALE`, so a stopped cron can't look healthy.
 
 ## Development
 
 ```bash
-uv run python -m pytest tests/             # hermetic: no network, no AWS, no real secrets
-uv run pre-commit run --all-files          # ruff, black, file checks, uv lock --check
+uv run python -m pytest tests/      # hermetic: no network, AWS or real secrets
+uv run pre-commit run --all-files   # ruff, black, file checks, uv lock --check
 uv run mypy .
-uv run lint-imports                        # the ports-and-adapters dependency direction
-npx cdk synth -a "uv run python scripts/ci_synth.py"   # offline synth through the pinned CLI
+uv run lint-imports                 # ports-and-adapters dependency direction
+npx cdk synth -a "uv run python scripts/ci_synth.py"
 ```
 
-CI runs lint and type checks, an offline CDK synth of `config/config-template.yaml`, tests with coverage, a Docker build that imports the entry modules with no network, and a dependency and secret scan. `pip-audit --strict` fails the build on any new advisory in the locked set; fix it with `uv lock --upgrade-package <pkg>`. Regenerate the lockfile with `uvx --from uv==0.6.14 uv lock`, the uv version CI and the Dockerfile pin.
+Regenerate the lockfile with `uvx --from uv==0.6.14 uv lock`, the uv version CI and the Dockerfile pin.
 
-## Project structure
+The code follows ports and adapters. Dependencies point inward only, and CI checks it:
 
 ```
-omnisummary/
-├── main.py            # Digest CLI
-├── research_cli.py    # Deep-research CLI (JSON on stdout)
-├── recall_cli.py      # Past digests and trends (JSON on stdout)
-├── entrypoints/       # Lambda handlers and bootstrap.py, which builds the adapters
-├── adapters/          # Bedrock, Threads, OpenAI images, S3 and AgentCore stores, SNS, collectors, research agent
-├── application/       # Use cases (digest, comic, comment replies, research rules), ports, prompts
-├── domain/            # Models, URL dedup, formatting, Threads post rendering, the digest snapshot
-├── shared/            # Config, constants, logger, pure helpers
-├── infrastructure/    # CDK stacks
-├── scripts/           # Deploy, secrets, profiles, sync, samplers
-├── assets/            # persona.jpg, the narrator's reference sheet
-├── config/            # config-template.yaml
-├── tests/
-└── docs/              # design.md and diagrams
+entrypoints/    Lambda handlers; bootstrap.py builds the adapters
+adapters/       Bedrock, Threads, OpenAI images, S3 and AgentCore stores, collectors, research agent
+application/    Use cases, ports (ports.py), prompts
+domain/         Models, URL dedup, Threads post rendering, the digest snapshot
+shared/         Config, constants, logger, pure helpers
+infrastructure/ CDK stacks
+scripts/        Deploy, secrets, sync, samplers
 ```
-
-The code follows ports and adapters. `application/ports.py` names what the core needs from the outside (language models, the image renderer, Threads, the stores, the content sources, the research sources); `adapters/` implements those ports, and `entrypoints/bootstrap.py` builds the adapters and hands them to the use cases. Dependencies point inward only (entrypoints → adapters → application → domain → shared), and CI checks it with import contracts (`uv run lint-imports`, `[tool.importlinter]` in pyproject). Tests hand the core fakes (`tests/fakes.py`) instead of real clients.
 
 ## License
 

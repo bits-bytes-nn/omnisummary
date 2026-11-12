@@ -12,6 +12,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
 from application.digest_generator import DigestGenerator
+from application.digest_pipeline import PipelineRun
 from domain.models import CollectedItem, DigestContent, DigestItem, DigestResult, RankedItem
 from shared.config import AWSConfig, Config, PipelineConfig
 from shared.constants import SourceType
@@ -69,7 +70,10 @@ async def test_run_alerts_a_digest_that_shipped_unchecked(monkeypatch):
         patch("entrypoints.digest_handler.Config.load", return_value=_config()),
         patch("entrypoints.digest_handler.run_collectors_with_health", new=AsyncMock(return_value=(items, health))),
         patch("entrypoints.digest_handler._maybe_alert"),
-        patch("entrypoints.digest_handler.run_pipeline", new=AsyncMock(return_value=(items, [MagicMock()], digest))),
+        patch(
+            "entrypoints.digest_handler.run_pipeline",
+            new=AsyncMock(return_value=PipelineRun(items, [MagicMock()], digest)),
+        ),
         patch("entrypoints.digest_handler.persist_digest"),
         patch("entrypoints.digest_handler._trigger_visual"),
         patch("entrypoints.digest_handler._emit_digest_items_metric"),

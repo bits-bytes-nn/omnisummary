@@ -26,14 +26,44 @@ from shared import Config
 FUNCTIONS = ("digest", "visual", "invest-digest", "invest-visual", "comment-replies")
 # Logs Insights' row cap: a longer window is queried in several pieces rather than silently cut.
 ROW_LIMIT = 10000
-QUERY = r"""
+# The Logs Insights patterns over the emitters' usage lines (adapters/bedrock.py, adapters/openai_images.py,
+# adapters/research_backends.py); tests/test_cost_report.py runs them against the real lines.
+USAGE_PATTERN = r'(?<s_kind>LLM|Image|Search) usage stage=(?<s_stage>[^ "]+)'
+USD_PATTERN = r" usd=(?<s_usd>[0-9.]+)"
+CREDITS_PATTERN = r" credits=(?<s_credits>[0-9.]+)"
+QUERY = f"""
 filter @message like /(LLM|Image|Search) usage stage=/
-| parse @message /(?<s_kind>LLM|Image|Search) usage stage=(?<s_stage>[^ "]+)/
-| parse @message / usd=(?<s_usd>[0-9.]+)/
-| parse @message / credits=(?<s_credits>[0-9.]+)/
+| parse @message /{USAGE_PATTERN}/
+| parse @message /{USD_PATTERN}/
+| parse @message /{CREDITS_PATTERN}/
 | display @timestamp, @log, s_kind, s_stage, s_usd, s_credits
-| limit {limit}
+| limit {{limit}}
 """
+
+
+Key = tuple[str, str]
+
+
+def tally(
+    rows: list, *, prefix: str, tz: ZoneInfo, by: str
+) -> tuple[dict[Key, float], dict[Key, float], dict[Key, int]]:
+    """(usd, Tavily credits, unpriced call count) per (local day, function or kind:stage) over the
+    query's result rows."""
+    usd: dict[Key, float] = defaultdict(float)
+    credits: dict[Key, float] = defaultdict(float)
+    unpriced: dict[Key, int] = defaultdict(int)
+    for row in rows:
+        f = {c["field"]: c["value"] for c in row}
+        day = datetime.fromisoformat(f["@timestamp"].replace(" ", "T") + "+00:00").astimezone(tz).date().isoformat()
+        function = f["@log"].rsplit(prefix, 1)[-1]
+        key = (day, function if by == "function" else f"{f['s_kind'].lower()}:{f['s_stage']}")
+        if "s_credits" in f:
+            credits[key] += float(f["s_credits"])
+        elif "s_usd" in f:
+            usd[key] += float(f["s_usd"])
+        else:
+            unpriced[key] += 1
+    return usd, credits, unpriced
 
 
 def main() -> None:
@@ -73,21 +103,7 @@ def main() -> None:
             sys.exit(f"{day_start:%Y-%m-%d} hit the {ROW_LIMIT}-row cap; totals would be low")
         rows += result["results"]
 
-    usd: dict[tuple[str, str], float] = defaultdict(float)
-    credits: dict[tuple[str, str], float] = defaultdict(float)
-    unpriced: dict[tuple[str, str], int] = defaultdict(int)
-    for row in rows:
-        f = {c["field"]: c["value"] for c in row}
-        day = datetime.fromisoformat(f["@timestamp"].replace(" ", "T") + "+00:00").astimezone(tz).date().isoformat()
-        function = f["@log"].rsplit(prefix, 1)[-1]
-        key = (day, function if args.by == "function" else f"{f['s_kind'].lower()}:{f['s_stage']}")
-        if "s_credits" in f:
-            credits[key] += float(f["s_credits"])
-        elif "s_usd" in f:
-            usd[key] += float(f["s_usd"])
-        else:
-            unpriced[key] += 1
-
+    usd, credits, unpriced = tally(rows, prefix=prefix, tz=tz, by=args.by)
     keys = sorted(set(usd) | set(credits) | set(unpriced))
     total: dict[str, float] = defaultdict(float)
     for day, name in keys:

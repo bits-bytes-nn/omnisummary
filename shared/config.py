@@ -64,7 +64,6 @@ class BaseCollectorConfig(_StrictModel):
     # Config._lookback_reaches_the_previous_run); 30 is the 19:00 KST floor plus an hour. Declared ONCE:
     # a subclass re-declaration replaces the FieldInfo and drops ge=1. Wider windows go in the YAML.
     lookback_hours: int = Field(default=30, ge=1)
-    reference_time: datetime | None = None
     request_timeout: int = Field(default=30, ge=1)
     max_retries: int = Field(default=3, ge=1)
     retry_backoff_sec: int = Field(default=5, ge=0)
@@ -144,7 +143,6 @@ class NaverResearchCollectorConfig(BaseCollectorConfig):
     # category still paging at the cap is logged.
     max_pages: int = Field(default=10, ge=1)
     page_delay_sec: float = Field(default=1.0, ge=0.0)
-    # The post names the broker and the analyst; the Naver page is not linked unless this is set.
 
 
 class TrendSearch(_StrictModel):
@@ -158,8 +156,7 @@ class WebSearchCollectorConfig(BaseCollectorConfig):
     max_results_per_query: int = Field(default=10, ge=1)
     refine_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
     max_refine_queries: int = Field(default=3, ge=1)
-    # The field the refine step asks for queries about (the edition's pipeline.domain), and its rules.
-    domain: str = "AI/ML"
+    # The refine step's rules; the field it asks about is the edition's pipeline.domain.
     refine_rules: str = (
         "- Prefer: technical blog posts, paper analyses, benchmarks, tool releases, practitioner discussions\n"
         '- No generic terms ("AI news", "machine learning update")'
@@ -209,10 +206,6 @@ class CollectorsConfig(_StrictModel):
             )
         return self
 
-    def set_reference_time(self, reference_time: datetime) -> None:
-        for name in COLLECTOR_NAMES:
-            getattr(self, name).reference_time = reference_time
-
 
 def _utc_offset_hours(timezone: str) -> int:
     """Whole-hour UTC offset of `timezone` right now, for turning the UTC cron hour into a local one.
@@ -246,14 +239,12 @@ class PipelineConfig(_StrictModel):
     recent_leads_window: int = Field(default=5, ge=0)
     # The other editions posting to the same Threads account ("" is the AI/ML edition). Their last day or
     # two of story titles, leads and implications join this edition's own, so one account does not run
-    # the same story and thesis twice in a day (2026-11-05: both editions led on the midterms and data
-    # centres, 12 hours apart; the Anthropic S-1 ran 7 times in 9 days across the two).
+    # the same story and thesis twice in a day.
     sibling_editions: list[str] = Field(default_factory=list)
     ranking_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
     digest_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
-    # A digest whose JSON the editor emits malformed (a stray bracket after the lead string cost
-    # the 2026-08-13 and 2026-08-17 digests every story) is RE-ASKED before it is given up on.
-    # Regeneration is one Bedrock call; the alternative is a day with no stories at all.
+    # A digest whose JSON the editor emits malformed is RE-ASKED before it is given up on: regeneration
+    # is one Bedrock call, the alternative a day with no stories at all.
     digest_max_retries: int = Field(default=3, ge=1)
     digest_retry_backoff_sec: float = Field(default=5.0, ge=0)
     # Post-generation faithfulness pass: verify the digest's specific claims against the
@@ -366,14 +357,11 @@ class PipelineConfig(_StrictModel):
     )
     max_per_origin: int = Field(default=1, ge=1)
     # An edition's extra sentence on how the editor picks its stories as a set (empty: the prompt is
-    # unchanged). The investing edition's: measured 3-0 on its stored days and the only variant that shipped
-    # an X post on 11-03's live pool; the same sentence lost 2-4 on AI days, which keep it empty.
+    # unchanged). Only the investing edition sets one; it lost on AI days (docs/decisions.md).
     selection_guidance: str = ""
     # The editor must carry this many stories from these source types, the best-scored ones in the pool:
     # an analyst's or investor's own note or post over the press report of it. Research notes among them
-    # get their full text (the note's PDF). Investing (2026-11-07, 7 stored days): research and X, 2 of
-    # 5 won 12-2 blind in both orders, fidelity 3.21 -> 3.86, press stories 22 -> 17 of 35; without the
-    # full text the same quota tied 7-7 and fidelity fell.
+    # get their full text (the note's PDF): the quota alone tied, with the text it won (docs/decisions.md).
     primary_quota: int = Field(default=0, ge=0)
     primary_source_types: list[SourceType] = Field(default_factory=list)
     # Score-calibration buckets the ranking prompt applies, injected as template text so
@@ -397,9 +385,8 @@ class PipelineConfig(_StrictModel):
     trend_max_evidence: int = Field(default=5, ge=1)
     trend_max_active_trends: int = Field(default=10, ge=1)
     # Whether the editor's trend context carries each trend's latest note or only its title. The AI/ML
-    # edition shows titles only (2026-11-06, blind on 6 stored days in both orders: 9-3, fidelity 2.8 to
-    # 3.9): given the notes, its leads re-told yesterday's figures as the "wider arc". Investing keeps the
-    # notes, whose market figures its editor uses (titles only lost 2-8 there).
+    # edition shows titles only: given the notes, its leads re-told yesterday's figures as the "wider arc".
+    # Investing keeps the notes, whose market figures its editor uses (docs/decisions.md).
     trend_context_notes: bool = True
     trend_momentum_half_life_days: float = Field(default=7.0, gt=0)
     # The digest's delivery channel. Off until the Threads access token / user id are provisioned in SSM.
@@ -674,8 +661,9 @@ class Config(_StrictModel):
         return cls(**config_data if config_data else {})
 
     @classmethod
-    def load(cls) -> "Config":
-        """The deployed config: `config/config.yaml`, falling back to the tracked template.
+    def load(cls, edition: str | None = None) -> "Config":
+        """The deployed config: `config/config.yaml` (`config/<edition>.yaml` for an edition, by default
+        the one OMNISUMMARY_EDITION names), falling back to the tracked template.
 
         Returning bare code defaults for a missing file was silent and wrong. config.yaml is
         gitignored, the Dockerfile COPYs config/, so a clean-checkout image — which is exactly what
@@ -689,13 +677,13 @@ class Config(_StrictModel):
         placeholders, rank and publish a thin digest with only a log line to show for it."""
         load_dotenv()
         config_dir = Path(__file__).parent.parent / "config"
-        edition = os.environ.get(EDITION_ENV, "").strip()
+        edition = (os.environ.get(EDITION_ENV, "") if edition is None else edition).strip()
         stem = edition or "config"
         config_path = config_dir / f"{stem}.yaml"
         if config_path.exists():
             config = cls.from_yaml(str(config_path))
             if config.edition != edition:
-                raise ValueError(f"'{config_path}' declares edition '{config.edition}', but {EDITION_ENV}='{edition}'")
+                raise ValueError(f"'{config_path}' declares edition '{config.edition}', but '{edition}' was asked for")
             return config
         if is_running_in_aws():
             raise FileNotFoundError(
@@ -718,12 +706,7 @@ class Config(_StrictModel):
 
 @lru_cache(maxsize=1)
 def get_config() -> Config:
-    """Process-wide cached Config for READ-ONLY leaf callers (delivery, research backends, agent
-    tools, og-image). Config.load() re-reads and re-validates the whole YAML on every call, which
-    a single research run did dozens of times — once per tool invocation.
-
-    Deliberately NOT used where the Config is MUTATED (main/handlers' set_reference_time, the infra
-    tests' bucket override): those callers need their own instance, and
-    a shared cached object would leak their edits everywhere. Tests clear the cache via an autouse
-    fixture in tests/conftest.py."""
+    """Process-wide cached Config for the SSM secret helpers in adapters/aws.py, whose many callers
+    hold no config. Everything else is handed its Config by the composition root. Tests clear the
+    cache via an autouse fixture in tests/conftest.py."""
     return Config.load()

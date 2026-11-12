@@ -55,21 +55,17 @@ async def test_one_story_with_source_slots_does_not_lose_seats():
 
 
 async def test_pinned_item_and_story_cap():
-    """A pin is kept out of the grouping, so its other copies are not story-capped against it."""
+    """A pin is grouped with the candidates, so another outlet's copy of the pinned story takes no seat."""
     pinned = _item(0, pinned=True)
     copies = [_item(k) for k in range(1, 6)]
     others = [_item(k) for k in range(6, 20)]
-    groups = {"same_story": [[1, 2, 3, 4, 5]]}  # numbers are over above_threshold, pin excluded
+    groups = {"same_story": [[1, 2, 3, 4, 5, 6]]}  # the pin is shown first, then above_threshold
     scores = {f"story {k}": 0.95 for k in range(1, 6)} | {f"story {k}": 0.7 for k in range(6, 20)}
     ranker, models = _ranker(_cfg(), {"ranking": score_by_title(scores), "story-groups": lambda _t: groups})
     pool = await ranker.rank([pinned, *copies, *others], select_count=6)
     assert pool[0].item.item_id == "i0"
-    shown = models.prompts["story-groups"][0]
-    copies_in_pool = [r for r in pool if r.item.item_id in {c.item_id for c in copies}]
-    # Observed: the pin's story is not in the grouping input; the copies it shares a story with each other
-    # still take only ONE seat. Report whether the pin itself could be grouped with its copies.
-    assert "story 0" not in shown
-    assert len(copies_in_pool) == 1
+    assert "story 0" in models.prompts["story-groups"][0]
+    assert not [r for r in pool if r.item.item_id in {c.item_id for c in copies}]
 
 
 async def test_a_single_item():

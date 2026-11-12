@@ -6,7 +6,7 @@ import pytest
 
 from adapters.memory import AgentCoreMemoryStore, LocalMemoryStore, create_memory_store
 from application.ports import MemoryReadError
-from shared import get_config
+from shared import Config, get_config
 
 
 def _store() -> AgentCoreMemoryStore:
@@ -84,6 +84,11 @@ class TestLocalMemoryStore:
             store.put_raw(d, _snapshot(d))
         recent = store.get_recent_digests(date(2026, 6, 9), 4)
         assert [r.content.lead for r in recent] == ["2026-06-08", "2026-06-06"]
+        dated = store.get_recent_digests_dated(date(2026, 6, 9), 4)
+        assert [(d.isoformat(), r.content.lead) for d, r in dated] == [
+            ("2026-06-08", "2026-06-08"),
+            ("2026-06-06", "2026-06-06"),
+        ]
 
     def test_an_unreadable_day_is_skipped_not_fatal(self, tmp_path):
         store = LocalMemoryStore(tmp_path)
@@ -108,11 +113,44 @@ def store_region() -> str:
 
 
 class TestCreateMemoryStore:
-    def test_local_when_no_memory_is_deployed(self, monkeypatch, tmp_path):
+    def test_a_chosen_base_dir_is_the_local_store_without_a_lookup(self, monkeypatch, tmp_path):
         monkeypatch.delenv("MEMORY_ID", raising=False)
-        with patch("adapters.memory._deployed_memory_id", return_value=""), patch("adapters.memory.boto3.Session"):
+        with patch("adapters.memory._deployed_memory_id") as lookup:
             store = create_memory_store(get_config(), tmp_path)
-        assert isinstance(store, LocalMemoryStore)
+        assert isinstance(store, LocalMemoryStore) and lookup.call_count == 0
+
+    def test_local_when_no_profile_is_configured_and_no_memory_is_deployed(self, monkeypatch):
+        monkeypatch.delenv("MEMORY_ID", raising=False)
+        config = Config()
+        with patch("adapters.memory._deployed_memory_id", return_value=""), patch("adapters.memory.boto3.Session"):
+            assert isinstance(create_memory_store(config), LocalMemoryStore)
+
+    def test_no_memory_on_the_configured_profile_is_unreadable_not_empty(self, monkeypatch):
+        # Ambient credentials for another account matched no memory, and the local fallback then
+        # answered "no digest stored" for a day production had written.
+        monkeypatch.delenv("MEMORY_ID", raising=False)
+        config = Config()
+        config.aws.profile = "research"
+        with (
+            patch("adapters.memory.available_boto_profile", return_value="research"),
+            patch("adapters.memory._deployed_memory_id", return_value=""),
+            patch("adapters.memory.boto3.Session"),
+        ):
+            with pytest.raises(MemoryReadError, match="No AgentCore memory"):
+                create_memory_store(config)
+
+    def test_a_profile_that_does_not_resolve_looks_up_on_ambient_credentials(self, monkeypatch):
+        # A managed runtime without ~/.aws/config still finds the memory on its own credentials.
+        monkeypatch.delenv("MEMORY_ID", raising=False)
+        config = Config()
+        config.aws.profile = "research"
+        with (
+            patch("adapters.memory.available_boto_profile", return_value=None),
+            patch("adapters.memory._deployed_memory_id", return_value="mem-1"),
+            patch("adapters.memory.boto3.Session") as session,
+        ):
+            assert isinstance(create_memory_store(config), AgentCoreMemoryStore)
+        assert session.call_args.kwargs["profile_name"] is None
 
     def test_a_failed_lookup_raises_instead_of_reading_the_local_store(self, monkeypatch, tmp_path):
         # Expired credentials fell back to the local store, so recall answered "nothing stored"
@@ -122,7 +160,7 @@ class TestCreateMemoryStore:
         session.client.return_value.get_paginator.return_value.paginate.side_effect = RuntimeError("expired token")
         with patch("adapters.memory.boto3.Session", return_value=session):
             with pytest.raises(MemoryReadError, match="expired token"):
-                create_memory_store(get_config(), tmp_path)
+                create_memory_store(get_config())
 
     def test_a_local_run_finds_the_stacks_memory_by_name(self, monkeypatch):
         # Without MEMORY_ID (set only on the Lambdas) a local run read none of production's

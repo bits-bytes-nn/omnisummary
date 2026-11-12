@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 from zoneinfo import ZoneInfo
 
 from application.digest_generator import DigestGenerator
@@ -24,6 +24,7 @@ from domain.digest_snapshot import DigestSnapshot
 from domain.formatting import resolve_origin_key
 from domain.models import CollectedItem, DigestResult, HealthReport, RankedItem, SourceHealth, SourceStatus
 from shared import Config, SourceType, logger
+from shared.config import PipelineConfig
 
 if TYPE_CHECKING:
     from application.daily_visual import DailyVisualMaker
@@ -61,7 +62,7 @@ async def run_collectors_with_health(
     health: list[SourceHealth] = []
     for label, collector, result in zip(labels, collectors, results, strict=True):
         if isinstance(result, BaseException):
-            health.append(SourceHealth(name=label, item_count=0, status=SourceStatus.FAILED, detail=str(result)[:200]))
+            health.append(SourceHealth(name=label, item_count=0, status=SourceStatus.FAILED, detail=str(result)))
             logger.warning("Collector '%s' failed: %s", label, result)
             continue
         items.extend(result)
@@ -69,7 +70,7 @@ async def run_collectors_with_health(
         # Reported, never filtered: every item still reaches the aggregator.
         if (issue := collector.health_issue) is not None:
             status, detail = issue
-            health.append(SourceHealth(name=label, item_count=len(result), status=status, detail=detail[:200]))
+            health.append(SourceHealth(name=label, item_count=len(result), status=status, detail=detail))
             logger.warning("Collector '%s' is %s: %s", label, status.value.upper(), detail)
             continue
         status = SourceStatus.OK if result else SourceStatus.EMPTY
@@ -78,10 +79,38 @@ async def run_collectors_with_health(
     # A source that ran clean and returned nothing is DARK: no exception, no stale park file, no
     # failure ratio. The config names which sources that is an incident for (the digest Lambda
     # alerts on the same list); log it loudly here so a local run sees it too.
-    dark = [name for name in report.empty_sources if name in set(config.collectors.alert_on_empty)]
+    dark = report.watched_empty(config.collectors.alert_on_empty)
     if dark:
         logger.error("Source(s) returned NO items and are configured as must-not-be-empty: %s", ", ".join(dark))
     return items, report
+
+
+class PipelineRun(NamedTuple):
+    """What run_pipeline produced: the aggregated items, the candidate pool and the digest."""
+
+    items: list[CollectedItem]
+    ranked_items: list[RankedItem]
+    digest: DigestResult
+
+
+class RecentHistory(NamedTuple):
+    """The recent snapshots, read once: `dedup` is the URL ledger's window, `titles` the longer title window."""
+
+    dedup: list[DigestSnapshot]
+    titles: list[DigestSnapshot]
+
+
+def load_recent_history(config: Config, memory_store: MemoryStore, digest_date: date) -> RecentHistory:
+    """Ages 1..ttl-1 seed cross-day dedup (today's own snapshot is excluded so a same-day re-run keeps its
+    stories, and a story back on the TTL day is allowed again); ages 1..RECENT_TITLE_DAYS feed the titles.
+    Raises when the store cannot be read."""
+    dedup_days = config.pipeline.published_url_ttl_days - 1
+    title_days = RECENT_TITLE_DAYS
+    dated = memory_store.get_recent_digests_dated(digest_date, max(dedup_days, title_days))
+    return RecentHistory(
+        dedup=[snap for day, snap in dated if (digest_date - day).days <= dedup_days],
+        titles=[snap for day, snap in dated if (digest_date - day).days <= title_days],
+    )
 
 
 class PublishIncomplete(RuntimeError):
@@ -111,10 +140,11 @@ async def run_pipeline(
     paid_check: PaidPageCheck,
     note_text: NoteText,
     dry_run: bool = False,
-) -> tuple[list[CollectedItem], list[RankedItem], DigestResult] | tuple[None, None, None]:
+) -> PipelineRun | None:
     """Aggregate, rank and write the day's digest, then record its stories and lead. `memory_store`
-    is called only to read the recent snapshots, and a failure there costs only the cross-day dedup
-    seed. The digest is neither stored nor published here: see persist_digest and publish_inline."""
+    is called once, to read the recent snapshots; a failed read costs only the dedup seed and the
+    titles, never the run. The digest is neither stored nor published here: see persist_digest and
+    publish_inline."""
     ledger = PublishedUrlLedger(state_store, config.pipeline.published_url_ttl_days)
 
     # Cross-day dedup draws from BOTH the ledger AND recent AgentCore Memory snapshots, so it
@@ -123,14 +153,12 @@ async def run_pipeline(
     # ledger's canonical form so http/https + trailing-slash variants of a past story still match.
     # Re-normalized on read: a key written under an older normalize_url must still match.
     exclude_urls = {normalize_url(u) for u in ledger.recent_urls(digest_date)}
-    snapshots: list[DigestSnapshot] = []
     try:
-        # Seed the same window the ledger excludes: ages 1..ttl-1 (today's own snapshot is excluded
-        # so a same-day re-run keeps its stories, and a story back on the TTL day is allowed again).
-        snapshots = memory_store().get_recent_digests(digest_date, config.pipeline.published_url_ttl_days - 1)
-        exclude_urls |= {normalize_url(u) for u in published_urls_from_snapshots(snapshots)}
+        history = await asyncio.to_thread(lambda: load_recent_history(config, memory_store(), digest_date))
     except Exception:
-        logger.warning("Could not seed cross-day dedup from memory snapshots (non-fatal)", exc_info=True)
+        logger.warning("Could not read the recent digest snapshots (non-fatal)", exc_info=True)
+        history = RecentHistory([], [])
+    exclude_urls |= {normalize_url(u) for u in published_urls_from_snapshots(history.dedup)}
 
     aggregator = ContentAggregator()
     items = aggregator.aggregate(collected_items, exclude_urls=exclude_urls)
@@ -138,44 +166,26 @@ async def run_pipeline(
 
     if not items:
         logger.warning("No items to process after aggregation")
-        return None, None, None
+        return None
 
     # Over-select (top_n + buffer): the editor picks the strongest top_n distinct stories from it.
     select_count = config.pipeline.top_n + config.pipeline.digest_candidate_buffer
     ranker = ContentRanker(config.pipeline, models, paid_check)
-    title_snapshots = snapshots
-    try:
-        # Titles reach further back than the URL ledger: Kimi K3.1 Pro shipped on 10-24 and again, as
-        # another outlet's take on the same release, on 11-02, eight days later.
-        title_snapshots = memory_store().get_recent_digests(digest_date, RECENT_TITLE_DAYS)
-    except Exception:
-        logger.warning(
-            "Could not read %d days of recent titles; using the dedup window", RECENT_TITLE_DAYS, exc_info=True
-        )
-    sibling = sibling_snapshots(sibling_memory, digest_date)
-    recent_titles = list(dict.fromkeys(_recent_story_titles(title_snapshots) + _recent_story_titles(sibling)))
-    ranked_items = await ranker.rank(items, select_count=select_count, recent_titles=recent_titles)
+    recent = editor_context(history, sibling_snapshots(sibling_memory, digest_date), config.pipeline)
+    ranked_items = await ranker.rank(items, select_count=select_count, recent_titles=recent.titles)
     logger.info("Ranked %d items (from %d)", len(ranked_items), len(items))
 
     if not ranked_items:
         logger.warning("No items passed ranking threshold")
-        return None, None, None
+        return None
 
     await require_primary(ranked_items, config.pipeline.primary_quota, config.pipeline.primary_source_types, note_text)
 
     trend_tracker = TrendTracker(config.pipeline, models, state_store)
     trends_context = trend_tracker.get_trends_context(today=digest_date)
 
-    recent_leads = _recent_leads(snapshots, config.pipeline.recent_leads_window) + _recent_leads(
-        sibling, config.pipeline.recent_leads_window
-    )
-    generator = DigestGenerator(config.pipeline, models)
-    digest = await generator.generate(
-        ranked_items,
-        trends_context=trends_context,
-        today=digest_date,
-        recent_leads=recent_leads,
-        recent_titles=recent_titles,
+    digest = await write_digest(
+        config.pipeline, models, ranked_items, recent, trends_context=trends_context, today=digest_date
     )
     logger.info("Generated digest with %d ranked items", len(digest.ranked_items))
     # Carry the ranking verdict on the result so the delivery/alerting layer can say the digest was
@@ -196,7 +206,7 @@ async def run_pipeline(
 
     if dry_run:
         logger.info("DRY RUN - Digest output:\n%s", digest.digest_text)
-        return items, ranked_items, digest
+        return PipelineRun(items, ranked_items, digest)
 
     try:
         # Trends only feed tomorrow's lead: a failed update must not cost today's post. The classifier
@@ -210,8 +220,9 @@ async def run_pipeline(
         logger.error("Trend update failed (non-fatal; today's digest still ships)", exc_info=True)
 
     try:
-        # Every scored item, not just the pool: the only way to replay a change to the slots, the caps or
-        # the threshold on a past day without paying for its ranking again.
+        # Every scored item's score and origin, not just the pool: enough to replay a change to the slots,
+        # the caps or the threshold on a past day without re-ranking. A changed prompt, criteria or model
+        # still needs the ranking re-run (the items' text is not kept).
         state_store.write_json(
             f"{SCORED_ITEMS_PREFIX}{digest_date.isoformat()}.json",
             [
@@ -248,7 +259,7 @@ async def run_pipeline(
     except Exception:
         logger.warning("Failed to update the published-URL ledger (non-fatal)", exc_info=True)
 
-    return items, ranked_items, digest
+    return PipelineRun(items, ranked_items, digest)
 
 
 async def require_primary(
@@ -261,7 +272,7 @@ async def require_primary(
         return
     chosen = sorted((r for r in pool if r.item.source_type in source_types), key=lambda r: -r.score)[:quota]
     for r in chosen:
-        r.item.metadata["primary"] = True
+        r.item.primary = True
         if r.item.source_type == SourceType.RESEARCH:
             text = await note_text(r.item)
             if text:
@@ -285,28 +296,55 @@ def sibling_snapshots(stores: Callable[[], list[MemoryStore]], digest_date: date
     return out
 
 
+class EditorContext(NamedTuple):
+    """What the recent digests tell the ranker and the editor: story titles and angles, newest first."""
+
+    titles: list[str]
+    leads: list[str]
+
+
+def editor_context(history: RecentHistory, sibling: list[DigestSnapshot], config: PipelineConfig) -> EditorContext:
+    """This edition's recent snapshots joined by the other editions' on the same account."""
+    return EditorContext(
+        titles=list(dict.fromkeys(_recent_story_titles(history.titles) + _recent_story_titles(sibling))),
+        leads=recent_angles(history.dedup, config) + recent_angles(sibling, config),
+    )
+
+
+async def write_digest(
+    config: PipelineConfig,
+    models: LanguageModels,
+    pool: list[RankedItem],
+    recent: EditorContext,
+    *,
+    trends_context: str,
+    today: date,
+) -> DigestResult:
+    """The editor's call on a ranked pool: the one path run_pipeline and the eval harness's replay share,
+    so an input added to the editor reaches both."""
+    return await DigestGenerator(config, models).generate(
+        pool, trends_context=trends_context, today=today, recent_leads=recent.leads, recent_titles=recent.titles
+    )
+
+
 def _recent_story_titles(snapshots: list[DigestSnapshot]) -> list[str]:
-    """Story titles from the recent snapshots (RECENT_TITLE_DAYS, newest first), so the ranker and the
-    editor see what recent digests ran. One
-    day was not enough: a weekly roundup brings a story back under a NEW URL the ledger cannot
-    match, and on 2026-10-11 three of five stories had run 1-4 days earlier. The ranker reads it for
-    Novelty and the editor for selection; it is information, not a filter."""
+    """Story titles from the recent snapshots (newest first), so the ranker can judge Novelty and the
+    editor selection against what recent digests ran: information, not a filter."""
     titles = [item.title for snap in snapshots if snap.content for item in snap.content.items if item.title]
     return list(dict.fromkeys(titles))
 
 
-def _recent_leads(snapshots: list[DigestSnapshot], window: int) -> list[str]:
-    """The angles the next digest must not repeat, from the snapshots the cross-day dedup seed already
-    fetched (newest first): each recent lead (the editor is shown its last sentence, its thesis, so the
-    countdown gag never reaches the comparison) and the last RECENT_IMPLICATION_DAYS days' implications.
-    The thesis shape repeats in the implications more than in the leads: given them too, the editor ended
-    1 of 6 leads on the "누가 ~느냐" formula instead of 4 of 6, 6/3 blind over 9 days (2026-11-01)."""
-    leads = [snap.content.lead for snap in snapshots if snap.content and snap.content.lead.strip()][:window]
-    recent = [snap.content for snap in snapshots[:RECENT_IMPLICATION_DAYS] if snap.content]
-    return leads + [item.implication for content in recent for item in content.items if item.implication.strip()]
+def recent_angles(snapshots: list[DigestSnapshot], config: PipelineConfig) -> list[str]:
+    """The angles the next digest must not repeat (newest first): the last recent_leads_window leads (the
+    editor is shown each one's thesis sentence, so the countdown gag never reaches the comparison) and
+    the implications of the last RECENT_IMPLICATION_SNAPSHOTS snapshots."""
+    leads = [snap.content.lead for snap in snapshots if snap.content and snap.content.lead.strip()]
+    recent = [snap.content for snap in snapshots[:RECENT_IMPLICATION_SNAPSHOTS] if snap.content]
+    implications = [item.implication for content in recent for item in content.items if item.implication.strip()]
+    return leads[: config.recent_leads_window] + implications
 
 
-RECENT_IMPLICATION_DAYS = 2
+RECENT_IMPLICATION_SNAPSHOTS = 2
 SCORED_ITEMS_PREFIX = "scored_items/"
 POOLS_PREFIX = "pools/"
 RECENT_TITLE_DAYS = 14

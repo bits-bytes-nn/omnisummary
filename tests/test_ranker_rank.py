@@ -165,7 +165,7 @@ class TestRankEndToEnd:
         # A pinned item must appear even when its score is below min_score and it would
         # otherwise be filtered out.
         items = _items([("a", SourceType.RSS), ("b", SourceType.RSS)])
-        items[1].metadata = {"pinned": True}  # b is pinned
+        items[1].pinned = True  # b is pinned
         ranker = _ranker(_rankings({"a": 0.9, "b": 0.2}), top_n=5, min_score=0.6, source_slots={})
         result = await ranker.rank(items)
         ids = {r.item.item_id for r in result}
@@ -178,7 +178,7 @@ class TestRankEndToEnd:
         # batch failed). It never became a RankedItem, but the --pin-url guarantee must still
         # hold: it's synthesized at min_score and force-included.
         items = _items([("a", SourceType.RSS), ("b", SourceType.RSS)])
-        items[1].metadata = {"pinned": True}  # b is pinned but the LLM only scores a
+        items[1].pinned = True  # b is pinned but the LLM only scores a
         ranker = _ranker(_rankings({"a": 0.9}), top_n=5, min_score=0.6, source_slots={})
         result = await ranker.rank(items)
         ids = {r.item.item_id for r in result}
@@ -190,7 +190,7 @@ class TestRankEndToEnd:
     async def test_pinned_item_leads_and_respects_top_n(self):
         # Pinned items lead the result and the total still caps at top_n.
         items = _items([(f"i{n}", SourceType.RSS) for n in range(5)])
-        items[4].metadata = {"pinned": True}  # i4 pinned, lowest score
+        items[4].pinned = True  # i4 pinned, lowest score
         ranker = _ranker(
             _rankings({"i0": 0.95, "i1": 0.9, "i2": 0.85, "i3": 0.8, "i4": 0.3}),
             top_n=3,
@@ -205,7 +205,7 @@ class TestRankEndToEnd:
     @pytest.mark.asyncio
     async def test_pinned_item_appears_once_and_sub_threshold_items_stay_out(self):
         items = _items([("a", SourceType.RSS), ("y_pin", SourceType.YOUTUBE), ("y_weak", SourceType.YOUTUBE)])
-        items[1].metadata = {"pinned": True}
+        items[1].pinned = True
         ranker = _ranker(
             _rankings({"a": 0.9, "y_pin": 0.85, "y_weak": 0.55}),
             top_n=5,
@@ -223,7 +223,7 @@ class TestRankEndToEnd:
         # shares the pin's host, the relaxed final pass (per-origin cap off)
         # still fills to top_n.
         items = _items([("p", SourceType.WEB), ("w1", SourceType.WEB), ("w2", SourceType.WEB)])
-        items[0].metadata = {"pinned": True}
+        items[0].pinned = True
         ranker = _ranker(
             _rankings({"p": 0.9, "w1": 0.85, "w2": 0.8}),
             top_n=3,
@@ -246,7 +246,7 @@ class TestRankEndToEnd:
             source_type=SourceType.WEB,
             title="t-p",
             url="https://pinned.example/a",
-            metadata={"pinned": True},
+            pinned=True,
         )
         web = CollectedItem(item_id="w1", source_type=SourceType.WEB, title="t-w1", url="https://other.example/a")
         rest = _items(

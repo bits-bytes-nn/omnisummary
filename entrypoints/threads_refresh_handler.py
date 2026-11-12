@@ -7,6 +7,7 @@ import httpx
 
 from adapters.aws import resolve_secret, secret_parameter_name
 from shared import logger, set_correlation_id
+from shared.constants import THREADS_TOKEN_SECRET
 
 THREADS_REFRESH_URL = "https://graph.threads.net/refresh_access_token"
 
@@ -25,7 +26,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     handler would otherwise report as "no token configured, nothing to refresh" — a 200 that leaves
     the real token to expire."""
     set_correlation_id(getattr(context, "aws_request_id", "") or None)
-    token = resolve_secret("THREADS_ACCESS_TOKEN", "threads-access-token", strict=True)
+    token = resolve_secret("THREADS_ACCESS_TOKEN", THREADS_TOKEN_SECRET, strict=True)
     if not token:
         logger.info("No Threads access token configured, nothing to refresh")
         return {"statusCode": 200, "body": "no token"}
@@ -60,7 +61,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         logger.error("Threads token refresh response carried no access_token")
         raise RuntimeError("Threads token refresh response carried no access_token") from None
 
-    name = secret_parameter_name("threads-access-token")
+    name = secret_parameter_name(THREADS_TOKEN_SECRET)
     ssm = boto3.client("ssm")
     try:
         # No Type: passing Type=SecureString on an overwrite is a type CHANGE, which SSM rejects

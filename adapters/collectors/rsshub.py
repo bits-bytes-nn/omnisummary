@@ -31,11 +31,13 @@ _FAILURE_HINT = "Twitter cookies may have expired — update TWITTER_AUTH_TOKEN 
 class RSSHubCollector(BaseCollector):
     config: RSSHubCollectorConfig
 
-    def __init__(self, config: RSSHubCollectorConfig):
-        self.config = config
-
     async def collect(self) -> list[CollectedItem]:
-        parked = load_items_from_s3("rsshub_items.json", max_age_hours=self.config.park_max_age_hours)
+        parked = await asyncio.to_thread(
+            load_items_from_s3,
+            "rsshub_items.json",
+            max_age_hours=self.config.park_max_age_hours,
+            timeout=self.config.request_timeout,
+        )
         self.park_status = parked
         if parked.usable:
             self.flag_degraded_park(
@@ -50,9 +52,9 @@ class RSSHubCollector(BaseCollector):
                 lookback_hours=park_read_lookback_hours(
                     parked,
                     lookback_hours=self.config.lookback_hours,
-                    reference_time=self.config.reference_time,
+                    reference_time=self.reference_time,
                 ),
-                reference_time=self.config.reference_time,
+                reference_time=self.reference_time,
                 description="RSSHub park file",
             )
 
@@ -170,7 +172,7 @@ class RSSHubCollector(BaseCollector):
                 feed,
                 source_type=SourceType.X,
                 lookback_hours=self.config.lookback_hours,
-                reference_time=self.config.reference_time,
+                reference_time=self.reference_time,
                 description=f"RSSHub feed '{feed_url}'",
                 metadata={"rsshub_feed": feed_url, "platform": "x"},
                 author=username,

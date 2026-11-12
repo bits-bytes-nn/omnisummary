@@ -20,6 +20,7 @@ from application.digest_pipeline import (
 )
 from domain.models import DigestResult, HealthReport
 from entrypoints import bootstrap
+from entrypoints.invocation import invoke_payload
 from shared import Config, get_correlation_id, is_running_in_aws, logger, set_correlation_id
 from shared.constants import DIGEST_ITEMS_METRIC
 
@@ -42,8 +43,7 @@ def _maybe_alert(health: HealthReport, alert_on_empty: list[str] | None = None) 
     # A source that ran clean and returned NOTHING leaves no exception, no stale park file and no
     # degraded ratio — it is simply dark. Only the sources config NAMES alert (collectors.
     # alert_on_empty), so reddit/x quiet days can't page every morning.
-    watched = set(alert_on_empty or [])
-    empty = [name for name in health.empty_sources if name in watched]
+    empty = health.watched_empty(alert_on_empty)
     if not (failed or stale or degraded or empty):
         return
     fields = {}
@@ -106,8 +106,7 @@ def _requested_date(event: dict[str, Any], timezone: str) -> str | None:
     digest on a partial window, and the failed day was never redone. None means today."""
     if not isinstance(event, dict):
         return None
-    if not ({"time", "digest_date"} & event.keys()) and isinstance(event.get("requestPayload"), dict):
-        event = event["requestPayload"]
+    event = invoke_payload(event, {"time", "digest_date"})
     explicit = str(event.get("digest_date") or "")
     if explicit:
         return explicit
@@ -122,7 +121,6 @@ async def _run(event: dict[str, Any] | None = None) -> None:
     config = Config.load()
 
     digest_date, reference_time = resolve_digest_window(config, _requested_date(event or {}, config.aws.timezone))
-    config.collectors.set_reference_time(reference_time)
     state_store = bootstrap.state_store(config)
     if already_published(config, digest_date, state_store):
         # The EmptyDigest alarm reads a missing metric as a failed day.
@@ -130,7 +128,9 @@ async def _run(event: dict[str, Any] | None = None) -> None:
         return
 
     models = bootstrap.language_models(config)
-    collected_items, health = await run_collectors_with_health(config, bootstrap.collectors(config, models))
+    collected_items, health = await run_collectors_with_health(
+        config, bootstrap.collectors(config, models, reference_time=reference_time)
+    )
     logger.info("Collected %d total items", len(collected_items))
     logger.info("Source health report:\n%s", health.summary())
     _maybe_alert(health, config.collectors.alert_on_empty)
@@ -152,10 +152,9 @@ async def _run(event: dict[str, Any] | None = None) -> None:
         note_text=bootstrap.note_text(config),
     )
 
-    items, ranked_items, digest = result
-    # Count the STORIES the digest actually carries (the curated content items), not the ranker's
-    # candidate list: on 2026-08-13/08-17 the editor's output failed to parse and the digest shipped
-    # zero stories, yet this metric reported the full candidate count and the alarm stayed green.
+    digest = result.digest if result else None
+    # Count the STORIES the digest carries, not the ranker's candidates: a digest whose stories were all
+    # lost still has a full candidate list.
     content_items = digest.content.items if digest and digest.content else []
     _emit_digest_items_metric(len(content_items))
     # Published SEPARATELY from the collector-health alert above (which runs before the pipeline):
@@ -165,9 +164,9 @@ async def _run(event: dict[str, Any] | None = None) -> None:
     _maybe_alert_ranking(digest, digest_date)
     _maybe_alert_grounding(digest, digest_date)
 
-    if items and ranked_items and digest:
+    if result is not None:
         try:
-            persist_digest(ranked_items, digest, digest_date, bootstrap.memory_store(config))
+            persist_digest(result.ranked_items, result.digest, digest_date, bootstrap.memory_store(config))
         except Exception as e:
             # The visual Lambda publishes off this snapshot and is the only Threads delivery path,
             # so a failed persist means the day produces NOTHING. Don't trigger the visual (it

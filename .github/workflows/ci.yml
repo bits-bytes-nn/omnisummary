@@ -61,6 +61,9 @@ jobs:
       # import an adapter or an outside system's client, directly or through another module.
       - name: Import contracts
         run: uv run lint-imports
+      # release.sh is the only deploy path; shellcheck ships with the ubuntu runner image.
+      - name: Shellcheck
+        run: shellcheck scripts/*.sh
 
   test:
     name: Tests & coverage

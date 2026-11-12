@@ -21,7 +21,7 @@
 | [6. LLM 팩토리](#6-llm-팩토리-adaptersbedrockpy) | 모델 구성, 비용 귀속, 토큰 카운트, 프롬프트 캐싱 |
 | [7. 메모리](#7-메모리-세-개의-분리된-저장소) | 트렌드, 다이제스트 스냅샷, cross-day dedup |
 | [8. 헬스 체크와 알림](#8-헬스-체크와-알림) | 소스 분류, SNS 알림, 메트릭 |
-| [9. 딥 리서치 에이전트](#9-딥-리서치-에이전트) | Strands 에이전트, 도구 8개, 로컬 CLI와 OpenClaw 스킬 |
+| [9. 딥 리서치 에이전트](#9-딥-리서치-에이전트) | Strands 에이전트, 도구 8개(투자판 11개), 로컬 CLI와 OpenClaw 스킬 |
 | [10. 시각화 생성기](#10-시각화-생성기) | 자유형 시놉시스에서 이미지까지 |
 | [11. 인프라](#11-인프라cdk) | CDK 두 스택 |
 | [12. 관측성](#12-관측성) | 로깅과 알람 |
@@ -37,7 +37,7 @@ OmniSummary는 능동형(proactive) AI/ML 일일 다이제스트 시스템이다
 
 시스템에는 서로 독립적인 두 개의 실행 경로가 있다.
 
-**첫째는 스케줄 다이제스트다.** EventBridge 크론이 다이제스트 Lambda를 깨우면 다섯 계열의 소스에서 콘텐츠를
+**첫째는 스케줄 다이제스트다.** EventBridge 크론이 다이제스트 Lambda를 깨우면 여섯 계열의 소스(네이버 증권 리서치는 투자판)에서 콘텐츠를
 수집해 중복을 제거하고, LLM으로 후보 풀을 고른 다음 한국어 에디토리얼 다이제스트를 구조화된 `DigestContent`로
 생성한다. 상태는 Bedrock AgentCore Memory에 저장하고, 소스별 헬스는 SNS 이메일로 보고한다. 게시는 **데일리
 비주얼 Lambda**가 한다. Threads 게시물은 만화 이미지 루트와 스토리 답글 체인이 한 세트로 나가야 하니,
@@ -51,11 +51,11 @@ OpenClaw 스킬(`~/Projects/agent-config/skills/omnisummary-research/SKILL.md`)�
 
 ```
 [EventBridge 크론] → [다이제스트 Lambda (Docker)]
-   → 수집기 (RSS, Reddit, YouTube, WebSearch, X via RSSHub/S3)
+   → 수집기 (RSS, Reddit, YouTube, WebSearch, X via RSSHub/S3, 투자판은 NaverResearch)
    → 집계기 (URL + 제목 중복 제거)
    → 랭커 (AI판 Claude Opus 5.5, 투자판 Sonnet 5.5, 소스 슬롯과 origin 상한으로 후보 풀 구성)
-   → 트렌드 트래커 (구조화 trends.json, StateStore)
    → 다이제스트 생성기 (Claude Sonnet 5.5, 후보 풀에서 가장 강한 5개를 골라 한국어 DigestContent 작성)
+   → 트렌드 트래커 (작성된 기사로 구조화 trends.json 갱신, StateStore, dry run에서는 건너뜀)
    → AgentCore Memory (다이제스트 스냅샷)
    → 데일리 비주얼 Lambda 비동기 트리거
         └→ 한글 만화 (gpt-image-2.5-sunburst) + Threads root/reply 체인 게시 (enable_threads_post)
@@ -88,7 +88,7 @@ entrypoints  →  adapters  →  application  →  domain  →  shared
 | 경로 | 책임 |
 |------|------|
 | `entrypoints/` | 조립 지점 `bootstrap.py`(어댑터를 만들어 유스케이스에 넘긴다: 언어 모델, 상태 저장소, AgentCore Memory, 수집기 레지스트리, Threads, 이미지 렌더러, 리서치 포트)와 Lambda 핸들러 네 개(`digest_handler`, 다이제스트 Lambda가 비동기로 부르는 `visual_handler`, `threads_refresh_handler`, 정해진 주기로 도는 `comment_reply_handler`). 알림 문구와 재게시 명령처럼 배포 환경을 아는 코드도 여기 있다 |
-| `adapters/` | 포트 구현. Bedrock(`bedrock.py`: 팩토리와 모델 레지스트리), AWS 세션과 SSM 비밀값(`aws.py`), S3·로컬 상태 저장소(`state_store.py`), AgentCore Memory(`memory.py`), SNS 알림(`alerts.py`), EMF 메트릭(`metrics.py`), Threads API와 `ThreadsGateway`(`threads.py`), OpenAI 이미지(`openai_images.py`), Tavily·OpenAlex(`research_backends.py`)와 OG 이미지(`og_image.py`), 수집기(`collectors/`: `BaseCollector`, 공유 park 파일 로더, RSS·Reddit·RSSHub·YouTube·WebSearch), Strands 리서치 에이전트(`research_agent.py`)와 그 도구(`research_tools.py`, 모델이 읽는 시그니처와 docstring만 있고 규칙은 `application/research.py`에 있다) |
+| `adapters/` | 포트 구현. Bedrock(`bedrock.py`: 팩토리와 모델 레지스트리), AWS 세션과 SSM 비밀값(`aws.py`), S3·로컬 상태 저장소(`state_store.py`), AgentCore Memory(`memory.py`), SNS 알림(`alerts.py`), EMF 메트릭(`metrics.py`), Threads API와 `ThreadsGateway`(`threads.py`), OpenAI 이미지(`openai_images.py`), Tavily·OpenAlex(`research_backends.py`)와 OG 이미지(`og_image.py`), 수집기(`collectors/`: `BaseCollector`, 공유 park 파일 로더, RSS·Reddit·RSSHub·YouTube·WebSearch·NaverResearch), Strands 리서치 에이전트(`research_agent.py`)와 그 도구(`research_tools.py`, 모델이 읽는 시그니처와 docstring만 있고 규칙은 `application/research.py`에 있다) |
 | `application/` | 포트 정의(`ports.py`: `LanguageModels`, `ImageRenderer`, `ThreadsPublisher`·`ThreadsComments`·`PublishError`, `StateStore`, `MemoryStore`, `ContentSource`, `ResearchSources`)와 유스케이스. 다이제스트 흐름(`digest_pipeline.py`: `run_collectors_with_health`, `run_pipeline`, `persist_digest`, `publish_inline`, `already_published`, `resolve_digest_window`), `ContentRanker`, `DigestGenerator`, `TrendTracker`, `DailyVisualMaker`와 `VisualGenerator`, `DigestPublisher`, `CommentResponder`, 리서치 실행 규칙(`research.py`: 인용 검사, 사실 확인, 전달), 원장(`history.py`), 프롬프트(`prompts/`) |
 | `domain/` | 외부 의존이 없는 규칙. 모델(`models.py`), URL 정규화와 중복 제거(`aggregator.py`), 포맷(`formatting.py`), Threads 게시물 렌더링(`renderers.py`), 다이제스트 스냅샷(`digest_snapshot.py`의 값 객체 `DigestSnapshot`) |
 | `shared/` | 공통 커널. config(공유 `KOREAN_PROSE_RULES`와 말투까지 정한 `KOREAN_STYLE_RULES` 포함), constants, logger, CDK와 코드가 함께 쓰는 이름(`naming.py`), 순수 헬퍼(`utils.py`: 재시도, LLM JSON 파싱) |
@@ -132,7 +132,7 @@ import하지 않는다. `domain`과 `shared`는 LangChain도 모른다. `applica
 `analyst_ratings`(Yahoo의 애널리스트 컨센서스와 최근 90일 증권사별 의견·목표가 변경, 날짜 포함. 국내 종목은 컨센서스만),
 `search_reports`(robots.txt가 수집을 허용하는 운용사·리서치·뉴스 도메인)를 더 갖는다. 시세는 인용 가능한 출처로 기록되어
 사실 확인이 숫자를 대조한다. 규칙은 `pipeline.domain_rules`에 있고 리서치 프롬프트와 다이제스트 에디터의 목소리 지침이 함께 읽는다(AI/ML판은 비어 있어 프롬프트가 그대로다). 댓글 Lambda는 매수·매도·목표가·보유 종목 처리 질문을 거절 목록에 둔다. 특정 종목의 매수·매도 판단과 자체 목표가를 쓰지 않고, 애널리스트
-의견은 누구의 것인지 날짜와 함께 밝힌다. 국내 증권사 리포트는 네이버 증권 리서치 수집기로 들어온다([§4.4a](#44a-네이버-증권-리서치-naver_researchpy)).
+의견은 누구의 것인지 날짜와 함께 밝힌다. 국내 증권사 리포트는 네이버 증권 리서치 수집기로 들어온다([§4.4](#44-네이버-증권-리서치-naver_researchpy)).
 한경 컨센서스와 NH 리서치는 수집하지 않는다([결정 기록](decisions.md#2026-11-0111-07-네이버-증권-리서치)).
 
 **실리는 것은 랭킹 기준이 정한다.** 에디터는 풀의 점수 상위를 거의 그대로 내보내므로 판의 목표는 랭킹 기준(`pipeline.ranking_criteria`)에 쓴다. 투자판은 "돈이 어디로 가는지에 대한 근거 있는 해석"을 앞에 두고, 가격 보도는 움직임의 크기가 아니라 설명하는 것으로 점수를 받는다. AI판 운영 config는 코드 기본값의 엔지니어 중심 기준("엔지니어가 일하는 방식을 바꾸는가") 대신 업계의 결과(무엇을 만들고 사고 투자하고 규제하는지)와 원 분석을 앞에 둔다. 에디터도 "가장 강한" 이야기를 같은 기준(`{criteria}`)으로 고른다. 조용한 날에는 매체·이야기 상한을 실릴 `top_n`만큼만 풀고 버퍼를 채우려 풀지 않는다. 버퍼까지 채우면 대량 발행처가 조용한 날의 풀을 차지했다([결정 기록](decisions.md#2026-11-03-큐레이션-재검토-실리는-것은-랭킹-기준이-정한다)).
@@ -144,9 +144,9 @@ import하지 않는다. `domain`과 `shared`는 LangChain도 모른다. `applica
 일반 경제·정책·기업 뉴스를 낮게 둔다. 여러 보유 종목에 걸치는 거시·정책 뉴스를 우대하면 후보 풀이 경제 신문처럼 된다
 ([결정 기록](decisions.md#2026-11-02-투자판-랭킹-기준-재작성)).
 
-투자판 소스는 네이버 증권 리서치의 국내 증권사 리포트([§4.4a](#44a-네이버-증권-리서치-naver_researchpy)), 국내 통신사와 매체의 섹션 피드, 중앙은행 보도자료와
-연설, 크립토 매체, 국내 부동산(섹션 피드와 매체를 좁힌 웹 검색), 본문을 피드에 싣는 실명 경제학자·분석가의 블로그, Reddit, X 계정
-(Reuters와 WSJ는 X로만 들어온다), YouTube 채널, 국내 시장·미국 시장·국내 부동산·크립토·IB 리서치 웹 검색 묶음이다. 정확한 목록은 `config/invest-template.yaml`이
+투자판 소스는 네이버 증권 리서치의 국내 증권사 리포트([§4.4](#44-네이버-증권-리서치-naver_researchpy)), 국내 통신사와 매체의 섹션 피드, 중앙은행 보도자료와
+연설, 가상자산 매체, 국내 부동산(섹션 피드와 매체를 좁힌 웹 검색), 본문을 피드에 싣는 실명 경제학자·분석가의 블로그, Reddit, X 계정
+(Reuters와 WSJ는 X로만 들어온다), YouTube 채널, 국내 시장·미국 시장·국내 부동산·가상자산·IB 리서치 웹 검색 묶음이다. 정확한 목록은 `config/invest-template.yaml`이
 정본이다. 미국 투자의견 변경을 담은 공개 피드는 없어 이데일리·인포맥스 해외주식과 리서치 도구 `analyst_ratings`가 대신하고, 공매도 잔고는
 로그인 없는 출처가 없다. 넣고 뺀 소스와 이유는 [결정 기록](decisions.md#2026-11-0111-02-투자판-소스-구성과-재검토)에 있다.
 
@@ -170,25 +170,27 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 `extra="forbid"`라서, 코드에서 지운 키가 gitignore된 `config.yaml`에 남아 있으면 `Config.load()`가 실패한다.
 필드를 지우는 변경은 운영자의 `config.yaml`도 함께 고쳐야 한다.
 
-`Config.load()`는 호출마다 YAML을 다시 읽고 전체를 재검증한다. 리서치 한 번이면 도구 호출마다 그 작업이
-반복되므로, 값을 읽기만 하는 리프 호출자는 `lru_cache(maxsize=1)`로 감싼 `get_config()`를 쓴다. 반면 Config를 변경하는 쪽은 자기 인스턴스가 필요하니 계속
-`Config.load()`나 `from_yaml`을 쓴다. `main`과 핸들러의 `set_reference_time`, 인프라
-테스트의 버킷 오버라이드가 여기 해당한다. 테스트에서는 conftest의 autouse 픽스처가 매 테스트 전후로 캐시를
-비운다.
+`Config.load(edition)`은 호출마다 YAML을 다시 읽고 전체를 재검증한다. 판을 넘기지 않으면 `OMNISUMMARY_EDITION`을
+따르고, CLI의 `--edition`은 환경 변수를 고치지 않고 이 인자로 넘긴다. 실행의 Config는 진입점이 한 번 읽어
+어댑터에 넘긴다. 리서치 백엔드(`WebResearchSources`), og:image, 고정 URL 수집도 이 Config에서 한도를 받으므로 한
+실행이 두 설정을 읽는 일이 없다. `lru_cache(maxsize=1)`로 감싼 `get_config()`는 판과 무관한 `aws` 값만 읽는
+`adapters/aws.py`와 `adapters/bedrock.py`, 평가 하네스에 남아 있다. 테스트에서는 conftest의 autouse 픽스처가 매
+테스트 전후로 캐시를 비운다.
 
 ### 3.1 `collectors.*`
 
-각 수집기는 `BaseCollectorConfig`를 상속하고 그 위에 자기 필드를 더한다.
+각 수집기는 `BaseCollectorConfig`를 상속하고 그 위에 자기 필드를 더한다. 실행마다 바뀌는 값(기준 시각 `reference_time`)은
+config에 두지 않고 `bootstrap.collectors`가 수집기 생성자로 넘긴다. config에 두던 때는 실행이 공유 config 객체를 고쳐 써야 했다.
 
 | 그룹 | 필드 | 설명 |
 |------|------|------|
-| 공통(상속) | `enabled`, `lookback_hours`, `reference_time`, `request_timeout`, `max_retries`, `retry_backoff_sec`, `park_max_age_hours`(기본 12), `error_rate_threshold`(기본 50.0), `empty_rate_threshold`(기본 없음=비활성) | 활성화 여부, 조회 윈도, 타임아웃, 재시도, S3 park 파일의 나이 예산(초과하면 항목은 쓰되 헬스를 STALE로 보고한다), 그리고 DEGRADED 판정 두 갈래: 입력(피드·계정·채널·쿼리) 실패율과 입력 빈 응답률. 어느 하나만 걸려도 DEGRADED이고 보고만 할 뿐 항목은 그대로 전달한다 |
+| 공통(상속) | `enabled`, `lookback_hours`, `request_timeout`, `max_retries`, `retry_backoff_sec`, `park_max_age_hours`(기본 12), `error_rate_threshold`(기본 50.0), `empty_rate_threshold`(기본 없음=비활성) | 활성화 여부, 조회 윈도, 타임아웃, 재시도, S3 park 파일의 나이 예산(초과하면 항목은 쓰되 헬스를 STALE로 보고한다), 그리고 DEGRADED 판정 두 갈래: 입력(피드·계정·채널·쿼리) 실패율과 입력 빈 응답률. 어느 하나만 걸려도 DEGRADED이고 보고만 할 뿐 항목은 그대로 전달한다 |
 | `rss` | `feeds`, `max_concurrency`(기본 5) | RSS 피드 URL 목록과 동시 fetch 상한 |
 | `reddit` | `subreddits`, `sort`, `limit` | 서브레딧, 정렬, 개수 |
 | `youtube` | `channels`, `max_videos_per_channel`, `resolve_timeout`, `transcript_timeout`, `transcript_language`, `max_concurrency`, `park_required` | 채널, 영상 수, 자막 관련 설정, 동시 채널 상한, AWS에서 park 파일 부재를 DEGRADED로 볼지([§4.2](#42-s3-park-파일-로더)) |
-| `web_search` | `trend_searches`, `max_results_per_query`, `max_refine_queries`, `refine_model`(Sonnet 5.5), `max_concurrency` | Tavily 검색, 쿼리 정제 모델 |
+| `web_search` | `trend_searches`, `max_results_per_query`, `max_refine_queries`, `refine_model`(Sonnet 5.5), `refine_rules`, `max_concurrency` | Tavily 검색, 쿼리 정제 모델과 정제 쿼리의 규칙(판마다 다르다). 정제가 묻는 분야는 `pipeline.domain`을 그대로 쓴다 |
 | `rsshub` | `base_url`, `accounts`, `max_concurrency` | X 계정(로컬 컨테이너 또는 S3)과 동시 fetch 상한 |
-| `naver_research` | `categories`(코드 기본 company·industry·invest·economy, 투자판은 debenture를 더한다; 같은 종목·같은 날 기업 리포트는 한 건으로 묶는다), `max_pages`(기본 10, 쪽당 50건), `page_delay_sec` | 네이버 증권 리서치의 국내 증권사 리포트([§4.4a](#44a-네이버-증권-리서치-naver_researchpy)). 기본은 꺼짐이고 투자판이 켠다 |
+| `naver_research` | `categories`(코드 기본 company·industry·invest·economy, 투자판은 debenture를 더한다; 같은 종목·같은 날 기업 리포트는 한 건으로 묶는다), `max_pages`(기본 10, 쪽당 50건), `page_delay_sec` | 네이버 증권 리서치의 국내 증권사 리포트([§4.4](#44-네이버-증권-리서치-naver_researchpy)). 기본은 꺼짐이고 투자판이 켠다 |
 
 `lookback_hours`는 하루가 아니라 **직전 실행까지** 닿아야 한다. cutoff는 다이제스트 날짜의 **끝** 자정에
 앵커되는데(`resolve_digest_window`) cron은 그 자정보다 몇 시간 앞서 수집한다. 그래서 24는 윈도를 정확히
@@ -214,9 +216,8 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 블로그는 하루 글이 없는 게 정상이고, X 계정 40개가 모두 조용한 건 세션이 깨진 것이다) 기본값은 비활성(값
 없음)이고 config.yaml에서 소스별로 켠다.
 
-**절대 개수로 판정하는 노브는 두지 않는다.** 비율은 입력이 적은 소스에서 판정을 표현하지 못하지만, 입력이 적은
-유일한 소스인 reddit은 서브레딧 전체를 요청 한 번으로 받으니([§4.4](#44-reddit-redditpy)) 실패가 소스
-단위로만 일어나고 FAILED로 충분하다.
+DEGRADED 사유는 덮어쓰지 않고 이어 붙인다. park 파일이 없다는 사유가 뒤에 온 채널 실패 사유에 지워지지 않게 하려는
+것이다. reddit은 서브레딧 전체를 요청 한 번으로 받으니([§4.5](#45-reddit-redditpy)) 실패가 소스 단위로만 일어난다.
 
 `collectors.alert_on_empty`(기본 `[]`)는 EMPTY가 사건인 소스의 이름 목록이다(예: `["rss", "web_search"]`).
 목록이 필요한 이유는 이렇다. 어두워진 소스는 예외도 남기지 않고 stale park 파일도 남기지 않고 실패율도
@@ -233,12 +234,13 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | 영역 | 필드 | 설명 |
 |------|------|------|
 | 모델 | `ranking_model`(기본 Sonnet 5.5, AI판 config는 Opus 5.5), `digest_model`(Sonnet 5.5, 그라운딩과 비주얼 편집기·아트 디렉터도 이 모델을 쓴다), `trend_model`(Sonnet 5.5) | 단계별 모델([§6](#모델-팩토리)) |
+| 다이제스트 재질의 | `digest_max_retries`(기본 3), `digest_retry_backoff_sec`(기본 5) | 에디터의 JSON이 깨졌을 때 다시 묻는 횟수와 간격 |
 | 랭킹 | `ranking_batch_size`(기본 40), `ranking_max_concurrency`(기본 4), `ranking_max_retries`(기본 3), `ranking_retry_backoff_sec`(기본 5), `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치, Bedrock fan-out 상한, 배치 재시도, 점수 루브릭 |
 | 후보 풀 | `top_n`(기본 5), `min_score`(기본 0.6), `digest_candidate_buffer`(기본 7), `source_slots`(소스마다 1), `max_per_origin`(기본 1) | 에디터에게 넘기는 후보는 `top_n + digest_candidate_buffer`개이고, 소스 슬롯과 origin 상한은 이 풀을 채우는 데만 쓴다. 실제로 나가는 `top_n`개는 에디터가 고른다([§5.2](#52-랭커-rankerpy)) |
-| 중복 | `published_url_ttl_days`(기본 6, 최소 2), `recent_leads_window`(기본 5) | cross-day dedup 원장 TTL과 최근 다이제스트 제목을 읽는 창, 반복 방지용 최근 lead와 최근 만화의 윈도([§5.6](#56-데일리-비주얼-daily_visualpy)). TTL이 최소 2인 것은 날짜만 있는 웹 결과가 이틀 연속 윈도에 들어가고([§4.7](#47-websearch-web_searchpy)) 두 번째 게시를 원장이 막기 때문이다 |
+| 중복 | `published_url_ttl_days`(기본 6, 최소 2), `recent_leads_window`(기본 5) | cross-day dedup 원장 TTL, 반복 방지용 최근 lead와 최근 만화의 윈도([§5.6](#56-데일리-비주얼-daily_visualpy)). 랭커와 에디터가 보는 최근 기사 제목의 일수(`RECENT_TITLE_DAYS`=14)와 lead와 함께 보여 주는 implication의 최근 다이제스트 수(`RECENT_IMPLICATION_SNAPSHOTS`=2)는 `application/digest_pipeline.py`의 상수다. TTL이 최소 2인 것은 날짜만 있는 웹 결과가 이틀 연속 윈도에 들어가고([§4.8](#48-websearch-web_searchpy)) 두 번째 게시를 원장이 막기 때문이다 |
 | 트렌드 | `trend_retention_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존 기간, 증거와 active 캡, momentum 반감기 |
 | 전달 | `enable_threads_post`, `threads_topic_tag`(기본 `AI`) | Threads 게시 on/off. 코드 기본값은 off이고 배포 설정은 on이다. 데일리 비주얼 Lambda가 게시한다. 토픽 태그는 root 게시물에만 붙는다([§5.8](#58-threads-전달-adaptersthreadspy-enable_threads_post)) |
-| 댓글 답글 | `enable_comment_replies`, `comment_reply_lookback_days`(7), `comment_reply_max_per_run`(10), `comment_reply_max_per_commenter`(3) | 독자 댓글 자동 답글. 코드 기본값은 off이고 배포 설정은 on이다([§5.9](#59-댓글-답글-applicationcomment_repliespy-enable_comment_replies)) |
+| 댓글 답글 | `enable_comment_replies`, `comment_reply_lookback_days`(7), `comment_reply_max_per_run`(10), `comment_reply_max_per_commenter`(3) | 독자 댓글 자동 답글. 남은 시간이 초안 예산(`_DRAFT_BUDGET_SEC`=60초)과 답글 게시 예비 시간의 합보다 적으면 다음 댓글을 시작하지 않는다. 코드 기본값은 off이고 배포 설정은 on이다([§5.9](#59-댓글-답글-applicationcomment_repliespy-enable_comment_replies)) |
 | 카운트다운 | `countdown_date`(기본 `2027-12-31`), `countdown_template`, `countdown_after` | 다이제스트 lead 맨 앞에 코드가 붙이는 "AGI 등장까지 N일 남았다" 인트로. 투자판은 "보편적 고소득 시대까지 N일 남았다"([§5.7](#57-카운트다운-인트로-domainformattingpy-countdown_intro) 참조) |
 | 시각화 | `image_model`(`gpt-image-2.5-sunburst`), `image_sizes`, `visual_image_quality`(`xhigh`), `visual_editor_source_max_tokens`, `visual_synopsis_source_max_tokens`, `visual_image_timeout_sec`(기본 300)과 `visual_image_max_retries`(기본 0), `visual_character_enabled`, `visual_character_sheet`, `visual_character_reference`(`assets/persona.jpg`) | 이미지 모델과 품질 등급, orientation에서 size로 가는 딕셔너리(키는 `VisualOrientation` 어휘로 고정이고 값만 튜닝한다), 입력 상한, 이미지 HTTP 호출 상한. SDK 기본값 600초씩 2회는 비주얼 Lambda의 15분 예산을 넘길 수 있어서 config로 고정했다 |
 | 프롬프트 주입 | `digest_language_rules`, `digest_voice_guidance`, `ranking_audience_description`, `digest_audience_description`, `visual_audience_description`, `visual_on_image_language`, `visual_synopsis_style_guidance`, `visual_synopsis_style_aesthetic`, `visual_guardrails`, `visual_moderation_softening_instruction` | 언어 규칙과 대상 독자, 톤, 미감, 가드레일, 모더레이션 완화 문구. 하드코딩 대신 템플릿 변수로 주입한다. `digest_language_rules`는 한국어 규칙과 번역 용어집을 튜닝하는 자리이고 언어 스위치가 아니다. 한국어 전용이 의도한 제품이다. `digest_voice_guidance`는 Gruber 톤이며, 단일 냉소 프레임으로 기본 고정하지 말고 그날 사실이 정당화할 때만 각을 세우도록 쓰여 있다 |
@@ -258,6 +260,8 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | 필드 | 설명 |
 |------|------|
 | `model_id` | 에이전트 모델(기본 Opus 5.5) |
+| `market_quotes` | 켜면 `market_quote`(주식·지수·환율·가상자산 시세)와 `analyst_ratings`(컨센서스와 날짜별 의견·목표가 변경) 도구가 생긴다. 투자판이 켠다 |
+| `report_search_domains` | 애널리스트·전략 리포트 발행처 목록. 비어 있지 않으면 `search_reports` 도구가 생긴다 |
 | `research_max_turns`, `research_max_total_tokens`, `research_max_output_tokens` | 툴 루프의 하드 상한(`strands.types.agent.Limits`로 실행마다 전달한다). SDK가 매 턴 경계에서 검사하고 `stop_reason="limit_*"`으로 멈춘다. 사이클마다 대화 전체를 다시 보내므로, 이 값들이 없으면 비용과 벽시계 시간에 상한이 없다 |
 | `research_target_words` | Markdown 리포트의 목표 분량(단어) 가이던스(기본 1500) |
 | `research_max_threads_posts` | Threads 게시물(root와 reply) 총수 하드 캡(기본 10). 너무 긴 리포트가 공개 게시물 수십 개로 퍼지지 않게 코드가 트림한다. 이 값이 Threads 리포트의 산문 예산을 정한다([§9의 `<delivery>`](#system_prompt_template) 참조) |
@@ -313,7 +317,9 @@ SecureString으로 기록한다. 재배포가 값을 되돌리지 않는데, Clo
 Lambda가 제자리에서 회전시키니, 로컬 `.env` 사본을 다시 쓰면 만료된 토큰으로 되돌아간다(`--force`로만
 덮어쓴다). 둘째, 비어 있는 환경 변수로 기존 값을 지우지 않는다. 여기에 `resolve_secret`이 플레이스홀더를
 미설정으로 취급하니, put_secrets를 건너뛴 배포는 플레이스홀더를 API 토큰으로 보내는 대신 정상적인 '자격증명
-없음' 경로로 degrade한다. Lambda와 로컬 CLI는 env를 먼저 보고 그다음 SSM을 본다.
+없음' 경로로 degrade한다. Lambda와 로컬 CLI는 env를 먼저 보고 그다음 SSM을 본다. SecureString으로 바꿀 수
+없는 String 파라미터에 실제 값이 들어 있으면 지우지도, 평문으로 덮어쓰지도 않는다. 실패로 보고하고 0이 아닌
+코드로 끝나며, 지운 뒤 다시 실행하는 명령을 출력한다.
 
 X 세션 쿠키는 SSM에 두지 않는다. 로컬 RSSHub Docker 컨테이너(`localhost:RSSHUB_PORT`, 기본 `1200`)만 쓰고, AWS의
 다이제스트는 로컬 sync가 올린 S3 park 파일에서 X 항목을 읽는다.
@@ -344,7 +350,7 @@ X 세션 쿠키는 SSM에 두지 않는다. 로컬 RSSHub Docker 컨테이너(`l
 - **robots.txt와 이용약관은 정책 신호이고 운영자가 판단해 여기에 적는다.** robots.txt가 AI 크롤러를 막은 국내 언론(연합뉴스,
   조선비즈 등)과 기사 하단의 "AI 학습 및 활용 금지" 문구, robots.txt와 약관이 수집을 제한하는 X(운영자 계정 세션의 RSSHub)와
   Reddit은 수집량이 적고 원문 링크를 남기는 조건으로 쓴다. 텔레그램은 약관 외에 사칭 채널 문제가 있어 쓰지 않는다. 약관이 AI 수집을 금지하는 네이버 블로그·카페도 쓰지 않는다.
-- **네이버 증권 리서치는 게시글에 증권사 이름만 밝히고 네이버 페이지 링크는 걸지 않는다**([§4.4a](#44a-네이버-증권-리서치-naver_researchpy)). 원문 보장
+- **네이버 증권 리서치는 게시글에 증권사 이름만 밝히고 네이버 페이지 링크는 걸지 않는다**([§4.4](#44-네이버-증권-리서치-naver_researchpy)). 원문 보장
   (`primary_quota`, [§7.3](#73-cross-day-dedup-히스토리-applicationhistorypy))으로 실리는 리서치 노트는 상세 API가 알려 주는 첨부 PDF(stock.pstatic.net, 로그인 없이 공개)의
   본문을 읽는다.
 - **소스는 문제가 있을 때만 뺀다(운영자 결정).** 조용하거나 실린 기사가 적은 것은 문제가 아니다. 문제는 위의 접근 통제·유료벽, 죽은
@@ -380,7 +386,7 @@ park 경로가 이 한 정의를 쓰므로, `--date`로 과거 날짜를 다시 
 park 항목도 라이브 경로와 **같은** 수집 윈도를 통과해야 한다. `parked_items_in_window`가
 `in_collection_window`를 그대로 적용한다. 파일 항목을 그대로 넘기면 윈도 두 개가 조용히 무시된다. STALE이지만
 쓸 수 있는 파일은 `park_max_age + lookback`만큼 오래된 항목까지 랭킹에 흘려보내고, 실행의 기준 시각(`--date`,
-다이제스트 핸들러의 `set_reference_time`)은 어디에도 적용되지 않는다. 윈도 밖으로 떨어진 개수는 WARNING으로
+다이제스트 핸들러가 수집기 생성자에 넘기는 `reference_time`)은 어디에도 적용되지 않는다. 윈도 밖으로 떨어진 개수는 WARNING으로
 남는다. 그 수가 올라가는 것 자체가 멈춘 sync의 신호다.
 
 이 필터는 `lookback_hours`가 이전 실행까지 닿는다는 전제에 의존한다(§3.1). 전제가 깨지면 sync 시각과 다음
@@ -392,8 +398,8 @@ cutoff 사이의 슬라이스가 어느 park 파일에도 없으면서 다음 �
 사이 항목은 어느 실행에도 실리지 않고 사라졌다. 그래서 두 가지를 한다.
 
 - sync 스크립트는 `lookback_hours + DIGEST_PERIOD_HOURS`(24) 윈도로 수집해 적재한다. Lambda가 읽는 윈도보다 하루 넓어서
-  동기화 하루 건너뜀까지 되짚을 수 있다. 신선도 기준(`park_max_age_hours`)과는 따로 둔다. 둘을 한 값으로 쓰던 때는 24시간
-  기준이 너무 느슨해, 낮에 한 번 더 돈 동기화가 다음 날 18:30 동기화 실패를 가렸다(2026-10-28, X 약 17시간 손실).
+  동기화 하루 건너뜀까지 되짚을 수 있다. 신선도 기준(`park_max_age_hours`)과는 따로 둔다. 한 값으로 쓰면 낮에 한 번 더 돈
+  동기화가 다음 날 정기 동기화의 실패를 가린다([결정 기록](decisions.md#장애에서-나온-규칙)).
   반복 게시는 윈도가 아니라 cross-day 원장이 막는다.
 - sync는 **직전 다이제스트가 읽은** 정상 sync의 시작 시각을 `meta.previous_sync_at`으로 남긴다. 로컬 파일
   (`digest_state/last_park_sync_<source>.txt`)에 정상 sync의 시작 시각을 최근 14개까지 적어 두고, 설정의 다이제스트
@@ -455,7 +461,7 @@ STALE로 올린다. 조용한 `absent`는 `NoSuchKey`와 `NoSuchBucket`, 404뿐�
 멈추지 않는다. X는 로컬 RSSHub 컨테이너(`rsshub`)가 떠 있어야 수집되는데, 명시적으로 멈춘 컨테이너는
 `--restart unless-stopped`로도 다시 뜨지 않는다. 그래서 스크립트가 `localhost:1200` 응답이 없으면
 `docker start rsshub`을 실행하고 2초 간격으로 30번까지 응답을 기다린다. 컨테이너가 멈춘 채로 크론만 돌면 X park 파일은 계속
-STALE이 되고, park 항목은 수집 윈도 밖이라 소스가 0건을 낸다(2026-08-17부터 54일간 그랬다).
+STALE이 되고, park 항목은 수집 윈도 밖이라 소스가 0건을 낸다([결정 기록](decisions.md#장애에서-나온-규칙)).
 
 ### 4.3 RSS (`rss.py`)
 
@@ -488,13 +494,13 @@ Tavily의 X 프로필 쿼리처럼 결과가 대부분 프로필 페이지인 �
 **요약만 싣는 피드는 페이지 본문으로 채운다.** `content` 요소 없이 `summary`만 있는 RSS 엔트리는 랭킹 전에
 Tavily extract(`adapters.research_backends.extract_pages`, 요청당 20개)로 페이지 본문을 받아 더 길 때만 바꾼다. DeepMind,
 Google Research, Hugging Face 피드는 설명이 비어 있거나 한 줄이고 OpenAI도 120~150자라서, 랭커가 제목만 보고
-점수를 매겼다. 2026-10-14에 본문 0자인 "Gemini 4 Argon" 글이 0.84를 받아 출고됐고, 근거 검증이 출처에 없는 주장을
-모두 지우자 한 문장짜리 스토리가 남았다. 하루 10건 안팎이다. 다만 `content` 없이 `summary`에 글 전체를 싣는
+점수를 매겼고, 본문 없이 출고된 글은 근거 검증이 출처에 없는 주장을 모두 지워 한 문장만 남았다([결정 기록](decisions.md#장애에서-나온-규칙)).
+하루 10건 안팎이다. 다만 `content` 없이 `summary`에 글 전체를 싣는
 피드도 있다(Simon Willison, 중앙값 1712자). 그 페이지를 받으면 깨끗한 본문이 내비게이션과 푸터가 섞인 텍스트로
 바뀌니, 요약이 500자(`THIN_SUMMARY_MAX_CHARS`) 미만일 때만 채운다. 얇은 피드의 중앙값은 19자(research.google)와
 149자(openai.com)였다. 읽기 실패나 더 짧은 페이지는 피드 문구를 그대로 둔다. 페이지 본문은 피드 요약을 **대신하지 않고 뒤에 붙는다.**
-뉴스 페이지는 메뉴와 다른 기사 제목으로 시작하는데(매경·이데일리 100건 중 81건은 기사가 1,500자 뒤에서 시작했다, 2026-11-03), 투자판 랭커는
-앞 1,500자(`ranking_text_max_chars`)만 읽어 남의 헤드라인으로 점수를 매겼다. 발행사가 쓴 100~200자 리드가 맨 앞에 남는다.
+뉴스 페이지는 메뉴와 다른 기사 제목으로 시작해서, 앞 1,500자(`ranking_text_max_chars`)만 읽는 투자판 랭커가 남의 헤드라인으로
+점수를 매겼다. 발행사가 쓴 100~200자 리드가 맨 앞에 남는다([결정 기록](decisions.md#2026-11-03-페이지-본문은-피드-요약-뒤에-붙인다)).
 
 **fan-out 상한(`max_concurrency`, 기본 5)이 필요한 이유.** 한 번에 도는 fetch 수를 묶어서 수집기의 최악
 wall time을 계산 가능하게 유지한다. 세마포어는 `collect()` 안에서, 다시 말해 실행 중인 루프에서 만든다
@@ -523,7 +529,7 @@ Lambda의 15분 예산 안에 넉넉히 들어가야 한다. 넘칠 만큼 피�
 예외로 올린다. `gather_collector_results(raise_if_all_failed=True)`가 전 피드 실패일 때만 이를 승격시키니,
 일부 피드 장애는 로깅 후 건너뛰고 전면 장애만 FAILED로 알린다.
 
-### 4.4a 네이버 증권 리서치 (`naver_research.py`)
+### 4.4 네이버 증권 리서치 (`naver_research.py`)
 
 stock.naver.com 리서치 페이지가 쓰는 공개 JSON(`/api/stockSecurity/researches/v2/{category}?index&size&startDate&endDate`)을
 읽는다. 증권사 기업·산업·투자전략·경제 리포트마다 증권사, (산업은) 애널리스트, (기업은) 종목, 투자의견, 목표주가,
@@ -531,13 +537,13 @@ stock.naver.com 리서치 페이지가 쓰는 공개 JSON(`/api/stockSecurity/re
 요청 날짜는 실행 윈도의 서울 날짜이고, 리포트는 날짜만 있으니 그날의 끝(23:59:59)으로 찍어 아침 실행 윈도가 전날
 리포트를 자르지 않게 한다(내보내지 않은 반복은 괜찮고, 내보낸 것은 URL 장부가 막는다). 출처는 증권사마다 하나라서
 (`feed_url = naver-research:<증권사>`) `max_per_origin`이 한 증권사가 풀을 차지하지 못하게 한다. 게시글의 출처 줄은
-"<증권사> 리서치"이고 네이버 페이지 링크는 붙이지 않는다(항상 `hide_link` → `DigestItem.show_link`, Threads
+"<증권사> 리서치"이고 네이버 페이지 링크는 붙이지 않는다(항상 `CollectedItem.show_link=False` → `DigestItem.show_link`, Threads
 렌더러와 저장용 `digest_text`가 URL을 뺀다. 같은 URL이 다른 소스로 들어와 살아남아도 숨김은 유지되고, `stock.naver.com`과 `finance.naver.com`은 웹 검색과 리서치 도구의 `read_url`에서도 제외한다). robots.txt가 네이버 검색 봇 외에는 막고 네이버 약관이 AI 수집을 제한한다는 점은 운영자 판단으로
 받아들였고([수집 원칙](#수집-원칙)), 그 대신 링크를 걸지 않는다.
 
 `pipeline.primary_quota`로 고른 노트는 상세 API(`/researches/v2/<분류>/<nid>`)가 알려 주는 첨부 PDF(`attachUrl`, stock.pstatic.net)의 본문을 읽어 붙인다(`note_text`). 거부나 실패는 우회하지 않고 요약만 남긴다([§7.3](#73-cross-day-dedup-히스토리-applicationhistorypy)의 '투자판은 원문 두 건을 싣는다').
 
-### 4.4 Reddit (`reddit.py`)
+### 4.5 Reddit (`reddit.py`)
 
 공개 `.rss` 피드를 쓴다. Reddit이 셀프서비스 OAuth 앱 생성을 동결했고(Responsible Builder Policy, 2025-11)
 `.json` API는 데이터센터 IP를 차단했지만 `.rss` 피드는 열려 있기 때문이다. 그래서 자격증명도 앱 등록도 필요하지
@@ -561,7 +567,7 @@ stock.naver.com 리서치 페이지가 쓰는 공개 JSON(`/api/stockSecurity/re
 **트레이드오프.** RSS에는 `score`나 `num_comments` 같은 engagement 값이 없어서, Reddit 항목의 랭킹은 LLM의
 품질 판단에 더 의존한다.
 
-### 4.5 RSSHub (`rsshub.py`)
+### 4.6 RSSHub (`rsshub.py`)
 
 로컬이나 컨테이너 RSSHub를 통해 X/Twitter 피드를 읽고, S3에 사전 동기화된 스냅샷(`rsshub_items.json`,
 `scripts/sync_to_s3.py rsshub`가 적재한다)이 있으면 공유 `load_items_from_s3`로 그것을 쓴다. AWS에서는 RSSHub를
@@ -582,7 +588,7 @@ HTTP 상태도 분류한다. 429와 5xx는 재시도하고 그 밖의 4xx와 파
 도달성(`_check_reachable`)은 OK인데 모든 계정이 실패하면 RuntimeError로 올려 FAILED로 알린다. 조용한 날과
 구분하기 위함이다. 일부 실패는 허용한다.
 
-### 4.6 YouTube (`youtube.py`)
+### 4.7 YouTube (`youtube.py`)
 
 AWS에서는 `scripts/sync_to_s3.py youtube`가 거주용 IP로 자막까지 수집해 적재한 `youtube_items.json`을 공유
 `load_items_from_s3`로 먼저 읽는다. 이 경로를 강하게 선호한다. 없으면 `YOUTUBE_API_KEY`로 라이브 수집하고,
@@ -618,7 +624,7 @@ canonical watch URL이 모두 그 id에서 나오므로 해시 폴백 id는 하�
 
 **다양성.** `max_videos_per_channel`(코드 기본값과 템플릿은 3, 운영 config는 1)로 고빈도 채널이 후보 풀을 독점하지 못하게 한다.
 
-### 4.7 WebSearch (`web_search.py`)
+### 4.8 WebSearch (`web_search.py`)
 
 LLM 쿼리 정제(`RefineQueryPrompt`)를 곁들인 Tavily 검색이다. `exclude_domains`(웹 검색 config에 하나)는 broad와
 정제 검색 모두에 Tavily의 `exclude_domains`로 넘어가 콘텐츠 팜을 결과에서 뺀다. 정제 쿼리는 어떤 트렌드
@@ -644,7 +650,7 @@ AI/ML 소식을 찾는 쿼리를 만든다. 받은 기사를 보완하거나 고
 `(Exception,)`으로 두면 그런 판정에도 쿼리마다 세 번씩 시도해 약 15초를 태우고, 헬스가 DEGRADED를 보고하는
 시점이 그만큼 늦어진다. RSS와 YouTube의 재시도 조건이 좁게 잡혀 있는 것도 같은 이유다.
 
-### 4.8 동시 실행과 헬스
+### 4.9 동시 실행과 헬스
 
 `gather_collector_results(tasks, labels, raise_if_all_failed=False)`가 작업을 동시 실행하고 작업별 예외를
 로깅한 뒤 건너뛴다. 반환값이 평탄한 리스트가 아니라 `CollectorRunResult(items, total, failed, empty)`인 것이
@@ -766,8 +772,8 @@ GUID(RSS와 X는 기사 URL, 그 밖은 글이나 영상 id)라서 그대로 정
 `_recent_story_titles(snapshots)`(1일 전부터 `RECENT_TITLE_DAYS`=14일 전까지의 출고 스토리 제목)를 받아 RankingPrompt의
 *Already in recent digests* 블록에 넣는다(`format_recent_titles`). Novelty 기준은 목록에 있는 스토리를 실질적
 새 진전이 없으면 재탕으로 본다. URL 원장은 정확한 URL만 맞추므로, 다른 매체나 주간 정리로 돌아온 같은 사건은
-랭커가 볼 근거가 없어 0.67–0.85를 받고 풀에 들어왔다. 2026-10-11 풀에서 기존 흐름은 1–4일 전에 나간 스토리 3개를
-다시 내보냈고, 제목을 랭커에 주자 그 3개가 풀에서 빠졌다. 정보일 뿐 필터가 아니다.
+랭커가 볼 근거가 없어 높은 점수로 풀에 들어왔다([결정 기록](decisions.md#2026-10-11-최근-제목을-랭커와-에디터에)). 정보일 뿐
+필터가 아니다.
 
 **후보 풀과 품질 우선 선정.** `rank(items, select_count)`는 `top_n + digest_candidate_buffer`(기본 5 + 7 = 12)개의
 후보 풀을 고른다. 소스 슬롯과 origin 상한은 이 **풀**을 채우는 데 쓰여서, 각 소스의 `min_score` 이상 최선
@@ -782,11 +788,12 @@ Anthropic 보고서를 밀어냈다([결정 기록](decisions.md#2026-10-품질-
 
 **선정과 다양성 (`_apply_source_slots`).** 먼저 `source_slots`로 소스별 기본 슬롯을 config 순서대로 채운다.
 나머지 풀은 점수 순으로 채우되 `max_per_origin`으로 하나의 origin 키가 차지하는 항목 수를 제한한다(①). 그래도
-모자라면 origin 캡을 풀고 채우되(②), 실릴 `top_n`개까지만 푼다. 버퍼까지 채우려 풀던 때는 대량 발행처가 조용한 날의 풀을 차지했다([결정 기록](decisions.md#2026-11-03-큐레이션-재검토-실리는-것은-랭킹-기준이-정한다)).
+모자라면 origin 캡을 풀고 채우되(②), 고정 URL(pin)과 합쳐 실릴 `top_n`개가 될 때까지만 푼다. 핀이 둘이면 캡을 풀어 채우는 몫은 `top_n - 2`개다. 버퍼까지 채우려 풀던 때는 대량 발행처가 조용한 날의 풀을 차지했다([결정 기록](decisions.md#2026-11-03-큐레이션-재검토-실리는-것은-랭킹-기준이-정한다)).
 수집기(소스) 단위 상한은 없다. "rss"는 13개 매체를 묶고, 매체 단위 다양성은 `max_per_origin`이 이미 지킨다. 수집기당 2개 상한을 두었을 때 16일 중 9일, 0.72–0.80 항목이 풀 밖에 남고 0.60–0.68 항목이 들어갔다. 슬롯은 운영 config에서 소스별로 뺄 수 있다. AI판은 Reddit 슬롯이 없다(r/LocalLLaMA의 개인 모델 튜닝 글이 매일 그 자리를 차지했다). Reddit 글은 점수로 들어온다. AI판 소스를 넣고 되살린 기록과 빠진 채인 소스(openai.com 피드는 Cloudflare 확인, xai는 계정 이전으로 빈 피드)는 [결정 기록](decisions.md#2026-11-02-ai판-소스-재검토)에 있고, 빼는 기준은 [수집 원칙](#수집-원칙)이다. 유료 글이 섞인 뉴스레터는 후보 풀의 유료 확인이 유료 글을 뺀다.
 
-origin은 `resolve_origin_key`로 해석한다. YouTube는 channel_url, Reddit은 subreddit, RSS는 feed_url, X는
-author, Web은 URL 호스트(`urlparse().netloc`에서 `www.` 제거)다. PSL이나 등록가능도메인 휴리스틱을 쓰지 않으니
+origin은 `resolve_origin_key`로 해석한다. YouTube는 channel_url, Reddit은 subreddit, X는 author이고, RSS와 Web은 기사
+URL의 호스트(`urlparse().netloc`에서 `www.` 제거)다. RSS를 feed_url로 나누면 한 매체의 피드 여러 개가 각자 origin이
+되어 `max_per_origin`을 우회한다. URL이 없는 RSS 항목만 feed_url을 쓴다. PSL이나 등록가능도메인 휴리스틱을 쓰지 않으니
 서브도메인은 별개 origin이다. 모든 소스(리서치는 증권사)에 키가 있어야 한다. 한 소스만 키가 비면 그 소스의 항목이 origin
 캡을 전부 우회해서 한 매체가 여러 슬롯을 차지한다.
 
@@ -809,7 +816,7 @@ unmatched-key 경고 경로를 요구한다. 권위는 프롬프트의 *Source A
 
 **핀 항목도 캡에 계수한다.** 핀은 `rank()`가 앞에 붙이고 이 fill을 통과하지 않으니, 카운터에 반영하지 않으면
 핀과 같은 origin의 항목이 나란히 실린다. 그래서 카운터를 핀으로 먼저 채운 뒤 나머지를 채우고, 캡 때문에 미달이
-되면 마지막 완화 패스가 풀 크기까지 메운다.
+되면 완화 패스가 핀과 합쳐 `top_n`개가 될 때까지만 메운다.
 
 ### 5.3 트렌드 트래커 (`trend_tracker.py`)
 
@@ -902,12 +909,12 @@ private 헬퍼를 부르면 파이프라인이 출력 채널의 내부 이름에
   일반화하는 방식이다. 각 lead의 **마지막** 문장만 보여준다. lead는 첫 문장에서 스토리 이름을 대고 마지막에
   논지를 놓으니, 되풀이하면 안 되는 논지가 마지막 문장에 있다(스토리 반복은 `recent_titles`가 다룬다). 잘라내기는 포맷
   시점(`_format_recent_leads`)에 일어나니 전문으로 저장된 기존 이력도 그대로 동작한다.
-  `RECENT_LEAD_PREVIEW_CHARS`는 문장 경계가 없는 산문용 백스톱이다. 최근 이틀(`RECENT_IMPLICATION_DAYS`)의 implication도 같은
+  `RECENT_LEAD_PREVIEW_CHARS`는 문장 경계가 없는 산문용 백스톱이다. 최근 다이제스트 두 건(`RECENT_IMPLICATION_SNAPSHOTS`)의 implication도 같은
   목록에 넣는다. 논지의 틀이 lead보다 implication에서 더 자주 되풀이됐다. 규칙을 더하지 않고 입력만 늘린 변경이다
   ([결정 기록](decisions.md#2026-11-01-반복-방지-입력에-최근-implication-추가)).
 - `recent_titles`는 1일 전부터 `RECENT_TITLE_DAYS`=14일 전까지 **모든** 스냅샷의 스토리 제목을 최신순으로 중복 없이 모은
-  목록이다. 주간 요약 글이 이미 실린 이야기를 새 URL로 다시 가져오면 URL 원장은 그것을 알아보지 못하고, 직전
-  하루치 제목만 보여주던 때는 2026-10-11 다섯 이야기 중 셋이 1~4일 전에 실린 것이었다. 프레이밍은 한 줄이다.
+  목록이다. 주간 요약 글이 이미 실린 이야기를 새 URL로 다시 가져오면 URL 원장은 그것을 알아보지 못한다
+  ([결정 기록](decisions.md#2026-10-11-최근-제목을-랭커와-에디터에)). 프레이밍은 한 줄이다.
   실질적 새 진전이 있을 때만 다시 싣고, 그때는 지난번 이후 무엇이 새로운지 본문에 말하라고 한다. 같은 목록을
   랭커도 받는다([§5.2](#52-랭커-rankerpy)). 임계나 유사도 휴리스틱은 없다. 실제로 재발행을 막는 것은 여전히 URL 원장이다. `application.digest_pipeline.run_pipeline`이
   cross-day dedup이 이미 가져온 스냅샷에서 뽑으니 추가 호출도 없다.
@@ -1044,7 +1051,8 @@ reply 하나를 만든다. 500자 이하로 문장 경계에서 트림하며 tit
 담은 기준 시트 이미지(`assets/persona.jpg`)가 입력 이미지로 함께 간다. 그래서 그 날의 렌더는 `images.generate`가
 아니라 `images.edit`이고, 프롬프트 앞에 "첨부 이미지가 화자의 기준 시트이니 그대로 그려라"는 고정 문구
 (`REFERENCE_NOTE`)가 붙는다. 문장만으로는 날마다 얼굴과 옷이 달랐다([결정 기록](decisions.md#2026-10-화자-기준-시트-이미지)). 시트 파일을 못 읽으면
-경고하고 참조 없이 그린다. 시트를 바꾸려면 이 파일만 교체하면 된다.
+경고하고 참조 없이 그린다. 화자의 외모는 세 곳에 있다. 기준 시트 이미지, 문장 시트(`visual_character_sheet`), 그리고
+`REFERENCE_NOTE`가 이름으로 부르는 특징(얼굴, 머리, 안경, 투톤 카디건)이다. 외모를 바꾸려면 셋을 함께 고친다.
 
 **얼굴이 알려진 실존 인물만 그 모습으로 그린다.** 대중이 얼굴을 아는 인물은 이름과 알려진 모습으로 그리고, 모든
 컷에서 같게 유지한다. 그 밖의 인물은 역할로 그리고 외모를 지어내지 않는다. 모든 인물의 특징을 적게 하면 잘 알려지지 않은 연구자에게
@@ -1068,7 +1076,7 @@ reply 하나를 만든다. 500자 이하로 문장 경계에서 트림하며 tit
 
 **만화와 글의 프롬프트 변경은 블라인드로 판정한다 (`scripts/eval_harness.py`).** 기준은 오너가 정했다. 만화는 뉴스 이해, 인사이트·유머,
 상식, 미감, 사실 충실성이고, 글은 맥락, 쉬운 설명, 정보 정확성, 인사이트, 500자 적합성, 한국어다. 평가자는 원문(에디터가 본 것과 같은 길이)을 받고 두 버전을 이름
-없이 비교하며, 라벨을 바꿔 두 순서로 판정한다. 변경은 저장된 날에서 두 순서 모두 이겨야 반영하고, 단순화도 진 적이 있다(2026-11-07 시사점 3:9, 만평 문장 10:12). 개발 날과 처음 보는 보류 날로 나눠 재고, 만화 변경은 브리프 판정과 이미지 판정이 갈린 적이 있어 그린
+없이 비교하며, 라벨을 바꿔 두 순서로 판정한다. 변경은 저장된 날에서 두 순서 모두 이겨야 반영하고, 단순화도 진 적이 있다. 개발 날과 처음 보는 보류 날로 나눠 재고, 만화 변경은 브리프 판정과 이미지 판정이 갈린 적이 있어 그린
 이미지로도 판정한다([결정 기록](decisions.md#2026-11-07-만평-편집자-연속성-문장-삭제-반영하지-않음)). 지금의 형식 규칙(기사가 형식을 정하고 비유가
 아닌 실제 장면)은 [2026-10-26 평가](decisions.md#2026-10-26-만화와-글의-루브릭-블라인드-평가)와
 [2026-11-01 재설계 평가](decisions.md#2026-11-01-만화-재설계-형식은-기사가-정한다-scriptseval_harnesspy)에서 정해졌다. 패러디·연재·여러 장
@@ -1087,11 +1095,11 @@ reply 하나를 만든다. 500자 이하로 문장 경계에서 트림하며 tit
 
 **브리프는 다이제스트 모델이 쓴다.** 편집기와 아트 디렉터 모두 `digest_model`(Sonnet 5.5)을 쓴다([§6](#모델-팩토리)).
 
-**플랜 파싱이 실패하면 그냥 건너뛴다.** 에디터 JSON을 못 읽으면 `{"skip": True}`로 취급한다. 재질의도, 일반 폴백
-instruction으로 렌더하는 낭비도 없다.
-
-**플랜의 불리언은 `coerce_bool`로 강제한다.** `skip`과 `use_character`는 모델이 쓴 JSON 값이라
-문자열일 수 있고, 맨 truthiness는 `"false"`를 True로 읽는다.
+**플랜 파싱이 실패하면 그냥 건너뛴다.** 에디터 답은 `VisualPlan`(`domain/models.py`)으로 검증하고, JSON을 못 읽거나
+스키마에 맞지 않으면 `VisualPlan(skip=True)`로 취급한다. 재질의도, 일반 폴백 instruction으로 렌더하는 낭비도 없다.
+`skip`과 `use_character`는 모델이 쓴 JSON 값이라 문자열일 수 있는데, Pydantic이 `"false"`를 False로 읽는다. 맨
+truthiness로 읽던 때는 `"false"`가 True가 되어 그날 그림이 사라졌다. 최근 만화 기록(`RecentComic`)과 리서치 사실 확인의
+지적(`FactIssue`)도 같은 방식으로 모듈 경계에서 검증하고, 형식이 깨진 항목은 그 항목만 버린다.
 
 **비주얼 실패가 다이제스트를 삼키지 않는다.** 이미지는 첨부물이고, 이 함수가 Threads의 유일한 게시 경로다.
 OpenAI 키가 없거나 에디터 호출이 실패하거나 에디터가 skip하거나 렌더가 실패하는 경우는 모두 `_make_visual`
@@ -1137,7 +1145,7 @@ Lambda가 "올라간 글을 지운 뒤에만 다시 올리라"는 Threads Delive
 `countdown_template`). D-day 이전에는 카운트다운, D-day 당일과 이후에는 `countdown_after`로
 카운트업한다("…AGI 등장 예정일 D+N일째, 아직이다"). `countdown_date`가 비면 비활성이다. 기준일은 인용한 사람의 말에 맞춘다.
 아모데이는 2025-02 파리 AI 정상회의 성명(anthropic.com)에서 "빠르면 2026년이나 2027년(늦어도 거의 확실히 2030년)"이라고 했고,
-그 앞쪽 범위의 끝인 2027년 말을 쓴다(2026-11-01까지는 젠슨 황과 아모데이를 섞어 반올림한 2029-01-01을 인용 없이 썼다).
+그 앞쪽 범위의 끝인 2027년 말을 쓴다([결정 기록](decisions.md#2026-11-01-카운트다운-기준일은-인용한-말에서)).
 투자판(`config/invest.yaml`)은 같은 틀("보편적 고소득 시대까지 N일 남았다", 그가 쓴 말은 "universal high income")로, 일론 머스크가 2025-11-19
 미·사우디 투자 포럼에서 "10~20년 안에" 일은 선택이 되고 돈은 의미가 없어진다고 한 날까지 센다. 기준일은 그 범위의 이른 끝인
 2035-11-19다. 두 판의 첫 문장이 대구를 이루고 인용한 사람의 이름은 문장에 넣지 않는 것은 운영자 결정이다(날짜만 그들의 말을 따른다). 템플릿은 운영자가
@@ -1173,8 +1181,8 @@ config가 형식을 검증한다)를 싣고 reply에는 붙이지 않는다. 다
 리포트의 root도 같은 태그를 쓴다. 만화 root는 `alt_text`(최대 1000자)로 `VisualBrief.alt_text`를 보낸다. 아트
 디렉터가 쓰는 한국어 설명으로 컷마다 한 문장과 대사를 담는다. 그러지 않으면 만화의 한국어 대사가 픽셀로만 남아
 스크린 리더가 읽을 것이 없다. 검색 효과는 Meta가 문서화하지 않았으니 접근성 개선이다. `alt_text`가 빈 브리프는
-비정상 응답의 신호라 한 번 다시 받는다(`VisualGenerator.brief`). 2026-11-11에 이런 브리프가 편집자 콘티를 버리고
-영어 대사의 일반적인 만화를 냈고, 같은 날 재실행 두 번은 정상이었다. 다시 받은 브리프도 비어 있거나 요청이 실패하면 받은 것을 그대로 그린다.
+비정상 응답의 신호라 한 번 다시 받는다(`VisualGenerator.brief`, [장애에서 나온 규칙](decisions.md#장애에서-나온-규칙)). 다시 받은
+브리프도 비어 있거나 요청이 실패하면 받은 것을 그대로 그린다.
 
 **이미지 호스팅.** Threads는 바이트 업로드를 받지 않고 공개 URL만 fetch하니, PNG를 S3에 올리고 단기 presigned
 URL을 Meta에 한 번 넘긴다(`_upload_image_for_hosting`).
@@ -1183,8 +1191,7 @@ URL을 Meta에 한 번 넘긴다(`_upload_image_for_hosting`).
 (`GET /{container-id}?fields=status`)를 `THREADS_CONTAINER_POLL_SEC`(3초) 간격으로, 최대 `THREADS_MEDIA_PROCESS_WAIT_SEC`(30초)
 확인해 `IN_PROGRESS`를 벗어나면 게시한다. 아직 보이지 않는 컨테이너가 답하는 400도 진행 중으로 보고, 상태를 읽지 못하면
 기다리지 않고 게시한다. code 24 / subcode 4279009("media not found")가 지목하는 id는 root가 아니라 reply 자신의 컨테이너다.
-만들자마자 게시하던 때에는 재시도가 새 컨테이너를 또 곧바로 게시해서 같은 경쟁을 반복했다(2026-11-06 두 판에서 37번, 답글 3건
-누락. 그 컨테이너들은 다음 날 모두 `FINISHED`였다). 그래도 code 24가 오면 reply는 하나의 공유 예산
+만들자마자 게시하던 때에는 재시도가 새 컨테이너를 또 곧바로 게시해서 같은 경쟁을 반복했다([결정 기록](decisions.md#장애에서-나온-규칙)). 그래도 code 24가 오면 reply는 하나의 공유 예산
 (`THREADS_INDEXING_BUDGET_SEC`, 270초) 안에서 다시 시도하고, 다른 일시 오류는 `THREADS_REPLY_RETRY_ATTEMPTS`(3)번에서 멈춘다.
 
 **per-reply best-effort와 전달량 회계(`ThreadsDelivery`).** reply 게시는 건별로 try/except다. 한 reply가
@@ -1201,9 +1208,8 @@ URL을 Meta에 한 번 넘긴다(`_upload_image_for_hosting`).
 root가 올라간다. 확실한 경우는 둘이다(`_root_may_be_live`가 False).
 
 - 컨테이너 생성 단계에서 실패했다.
-- 게시(`threads_publish`) 단계가 429나 코드 24("게시하려는 컨테이너 없음")로 답했다. 답글은 몇 달 동안 코드
-  24를 77번 넘게 재시도했는데, 2026-10-27에 확인한 다이제스트 80개는 모두 이야기 답글이 정확히 다섯 개였고
-  중복은 없었다. root는 이 근거까지만 믿는다.
+- 게시(`threads_publish`) 단계가 429나 코드 24("게시하려는 컨테이너 없음")로 답했다. 답글의 코드 24 재시도는
+  중복 게시를 낸 적이 없고([결정 기록](decisions.md#장애에서-나온-규칙)), root는 이 근거까지만 믿는다.
 
 그 밖의 게시 단계 오류(Meta는 일부 일시 오류를 400으로 돌려준다), 게시 단계 5xx, 네트워크 오류는 실제로 올라간
 글에 돌아올 수 있으니 root를 다시 올리지 않고 예외를 올린다.
@@ -1471,8 +1477,9 @@ ARN(`arn:...:application-inference-profile/<opaque-id>`)이고 그 안에는 둘
 
 **파이프라인에는 적용하지 않는다.** 다이제스트와 그라운딩, 트렌드, 시각화 시놉시스는 실행당 한 번 호출되고
 프롬프트와 원문이 서로 달라 재사용이 없다. 캐시 쓰기는 입력 단가의 1.25배라 재사용 없는 캐싱은 손해다.
-랭커의 배치들은 공통 프리픽스(지침과 최근 제목)를 갖지만 병렬로 동시에 나가서 앞선 호출이 쓴 캐시를 읽을
-수 없고, 순차로 바꿔 얻는 절감은 실행당 약 $0.05다. 그래서 의도적으로 캐싱하지 않는다.
+랭커의 배치들은 공통 프리픽스(지침과 최근 제목)를 갖는다. 배치는 `ranking_max_concurrency`개씩 나가므로 첫 묶음은 서로의
+캐시를 읽을 수 없지만, 뒤 묶음은 앞 묶음이 쓴 캐시를 읽을 수 있다. 그 절감은 측정한 적이 없다. 캐싱하지 않는 것은 측정
+없이 둔 기본값이고, 켜려면 실제 실행의 `cache_read`로 절감을 먼저 재야 한다.
 그래서 모델 레지스트리에도 `supports_prompt_caching` 같은 플래그를 두지 않는다. 어차피 모든 엔트리가 True가 되고
 읽는 곳도 없어서, 레지스트리에 쓰이지 않는 플래그만 남는다. 파이프라인 스테이지의
 `cache_read`/`cache_write` 로그 필드가 항상 0인 것도 그래서 정상이다.
@@ -1590,9 +1597,11 @@ append하고, `list_events`는 순서를 보장하지 않는다. 한 페이지�
 조회와 이벤트를 읽는 `bedrock-agentcore` 클라이언트는 하나의 세션을 쓴다. 프로필은
 `available_boto_profile(config.aws.profile)`, 리전은 스택 리전(`config.aws.region`)이다. 셸의 `AWS_PROFILE`과
 `AWS_REGION`은 다른 계정이나 모델 호출 리전을 가리킬 수 있고, 읽기 클라이언트만 기본 세션을 쓰던 때는 이름으로
-찾은 메모리를 "Memory not found"로 답했다. 목록 조회가 성공했는데 메모리가 없을 때만
-`LocalMemoryStore`(`digest_*.json`)로 폴백한다. 조회 자체가 실패하면(만료된 SSO, 권한, 스로틀)
-`MemoryReadError`를 던진다. 폴백하면 production이 쓴 날짜를 "저장된 것 없음"으로 답했다.
+찾은 메모리를 "Memory not found"로 답했다. `LocalMemoryStore`(`digest_*.json`)는 호출자가 `base_dir`를 넘겼거나
+`aws.profile`이 비어 있을 때만 쓴다. 조회 자체가 실패하면(만료된 SSO, 권한, 스로틀) `MemoryReadError`를 던진다. `aws.profile`을 설정했는데 조회 결과에
+메모리가 없을 때도 같다. 설정한 프로필이 이 머신에 없으면 기본 자격 증명으로 조회하는데, 그것이 다른 계정이면 메모리가
+없으니, 로컬 파일로 떨어지면 운영이 쓴 날짜를 "저장된 것 없음"으로 답하게 된다.
+`recall_digest`는 이 오류를 "읽지 못했다"로 전하고, 다이제스트 실행(`run_pipeline`)은 원래 실패해도 멈추지 않는다.
 
 **윈도 조회.** `get_recent_digests(before, days)`가 cross-day dedup 시드를
 제공한다([§7.3](#73-cross-day-dedup-히스토리-applicationhistorypy)). 세션 id가 날짜로 정해지니 `before` 이전 `days`일의
@@ -1623,8 +1632,8 @@ append하고, `list_events`는 순서를 보장하지 않는다. 한 페이지�
 아니라 AgentCore Memory 히스토리로도 self-heal되게 한다. 원장이 비어도 작동한다.
 
 **시드와 기록(`application.digest_pipeline.run_pipeline`).** exclude 집합을 원장과 최근 AgentCore Memory 스냅샷 양쪽에서
-시드한다(`get_recent_digests(today, published_url_ttl_days - 1)`로 원장이 제외하는 것과 같은 창, 1일 전부터 TTL 하루 전까지를 읽는다. TTL 당일에는 둘 다 같은 스토리를 다시 허용한다). 생성 후에는 발행된 `content.items` URL을 원장에 기록한다. 최근 lead와 최근 스토리 제목은 따로 저장하지 않고
-이미 읽어 온 스냅샷에서 꺼낸다. lead는 원장 창의 스냅샷(`_recent_leads`)에서, 제목은 그보다 긴 14일 창을 한 번 더 읽어(`_recent_story_titles`) 꺼낸다. 10-24에 실린 Kimi K3.1 Pro가 8일 뒤 다른 매체의 같은 출시 기사로 다시 실렸고, 원장 창(5일)으로는 막을 수 없었다. 스냅샷이 없는 날(에디션 시작 전, 건너뛴 날)은 INFO 로그만 남긴다.
+시드한다(원장이 제외하는 것과 같은 창, 1일 전부터 TTL 하루 전까지. TTL 당일에는 둘 다 같은 스토리를 다시 허용한다). 생성 후에는 발행된 `content.items` URL을 원장에 기록한다. 최근 lead와 최근 스토리 제목은 따로 저장하지 않고
+스냅샷에서 꺼낸다. `run_pipeline`이 `load_recent_history`로 두 창 중 긴 쪽(`RECENT_TITLE_DAYS`=14일)을 `get_recent_digests_dated`로 한 번만 읽고 날짜로 나눈다. lead와 implication(`recent_angles`)은 원장 창의 스냅샷에서, 제목(`_recent_story_titles`)은 긴 창에서 꺼낸다. 10-24에 실린 Kimi K3.1 Pro가 8일 뒤 다른 매체의 같은 출시 기사로 다시 실렸고, 원장 창(5일)으로는 막을 수 없었다. 스냅샷이 없는 날(에디션 시작 전, 건너뛴 날)은 INFO 로그만 남긴다.
 
 **같은 계정의 다른 판(`pipeline.sibling_editions`).** 두 판은 한 Threads 계정에 올라가므로, 다른 판의 그날과 전날
 스냅샷(`sibling_snapshots`, 07:30 판과 19:00 판이라 같은 날짜가 이미 올라가 있을 수 있다)의 제목은 `recent_titles`에, lead와
@@ -1684,7 +1693,7 @@ STALE과 DEGRADED는 실패가 아니니 `failed_sources`에 들어가지 않는
 
 ### 소스 분류 (`run_collectors_with_health`)
 
-- 예외가 나면 **FAILED**이고 잘린 detail을 담는다.
+- 예외가 나면 **FAILED**이고 예외 메시지를 detail에 담는다.
 - park 파일이 `degraded`(stale은 나이 예산 초과, error는 읽기 불가)면 **STALE**이고 항목 수와 park detail을
   담는다. 항목은 나왔지만 그 sync가 멈춰 있다는 뜻이라 OK도 FAILED도 아닌 별도 상태다.
   수집기의 `health_issue`(포트의 유일한 헬스 항목, `BaseCollector`가 `park_status`와 `degraded_detail`로 만든다)를
@@ -1801,7 +1810,7 @@ no-op이다.
 **남은 실행 시간으로 게시 경로를 bound한다.** 비주얼 Lambda는 자기 `context.get_remaining_time_in_millis()`를
 평범한 monotonic float 하나로 바꿔(`_remaining_deadline`이고, context 객체는 파이프라인에 넘기지 않는다)
 `run(deadline=...)`에서 `_post_threads`, `post_to_threads`로, 그리고 이미지 생성기로 흘린다.
-`deadline=None`이면(로컬 실행과 `main.py`, `research_cli.py`) 아무것도 깎지 않는다. 딜라인이 있을 때만 인덱싱 예산이
+`deadline=None`이면(로컬 실행과 `main.py`, `research_cli.py`) 아무것도 깎지 않는다. 데드라인이 있을 때만 인덱싱 예산이
 `min(270초, 남은 시간 − 게시 예비분)`으로 줄고(예비분 `THREADS_PUBLISH_RESERVE_SEC`은
 reply 한 건의 재시도 사다리이고, 시도마다 컨테이너 대기 `THREADS_MEDIA_PROCESS_WAIT_SEC`을 더해 산출한다), 남은 시간이 충분하면 270초를 절대 깎지
 않는다. 스토리를 잃는 쪽은 인덱싱을 오래 기다리는 것이 아니라 일찍 포기하는 것이다. 이미지 쪽에서는 moderation
@@ -1855,7 +1864,7 @@ Threads에서 드롭되거나 잘린 게시물이 있으면 그 수를 적는다
 
 ### 구성 (`adapters/research_agent.py`의 `create_research_agent`)
 
-`BedrockModel`(기본 Opus 5.5, `config.agent.model_id`)을 streaming으로 구성하고 도구 8개로 Strands
+`BedrockModel`(기본 Opus 5.5, `config.agent.model_id`)을 streaming으로 구성하고 도구 8개(투자판은 `market_quote`, `analyst_ratings`, `search_reports`를 더해 11개)로 Strands
 `Agent`를 만든다. Claude 모델에만 `CacheConfig(strategy="anthropic")`를 붙인다([§6의 프롬프트 캐싱](#프롬프트-캐싱) 참조).
 `max_tokens`는 `LANGUAGE_MODEL_INFO`에서 가져오고, `temperature`와 effort는 Bedrock 팩토리와 같은 레지스트리
 플래그로 정한다. effort는 `request_fields()`가 만든 provider별 필드를 `additional_request_fields`로 보낸다(Opus
@@ -1880,7 +1889,7 @@ spec에서 이름과 인자, 한 줄 요약을 뽑아 `<tools>` 블록을 만든
   시점 기준으로 판단하고 `recall_digest`에 넘길 절대 날짜를 추측해야 한다.
 - **`<voice>`** — 데일리 다이제스트와 같은 내레이터 페르소나(`config.pipeline.digest_voice_guidance` 주입)를
   리포트 길이에 맞게 쓴다. 반복 금지는 한 번만 적는다.
-- **`<tools>`와 `<flow>`** — 도구 8개와 권장하되 강제하지 않는 흐름이다. 이해와 재작성, 다중 소스 리서치,
+- **`<tools>`와 `<flow>`** — 그 판의 도구와 권장하되 강제하지 않는 흐름이다. 이해와 재작성, 다중 소스 리서치,
   작성, 이미지 첨부(기본은 생략), 전달 순이다. 검색 폭과 깊이는 숫자로 주지 않는다. 루프를 멈추는 것은 `Limits`이고,
   프롬프트의 숫자 가이던스는 아무것도 강제하지 않았다.
 - **`<delivery>`** — 항상 전체 리포트(약 `research_target_words` 단어)를 Markdown으로
@@ -1986,7 +1995,8 @@ AgentCore Browser도 쓰지 않는다. 다이제스트에 실린 실제 URL 10�
 `threads_lock`(Threads 전달을 사실 확인까지 한 번에 하나로 묶는다), `refused_for_facts`·`fact_issues`(사실 확인으로 돌려보낸
 텍스트와 그 지적), `last_refusal`(마지막으로 돌려보낸 이유), `threads_attempted`,
 `report`(제출된 최신 Markdown), `threads_stats`(Threads 전달이 실제로 낸 렌더·게시·드롭·트림 수), 실행이 바깥에 닿는 유일한 통로인 `ports`(`ResearchPorts`)가 있다. `request_context`는 contextvar로 바인딩해
-상태가 실행 사이에 쌓이지 않게 하고, `current_delivery_context`는 바인딩이 없으면 새 인스턴스를 반환한다.
+상태가 실행 사이에 쌓이지 않게 하고, `current_delivery_context`는 바인딩이 없으면 `RuntimeError`를 낸다. 바인딩
+없이 불린 도구가 캐시된 파일 설정을 읽는 대신 그 자리에서 실패하게 하려는 것이다.
 
 **`deliver_research_report`** — `MARKDOWN`은 리포트를 기록하고 `POSTED`를 돌려준다. `THREADS`는 멱등이고
 `DeliveryOutcome`(`POSTED`, `NOT_POSTED`, `FAILED`, `TOO_LONG`)을 돌려준다. bool이 아닌 이유는 "이미 게시돼 이번 텍스트는
@@ -2170,8 +2180,9 @@ CloudFormation이 PutParameter를 다시 실행해 살아 있는 시크릿 위�
 `String`에서 `SecureString`으로 가는 타입 변경은 SSM이 `ValidationException`으로 거절한다. 그래서 스크립트는
 CloudFormation이 남긴 정확한 상태, 곧 `Type == String`이면서 `Value == SSM_PLACEHOLDER`일 때만 파라미터를
 삭제하고 SecureString으로 재생성한다. 이것이 "시크릿은 SecureString"이라는 주장을 실제로 참으로 만드는
-단계다. 그 밖의 `String`은 실제 값을 담고 있으니 절대 삭제하지 않고 값만 제자리에 쓰고 시끄럽게 알린다. 살아
-있는 자격증명을 잃는 것은 암호화되지 않은 것보다 나쁘다. 삭제는 됐는데 재기록이 실패한 경우는 파라미터 자체가
+단계다. 그 밖의 `String`은 실제 값을 담고 있으니 지우지도 평문으로 덮어쓰지도 않는다. 그대로 두고 `FAILED` 목록에
+올려 non-zero로 끝내며, 운영자가 직접 옮길 수 있게 안내를 출력한다. 살아 있는 자격증명을 잃는 것은 암호화되지 않은
+것보다 나쁘다. 삭제는 됐는데 재기록이 실패한 경우는 파라미터 자체가
 없는 가장 나쁜 상태이니 `FAILED` 목록과 non-zero 종료, 그리고 복구 명령 전문
 (`aws ssm put-parameter --name … --type SecureString …`)을 출력한다. 한 파라미터의 실패로 루프가 죽지 않는다.
 첫 거절에서 루프가 죽으면 그 뒤의 시크릿이 전부 플레이스홀더로, 런타임에서는 미설정인 상태로 남는다. `--verify`는
@@ -2215,7 +2226,8 @@ CloudWatch 알람 15개가 모두 SNS 알림 토픽으로, 그리고 이메일�
 
 `tests/edge/`는 실제 코드를 가짜 모델·전송으로 끝까지 돌리는 엣지 시나리오다(2026-11-02). 모든 수집기가 비거나 하나가 실패할 때, 모든 랭킹 배치가 산문으로 답할 때(빠르게 실패하고 호출 수가 묶인다), 에디터가 없는 헤드라인을 낼 때, 그라운딩·같은 이야기 묶음·메모리 장애, 후보가 전부 한 이야기일 때, 네이버 403·429·빈 일요일·형식 변경·페이지 상한·순서가 바뀐 묶음, 링크를 숨긴 헤드라인, 500자 경계의 첫 글, 카운트다운 D-day, 추적 파라미터와 HTML 엔티티 제목, 토큰 예산 1과 CountTokens 장애를 다룬다. `edge_harness.py`가 단계(stage)별로 답하는 가짜 모델을 준다.
 
-약 1,500개의 테스트가 있고 커버리지 게이트는 90%다. 게이트는 측정값을 따라 움직여야 한다.
+테스트는 `uv run python -m pytest tests/ --cov`로 돌리고, 커버리지 게이트는 90%(`pyproject.toml`의 `fail_under`)다. CI는 그 밖에
+ruff, black, mypy, `lint-imports`, `uv lock --check`, CDK synth, `shellcheck scripts/*.sh`(배포 경로인 `release.sh`)를 돈다. 게이트는 측정값을 따라 움직여야 한다.
 10포인트 이상 낮게 방치된 게이트는 진짜 회귀를 오타만큼이나 편하게 통과시킨다. `tests/conftest.py`의 autouse
 픽스처가 앰비언트 시크릿과 인프라 env를 monkeypatch로 비우고 SSM 클라이언트를 막아 hermetic하게 만든다. 개발자의
 `.env`나 AWS 프로파일에 결과가 좌우되지 않고, 실 SSM 왕복에 드는 수십 초도 들지 않는다. 그 아래에서 소켓 연결과
@@ -2239,7 +2251,7 @@ S3 읽기(10-28)로 이어졌다. 이제는 빠뜨린 stub이 그 자리에서 �
 - 헬스 리포트와 logger.
 - 메모리 스토어(로컬과 AgentCore 모킹).
 - 다이제스트 핸들러 알림.
-- 딥 리서치 — 구성과 프롬프트 보간(`test_research_agent.py`), 도구 8개(`test_research_tools.py`), 리서치
+- 딥 리서치 — 구성과 프롬프트 보간(`test_research_agent.py`), 도구(`test_research_tools.py`, 투자판 도구는 `test_invest_edition.py`), 리서치
   백엔드(`test_research_backends.py`), 리포트 전달(`test_research_delivery.py`), 렌더러(`test_renderers.py`), OG
   이미지(`test_og_image.py`), CLI의 JSON 계약과 종료 코드, `Limits` 전달(`test_research_cli.py`).
 - `VisualGenerator`(`test_visual_generator.py`)와 데일리 비주얼(`test_daily_visual.py`).
@@ -2349,7 +2361,10 @@ uv run python -m pytest tests/ -v                       # 테스트
 uv run pre-commit run --all-files                       # ruff, black, 파일 검사, uv lock --check
 uv run mypy .                                           # 레포 전체 타입 체크
 uv run lint-imports                                     # 계층 의존 방향(포트와 어댑터) 검사
-uv run python scripts/ci_synth.py                       # 오프라인 CDK synth(인프로세스)
+npx cdk synth -a "uv run python scripts/ci_synth.py"    # 오프라인 CDK synth(레포에 고정한 CLI, 투자판 템플릿 포함)
+uv run python scripts/cost_report.py --days 7 [--by stage]  # 배포 로그로 본 일별, Lambda별 또는 단계별 비용(읽기 전용)
+uv run python scripts/eval_harness.py judge digest <A> <B>  # 저장된 날의 두 결과를 블라인드로 판정(두 순서로 돌린다)
+scripts/release.sh                                      # CI를 통과한 origin/main HEAD를 빌드, 검사, 배포, 배포 뒤 확인
 uv run pre-commit install                               # 1회 — 커밋 전 게이트
 ```
 

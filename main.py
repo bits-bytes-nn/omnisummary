@@ -58,7 +58,6 @@ async def main() -> int:
     if digest_date > datetime.now(ZoneInfo(config.aws.timezone)).date():
         # A typo'd future date stored that day's snapshot and post marker, and the real run then skipped.
         parser.error(f"--date {digest_date} is in the future")
-    config.collectors.set_reference_time(reference_time)
 
     logger.info(
         "Starting OmniSummary digest pipeline (date: '%s', reference_time: '%s')",
@@ -72,7 +71,7 @@ async def main() -> int:
 
     models = bootstrap.language_models(config)
     collected_items, health = await run_collectors_with_health(
-        config, bootstrap.collectors(config, models, args.sources)
+        config, bootstrap.collectors(config, models, args.sources, reference_time=reference_time)
     )
     logger.info("Collected %d total items", len(collected_items))
     logger.info("Source health report:\n%s", health.summary())
@@ -80,7 +79,7 @@ async def main() -> int:
     if args.pin_url:
         from adapters.collectors.web_search import fetch_pinned_items
 
-        pinned = await fetch_pinned_items(args.pin_url)
+        pinned = await fetch_pinned_items(args.pin_url, config.collectors.youtube)
         logger.info("Fetched %d pinned item(s) from %d URL(s)", len(pinned), len(args.pin_url))
         fetched = {normalize_url(it.url) for it in pinned}
         missing = sorted(u.strip() for u in args.pin_url if u.strip() and normalize_url(u.strip()) not in fetched)
@@ -94,7 +93,7 @@ async def main() -> int:
         logger.error("No items collected. Exiting.")
         return 1
 
-    _, ranked_items, digest = await run_pipeline(
+    run = await run_pipeline(
         config,
         models,
         collected_items,
@@ -106,9 +105,10 @@ async def main() -> int:
         note_text=bootstrap.note_text(config),
         dry_run=args.dry_run,
     )
-    if digest is None or ranked_items is None:
+    if run is None:
         logger.error("No digest was produced")
         return 1
+    ranked_items, digest = run.ranked_items, run.digest
     if not args.dry_run:
         # Persisted BEFORE the post: a store that fails after the post went up would leave the day's
         # posted digest stored nowhere, and a re-run would record a different one.
