@@ -63,7 +63,7 @@
   해외주식·외부기고, 이데일리 증권, CNBC 실적, FactSet 실적 점검, TKer, 전략가 X 계정 6개(Carson, Schwab, Fidelity,
   Bianco, FactSet, 실적 콜 인용), 수급·공시·공모주와 미국 실적·변동성 웹 검색 묶음, r/CryptoCurrency 복귀).
 - 같은 날 두 번째 재검토: 웹 검색 국내 묶음(시장, 부동산, 수급·공시)은 결과가 없거나 피드와 겹쳤고 나머지는 집단소송
-  공지(GlobeNewswire)와 랜딩 페이지라 웹 검색을 미국 시장·크립토 두 묶음으로 줄였다. 웹 검색의 보장 자리와 Reddit 자리를
+  공지(GlobeNewswire)와 랜딩 페이지라 웹 검색을 미국 시장·가상자산 두 묶음으로 줄였다. 웹 검색의 보장 자리와 Reddit 자리를
   뺐고, r/economics(정치·일반 뉴스)와 RyanDetrick(팟캐스트 홍보와 계절성 통계)을 뺐다. 연준 피드는 통화정책 보도자료와
   연설로 바꿨고 리서치 수집기에 채권(debenture) 분류를 더했다. 리서치 도구의 검색 도메인에서 일반 독자에게 막힌 호스트
   (Reuters, 한국경제, MarketWatch, Investing.com, Seeking Alpha)를 뺐다. Glassnode 리서치 피드는 Lambda에서 403이라 뺐다.

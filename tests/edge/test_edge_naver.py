@@ -45,9 +45,9 @@ def _collector(monkeypatch, answer, **cfg):
     monkeypatch.setattr(
         naver_research.httpx, "AsyncClient", lambda **kw: _REAL_CLIENT(transport=httpx.MockTransport(handler), **kw)
     )
-    base = {"enabled": True, "lookback_hours": 42, "page_delay_sec": 0, "retry_backoff_sec": 0, "reference_time": REF}
+    base = {"enabled": True, "lookback_hours": 42, "page_delay_sec": 0, "retry_backoff_sec": 0}
     base.update(cfg)
-    return NaverResearchCollector(NaverResearchCollectorConfig(**base)), seen
+    return NaverResearchCollector(NaverResearchCollectorConfig(**base), reference_time=REF), seen
 
 
 def _ok(rows, has_next=False):

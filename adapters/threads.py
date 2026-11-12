@@ -16,6 +16,7 @@ from application.ports import PublishError
 from domain.models import ThreadsComment, ThreadsDelivery
 from shared import THREADS_MAX_POST_CHARS, logger
 from shared.config import Config
+from shared.constants import THREADS_TOKEN_SECRET, THREADS_USER_SECRET
 
 # Meta's cap on an image post's alt_text.
 THREADS_ALT_TEXT_MAX_CHARS = 1000
@@ -362,8 +363,8 @@ async def post_to_threads(
     Returns a ThreadsDelivery (posted, expected) count — NOT a bool, so a partial reply chain is
     distinguishable from a complete post. Branch on `.published`, never on the value itself."""
     expected = 1 + len([r for r in (replies or []) if r.strip()])
-    token = resolve_secret("THREADS_ACCESS_TOKEN", "threads-access-token")
-    user_id = resolve_secret("THREADS_USER_ID", "threads-user-id")
+    token = resolve_secret("THREADS_ACCESS_TOKEN", THREADS_TOKEN_SECRET)
+    user_id = resolve_secret("THREADS_USER_ID", THREADS_USER_SECRET)
     if not token or not user_id:
         # ERROR, not INFO: with enable_threads_post on, empty credentials mean the day's digest is
         # NOT delivered anywhere. That read as a routine "skipping" line in the logs.
@@ -579,8 +580,8 @@ class ThreadsGateway:
     @asynccontextmanager
     async def comments(self) -> AsyncIterator[_CommentSession]:
         # Strict: an SSM read failure must fail the run, not read as "nothing to answer".
-        token = resolve_secret("THREADS_ACCESS_TOKEN", "threads-access-token", strict=True)
-        user_id = resolve_secret("THREADS_USER_ID", "threads-user-id", strict=True)
+        token = resolve_secret("THREADS_ACCESS_TOKEN", THREADS_TOKEN_SECRET, strict=True)
+        user_id = resolve_secret("THREADS_USER_ID", THREADS_USER_SECRET, strict=True)
         if not token or not user_id:
             raise RuntimeError("Threads access token / user id not configured; cannot answer comments")
         async with threads_client(token, COMMENT_REQUEST_TIMEOUT_SEC) as client:

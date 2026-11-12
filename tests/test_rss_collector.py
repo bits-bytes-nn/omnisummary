@@ -9,10 +9,15 @@ from adapters.collectors.rss import RSSCollector
 from shared.config import RSSCollectorConfig
 from shared.constants import SourceType
 
+REFERENCE_TIME = datetime(2026, 6, 2, tzinfo=UTC)
+
+
+def _collector(cfg, **kwargs) -> RSSCollector:
+    return RSSCollector(cfg, reference_time=kwargs.pop("reference_time", REFERENCE_TIME), **kwargs)
+
 
 def _config(feeds=None, **kwargs) -> RSSCollectorConfig:
     cfg = RSSCollectorConfig(feeds=feeds or ["https://example.com/feed"], **kwargs)
-    cfg.reference_time = datetime(2026, 6, 2, tzinfo=UTC)
     cfg.lookback_hours = 24
     return cfg
 
@@ -58,7 +63,7 @@ def _fetch_by_url(mapping, *, record=None):
 class TestRSSCollect:
     @pytest.mark.asyncio
     async def test_collects_entries(self):
-        c = RSSCollector(_config())
+        c = _collector(_config())
         with patch("adapters.collectors.base.fetch_feed", return_value=_feed([_entry()])):
             items = await c.collect()
         assert len(items) == 1
@@ -69,7 +74,7 @@ class TestRSSCollect:
     @pytest.mark.asyncio
     async def test_dead_feed_among_healthy_ones_is_skipped_and_logged(self):
         # Partial tolerance: one dead feed loses only its own items, and is logged (not silent).
-        c = RSSCollector(_config(feeds=["https://dead.example/feed", "https://ok.example/feed"]))
+        c = _collector(_config(feeds=["https://dead.example/feed", "https://ok.example/feed"]))
         fetch = _fetch_by_url(
             {
                 "https://dead.example/feed": RuntimeError("RSS feed returned HTTP 404"),
@@ -85,7 +90,7 @@ class TestRSSCollect:
     @pytest.mark.asyncio
     async def test_all_feeds_http_error_raises(self):
         # Total outage (every feed 4xx/5xx) must be FAILED, not a silently empty digest.
-        c = RSSCollector(_config(feeds=["https://a.example/feed", "https://b.example/feed"]))
+        c = _collector(_config(feeds=["https://a.example/feed", "https://b.example/feed"]))
         with patch("adapters.collectors.base.fetch_feed", side_effect=RuntimeError("RSS feed returned HTTP 404")):
             with pytest.raises(RuntimeError, match="returned HTTP 404"):
                 await c.collect()
@@ -93,7 +98,7 @@ class TestRSSCollect:
     @pytest.mark.asyncio
     async def test_all_feeds_timing_out_raises(self):
         # A hung feed counts as a failure, so an all-hung run reports FAILED too.
-        c = RSSCollector(
+        c = _collector(
             _config(feeds=["https://a.example/feed", "https://b.example/feed"], max_retries=2, retry_backoff_sec=0)
         )
         with patch("adapters.collectors.base.fetch_feed", side_effect=TransientStatusError("timed out after 30s")):
@@ -103,7 +108,7 @@ class TestRSSCollect:
     @pytest.mark.asyncio
     async def test_one_hung_feed_among_many_is_skipped(self):
         # One feed that never answers (every attempt times out) loses only its own items.
-        c = RSSCollector(
+        c = _collector(
             _config(
                 feeds=["https://hang.example/feed", "https://ok.example/feed"],
                 request_timeout=1,
@@ -125,7 +130,7 @@ class TestRSSCollect:
     async def test_transient_status_is_retried_then_succeeds(self):
         # A single 503 used to lose that feed's whole day of items. It is retried instead, using
         # the shared classification in collectors.base: 429/5xx retry and 403/404 do not.
-        c = RSSCollector(_config(max_retries=3, retry_backoff_sec=0))
+        c = _collector(_config(max_retries=3, retry_backoff_sec=0))
         outcomes = [TransientStatusError("returned HTTP 503"), _feed([_entry()])]
 
         async def _fetch(url, **kwargs):
@@ -143,7 +148,7 @@ class TestRSSCollect:
     async def test_transient_status_exhausted_still_fails_the_source(self):
         # Retries must not paper over a real outage: an exhausted chain still raises, so an
         # all-feeds-down run reports FAILED rather than a silent empty digest.
-        c = RSSCollector(
+        c = _collector(
             _config(feeds=["https://a.example/feed", "https://b.example/feed"], max_retries=2, retry_backoff_sec=0)
         )
         with patch(
@@ -155,7 +160,7 @@ class TestRSSCollect:
 
     @pytest.mark.asyncio
     async def test_permanent_status_is_not_retried(self):
-        c = RSSCollector(_config(max_retries=3, retry_backoff_sec=0))
+        c = _collector(_config(max_retries=3, retry_backoff_sec=0))
         with patch("adapters.collectors.base.fetch_feed", side_effect=RuntimeError("returned HTTP 403")) as fetch:
             with pytest.raises(RuntimeError, match="returned HTTP 403"):
                 await c.collect()
@@ -165,7 +170,7 @@ class TestRSSCollect:
     async def test_every_attempt_carries_the_configured_timeout(self):
         # The retry wraps the whole fetch, so every attempt gets its own request_timeout instead of
         # sharing one budget; a feed that answers on the second try still delivers.
-        c = RSSCollector(_config(max_retries=3, retry_backoff_sec=0, request_timeout=11))
+        c = _collector(_config(max_retries=3, retry_backoff_sec=0, request_timeout=11))
         timeouts: list[float] = []
         outcomes = [TransientStatusError("returned HTTP 503"), _feed([_entry()])]
 
@@ -186,7 +191,7 @@ class TestRSSCollect:
         # Unbounded fan-out let a feed's timeout expire while its fetch was still QUEUED behind
         # other feeds, turning a healthy feed into a bogus FAILURE.
         feeds = [f"https://f{n}.example/feed" for n in range(8)]
-        c = RSSCollector(_config(feeds=feeds, max_concurrency=2))
+        c = _collector(_config(feeds=feeds, max_concurrency=2))
         in_flight = 0
         peak = 0
 
@@ -206,7 +211,7 @@ class TestRSSCollect:
     @pytest.mark.asyncio
     async def test_raises_when_all_feeds_fail(self):
         # A total outage (every feed errors) must surface as FAILED, not a silent empty result.
-        c = RSSCollector(_config(feeds=["https://a.example/feed", "https://b.example/feed"]))
+        c = _collector(_config(feeds=["https://a.example/feed", "https://b.example/feed"]))
         with patch("adapters.collectors.base.fetch_feed", side_effect=OSError("network down")):
             with pytest.raises(RuntimeError):
                 await c.collect()
@@ -216,7 +221,7 @@ class TestRSSCollect:
         # Every feed answers 200 with no entries but one: no failure rate trips, and the source used
         # to report a clean OK.
         feeds = [f"https://f{n}.example/feed" for n in range(4)]
-        c = RSSCollector(_config(feeds=feeds, empty_rate_threshold=50.0))
+        c = _collector(_config(feeds=feeds, empty_rate_threshold=50.0))
         mapping = {url: _feed([]) for url in feeds}
         mapping[feeds[0]] = _feed([_entry()])
         with patch("adapters.collectors.base.fetch_feed", side_effect=_fetch_by_url(mapping)):
@@ -231,14 +236,14 @@ class TestTitles:
         entry = _entry()
         entry["title"] = "&amp;quot;금리 인하&amp;quot; 기대"
         with patch("adapters.collectors.base.fetch_feed", return_value=_feed([entry])):
-            items = await RSSCollector(_config()).collect()
+            items = await _collector(_config()).collect()
         assert items[0].title == '"금리 인하" 기대'
 
 
 class TestSummaryOnlyEntries:
     @pytest.mark.asyncio
     async def test_a_summary_only_entry_gets_the_page_text(self):
-        c = RSSCollector(_config())
+        c = _collector(_config())
         pages = AsyncMock(return_value={"https://example.com/p/1": "the full article text"})
         with (
             patch("adapters.collectors.base.fetch_feed", return_value=_feed([_entry()])),
@@ -253,7 +258,7 @@ class TestSummaryOnlyEntries:
     async def test_an_entry_with_full_content_is_not_fetched(self):
         entry = _entry()
         entry["content"] = [{"value": "full body in the feed"}]
-        c = RSSCollector(_config())
+        c = _collector(_config())
         pages = AsyncMock(return_value={})
         with (
             patch("adapters.collectors.base.fetch_feed", return_value=_feed([entry])),
@@ -265,7 +270,7 @@ class TestSummaryOnlyEntries:
 
     @pytest.mark.asyncio
     async def test_the_feed_text_stays_when_the_page_reads_shorter_or_fails(self):
-        c = RSSCollector(_config())
+        c = _collector(_config())
         with (
             patch("adapters.collectors.base.fetch_feed", return_value=_feed([_entry()])),
             patch(
@@ -279,7 +284,7 @@ class TestSummaryOnlyEntries:
     async def test_a_feed_that_ships_whole_posts_as_the_summary_is_not_fetched(self):
         entry = _entry()
         entry["summary"] = "a whole post. " * 60
-        c = RSSCollector(_config())
+        c = _collector(_config())
         pages = AsyncMock(return_value={})
         with (
             patch("adapters.collectors.base.fetch_feed", return_value=_feed([entry])),
@@ -318,3 +323,30 @@ def test_a_minus_zero_offset_is_universal_time():
 
     instant = _feed_instant({"published": "Mon, 02 Nov 2026 10:00:00 -0000"}, ZoneInfo("Asia/Seoul"))
     assert instant.isoformat() == "2026-11-02T10:00:00+00:00"
+
+
+class TestCollectionDeadline:
+    @pytest.mark.asyncio
+    async def test_a_feed_past_the_deadline_is_cut_off_and_the_answered_ones_kept(self):
+        from adapters.collectors.base import BaseCollector
+        from application.digest_pipeline import run_collectors_with_health
+        from domain.models import SourceStatus
+        from shared import Config
+
+        async def fetch(url, **kwargs):
+            if "slow" in url:
+                await asyncio.sleep(60)
+            return _feed([_entry()])
+
+        c = _collector(_config(feeds=["https://ok.example/feed", "https://slow.example/feed"]), deadline_sec=0.05)
+        fill = AsyncMock()
+        with (
+            patch("adapters.collectors.base.fetch_feed", side_effect=fetch),
+            patch.object(RSSCollector, "_fill_summary_only", fill),
+        ):
+            items, report = await run_collectors_with_health(Config(), [("rss", c)])
+        assert [i.url for i in items] == ["https://example.com/p/1"]
+        assert isinstance(c, BaseCollector) and fill.await_count == 0  # past the deadline: no page fill
+        [health] = report.sources
+        assert health.status == SourceStatus.DEGRADED and health.item_count == 1
+        assert "1/2 feeds cut off at the collection deadline" in health.detail

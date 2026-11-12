@@ -14,14 +14,14 @@ from shared.constants import SourceType
 @pytest.fixture(autouse=True)
 def _every_page_is_open(monkeypatch):
     monkeypatch.setattr("adapters.collectors.web_search.access_controlled", AsyncMock(return_value=set()))
+    monkeypatch.setattr("adapters.collectors.web_search.access_verdicts", AsyncMock(return_value={}))
 
 
 def _collector(**kwargs) -> WebSearchCollector:
     cfg = WebSearchCollectorConfig(**kwargs)
-    cfg.reference_time = datetime(2026, 6, 3, tzinfo=UTC)
     cfg.lookback_hours = 24
     # no models -> _llm stays None, no Tavily client call in _parse_results
-    return WebSearchCollector(cfg, models=None)
+    return WebSearchCollector(cfg, models=None, reference_time=datetime(2026, 6, 3, tzinfo=UTC))
 
 
 def _result(score, *, days_old=0, title="X", url="https://example.com/a"):
@@ -90,7 +90,7 @@ class TestParseResults:
         r = {"url": "https://example.com/d", "title": "d", "content": "x", "score": 0.9, "published_date": "2026-10-10"}
         for reference in (datetime(2026, 10, 11, tzinfo=kst), datetime(2026, 10, 12, tzinfo=kst)):
             c = _collector()
-            c.config.reference_time = reference
+            c.reference_time = reference
             c.config.lookback_hours = 30
             assert len(c._parse_results({"results": [r]}, trend_name="t")) == 1
 
@@ -105,9 +105,8 @@ def _search_collector(*, models=None, **kwargs) -> WebSearchCollector:
         retry_backoff_sec=0,
         **kwargs,
     )
-    cfg.reference_time = datetime(2026, 6, 3, tzinfo=UTC)
     cfg.lookback_hours = 24
-    return WebSearchCollector(cfg, models=models)
+    return WebSearchCollector(cfg, models=models, domain="AI/ML", reference_time=datetime(2026, 6, 3, tzinfo=UTC))
 
 
 class TestCollect:
@@ -168,7 +167,7 @@ class TestCollect:
     async def test_a_paid_or_bot_checked_result_is_dropped(self, monkeypatch):
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         monkeypatch.setattr(
-            "adapters.collectors.web_search.access_controlled", AsyncMock(return_value={"https://a.example/1"})
+            "adapters.collectors.web_search.access_verdicts", AsyncMock(return_value={"https://a.example/1": "paid"})
         )
         c = _search_collector()
         client = MagicMock()
@@ -178,6 +177,45 @@ class TestCollect:
             }
         )
         c._client_instance = client
+        assert {i.url for i in await c.collect()} == {"https://b.example/2"}
+        assert c.degraded_detail == ""
+
+    @pytest.mark.asyncio
+    async def test_most_results_refused_reads_degraded_with_the_refusing_hosts(self, monkeypatch):
+        # A CDN or WAF refusing the datacenter IP dropped most results and the source still read OK.
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        verdicts = {"https://www.a.example/1": "403", "https://a.example/2": "403", "https://p.example/3": "paid"}
+        monkeypatch.setattr("adapters.collectors.web_search.access_verdicts", AsyncMock(return_value=verdicts))
+        c = _search_collector()
+        client = MagicMock()
+        client.search = AsyncMock(
+            return_value={"results": [_result(0.9, url=url, title=url) for url in [*verdicts, "https://b.example/4"]]}
+        )
+        c._client_instance = client
+        assert {i.url for i in await c.collect()} == {"https://b.example/4"}
+        status, detail = c.health_issue
+        assert status.value == "degraded"
+        assert detail == (
+            "3/4 result pages failed (>50%): dropped by the access check, 1 paid, 2 refused (403 x2); "
+            "refusing hosts: a.example (2)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_refine_step_that_runs_into_the_deadline_keeps_the_broad_results(self, monkeypatch):
+        import asyncio
+
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        c = _search_collector()
+        c.deadline_sec = 0.05
+        client = MagicMock()
+        client.search = AsyncMock(return_value={"results": [_result(0.9, url="https://b.example/2")]})
+        c._client_instance = client
+
+        async def hang(*_a):
+            await asyncio.sleep(60)
+            return []
+
+        monkeypatch.setattr(c, "_refine_search", hang)
         assert {i.url for i in await c.collect()} == {"https://b.example/2"}
 
     @pytest.mark.asyncio
@@ -591,16 +629,24 @@ class TestTitleFromUrl:
 
 
 class TestYoutubeVideoId:
-    def test_extracts_id_from_url_forms(self):
-        from adapters.collectors.web_search import _youtube_video_id
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://www.youtube.com/watch?v=4pG3SJQPAwk",
+            "https://youtu.be/4pG3SJQPAwk",
+            "https://m.youtube.com/watch?v=4pG3SJQPAwk&t=10s",
+            "https://www.youtube.com/shorts/4pG3SJQPAwk",
+            "https://www.youtube.com/live/4pG3SJQPAwk",
+            "https://www.youtube.com/embed/4pG3SJQPAwk",
+        ],
+    )
+    def test_extracts_id_from_url_forms(self, url):
+        from domain.aggregator import youtube_video_id
 
-        assert _youtube_video_id("https://www.youtube.com/watch?v=4pG3SJQPAwk") == "4pG3SJQPAwk"
-        assert _youtube_video_id("https://youtu.be/4pG3SJQPAwk") == "4pG3SJQPAwk"
-        assert _youtube_video_id("https://m.youtube.com/watch?v=4pG3SJQPAwk&t=10s") == "4pG3SJQPAwk"
-        assert _youtube_video_id("https://www.youtube.com/shorts/4pG3SJQPAwk") == "4pG3SJQPAwk"
+        assert youtube_video_id(url) == "4pG3SJQPAwk"
 
     def test_returns_empty_for_non_youtube(self):
-        from adapters.collectors.web_search import _youtube_video_id
+        from domain.aggregator import youtube_video_id
 
-        assert _youtube_video_id("https://example.com/watch?v=4pG3SJQPAwk") == ""
-        assert _youtube_video_id("https://www.youtube.com/@DwarkeshPatel") == ""
+        assert youtube_video_id("https://example.com/watch?v=4pG3SJQPAwk") == ""
+        assert youtube_video_id("https://www.youtube.com/@DwarkeshPatel") == ""

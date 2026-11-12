@@ -45,23 +45,32 @@ class NaverResearchCollector(BaseCollector):
 
     config: NaverResearchCollectorConfig
 
-    def __init__(self, config: NaverResearchCollectorConfig):
-        self.config = config
+    def __init__(
+        self,
+        config: NaverResearchCollectorConfig,
+        *,
+        reference_time: datetime | None = None,
+        deadline_sec: float | None = None,
+    ) -> None:
+        super().__init__(config, reference_time=reference_time, deadline_sec=deadline_sec)
         self._partial: list[str] = []
 
     async def collect(self) -> list[CollectedItem]:
         if not self.config.categories:
             return []
-        end = self.config.reference_time or datetime.now(_SEOUL)
+        end = self.reference_time or datetime.now(_SEOUL)
         start = cutoff_datetime(self.config.lookback_hours, end).astimezone(_SEOUL).date()
         last = (end - timedelta(seconds=1)).astimezone(_SEOUL).date()
         categories = [str(c) for c in self.config.categories]
         self._partial = []
+        self.start_deadline()
         async with httpx.AsyncClient(
             headers=FEED_FETCH_HEADERS, timeout=self.config.request_timeout, follow_redirects=True
         ) as client:
             tasks = [self._collect_category(client, c, start.isoformat(), last.isoformat()) for c in categories]
-            result = await gather_collector_results(tasks, labels=categories, raise_if_all_failed=True)
+            result = await gather_collector_results(
+                tasks, labels=categories, raise_if_all_failed=True, deadline_at=self.deadline_at
+            )
         logger.info(
             "Naver research gathered %d reports from %d/%d categories (%d failed)",
             len(result.items),
@@ -69,9 +78,15 @@ class NaverResearchCollector(BaseCollector):
             result.total,
             result.failed,
         )
-        self.record_run_health(total=result.total, failed=result.failed, empty=result.empty, what="categories")
+        self.record_run_health(
+            total=result.total,
+            failed=result.failed,
+            empty=result.empty,
+            cancelled=result.cancelled,
+            what="categories",
+        )
         if self._partial:
-            self.degraded_detail = "; ".join(filter(None, [self.degraded_detail, *self._partial]))
+            self._add_degraded_detail("; ".join(self._partial))
             logger.warning("Collector is DEGRADED: %s", self.degraded_detail)
         return _one_item_per_stock_and_day(result.items)
 
@@ -152,7 +167,7 @@ class NaverResearchCollector(BaseCollector):
         # the shipped-URL ledger keeps a story from running twice).
         published = datetime.combine(day, time(23, 59, 59), tzinfo=_SEOUL)
         if not in_collection_window(
-            published, lookback_hours=self.config.lookback_hours, reference_time=self.config.reference_time
+            published, lookback_hours=self.config.lookback_hours, reference_time=self.reference_time
         ):
             return None
         stock = str(row.get("itemName") or "")

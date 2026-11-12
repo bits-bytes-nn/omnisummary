@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from application.daily_visual import DailyVisualMaker
-from domain.models import CollectedItem, RankedItem, ThreadsDelivery, VisualBrief
+from domain.models import CollectedItem, RankedItem, ThreadsDelivery, VisualBrief, VisualPlan
 from shared.config import Config
 from shared.constants import SourceType
 from tests.fakes import FakeRenderer, FakeThreads, MemoryStateStore, fake_models
@@ -55,12 +55,12 @@ class TestTheArtDirectorInstruction:
         # Depicting real people is ALLOWED (normal editorial-cartoon practice); what is barred is
         # standing a company or country up as an ethnically-coded human, as a 2026-08-15 visual did.
         maker = _maker()
-        instruction = maker._build_instruction({"instruction": "x"})
+        instruction = maker._build_instruction(VisualPlan.model_validate({"instruction": "x"}))
         assert "GUARDRAILS:" in instruction
         assert "Recognisable depictions of real people are fine" in instruction
         assert "ethnically-coded human" in instruction
         maker.config.pipeline.visual_guardrails = ""
-        assert "GUARDRAILS:" not in maker._build_instruction({"instruction": "x"})
+        assert "GUARDRAILS:" not in maker._build_instruction(VisualPlan.model_validate({"instruction": "x"}))
 
 
 class TestRecentComics:
@@ -76,7 +76,9 @@ class TestRecentComics:
             return_value=(b"PNG", VisualBrief(title="T", prompt="p", orientation="portrait", alt_text="1컷: 빵집."))
         )
         outcome = ThreadsDelivery(2, 2, with_image=with_image)
-        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"instruction": "draw"})):
+        with patch.object(
+            maker, "_write_synopsis", new=AsyncMock(return_value=VisualPlan.model_validate({"instruction": "draw"}))
+        ):
             maker.threads.post_thread = AsyncMock(return_value=outcome)
             await maker.run(_items(), _content(), today=date(2026, 10, 17))
         return maker
@@ -239,7 +241,9 @@ class TestVisualFailureNeverCostsTheDigest:
     @pytest.mark.asyncio
     async def test_editor_skip_still_publishes_the_text_digest(self):
         maker = self._threads_maker()
-        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"skip": True})):
+        with patch.object(
+            maker, "_write_synopsis", new=AsyncMock(return_value=VisualPlan.model_validate({"skip": True}))
+        ):
             maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
             th = maker.threads.post_thread
             result = await maker.run(_items(), self._content(), today=date(2026, 6, 10))
@@ -271,7 +275,7 @@ class TestDailyVisualMaker:
     async def test_no_image_rendered_when_the_editor_skips(self):
         maker = _rendering_maker()
         maker.generator.generate = AsyncMock()
-        plan = {"skip": True, "instruction": "draw"}  # a skip wins over a written synopsis
+        plan = VisualPlan.model_validate({"skip": True, "instruction": "draw"})  # a skip wins over a written synopsis
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
             await maker.run(_items())
         maker.generator.generate.assert_not_awaited()
@@ -284,7 +288,9 @@ class TestDailyVisualMaker:
         from domain.models import DigestContent, DigestItem
 
         maker = _rendering_maker()
-        plan = {"skip": False, "item_number": 3, "research": [], "instruction": "draw"}  # editor drifts
+        plan = VisualPlan.model_validate(
+            {"skip": False, "item_number": 3, "research": [], "instruction": "draw"}
+        )  # editor drifts
         content = DigestContent(
             lead="lead", items=[DigestItem(title="t", url="http://e.com/2", body="b")]
         )  # headline maps to ranked Story 2 by URL
@@ -304,7 +310,7 @@ class TestDailyVisualMaker:
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
-        plan = {"skip": False, "instruction": "x"}
+        plan = VisualPlan.model_validate({"skip": False, "instruction": "x"})
         content = DigestContent(
             lead="오늘의 리드.",
             items=[DigestItem(title="스토리", url="http://e.com/1", body="본문.")],
@@ -336,7 +342,7 @@ class TestDailyVisualMaker:
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
-        plan = {"skip": False, "instruction": "x"}
+        plan = VisualPlan.model_validate({"skip": False, "instruction": "x"})
         empty = DigestContent(lead="리드만 남았다.", items=[])
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
             maker.generator.generate = AsyncMock(
@@ -376,7 +382,7 @@ class TestDailyVisualMaker:
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
-        plan = {"skip": False, "research": [], "instruction": "x"}
+        plan = VisualPlan.model_validate({"skip": False, "research": [], "instruction": "x"})
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
             maker.generator.generate = AsyncMock(
@@ -398,7 +404,7 @@ class TestDailyVisualMaker:
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
-        plan = {"skip": False, "research": [], "instruction": "x"}
+        plan = VisualPlan.model_validate({"skip": False, "research": [], "instruction": "x"})
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
         deadline = time.monotonic() + 900
         gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait")))
@@ -456,7 +462,11 @@ class TestDailyVisualMaker:
             maker.threads_ledger.mark(date(2026, 6, 10), "other-run")
             return b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait")
 
-        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"skip": False, "instruction": "x"})):
+        with patch.object(
+            maker,
+            "_write_synopsis",
+            new=AsyncMock(return_value=VisualPlan.model_validate({"skip": False, "instruction": "x"})),
+        ):
             maker.generator.generate = _render_while_another_run_posts
             maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
             th = maker.threads.post_thread
@@ -473,7 +483,7 @@ class TestDailyVisualMaker:
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
         maker.threads_ledger.mark(date(2026, 6, 10))  # today already posted
-        plan = {"skip": False, "instruction": "x"}
+        plan = VisualPlan.model_validate({"skip": False, "instruction": "x"})
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
             maker.generator.generate = AsyncMock(
@@ -495,7 +505,9 @@ class TestDailyVisualMaker:
         maker.publisher.has_a_destination = MagicMock(return_value=True)
         maker.threads_ledger.already_posted = MagicMock(return_value=True)  # claimed after has_a_destination passed
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
-        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"skip": True})):
+        with patch.object(
+            maker, "_write_synopsis", new=AsyncMock(return_value=VisualPlan.model_validate({"skip": True}))
+        ):
             maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
             th = maker.threads.post_thread
             await maker.run(_items(), content, today=date(2026, 6, 10))
@@ -510,7 +522,7 @@ class TestDailyVisualMaker:
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
         maker.threads_ledger.mark(date(2026, 6, 10))
-        plan = {"skip": False, "instruction": "x"}
+        plan = VisualPlan.model_validate({"skip": False, "instruction": "x"})
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
             maker.generator.generate = AsyncMock(
@@ -536,7 +548,11 @@ class TestDailyVisualMaker:
     @pytest.mark.asyncio
     async def test_a_plan_without_a_synopsis_is_a_skip(self):
         maker = _maker()
-        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"skip": False, "instruction": " "})):
+        with patch.object(
+            maker,
+            "_write_synopsis",
+            new=AsyncMock(return_value=VisualPlan.model_validate({"skip": False, "instruction": " "})),
+        ):
             _, instruction, _ = await maker._compose(_items(), _content(), date(2026, 6, 10), recent_comics=[])
         assert instruction == ""
 
@@ -551,7 +567,7 @@ class TestDailyVisualMaker:
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
         maker.threads_ledger.mark(date(2026, 6, 10))  # prior successful post
-        plan = {"skip": False, "instruction": "x"}
+        plan = VisualPlan.model_validate({"skip": False, "instruction": "x"})
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
             maker.generator.generate = AsyncMock(
@@ -569,7 +585,7 @@ class TestDailyVisualMaker:
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
-        plan = {"skip": False, "instruction": "x"}
+        plan = VisualPlan.model_validate({"skip": False, "instruction": "x"})
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
             maker.generator.generate = AsyncMock(
@@ -588,7 +604,7 @@ class TestDailyVisualMaker:
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
-        plan = {"skip": False, "instruction": "x"}
+        plan = VisualPlan.model_validate({"skip": False, "instruction": "x"})
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
             maker.generator.generate = AsyncMock(
@@ -608,7 +624,7 @@ class TestDailyVisualMaker:
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
-        plan = {"skip": False, "instruction": "x"}
+        plan = VisualPlan.model_validate({"skip": False, "instruction": "x"})
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
         claimed_during_post: list[bool] = []
 
@@ -634,7 +650,7 @@ class TestDailyVisualMaker:
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
-        plan = {"skip": False, "instruction": "x"}
+        plan = VisualPlan.model_validate({"skip": False, "instruction": "x"})
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
             maker.generator.generate = AsyncMock(
@@ -655,7 +671,9 @@ class TestDailyVisualMaker:
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
-        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"instruction": "x"})):
+        with patch.object(
+            maker, "_write_synopsis", new=AsyncMock(return_value=VisualPlan.model_validate({"instruction": "x"}))
+        ):
             maker.generator.generate = AsyncMock(
                 return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
             )
@@ -669,7 +687,9 @@ class TestDailyVisualMaker:
         # post a second root.
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
-        with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value={"instruction": "x"})):
+        with patch.object(
+            maker, "_write_synopsis", new=AsyncMock(return_value=VisualPlan.model_validate({"instruction": "x"}))
+        ):
             maker.generator.generate = AsyncMock(
                 return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
             )
@@ -680,7 +700,7 @@ class TestDailyVisualMaker:
     @pytest.mark.asyncio
     async def test_threads_disabled_by_default(self):
         maker = _maker()
-        plan = {"skip": False, "instruction": "x"}
+        plan = VisualPlan.model_validate({"skip": False, "instruction": "x"})
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
             maker.generator.generate = AsyncMock(
                 return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
@@ -693,7 +713,7 @@ class TestDailyVisualMaker:
     @pytest.mark.asyncio
     async def test_a_render_failure_publishes_text_only(self):
         maker = _rendering_maker()
-        plan = {"skip": False, "item_number": 1, "instruction": "draw"}
+        plan = VisualPlan.model_validate({"skip": False, "item_number": 1, "instruction": "draw"})
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
             maker.generator.generate = AsyncMock(side_effect=RuntimeError("boom"))
             await maker.run(_items())
@@ -711,7 +731,7 @@ class TestDailyVisualMaker:
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
-        plan = {"skip": False, "instruction": "x"}
+        plan = VisualPlan.model_validate({"skip": False, "instruction": "x"})
         content = DigestContent(
             lead="오늘의 리드.",
             items=[DigestItem(title="스토리", url="http://e.com/1", body="본문.")],
@@ -736,7 +756,7 @@ class TestDailyVisualMaker:
 
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
-        plan = {"skip": False, "instruction": "x"}
+        plan = VisualPlan.model_validate({"skip": False, "instruction": "x"})
         content = DigestContent(lead="리드.", items=[DigestItem(title="s", url="http://e.com/1", body="b")])
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
             maker.generator.generate = AsyncMock(
@@ -786,7 +806,7 @@ class TestDailyVisualMaker:
             ],
         )
         gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait")))
-        plan = {"skip": False, "instruction": "draw"}
+        plan = VisualPlan.model_validate({"skip": False, "instruction": "draw"})
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)) as write:
             maker.generator.generate = gen
             await maker.run(_items(), content, today=date(2026, 6, 10))
@@ -824,7 +844,7 @@ class TestDailyVisualMaker:
         maker = _maker()
         maker.llm = RunnableLambda(lambda _: AIMessage(content='Here:\n{"skip": false, "item_number": 1}\ndone'))
         plan = await maker._write_synopsis("source", [])
-        assert plan == {"skip": False, "item_number": 1}
+        assert plan == VisualPlan(skip=False)
 
     @pytest.mark.asyncio
     async def test_write_synopsis_malformed_plan_becomes_skip(self):
@@ -835,7 +855,16 @@ class TestDailyVisualMaker:
 
         maker = _maker()
         maker.llm = RunnableLambda(lambda _: AIMessage(content="no json here at all"))
-        assert await maker._write_synopsis("source", []) == {"skip": True}
+        assert await maker._write_synopsis("source", []) == VisualPlan(skip=True)
+
+    @pytest.mark.asyncio
+    async def test_a_plan_outside_the_schema_becomes_skip(self):
+        from langchain_core.messages import AIMessage
+        from langchain_core.runnables import RunnableLambda
+
+        maker = _maker()
+        maker.llm = RunnableLambda(lambda _: AIMessage(content='{"skip": "perhaps", "instruction": "draw"}'))
+        assert await maker._write_synopsis("source", []) == VisualPlan(skip=True)
 
     @pytest.mark.asyncio
     async def test_a_stringly_typed_skip_flag_does_not_kill_the_visual(self):
@@ -847,7 +876,7 @@ class TestDailyVisualMaker:
         maker.config.pipeline.enable_threads_post = False
         content = DigestContent(lead="리드.", items=[DigestItem(title="헤드라인", url="http://e.com/1", body="본문.")])
         gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait")))
-        plan = {"skip": "false", "research": [], "instruction": "draw it"}
+        plan = VisualPlan.model_validate({"skip": "false", "research": [], "instruction": "draw it"})
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
             maker.generator.generate = gen
             await maker.run(_items(), content, today=date(2026, 6, 10))
@@ -858,7 +887,9 @@ class TestDailyVisualMaker:
         # `bool(plan.get("use_character"))` on "false" injected the mascot sheet against the
         # editor's judgment.
         maker = _maker()
-        instruction = maker._build_instruction({"instruction": "draw", "use_character": "false"})
+        instruction = maker._build_instruction(
+            VisualPlan.model_validate({"instruction": "draw", "use_character": "false"})
+        )
         assert "THE NARRATOR" not in instruction
 
     @pytest.mark.asyncio
@@ -881,7 +912,7 @@ class TestCharacterInjection:
     async def test_character_sheet_injected_when_editor_opts_in(self):
         maker = _rendering_maker()
         maker.config.pipeline.visual_character_enabled = True
-        plan = {"skip": False, "instruction": "draw it", "use_character": True}
+        plan = VisualPlan.model_validate({"skip": False, "instruction": "draw it", "use_character": True})
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
             maker.generator.generate = AsyncMock(
                 return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
@@ -895,7 +926,7 @@ class TestCharacterInjection:
     async def test_character_not_injected_when_globally_disabled(self):
         maker = _rendering_maker()
         maker.config.pipeline.visual_character_enabled = False
-        plan = {"skip": False, "instruction": "draw it", "use_character": True}
+        plan = VisualPlan.model_validate({"skip": False, "instruction": "draw it", "use_character": True})
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
             maker.generator.generate = AsyncMock(
                 return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait"))
@@ -911,7 +942,7 @@ class TestComposeIsWhatShips:
 
     @pytest.mark.asyncio
     async def test_output_is_byte_identical_to_what_make_visual_sends(self):
-        plan = {"skip": False, "instruction": "Draw the story.", "use_character": True}
+        plan = VisualPlan.model_validate({"skip": False, "instruction": "Draw the story.", "use_character": True})
         post_date = date(2026, 8, 15)
         maker = _rendering_maker()
         maker.config.pipeline.enable_threads_post = False
@@ -946,7 +977,7 @@ class TestStoryLessDayDoesNotPayForARender:
         maker = _maker()
         maker.config.pipeline.enable_threads_post = True
         content = TestVisualFailureNeverCostsTheDigest._content()
-        plan = {"skip": False, "instruction": "Draw."}
+        plan = VisualPlan.model_validate({"skip": False, "instruction": "Draw."})
         gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="portrait")))
         with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
             maker.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))
@@ -966,15 +997,15 @@ class TestCharacterReference:
         gen = AsyncMock(return_value=(b"PNG", VisualBrief(title="T", prompt="draw", orientation="tall")))
         maker.generator.generate = gen
         for use_character, expected in ((True, [b"SHEET"]), (False, [])):
-            plan = {"skip": False, "instruction": "x", "use_character": use_character}
+            plan = VisualPlan.model_validate({"skip": False, "instruction": "x", "use_character": use_character})
             with patch.object(maker, "_write_synopsis", new=AsyncMock(return_value=plan)):
                 await maker._make_visual(_items(), None, date(2026, 6, 10))
             assert gen.await_args.kwargs["references"] == expected
 
     def test_the_narrator_joins_only_when_the_plan_asks_for_him(self):
         maker = _maker()
-        assert maker._features_character({"instruction": "x"}) is False
-        assert maker._features_character({"instruction": "x", "use_character": True}) is True
+        assert maker._features_character(VisualPlan.model_validate({"instruction": "x"})) is False
+        assert maker._features_character(VisualPlan.model_validate({"instruction": "x", "use_character": True})) is True
 
     def test_a_missing_reference_file_degrades_to_none(self, tmp_path):
         maker = _maker()

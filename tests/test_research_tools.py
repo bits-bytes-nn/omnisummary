@@ -13,7 +13,7 @@ from application.research import (
 )
 from domain.digest_snapshot import DigestSnapshot
 from domain.formatting import normalize_citation_url
-from domain.models import ImageAsset
+from domain.models import FactIssue, ImageAsset
 from shared import get_config
 from shared.config import Config
 from tests.fakes import FakeSources
@@ -426,8 +426,8 @@ class TestThreadFactCheck:
     @pytest.mark.asyncio
     async def test_a_contradicted_claim_sends_the_thread_back_until_a_rewrite_passes(self):
         delivery = _threads_delivery()
-        issues = [{"post": 5, "claim": "더 비싼 값", "source_says": "Muse is cheaper per task"}]
-        new_claim = [{"post": 2, "claim": "1조원에 인수", "source_says": "no acquisition"}]
+        issues = [FactIssue(post=5, claim="더 비싼 값", source_says="Muse is cheaper per task")]
+        new_claim = [FactIssue(post=2, claim="1조원에 인수", source_says="no acquisition")]
         check = AsyncMock(side_effect=[issues, new_claim, []])
         post = AsyncMock(return_value=DeliveryOutcome.POSTED)
         with request_context(delivery):
@@ -481,21 +481,22 @@ class TestThreadFactCheck:
         def model(prompt):
             seen["text"] = prompt.to_string()
             return AIMessage(
-                content='```json\n{"issues": [{"post": 1, "claim": "더 비싸다", "source_says": "cheaper"}]}\n```'
+                content='```json\n{"issues": [{"post": 1, "claim": "더 비싸다", "source_says": "cheaper"}, '
+                '{"post": 2, "claim": ""}, "not an issue"]}\n```'
             )
 
         delivery.ports.models = MagicMock()
         delivery.ports.models.get_model.return_value = RunnableLambda(model)
         with request_context(delivery):
             issues = await research.check_thread_facts("Muse가 더 비싸다.\nhttps://a.example/1", delivery)
-        assert issues == [{"post": 1, "claim": "더 비싸다", "source_says": "cheaper"}]
+        assert issues == [FactIssue(post=1, claim="더 비싸다", source_says="cheaper")]
         assert "POST 1:" in seen["text"] and "Muse is cheaper per task." in seen["text"]
 
     @pytest.mark.asyncio
     async def test_the_check_is_skipped_once_the_thread_is_live(self):
         delivery = DeliveryContext(config=Config(), publish_threads=True)
         delivery.delivered_channels.add("threads")
-        check = AsyncMock(return_value=[{"post": 1, "claim": "x"}])
+        check = AsyncMock(return_value=[FactIssue(post=1, claim="x")])
         with request_context(delivery):
             with patch.object(research, "check_thread_facts", new=check):
                 msg = await rt.deliver_report._tool_func("다시 보낸 스레드", channel="threads")

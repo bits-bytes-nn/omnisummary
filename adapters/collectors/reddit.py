@@ -28,9 +28,6 @@ class RedditCollector(BaseCollector):
 
     config: RedditCollectorConfig
 
-    def __init__(self, config: RedditCollectorConfig):
-        self.config = config
-
     async def collect(self) -> list[CollectedItem]:
         subreddits = self.config.subreddits
         if not subreddits:
@@ -50,7 +47,7 @@ class RedditCollector(BaseCollector):
             feed,
             source_type=SourceType.REDDIT,
             lookback_hours=self.config.lookback_hours,
-            reference_time=self.config.reference_time,
+            reference_time=self.reference_time,
             description=description,
             metadata={},
             item_id_of=lambda entry, link: self._extract_post_id(entry.get("id", ""), link),

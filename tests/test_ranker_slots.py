@@ -1,3 +1,5 @@
+from urllib.parse import urlparse
+
 from domain.models import CollectedItem, RankedItem
 from shared.config import PipelineConfig
 from shared.constants import SourceType
@@ -25,7 +27,7 @@ def _ranked(
         item_id=item_id,
         source_type=source,
         title=f"title-{item_id}",
-        url=url or f"http://example.com/{item_id}",
+        url=url or (f"https://{urlparse(feed).netloc}/{item_id}" if feed else f"http://example.com/{item_id}"),
         author=author or None,
         metadata=metadata,
     )
@@ -112,10 +114,22 @@ class TestOriginCap:
             _ranked(0.95, SourceType.RSS, item_id="r1"),
             _ranked(0.94, SourceType.RSS, item_id="r2"),
             _ranked(0.93, SourceType.RSS, item_id="r3"),
-            _ranked(0.60, SourceType.RSS, item_id="r4", feed="https://other.example/feed"),
+            _ranked(0.60, SourceType.RSS, item_id="r4", url="https://other.example/r4"),
         ]
         selected = ranker._apply_source_slots(items, ranker.config.top_n)
         assert {r.item.item_id for r in selected} == {"r1", "r4"}
+
+    def test_two_feeds_of_one_publisher_compete_for_one_origin_seat(self):
+        ranker = _ranker(top_n=2, min_score=0.5, source_slots={}, max_per_origin=1)
+        items = [
+            _ranked(0.95, SourceType.RSS, item_id="a", feed="https://pub.example/rss/1", url="https://pub.example/a"),
+            _ranked(0.94, SourceType.RSS, item_id="b", feed="https://pub.example/rss/2", url="https://pub.example/b"),
+            _ranked(
+                0.60, SourceType.RSS, item_id="c", feed="https://other.example/feed", url="https://other.example/c"
+            ),
+        ]
+        selected = ranker._apply_source_slots(items, ranker.config.top_n)
+        assert {r.item.item_id for r in selected} == {"a", "c"}
 
     def test_an_author_less_x_item_is_capped_by_its_host(self):
         # Observed live on 2026-08-18: DOMAIN_TO_SOURCE relabels a web-search hit or a pinned x.com

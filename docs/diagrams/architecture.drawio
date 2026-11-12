@@ -32,7 +32,7 @@
         <mxCell id="collectors" value="Collectors (async)&#10;RSS · Reddit (.rss) · YouTube · WebSearch (Tavily)&#10;X (S3 park file) · Naver 증권 research (invest)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#888888;align=center;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="70" y="250" width="250" height="80" as="geometry"/>
         </mxCell>
-        <mxCell id="pipeline" value="Pipeline&#10;Aggregate → Rank (Opus 5.5 AI / Sonnet 5.5 invest)&#10;→ pool → Trends → Digest (Sonnet 5.5 picks top 5)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#888888;align=center;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="pipeline" value="Pipeline&#10;Aggregate → Rank (Opus 5.5 AI / Sonnet 5.5 invest)&#10;→ pool → Digest (Sonnet 5.5 picks top 5) → Trends" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#888888;align=center;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="400" y="250" width="270" height="80" as="geometry"/>
         </mxCell>
 
@@ -106,7 +106,15 @@
         <mxCell id="e12" value="on failure" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;dashed=1;fontSize=10;" edge="1" parent="1" source="investlambda" target="dlq"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e13" value="rotates the token" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;dashed=1;fontSize=10;" edge="1" parent="1" source="refreshlambda" target="ssm"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="634" y="790"/><mxPoint x="334" y="790"/></Array></mxGeometry></mxCell>
 
-        <mxCell id="e10" value="park files" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;dashed=1;fontSize=10;" edge="1" parent="1" source="collectors" target="s3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="localsync" value="Local sync (cron, residential IP)&#10;sync_all_to_s3.sh · RSSHub container (X) · YouTube transcripts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#888888;align=center;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="850" width="320" height="50" as="geometry"/>
+        </mxCell>
+<mxCell id="e14" value="park files" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;dashed=1;fontSize=10;" edge="1" parent="1" source="localsync" target="s3"><mxGeometry relative="1" as="geometry"/></mxCell>
+<mxCell id="e15" value="on failure" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;dashed=1;fontSize=10;" edge="1" parent="1" source="digestlambda" target="dlq"><mxGeometry relative="1" as="geometry"/></mxCell>
+<mxCell id="e16" value="on failure" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;dashed=1;fontSize=10;" edge="1" parent="1" source="visuallambda" target="dlq"><mxGeometry relative="1" as="geometry"/></mxCell>
+<mxCell id="e17" value="hourly" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;dashed=1;fontSize=10;" edge="1" parent="1" source="eventbridge" target="commentlambda"><mxGeometry relative="1" as="geometry"/></mxCell>
+<mxCell id="e18" value="weekly" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;dashed=1;fontSize=10;" edge="1" parent="1" source="eventbridge" target="refreshlambda"><mxGeometry relative="1" as="geometry"/></mxCell>
+<mxCell id="e10" value="park files" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;dashed=1;fontSize=10;" edge="1" parent="1" source="s3" target="collectors"><mxGeometry relative="1" as="geometry"/></mxCell>
 
         <mxCell id="f1" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;" edge="1" parent="1" source="user" target="cli"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="f2" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;" edge="1" parent="1" source="cli" target="runtime"><mxGeometry relative="1" as="geometry"/></mxCell>

@@ -76,7 +76,7 @@ curl -s http://localhost:1200/twitter/user/<collectors.rsshub.accounts의 계정
 ./scripts/sync_all_to_s3.sh
 aws s3api head-object --profile research --region ap-northeast-2 --bucket <상태 버킷> --key omnisummary/rsshub_items.json \
   --query LastModified --output text   # 방금 실행한 시각이어야 한다
-tail -1 digest_state/last_park_sync_rsshub.txt   # 정상 동기화로 기록된 시작·업로드 시각(투자 판은 digest_state/invest/)
+tail -1 digest_state/last_park_sync_rsshub.txt   # 정상 동기화로 기록된 시작·업로드 시각(투자판은 digest_state/invest/)
 ```
 
 `last_park_sync_rsshub.txt`에 새 줄이 없으면 그 동기화는 실패율이나 빈 응답률 임계를 넘은 비정상 동기화다. 쿠키와 계정 목록을 다시 본다.
@@ -152,7 +152,7 @@ aws logs filter-log-events --profile research --region ap-northeast-2 --log-grou
 `main.py --date <날짜> --force-republish`는 다시 수집하고 새로 쓰므로 그날 게시된 것과 다른 다이제스트가 나가고, 저장된
 기록도 그것으로 바뀐다. 저장된 스냅샷이 없거나 기사가 0건일 때만 쓴다.
 
-DLQ에 쌓인 메시지는 다시 올리고 위 확인을 마친 뒤에만 지운다. digest Lambda 메시지를 다시 넣으면 그 메시지가 실행됐던 날짜의 다이제스트를 다시 만든다(이벤트의 `time`을 읽는다). 그날 비주얼 Lambda가 아직 게시 중이면 새로 만든 스냅숏이 그날의 기록을 덮어써서, 게시된 글과 회상·재게시 기준이 달라진다. 저장된 다이제스트가 있고 게시만 실패했다면 digest 메시지를 다시 넣지 말고 비주얼 Lambda에 `{"digest_date": "YYYY-MM-DD"}`를 넘겨 저장된 것을 게시한다.
+DLQ에 쌓인 메시지는 다시 올리고 위 확인을 마친 뒤에만 지운다. digest Lambda 메시지를 다시 넣으면 그 메시지가 실행됐던 날짜의 다이제스트를 다시 만든다(이벤트의 `time`을 읽는다). 그날 비주얼 Lambda가 아직 게시 중이면 새로 만든 스냅샷이 그날의 기록을 덮어써서, 게시된 글과 회상·재게시 기준이 달라진다. 저장된 다이제스트가 있고 게시만 실패했다면 digest 메시지를 다시 넣지 말고 비주얼 Lambda에 `{"digest_date": "YYYY-MM-DD"}`를 넘겨 저장된 것을 게시한다.
 
 DLQ는 두 판이 함께 쓴다. 큐를 통째로 비우지 말고, 메시지마다 `functionArn`과 `requestPayload`로 어느 Lambda의 어느 날짜인지
 확인한 뒤 다시 올리고 확인까지 마친 메시지만 수신 핸들로 지운다. 수신한 메시지는 `--visibility-timeout` 동안만 핸들이 유효하다.
@@ -179,7 +179,7 @@ digest로 돌고(`ResolvedImageUri`), `State`가 `Active`, `LastUpdateStatus`가
 |--------|------|
 | 비밀값이 모두 들어 있는지 | `uv run python scripts/put_secrets.py --verify` |
 | X 수집기가 살아 있는지 | `curl -s http://localhost:1200/twitter/user/<설정의 X 계정> \| head` |
-| 최근 정상 동기화 시각(시작, 업로드) | `cat digest_state/last_park_sync_rsshub.txt digest_state/last_park_sync_youtube.txt`(투자 판은 `digest_state/invest/`) |
+| 최근 정상 동기화 시각(시작, 업로드) | `cat digest_state/last_park_sync_rsshub.txt digest_state/last_park_sync_youtube.txt`(투자판은 `digest_state/invest/`) |
 | 동기화 로그 | `tail -50 logs/sync.log`(cron이 그 경로에 쓸 때) |
 | 추적 중인 트렌드 | `uv run python recall_cli.py trends` |
 | 지금 답할 댓글 초안(게시하지 않는다) | `uv run python scripts/sample_comment_replies.py` |

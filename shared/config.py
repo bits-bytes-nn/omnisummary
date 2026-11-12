@@ -64,7 +64,6 @@ class BaseCollectorConfig(_StrictModel):
     # Config._lookback_reaches_the_previous_run); 30 is the 19:00 KST floor plus an hour. Declared ONCE:
     # a subclass re-declaration replaces the FieldInfo and drops ge=1. Wider windows go in the YAML.
     lookback_hours: int = Field(default=30, ge=1)
-    reference_time: datetime | None = None
     request_timeout: int = Field(default=30, ge=1)
     max_retries: int = Field(default=3, ge=1)
     retry_backoff_sec: int = Field(default=5, ge=0)
@@ -163,8 +162,7 @@ class WebSearchCollectorConfig(BaseCollectorConfig):
     max_results_per_query: int = Field(default=10, ge=1)
     refine_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
     max_refine_queries: int = Field(default=3, ge=1)
-    # The field the refine step asks for queries about (the edition's pipeline.domain), and its rules.
-    domain: str = "AI/ML"
+    # The refine step's rules; the field it asks about is the edition's pipeline.domain.
     refine_rules: str = (
         "- Prefer: technical blog posts, paper analyses, benchmarks, tool releases, practitioner discussions\n"
         '- No generic terms ("AI news", "machine learning update")'
@@ -200,10 +198,17 @@ class CollectorsConfig(_StrictModel):
     # this is an explicit opt-in list rather than "alert whenever any source is empty" — that would
     # page daily and be muted within a week. Empty (the default) never alerts on EMPTY.
     alert_on_empty: list[str] = Field(default_factory=list)
-    # Wall-clock limit on ONE collector's collect() in a digest run. A source past it is cancelled and
-    # reported FAILED, the others' items are kept: the per-request timeouts bound each read, not a
-    # whole fan-out, and the digest Lambda still has to rank and write after collection.
+    # Wall-clock limit on ONE collector's fan-out in a digest run: the inputs still running then are
+    # cut off and the finished ones' items kept (the source reads DEGRADED). The per-request timeouts
+    # bound each read, not a whole fan-out, and the digest Lambda still has to rank and write.
     collection_deadline_sec: int = Field(default=300, ge=1)
+
+    @property
+    def collection_backstop_sec(self) -> int:
+        """When the pipeline cancels a collector that is still running (reported FAILED): the deadline
+        plus one request of the slowest-configured collector, for what follows a cut-off fan-out (the
+        web results' access check). Derived, so it cannot drift below the deadline."""
+        return self.collection_deadline_sec + max(getattr(self, name).request_timeout for name in COLLECTOR_NAMES)
 
     @model_validator(mode="after")
     def _alert_on_empty_names_known_collectors(self) -> "CollectorsConfig":
@@ -217,10 +222,6 @@ class CollectorsConfig(_StrictModel):
                 f"valid names are {sorted(COLLECTOR_NAMES)}"
             )
         return self
-
-    def set_reference_time(self, reference_time: datetime) -> None:
-        for name in COLLECTOR_NAMES:
-            getattr(self, name).reference_time = reference_time
 
 
 def _utc_offset_hours(timezone: str) -> int:
@@ -730,12 +731,7 @@ class Config(_StrictModel):
 
 @lru_cache(maxsize=1)
 def get_config() -> Config:
-    """Process-wide cached Config for READ-ONLY leaf callers (delivery, research backends, agent
-    tools, og-image). Config.load() re-reads and re-validates the whole YAML on every call, which
-    a single research run did dozens of times — once per tool invocation.
-
-    Deliberately NOT used where the Config is MUTATED (main/handlers' set_reference_time, the infra
-    tests' bucket override): those callers need their own instance, and
-    a shared cached object would leak their edits everywhere. Tests clear the cache via an autouse
-    fixture in tests/conftest.py."""
+    """Process-wide cached Config for the SSM secret helpers in adapters/aws.py, whose many callers
+    hold no config. Everything else is handed its Config by the composition root. Tests clear the
+    cache via an autouse fixture in tests/conftest.py."""
     return Config.load()

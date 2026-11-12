@@ -47,10 +47,9 @@ def _collector(monkeypatch, pages: dict[str, list[dict]], **cfg) -> tuple[NaverR
         enabled=True,
         lookback_hours=42,
         page_delay_sec=0,
-        reference_time=datetime(2026, 11, 3, tzinfo=SEOUL),
         **cfg,
     )
-    return NaverResearchCollector(config), seen
+    return NaverResearchCollector(config, reference_time=datetime(2026, 11, 3, tzinfo=SEOUL)), seen
 
 
 @pytest.mark.asyncio
@@ -146,9 +145,11 @@ async def test_a_transient_status_is_retried(monkeypatch):
         page_delay_sec=0,
         retry_backoff_sec=0,
         categories=["company"],
-        reference_time=datetime(2026, 11, 3, tzinfo=SEOUL),
     )
-    assert len(await NaverResearchCollector(config).collect()) == 1 and len(calls) == 2
+    assert (
+        len(await NaverResearchCollector(config, reference_time=datetime(2026, 11, 3, tzinfo=SEOUL)).collect()) == 1
+        and len(calls) == 2
+    )
 
 
 def test_a_news_item_that_wins_a_title_tie_keeps_its_own_link():
@@ -346,8 +347,8 @@ async def test_a_later_page_failing_keeps_the_pages_read_and_degrades_the_source
             lookback_hours=42,
             page_delay_sec=0,
             max_retries=1,
-            reference_time=datetime(2026, 11, 3, tzinfo=SEOUL),
-        )
+        ),
+        reference_time=datetime(2026, 11, 3, tzinfo=SEOUL),
     )
     items = await collector.collect()
     assert len(items) == 2

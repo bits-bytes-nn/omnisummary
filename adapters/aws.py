@@ -39,15 +39,15 @@ def aws_region() -> str | None:
 def secret_parameter_name(suffix: str) -> str:
     """/{project}/{stage}/{suffix}: the Lambda's own PROJECT_NAME/STAGE, else the config's — the names
     scripts/put_secrets.py writes under. Hardcoded "omnisummary"/"dev" fallbacks sent a local run of
-    any other stage to the dev secrets while it read that stage's memory."""
+    any other stage to the dev secrets while it read that stage's memory, so an unreadable config
+    raises instead."""
     project, stage = os.getenv("PROJECT_NAME"), os.getenv("STAGE")
     if not (project and stage):
-        try:
-            aws = get_config().aws
-            project, stage = project or aws.project_name, stage or aws.stage
-        except Exception:
-            logger.warning("Could not read the project/stage from config; using the defaults", exc_info=True)
-    return f"/{project or 'omnisummary'}/{stage or 'dev'}/{suffix}"
+        aws = get_config().aws
+        project, stage = project or aws.project_name, stage or aws.stage
+    if not (project and stage):
+        raise ValueError(f"No project/stage to name the SSM parameter '{suffix}' under")
+    return f"/{project}/{stage}/{suffix}"
 
 
 def state_location(config) -> tuple[str, str]:

@@ -55,12 +55,15 @@ TRENDS_KEY: str = "trends.json"
 # value locally. The CDK stack creates each parameter holding SSM_PLACEHOLDER so no secret ever
 # enters a CloudFormation template; scripts/put_secrets.py writes the real values as SecureStrings.
 # One mapping, used by both, so a renamed parameter can't drift between them.
+# The Threads secrets' SSM suffixes, shared by the readers, the token refresh and the stack's IAM grants.
+THREADS_TOKEN_SECRET = "threads-access-token"
+THREADS_USER_SECRET = "threads-user-id"
 SSM_SECRET_ENV_VARS: dict[str, str] = {
     "tavily-api-key": "TAVILY_API_KEY",
     "openai-api-key": "OPENAI_API_KEY",
     "youtube-api-key": "YOUTUBE_API_KEY",
-    "threads-access-token": "THREADS_ACCESS_TOKEN",
-    "threads-user-id": "THREADS_USER_ID",
+    THREADS_TOKEN_SECRET: "THREADS_ACCESS_TOKEN",
+    THREADS_USER_SECRET: "THREADS_USER_ID",
 }
 
 # Value the stack writes instead of a real secret. resolve_secret() treats it as "unset" so a

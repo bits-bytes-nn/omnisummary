@@ -39,8 +39,9 @@ collectors:
     # transcripts), so an absent one is a DEGRADED source, not a quiet fall-through to live
     # metadata-only collection.
     park_required: true
-    # A park day carries 2-3 videos, where one caption-less upload is already a third of them: rates
-    # (failed or empty channels, videos without a transcript) are judged from 4 inputs up.
+    # Rates (failed or empty channels, a partial share of videos without a transcript) are judged from
+    # 4 inputs up: a park day carries only a handful of videos, where one caption-less upload is already
+    # a third of them. A day where EVERY video lacks a transcript is reported at any count.
     min_inputs_for_rate: 4
     # empty_rate_threshold is deliberately NOT armed for youtube (see rsshub below, where it is). The
     # all-200-and-empty shape it targets has no YouTube analogue — a revoked key, an exhausted quota
@@ -154,7 +155,6 @@ collectors:
           - "market outlook strategist view stocks rates"
           - "economic outlook inflation Fed recession strategist"
         domains: ["goldmansachs.com", "jpmorgan.com", "morganstanley.com", "blackrock.com", "pimco.com", "schroders.com", "invesco.com"]
-    domain: "investing (Korean, US and global stocks, macro and markets, crypto assets, and Korean real estate)"
     refine_rules: |-
       - Prefer: earnings and guidance, filings, central-bank and policy decisions, analyst actions, wire reports
       - No generic terms ("stock market news", "crypto update")
@@ -203,8 +203,9 @@ collectors:
   alert_on_empty: []
     # - "rss"
     # - "web_search"
-  # Wall-clock limit on one collector in a digest run: a source past it is reported FAILED and the
-  # others' items are kept, so ranking and writing keep their share of the Lambda's 15 minutes.
+  # Wall-clock limit on one collector's fan-out in a digest run: the inputs still running then are cut
+  # off, the answered ones' items kept and the source reported DEGRADED, so ranking and writing keep
+  # their share of the Lambda's 15 minutes.
   collection_deadline_sec: 300
 
 pipeline:

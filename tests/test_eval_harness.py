@@ -50,7 +50,7 @@ def _judging(prefer):
 
 def _cases(harness, monkeypatch, tmp_path, judge, n=8):
     monkeypatch.setattr(harness, "ROOT", tmp_path)
-    monkeypatch.setattr(harness, "get_config", lambda: Config())
+    monkeypatch.setattr(harness, "_edition", lambda: "")
     monkeypatch.setattr(harness.Config, "load", classmethod(lambda cls, *a, **k: Config()))
     models = MagicMock()
     models.get_model.return_value = judge
@@ -107,7 +107,7 @@ def test_a_digest_replay_takes_the_editors_path_and_shows_the_judge_the_editors_
     write = MagicMock(side_effect=lambda *a, **k: asyncio.sleep(0, DigestResult(digest_text="digest")))
 
     monkeypatch.setattr(harness, "ROOT", tmp_path)
-    monkeypatch.setattr(harness, "get_config", lambda: config)
+    monkeypatch.setattr(harness, "_edition", lambda: config.edition)
     monkeypatch.setattr(harness.Config, "load", classmethod(lambda cls, *a, **k: config))
     monkeypatch.setattr(harness, "_other_editions", lambda _config: [])
     monkeypatch.setattr(harness.bootstrap, "language_models", lambda _config: models)
@@ -124,3 +124,22 @@ def test_a_digest_replay_takes_the_editors_path_and_shows_the_judge_the_editors_
     case = json.loads((tmp_path / "digest" / "arm" / "2026-11-10.json").read_text())
     assert "x" * 3000 in case["context"] and "x" * 3001 not in case["context"]
     assert case["artifact"] == "digest"
+
+
+def test_a_research_run_that_printed_nothing_is_skipped_and_the_rest_are_kept(harness, monkeypatch, tmp_path):
+    import subprocess
+
+    runs = iter(
+        [
+            subprocess.CompletedProcess([], 1, stdout="", stderr="Traceback: boom"),
+            subprocess.CompletedProcess(
+                [], 0, stdout=json.dumps({"status": "succeeded", "markdown": "# R"}), stderr=""
+            ),
+        ]
+    )
+    monkeypatch.setattr(harness, "ROOT", tmp_path)
+    monkeypatch.setattr(harness, "_edition", lambda: "")
+    monkeypatch.setattr(harness.subprocess, "run", lambda *a, **k: next(runs))
+    harness._research("arm", ["crashed topic", "good topic"])
+    cases = [json.loads(p.read_text()) for p in (tmp_path / "research" / "arm").glob("*.json")]
+    assert [c["case"] for c in cases] == ["good topic"] and cases[0]["status"] == "succeeded"

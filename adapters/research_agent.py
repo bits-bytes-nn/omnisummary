@@ -209,6 +209,7 @@ def create_research_agent(config: Config | None = None, tools: list[Any] | None 
         boto_session,
         model_id,
         config.aws.bedrock_region,
+        config.aws,
     )
 
     model_kwargs: dict[str, Any] = {

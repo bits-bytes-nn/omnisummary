@@ -6,7 +6,7 @@ import pytest
 
 from adapters.memory import AgentCoreMemoryStore, LocalMemoryStore, create_memory_store
 from application.ports import MemoryReadError
-from shared import get_config
+from shared import Config, get_config
 
 
 def _store() -> AgentCoreMemoryStore:
@@ -113,11 +113,45 @@ def store_region() -> str:
 
 
 class TestCreateMemoryStore:
-    def test_local_when_no_memory_is_deployed(self, monkeypatch, tmp_path):
+    def test_a_chosen_base_dir_is_the_local_store_without_a_lookup(self, monkeypatch, tmp_path):
         monkeypatch.delenv("MEMORY_ID", raising=False)
-        with patch("adapters.memory._deployed_memory_id", return_value=""), patch("adapters.memory.boto3.Session"):
+        with patch("adapters.memory._deployed_memory_id") as lookup:
             store = create_memory_store(get_config(), tmp_path)
-        assert isinstance(store, LocalMemoryStore)
+        assert isinstance(store, LocalMemoryStore) and lookup.call_count == 0
+
+    def test_local_when_no_profile_is_configured_and_no_memory_is_deployed(self, monkeypatch):
+        monkeypatch.delenv("MEMORY_ID", raising=False)
+        config = Config()
+        with patch("adapters.memory._deployed_memory_id", return_value=""), patch("adapters.memory.boto3.Session"):
+            assert isinstance(create_memory_store(config), LocalMemoryStore)
+
+    def test_no_memory_on_the_configured_profile_is_unreadable_not_empty(self, monkeypatch):
+        # Ambient credentials for another account matched no memory, and the local fallback then
+        # answered "no digest stored" for a day production had written.
+        monkeypatch.delenv("MEMORY_ID", raising=False)
+        config = Config()
+        config.aws.profile = "research"
+        with (
+            patch("adapters.memory.available_boto_profile", return_value="research"),
+            patch("adapters.memory._deployed_memory_id", return_value=""),
+            patch("adapters.memory.boto3.Session"),
+            patch("adapters.memory.is_running_in_aws", return_value=False),
+        ):
+            with pytest.raises(MemoryReadError, match="No AgentCore memory"):
+                create_memory_store(config)
+
+    def test_a_configured_profile_that_does_not_resolve_is_unreadable(self, monkeypatch):
+        monkeypatch.delenv("MEMORY_ID", raising=False)
+        config = Config()
+        config.aws.profile = "research"
+        with (
+            patch("adapters.memory.available_boto_profile", return_value=None),
+            patch("adapters.memory._deployed_memory_id") as lookup,
+            patch("adapters.memory.is_running_in_aws", return_value=False),
+        ):
+            with pytest.raises(MemoryReadError, match="profile 'research' is not configured"):
+                create_memory_store(config)
+        assert lookup.call_count == 0
 
     def test_a_failed_lookup_raises_instead_of_reading_the_local_store(self, monkeypatch, tmp_path):
         # Expired credentials fell back to the local store, so recall answered "nothing stored"
@@ -127,7 +161,7 @@ class TestCreateMemoryStore:
         session.client.return_value.get_paginator.return_value.paginate.side_effect = RuntimeError("expired token")
         with patch("adapters.memory.boto3.Session", return_value=session):
             with pytest.raises(MemoryReadError, match="expired token"):
-                create_memory_store(get_config(), tmp_path)
+                create_memory_store(get_config())
 
     def test_a_local_run_finds_the_stacks_memory_by_name(self, monkeypatch):
         # Without MEMORY_ID (set only on the Lambdas) a local run read none of production's

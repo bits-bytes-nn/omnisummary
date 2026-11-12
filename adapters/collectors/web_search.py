@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import re
+from collections import Counter
 from datetime import UTC, datetime, timedelta, tzinfo
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
@@ -13,14 +13,21 @@ from tavily.errors import TimeoutError as TavilyTimeoutError
 from tavily.errors import UsageLimitExceededError
 
 from adapters.aws import resolve_secret
-from adapters.research_backends import access_controlled, record_tavily_usage, tavily_client
+from adapters.research_backends import access_controlled, access_verdicts, record_tavily_usage, tavily_client
 from application.ports import LanguageModels
 from application.prompts import RefineQueryPrompt
+from domain.aggregator import youtube_video_id
 from domain.models import CollectedItem, generate_item_id
 from shared import DOMAIN_TO_SOURCE, SourceType, logger, parse_json_from_llm_output, retry_async
 from shared.config import WebSearchCollectorConfig, YouTubeCollectorConfig
 
-from .base import BaseCollector, collection_window_dates, gather_collector_results, in_collection_window
+from .base import (
+    BaseCollector,
+    collection_window_dates,
+    degradation_reason,
+    gather_collector_results,
+    in_collection_window,
+)
 from .youtube import YOUTUBE_API_BASE, fetch_youtube_transcript
 
 # Failures another attempt can plausibly fix: a hung request (asyncio's TimeoutError and Tavily's
@@ -39,8 +46,18 @@ _RETRIABLE_SEARCH_ERRORS: tuple[type[BaseException], ...] = (
 class WebSearchCollector(BaseCollector):
     config: WebSearchCollectorConfig
 
-    def __init__(self, config: WebSearchCollectorConfig, models: LanguageModels | None = None):
-        self.config = config
+    def __init__(
+        self,
+        config: WebSearchCollectorConfig,
+        models: LanguageModels | None = None,
+        *,
+        domain: str = "",
+        reference_time: datetime | None = None,
+        deadline_sec: float | None = None,
+    ) -> None:
+        super().__init__(config, reference_time=reference_time, deadline_sec=deadline_sec)
+        # The field the refine step asks for queries about: the edition's pipeline.domain.
+        self.domain = domain
         self._api_key = ""
         self._client_instance: AsyncTavilyClient | None = None
         self._llm = models.get_model(config.refine_model, stage="query-refine") if models else None
@@ -80,7 +97,10 @@ class WebSearchCollector(BaseCollector):
             logger.info("No web search queries configured, skipping")
             return []
 
-        broad = await gather_collector_results(tasks, labels=labels, raise_if_all_failed=True)
+        self.start_deadline()
+        broad = await gather_collector_results(
+            tasks, labels=labels, raise_if_all_failed=True, deadline_at=self.deadline_at
+        )
         broad_items = broad.items
         logger.info(
             "Web search collector gathered %d items (broad phase) from %d/%d queries (%d failed)",
@@ -95,20 +115,63 @@ class WebSearchCollector(BaseCollector):
             total=broad.total,
             failed=broad.failed,
             empty=broad.empty,
+            cancelled=broad.cancelled,
             what="search queries",
         )
 
-        refined_items = await self._refine_search(broad_items, semaphore)
+        refined_items = await self._refine_within_deadline(broad_items, semaphore)
         # Duplicates across queries are left to the aggregator, which dedups every source by URL and title.
         all_items = broad_items + refined_items
         # Tavily reads results from its own servers: a page that is paid or bot-checked for a reader
         # would reach the digest around its control. Exclude lists only learned of each such host
         # after a story from it shipped.
-        blocked = await access_controlled([it.url for it in all_items])
+        checked = {it.url for it in all_items}
+        blocked = await access_verdicts(list(checked))
         all_items = [it for it in all_items if it.url not in blocked]
+        self._report_blocked(blocked, total=len(checked))
         logger.info("Web search collector gathered %d items total (after refinement)", len(all_items))
 
         return all_items
+
+    def _report_blocked(self, blocked: dict[str, str], *, total: int) -> None:
+        """DEGRADED when the access check dropped too many result pages (a CDN or WAF refusing the
+        datacenter IP looks like a quiet day otherwise), split into paid and refused, with the
+        refusing hosts by count. Same threshold as a failed query."""
+        reason = degradation_reason(
+            total=total,
+            failed=len(blocked),
+            empty=0,
+            what="result pages",
+            threshold=self.config.error_rate_threshold,
+            empty_threshold=None,
+            min_inputs=self.config.min_inputs_for_rate,
+        )
+        if not reason:
+            return
+        refused = {url: why for url, why in blocked.items() if why != "paid"}
+        statuses = Counter(refused.values())
+        hosts = Counter(urlparse(url).netloc.removeprefix("www.") for url in refused)
+        detail = f"dropped by the access check, {len(blocked) - len(refused)} paid, {len(refused)} refused"
+        if statuses:
+            detail += " (" + ", ".join(f"{status} x{n}" for status, n in statuses.most_common()) + ")"
+        if hosts:
+            detail += "; refusing hosts: " + ", ".join(f"{host} ({n})" for host, n in hosts.most_common())
+        self._add_degraded_detail(f"{reason}: {detail}")
+        logger.warning("Collector is DEGRADED: %s", self.degraded_detail)
+
+    async def _refine_within_deadline(
+        self, broad_items: list[CollectedItem], semaphore: asyncio.Semaphore
+    ) -> list[CollectedItem]:
+        """The refine step is optional: skipped past the collection deadline, cut off at it."""
+        if self.past_deadline():
+            logger.warning("Skipping web search refinement: past the collection deadline")
+            return []
+        try:
+            async with asyncio.timeout_at(self.deadline_at):
+                return await self._refine_search(broad_items, semaphore)
+        except TimeoutError:
+            logger.warning("Web search refinement ran into the collection deadline; using broad results only")
+            return []
 
     async def _refine_search(
         self, broad_items: list[CollectedItem], semaphore: asyncio.Semaphore | None = None
@@ -148,12 +211,10 @@ class WebSearchCollector(BaseCollector):
                 {
                     "titles": titles,
                     "max_queries": self.config.max_refine_queries,
-                    "domain": self.config.domain,
+                    "domain": self.domain,
                     "refine_rules": self.config.refine_rules,
                     # reference_time is midnight at the END of the digest date, so step back into that day.
-                    "today": ((self.config.reference_time or datetime.now(UTC)) - timedelta(seconds=1))
-                    .date()
-                    .isoformat(),
+                    "today": ((self.reference_time or datetime.now(UTC)) - timedelta(seconds=1)).date().isoformat(),
                 }
             )
             queries = parse_json_from_llm_output(raw)
@@ -176,7 +237,7 @@ class WebSearchCollector(BaseCollector):
         # The window Tavily is asked about is the run's OWN window, not a day count derived from it:
         # `days = lookback_hours // 24` truncated a 30-hour window to 1 day for the largest source,
         # and `days` is anchored to now, so a `--date` backfill searched today either way.
-        start_date, end_date = collection_window_dates(self.config.lookback_hours, self.config.reference_time)
+        start_date, end_date = collection_window_dates(self.config.lookback_hours, self.reference_time)
 
         async def _search() -> dict:
             return await asyncio.wait_for(
@@ -216,7 +277,7 @@ class WebSearchCollector(BaseCollector):
         return self._parse_results(response, trend_name=trend_name)
 
     def _date_only_tz(self) -> tzinfo:
-        reference = self.config.reference_time
+        reference = self.reference_time
         return reference.tzinfo if reference is not None and reference.tzinfo is not None else UTC
 
     def _parse_results(
@@ -244,7 +305,7 @@ class WebSearchCollector(BaseCollector):
                 if not in_collection_window(
                     published_at,
                     lookback_hours=self.config.lookback_hours,
-                    reference_time=self.config.reference_time,
+                    reference_time=self.reference_time,
                 ):
                     continue
 
@@ -287,22 +348,6 @@ def _title_from_url(url: str) -> str:
     if opaque:
         return host or url
     return slug.replace("-", " ").replace("_", " ").strip() or host or url
-
-
-_YOUTUBE_ID_RE = re.compile(r"(?:v=|/shorts/|youtu\.be/|/embed/)([A-Za-z0-9_-]{11})")
-_YOUTUBE_HOSTS = {"youtube.com", "m.youtube.com", "youtu.be"}
-
-
-def _youtube_video_id(url: str) -> str:
-    """Pull the 11-char video id out of any YouTube URL form (watch?v=, youtu.be/, /shorts/,
-    /embed/). Returns "" for a non-YouTube or id-less URL so the caller routes it to Tavily.
-    (DOMAIN_TO_SOURCE doesn't map youtube.com — it's the collector's own source — so match on
-    the host directly rather than _detect_source_type.)"""
-    host = urlparse(url).netloc.lower().removeprefix("www.")
-    if host not in _YOUTUBE_HOSTS:
-        return ""
-    match = _YOUTUBE_ID_RE.search(url)
-    return match.group(1) if match else ""
 
 
 async def _fetch_youtube_pinned(url: str, video_id: str, youtube: YouTubeCollectorConfig) -> CollectedItem | None:
@@ -398,7 +443,7 @@ async def fetch_pinned_items(urls: list[str], youtube: YouTubeCollectorConfig) -
     if not urls:
         return []
 
-    youtube_pins = {u: vid for u in urls if (vid := _youtube_video_id(u))}
+    youtube_pins = {u: vid for u in urls if (vid := youtube_video_id(u))}
     other_urls = [u for u in urls if u not in youtube_pins]
 
     items: list[CollectedItem] = []

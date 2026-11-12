@@ -201,7 +201,7 @@ async def test_stale_wins_over_degraded():
 
 
 @pytest.mark.asyncio
-async def test_a_collector_past_the_deadline_fails_and_the_others_are_kept():
+async def test_a_collector_past_the_backstop_fails_and_the_others_are_kept():
     import asyncio
 
     from application import digest_pipeline as runner

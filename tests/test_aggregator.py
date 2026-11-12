@@ -116,6 +116,7 @@ class TestContentAggregator:
             ("https://x.com/i/status/123", "https://twitter.com/karpathy/status/123?s=20"),
             ("https://youtube.com/shorts/abc", "https://www.youtube.com/watch?v=abc"),
             ("https://youtube.com/live/abc", "https://youtu.be/abc"),
+            ("https://www.youtube.com/embed/abc", "https://youtu.be/abc"),
         ],
     )
     def test_other_spellings_of_one_post_or_video_normalize_alike(self, a, b):

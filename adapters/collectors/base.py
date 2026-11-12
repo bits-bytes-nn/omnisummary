@@ -237,6 +237,27 @@ class BaseCollector(ABC):
     # Every collector's config; the health verdicts below read their thresholds from it, so a
     # source can never forget to forward a configured knob.
     config: BaseCollectorConfig
+    # The run's reference time (midnight at the END of the digest date; None: now) and its collection
+    # deadline, both handed in by the composition root. deadline_at is the deadline on the loop's clock,
+    # started by start_deadline() when collect() begins.
+    reference_time: datetime | None = None
+    deadline_sec: float | None = None
+    deadline_at: float | None = None
+
+    def __init__(
+        self, config: BaseCollectorConfig, *, reference_time: datetime | None = None, deadline_sec: float | None = None
+    ) -> None:
+        self.config = config
+        self.reference_time = reference_time
+        self.deadline_sec = deadline_sec
+
+    def start_deadline(self) -> None:
+        """Start this run's collection deadline: the fan-out keeps what its inputs finished by then."""
+        if self.deadline_sec is not None:
+            self.deadline_at = asyncio.get_running_loop().time() + self.deadline_sec
+
+    def past_deadline(self) -> bool:
+        return self.deadline_at is not None and asyncio.get_running_loop().time() >= self.deadline_at
 
     @abstractmethod
     async def collect(self) -> list[CollectedItem]: ...
@@ -252,12 +273,17 @@ class BaseCollector(ABC):
             return SourceStatus.DEGRADED, self.degraded_detail
         return None
 
+    def _add_degraded_detail(self, reason: str) -> None:
+        """Append one more reason, so a later verdict never erases an earlier one."""
+        self.degraded_detail = "; ".join(filter(None, [self.degraded_detail, reason]))
+
     def record_run_health(
         self,
         *,
         total: int,
         failed: int,
         empty: int = 0,
+        cancelled: int = 0,
         what: str,
         hint: str = "",
     ) -> None:
@@ -266,7 +292,9 @@ class BaseCollector(ABC):
 
         One implementation for every collector: a fresh, on-time result says nothing about a run
         that collected from 3 of 40 inputs, which is the shape of a source quietly vanishing from
-        the digest. Reporting only — the items themselves are never filtered."""
+        the digest. Inputs cut off at the collection deadline (`cancelled`, counted in `failed` too)
+        report the source DEGRADED at any share: the run kept what finished, and said so. Reporting
+        only — the items themselves are never filtered."""
         self.run_meta = {
             PARK_META_ACCOUNTS_TOTAL: total,
             PARK_META_ACCOUNTS_FAILED: failed,
@@ -274,6 +302,9 @@ class BaseCollector(ABC):
         }
         if total <= 0:
             return
+        if cancelled:
+            self._add_degraded_detail(f"{cancelled}/{total} {what} cut off at the collection deadline")
+            logger.warning("Collector is DEGRADED: %s", self.degraded_detail)
         reason = degradation_reason(
             total=total,
             failed=failed,
@@ -285,7 +316,7 @@ class BaseCollector(ABC):
         )
         if not reason:
             return
-        self.degraded_detail = reason + (f"; {hint}" if hint else "")
+        self._add_degraded_detail(reason + (f"; {hint}" if hint else ""))
         logger.warning("Collector is DEGRADED: %s", self.degraded_detail)
 
     def flag_degraded_park(
@@ -316,7 +347,7 @@ class BaseCollector(ABC):
         )
         if not reason:
             return
-        self.degraded_detail = f"parked sync: {reason}" + (f"; {hint}" if hint else "")
+        self._add_degraded_detail(f"parked sync: {reason}" + (f"; {hint}" if hint else ""))
         logger.warning("Park file is DEGRADED: %s", self.degraded_detail)
 
     def flag_missing_park(self, parked: ParkedItems, *, required: bool, hint: str = "") -> None:
@@ -330,8 +361,8 @@ class BaseCollector(ABC):
         every day. Reporting only: the live items still reach the aggregator."""
         if not required or parked.outcome is not ParkOutcome.ABSENT or not is_running_in_aws():
             return
-        self.degraded_detail = f"park file required but absent: {parked.detail or 'no park file found'}" + (
-            f"; {hint}" if hint else ""
+        self._add_degraded_detail(
+            f"park file required but absent: {parked.detail or 'no park file found'}" + (f"; {hint}" if hint else "")
         )
         logger.error("Collector is DEGRADED: %s", self.degraded_detail)
 
@@ -581,39 +612,71 @@ class CollectorRunResult(BaseModel):
     """A fan-out's items PLUS how many of its inputs answered.
 
     Returned instead of a bare list so the caller can report a source that produced items from only
-    a fraction of its inputs: 2 of 40 feeds answering used to look exactly like a healthy run."""
+    a fraction of its inputs: 2 of 40 feeds answering used to look exactly like a healthy run.
+    `cancelled` inputs were still running at the deadline; they are counted in `failed` too."""
 
     items: list[CollectedItem] = Field(default_factory=list)
     total: int = 0
     failed: int = 0
     empty: int = 0
+    cancelled: int = 0
 
 
 async def gather_collector_results(
     tasks: Sequence[Awaitable[list[CollectedItem]]],
     labels: list[str] | None = None,
     raise_if_all_failed: bool = False,
+    deadline_at: float | None = None,
 ) -> CollectorRunResult:
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    """Every input's items. With `deadline_at` (the loop's clock), the inputs still running then are
+    cancelled and counted as failed, and the finished ones' items are kept: cancelling the whole
+    collector at the deadline threw away every feed that had already answered."""
+    futures: list[asyncio.Future] = [asyncio.ensure_future(task) for task in tasks]
+    pending: set[asyncio.Future] = set()
+    if futures:
+        timeout = None if deadline_at is None else max(0.0, deadline_at - asyncio.get_running_loop().time())
+        try:
+            _, pending = await asyncio.wait(futures, timeout=timeout)
+        except BaseException:
+            # Cancelled from outside (the pipeline's backstop): asyncio.wait leaves its inputs running.
+            for future in futures:
+                future.cancel()
+            raise
+        for future in pending:
+            future.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
     items: list[CollectedItem] = []
     failures: list[BaseException] = []
     empty = 0
-    for i, result in enumerate(results):
-        if isinstance(result, BaseException):
-            label = labels[i] if labels else f"task-{i}"
-            logger.warning("Collector task '%s' failed: %s", label, result)
-            failures.append(result)
-        elif result:
+    for i, future in enumerate(futures):
+        label = labels[i] if labels else f"task-{i}"
+        if future in pending:
+            failures.append(TimeoutError(f"'{label}' was still running at the collection deadline"))
+            continue
+        error = future.exception() if not future.cancelled() else asyncio.CancelledError()
+        if error is not None:
+            logger.warning("Collector task '%s' failed: %s", label, error)
+            failures.append(error)
+        elif result := future.result():
             items.extend(result)
         else:
             empty += 1
+    if pending:
+        logger.warning(
+            "%d of %d inputs were still running at the collection deadline and were cancelled: %s",
+            len(pending),
+            len(futures),
+            ", ".join(labels[i] if labels else f"task-{i}" for i, f in enumerate(futures) if f in pending),
+        )
 
     # When every task errored (and produced nothing), surface it so the health check
     # marks the source FAILED instead of reporting a silent empty result on an outage.
-    if raise_if_all_failed and results and len(failures) == len(results):
+    if raise_if_all_failed and futures and len(failures) == len(futures):
         raise RuntimeError(f"All {len(failures)} collector tasks failed: {failures[0]}")
 
-    return CollectorRunResult(items=items, total=len(results), failed=len(failures), empty=empty)
+    return CollectorRunResult(
+        items=items, total=len(futures), failed=len(failures), empty=empty, cancelled=len(pending)
+    )
 
 
 async def fetch_feed(url: str, *, description: str, timeout: float) -> Any:

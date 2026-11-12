@@ -201,7 +201,7 @@ def _is_false(value: object) -> bool:
     return isinstance(value, str) and value.strip().lower().rsplit("/", 1)[-1] == "false"
 
 
-async def access_controlled(urls: list[str], *, refusals: bool = True) -> set[str]:
+async def access_verdicts(urls: list[str], *, refusals: bool = True) -> dict[str, str]:
     """The URLs whose page refuses an ordinary reader (401/403/429) or declares itself paid. Tavily
     reads a page from its own servers, so extracting one of these would get around the control the
     publisher put in front of it (docs/design.md, 판). Checked per page, not per host: a host list only
@@ -210,18 +210,20 @@ async def access_controlled(urls: list[str], *, refusals: bool = True) -> set[st
     hosts, enough to trip a publisher's WAF). A page that cannot be reached at all is an outage, not a
     control, and passes. `refusals=False` keeps only the pages that declare themselves paid: for a feed
     post, whose text the publisher's own feed handed us, a 403 from a datacenter IP (Lambda got one from
-    Wikipedia and GitHub) says nothing about what a reader sees."""
+    Wikipedia and GitHub) says nothing about what a reader sees.
+
+    Maps each such URL to why: "paid", or the refusing HTTP status ("403")."""
     if not urls:
-        return set()
+        return {}
     semaphore = asyncio.Semaphore(_ACCESS_CHECK_CONCURRENCY)
     per_host: dict[str, asyncio.Semaphore] = defaultdict(lambda: asyncio.Semaphore(_ACCESS_CHECK_PER_HOST))
 
-    async def refused(client: httpx.AsyncClient, url: str) -> bool:
+    async def refused(client: httpx.AsyncClient, url: str) -> str:
         async with per_host[_host(url)], semaphore:
             try:
                 async with client.stream("GET", url) as resp:
                     if resp.status_code in _REFUSED_STATUS:
-                        return refusals
+                        return str(resp.status_code) if refusals else ""
                     head = b""
                     async for chunk in resp.aiter_bytes():
                         head += chunk
@@ -230,15 +232,15 @@ async def access_controlled(urls: list[str], *, refusals: bool = True) -> set[st
             except Exception as e:
                 # Unreachable, or a URL httpx cannot even form (a malformed IDN): not a control.
                 logger.debug("Access check could not read '%s': %s", url, e)
-                return False
-        return declares_paid(head.decode("utf-8", "ignore"), str(resp.url))
+                return ""
+        return "paid" if declares_paid(head.decode("utf-8", "ignore"), str(resp.url)) else ""
 
     async with httpx.AsyncClient(
         headers={"User-Agent": BROWSER_USER_AGENT}, timeout=_ACCESS_CHECK_TIMEOUT_SEC, follow_redirects=True
     ) as client:
         unique = list(dict.fromkeys(urls))
         verdicts = await asyncio.gather(*(refused(client, u) for u in unique))
-    blocked = {u for u, no in zip(unique, verdicts, strict=True) if no}
+    blocked = {u: why for u, why in zip(unique, verdicts, strict=True) if why}
     if blocked:
         logger.info(
             "Access check: %d of %d pages refuse a reader or declare themselves paid (%s)",
@@ -247,6 +249,11 @@ async def access_controlled(urls: list[str], *, refusals: bool = True) -> set[st
             ", ".join(sorted({_host(u) for u in blocked})),
         )
     return blocked
+
+
+async def access_controlled(urls: list[str], *, refusals: bool = True) -> set[str]:
+    """access_verdicts' URLs, without the reasons."""
+    return set(await access_verdicts(urls, refusals=refusals))
 
 
 async def extract_url(url: str, *, cap: int) -> str:
@@ -488,9 +495,9 @@ async def yahoo_quote(symbol: str, period: str = "5d", *, timeout: float) -> str
         OSError,
         RecursionError,
     ) as e:
-        # One odd payload must not cost the other tickers of the same call.
+        # An unreadable payload is the source's failure, not an unknown ticker.
         logger.warning("Quote for '%s' failed: %s", symbol, e)
-        return ""
+        raise MarketDataUnavailable(f"Yahoo Finance answered an unreadable quote ({type(e).__name__})") from e
 
 
 def _format_quote(symbol: str, period: str, result: dict) -> str:
@@ -571,7 +578,7 @@ async def yahoo_analyst_ratings(symbol: str, *, timeout: float) -> str:
         return ""
     except (ValueError, TypeError, AttributeError, IndexError, KeyError, OverflowError) as e:
         logger.warning("Analyst ratings for '%s' failed: %s", symbol, e)
-        return ""
+        raise MarketDataUnavailable(f"Yahoo Finance answered unreadable analyst ratings ({type(e).__name__})") from e
 
 
 def _raw(value: object) -> float | None:

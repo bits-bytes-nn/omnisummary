@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
 import hashlib
 import json
 import os
@@ -30,10 +31,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from langchain_core.output_parsers import StrOutputParser  # noqa: E402
 from langchain_core.prompts import ChatPromptTemplate  # noqa: E402
 
+from application.daily_visual import recent_comics  # noqa: E402
 from domain.digest_snapshot import DigestSnapshot  # noqa: E402
 from entrypoints import bootstrap  # noqa: E402
 from shared import Config, logger, parse_json_from_llm_output  # noqa: E402
-from shared.config import get_config  # noqa: E402
 from shared.constants import LanguageModelId  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1] / "evals"
@@ -120,10 +121,15 @@ def _posted_before(snapshots: list[DigestSnapshot], replayed: DigestSnapshot) ->
     return [s for s in snapshots if s.digest is None or s.digest.generated_at <= cutoff]
 
 
+@functools.cache
+def _edition() -> str:
+    return Config.load().edition
+
+
 def _case_dir(kind: str, label: str) -> Path:
     """evals/<kind>[/<edition>]/<label>: the editions replay the same dates, so a shared label would
     overwrite one edition's cases with the other's."""
-    edition = get_config().edition
+    edition = _edition()
     path = ROOT / kind / edition / label if edition else ROOT / kind / label
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -197,13 +203,13 @@ async def _digest(label: str, dates: list[str]) -> None:
 async def _visual(label: str, dates: list[str]) -> None:
     config = Config.load()
     maker = bootstrap.daily_visual_maker(config)
-    log = maker.comic_log.entries() if maker.comic_log else []
+    log = recent_comics(maker.comic_log.entries() if maker.comic_log else [])
     for day in dates:
         snapshot = bootstrap.memory_store(config).get_digest(day)
         if snapshot is None:
             logger.warning("No snapshot for %s; skipped", day)
             continue
-        recent = [e for e in log if str(e.get("date", "")) < day][-config.pipeline.recent_leads_window :]
+        recent = [e for e in log if e.date < day][-config.pipeline.recent_leads_window :]
         if len(recent) < config.pipeline.recent_leads_window:
             # The deployed log keeps only the last few comics, so an older day replays with fewer of them
             # than its real run had.
@@ -221,9 +227,11 @@ async def _visual(label: str, dates: list[str]) -> None:
             continue
         out = {
             "case": day,
-            "context": f"HEADLINE ARTICLE:\n{source}\n\nRECENT COMICS:\n{json.dumps(recent, ensure_ascii=False)}",
+            "context": f"HEADLINE ARTICLE:\n{source}\n\nRECENT COMICS:\n{json.dumps([e.model_dump() for e in recent], ensure_ascii=False)}",
             "artifact": json.dumps(
-                {"plan": plan, "brief": brief.model_dump() if brief else None}, ensure_ascii=False, indent=1
+                {"plan": plan.model_dump(), "brief": brief.model_dump() if brief else None},
+                ensure_ascii=False,
+                indent=1,
             ),
         }
         (_case_dir("visual", label) / f"{day}.json").write_text(json.dumps(out, ensure_ascii=False, indent=1))
@@ -239,7 +247,14 @@ def _research(label: str, topics: list[str]) -> None:
             text=True,
             cwd=Path(__file__).resolve().parents[1],
         )
-        result = json.loads(proc.stdout)
+        if proc.returncode != 0:
+            logger.warning("research %s '%s' exited %d: %s", label, topic, proc.returncode, proc.stderr[-2000:])
+        try:
+            result = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            # A crash before the CLI's one JSON object leaves nothing to judge: the other topics still are.
+            logger.warning("research %s '%s' printed no result; skipped", label, topic)
+            continue
         posts = (result.get("threads") or {}).get("posts") or []
         out = {
             "case": topic,

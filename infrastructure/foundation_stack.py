@@ -15,6 +15,7 @@ from aws_cdk.aws_bedrockagentcore import CfnMemory
 from constructs import Construct
 
 from shared import Config
+from shared.constants import THREADS_TOKEN_SECRET, THREADS_USER_SECRET
 from shared.naming import digest_memory_name, state_bucket_name
 
 
@@ -133,7 +134,7 @@ class OmniSummaryFoundationStack(Stack):
             actions=["ssm:GetParameter"],
             resources=[
                 f"arn:aws:ssm:{self.region}:{self.account}:parameter/{project_name}/{stage}/{name}"
-                for name in ("threads-access-token", "threads-user-id")
+                for name in (THREADS_TOKEN_SECRET, THREADS_USER_SECRET)
             ],
         )
         for role in (*pipeline_roles, self.comment_reply_role, self.token_refresh_role):
@@ -215,7 +216,7 @@ class OmniSummaryFoundationStack(Stack):
             iam.PolicyStatement(
                 actions=["ssm:PutParameter"],
                 resources=[
-                    f"arn:aws:ssm:{self.region}:{self.account}:parameter/{project_name}/{stage}/threads-access-token"
+                    f"arn:aws:ssm:{self.region}:{self.account}:parameter/{project_name}/{stage}/{THREADS_TOKEN_SECRET}"
                 ],
             )
         )

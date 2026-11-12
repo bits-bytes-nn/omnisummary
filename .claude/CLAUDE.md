@@ -9,8 +9,8 @@ Proactive AI/ML daily digest: collects from 6 sources (RSS, Reddit, YouTube, X/T
   → Collectors (RSS, Reddit, YouTube, WebSearch, X/S3; NaverResearch for investing)
   → Aggregator (URL + title dedup)
   → Ranker (Claude Opus 5.5 for AI, Sonnet 5.5 for investing; parallel batches) → candidate pool (top_n + buffer; source slots shape the POOL)
-  → TrendTracker (structured trends.json)
   → DigestGenerator (Claude Sonnet 5.5 picks the strongest top_n and writes DigestContent)
+  → TrendTracker (structured trends.json from the written stories; skipped on --dry-run)
   → AgentCore Memory (digest snapshot) → Daily Visual Lambda (async)
        → Korean comic, form picked per story (gpt-image-2.5-sunburst) + Threads root/reply chain
 [EventBridge hourly] → [Comment-reply Lambda] → answers readers' new comments (Sonnet 5.5, or declines)

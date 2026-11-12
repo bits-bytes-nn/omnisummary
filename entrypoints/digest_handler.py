@@ -20,6 +20,7 @@ from application.digest_pipeline import (
 )
 from domain.models import DigestResult, HealthReport
 from entrypoints import bootstrap
+from entrypoints.invocation import invoke_payload
 from shared import Config, get_correlation_id, is_running_in_aws, logger, set_correlation_id
 from shared.constants import DIGEST_ITEMS_METRIC
 
@@ -105,8 +106,7 @@ def _requested_date(event: dict[str, Any], timezone: str) -> str | None:
     digest on a partial window, and the failed day was never redone. None means today."""
     if not isinstance(event, dict):
         return None
-    if not ({"time", "digest_date"} & event.keys()) and isinstance(event.get("requestPayload"), dict):
-        event = event["requestPayload"]
+    event = invoke_payload(event, {"time", "digest_date"})
     explicit = str(event.get("digest_date") or "")
     if explicit:
         return explicit
@@ -121,7 +121,6 @@ async def _run(event: dict[str, Any] | None = None) -> None:
     config = Config.load()
 
     digest_date, reference_time = resolve_digest_window(config, _requested_date(event or {}, config.aws.timezone))
-    config.collectors.set_reference_time(reference_time)
     state_store = bootstrap.state_store(config)
     if already_published(config, digest_date, state_store):
         # The EmptyDigest alarm reads a missing metric as a failed day.
@@ -129,7 +128,9 @@ async def _run(event: dict[str, Any] | None = None) -> None:
         return
 
     models = bootstrap.language_models(config)
-    collected_items, health = await run_collectors_with_health(config, bootstrap.collectors(config, models))
+    collected_items, health = await run_collectors_with_health(
+        config, bootstrap.collectors(config, models, reference_time=reference_time)
+    )
     logger.info("Collected %d total items", len(collected_items))
     logger.info("Source health report:\n%s", health.summary())
     _maybe_alert(health, config.collectors.alert_on_empty)

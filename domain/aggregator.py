@@ -17,7 +17,7 @@ _HOST_ALIASES = {
     "old.reddit.com": "reddit.com",
     "m.youtube.com": "youtube.com",
 }
-_YOUTUBE_VIDEO_PATH = re.compile(r"^/(?:shorts|live)/([\w-]+)$")
+_YOUTUBE_VIDEO_PATH = re.compile(r"^/(?:shorts|live|embed)/([\w-]+)$")
 _X_STATUS_PATH = re.compile(r"^/(?:i/web|[^/]+)/status/(\d+)")
 _NON_ASCII_ESCAPES = re.compile(r"(?:%[89A-Fa-f][0-9A-Fa-f])+")
 _HOST_TRACKING_PARAMS = {"x.com": {"s", "t"}, "youtube.com": {"si", "feature", "t"}}
@@ -54,6 +54,15 @@ def normalize_url(url: str) -> str:
     ]
     query = urlencode(sorted(kept))
     return urlunsplit(("https", host, path, query, ""))
+
+
+def youtube_video_id(url: str) -> str:
+    """The video id of a YouTube URL in any form normalize_url folds into watch?v= (youtu.be/, /shorts/,
+    /live/, /embed/, m.youtube.com), else ""."""
+    parts = urlsplit(normalize_url(url))
+    if parts.netloc != "youtube.com" or parts.path != "/watch":
+        return ""
+    return dict(parse_qsl(parts.query)).get("v", "")
 
 
 _SHIPPED_TRACKING_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid"}

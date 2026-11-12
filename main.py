@@ -58,7 +58,6 @@ async def main() -> int:
     if digest_date > datetime.now(ZoneInfo(config.aws.timezone)).date():
         # A typo'd future date stored that day's snapshot and post marker, and the real run then skipped.
         parser.error(f"--date {digest_date} is in the future")
-    config.collectors.set_reference_time(reference_time)
 
     logger.info(
         "Starting OmniSummary digest pipeline (date: '%s', reference_time: '%s')",
@@ -72,7 +71,7 @@ async def main() -> int:
 
     models = bootstrap.language_models(config)
     collected_items, health = await run_collectors_with_health(
-        config, bootstrap.collectors(config, models, args.sources)
+        config, bootstrap.collectors(config, models, args.sources, reference_time=reference_time)
     )
     logger.info("Collected %d total items", len(collected_items))
     logger.info("Source health report:\n%s", health.summary())

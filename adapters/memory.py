@@ -11,7 +11,7 @@ import boto3
 from adapters.aws import available_boto_profile, aws_region
 from application.ports import MemoryReadError, MemoryStore
 from shared.config import Config
-from shared.logger import logger
+from shared.logger import is_running_in_aws, logger
 from shared.naming import digest_memory_name
 
 DEFAULT_ACTOR_ID = "omnisummary"
@@ -241,17 +241,35 @@ def _deployed_memory_id(config: Config, session: boto3.Session) -> str:
 
 
 def create_memory_store(config: Config, base_dir: Path | None = None, *, edition: str | None = None) -> MemoryStore:
-    """The AgentCore-backed store when the stack's memory exists (MEMORY_ID, or looked up by name for
-    a local run), else the local store. The lookup and the reads share ONE session on the configured
-    profile and config.aws.region, where the stack lives: a shell's AWS_PROFILE / AWS_REGION may point
-    at another account or the Bedrock region, and a read client on them found the memory by name and
-    then answered "Memory not found" for it. `edition` reads another edition's snapshots (default: this
-    config's)."""
+    """The AgentCore-backed store (MEMORY_ID, or looked up by name for a local run), or the local store
+    when one is chosen: `base_dir` given, or no AWS profile configured. The lookup and the reads share
+    ONE session on the configured profile and config.aws.region, where the stack lives: a shell's
+    AWS_PROFILE / AWS_REGION may point at another account or the Bedrock region, and a read client on
+    them found the memory by name and then answered "Memory not found" for it. `edition` reads another
+    edition's snapshots (default: this config's).
+
+    Off AWS, a configured profile that does not resolve here, or a lookup that matches no memory, raises
+    MemoryReadError: on ambient credentials for another account the lookup matched nothing, and the
+    local fallback then answered "no digest stored" for a day production had written."""
     edition = config.edition if edition is None else edition
-    session = boto3.Session(profile_name=available_boto_profile(config.aws.profile), region_name=config.aws.region)
-    memory_id = os.environ.get("MEMORY_ID", "") or _deployed_memory_id(config, session)
+    if base_dir is not None:
+        return LocalMemoryStore(base_dir)
+    profile = available_boto_profile(config.aws.profile)
+    memory_id = os.environ.get("MEMORY_ID", "")
+    local_run = bool(config.aws.profile) and not is_running_in_aws()
+    if not memory_id and local_run and profile is None:
+        raise MemoryReadError(
+            f"AWS profile '{config.aws.profile}' is not configured here; the digest memory is unreadable"
+        )
+    session = boto3.Session(profile_name=profile, region_name=config.aws.region)
+    memory_id = memory_id or _deployed_memory_id(config, session)
     if memory_id:
         return AgentCoreMemoryStore(memory_id, region_name=config.aws.region, session=session, edition=edition)
-    fallback = base_dir or (Path("digest_state") / edition if edition else Path("digest_state"))
+    if local_run:
+        raise MemoryReadError(
+            f"No AgentCore memory '{digest_memory_name(config.aws.project_name, config.aws.stage)}-*' "
+            f"in {config.aws.region} on profile '{profile}'"
+        )
+    fallback = Path("digest_state") / edition if edition else Path("digest_state")
     logger.info("No AgentCore memory found — using LocalMemoryStore at '%s'", fallback)
     return LocalMemoryStore(fallback)

@@ -25,21 +25,22 @@ THIN_SUMMARY_MAX_CHARS = 500
 class RSSCollector(BaseCollector):
     config: RSSCollectorConfig
 
-    def __init__(self, config: RSSCollectorConfig):
-        self.config = config
-
     async def collect(self) -> list[CollectedItem]:
         if not self.config.feeds:
             logger.info("No RSS feeds configured, skipping")
             return []
 
-        # Bound the fan-out: max_concurrency feeds are in flight at a time, so the collector's
-        # worst case is ceil(feeds / max_concurrency) * (max_retries * request_timeout + backoff),
-        # which has to stay inside the digest Lambda's 15-minute budget. The semaphore is created
-        # HERE (on the running loop, never at import/__init__). Mirrors rsshub.max_concurrency.
+        # Bound the fan-out: max_concurrency feeds are in flight at a time. Its worst case,
+        # ceil(feeds / max_concurrency) * (request_timeout + retry_backoff_sec) * max_retries, can run
+        # past the collection deadline; the feeds still running then are cut off and the rest kept.
+        # The semaphore is created HERE (on the running loop, never at import/__init__). Mirrors
+        # rsshub.max_concurrency.
+        self.start_deadline()
         semaphore = asyncio.Semaphore(self.config.max_concurrency)
         tasks = [self._collect_feed(feed_url, semaphore) for feed_url in self.config.feeds]
-        result = await gather_collector_results(tasks, labels=self.config.feeds, raise_if_all_failed=True)
+        result = await gather_collector_results(
+            tasks, labels=self.config.feeds, raise_if_all_failed=True, deadline_at=self.deadline_at
+        )
         logger.info(
             "RSS collector gathered %d items total from %d/%d feeds (%d failed, %d empty)",
             len(result.items),
@@ -54,9 +55,18 @@ class RSSCollector(BaseCollector):
             total=result.total,
             failed=result.failed,
             empty=result.empty,
+            cancelled=result.cancelled,
             what="feeds",
         )
-        return await self._fill_summary_only(result.items)
+        if self.past_deadline():
+            logger.warning("RSS: past the collection deadline; summary-only items keep their feed text")
+            return result.items
+        try:
+            async with asyncio.timeout_at(self.deadline_at):
+                return await self._fill_summary_only(result.items)
+        except TimeoutError:
+            logger.warning("RSS: the page fill ran into the collection deadline; the rest keep their feed text")
+            return result.items
 
     @staticmethod
     async def _fill_summary_only(items: list[CollectedItem]) -> list[CollectedItem]:
@@ -104,7 +114,7 @@ class RSSCollector(BaseCollector):
                 feed,
                 source_type=SourceType.RSS,
                 lookback_hours=self.config.lookback_hours,
-                reference_time=self.config.reference_time,
+                reference_time=self.reference_time,
                 description=f"RSS feed '{feed_url}'",
                 metadata={"feed_url": feed_url, "feed_title": feed.feed.get("title", "")},
             )

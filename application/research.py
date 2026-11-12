@@ -16,6 +16,9 @@ from enum import Enum, auto
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+from langchain_core.output_parsers import StrOutputParser
+from pydantic import ValidationError
+
 from application.ports import (
     LanguageModels,
     MarketDataUnavailable,
@@ -24,11 +27,12 @@ from application.ports import (
     StateStore,
     ThreadsPublisher,
 )
+from application.prompts import ThreadFactCheckPrompt
 from domain.digest_snapshot import DigestSnapshot
-from domain.formatting import citation_key, extract_urls, normalize_citation_url
-from domain.models import ImageAsset
+from domain.formatting import citation_key, extract_urls, host_matches, normalize_citation_url
+from domain.models import FactIssue, ImageAsset, TrendMemory
 from domain.renderers import footer_overhead, render_threads_research, research_post_budget
-from shared import THREADS_MAX_POST_CHARS, Config, logger
+from shared import THREADS_MAX_POST_CHARS, TRENDS_KEY, Config, logger, parse_json_from_llm_output
 
 # The two places a research report can go. MARKDOWN is the report handed back to the caller (the CLI
 # prints it and saves it); THREADS publishes a plain-text thread to the public account and is allowed
@@ -73,7 +77,7 @@ class DeliveryOutcome(Enum):
     POSTED = auto()
     NOT_POSTED = auto()
     FAILED = auto()
-    # Nothing was posted: the thread would have lost posts to the channel's limits. Returned once.
+    # Nothing was posted: the thread would have lost posts to the channel's limits.
     TOO_LONG = auto()
 
 
@@ -114,7 +118,7 @@ class DeliveryContext:
     # The thread last sent back for claims its sources do not support, whitespace collapsed: the same
     # text gets the same verdict instead of a second, non-deterministic check.
     refused_for_facts: str | None = None
-    fact_issues: list[dict] = field(default_factory=list)
+    fact_issues: list[FactIssue] = field(default_factory=list)
     # The fact check could not run, so the thread went out unchecked; the CLI says so in its warnings.
     fact_check_skipped: bool = False
     # Why the last Threads attempt was sent back, for the CLI's warning when nothing was resubmitted.
@@ -373,7 +377,7 @@ async def search_papers(query: str) -> str:
 
 
 async def read_url(url: str) -> str:
-    if _excluded_host(url, current_delivery_context().config.collectors.web_search.exclude_domains):
+    if host_matches(url, current_delivery_context().config.collectors.web_search.exclude_domains):
         # Hosts behind a paywall or a bot check (docs/design.md, 판): an extractor would fetch the page
         # around that control, and a read page becomes a citable source.
         return f"{url} is on a host this project does not read; it is not a source you can cite."
@@ -390,20 +394,7 @@ async def read_url(url: str) -> str:
     return text
 
 
-def _excluded_host(url: str, domains: list[str]) -> bool:
-    from urllib.parse import urlsplit
-
-    try:
-        host = (urlsplit(url).hostname or "").lower().removeprefix("www.")
-    except ValueError:
-        return False
-    return any(host == d or host.endswith("." + d) for d in (x.lower().removeprefix("www.") for x in domains))
-
-
 async def recall_trends() -> str:
-    from domain.models import TrendMemory
-    from shared import TRENDS_KEY
-
     config = current_delivery_context().config
     half_life = config.pipeline.trend_momentum_half_life_days
     gist_chars = config.agent.search_content_preview_chars
@@ -562,10 +553,7 @@ async def deliver_thread(report: str, delivery: DeliveryContext) -> str:
             delivery.fact_issues = issues
             delivery.last_refusal = "claims its sources do not support"
             logger.warning("Research thread sent back: %d claim(s) its sources do not support", len(issues))
-            listed = "\n".join(
-                f"- post {i.get('post', '?')}: \"{i.get('claim', '')}\" (the source says: {i.get('source_says', '')})"
-                for i in issues
-            )
+            listed = "\n".join(f'- post {i.post}: "{i.claim}" (the source says: {i.source_says})' for i in issues)
             return (
                 "NOT posted: these claims do not match the sources they cite:\n"
                 f"{listed}\nCorrect or drop them, then call deliver_report again; the new text is checked the same way."
@@ -600,21 +588,27 @@ async def deliver_thread(report: str, delivery: DeliveryContext) -> str:
     return f"Delivered the report to {target} ({stats.summary()})."
 
 
+def _fact_issues(raw: object) -> list[FactIssue]:
+    """The fact check's issues that name a claim; a malformed one costs only itself."""
+    issues = []
+    for entry in raw if isinstance(raw, list) else []:
+        try:
+            issues.append(FactIssue.model_validate(entry))
+        except ValidationError:
+            logger.warning("Skipping a malformed fact-check issue: %r", entry)
+    return issues
+
+
 def _same_text(report: str) -> str:
     """The report with whitespace collapsed: a resubmission that differs only in a trailing newline is
     the same text, not a rewrite."""
     return " ".join(report.split())
 
 
-async def check_thread_facts(report: str, delivery: DeliveryContext) -> list[dict]:
+async def check_thread_facts(report: str, delivery: DeliveryContext) -> list[FactIssue]:
     """Claims in the thread that contradict or overstate the sources it cites, read from what the
     tools returned for those URLs. Best-effort: a failed check returns [] and the thread posts as
     before, since the check must not be able to stop publishing on its own."""
-    from langchain_core.output_parsers import StrOutputParser
-
-    from application.prompts import ThreadFactCheckPrompt
-    from shared import parse_json_from_llm_output
-
     keys = (citation_key(url, delivery.seen_urls) for url in extract_urls(report))
     cited = [delivery.source_texts[key] for key in dict.fromkeys(keys) if key in delivery.source_texts]
     if not cited:
@@ -638,8 +632,7 @@ async def check_thread_facts(report: str, delivery: DeliveryContext) -> list[dic
         raw = await (ThreadFactCheckPrompt.get_prompt() | llm | StrOutputParser()).ainvoke(
             {"thread": thread, "sources": sources}
         )
-        issues = parse_json_from_llm_output(raw).get("issues", [])
-        return [i for i in issues if isinstance(i, dict) and i.get("claim")]
+        return _fact_issues(parse_json_from_llm_output(raw).get("issues", []))
     except Exception:
         logger.warning("Thread fact check failed; posting without it", exc_info=True)
         delivery.fact_check_skipped = True

@@ -153,6 +153,31 @@ class VisualBrief(BaseModel):
     )
 
 
+class VisualPlan(BaseModel):
+    """The visual editor's plan for the day's comic. Pydantic reads a STRING "false" as False: read by
+    truthiness, an editor that wrote it silently killed the day's visual."""
+
+    skip: bool = False
+    use_character: bool = False
+    instruction: str = ""
+
+
+class RecentComic(BaseModel):
+    """One entry of the recent-comics log the editor is shown so today's comic does not repeat it."""
+
+    date: str
+    orientation: str = ""
+    comic: str = ""
+
+
+class FactIssue(BaseModel):
+    """A thread claim the research fact check found its cited source does not support."""
+
+    post: int | str = "?"
+    claim: str = Field(min_length=1)
+    source_says: str = ""
+
+
 class RankingEntry(BaseModel):
     item: StrictInt = Field(description="The `=== Item N ===` number the item was shown with.")
     score: float

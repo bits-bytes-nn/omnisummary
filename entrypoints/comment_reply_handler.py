@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from datetime import UTC, datetime
 from typing import Any
 
 from application.comment_replies import CommentResponder
 from entrypoints import bootstrap
+from entrypoints.invocation import remaining_deadline
 from shared import Config, logger, set_correlation_id
 
 
@@ -22,9 +22,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         logger.info("Comment replies are disabled (pipeline.enable_comment_replies)")
         return {"statusCode": 200, "body": "disabled"}
     try:
-        remaining_ms = getattr(context, "get_remaining_time_in_millis", lambda: None)()
-        deadline = time.monotonic() + remaining_ms / 1000 if isinstance(remaining_ms, int | float) else None
-        run = asyncio.run(_run(config, deadline))
+        run = asyncio.run(_run(config, remaining_deadline(context)))
     except Exception as e:
         logger.error("Comment-reply Lambda failed: %s", e, exc_info=True)
         raise
