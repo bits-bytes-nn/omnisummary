@@ -59,7 +59,7 @@ aws logs filter-log-events --profile research --region ap-northeast-2 --log-grou
 |------|----|-------|
 | `FAILED` | 소스가 아예 실패했다 | 보고서의 오류를 본다. 대개 일시적이라 다음 날 복구된다 |
 | `STALE` | X나 YouTube 적재 파일이 12시간보다 오래됐다(그날 18:30 동기화, 투자판은 07:00 동기화가 실패했거나 돌지 않았다). 그 동기화의 일부 실패도 상세에 함께 적힌다 | Mac이 그 시각에 깨어 있었는지(잠든 사이의 cron은 실행되지 않는다), Docker Desktop과 `rsshub` 컨테이너가 떠 있었는지, cron 로그(`logs/sync.log`)를 본다. 하루 건너뛴 것은 다음 정상 동기화가 다시 읽어 와 복구된다(이틀 연속이면 앞날은 잃는다) |
-| `DEGRADED` | 입력의 일부만 응답했거나, 네이버 리서치가 중간 쪽에서 실패했거나 `max_pages`에 닿았다 | 보고서의 상세를 본다. X라면 쿠키 만료가 흔한 원인이다. README의 'RSSHub로 X 읽기' 절에 따라 쿠키를 새로 받아 컨테이너를 다시 만들고, 아래 'X 쿠키를 갱신한 뒤'로 확인한다 |
+| `DEGRADED` | 입력의 일부만 응답했다 | 보고서의 상세를 본다. X라면 쿠키 만료가 흔한 원인이다. README의 'RSSHub로 X 읽기' 절에 따라 쿠키를 새로 받아 컨테이너를 다시 만들고, 아래 'X 쿠키를 갱신한 뒤'로 확인한다 |
 | `EMPTY` | 꼭 있어야 하는 소스가 0건이다 | 피드 주소나 API 키를 확인한다 |
 
 ### X 쿠키를 갱신한 뒤
@@ -169,7 +169,7 @@ aws sqs delete-message --profile research --region ap-northeast-2 --queue-url "$
 
 `scripts/release.sh`는 origin/main에 올라가 CI를 통과한 HEAD만 배포한다. 이미지를 빌드한 뒤 올리기 전에 CI의 docker 작업과 같은
 가져오기·설정 검사를 그 이미지로 다시 돌린다(`config/invest.yaml`이 있으면 투자판도). CI가 보는 이미지에는 운영자 설정이 없기
-때문이다. IAM이나 보안 그룹 권한을 넓히는 변경은 배포 중에 승인을 묻는다. 배포가 끝나면 스테이지의 이미지 Lambda가 모두 방금 올린
+때문이다. CDK 배포는 승인을 묻지 않는다(`--require-approval never`, 운영자가 TTY 없는 셸에서 배포한다). 배포가 끝나면 스테이지의 이미지 Lambda가 모두 방금 올린
 digest로 돌고(`ResolvedImageUri`), `State`가 `Active`, `LastUpdateStatus`가 `Successful`인지 읽기만 해서 확인하고, 하나라도 다르면
 실패로 끝난다.
 

@@ -142,6 +142,10 @@ def _thread_text(pending: PendingComment) -> str:
     return "\n\n".join(f"[{author(item)}]\n{text(item)}" for item in pending.thread)
 
 
+# Seconds one comment's draft may take.
+_DRAFT_BUDGET_SEC = 60
+
+
 class CommentResponder:
     """Answers readers' comments on the account's recent posts: one model call per comment, which
     may decline it, then one reply under the comment."""
@@ -160,7 +164,7 @@ class CommentResponder:
     def seconds_per_comment(self) -> float:
         """A comment is started only with a draft and a publish's worst case left: a run killed between
         the publish and the ledger write answers the comment again."""
-        return self.config.comment_reply_draft_budget_sec + self.threads.reply_publish_reserve_sec
+        return _DRAFT_BUDGET_SEC + self.threads.reply_publish_reserve_sec
 
     async def draft(self, pending: PendingComment) -> CommentReply:
         chain = CommentReplyPrompt.get_prompt() | self.llm

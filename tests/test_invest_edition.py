@@ -1,13 +1,11 @@
 """The investing edition: one codebase, its own config, state prefix and memory sessions, and two tools."""
 
 import json
-from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
 from application import research
-from application.ports import MarketDataUnavailable
 from application.research import DeliveryContext, ResearchPorts, request_context
 from shared import Config
 from shared.config import EDITION_ENV
@@ -159,15 +157,12 @@ async def test_the_quote_uses_exchange_dates_labels_a_live_session_and_survives_
         [],
         {"chart": None},
         {"chart": {"result": {"x": 1}}},
+        {"chart": {"result": [{"timestamp": [1e20], "indicators": {"quote": [{"close": [1.0]}]}}]}},
         {"chart": {"result": [{"indicators": {"quote": [{"close": "x"}]}}]}},
     )
     for odd in odd_payloads:
         payloads.append(odd)
         assert await research_backends.yahoo_quote("AAPL", timeout=10) == ""
-    # A payload that breaks the parser is the source's failure, never an unknown ticker.
-    payloads.append({"chart": {"result": [{"timestamp": [1e20], "indicators": {"quote": [{"close": [1.0]}]}}]}})
-    with pytest.raises(MarketDataUnavailable, match="unreadable quote"):
-        await research_backends.yahoo_quote("AAPL", timeout=10)
     assert await research_backends.yahoo_quote("삼성", timeout=10) == ""
 
 
@@ -238,22 +233,3 @@ async def test_tickers_past_the_cap_are_named_as_not_queried():
         out = await research.analyst_ratings(" ".join(tickers))
     assert sources.analyst_ratings.await_count == research.MAX_RATINGS_TICKERS
     assert f"Not queried (one call reads at most {research.MAX_RATINGS_TICKERS} tickers): T5, T6" in out
-
-
-@pytest.mark.asyncio
-async def test_a_failed_source_is_not_reported_as_a_bad_ticker(monkeypatch):
-    from adapters import research_backends
-
-    statuses = [503, 404]
-    transport = httpx.MockTransport(lambda request: httpx.Response(statuses.pop(0)))
-    real = httpx.AsyncClient
-    monkeypatch.setattr(research_backends.httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw))
-    with pytest.raises(MarketDataUnavailable):
-        await research_backends.yahoo_quote("AAPL", timeout=10)
-    assert await research_backends.yahoo_quote("NOPE", timeout=10) == ""
-
-    sources = FakeSources()
-    sources.market_quote = AsyncMock(side_effect=MarketDataUnavailable("Yahoo Finance failed (HTTPStatusError)"))
-    with request_context(DeliveryContext(config=Config(), ports=ResearchPorts(sources=sources))):
-        out = await research.market_quote("AAPL")
-    assert "market data unavailable" in out and "check the ticker" not in out

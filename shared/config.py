@@ -140,7 +140,7 @@ class NaverResearchCollectorConfig(BaseCollectorConfig):
     # company, industry, invest (strategy), economy, market (daily wraps), debenture (fixed income).
     categories: list[ResearchCategory] = Field(default_factory=lambda: list(_DEFAULT_RESEARCH_CATEGORIES))
     # Pages of 50 per category, newest first; a peak earnings day had 121 company notes in one day. A
-    # category still paging at the cap reports the source DEGRADED.
+    # category still paging at the cap is logged.
     max_pages: int = Field(default=10, ge=1)
     page_delay_sec: float = Field(default=1.0, ge=0.0)
 
@@ -192,10 +192,6 @@ class CollectorsConfig(_StrictModel):
     # this is an explicit opt-in list rather than "alert whenever any source is empty" — that would
     # page daily and be muted within a week. Empty (the default) never alerts on EMPTY.
     alert_on_empty: list[str] = Field(default_factory=list)
-    # Wall-clock limit on ONE collector in a digest run: a collector still running then is cancelled and
-    # reported FAILED, and the other collectors' items are kept. The per-request timeouts bound each
-    # read, not a whole fan-out, and the digest Lambda still has to rank and write.
-    collection_deadline_sec: int = Field(default=300, ge=1)
 
     @model_validator(mode="after")
     def _alert_on_empty_names_known_collectors(self) -> "CollectorsConfig":
@@ -241,11 +237,6 @@ class PipelineConfig(_StrictModel):
     published_url_ttl_days: int = Field(default=6, ge=2)
     # How many recent digest leads (and daily comics) to feed back into the prompts as "don't reuse these".
     recent_leads_window: int = Field(default=5, ge=0)
-    # Days of recent story titles the ranker and the editor see: a story returns under another outlet's URL
-    # more than a week later, past the URL ledger.
-    recent_title_days: int = Field(default=14, ge=0)
-    # Days of recent implications fed back with the leads as angles not to repeat.
-    recent_implication_days: int = Field(default=2, ge=0)
     # The other editions posting to the same Threads account ("" is the AI/ML edition). Their last day or
     # two of story titles, leads and implications join this edition's own, so one account does not run
     # the same story and thesis twice in a day.
@@ -414,9 +405,6 @@ class PipelineConfig(_StrictModel):
     # The account answers one commenter at most this many times under one post, so a bot that
     # answers every reply cannot hold it in an endless exchange.
     comment_reply_max_per_commenter: int = Field(default=3, ge=1)
-    # Seconds one comment's draft may take; with the Threads reply's publish reserve it is the time a
-    # comment needs left before it is started.
-    comment_reply_draft_budget_sec: int = Field(default=60, ge=0)
     # Sunburst over flare: the same token price, and it draws brand logos correctly (docs/design.md).
     image_model: str = "gpt-image-2.5-sunburst"
     # orientation -> gpt-image size. The art director picks the frame the editor's form needs (a grid

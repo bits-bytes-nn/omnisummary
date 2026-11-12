@@ -19,14 +19,7 @@ from zoneinfo import ZoneInfo
 from langchain_core.output_parsers import StrOutputParser
 from pydantic import ValidationError
 
-from application.ports import (
-    LanguageModels,
-    MarketDataUnavailable,
-    MemoryStore,
-    ResearchSources,
-    StateStore,
-    ThreadsPublisher,
-)
+from application.ports import LanguageModels, MemoryStore, ResearchSources, StateStore, ThreadsPublisher
 from application.prompts import ThreadFactCheckPrompt
 from domain.digest_snapshot import DigestSnapshot
 from domain.formatting import citation_key, extract_urls, host_matches, normalize_citation_url
@@ -351,11 +344,7 @@ async def _market_blocks(symbols: str, limit: int, fetch, missing: str) -> str:
     blocks = []
     tickers = list(dict.fromkeys(symbols.upper().replace(",", " ").split()))
     for symbol in tickers[:limit]:
-        try:
-            block = await fetch(symbol)
-        except MarketDataUnavailable as e:
-            blocks.append(f"- {symbol}: market data unavailable ({e}); the ticker may be fine, try again later.")
-            continue
+        block = await fetch(symbol)
         if block:
             # The data page is the source of these numbers, for the citation check and the fact check.
             url = (_RESULT_URL.findall(block) or [""])[0]

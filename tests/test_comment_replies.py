@@ -535,8 +535,7 @@ def test_a_domain_split_by_an_invisible_character_is_refused(hidden):
 
 def test_a_comment_needs_its_draft_budget_plus_the_reply_publish_reserve(tmp_path):
     from adapters.threads import THREADS_PUBLISH_RESERVE_SEC
+    from application.comment_replies import _DRAFT_BUDGET_SEC
 
     responder = _responder(tmp_path, [])
-    assert (
-        responder.seconds_per_comment == responder.config.comment_reply_draft_budget_sec + THREADS_PUBLISH_RESERVE_SEC
-    )
+    assert responder.seconds_per_comment == _DRAFT_BUDGET_SEC + THREADS_PUBLISH_RESERVE_SEC

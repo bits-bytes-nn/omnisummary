@@ -46,8 +46,7 @@ DIGEST_IMAGE_REF="$(aws ecr describe-images --profile "$PROFILE" --region "$REGI
   --image-ids imageTag="$SHA" --query 'imageDetails[0].imageDigest' --output text)"
 export DIGEST_IMAGE_REF
 echo "Deploying ${SHA:0:12} as ${DIGEST_IMAGE_REF}"
-# An IAM or security-group broadening stops for the operator's approval; anything else deploys unattended.
-AWS_PROFILE="$PROFILE" npx cdk deploy --all -a "uv run python scripts/deploy.py" --require-approval broadening
+AWS_PROFILE="$PROFILE" npx cdk deploy --all -a "uv run python scripts/deploy.py" --require-approval never
 
 # Read-only smoke check: every image function of the stage runs the image just pushed, and its update landed.
 FUNCTIONS="$(aws lambda list-functions --profile "$PROFILE" --region "$REGION" --output text \

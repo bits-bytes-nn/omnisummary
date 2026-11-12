@@ -55,8 +55,7 @@ async def run_collectors_with_health(
     collectors = [collector for _, collector in sources]
     for label in labels:
         logger.info("Starting collector: '%s'", label)
-    deadline = config.collectors.collection_deadline_sec
-    tasks = [_collect_within(collector, deadline) for collector in collectors]
+    tasks = [collector.collect() for collector in collectors]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
     items: list[CollectedItem] = []
@@ -86,23 +85,6 @@ async def run_collectors_with_health(
     return items, report
 
 
-class CollectionDeadlineExceeded(RuntimeError):
-    """A collector ran past collectors.collection_deadline_sec and was cancelled."""
-
-
-async def _collect_within(collector: ContentSource, deadline: int) -> list[CollectedItem]:
-    """One collector's collect(), cancelled at the deadline so a stuck source cannot spend the Lambda's
-    time budget the ranking and writing still need. The other collectors' items are kept."""
-    scope = asyncio.timeout(deadline)
-    try:
-        async with scope:
-            return await collector.collect()
-    except TimeoutError as e:
-        if not scope.expired():
-            raise
-        raise CollectionDeadlineExceeded(f"exceeded collection deadline ({deadline}s)") from e
-
-
 class PipelineRun(NamedTuple):
     """What run_pipeline produced: the aggregated items, the candidate pool and the digest."""
 
@@ -120,24 +102,15 @@ class RecentHistory(NamedTuple):
 
 def load_recent_history(config: Config, memory_store: MemoryStore, digest_date: date) -> RecentHistory:
     """Ages 1..ttl-1 seed cross-day dedup (today's own snapshot is excluded so a same-day re-run keeps its
-    stories, and a story back on the TTL day is allowed again); ages 1..recent_title_days feed the titles.
+    stories, and a story back on the TTL day is allowed again); ages 1..RECENT_TITLE_DAYS feed the titles.
     Raises when the store cannot be read."""
     dedup_days = config.pipeline.published_url_ttl_days - 1
-    title_days = config.pipeline.recent_title_days
+    title_days = RECENT_TITLE_DAYS
     dated = memory_store.get_recent_digests_dated(digest_date, max(dedup_days, title_days))
     return RecentHistory(
         dedup=[snap for day, snap in dated if (digest_date - day).days <= dedup_days],
         titles=[snap for day, snap in dated if (digest_date - day).days <= title_days],
     )
-
-
-def read_recent_history(config: Config, memory_store: Callable[[], MemoryStore], digest_date: date) -> RecentHistory:
-    """load_recent_history, best-effort: a failed read costs only the dedup seed and the titles, never the run."""
-    try:
-        return load_recent_history(config, memory_store(), digest_date)
-    except Exception:
-        logger.warning("Could not read the recent digest snapshots (non-fatal)", exc_info=True)
-        return RecentHistory([], [])
 
 
 class PublishIncomplete(RuntimeError):
@@ -169,8 +142,9 @@ async def run_pipeline(
     dry_run: bool = False,
 ) -> PipelineRun | None:
     """Aggregate, rank and write the day's digest, then record its stories and lead. `memory_store`
-    is called once, to read the recent snapshots (read_recent_history). The digest is neither stored
-    nor published here: see persist_digest and publish_inline."""
+    is called once, to read the recent snapshots; a failed read costs only the dedup seed and the
+    titles, never the run. The digest is neither stored nor published here: see persist_digest and
+    publish_inline."""
     ledger = PublishedUrlLedger(state_store, config.pipeline.published_url_ttl_days)
 
     # Cross-day dedup draws from BOTH the ledger AND recent AgentCore Memory snapshots, so it
@@ -179,7 +153,11 @@ async def run_pipeline(
     # ledger's canonical form so http/https + trailing-slash variants of a past story still match.
     # Re-normalized on read: a key written under an older normalize_url must still match.
     exclude_urls = {normalize_url(u) for u in ledger.recent_urls(digest_date)}
-    history = await asyncio.to_thread(read_recent_history, config, memory_store, digest_date)
+    try:
+        history = await asyncio.to_thread(lambda: load_recent_history(config, memory_store(), digest_date))
+    except Exception:
+        logger.warning("Could not read the recent digest snapshots (non-fatal)", exc_info=True)
+        history = RecentHistory([], [])
     exclude_urls |= {normalize_url(u) for u in published_urls_from_snapshots(history.dedup)}
 
     aggregator = ContentAggregator()
@@ -359,15 +337,17 @@ def _recent_story_titles(snapshots: list[DigestSnapshot]) -> list[str]:
 def recent_angles(snapshots: list[DigestSnapshot], config: PipelineConfig) -> list[str]:
     """The angles the next digest must not repeat (newest first): the last recent_leads_window leads (the
     editor is shown each one's thesis sentence, so the countdown gag never reaches the comparison) and
-    the implications of the last recent_implication_days snapshots."""
+    the implications of the last RECENT_IMPLICATION_SNAPSHOTS snapshots."""
     leads = [snap.content.lead for snap in snapshots if snap.content and snap.content.lead.strip()]
-    recent = [snap.content for snap in snapshots[: config.recent_implication_days] if snap.content]
+    recent = [snap.content for snap in snapshots[:RECENT_IMPLICATION_SNAPSHOTS] if snap.content]
     implications = [item.implication for content in recent for item in content.items if item.implication.strip()]
     return leads[: config.recent_leads_window] + implications
 
 
+RECENT_IMPLICATION_SNAPSHOTS = 2
 SCORED_ITEMS_PREFIX = "scored_items/"
 POOLS_PREFIX = "pools/"
+RECENT_TITLE_DAYS = 14
 
 
 def persist_digest(

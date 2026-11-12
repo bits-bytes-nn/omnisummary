@@ -31,10 +31,9 @@ class RSSCollector(BaseCollector):
             return []
 
         # Bound the fan-out: max_concurrency feeds are in flight at a time, so the collector's
-        # worst case is ceil(feeds / max_concurrency) * (max_retries * request_timeout + backoff);
-        # the pipeline's collectors.collection_deadline_sec bounds the whole collector on top of it.
-        # The semaphore is created HERE (on the running loop, never at import/__init__). Mirrors
-        # rsshub.max_concurrency.
+        # worst case is ceil(feeds / max_concurrency) * (max_retries * request_timeout + backoff),
+        # which has to stay inside the digest Lambda's 15-minute budget. The semaphore is created
+        # HERE (on the running loop, never at import/__init__). Mirrors rsshub.max_concurrency.
         semaphore = asyncio.Semaphore(self.config.max_concurrency)
         tasks = [self._collect_feed(feed_url, semaphore) for feed_url in self.config.feeds]
         result = await gather_collector_results(tasks, labels=self.config.feeds, raise_if_all_failed=True)

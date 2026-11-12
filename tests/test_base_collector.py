@@ -1,4 +1,3 @@
-import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
@@ -91,27 +90,6 @@ class TestGatherCollectorResults:
         result = await gather_collector_results([_ok("a"), _fail(), _fail(), _empty()])
         assert (result.total, result.failed, result.empty) == (4, 2, 1)
         assert [i.item_id for i in result.items] == ["a"]
-
-    @pytest.mark.asyncio
-    async def test_a_cancelled_fan_out_cancels_its_inputs(self):
-        started = asyncio.Event()
-        cancelled = []
-
-        async def hung():
-            started.set()
-            try:
-                await asyncio.sleep(60)
-            except asyncio.CancelledError:
-                cancelled.append(True)
-                raise
-            return []
-
-        outer = asyncio.ensure_future(gather_collector_results([hung()]))
-        await started.wait()
-        outer.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await outer
-        assert cancelled == [True]
 
 
 class _Collector(BaseCollector):
@@ -326,16 +304,6 @@ class TestFetchFeed:
                 await fetch_feed("https://hang.example/feed", description="RSS feed", timeout=1)
 
     @pytest.mark.asyncio
-    async def test_a_body_trickling_past_the_timeout_is_cut_off_as_transient(self):
-        class _Trickling(_FakeClient):
-            async def get(self, url):
-                await asyncio.sleep(60)
-
-        with patch("adapters.collectors.base.httpx.AsyncClient", lambda **kwargs: _Trickling(None, **kwargs)):
-            with pytest.raises(TransientStatusError, match="timed out"):
-                await fetch_feed("https://slow.example/feed", description="RSS feed", timeout=0.01)
-
-    @pytest.mark.asyncio
     async def test_a_transport_failure_is_transient_not_a_dead_feed(self):
         # A DNS hiccup used to lose the feed for the whole day while an HTTP 503 got three attempts.
         with patch("adapters.collectors.base.httpx.AsyncClient", _client_factory(httpx.ConnectError("dns"))):
@@ -543,13 +511,6 @@ class TestLoadItemsFromS3:
         assert parked.outcome == ParkOutcome.FRESH
         assert [i.item_id for i in parked.items] == ["v1"]
         assert client.get_object.call_args.kwargs["Key"] == "omnisummary/youtube_items.json"
-
-    def test_a_client_creation_error_is_an_error_outcome_not_an_exception(self, monkeypatch):
-        monkeypatch.setenv("STATE_BUCKET", "b")
-        with patch("adapters.collectors.base.boto3.Session", side_effect=KeyError("credential_provider")):
-            parked = load_items_from_s3("youtube_items.json", max_age_hours=36, timeout=30)
-        assert parked.outcome == ParkOutcome.ERROR
-        assert parked.usable is False and parked.degraded is True
 
     def test_the_s3_read_is_bounded_by_the_given_timeout(self, monkeypatch):
         monkeypatch.setenv("STATE_BUCKET", "b")

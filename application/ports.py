@@ -243,10 +243,6 @@ class ContentSource(Protocol):
     async def collect(self) -> list[CollectedItem]: ...
 
 
-class MarketDataUnavailable(RuntimeError):
-    """The market data source failed (an outage, a refused session), as opposed to an unknown ticker."""
-
-
 class ResearchSources(Protocol):
     """What the research agent reads. Each search answers formatted text, one "URL:" line per result."""
 
@@ -271,10 +267,10 @@ class ResearchSources(Protocol):
 
     async def market_quote(self, symbol: str, period: str = "5d") -> str:
         """Closes over `period` (5d, 1mo, 6mo, 1y, 5y) with its high and low for one ticker, as one result
-        block, or "" if unknown. Raises MarketDataUnavailable when the source itself failed."""
+        block, or "" if unknown."""
         ...
 
     async def analyst_ratings(self, symbol: str) -> str:
         """Analyst consensus and recent dated rating/target actions for one stock, as one result block,
-        or "" if unknown. Raises MarketDataUnavailable when the source itself failed."""
+        or "" if unknown."""
         ...

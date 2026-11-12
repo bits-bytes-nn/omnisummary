@@ -199,10 +199,6 @@ collectors:
   alert_on_empty: []
     # - "rss"
     # - "web_search"
-  # Wall-clock limit on one collector in a digest run: a collector still running then is cancelled and
-  # reported FAILED, the other collectors' items are kept, and ranking and writing keep their share of
-  # the Lambda's 15 minutes.
-  collection_deadline_sec: 300
 
 pipeline:
   domain_rules: |

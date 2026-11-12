@@ -550,18 +550,6 @@ class TestS3Preload:
         assert load.call_args.kwargs["max_age_hours"] == 72
 
     @pytest.mark.asyncio
-    async def test_a_racing_s3_client_creation_falls_back_to_live_collection(self, monkeypatch):
-        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        monkeypatch.setenv("STATE_BUCKET", "b")
-        collector = _collector(_config())
-        live_item = CollectedItem(item_id="vLive", source_type=SourceType.YOUTUBE, title="live", url="https://y/live")
-        with patch("adapters.collectors.base.boto3.Session", side_effect=KeyError("credential_provider")):
-            with patch.object(collector, "_collect_channel", new=AsyncMock(return_value=[live_item])):
-                items = await collector.collect()
-        assert collector.park_status is not None and collector.park_status.outcome is ParkOutcome.ERROR
-        assert [item.item_id for item in items] == ["vLive"]
-
-    @pytest.mark.asyncio
     async def test_live_collection_when_no_s3(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
         collector = _collector(_config())

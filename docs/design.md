@@ -219,13 +219,6 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 DEGRADED 사유는 덮어쓰지 않고 이어 붙인다. park 파일이 없다는 사유가 뒤에 온 채널 실패 사유에 지워지지 않게 하려는
 것이다. reddit은 서브레딧 전체를 요청 한 번으로 받으니([§4.5](#45-reddit-redditpy)) 실패가 소스 단위로만 일어난다.
 
-`collectors.collection_deadline_sec`(기본 300)는 다이제스트 실행에서 수집기 하나에 주는 벽시계 한도다. 요청별 타임아웃은
-읽기 한 번씩만 묶으므로, 파이프라인의 `_collect_within`이 수집기마다 `collect()`를 `asyncio.timeout`으로 감싼다. 한도까지
-끝나지 않은 수집기는 취소되고 FAILED("exceeded collection deadline (300s)")로 보고되며, 나머지 소스의 항목은 그대로 쓴다.
-배포 로그 30일 동안 다이제스트 Lambda의 최장 실행은 AI판 210초, 투자판 473초(타임아웃 900초)였고 한도에 걸린 수집기는
-없었다. 피드 fetch도 시도 하나를 `request_timeout` 안에 끝낸다. 바이트를 조금씩 흘리는 호스트는 읽기 타임아웃에 걸리지
-않기 때문이다.
-
 `collectors.alert_on_empty`(기본 `[]`)는 EMPTY가 사건인 소스의 이름 목록이다(예: `["rss", "web_search"]`).
 목록이 필요한 이유는 이렇다. 어두워진 소스는 예외도 남기지 않고 stale park 파일도 남기지 않고 실패율도
 남기지 않아서 다른 어떤 신호에도 걸리지 않는다. 그렇다고 빈 소스면 무조건 알리게 두면 reddit이나 X처럼
@@ -244,10 +237,10 @@ DEGRADED 사유는 덮어쓰지 않고 이어 붙인다. park 파일이 없다�
 | 다이제스트 재질의 | `digest_max_retries`(기본 3), `digest_retry_backoff_sec`(기본 5) | 에디터의 JSON이 깨졌을 때 다시 묻는 횟수와 간격 |
 | 랭킹 | `ranking_batch_size`(기본 40), `ranking_max_concurrency`(기본 4), `ranking_max_retries`(기본 3), `ranking_retry_backoff_sec`(기본 5), `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치, Bedrock fan-out 상한, 배치 재시도, 점수 루브릭 |
 | 후보 풀 | `top_n`(기본 5), `min_score`(기본 0.6), `digest_candidate_buffer`(기본 7), `source_slots`(소스마다 1), `max_per_origin`(기본 1) | 에디터에게 넘기는 후보는 `top_n + digest_candidate_buffer`개이고, 소스 슬롯과 origin 상한은 이 풀을 채우는 데만 쓴다. 실제로 나가는 `top_n`개는 에디터가 고른다([§5.2](#52-랭커-rankerpy)) |
-| 중복 | `published_url_ttl_days`(기본 6, 최소 2), `recent_leads_window`(기본 5), `recent_title_days`(기본 14), `recent_implication_days`(기본 2) | cross-day dedup 원장 TTL, 반복 방지용 최근 lead와 최근 만화의 윈도, 랭커와 에디터가 보는 최근 기사 제목의 일수, lead와 함께 보여 주는 implication의 최근 다이제스트 수([§5.6](#56-데일리-비주얼-daily_visualpy)). TTL이 최소 2인 것은 날짜만 있는 웹 결과가 이틀 연속 윈도에 들어가고([§4.8](#48-websearch-web_searchpy)) 두 번째 게시를 원장이 막기 때문이다 |
+| 중복 | `published_url_ttl_days`(기본 6, 최소 2), `recent_leads_window`(기본 5) | cross-day dedup 원장 TTL, 반복 방지용 최근 lead와 최근 만화의 윈도([§5.6](#56-데일리-비주얼-daily_visualpy)). 랭커와 에디터가 보는 최근 기사 제목의 일수(`RECENT_TITLE_DAYS`=14)와 lead와 함께 보여 주는 implication의 최근 다이제스트 수(`RECENT_IMPLICATION_SNAPSHOTS`=2)는 `application/digest_pipeline.py`의 상수다. TTL이 최소 2인 것은 날짜만 있는 웹 결과가 이틀 연속 윈도에 들어가고([§4.8](#48-websearch-web_searchpy)) 두 번째 게시를 원장이 막기 때문이다 |
 | 트렌드 | `trend_retention_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존 기간, 증거와 active 캡, momentum 반감기 |
 | 전달 | `enable_threads_post`, `threads_topic_tag`(기본 `AI`) | Threads 게시 on/off. 코드 기본값은 off이고 배포 설정은 on이다. 데일리 비주얼 Lambda가 게시한다. 토픽 태그는 root 게시물에만 붙는다([§5.8](#58-threads-전달-adaptersthreadspy-enable_threads_post)) |
-| 댓글 답글 | `enable_comment_replies`, `comment_reply_lookback_days`(7), `comment_reply_max_per_run`(10), `comment_reply_max_per_commenter`(3), `comment_reply_draft_budget_sec`(60) | 독자 댓글 자동 답글. 남은 시간이 초안 예산과 답글 게시 예비 시간의 합보다 적으면 다음 댓글을 시작하지 않는다. 코드 기본값은 off이고 배포 설정은 on이다([§5.9](#59-댓글-답글-applicationcomment_repliespy-enable_comment_replies)) |
+| 댓글 답글 | `enable_comment_replies`, `comment_reply_lookback_days`(7), `comment_reply_max_per_run`(10), `comment_reply_max_per_commenter`(3) | 독자 댓글 자동 답글. 남은 시간이 초안 예산(`_DRAFT_BUDGET_SEC`=60초)과 답글 게시 예비 시간의 합보다 적으면 다음 댓글을 시작하지 않는다. 코드 기본값은 off이고 배포 설정은 on이다([§5.9](#59-댓글-답글-applicationcomment_repliespy-enable_comment_replies)) |
 | 카운트다운 | `countdown_date`(기본 `2027-12-31`), `countdown_template`, `countdown_after` | 다이제스트 lead 맨 앞에 코드가 붙이는 "AGI 등장까지 N일 남았다" 인트로. 투자판은 "보편적 고소득 시대까지 N일 남았다"([§5.7](#57-카운트다운-인트로-domainformattingpy-countdown_intro) 참조) |
 | 시각화 | `image_model`(`gpt-image-2.5-sunburst`), `image_sizes`, `visual_image_quality`(`xhigh`), `visual_editor_source_max_tokens`, `visual_synopsis_source_max_tokens`, `visual_image_timeout_sec`(기본 300)과 `visual_image_max_retries`(기본 0), `visual_character_enabled`, `visual_character_sheet`, `visual_character_reference`(`assets/persona.jpg`) | 이미지 모델과 품질 등급, orientation에서 size로 가는 딕셔너리(키는 `VisualOrientation` 어휘로 고정이고 값만 튜닝한다), 입력 상한, 이미지 HTTP 호출 상한. SDK 기본값 600초씩 2회는 비주얼 Lambda의 15분 예산을 넘길 수 있어서 config로 고정했다 |
 | 프롬프트 주입 | `digest_language_rules`, `digest_voice_guidance`, `ranking_audience_description`, `digest_audience_description`, `visual_audience_description`, `visual_on_image_language`, `visual_synopsis_style_guidance`, `visual_synopsis_style_aesthetic`, `visual_guardrails`, `visual_moderation_softening_instruction` | 언어 규칙과 대상 독자, 톤, 미감, 가드레일, 모더레이션 완화 문구. 하드코딩 대신 템플릿 변수로 주입한다. `digest_language_rules`는 한국어 규칙과 번역 용어집을 튜닝하는 자리이고 언어 스위치가 아니다. 한국어 전용이 의도한 제품이다. `digest_voice_guidance`는 Gruber 톤이며, 단일 냉소 프레임으로 기본 고정하지 말고 그날 사실이 정당화할 때만 각을 세우도록 쓰여 있다 |
@@ -327,10 +320,6 @@ Lambda가 제자리에서 회전시키니, 로컬 `.env` 사본을 다시 쓰면
 없음' 경로로 degrade한다. Lambda와 로컬 CLI는 env를 먼저 보고 그다음 SSM을 본다. SecureString으로 바꿀 수
 없는 String 파라미터에 실제 값이 들어 있으면 지우지도, 평문으로 덮어쓰지도 않는다. 실패로 보고하고 0이 아닌
 코드로 끝나며, 지운 뒤 다시 실행하는 명령을 출력한다.
-
-시크릿 파라미터는 상태 버킷, AgentCore Memory와 같이 `RemovalPolicy.RETAIN`이다. 스택을 지우거나 리소스가
-교체돼도 갱신 Lambda가 회전시킨 토큰이 남는다. DeletionPolicy는 템플릿의 `Properties`가 아니라 리소스 수준
-설정이라서 아래의 "속성을 바꾸지 않는다" 규칙에 걸리지 않는다.
 
 X 세션 쿠키는 SSM에 두지 않는다. 로컬 RSSHub Docker 컨테이너(`localhost:RSSHUB_PORT`, 기본 `1200`)만 쓰고, AWS의
 다이제스트는 로컬 sync가 올린 S3 park 파일에서 X 항목을 읽는다.
@@ -780,7 +769,7 @@ GUID(RSS와 X는 기사 URL, 그 밖은 글이나 영상 id)라서 그대로 정
 다른 배치에 몰렸다.
 
 **최근 다이제스트 제목을 랭커도 본다.** `rank(..., recent_titles=...)`는 `run_pipeline`이 에디터에게 주는 것과 같은
-`_recent_story_titles(snapshots)`(1일 전부터 `pipeline.recent_title_days`(기본 14)일 전까지의 출고 스토리 제목)를 받아 RankingPrompt의
+`_recent_story_titles(snapshots)`(1일 전부터 `RECENT_TITLE_DAYS`=14일 전까지의 출고 스토리 제목)를 받아 RankingPrompt의
 *Already in recent digests* 블록에 넣는다(`format_recent_titles`). Novelty 기준은 목록에 있는 스토리를 실질적
 새 진전이 없으면 재탕으로 본다. URL 원장은 정확한 URL만 맞추므로, 다른 매체나 주간 정리로 돌아온 같은 사건은
 랭커가 볼 근거가 없어 높은 점수로 풀에 들어왔다([결정 기록](decisions.md#2026-10-11-최근-제목을-랭커와-에디터에)). 정보일 뿐
@@ -920,10 +909,10 @@ private 헬퍼를 부르면 파이프라인이 출력 채널의 내부 이름에
   일반화하는 방식이다. 각 lead의 **마지막** 문장만 보여준다. lead는 첫 문장에서 스토리 이름을 대고 마지막에
   논지를 놓으니, 되풀이하면 안 되는 논지가 마지막 문장에 있다(스토리 반복은 `recent_titles`가 다룬다). 잘라내기는 포맷
   시점(`_format_recent_leads`)에 일어나니 전문으로 저장된 기존 이력도 그대로 동작한다.
-  `RECENT_LEAD_PREVIEW_CHARS`는 문장 경계가 없는 산문용 백스톱이다. 최근 이틀(`pipeline.recent_implication_days`)의 implication도 같은
+  `RECENT_LEAD_PREVIEW_CHARS`는 문장 경계가 없는 산문용 백스톱이다. 최근 다이제스트 두 건(`RECENT_IMPLICATION_SNAPSHOTS`)의 implication도 같은
   목록에 넣는다. 논지의 틀이 lead보다 implication에서 더 자주 되풀이됐다. 규칙을 더하지 않고 입력만 늘린 변경이다
   ([결정 기록](decisions.md#2026-11-01-반복-방지-입력에-최근-implication-추가)).
-- `recent_titles`는 1일 전부터 `pipeline.recent_title_days`(기본 14)일 전까지 **모든** 스냅샷의 스토리 제목을 최신순으로 중복 없이 모은
+- `recent_titles`는 1일 전부터 `RECENT_TITLE_DAYS`=14일 전까지 **모든** 스냅샷의 스토리 제목을 최신순으로 중복 없이 모은
   목록이다. 주간 요약 글이 이미 실린 이야기를 새 URL로 다시 가져오면 URL 원장은 그것을 알아보지 못한다
   ([결정 기록](decisions.md#2026-10-11-최근-제목을-랭커와-에디터에)). 프레이밍은 한 줄이다.
   실질적 새 진전이 있을 때만 다시 싣고, 그때는 지난번 이후 무엇이 새로운지 본문에 말하라고 한다. 같은 목록을
@@ -1612,7 +1601,7 @@ append하고, `list_events`는 순서를 보장하지 않는다. 한 페이지�
 `aws.profile`이 비어 있을 때만 쓴다. 조회 자체가 실패하면(만료된 SSO, 권한, 스로틀) `MemoryReadError`를 던진다. AWS 밖에서
 설정한 프로필이 이 머신에 없거나 조회 결과에 메모리가 없을 때도 같다. 프로필이 없으면 다른 계정의 기본 자격 증명으로
 조회하게 되고, 그 계정에는 메모리가 없으니 로컬 파일로 떨어져 production이 쓴 날짜를 "저장된 것 없음"으로 답했다.
-`recall_digest`는 이 오류를 "읽지 못했다"로 전하고, `read_recent_history`는 원래 실패해도 실행을 멈추지 않는다.
+`recall_digest`는 이 오류를 "읽지 못했다"로 전하고, 다이제스트 실행(`run_pipeline`)은 원래 실패해도 멈추지 않는다.
 
 **윈도 조회.** `get_recent_digests(before, days)`가 cross-day dedup 시드를
 제공한다([§7.3](#73-cross-day-dedup-히스토리-applicationhistorypy)). 세션 id가 날짜로 정해지니 `before` 이전 `days`일의
@@ -1644,7 +1633,7 @@ append하고, `list_events`는 순서를 보장하지 않는다. 한 페이지�
 
 **시드와 기록(`application.digest_pipeline.run_pipeline`).** exclude 집합을 원장과 최근 AgentCore Memory 스냅샷 양쪽에서
 시드한다(원장이 제외하는 것과 같은 창, 1일 전부터 TTL 하루 전까지. TTL 당일에는 둘 다 같은 스토리를 다시 허용한다). 생성 후에는 발행된 `content.items` URL을 원장에 기록한다. 최근 lead와 최근 스토리 제목은 따로 저장하지 않고
-스냅샷에서 꺼낸다. `read_recent_history`가 두 창 중 긴 쪽(`recent_title_days`, 기본 14일)을 `get_recent_digests_dated`로 한 번만 읽고 날짜로 나눈다. lead와 implication(`recent_angles`)은 원장 창의 스냅샷에서, 제목(`_recent_story_titles`)은 긴 창에서 꺼낸다. 10-24에 실린 Kimi K3.1 Pro가 8일 뒤 다른 매체의 같은 출시 기사로 다시 실렸고, 원장 창(5일)으로는 막을 수 없었다. 스냅샷이 없는 날(에디션 시작 전, 건너뛴 날)은 INFO 로그만 남긴다.
+스냅샷에서 꺼낸다. `run_pipeline`이 `load_recent_history`로 두 창 중 긴 쪽(`RECENT_TITLE_DAYS`=14일)을 `get_recent_digests_dated`로 한 번만 읽고 날짜로 나눈다. lead와 implication(`recent_angles`)은 원장 창의 스냅샷에서, 제목(`_recent_story_titles`)은 긴 창에서 꺼낸다. 10-24에 실린 Kimi K3.1 Pro가 8일 뒤 다른 매체의 같은 출시 기사로 다시 실렸고, 원장 창(5일)으로는 막을 수 없었다. 스냅샷이 없는 날(에디션 시작 전, 건너뛴 날)은 INFO 로그만 남긴다.
 
 **같은 계정의 다른 판(`pipeline.sibling_editions`).** 두 판은 한 Threads 계정에 올라가므로, 다른 판의 그날과 전날
 스냅샷(`sibling_snapshots`, 07:30 판과 19:00 판이라 같은 날짜가 이미 올라가 있을 수 있다)의 제목은 `recent_titles`에, lead와
@@ -1657,7 +1646,7 @@ implication은 `recent_leads`에 더한다. 규칙이 아니라 입력이다. �
 제목만 넘기고(`pipeline.trend_context_notes: false`), 투자판은 메모를 받는다([결정 기록](decisions.md#2026-11-06-에디터-프롬프트-정리와-판정-원문)).
 
 **평가 하네스는 운영과 같은 입력으로 재현한다.** 판정자는 에디터와 같은 원문을 본다. 원문을 잘라 주면 뒤쪽 수치를 지어낸 것으로
-채점해 판정이 뒤집혔다. 최근 제목은 `pipeline.recent_title_days`(기본 14일)이고,
+채점해 판정이 뒤집혔다. 최근 제목은 `RECENT_TITLE_DAYS`(14일)이고,
 다른 판 스냅샷은 재현하는 날의 스냅샷보다 먼저 만들어진 것만 쓴다. 07:30 투자판을 재현하면서 같은 날 19:00 AI판을 보여 주면 실제 실행에는
 없던 입력이 된다. 판정 하나를 읽지 못해도 이미 낸 판정은 파일에 남는다.
 운영 파이프라인은 에디터가 읽은 후보 풀 전체(본문, 원문 보장 표시, PDF 본문)를 `digest_state/pools/<날짜>.json`에 남기고, 하네스는 그 파일이 있으면 그것으로 재현한다. AgentCore 스냅샷은 이벤트 한도를 나눠 항목을 약 7.4천 자로 자르기 때문이다. 케이스는 `evals/<종류>[/<판>]/<라벨>/`에 판별로 따로 쌓인다(두 판이 같은 날짜를 재현하므로 한 폴더면 서로 덮어썼다).
@@ -1704,7 +1693,7 @@ STALE과 DEGRADED는 실패가 아니니 `failed_sources`에 들어가지 않는
 
 ### 소스 분류 (`run_collectors_with_health`)
 
-- 예외가 나면 **FAILED**이고 잘린 detail을 담는다. `collectors.collection_deadline_sec`을 넘겨 취소된 수집기도 같다.
+- 예외가 나면 **FAILED**이고 예외 메시지를 detail에 담는다.
 - park 파일이 `degraded`(stale은 나이 예산 초과, error는 읽기 불가)면 **STALE**이고 항목 수와 park detail을
   담는다. 항목은 나왔지만 그 sync가 멈춰 있다는 뜻이라 OK도 FAILED도 아닌 별도 상태다.
   수집기의 `health_issue`(포트의 유일한 헬스 항목, `BaseCollector`가 `park_status`와 `degraded_detail`로 만든다)를

@@ -201,54 +201,6 @@ async def test_stale_wins_over_degraded():
 
 
 @pytest.mark.asyncio
-async def test_a_collector_past_the_collection_deadline_fails_and_the_others_are_kept():
-    import asyncio
-
-    from application import digest_pipeline as runner
-
-    async def ok():
-        return [_item("http://a.com")]
-
-    async def hung():
-        await asyncio.sleep(60)
-        return [_item("http://b.com")]
-
-    config = Config()
-    config.collectors.collection_deadline_sec = 123
-    asked: list[float] = []
-    real_timeout = asyncio.timeout
-
-    def short_timeout(delay):
-        asked.append(delay)
-        return real_timeout(0.01)
-
-    with patch.object(runner.asyncio, "timeout", short_timeout):
-        items, report = await runner.run_collectors_with_health(
-            config, _sources([ok(), hung()], ["rss", "web_search"], [_Collector(), _Collector()])
-        )
-
-    assert asked == [123, 123]
-    assert [item.url for item in items] == ["http://a.com"]
-    by_name = {s.name: s for s in report.sources}
-    assert by_name["rss"].status == SourceStatus.OK
-    assert by_name["web_search"].status == SourceStatus.FAILED
-    assert by_name["web_search"].detail == "exceeded collection deadline (123s)"
-
-
-@pytest.mark.asyncio
-async def test_a_timeout_raised_inside_a_collector_keeps_its_own_message():
-    from application import digest_pipeline as runner
-
-    async def times_out():
-        raise TimeoutError("upstream read timed out")
-
-    _items, report = await runner.run_collectors_with_health(Config(), _sources([times_out()], ["rss"], [_Collector()]))
-
-    assert report.sources[0].status == SourceStatus.FAILED
-    assert "exceeded collection deadline" not in report.sources[0].detail
-
-
-@pytest.mark.asyncio
 async def test_a_long_rsshub_detail_keeps_its_actionable_hint():
     from adapters.collectors.rsshub import _FAILURE_HINT
     from application import digest_pipeline as runner

@@ -45,15 +45,13 @@ class OmniSummaryApplicationStack(Stack):
         # the staging bucket and GetTemplate. Each starts as SSM_PLACEHOLDER; scripts/put_secrets.py
         # writes the SecureString. NEVER change a property here (not even a Description): CloudFormation
         # would re-put the placeholder over the live secret. tests/test_infrastructure.py pins this.
-        # RETAIN, like the state bucket and the memory: a stack delete or replacement must not take the
-        # token the refresh Lambda rotates in place. DeletionPolicy is a resource attribute, not a property.
         for name in SSM_SECRET_ENV_VARS:
             ssm.StringParameter(
                 self,
                 f"Ssm-{name}",
                 parameter_name=f"/{project_name}/{stage}/{name}",
                 string_value=SSM_PLACEHOLDER,
-            ).apply_removal_policy(RemovalPolicy.RETAIN)
+            )
 
         # Pin to the pushed image digest when provided (DIGEST_IMAGE_REF). A bare
         # ":latest" tag string never changes in the template, so CloudFormation would
