@@ -393,3 +393,15 @@ class TestRetweetOfATruncatedPost:
             "d", "https://x.com/someone/status/4", retweet.title, source_type=SourceType.X, text="RT elvis " + self.POST
         )
         assert [i.item_id for i in ContentAggregator().aggregate([retweet, original, again])] == ["a"]
+
+    def test_a_key_left_on_a_replaced_copy_never_points_outside_the_list(self):
+        # C (a retweet) is replaced by its post A, A by B (same title, other text), then D answers to
+        # C's title with a longer text: it must meet B, still in the list, not A, which has left it.
+        body = self.POST
+        c = _item(
+            "c", "https://x.com/u/status/c", "RT Bob: " + body[:40], source_type=SourceType.X, text="RT Bob " + body
+        )
+        a = _item("a", "https://x.com/u/status/a", body[:40] + "x", source_type=SourceType.X, text=body)
+        b = _item("b", "https://x.com/u/status/b", body[:40] + "x", source_type=SourceType.X, text="Another post. " * 9)
+        d = _item("d", "https://x.com/u/status/d", body[:40], source_type=SourceType.X, text=body + " extra" * 30)
+        assert [i.item_id for i in ContentAggregator().aggregate([c, a, b, d])] == ["d"]

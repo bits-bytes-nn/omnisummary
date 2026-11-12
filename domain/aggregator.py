@@ -166,14 +166,17 @@ class ContentAggregator:
                 survivor = self._pick_survivor(prev, item)
                 if survivor is not prev:
                     # A later duplicate has richer content; swap it in at the survivor's position
-                    # so the digest reads the fuller text (order otherwise preserved).
+                    # so the digest reads the fuller text (order otherwise preserved). Every key that
+                    # led to the replaced copy now leads to the survivor, so no lookup finds an item
+                    # that has left the list.
                     deduplicated[deduplicated.index(prev)] = survivor
-                # Every key either copy answers to now leads to the survivor, so a third copy matched by
-                # the loser's title or text finds the item that is still in the list.
-                for copy in (prev, item):
-                    seen_titles[normalize_title(copy.title)] = survivor
-                    if key := x_post_key(copy):
-                        seen_posts[key] = survivor
+                    for seen in (seen_titles, seen_posts):
+                        for key, kept in seen.items():
+                            if kept is prev:
+                                seen[key] = survivor
+                seen_titles[norm] = survivor
+                if post:
+                    seen_posts[post] = survivor
                 title_dupes += 1
             else:
                 seen_titles[norm] = item
