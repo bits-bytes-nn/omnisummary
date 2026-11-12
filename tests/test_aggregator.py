@@ -355,3 +355,53 @@ def test_the_same_url_from_a_research_note_stays_unlinked_whichever_copy_survive
     web = CollectedItem(item_id="w", source_type=SourceType.WEB, title="b", url=url, text="긴 본문 " * 40)
     [kept] = ContentAggregator().aggregate([note, web])
     assert kept.item_id == "w" and kept.show_link is False
+
+
+class TestRetweetOfATruncatedPost:
+    """RSSHub cuts titles at a fixed length, and a retweet's "RT name:" takes part of it, so the two
+    titles differ while the text is the same post (2-6 such pairs a day in both editions, 11-06..12)."""
+
+    POST = "Great paper from Meta with practical tips for tuning LLM judges. This one is on keeping judges calibrated."
+
+    def _pair(self):
+        original = _item(
+            "a", "https://x.com/omarsar0/status/1", self.POST[:90], source_type=SourceType.X, text=self.POST
+        )
+        retweet = _item(
+            "b",
+            "https://x.com/omarsar0/status/2",
+            ("RT elvis: " + self.POST)[:90],
+            source_type=SourceType.X,
+            text="RT elvis " + self.POST,
+        )
+        return original, retweet
+
+    def test_the_post_survives_its_retweet_in_either_order(self):
+        original, retweet = self._pair()
+        for items in ([original, retweet], [retweet, original]):
+            assert [i.item_id for i in ContentAggregator().aggregate(list(items))] == ["a"]
+
+    def test_different_posts_by_one_author_are_kept(self):
+        original, _ = self._pair()
+        other = _item("c", "https://x.com/omarsar0/status/3", self.POST[:90], source_type=SourceType.X, text="Another.")
+        other.title = "Another post entirely"
+        assert len(ContentAggregator().aggregate([original, other])) == 2
+
+    def test_a_third_copy_after_the_post_replaced_its_retweet_is_merged(self):
+        original, retweet = self._pair()
+        again = _item(
+            "d", "https://x.com/someone/status/4", retweet.title, source_type=SourceType.X, text="RT elvis " + self.POST
+        )
+        assert [i.item_id for i in ContentAggregator().aggregate([retweet, original, again])] == ["a"]
+
+    def test_a_key_left_on_a_replaced_copy_never_points_outside_the_list(self):
+        # C (a retweet) is replaced by its post A, A by B (same title, other text), then D answers to
+        # C's title with a longer text: it must meet B, still in the list, not A, which has left it.
+        body = self.POST
+        c = _item(
+            "c", "https://x.com/u/status/c", "RT Bob: " + body[:40], source_type=SourceType.X, text="RT Bob " + body
+        )
+        a = _item("a", "https://x.com/u/status/a", body[:40] + "x", source_type=SourceType.X, text=body)
+        b = _item("b", "https://x.com/u/status/b", body[:40] + "x", source_type=SourceType.X, text="Another post. " * 9)
+        d = _item("d", "https://x.com/u/status/d", body[:40], source_type=SourceType.X, text=body + " extra" * 30)
+        assert [i.item_id for i in ContentAggregator().aggregate([c, a, b, d])] == ["d"]
