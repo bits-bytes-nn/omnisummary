@@ -14,6 +14,7 @@ import pytest
 from adapters.state_store import LocalStateStore
 from application import digest_pipeline as runner
 from application.history import PUBLISHED_URLS_KEY
+from application.ports import MemoryReadError
 from domain.digest_snapshot import DigestSnapshot
 from domain.models import CollectedItem, DigestContent, DigestItem, DigestResult, RankedItem
 from shared.config import Config
@@ -101,7 +102,7 @@ async def _run(pipeline: _Pipeline, config: Config, items: list[CollectedItem], 
         items,
         DIGEST_DATE,
         state_store=pipeline.store,
-        memory_store=lambda: pipeline.memory,
+        memory_store=kwargs.pop("memory_store", lambda: pipeline.memory),
         **{"paid_check": nothing_paid, "note_text": no_note_text, "sibling_memory": lambda: [], **kwargs},
     )
 
@@ -283,6 +284,18 @@ class TestRunPipelineDedup:
                 p.memory.get_recent_digests_dated.side_effect = RuntimeError("agentcore down")
                 collected, ranked, digest = await _run(p, _config(), [_item("https://a.example/1")])
         assert collected and ranked and digest  # the digest still ships
+
+    @pytest.mark.asyncio
+    async def test_an_unopenable_memory_store_is_non_fatal(self):
+        def unopenable():
+            raise MemoryReadError("no memory on this profile")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with _Pipeline(tmpdir) as p:
+                collected, ranked, digest = await _run(
+                    p, _config(), [_item("https://a.example/1")], memory_store=unopenable
+                )
+        assert collected and ranked and digest
 
 
 class TestRunPipelineDryRun:

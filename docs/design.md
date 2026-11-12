@@ -1598,9 +1598,9 @@ append하고, `list_events`는 순서를 보장하지 않는다. 한 페이지�
 `available_boto_profile(config.aws.profile)`, 리전은 스택 리전(`config.aws.region`)이다. 셸의 `AWS_PROFILE`과
 `AWS_REGION`은 다른 계정이나 모델 호출 리전을 가리킬 수 있고, 읽기 클라이언트만 기본 세션을 쓰던 때는 이름으로
 찾은 메모리를 "Memory not found"로 답했다. `LocalMemoryStore`(`digest_*.json`)는 호출자가 `base_dir`를 넘겼거나
-`aws.profile`이 비어 있을 때만 쓴다. 조회 자체가 실패하면(만료된 SSO, 권한, 스로틀) `MemoryReadError`를 던진다. AWS 밖에서
-설정한 프로필이 이 머신에 없거나 조회 결과에 메모리가 없을 때도 같다. 프로필이 없으면 다른 계정의 기본 자격 증명으로
-조회하게 되고, 그 계정에는 메모리가 없으니 로컬 파일로 떨어져 production이 쓴 날짜를 "저장된 것 없음"으로 답했다.
+`aws.profile`이 비어 있을 때만 쓴다. 조회 자체가 실패하면(만료된 SSO, 권한, 스로틀) `MemoryReadError`를 던진다. `aws.profile`을 설정했는데 조회 결과에
+메모리가 없을 때도 같다. 설정한 프로필이 이 머신에 없으면 기본 자격 증명으로 조회하는데, 그것이 다른 계정이면 메모리가
+없으니, 로컬 파일로 떨어지면 운영이 쓴 날짜를 "저장된 것 없음"으로 답하게 된다.
 `recall_digest`는 이 오류를 "읽지 못했다"로 전하고, 다이제스트 실행(`run_pipeline`)은 원래 실패해도 멈추지 않는다.
 
 **윈도 조회.** `get_recent_digests(before, days)`가 cross-day dedup 시드를

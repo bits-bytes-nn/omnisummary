@@ -167,8 +167,8 @@ async def _digest(label: str, dates: list[str]) -> None:
         if not stored:
             logger.warning("%s has no stored pool; replaying the snapshot's shortened items", day)
         today = date.fromisoformat(day)
-        # The same inputs a real run on that date had: the earlier snapshots and the trends before it. A failed
-        # read raises: a replay without them is a different input from the run it stands for.
+        # The same inputs a real run on that date had: the earlier snapshots and the trends before it. A store that
+        # cannot be read raises: a replay without them is a different input from the run it stands for.
         history = load_recent_history(config, memory, today)
         trends = TrendTracker(config.pipeline, models, bootstrap.state_store(config)).get_trends_context(today=today)
         sibling = _posted_before(sibling_snapshots(lambda: bootstrap.sibling_memory_stores(config), today), snapshot)
