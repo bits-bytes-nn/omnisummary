@@ -6,6 +6,7 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 from domain.formatting import RETWEET_PREFIX, normalize_title
 from domain.models import CollectedItem, generate_item_id
 from shared import logger
+from shared.constants import SourceType
 
 _TRACKING_PARAM_PREFIXES = ("utm_",)
 _TRACKING_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src", "ref_url"}
@@ -136,6 +137,9 @@ class ContentAggregator:
         url_deduped = list(seen_urls.values())
 
         seen_titles: dict[str, CollectedItem] = {}
+        # X posts by their text: RSSHub cuts a retweet's title shorter ("RT name:" takes room), so a
+        # retweet and its post can share no title while their text is the same.
+        seen_posts: dict[str, CollectedItem] = {}
         deduplicated: list[CollectedItem] = []
         title_dupes = 0
         empty_norm = 0
@@ -151,8 +155,9 @@ class ContentAggregator:
                 continue
             # A pinned duplicate is not lost here: _pick_survivor always keeps the pinned copy. Two pins
             # sharing a title are both kept, since each was asked for by URL.
-            if norm in seen_titles and not (item.pinned and seen_titles[norm].pinned):
-                prev = seen_titles[norm]
+            post = x_post_key(item)
+            prev = seen_titles.get(norm) or (seen_posts.get(post) if post else None)
+            if prev is not None and not (item.pinned and prev.pinned):
                 logger.debug(
                     "Duplicate title skipped: '%s' (same as '%s')",
                     item.title[:60],
@@ -162,11 +167,18 @@ class ContentAggregator:
                 if survivor is not prev:
                     # A later duplicate has richer content; swap it in at the survivor's position
                     # so the digest reads the fuller text (order otherwise preserved).
-                    seen_titles[norm] = survivor
                     deduplicated[deduplicated.index(prev)] = survivor
+                # Every key either copy answers to now leads to the survivor, so a third copy matched by
+                # the loser's title or text finds the item that is still in the list.
+                for copy in (prev, item):
+                    seen_titles[normalize_title(copy.title)] = survivor
+                    if key := x_post_key(copy):
+                        seen_posts[key] = survivor
                 title_dupes += 1
             else:
                 seen_titles[norm] = item
+                if post:
+                    seen_posts[post] = item
                 deduplicated.append(item)
 
         if empty_norm:
@@ -223,3 +235,15 @@ class ContentAggregator:
             return
         for k, v in dupe.metadata.items():
             kept.metadata.setdefault(k, v)
+
+
+def x_post_key(item: CollectedItem) -> str:
+    """An X post's normalized text, a retweet's without its "RT <name>" lead (the title's name, in any
+    spacing or punctuation), so a retweet and the post it carries share a key. "" for anything else."""
+    if item.source_type != SourceType.X or not item.text.strip():
+        return ""
+    text = item.text
+    if match := RETWEET_PREFIX.match(item.title):
+        name = match.group(0).strip()[2:].rstrip(":").strip()
+        text = re.sub(rf"^\s*RT\s+{re.escape(name)}\s*:?", "", text)
+    return normalize_title(text)
