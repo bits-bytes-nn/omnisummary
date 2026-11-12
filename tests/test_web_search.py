@@ -14,7 +14,6 @@ from shared.constants import SourceType
 @pytest.fixture(autouse=True)
 def _every_page_is_open(monkeypatch):
     monkeypatch.setattr("adapters.collectors.web_search.access_controlled", AsyncMock(return_value=set()))
-    monkeypatch.setattr("adapters.collectors.web_search.access_verdicts", AsyncMock(return_value={}))
 
 
 def _collector(**kwargs) -> WebSearchCollector:
@@ -167,7 +166,7 @@ class TestCollect:
     async def test_a_paid_or_bot_checked_result_is_dropped(self, monkeypatch):
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         monkeypatch.setattr(
-            "adapters.collectors.web_search.access_verdicts", AsyncMock(return_value={"https://a.example/1": "paid"})
+            "adapters.collectors.web_search.access_controlled", AsyncMock(return_value={"https://a.example/1"})
         )
         c = _search_collector()
         client = MagicMock()
@@ -177,45 +176,6 @@ class TestCollect:
             }
         )
         c._client_instance = client
-        assert {i.url for i in await c.collect()} == {"https://b.example/2"}
-        assert c.degraded_detail == ""
-
-    @pytest.mark.asyncio
-    async def test_most_results_refused_reads_degraded_with_the_refusing_hosts(self, monkeypatch):
-        # A CDN or WAF refusing the datacenter IP dropped most results and the source still read OK.
-        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
-        verdicts = {"https://www.a.example/1": "403", "https://a.example/2": "403", "https://p.example/3": "paid"}
-        monkeypatch.setattr("adapters.collectors.web_search.access_verdicts", AsyncMock(return_value=verdicts))
-        c = _search_collector()
-        client = MagicMock()
-        client.search = AsyncMock(
-            return_value={"results": [_result(0.9, url=url, title=url) for url in [*verdicts, "https://b.example/4"]]}
-        )
-        c._client_instance = client
-        assert {i.url for i in await c.collect()} == {"https://b.example/4"}
-        status, detail = c.health_issue
-        assert status.value == "degraded"
-        assert detail == (
-            "3/4 result pages failed (>50%): dropped by the access check, 1 paid, 2 refused (403 x2); "
-            "refusing hosts: a.example (2)"
-        )
-
-    @pytest.mark.asyncio
-    async def test_a_refine_step_that_runs_into_the_deadline_keeps_the_broad_results(self, monkeypatch):
-        import asyncio
-
-        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
-        c = _search_collector()
-        c.deadline_sec = 0.05
-        client = MagicMock()
-        client.search = AsyncMock(return_value={"results": [_result(0.9, url="https://b.example/2")]})
-        c._client_instance = client
-
-        async def hang(*_a):
-            await asyncio.sleep(60)
-            return []
-
-        monkeypatch.setattr(c, "_refine_search", hang)
         assert {i.url for i in await c.collect()} == {"https://b.example/2"}
 
     @pytest.mark.asyncio

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections import Counter
 from datetime import UTC, datetime, timedelta, tzinfo
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
@@ -13,7 +12,7 @@ from tavily.errors import TimeoutError as TavilyTimeoutError
 from tavily.errors import UsageLimitExceededError
 
 from adapters.aws import resolve_secret
-from adapters.research_backends import access_controlled, access_verdicts, record_tavily_usage, tavily_client
+from adapters.research_backends import access_controlled, record_tavily_usage, tavily_client
 from application.ports import LanguageModels
 from application.prompts import RefineQueryPrompt
 from domain.aggregator import youtube_video_id
@@ -21,13 +20,7 @@ from domain.models import CollectedItem, generate_item_id
 from shared import DOMAIN_TO_SOURCE, SourceType, logger, parse_json_from_llm_output, retry_async
 from shared.config import WebSearchCollectorConfig, YouTubeCollectorConfig
 
-from .base import (
-    BaseCollector,
-    collection_window_dates,
-    degradation_reason,
-    gather_collector_results,
-    in_collection_window,
-)
+from .base import BaseCollector, collection_window_dates, gather_collector_results, in_collection_window
 from .youtube import YOUTUBE_API_BASE, fetch_youtube_transcript
 
 # Failures another attempt can plausibly fix: a hung request (asyncio's TimeoutError and Tavily's
@@ -53,9 +46,8 @@ class WebSearchCollector(BaseCollector):
         *,
         domain: str = "",
         reference_time: datetime | None = None,
-        deadline_sec: float | None = None,
     ) -> None:
-        super().__init__(config, reference_time=reference_time, deadline_sec=deadline_sec)
+        super().__init__(config, reference_time=reference_time)
         # The field the refine step asks for queries about: the edition's pipeline.domain.
         self.domain = domain
         self._api_key = ""
@@ -97,10 +89,7 @@ class WebSearchCollector(BaseCollector):
             logger.info("No web search queries configured, skipping")
             return []
 
-        self.start_deadline()
-        broad = await gather_collector_results(
-            tasks, labels=labels, raise_if_all_failed=True, deadline_at=self.deadline_at
-        )
+        broad = await gather_collector_results(tasks, labels=labels, raise_if_all_failed=True)
         broad_items = broad.items
         logger.info(
             "Web search collector gathered %d items (broad phase) from %d/%d queries (%d failed)",
@@ -115,63 +104,20 @@ class WebSearchCollector(BaseCollector):
             total=broad.total,
             failed=broad.failed,
             empty=broad.empty,
-            cancelled=broad.cancelled,
             what="search queries",
         )
 
-        refined_items = await self._refine_within_deadline(broad_items, semaphore)
+        refined_items = await self._refine_search(broad_items, semaphore)
         # Duplicates across queries are left to the aggregator, which dedups every source by URL and title.
         all_items = broad_items + refined_items
         # Tavily reads results from its own servers: a page that is paid or bot-checked for a reader
         # would reach the digest around its control. Exclude lists only learned of each such host
         # after a story from it shipped.
-        checked = {it.url for it in all_items}
-        blocked = await access_verdicts(list(checked))
+        blocked = await access_controlled([it.url for it in all_items])
         all_items = [it for it in all_items if it.url not in blocked]
-        self._report_blocked(blocked, total=len(checked))
         logger.info("Web search collector gathered %d items total (after refinement)", len(all_items))
 
         return all_items
-
-    def _report_blocked(self, blocked: dict[str, str], *, total: int) -> None:
-        """DEGRADED when the access check dropped too many result pages (a CDN or WAF refusing the
-        datacenter IP looks like a quiet day otherwise), split into paid and refused, with the
-        refusing hosts by count. Same threshold as a failed query."""
-        reason = degradation_reason(
-            total=total,
-            failed=len(blocked),
-            empty=0,
-            what="result pages",
-            threshold=self.config.error_rate_threshold,
-            empty_threshold=None,
-            min_inputs=self.config.min_inputs_for_rate,
-        )
-        if not reason:
-            return
-        refused = {url: why for url, why in blocked.items() if why != "paid"}
-        statuses = Counter(refused.values())
-        hosts = Counter(urlparse(url).netloc.removeprefix("www.") for url in refused)
-        detail = f"dropped by the access check, {len(blocked) - len(refused)} paid, {len(refused)} refused"
-        if statuses:
-            detail += " (" + ", ".join(f"{status} x{n}" for status, n in statuses.most_common()) + ")"
-        if hosts:
-            detail += "; refusing hosts: " + ", ".join(f"{host} ({n})" for host, n in hosts.most_common())
-        self._add_degraded_detail(f"{reason}: {detail}")
-        logger.warning("Collector is DEGRADED: %s", self.degraded_detail)
-
-    async def _refine_within_deadline(
-        self, broad_items: list[CollectedItem], semaphore: asyncio.Semaphore
-    ) -> list[CollectedItem]:
-        """The refine step is optional: skipped past the collection deadline, cut off at it."""
-        if self.past_deadline():
-            logger.warning("Skipping web search refinement: past the collection deadline")
-            return []
-        try:
-            async with asyncio.timeout_at(self.deadline_at):
-                return await self._refine_search(broad_items, semaphore)
-        except TimeoutError:
-            logger.warning("Web search refinement ran into the collection deadline; using broad results only")
-            return []
 
     async def _refine_search(
         self, broad_items: list[CollectedItem], semaphore: asyncio.Semaphore | None = None

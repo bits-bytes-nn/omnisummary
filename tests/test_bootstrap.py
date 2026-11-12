@@ -85,15 +85,14 @@ class TestCollectors:
         models.get_model.assert_called_once()
         assert models.get_model.call_args.kwargs["stage"] == "query-refine"
 
-    def test_every_collector_gets_the_runs_window_and_deadline_and_web_search_the_editions_domain(self):
+    def test_every_collector_gets_the_runs_window_and_web_search_the_editions_domain(self):
         from datetime import UTC, datetime
 
         config = self._config()
         config.pipeline.domain = "investing"
-        config.collectors.collection_deadline_sec = 123
         moment = datetime(2026, 11, 12, tzinfo=UTC)
         built = dict(bootstrap.collectors(config, MagicMock(), reference_time=moment))
-        assert {(c.reference_time, c.deadline_sec) for c in built.values()} == {(moment, 123)}
+        assert {c.reference_time for c in built.values()} == {moment}
         assert built["web_search"].domain == "investing"
 
 

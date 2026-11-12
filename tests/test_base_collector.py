@@ -93,30 +93,6 @@ class TestGatherCollectorResults:
         assert [i.item_id for i in result.items] == ["a"]
 
     @pytest.mark.asyncio
-    async def test_inputs_still_running_at_the_deadline_are_cut_off_and_the_rest_kept(self):
-        async def hung():
-            await asyncio.sleep(60)
-            return [_item("late")]
-
-        loop = asyncio.get_running_loop()
-        result = await gather_collector_results(
-            [_ok("a"), hung(), _empty()], labels=["a", "hung", "empty"], deadline_at=loop.time() + 0.05
-        )
-        assert [i.item_id for i in result.items] == ["a"]
-        assert (result.total, result.failed, result.empty, result.cancelled) == (3, 1, 1, 1)
-
-    @pytest.mark.asyncio
-    async def test_every_input_cut_off_still_fails_the_source(self):
-        async def hung():
-            await asyncio.sleep(60)
-            return []
-
-        with pytest.raises(RuntimeError, match="still running at the collection deadline"):
-            await gather_collector_results(
-                [hung()], raise_if_all_failed=True, deadline_at=asyncio.get_running_loop().time() + 0.01
-            )
-
-    @pytest.mark.asyncio
     async def test_a_cancelled_fan_out_cancels_its_inputs(self):
         started = asyncio.Event()
         cancelled = []
@@ -156,11 +132,6 @@ class TestDegradationReporting:
         assert c.run_meta == {"accounts_total": 40, "accounts_failed": 30, "accounts_empty": 2}
         assert "30/40 feeds failed" in c.degraded_detail
         assert "cookies expired" in c.degraded_detail
-
-    def test_inputs_cut_off_at_the_deadline_read_degraded_at_any_share(self):
-        c = _Collector()
-        c.record_run_health(total=40, failed=1, cancelled=1, what="feeds")
-        assert c.degraded_detail == "1/40 feeds cut off at the collection deadline"
 
     def test_run_health_stays_quiet_below_the_threshold(self):
         c = _Collector()

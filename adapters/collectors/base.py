@@ -146,9 +146,6 @@ _ABSENT_ERROR_CODES = frozenset({"NoSuchKey", "NoSuchBucket", "404"})
 PARK_META_ACCOUNTS_TOTAL = "accounts_total"
 PARK_META_ACCOUNTS_FAILED = "accounts_failed"
 PARK_META_ACCOUNTS_EMPTY = "accounts_empty"
-# Videos a YouTube sync kept, and how many of them came without a transcript.
-PARK_META_VIDEOS = "videos"
-PARK_META_TRANSCRIPTS_MISSING = "transcripts_missing"
 # When the sync BEFORE this file's ran. The previous digest could read no further than that sync's
 # file, so a reader reaches back to it when it is older than the lookback: a skipped sync otherwise
 # lost everything between its predecessor and the next sync's window for good.
@@ -196,7 +193,6 @@ def degradation_reason(
     what: str,
     threshold: float,
     empty_threshold: float | None,
-    min_inputs: int = 1,
 ) -> str:
     """Why a source that produced items is nonetheless DEGRADED, or "" when it is healthy. Shared by
     the live path and the park-file path so the two verdicts cannot drift.
@@ -206,11 +202,7 @@ def degradation_reason(
     - `empty_threshold`: percent of inputs that answered with ZERO items. All-200-and-empty (expired
       RSSHub cookies, a paywalled 200, a playlist that resolves to nothing) is the same
       disappearance shape as a failure, but it trips no failure rate at all — and as long as ONE
-      input still produced an item, the source reported a clean OK.
-
-    Below `min_inputs` inputs neither rate is judged: one miss out of two is not a rate."""
-    if total < min_inputs:
-        return ""
+      input still produced an item, the source reported a clean OK."""
     fail_rate = failed / total * 100
     empty_rate = empty / total * 100
     if failed > 0 and fail_rate > threshold:
@@ -237,27 +229,13 @@ class BaseCollector(ABC):
     # Every collector's config; the health verdicts below read their thresholds from it, so a
     # source can never forget to forward a configured knob.
     config: BaseCollectorConfig
-    # The run's reference time (midnight at the END of the digest date; None: now) and its collection
-    # deadline, both handed in by the composition root. deadline_at is the deadline on the loop's clock,
-    # started by start_deadline() when collect() begins.
+    # The run's reference time (midnight at the END of the digest date; None: now), handed in by the
+    # composition root.
     reference_time: datetime | None = None
-    deadline_sec: float | None = None
-    deadline_at: float | None = None
 
-    def __init__(
-        self, config: BaseCollectorConfig, *, reference_time: datetime | None = None, deadline_sec: float | None = None
-    ) -> None:
+    def __init__(self, config: BaseCollectorConfig, *, reference_time: datetime | None = None) -> None:
         self.config = config
         self.reference_time = reference_time
-        self.deadline_sec = deadline_sec
-
-    def start_deadline(self) -> None:
-        """Start this run's collection deadline: the fan-out keeps what its inputs finished by then."""
-        if self.deadline_sec is not None:
-            self.deadline_at = asyncio.get_running_loop().time() + self.deadline_sec
-
-    def past_deadline(self) -> bool:
-        return self.deadline_at is not None and asyncio.get_running_loop().time() >= self.deadline_at
 
     @abstractmethod
     async def collect(self) -> list[CollectedItem]: ...
@@ -283,7 +261,6 @@ class BaseCollector(ABC):
         total: int,
         failed: int,
         empty: int = 0,
-        cancelled: int = 0,
         what: str,
         hint: str = "",
     ) -> None:
@@ -292,9 +269,7 @@ class BaseCollector(ABC):
 
         One implementation for every collector: a fresh, on-time result says nothing about a run
         that collected from 3 of 40 inputs, which is the shape of a source quietly vanishing from
-        the digest. Inputs cut off at the collection deadline (`cancelled`, counted in `failed` too)
-        report the source DEGRADED at any share: the run kept what finished, and said so. Reporting
-        only — the items themselves are never filtered."""
+        the digest. Reporting only — the items themselves are never filtered."""
         self.run_meta = {
             PARK_META_ACCOUNTS_TOTAL: total,
             PARK_META_ACCOUNTS_FAILED: failed,
@@ -302,9 +277,6 @@ class BaseCollector(ABC):
         }
         if total <= 0:
             return
-        if cancelled:
-            self._add_degraded_detail(f"{cancelled}/{total} {what} cut off at the collection deadline")
-            logger.warning("Collector is DEGRADED: %s", self.degraded_detail)
         reason = degradation_reason(
             total=total,
             failed=failed,
@@ -312,7 +284,6 @@ class BaseCollector(ABC):
             what=what,
             threshold=self.config.error_rate_threshold,
             empty_threshold=self.config.empty_rate_threshold,
-            min_inputs=self.config.min_inputs_for_rate,
         )
         if not reason:
             return
@@ -343,7 +314,6 @@ class BaseCollector(ABC):
             what=what,
             threshold=self.config.error_rate_threshold,
             empty_threshold=self.config.empty_rate_threshold,
-            min_inputs=self.config.min_inputs_for_rate,
         )
         if not reason:
             return
@@ -612,71 +582,39 @@ class CollectorRunResult(BaseModel):
     """A fan-out's items PLUS how many of its inputs answered.
 
     Returned instead of a bare list so the caller can report a source that produced items from only
-    a fraction of its inputs: 2 of 40 feeds answering used to look exactly like a healthy run.
-    `cancelled` inputs were still running at the deadline; they are counted in `failed` too."""
+    a fraction of its inputs: 2 of 40 feeds answering used to look exactly like a healthy run."""
 
     items: list[CollectedItem] = Field(default_factory=list)
     total: int = 0
     failed: int = 0
     empty: int = 0
-    cancelled: int = 0
 
 
 async def gather_collector_results(
     tasks: Sequence[Awaitable[list[CollectedItem]]],
     labels: list[str] | None = None,
     raise_if_all_failed: bool = False,
-    deadline_at: float | None = None,
 ) -> CollectorRunResult:
-    """Every input's items. With `deadline_at` (the loop's clock), the inputs still running then are
-    cancelled and counted as failed, and the finished ones' items are kept: cancelling the whole
-    collector at the deadline threw away every feed that had already answered."""
-    futures: list[asyncio.Future] = [asyncio.ensure_future(task) for task in tasks]
-    pending: set[asyncio.Future] = set()
-    if futures:
-        timeout = None if deadline_at is None else max(0.0, deadline_at - asyncio.get_running_loop().time())
-        try:
-            _, pending = await asyncio.wait(futures, timeout=timeout)
-        except BaseException:
-            # Cancelled from outside (the pipeline's backstop): asyncio.wait leaves its inputs running.
-            for future in futures:
-                future.cancel()
-            raise
-        for future in pending:
-            future.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
     items: list[CollectedItem] = []
     failures: list[BaseException] = []
     empty = 0
-    for i, future in enumerate(futures):
-        label = labels[i] if labels else f"task-{i}"
-        if future in pending:
-            failures.append(TimeoutError(f"'{label}' was still running at the collection deadline"))
-            continue
-        error = future.exception() if not future.cancelled() else asyncio.CancelledError()
-        if error is not None:
-            logger.warning("Collector task '%s' failed: %s", label, error)
-            failures.append(error)
-        elif result := future.result():
+    for i, result in enumerate(results):
+        if isinstance(result, BaseException):
+            label = labels[i] if labels else f"task-{i}"
+            logger.warning("Collector task '%s' failed: %s", label, result)
+            failures.append(result)
+        elif result:
             items.extend(result)
         else:
             empty += 1
-    if pending:
-        logger.warning(
-            "%d of %d inputs were still running at the collection deadline and were cancelled: %s",
-            len(pending),
-            len(futures),
-            ", ".join(labels[i] if labels else f"task-{i}" for i, f in enumerate(futures) if f in pending),
-        )
 
     # When every task errored (and produced nothing), surface it so the health check
     # marks the source FAILED instead of reporting a silent empty result on an outage.
-    if raise_if_all_failed and futures and len(failures) == len(futures):
+    if raise_if_all_failed and results and len(failures) == len(results):
         raise RuntimeError(f"All {len(failures)} collector tasks failed: {failures[0]}")
 
-    return CollectorRunResult(
-        items=items, total=len(futures), failed=len(failures), empty=empty, cancelled=len(pending)
-    )
+    return CollectorRunResult(items=items, total=len(results), failed=len(failures), empty=empty)
 
 
 async def fetch_feed(url: str, *, description: str, timeout: float) -> Any:

@@ -201,7 +201,7 @@ async def test_stale_wins_over_degraded():
 
 
 @pytest.mark.asyncio
-async def test_a_collector_past_the_backstop_fails_and_the_others_are_kept():
+async def test_a_collector_past_the_collection_deadline_fails_and_the_others_are_kept():
     import asyncio
 
     from application import digest_pipeline as runner
@@ -213,17 +213,26 @@ async def test_a_collector_past_the_backstop_fails_and_the_others_are_kept():
         await asyncio.sleep(60)
         return [_item("http://b.com")]
 
+    config = Config()
+    config.collectors.collection_deadline_sec = 123
+    asked: list[float] = []
     real_timeout = asyncio.timeout
-    with patch.object(runner.asyncio, "timeout", lambda _: real_timeout(0.01)):
+
+    def short_timeout(delay):
+        asked.append(delay)
+        return real_timeout(0.01)
+
+    with patch.object(runner.asyncio, "timeout", short_timeout):
         items, report = await runner.run_collectors_with_health(
-            Config(), _sources([ok(), hung()], ["rss", "web_search"], [_Collector(), _Collector()])
+            config, _sources([ok(), hung()], ["rss", "web_search"], [_Collector(), _Collector()])
         )
 
+    assert asked == [123, 123]
     assert [item.url for item in items] == ["http://a.com"]
     by_name = {s.name: s for s in report.sources}
     assert by_name["rss"].status == SourceStatus.OK
     assert by_name["web_search"].status == SourceStatus.FAILED
-    assert "exceeded collection deadline" in by_name["web_search"].detail
+    assert by_name["web_search"].detail == "exceeded collection deadline (123s)"
 
 
 @pytest.mark.asyncio

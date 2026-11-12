@@ -91,9 +91,6 @@ class BaseCollectorConfig(_StrictModel):
     # broken session. None (the default) disables the check; set it per source in config.yaml for the
     # sources whose silence is never legitimate.
     empty_rate_threshold: float | None = Field(default=None, ge=0.0, le=100.0)
-    # Fewest inputs a rate check (failed, empty, a YouTube video without a transcript) judges at all;
-    # below it the source is not reported DEGRADED on a rate, since one miss out of two is not a rate.
-    min_inputs_for_rate: int = Field(default=1, ge=1)
 
 
 class YouTubeCollectorConfig(BaseCollectorConfig):
@@ -102,9 +99,6 @@ class YouTubeCollectorConfig(BaseCollectorConfig):
     resolve_timeout: int = Field(default=15, ge=1)
     transcript_timeout: int = Field(default=15, ge=1)
     transcript_language: str = Field(default="en")
-    # Percent of kept videos without a transcript past which the source reports DEGRADED: a sync whose
-    # transcript fetches are all blocked still returns every video, with its description only.
-    transcript_missing_threshold: float | None = Field(default=50.0, ge=0.0, le=100.0)
     # How many channels may be collected at once. Each one parks worker threads (page scrape,
     # transcript fetches), so this stays at/below the default asyncio executor width, same bound as
     # rss.max_concurrency / rsshub.max_concurrency.
@@ -198,17 +192,10 @@ class CollectorsConfig(_StrictModel):
     # this is an explicit opt-in list rather than "alert whenever any source is empty" — that would
     # page daily and be muted within a week. Empty (the default) never alerts on EMPTY.
     alert_on_empty: list[str] = Field(default_factory=list)
-    # Wall-clock limit on ONE collector's fan-out in a digest run: the inputs still running then are
-    # cut off and the finished ones' items kept (the source reads DEGRADED). The per-request timeouts
-    # bound each read, not a whole fan-out, and the digest Lambda still has to rank and write.
+    # Wall-clock limit on ONE collector in a digest run: a collector still running then is cancelled and
+    # reported FAILED, and the other collectors' items are kept. The per-request timeouts bound each
+    # read, not a whole fan-out, and the digest Lambda still has to rank and write.
     collection_deadline_sec: int = Field(default=300, ge=1)
-
-    @property
-    def collection_backstop_sec(self) -> int:
-        """When the pipeline cancels a collector that is still running (reported FAILED): the deadline
-        plus one request of the slowest-configured collector, for what follows a cut-off fan-out (the
-        web results' access check). Derived, so it cannot drift below the deadline."""
-        return self.collection_deadline_sec + max(getattr(self, name).request_timeout for name in COLLECTOR_NAMES)
 
     @model_validator(mode="after")
     def _alert_on_empty_names_known_collectors(self) -> "CollectorsConfig":

@@ -201,7 +201,7 @@ def _is_false(value: object) -> bool:
     return isinstance(value, str) and value.strip().lower().rsplit("/", 1)[-1] == "false"
 
 
-async def access_verdicts(urls: list[str], *, refusals: bool = True) -> dict[str, str]:
+async def access_controlled(urls: list[str], *, refusals: bool = True) -> set[str]:
     """The URLs whose page refuses an ordinary reader (401/403/429) or declares itself paid. Tavily
     reads a page from its own servers, so extracting one of these would get around the control the
     publisher put in front of it (docs/design.md, 판). Checked per page, not per host: a host list only
@@ -210,20 +210,18 @@ async def access_verdicts(urls: list[str], *, refusals: bool = True) -> dict[str
     hosts, enough to trip a publisher's WAF). A page that cannot be reached at all is an outage, not a
     control, and passes. `refusals=False` keeps only the pages that declare themselves paid: for a feed
     post, whose text the publisher's own feed handed us, a 403 from a datacenter IP (Lambda got one from
-    Wikipedia and GitHub) says nothing about what a reader sees.
-
-    Maps each such URL to why: "paid", or the refusing HTTP status ("403")."""
+    Wikipedia and GitHub) says nothing about what a reader sees."""
     if not urls:
-        return {}
+        return set()
     semaphore = asyncio.Semaphore(_ACCESS_CHECK_CONCURRENCY)
     per_host: dict[str, asyncio.Semaphore] = defaultdict(lambda: asyncio.Semaphore(_ACCESS_CHECK_PER_HOST))
 
-    async def refused(client: httpx.AsyncClient, url: str) -> str:
+    async def refused(client: httpx.AsyncClient, url: str) -> bool:
         async with per_host[_host(url)], semaphore:
             try:
                 async with client.stream("GET", url) as resp:
                     if resp.status_code in _REFUSED_STATUS:
-                        return str(resp.status_code) if refusals else ""
+                        return refusals
                     head = b""
                     async for chunk in resp.aiter_bytes():
                         head += chunk
@@ -232,15 +230,15 @@ async def access_verdicts(urls: list[str], *, refusals: bool = True) -> dict[str
             except Exception as e:
                 # Unreachable, or a URL httpx cannot even form (a malformed IDN): not a control.
                 logger.debug("Access check could not read '%s': %s", url, e)
-                return ""
-        return "paid" if declares_paid(head.decode("utf-8", "ignore"), str(resp.url)) else ""
+                return False
+        return declares_paid(head.decode("utf-8", "ignore"), str(resp.url))
 
     async with httpx.AsyncClient(
         headers={"User-Agent": BROWSER_USER_AGENT}, timeout=_ACCESS_CHECK_TIMEOUT_SEC, follow_redirects=True
     ) as client:
         unique = list(dict.fromkeys(urls))
         verdicts = await asyncio.gather(*(refused(client, u) for u in unique))
-    blocked = {u: why for u, why in zip(unique, verdicts, strict=True) if why}
+    blocked = {u for u, no in zip(unique, verdicts, strict=True) if no}
     if blocked:
         logger.info(
             "Access check: %d of %d pages refuse a reader or declare themselves paid (%s)",
@@ -249,11 +247,6 @@ async def access_verdicts(urls: list[str], *, refusals: bool = True) -> dict[str
             ", ".join(sorted({_host(u) for u in blocked})),
         )
     return blocked
-
-
-async def access_controlled(urls: list[str], *, refusals: bool = True) -> set[str]:
-    """access_verdicts' URLs, without the reasons."""
-    return set(await access_verdicts(urls, refusals=refusals))
 
 
 async def extract_url(url: str, *, cap: int) -> str:

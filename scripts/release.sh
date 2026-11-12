@@ -36,6 +36,7 @@ from shared import Config
 c = Config.load()
 assert c.collectors.web_search.trend_searches, 'the image resolved to bare code defaults'
 assert Path(c.pipeline.visual_character_reference).is_file(), 'persona sheet missing'
+assert c.edition != 'invest' or (c.pipeline.threads_footer and c.pipeline.domain_rules), 'investing edition config'
 print('image OK:', c.edition or 'ai', c.aws.region, c.pipeline.digest_model.value)"
 check_image
 if [ -f config/invest.yaml ]; then check_image -e OMNISUMMARY_EDITION=invest; fi

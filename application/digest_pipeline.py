@@ -55,10 +55,8 @@ async def run_collectors_with_health(
     collectors = [collector for _, collector in sources]
     for label in labels:
         logger.info("Starting collector: '%s'", label)
-    # The collectors cut their own fan-out at collection_deadline_sec and keep what finished; this
-    # backstop cancels one that is still running past it.
-    backstop = config.collectors.collection_backstop_sec
-    tasks = [_collect_within(collector, backstop) for collector in collectors]
+    deadline = config.collectors.collection_deadline_sec
+    tasks = [_collect_within(collector, deadline) for collector in collectors]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
     items: list[CollectedItem] = []
@@ -89,12 +87,12 @@ async def run_collectors_with_health(
 
 
 class CollectionDeadlineExceeded(RuntimeError):
-    """A collector ran past collectors.collection_backstop_sec and was cancelled."""
+    """A collector ran past collectors.collection_deadline_sec and was cancelled."""
 
 
 async def _collect_within(collector: ContentSource, deadline: int) -> list[CollectedItem]:
-    """One collector's collect(), cancelled at the backstop so a stuck source cannot spend the Lambda's
-    time budget the ranking and writing still need."""
+    """One collector's collect(), cancelled at the deadline so a stuck source cannot spend the Lambda's
+    time budget the ranking and writing still need. The other collectors' items are kept."""
     scope = asyncio.timeout(deadline)
     try:
         async with scope:
@@ -120,21 +118,26 @@ class RecentHistory(NamedTuple):
     titles: list[DigestSnapshot]
 
 
-def read_recent_history(config: Config, memory_store: Callable[[], MemoryStore], digest_date: date) -> RecentHistory:
+def load_recent_history(config: Config, memory_store: MemoryStore, digest_date: date) -> RecentHistory:
     """Ages 1..ttl-1 seed cross-day dedup (today's own snapshot is excluded so a same-day re-run keeps its
     stories, and a story back on the TTL day is allowed again); ages 1..recent_title_days feed the titles.
-    Best-effort: a failed read costs only the dedup seed and the titles, never the run."""
+    Raises when the store cannot be read."""
     dedup_days = config.pipeline.published_url_ttl_days - 1
     title_days = config.pipeline.recent_title_days
-    try:
-        dated = memory_store().get_recent_digests_dated(digest_date, max(dedup_days, title_days))
-    except Exception:
-        logger.warning("Could not read the recent digest snapshots (non-fatal)", exc_info=True)
-        return RecentHistory([], [])
+    dated = memory_store.get_recent_digests_dated(digest_date, max(dedup_days, title_days))
     return RecentHistory(
         dedup=[snap for day, snap in dated if (digest_date - day).days <= dedup_days],
         titles=[snap for day, snap in dated if (digest_date - day).days <= title_days],
     )
+
+
+def read_recent_history(config: Config, memory_store: Callable[[], MemoryStore], digest_date: date) -> RecentHistory:
+    """load_recent_history, best-effort: a failed read costs only the dedup seed and the titles, never the run."""
+    try:
+        return load_recent_history(config, memory_store(), digest_date)
+    except Exception:
+        logger.warning("Could not read the recent digest snapshots (non-fatal)", exc_info=True)
+        return RecentHistory([], [])
 
 
 class PublishIncomplete(RuntimeError):

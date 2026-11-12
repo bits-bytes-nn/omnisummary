@@ -135,23 +135,22 @@ class TestCreateMemoryStore:
             patch("adapters.memory.available_boto_profile", return_value="research"),
             patch("adapters.memory._deployed_memory_id", return_value=""),
             patch("adapters.memory.boto3.Session"),
-            patch("adapters.memory.is_running_in_aws", return_value=False),
         ):
             with pytest.raises(MemoryReadError, match="No AgentCore memory"):
                 create_memory_store(config)
 
-    def test_a_configured_profile_that_does_not_resolve_is_unreadable(self, monkeypatch):
+    def test_a_profile_that_does_not_resolve_looks_up_on_ambient_credentials(self, monkeypatch):
+        # A managed runtime without ~/.aws/config still finds the memory on its own credentials.
         monkeypatch.delenv("MEMORY_ID", raising=False)
         config = Config()
         config.aws.profile = "research"
         with (
             patch("adapters.memory.available_boto_profile", return_value=None),
-            patch("adapters.memory._deployed_memory_id") as lookup,
-            patch("adapters.memory.is_running_in_aws", return_value=False),
+            patch("adapters.memory._deployed_memory_id", return_value="mem-1"),
+            patch("adapters.memory.boto3.Session") as session,
         ):
-            with pytest.raises(MemoryReadError, match="profile 'research' is not configured"):
-                create_memory_store(config)
-        assert lookup.call_count == 0
+            assert isinstance(create_memory_store(config), AgentCoreMemoryStore)
+        assert session.call_args.kwargs["profile_name"] is None
 
     def test_a_failed_lookup_raises_instead_of_reading_the_local_store(self, monkeypatch, tmp_path):
         # Expired credentials fell back to the local store, so recall answered "nothing stored"

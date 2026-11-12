@@ -30,17 +30,14 @@ class RSSCollector(BaseCollector):
             logger.info("No RSS feeds configured, skipping")
             return []
 
-        # Bound the fan-out: max_concurrency feeds are in flight at a time. Its worst case,
-        # ceil(feeds / max_concurrency) * (request_timeout + retry_backoff_sec) * max_retries, can run
-        # past the collection deadline; the feeds still running then are cut off and the rest kept.
+        # Bound the fan-out: max_concurrency feeds are in flight at a time, so the collector's
+        # worst case is ceil(feeds / max_concurrency) * (max_retries * request_timeout + backoff);
+        # the pipeline's collectors.collection_deadline_sec bounds the whole collector on top of it.
         # The semaphore is created HERE (on the running loop, never at import/__init__). Mirrors
         # rsshub.max_concurrency.
-        self.start_deadline()
         semaphore = asyncio.Semaphore(self.config.max_concurrency)
         tasks = [self._collect_feed(feed_url, semaphore) for feed_url in self.config.feeds]
-        result = await gather_collector_results(
-            tasks, labels=self.config.feeds, raise_if_all_failed=True, deadline_at=self.deadline_at
-        )
+        result = await gather_collector_results(tasks, labels=self.config.feeds, raise_if_all_failed=True)
         logger.info(
             "RSS collector gathered %d items total from %d/%d feeds (%d failed, %d empty)",
             len(result.items),
@@ -55,18 +52,9 @@ class RSSCollector(BaseCollector):
             total=result.total,
             failed=result.failed,
             empty=result.empty,
-            cancelled=result.cancelled,
             what="feeds",
         )
-        if self.past_deadline():
-            logger.warning("RSS: past the collection deadline; summary-only items keep their feed text")
-            return result.items
-        try:
-            async with asyncio.timeout_at(self.deadline_at):
-                return await self._fill_summary_only(result.items)
-        except TimeoutError:
-            logger.warning("RSS: the page fill ran into the collection deadline; the rest keep their feed text")
-            return result.items
+        return await self._fill_summary_only(result.items)
 
     @staticmethod
     async def _fill_summary_only(items: list[CollectedItem]) -> list[CollectedItem]:

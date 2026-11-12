@@ -179,15 +179,15 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 
 ### 3.1 `collectors.*`
 
-각 수집기는 `BaseCollectorConfig`를 상속하고 그 위에 자기 필드를 더한다. 실행마다 바뀌는 값(기준 시각 `reference_time`, 수집 한도)은
+각 수집기는 `BaseCollectorConfig`를 상속하고 그 위에 자기 필드를 더한다. 실행마다 바뀌는 값(기준 시각 `reference_time`)은
 config에 두지 않고 `bootstrap.collectors`가 수집기 생성자로 넘긴다. config에 두던 때는 실행이 공유 config 객체를 고쳐 써야 했다.
 
 | 그룹 | 필드 | 설명 |
 |------|------|------|
-| 공통(상속) | `enabled`, `lookback_hours`, `request_timeout`, `max_retries`, `retry_backoff_sec`, `park_max_age_hours`(기본 12), `error_rate_threshold`(기본 50.0), `empty_rate_threshold`(기본 없음=비활성), `min_inputs_for_rate`(기본 1) | 활성화 여부, 조회 윈도, 타임아웃, 재시도, S3 park 파일의 나이 예산(초과하면 항목은 쓰되 헬스를 STALE로 보고한다), 그리고 DEGRADED 판정 두 갈래: 입력(피드·계정·채널·쿼리) 실패율과 입력 빈 응답률. 어느 하나만 걸려도 DEGRADED이고 보고만 할 뿐 항목은 그대로 전달한다. 입력이 `min_inputs_for_rate`개보다 적으면 비율로 판정하지 않는다 |
+| 공통(상속) | `enabled`, `lookback_hours`, `request_timeout`, `max_retries`, `retry_backoff_sec`, `park_max_age_hours`(기본 12), `error_rate_threshold`(기본 50.0), `empty_rate_threshold`(기본 없음=비활성) | 활성화 여부, 조회 윈도, 타임아웃, 재시도, S3 park 파일의 나이 예산(초과하면 항목은 쓰되 헬스를 STALE로 보고한다), 그리고 DEGRADED 판정 두 갈래: 입력(피드·계정·채널·쿼리) 실패율과 입력 빈 응답률. 어느 하나만 걸려도 DEGRADED이고 보고만 할 뿐 항목은 그대로 전달한다 |
 | `rss` | `feeds`, `max_concurrency`(기본 5) | RSS 피드 URL 목록과 동시 fetch 상한 |
 | `reddit` | `subreddits`, `sort`, `limit` | 서브레딧, 정렬, 개수 |
-| `youtube` | `channels`, `max_videos_per_channel`, `resolve_timeout`, `transcript_timeout`, `transcript_language`, `transcript_missing_threshold`(기본 50), `max_concurrency`, `park_required` | 채널, 영상 수, 자막 관련 설정, 자막 없는 영상 비율이 이 퍼센트를 넘으면 DEGRADED, 동시 채널 상한, AWS에서 park 파일 부재를 DEGRADED로 볼지([§4.2](#42-s3-park-파일-로더)) |
+| `youtube` | `channels`, `max_videos_per_channel`, `resolve_timeout`, `transcript_timeout`, `transcript_language`, `max_concurrency`, `park_required` | 채널, 영상 수, 자막 관련 설정, 동시 채널 상한, AWS에서 park 파일 부재를 DEGRADED로 볼지([§4.2](#42-s3-park-파일-로더)) |
 | `web_search` | `trend_searches`, `max_results_per_query`, `max_refine_queries`, `refine_model`(Sonnet 5.5), `refine_rules`, `max_concurrency` | Tavily 검색, 쿼리 정제 모델과 정제 쿼리의 규칙(판마다 다르다). 정제가 묻는 분야는 `pipeline.domain`을 그대로 쓴다 |
 | `rsshub` | `base_url`, `accounts`, `max_concurrency` | X 계정(로컬 컨테이너 또는 S3)과 동시 fetch 상한 |
 | `naver_research` | `categories`(코드 기본 company·industry·invest·economy, 투자판은 debenture를 더한다; 같은 종목·같은 날 기업 리포트는 한 건으로 묶는다), `max_pages`(기본 10, 쪽당 50건), `page_delay_sec` | 네이버 증권 리서치의 국내 증권사 리포트([§4.4](#44-네이버-증권-리서치-naver_researchpy)). 기본은 꺼짐이고 투자판이 켠다 |
@@ -216,25 +216,15 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 블로그는 하루 글이 없는 게 정상이고, X 계정 40개가 모두 조용한 건 세션이 깨진 것이다) 기본값은 비활성(값
 없음)이고 config.yaml에서 소스별로 켠다.
 
-**표본이 작으면 비율로 판정하지 않는다(`min_inputs_for_rate`).** park된 YouTube는 하루 영상이 몇 개뿐이라 자막 없는
-영상 하나가 이미 3분의 1이다. DEGRADED는 SNS 알림을 보내고 sync의 정상 기록도 건너뛰게 하니, 그 정도 표본으로 낸 판정은
-알림 피로만 남긴다. 하한은 실패율, 빈 응답률, 자막 일부 누락 비율에 똑같이 적용되고 기본값 1은 판정을 바꾸지 않는다.
-운영 config는 youtube에 4를 둔다. 하한은 표본이 작을 때의 잡음을 거르는 장치라서 전면 장애에는 걸지 않는다. 소스 전체가
-실패하면 하한과 무관하게 FAILED이고, 영상이 전부 자막 없이 왔으면 영상 수와 무관하게 DEGRADED다. park 하루치 영상 수는
-투자판 채널 수보다 적은 날이 많아서, 하한을 걸면 AWS 경로의 자막 전면 장애가 한 번도 보고되지 않는다. DEGRADED 사유는
-덮어쓰지 않고 이어 붙인다. park 파일이 없다는 사유가 뒤에 온 채널 실패 사유에 지워지지 않게 하려는 것이다. reddit은 서브레딧 전체를 요청 한
-번으로 받으니([§4.5](#45-reddit-redditpy)) 실패가 소스 단위로만 일어난다.
+DEGRADED 사유는 덮어쓰지 않고 이어 붙인다. park 파일이 없다는 사유가 뒤에 온 채널 실패 사유에 지워지지 않게 하려는
+것이다. reddit은 서브레딧 전체를 요청 한 번으로 받으니([§4.5](#45-reddit-redditpy)) 실패가 소스 단위로만 일어난다.
 
-`collectors.collection_deadline_sec`(기본 300)는 다이제스트 실행에서 수집기 하나의 팬아웃에 주는 벽시계 한도다. 요청별
-타임아웃은 읽기 한 번씩만 묶어서, 피드가 많은 소스는 재시도까지 합치면 Lambda 15분의 대부분을 쓸 수 있다(RSS 피드 37~40개,
-동시 5개, 요청 30초, 백오프 5초, 재시도 3회면 최악 840초다). 한도에 이르면 `gather_collector_results`가 아직 도는 입력만 취소하고
-끝난 입력의 항목은 그대로 쓴다. 잘린 입력은 실패로 세고, 소스는 비율과 무관하게 DEGRADED("cut off at the collection
-deadline")로 보고된다. 한도를 넘긴 뒤에는 선택 단계(RSS 요약 보충, 웹 검색 질의 보정)를 건너뛰고, 진행 중이던 단계는 한도에서
-끊는다. 웹 결과의 접근 확인은 정책이라 건너뛰지 않는다. 수집기 전체를 한도에서 취소하던 때는 이미 답한 피드까지 버려서 소스가
-항목 0개의 FAILED가 됐다. 파이프라인의 `_collect_within`은 그 뒤의 백스톱이다. 한도에 수집기들 중 가장 긴 `request_timeout`을
-더한 시각(`collection_backstop_sec`)까지 끝나지 않은 수집기는 취소되고 FAILED("exceeded collection deadline")로 보고되며, 나머지
-소스의 항목은 그대로 쓴다. 두 시각이 같으면 백스톱이 먼저 취소해 버리므로 백스톱이 한 요청만큼 늦다. 피드 fetch도 시도
-하나를 `request_timeout` 안에 끝낸다. 바이트를 조금씩 흘리는 호스트는 읽기 타임아웃에 걸리지 않기 때문이다.
+`collectors.collection_deadline_sec`(기본 300)는 다이제스트 실행에서 수집기 하나에 주는 벽시계 한도다. 요청별 타임아웃은
+읽기 한 번씩만 묶으므로, 파이프라인의 `_collect_within`이 수집기마다 `collect()`를 `asyncio.timeout`으로 감싼다. 한도까지
+끝나지 않은 수집기는 취소되고 FAILED("exceeded collection deadline (300s)")로 보고되며, 나머지 소스의 항목은 그대로 쓴다.
+배포 로그 30일 동안 다이제스트 Lambda의 최장 실행은 AI판 210초, 투자판 473초(타임아웃 900초)였고 한도에 걸린 수집기는
+없었다. 피드 fetch도 시도 하나를 `request_timeout` 안에 끝낸다. 바이트를 조금씩 흘리는 호스트는 읽기 타임아웃에 걸리지
+않기 때문이다.
 
 `collectors.alert_on_empty`(기본 `[]`)는 EMPTY가 사건인 소스의 이름 목록이다(예: `["rss", "web_search"]`).
 목록이 필요한 이유는 이렇다. 어두워진 소스는 예외도 남기지 않고 stale park 파일도 남기지 않고 실패율도
@@ -254,7 +244,7 @@ deadline")로 보고된다. 한도를 넘긴 뒤에는 선택 단계(RSS 요약 
 | 다이제스트 재질의 | `digest_max_retries`(기본 3), `digest_retry_backoff_sec`(기본 5) | 에디터의 JSON이 깨졌을 때 다시 묻는 횟수와 간격 |
 | 랭킹 | `ranking_batch_size`(기본 40), `ranking_max_concurrency`(기본 4), `ranking_max_retries`(기본 3), `ranking_retry_backoff_sec`(기본 5), `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치, Bedrock fan-out 상한, 배치 재시도, 점수 루브릭 |
 | 후보 풀 | `top_n`(기본 5), `min_score`(기본 0.6), `digest_candidate_buffer`(기본 7), `source_slots`(소스마다 1), `max_per_origin`(기본 1) | 에디터에게 넘기는 후보는 `top_n + digest_candidate_buffer`개이고, 소스 슬롯과 origin 상한은 이 풀을 채우는 데만 쓴다. 실제로 나가는 `top_n`개는 에디터가 고른다([§5.2](#52-랭커-rankerpy)) |
-| 중복 | `published_url_ttl_days`(기본 6, 최소 2), `recent_leads_window`(기본 5), `recent_title_days`(기본 14), `recent_implication_days`(기본 2) | cross-day dedup 원장 TTL, 반복 방지용 최근 lead와 최근 만화의 윈도, 랭커와 에디터가 보는 최근 기사 제목의 일수, lead와 함께 보여 주는 최근 implication의 일수([§5.6](#56-데일리-비주얼-daily_visualpy)). TTL이 최소 2인 것은 날짜만 있는 웹 결과가 이틀 연속 윈도에 들어가고([§4.8](#48-websearch-web_searchpy)) 두 번째 게시를 원장이 막기 때문이다 |
+| 중복 | `published_url_ttl_days`(기본 6, 최소 2), `recent_leads_window`(기본 5), `recent_title_days`(기본 14), `recent_implication_days`(기본 2) | cross-day dedup 원장 TTL, 반복 방지용 최근 lead와 최근 만화의 윈도, 랭커와 에디터가 보는 최근 기사 제목의 일수, lead와 함께 보여 주는 implication의 최근 다이제스트 수([§5.6](#56-데일리-비주얼-daily_visualpy)). TTL이 최소 2인 것은 날짜만 있는 웹 결과가 이틀 연속 윈도에 들어가고([§4.8](#48-websearch-web_searchpy)) 두 번째 게시를 원장이 막기 때문이다 |
 | 트렌드 | `trend_retention_days`, `trend_max_evidence`, `trend_max_active_trends`, `trend_momentum_half_life_days` | 보존 기간, 증거와 active 캡, momentum 반감기 |
 | 전달 | `enable_threads_post`, `threads_topic_tag`(기본 `AI`) | Threads 게시 on/off. 코드 기본값은 off이고 배포 설정은 on이다. 데일리 비주얼 Lambda가 게시한다. 토픽 태그는 root 게시물에만 붙는다([§5.8](#58-threads-전달-adaptersthreadspy-enable_threads_post)) |
 | 댓글 답글 | `enable_comment_replies`, `comment_reply_lookback_days`(7), `comment_reply_max_per_run`(10), `comment_reply_max_per_commenter`(3), `comment_reply_draft_budget_sec`(60) | 독자 댓글 자동 답글. 남은 시간이 초안 예산과 답글 게시 예비 시간의 합보다 적으면 다음 댓글을 시작하지 않는다. 코드 기본값은 off이고 배포 설정은 on이다([§5.9](#59-댓글-답글-applicationcomment_repliespy-enable_comment_replies)) |
@@ -356,9 +346,7 @@ X 세션 쿠키는 SSM에 두지 않는다. 로컬 RSSHub Docker 컨테이너(`l
   일반 UA로 한 번 GET해서 401·403·429를 받거나 페이지가 스스로 유료라고 밝히면 읽지 않고 항목을 뺀다. 유료 선언은 schema.org
   `isAccessibleForFree: false`를 JSON-LD와 microdata에서 구조적으로 읽고, URL이 없거나 이 페이지를 가리키는 자기 항목만 본다. 같은
   페이지의 다른 기사 카드나 본문 문자열은 세지 않는다(`declares_paid`). 연결 자체가 안 되는 페이지는 통제가 아니라 장애이므로
-  통과시킨다. YouTube 고정은 Data API로 읽어 해당하지 않는다. 웹 검색에서 뺀 결과의 비율이 `error_rate_threshold`를 넘으면 소스를
-  DEGRADED로 보고하고, 사유에 유료와 거부(상태 코드별) 건수, 거부한 호스트를 건수 순으로 적는다. CDN이나 WAF가 Lambda IP를 막는
-  날은 웹 항목이 몇 개만 남아도 OK로 읽혔고, 전부 빠지면 원인 없이 EMPTY였다.
+  통과시킨다. YouTube 고정은 Data API로 읽어 해당하지 않는다.
 - **RSS 글은 랭킹 뒤 유료 선언만 확인하고, 403으로 빼지 않는다.** 수집 때는 확인하지 않는다. 요약 보충 페이지가 한 번에 수백 개라
   한 호스트에 요청을 두 배로 몰면 그 호스트의 WAF가 수집 IP를 막고 피드까지 403이 된다. 랭킹 점수가 나온 뒤 기준을 넘은 상위 RSS
   글만(풀 크기의 3배 안, 호스트당 동시 2개) 확인해서 스스로 유료라고 밝히면 풀을 짜기 전에 뺀다(`ContentRanker`의 `paid_check`).
@@ -815,8 +803,8 @@ Anthropic 보고서를 밀어냈다([결정 기록](decisions.md#2026-10-품질-
 수집기(소스) 단위 상한은 없다. "rss"는 13개 매체를 묶고, 매체 단위 다양성은 `max_per_origin`이 이미 지킨다. 수집기당 2개 상한을 두었을 때 16일 중 9일, 0.72–0.80 항목이 풀 밖에 남고 0.60–0.68 항목이 들어갔다. 슬롯은 운영 config에서 소스별로 뺄 수 있다. AI판은 Reddit 슬롯이 없다(r/LocalLLaMA의 개인 모델 튜닝 글이 매일 그 자리를 차지했다). Reddit 글은 점수로 들어온다. AI판 소스를 넣고 되살린 기록과 빠진 채인 소스(openai.com 피드는 Cloudflare 확인, xai는 계정 이전으로 빈 피드)는 [결정 기록](decisions.md#2026-11-02-ai판-소스-재검토)에 있고, 빼는 기준은 [수집 원칙](#수집-원칙)이다. 유료 글이 섞인 뉴스레터는 후보 풀의 유료 확인이 유료 글을 뺀다.
 
 origin은 `resolve_origin_key`로 해석한다. YouTube는 channel_url, Reddit은 subreddit, X는 author이고, RSS와 Web은 기사
-URL의 호스트(`urlparse().netloc`에서 `www.` 제거)다. RSS를 feed_url로 나누던 때는 한 매체의 피드 여러 개가 각자 origin이
-되어, 투자판 연합인포맥스 피드 7개가 풀 12석 중 3석을 차지한 날이 있었다. URL이 없는 RSS 항목만 feed_url을 쓴다. PSL이나 등록가능도메인 휴리스틱을 쓰지 않으니
+URL의 호스트(`urlparse().netloc`에서 `www.` 제거)다. RSS를 feed_url로 나누면 한 매체의 피드 여러 개가 각자 origin이
+되어 `max_per_origin`을 우회한다. URL이 없는 RSS 항목만 feed_url을 쓴다. PSL이나 등록가능도메인 휴리스틱을 쓰지 않으니
 서브도메인은 별개 origin이다. 모든 소스(리서치는 증권사)에 키가 있어야 한다. 한 소스만 키가 비면 그 소스의 항목이 origin
 캡을 전부 우회해서 한 매체가 여러 슬롯을 차지한다.
 
@@ -1716,7 +1704,7 @@ STALE과 DEGRADED는 실패가 아니니 `failed_sources`에 들어가지 않는
 
 ### 소스 분류 (`run_collectors_with_health`)
 
-- 예외가 나면 **FAILED**이고 잘린 detail을 담는다.
+- 예외가 나면 **FAILED**이고 잘린 detail을 담는다. `collectors.collection_deadline_sec`을 넘겨 취소된 수집기도 같다.
 - park 파일이 `degraded`(stale은 나이 예산 초과, error는 읽기 불가)면 **STALE**이고 항목 수와 park detail을
   담는다. 항목은 나왔지만 그 sync가 멈춰 있다는 뜻이라 OK도 FAILED도 아닌 별도 상태다.
   수집기의 `health_issue`(포트의 유일한 헬스 항목, `BaseCollector`가 `park_status`와 `degraded_detail`로 만든다)를

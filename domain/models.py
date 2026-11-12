@@ -153,9 +153,16 @@ class VisualBrief(BaseModel):
     )
 
 
+def _without_nulls(data: object) -> object:
+    """A model's JSON null means it left the field out, so the field keeps its default."""
+    return {k: v for k, v in data.items() if v is not None} if isinstance(data, dict) else data
+
+
 class VisualPlan(BaseModel):
     """The visual editor's plan for the day's comic. Pydantic reads a STRING "false" as False: read by
     truthiness, an editor that wrote it silently killed the day's visual."""
+
+    _drop_nulls = model_validator(mode="before")(_without_nulls)
 
     skip: bool = False
     use_character: bool = False
@@ -172,6 +179,8 @@ class RecentComic(BaseModel):
 
 class FactIssue(BaseModel):
     """A thread claim the research fact check found its cited source does not support."""
+
+    _drop_nulls = model_validator(mode="before")(_without_nulls)
 
     post: int | str = "?"
     claim: str = Field(min_length=1)

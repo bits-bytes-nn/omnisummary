@@ -45,14 +45,8 @@ class NaverResearchCollector(BaseCollector):
 
     config: NaverResearchCollectorConfig
 
-    def __init__(
-        self,
-        config: NaverResearchCollectorConfig,
-        *,
-        reference_time: datetime | None = None,
-        deadline_sec: float | None = None,
-    ) -> None:
-        super().__init__(config, reference_time=reference_time, deadline_sec=deadline_sec)
+    def __init__(self, config: NaverResearchCollectorConfig, *, reference_time: datetime | None = None) -> None:
+        super().__init__(config, reference_time=reference_time)
         self._partial: list[str] = []
 
     async def collect(self) -> list[CollectedItem]:
@@ -63,14 +57,11 @@ class NaverResearchCollector(BaseCollector):
         last = (end - timedelta(seconds=1)).astimezone(_SEOUL).date()
         categories = [str(c) for c in self.config.categories]
         self._partial = []
-        self.start_deadline()
         async with httpx.AsyncClient(
             headers=FEED_FETCH_HEADERS, timeout=self.config.request_timeout, follow_redirects=True
         ) as client:
             tasks = [self._collect_category(client, c, start.isoformat(), last.isoformat()) for c in categories]
-            result = await gather_collector_results(
-                tasks, labels=categories, raise_if_all_failed=True, deadline_at=self.deadline_at
-            )
+            result = await gather_collector_results(tasks, labels=categories, raise_if_all_failed=True)
         logger.info(
             "Naver research gathered %d reports from %d/%d categories (%d failed)",
             len(result.items),
@@ -78,13 +69,7 @@ class NaverResearchCollector(BaseCollector):
             result.total,
             result.failed,
         )
-        self.record_run_health(
-            total=result.total,
-            failed=result.failed,
-            empty=result.empty,
-            cancelled=result.cancelled,
-            what="categories",
-        )
+        self.record_run_health(total=result.total, failed=result.failed, empty=result.empty, what="categories")
         if self._partial:
             self._add_degraded_detail("; ".join(self._partial))
             logger.warning("Collector is DEGRADED: %s", self.degraded_detail)

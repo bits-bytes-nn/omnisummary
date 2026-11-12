@@ -17,8 +17,6 @@ from shared import SourceType, logger, retry_async
 from shared.config import YouTubeCollectorConfig
 
 from .base import (
-    PARK_META_TRANSCRIPTS_MISSING,
-    PARK_META_VIDEOS,
     RETRIABLE_STATUS_CODES,
     BaseCollector,
     TransientStatusError,
@@ -71,14 +69,8 @@ def _latest_within_window(items: list[CollectedItem], limit: int) -> list[Collec
 class YouTubeCollector(BaseCollector):
     config: YouTubeCollectorConfig
 
-    def __init__(
-        self,
-        config: YouTubeCollectorConfig,
-        *,
-        reference_time: datetime | None = None,
-        deadline_sec: float | None = None,
-    ) -> None:
-        super().__init__(config, reference_time=reference_time, deadline_sec=deadline_sec)
+    def __init__(self, config: YouTubeCollectorConfig, *, reference_time: datetime | None = None) -> None:
+        super().__init__(config, reference_time=reference_time)
         # Resolved once per collect() (see _resolve_api_key), never lazily per access: the SSM
         # lookup is a blocking boto3 call, and reading it from a property inside the async fan-out
         # stalled the whole event loop for the duration of every channel's first access.
@@ -101,8 +93,6 @@ class YouTubeCollector(BaseCollector):
         if not self.api_key:
             self.api_key = await asyncio.to_thread(resolve_secret, "YOUTUBE_API_KEY", "youtube-api-key")
         return self.api_key
-
-    _transcripts_missing = 0
 
     def __del__(self) -> None:
         # Release pooled sockets when the collector is garbage-collected so warm Lambda
@@ -134,9 +124,6 @@ class YouTubeCollector(BaseCollector):
                 parked,
                 what="channels",
             )
-            videos, missing = (parked.meta.get(key) for key in (PARK_META_VIDEOS, PARK_META_TRANSCRIPTS_MISSING))
-            if isinstance(videos, int) and isinstance(missing, int):
-                self._flag_missing_transcripts(videos, missing, "parked sync: ")
             # Through the SAME window both live branches apply: a stale park file otherwise fed
             # videos older than lookback into ranking, and a --date backfill ingested today's.
             return parked_items_in_window(
@@ -167,13 +154,9 @@ class YouTubeCollector(BaseCollector):
         # The semaphore is created HERE (on the running loop, never at import/__init__) and is
         # acquired BEFORE the per-channel timeout, so the timeout measures the fetch, not the queue
         # wait. Mirrors rss.max_concurrency / rsshub.max_concurrency.
-        self.start_deadline()
         semaphore = asyncio.Semaphore(self.config.max_concurrency)
-        self._transcripts_missing = 0
         tasks = [self._collect_channel_bounded(ch, semaphore) for ch in self.config.channels]
-        result = await gather_collector_results(
-            tasks, labels=self.config.channels, raise_if_all_failed=True, deadline_at=self.deadline_at
-        )
+        result = await gather_collector_results(tasks, labels=self.config.channels, raise_if_all_failed=True)
         logger.info(
             "YouTube collector gathered %d items total from %d/%d channels (%d failed, %d empty)",
             len(result.items),
@@ -188,30 +171,9 @@ class YouTubeCollector(BaseCollector):
             total=result.total,
             failed=result.failed,
             empty=result.empty,
-            cancelled=result.cancelled,
             what="channels",
         )
-        self.run_meta = {
-            **self.run_meta,
-            PARK_META_VIDEOS: len(result.items),
-            PARK_META_TRANSCRIPTS_MISSING: min(self._transcripts_missing, len(result.items)),
-        }
-        self._flag_missing_transcripts(len(result.items), self.run_meta[PARK_META_TRANSCRIPTS_MISSING])
         return result.items
-
-    def _flag_missing_transcripts(self, videos: int, missing: int, prefix: str = "") -> None:
-        """DEGRADED when too many kept videos came without a transcript. Reporting only.
-
-        A total outage (every video without one) is flagged at any sample size: min_inputs_for_rate
-        counts channels, and a park day carries fewer videos than the invest edition has channels."""
-        threshold = self.config.transcript_missing_threshold
-        if threshold is None or videos <= 0:
-            return
-        if missing < videos and (videos < self.config.min_inputs_for_rate or missing / videos * 100 <= threshold):
-            return
-        reason = f"{prefix}{missing}/{videos} videos have no transcript (>{threshold:.0f}%)"
-        self._add_degraded_detail(reason)
-        logger.warning("Collector is DEGRADED: %s", self.degraded_detail)
 
     async def _collect_channel_bounded(self, channel_url: str, semaphore: asyncio.Semaphore) -> list[CollectedItem]:
         """Run one channel inside the fan-out bound and a real wall-clock budget. The per-step
@@ -348,8 +310,6 @@ class YouTubeCollector(BaseCollector):
                 transcript = await self._fetch_transcript(video_id)
                 if transcript:
                     item.text = transcript
-                else:
-                    self._transcripts_missing += 1
                 logger.info("Collected YouTube video: '%s'", item.title)
                 items.append(item)
 
@@ -401,8 +361,6 @@ class YouTubeCollector(BaseCollector):
             transcript = await self._fetch_transcript(item.item_id)
             if transcript:
                 item.text = transcript
-            else:
-                self._transcripts_missing += 1
             logger.info("Collected YouTube video: '%s'", item.title)
             items.append(item)
 

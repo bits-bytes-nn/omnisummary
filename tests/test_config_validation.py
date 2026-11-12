@@ -254,11 +254,6 @@ class TestParkedSourceTripwires:
         )
         assert "returned nothing" in reason
 
-    def test_a_sample_below_the_floor_is_not_a_rate(self):
-        common = {"failed": 2, "empty": 0, "what": "channels", "threshold": 50.0, "empty_threshold": None}
-        assert degradation_reason(total=3, min_inputs=4, **common) == ""
-        assert "2/3 channels failed" in degradation_reason(total=3, **common)
-
 
 class TestLoadNeverSilentlyShipsAnEmptyConfig:
     """`if not config_path.exists(): return cls()` was silent and wrong.

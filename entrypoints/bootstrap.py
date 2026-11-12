@@ -108,9 +108,8 @@ def collectors(
     reference_time: datetime | None = None,
 ) -> list[tuple[str, ContentSource]]:
     """The (name, collector) pairs to run: the enabled ones, or the named ones that are enabled, in
-    the order named. Each gets the run's reference time (None: now) and the collection deadline."""
+    the order named. Each gets the run's reference time (None: now)."""
     registry = collector_registry(config, models)
-    run = {"reference_time": reference_time, "deadline_sec": config.collectors.collection_deadline_sec}
     names = [name for name, (_, cfg, _kw) in registry.items() if cfg.enabled] if sources is None else sources
     built: list[tuple[str, ContentSource]] = []
     for name in names:
@@ -121,7 +120,7 @@ def collectors(
         if not collector_cfg.enabled:
             logger.info("Skipping disabled source: '%s'", name)
             continue
-        built.append((name, collector_cls(collector_cfg, **kwargs, **run)))
+        built.append((name, collector_cls(collector_cfg, **kwargs, reference_time=reference_time)))
     return built
 
 

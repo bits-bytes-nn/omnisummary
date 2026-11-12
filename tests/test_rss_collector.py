@@ -323,30 +323,3 @@ def test_a_minus_zero_offset_is_universal_time():
 
     instant = _feed_instant({"published": "Mon, 02 Nov 2026 10:00:00 -0000"}, ZoneInfo("Asia/Seoul"))
     assert instant.isoformat() == "2026-11-02T10:00:00+00:00"
-
-
-class TestCollectionDeadline:
-    @pytest.mark.asyncio
-    async def test_a_feed_past_the_deadline_is_cut_off_and_the_answered_ones_kept(self):
-        from adapters.collectors.base import BaseCollector
-        from application.digest_pipeline import run_collectors_with_health
-        from domain.models import SourceStatus
-        from shared import Config
-
-        async def fetch(url, **kwargs):
-            if "slow" in url:
-                await asyncio.sleep(60)
-            return _feed([_entry()])
-
-        c = _collector(_config(feeds=["https://ok.example/feed", "https://slow.example/feed"]), deadline_sec=0.05)
-        fill = AsyncMock()
-        with (
-            patch("adapters.collectors.base.fetch_feed", side_effect=fetch),
-            patch.object(RSSCollector, "_fill_summary_only", fill),
-        ):
-            items, report = await run_collectors_with_health(Config(), [("rss", c)])
-        assert [i.url for i in items] == ["https://example.com/p/1"]
-        assert isinstance(c, BaseCollector) and fill.await_count == 0  # past the deadline: no page fill
-        [health] = report.sources
-        assert health.status == SourceStatus.DEGRADED and health.item_count == 1
-        assert "1/2 feeds cut off at the collection deadline" in health.detail
