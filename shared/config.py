@@ -100,6 +100,9 @@ class YouTubeCollectorConfig(BaseCollectorConfig):
     resolve_timeout: int = Field(default=15, ge=1)
     transcript_timeout: int = Field(default=15, ge=1)
     transcript_language: str = Field(default="en")
+    # Percent of kept videos without a transcript past which the source reports DEGRADED: a sync whose
+    # transcript fetches are all blocked still returns every video, with its description only.
+    transcript_missing_threshold: float | None = Field(default=50.0, ge=0.0, le=100.0)
     # How many channels may be collected at once. Each one parks worker threads (page scrape,
     # transcript fetches), so this stays at/below the default asyncio executor width, same bound as
     # rss.max_concurrency / rsshub.max_concurrency.
@@ -141,10 +144,9 @@ class NaverResearchCollectorConfig(BaseCollectorConfig):
     # company, industry, invest (strategy), economy, market (daily wraps), debenture (fixed income).
     categories: list[ResearchCategory] = Field(default_factory=lambda: list(_DEFAULT_RESEARCH_CATEGORIES))
     # Pages of 50 per category, newest first; a peak earnings day had 121 company notes in one day. A
-    # category still paging at the cap is logged.
+    # category still paging at the cap reports the source DEGRADED.
     max_pages: int = Field(default=10, ge=1)
     page_delay_sec: float = Field(default=1.0, ge=0.0)
-    # The post names the broker and the analyst; the Naver page is not linked unless this is set.
 
 
 class TrendSearch(_StrictModel):
@@ -244,16 +246,19 @@ class PipelineConfig(_StrictModel):
     published_url_ttl_days: int = Field(default=6, ge=2)
     # How many recent digest leads (and daily comics) to feed back into the prompts as "don't reuse these".
     recent_leads_window: int = Field(default=5, ge=0)
+    # Days of recent story titles the ranker and the editor see: a story returns under another outlet's URL
+    # more than a week later, past the URL ledger.
+    recent_title_days: int = Field(default=14, ge=0)
+    # Days of recent implications fed back with the leads as angles not to repeat.
+    recent_implication_days: int = Field(default=2, ge=0)
     # The other editions posting to the same Threads account ("" is the AI/ML edition). Their last day or
     # two of story titles, leads and implications join this edition's own, so one account does not run
-    # the same story and thesis twice in a day (2026-11-05: both editions led on the midterms and data
-    # centres, 12 hours apart; the Anthropic S-1 ran 7 times in 9 days across the two).
+    # the same story and thesis twice in a day.
     sibling_editions: list[str] = Field(default_factory=list)
     ranking_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
     digest_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
-    # A digest whose JSON the editor emits malformed (a stray bracket after the lead string cost
-    # the 2026-08-13 and 2026-08-17 digests every story) is RE-ASKED before it is given up on.
-    # Regeneration is one Bedrock call; the alternative is a day with no stories at all.
+    # A digest whose JSON the editor emits malformed is RE-ASKED before it is given up on: regeneration
+    # is one Bedrock call, the alternative a day with no stories at all.
     digest_max_retries: int = Field(default=3, ge=1)
     digest_retry_backoff_sec: float = Field(default=5.0, ge=0)
     # Post-generation faithfulness pass: verify the digest's specific claims against the
@@ -418,6 +423,9 @@ class PipelineConfig(_StrictModel):
     # The account answers one commenter at most this many times under one post, so a bot that
     # answers every reply cannot hold it in an endless exchange.
     comment_reply_max_per_commenter: int = Field(default=3, ge=1)
+    # Seconds one comment's draft may take; with the Threads reply's publish reserve it is the time a
+    # comment needs left before it is started.
+    comment_reply_draft_budget_sec: int = Field(default=60, ge=0)
     # Sunburst over flare: the same token price, and it draws brand logos correctly (docs/design.md).
     image_model: str = "gpt-image-2.5-sunburst"
     # orientation -> gpt-image size. The art director picks the frame the editor's form needs (a grid

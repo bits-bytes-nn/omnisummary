@@ -181,3 +181,45 @@ class TestConfigGuard:
                         put_secrets.main()
         cfg.load.assert_not_called()
         client.assert_not_called()
+
+
+def _run_main(put_secrets, client, argv):
+    config = MagicMock()
+    config.aws.project_name, config.aws.stage, config.aws.region = "omnisummary", "dev", "ap-northeast-2"
+    with patch.object(put_secrets, "Config") as cfg:
+        cfg.load.return_value = config
+        with patch.object(put_secrets.boto3, "Session", return_value=MagicMock(client=MagicMock(return_value=client))):
+            with patch.object(sys, "argv", ["put_secrets.py", *argv]):
+                return put_secrets.main()
+
+
+class TestTheLiveValueIsKept:
+    """The refresh Lambda rotates the Threads token in place: reasserting .env would restore an expired one."""
+
+    @pytest.fixture(autouse=True)
+    def _env(self, monkeypatch):
+        for env_var in SSM_SECRET_ENV_VARS.values():
+            monkeypatch.setenv(env_var, "local-value")
+
+    def test_an_existing_secure_string_is_left_alone_without_force(self, put_secrets, capsys):
+        client = _ssm()
+        client.get_parameter.return_value = {"Parameter": {"Type": "SecureString", "Value": "rotated-value"}}
+        assert _run_main(put_secrets, client, []) == 0
+        client.put_parameter.assert_not_called()
+        client.delete_parameter.assert_not_called()
+        assert "live value differs from .env" in capsys.readouterr().out
+
+    def test_force_overwrites_an_existing_secure_string(self, put_secrets):
+        client = _ssm()
+        client.get_parameter.return_value = {"Parameter": {"Type": "SecureString", "Value": "rotated-value"}}
+        assert _run_main(put_secrets, client, ["--force"]) == 0
+        assert len(client.put_parameter.call_args_list) == len(SSM_SECRET_ENV_VARS)
+        assert all(c.kwargs["Value"] == "local-value" for c in client.put_parameter.call_args_list)
+
+    def test_dry_run_writes_and_deletes_nothing(self, put_secrets, capsys):
+        client = _ssm()
+        client.get_parameter.return_value = {"Parameter": {"Type": "String", "Value": SSM_PLACEHOLDER}}
+        assert _run_main(put_secrets, client, ["--dry-run"]) == 0
+        client.put_parameter.assert_not_called()
+        client.delete_parameter.assert_not_called()
+        assert "would write SecureString" in capsys.readouterr().out

@@ -23,6 +23,26 @@ class CollectedItem(BaseModel):
     author: str | None = None
     published_at: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # An operator's --pin-url: bypasses cross-day dedup, takes a pool seat and must ship.
+    pinned: bool = False
+    # One of the edition's primary-quota stories the editor must carry.
+    primary: bool = False
+    # False for a source whose page the post must not link (the source line still names it).
+    show_link: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def lift_stored_flags(cls, data: Any) -> Any:
+        """Pools and snapshots stored before the flags were fields carry them as metadata keys."""
+        if isinstance(data, dict) and isinstance(meta := data.get("metadata"), dict):
+            if legacy := meta.keys() & {"pinned", "primary", "hide_link"}:
+                meta = {k: v for k, v in meta.items() if k not in legacy}
+                lifted = dict(data, metadata=meta)
+                lifted.setdefault("pinned", bool(data["metadata"].get("pinned")))
+                lifted.setdefault("primary", bool(data["metadata"].get("primary")))
+                lifted.setdefault("show_link", not data["metadata"].get("hide_link"))
+                return lifted
+        return data
 
     @model_validator(mode="after")
     def ensure_item_id(self) -> CollectedItem:
@@ -91,13 +111,7 @@ class RankingHealth(BaseModel):
 
     @property
     def degraded(self) -> bool:
-        """True when candidates were LOST: a batch that failed every retry, or a split batch whose half did.
-
-        A `coverage < min_coverage_ratio` arm sat beside this. It was added for the batch whose
-        response never parsed twice over, leaving every counter at zero while the alerting stayed
-        silent — but the same commit made that case RAISE, so the arm was dead by its own docstring.
-        Measured over 30 production runs, per-day coverage is bimodal (0.93-1.0 or 0.0), so the
-        tuned ratio never separated anything the batches_failed count did not already catch."""
+        """True when candidates were LOST: a batch that failed every retry, or a split batch whose half did."""
         return self.batches_failed > 0 or self.batches_partly_lost > 0
 
     def summary(self) -> str:
@@ -308,6 +322,11 @@ class HealthReport(BaseModel):
         legitimately quiet some days), so callers decide which of these matter — see
         CollectorsConfig.alert_on_empty."""
         return [s.name for s in self.sources if s.status == SourceStatus.EMPTY]
+
+    def watched_empty(self, watched: list[str] | None) -> list[str]:
+        """The empty sources among `watched` (CollectorsConfig.alert_on_empty): the dark ones that matter."""
+        names = set(watched or [])
+        return [name for name in self.empty_sources if name in names]
 
     def summary(self) -> str:
         return "\n".join(

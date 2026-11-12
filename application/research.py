@@ -16,12 +16,19 @@ from enum import Enum, auto
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from application.ports import LanguageModels, MemoryStore, ResearchSources, StateStore, ThreadsPublisher
+from application.ports import (
+    LanguageModels,
+    MarketDataUnavailable,
+    MemoryStore,
+    ResearchSources,
+    StateStore,
+    ThreadsPublisher,
+)
 from domain.digest_snapshot import DigestSnapshot
 from domain.formatting import citation_key, extract_urls, normalize_citation_url
 from domain.models import ImageAsset
 from domain.renderers import footer_overhead, render_threads_research, research_post_budget
-from shared import THREADS_MAX_POST_CHARS, Config, get_config, logger
+from shared import THREADS_MAX_POST_CHARS, Config, logger
 
 # The two places a research report can go. MARKDOWN is the report handed back to the caller (the CLI
 # prints it and saves it); THREADS publishes a plain-text thread to the public account and is allowed
@@ -122,8 +129,8 @@ class DeliveryContext:
     # Whether a Threads post was actually attempted this run.
     threads_attempted: bool = False
     ports: ResearchPorts = field(default_factory=ResearchPorts)
-    # The run's config, handed in by the caller; the cached file config only when none is.
-    config: Config = field(default_factory=get_config)
+    # The run's config, handed in by the caller.
+    config: Config = field(kw_only=True)
 
     @property
     def allowed_channels(self) -> set[str]:
@@ -134,9 +141,12 @@ _request_delivery: ContextVar[DeliveryContext | None] = ContextVar("research_req
 
 
 def current_delivery_context() -> DeliveryContext:
-    # A fresh context when nothing is bound rather than a shared module-level singleton, so state
-    # can never accumulate across invocations. Real entrypoints always bind via request_context.
-    return _request_delivery.get() or DeliveryContext()
+    """The bound run's context. Every entrypoint binds one via request_context; a tool called outside
+    one has no config to read, so it fails here instead of reading the cached file config."""
+    delivery = _request_delivery.get()
+    if delivery is None:
+        raise RuntimeError("No research run is bound (request_context)")
+    return delivery
 
 
 @contextmanager
@@ -318,26 +328,40 @@ async def market_quote(symbols: str, period: str = "5d") -> str:
     sources = _sources()
     if sources is None:
         return "Market data is not available in this run."
-    return await _market_blocks(symbols, 8, lambda s: sources.market_quote(s, period), "no quote found")
+    return await _market_blocks(symbols, MAX_QUOTE_TICKERS, lambda s: sources.market_quote(s, period), "no quote found")
 
 
 async def analyst_ratings(symbols: str) -> str:
     sources = _sources()
     if sources is None:
         return "Market data is not available in this run."
-    return await _market_blocks(symbols, 5, sources.analyst_ratings, "no analyst ratings found")
+    return await _market_blocks(symbols, MAX_RATINGS_TICKERS, sources.analyst_ratings, "no analyst ratings found")
+
+
+# Tickers one market_quote / analyst_ratings call reads; the tool specs state the same numbers.
+MAX_QUOTE_TICKERS = 8
+MAX_RATINGS_TICKERS = 5
 
 
 async def _market_blocks(symbols: str, limit: int, fetch, missing: str) -> str:
     blocks = []
-    for symbol in list(dict.fromkeys(symbols.upper().replace(",", " ").split()))[:limit]:
-        block = await fetch(symbol)
+    tickers = list(dict.fromkeys(symbols.upper().replace(",", " ").split()))
+    for symbol in tickers[:limit]:
+        try:
+            block = await fetch(symbol)
+        except MarketDataUnavailable as e:
+            blocks.append(f"- {symbol}: market data unavailable ({e}); the ticker may be fine, try again later.")
+            continue
         if block:
             # The data page is the source of these numbers, for the citation check and the fact check.
             url = (_RESULT_URL.findall(block) or [""])[0]
             record_seen_urls("", url)
             current_delivery_context().source_texts[normalize_citation_url(url)] = block
         blocks.append(block or f"- {symbol}: {missing} (check the ticker: 005930.KS, AAPL, ^GSPC, BTC-USD).")
+    if skipped := tickers[limit:]:
+        blocks.append(
+            f"- Not queried (one call reads at most {limit} tickers): {', '.join(skipped)}. Call again for them."
+        )
     return "\n\n".join(blocks) or "No ticker given."
 
 

@@ -6,7 +6,7 @@ state-store wiring under test run for real against a temp-dir state store."""
 from __future__ import annotations
 
 import tempfile
-from datetime import date
+from datetime import date, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,6 +21,10 @@ from shared.constants import SourceType
 from tests.fakes import no_note_text, nothing_paid, snapshot
 
 DIGEST_DATE = date(2026, 6, 3)
+
+
+def _dated(snapshots: list[DigestSnapshot]) -> list[tuple[date, DigestSnapshot]]:
+    return [(DIGEST_DATE - timedelta(days=age), snap) for age, snap in enumerate(snapshots, start=1)]
 
 
 def _item(url: str, title: str = "t") -> CollectedItem:
@@ -52,7 +56,7 @@ class _Pipeline:
         self.tracker.get_trends_context.return_value = "trends"
         self.tracker.update_trends = AsyncMock()
         self.memory = MagicMock()
-        self.memory.get_recent_digests.return_value = []
+        self.memory.get_recent_digests_dated.return_value = []
 
     def __enter__(self):
         ranked = self.ranked
@@ -108,7 +112,7 @@ class TestRunPipelineShortCircuits:
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
                 result = await _run(p, _config(), [])
-        assert result == (None, None, None)
+        assert result is None
         p.ranker.rank.assert_not_called()  # never pays for a ranking call on an empty day
 
     @pytest.mark.asyncio
@@ -116,7 +120,7 @@ class TestRunPipelineShortCircuits:
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir, ranked=[]) as p:
                 result = await _run(p, _config(), [_item("https://a.example/1")])
-        assert result == (None, None, None)
+        assert result is None
         p.generator.generate.assert_not_called()  # no digest generated from nothing
 
 
@@ -155,7 +159,7 @@ class TestRunPipelineHappyPath:
     async def test_recent_leads_are_fed_back_to_the_generator(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
-                p.memory.get_recent_digests.return_value = [snapshot(lead="어제의 리드다.")]
+                p.memory.get_recent_digests_dated.return_value = _dated([snapshot(lead="어제의 리드다.")])
                 await _run(p, _config(), [_item("https://a.example/1")])
         assert p.generate_kwargs["recent_leads"] == ["어제의 리드다."]
         assert p.generate_kwargs["trends_context"] == "trends"
@@ -172,7 +176,7 @@ class TestRunPipelineHappyPath:
         sibling.get_recent_digests.return_value = [snapshot(lead="어제 아침 리드다.")]
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
-                p.memory.get_recent_digests.return_value = [snapshot(lead="어제의 리드다.")]
+                p.memory.get_recent_digests_dated.return_value = _dated([snapshot(lead="어제의 리드다.")])
                 await _run(p, _config(), [_item("https://a.example/1")], sibling_memory=lambda: [sibling])
         sibling.get_digest.assert_called_once_with(DIGEST_DATE.isoformat())
         sibling.get_recent_digests.assert_called_once_with(DIGEST_DATE, 1)
@@ -252,20 +256,31 @@ class TestRunPipelineDedup:
         # and trailing-slash variants of a story published earlier in the window.
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
-                p.memory.get_recent_digests.return_value = [snapshot(items=[{"url": "http://old.example/1/"}])]
+                p.memory.get_recent_digests_dated.return_value = _dated(
+                    [snapshot(items=[{"url": "http://old.example/1/"}])]
+                )
                 collected, _r, _d = await _run(
                     p, _config(), [_item("https://old.example/1"), _item("https://new.example/2")]
                 )
         assert [it.url for it in collected] == ["https://new.example/2"]
-        # The ledger's window: ages 1..ttl-1, so a story is allowed back on the TTL day by both.
-        # The dedup seed reads the ledger window; the rehash titles reach 14 days back.
-        assert [c.args for c in p.memory.get_recent_digests.call_args_list] == [(DIGEST_DATE, 5), (DIGEST_DATE, 14)]
+        # One read covers both windows: the dedup seed's (ages 1..ttl-1) and the titles' (14 days).
+        assert [c.args for c in p.memory.get_recent_digests_dated.call_args_list] == [(DIGEST_DATE, 14)]
+
+    @pytest.mark.asyncio
+    async def test_a_story_past_the_ledger_window_is_allowed_back_but_its_title_is_still_shown(self):
+        old = snapshot(items=[{"url": "https://old.example/1", "title": "지난주 이야기"}])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with _Pipeline(tmpdir) as p:
+                p.memory.get_recent_digests_dated.return_value = [(DIGEST_DATE - timedelta(days=6), old)]
+                collected, _r, _d = await _run(p, _config(), [_item("https://old.example/1")])
+        assert [it.url for it in collected] == ["https://old.example/1"]
+        assert p.ranker.rank.await_args.kwargs["recent_titles"] == ["지난주 이야기"]
 
     @pytest.mark.asyncio
     async def test_memory_failure_is_non_fatal(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with _Pipeline(tmpdir) as p:
-                p.memory.get_recent_digests.side_effect = RuntimeError("agentcore down")
+                p.memory.get_recent_digests_dated.side_effect = RuntimeError("agentcore down")
                 collected, ranked, digest = await _run(p, _config(), [_item("https://a.example/1")])
         assert collected and ranked and digest  # the digest still ships
 
@@ -346,7 +361,7 @@ class TestRecentStoryTitles:
     def test_recent_angles_carry_the_last_two_days_implications(self):
         # The thesis shape repeated in the implications; shown them, the editor stopped ending leads on it.
         days = [snapshot(lead=f"리드 {n}.", items=[{"title": f"t{n}", "implication": f"함의 {n}."}]) for n in range(3)]
-        assert runner._recent_leads(days, 5) == ["리드 0.", "리드 1.", "리드 2.", "함의 0.", "함의 1."]
+        assert runner.recent_angles(days, _config().pipeline) == ["리드 0.", "리드 1.", "리드 2.", "함의 0.", "함의 1."]
 
     def test_a_story_less_or_missing_snapshot_degrades_to_nothing(self):
         assert runner._recent_story_titles([]) == []
@@ -433,8 +448,8 @@ class TestRequirePrimary:
             return "full note"
 
         await runner.require_primary(pool, 2, [SourceType.RESEARCH, SourceType.X], note_text)
-        assert [r.item.item_id for r in pool if r.item.metadata.get("primary")] == ["note", "post"]
-        assert not any(r.item.metadata.get("pinned") for r in pool)
+        assert [r.item.item_id for r in pool if r.item.primary] == ["note", "post"]
+        assert not any(r.item.pinned for r in pool)
         assert read == ["note"]
         assert pool[1].item.text == "summary\n\nfull note"
         assert pool[0].item.text == "summary"
@@ -443,4 +458,4 @@ class TestRequirePrimary:
     async def test_no_quota_changes_nothing(self):
         pool = [self._ranked("note", SourceType.RESEARCH, 0.8, nid=1)]
         await runner.require_primary(pool, 0, [SourceType.RESEARCH], AsyncMock(side_effect=AssertionError))
-        assert not pool[0].item.metadata.get("primary")
+        assert not pool[0].item.primary

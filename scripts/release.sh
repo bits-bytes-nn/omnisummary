@@ -25,10 +25,43 @@ ECR="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${REPO}"
 
 aws ecr get-login-password --profile "$PROFILE" --region "$REGION" | docker login --username AWS --password-stdin "${ECR%%/*}"
 docker build --platform linux/amd64 --provenance=false --build-arg GIT_REVISION="$SHA" -t "${ECR}:${SHA}" -t "${ECR}:latest" .
+# The image that ships carries the operator's config, which CI never sees: the same import and config checks
+# as the CI docker job, on this image, before anything is pushed.
+check_image() {
+  docker run --rm --network none "$@" --entrypoint python "${ECR}:${SHA}" -c "$IMAGE_CHECK"
+}
+IMAGE_CHECK="import entrypoints.digest_handler, entrypoints.visual_handler, entrypoints.threads_refresh_handler, entrypoints.comment_reply_handler
+from pathlib import Path
+from shared import Config
+c = Config.load()
+assert c.collectors.web_search.trend_searches, 'the image resolved to bare code defaults'
+assert Path(c.pipeline.visual_character_reference).is_file(), 'persona sheet missing'
+print('image OK:', c.edition or 'ai', c.aws.region, c.pipeline.digest_model.value)"
+check_image
+if [ -f config/invest.yaml ]; then check_image -e OMNISUMMARY_EDITION=invest; fi
 docker push "${ECR}:${SHA}"
 docker push "${ECR}:latest"
 DIGEST_IMAGE_REF="$(aws ecr describe-images --profile "$PROFILE" --region "$REGION" --repository-name "$REPO" \
   --image-ids imageTag="$SHA" --query 'imageDetails[0].imageDigest' --output text)"
 export DIGEST_IMAGE_REF
 echo "Deploying ${SHA:0:12} as ${DIGEST_IMAGE_REF}"
-AWS_PROFILE="$PROFILE" npx cdk deploy --all -a "uv run python scripts/deploy.py" --require-approval never
+# An IAM or security-group broadening stops for the operator's approval; anything else deploys unattended.
+AWS_PROFILE="$PROFILE" npx cdk deploy --all -a "uv run python scripts/deploy.py" --require-approval broadening
+
+# Read-only smoke check: every image function of the stage runs the image just pushed, and its update landed.
+FUNCTIONS="$(aws lambda list-functions --profile "$PROFILE" --region "$REGION" --output text \
+  --query "Functions[?starts_with(FunctionName, '${PROJECT_STAGE}-') && PackageType=='Image'].FunctionName")"
+[ -n "$FUNCTIONS" ] || { echo "No ${PROJECT_STAGE}-* image functions found after deploy" >&2; exit 1; }
+FAILED=0
+for FN in $FUNCTIONS; do
+  aws lambda wait function-updated-v2 --profile "$PROFILE" --region "$REGION" --function-name "$FN"
+  read -r IMAGE STATE UPDATE <<<"$(aws lambda get-function --profile "$PROFILE" --region "$REGION" --function-name "$FN" \
+    --query '[Code.ResolvedImageUri, Configuration.State, Configuration.LastUpdateStatus]' --output text)"
+  if [ "${IMAGE##*@}" = "$DIGEST_IMAGE_REF" ] && [ "$STATE" = "Active" ] && [ "$UPDATE" = "Successful" ]; then
+    echo "OK   $FN"
+  else
+    echo "FAIL $FN: image ${IMAGE##*@}, state $STATE, last update $UPDATE" >&2
+    FAILED=1
+  fi
+done
+[ "$FAILED" -eq 0 ] || { echo "Deployed functions do not all run ${DIGEST_IMAGE_REF}" >&2; exit 1; }

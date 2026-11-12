@@ -108,16 +108,15 @@ class ContentAggregator:
             key = normalize_url(item.url)
             # Pinned items (user-specified via --pin-url) bypass cross-day dedup: the user
             # asked for this exact URL today, even if it was published in a recent digest.
-            if key in exclude and not item.metadata.get("pinned"):
+            if key in exclude and not item.pinned:
                 cross_day_skipped += 1
                 continue
             if key in seen_urls:
                 logger.debug("Duplicate URL skipped: '%s'", item.url)
-                hidden = seen_urls[key].metadata.get("hide_link") or item.metadata.get("hide_link")
+                linkable = seen_urls[key].show_link and item.show_link
                 seen_urls[key] = self._pick_survivor(seen_urls[key], item)
-                if hidden:
-                    # The same URL: a page that must not be linked stays unlinked whichever copy survives.
-                    seen_urls[key].metadata["hide_link"] = True
+                # The same URL: a page that must not be linked stays unlinked whichever copy survives.
+                seen_urls[key].show_link = linkable
                 url_dupes += 1
             else:
                 seen_urls[key] = item
@@ -143,7 +142,7 @@ class ContentAggregator:
                 continue
             # A pinned duplicate is not lost here: _pick_survivor always keeps the pinned copy. Two pins
             # sharing a title are both kept, since each was asked for by URL.
-            if norm in seen_titles and not (item.metadata.get("pinned") and seen_titles[norm].metadata.get("pinned")):
+            if norm in seen_titles and not (item.pinned and seen_titles[norm].pinned):
                 prev = seen_titles[norm]
                 logger.debug(
                     "Duplicate title skipped: '%s' (same as '%s')",
@@ -191,9 +190,9 @@ class ContentAggregator:
         the same article's full-text RSS/web entry just because its collector ran first). A pinned
         item always wins; otherwise the longer body wins; ties keep the incumbent so
         collector order still breaks ties deterministically."""
-        if dupe.metadata.get("pinned") and not incumbent.metadata.get("pinned"):
+        if dupe.pinned and not incumbent.pinned:
             winner, loser = dupe, incumbent
-        elif incumbent.metadata.get("pinned"):
+        elif incumbent.pinned:
             winner, loser = incumbent, dupe
         elif bool(RETWEET_PREFIX.match(incumbent.title)) != bool(RETWEET_PREFIX.match(dupe.title)):
             # The post itself over its retweet: the retweet's body is longer only by its "RT name:".
@@ -209,7 +208,7 @@ class ContentAggregator:
     def _fill_missing_metadata(kept: CollectedItem, dupe: CollectedItem) -> None:
         # Only fill keys the kept item lacks — never overwrite its own origin/engagement
         # metadata (feed_url, subreddit, channel_url, view_count) with a lower-priority dupe's.
-        # Metadata keys belong to a source type (subreddit, channel_url, broker, hide_link ...): a news
+        # Metadata keys belong to a source type (subreddit, channel_url, broker ...): a news
         # item that wins a title tie with a research note must not take the note's hidden link or broker.
         if dupe.source_type != kept.source_type:
             return

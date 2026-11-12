@@ -10,6 +10,7 @@ from domain.aggregator import normalize_url
 from domain.formatting import (
     countdown_intro,
     format_collected_item,
+    format_recent_titles,
     place_countdown_intro,
     source_tag_and_metrics,
     split_sentences,
@@ -113,12 +114,11 @@ class DigestGenerator:
                 content.items = self._trim_keeping_pinned(content.items, target_count, ranked_items)
                 sources = [source_of[id(it)] for it in content.items]
             shipped = {normalize_url(src.url) for src in sources}
-            for flag, what in (("pinned", "Pinned URL(s)"), ("primary", "Primary-quota stories")):
-                missing = [
-                    r.item.url
-                    for r in ranked_items
-                    if r.item.metadata.get(flag) and normalize_url(r.item.url) not in shipped
-                ]
+            unshipped = [r.item for r in ranked_items if normalize_url(r.item.url) not in shipped]
+            for missing, what in (
+                ([it.url for it in unshipped if it.pinned], "Pinned URL(s)"),
+                ([it.url for it in unshipped if it.primary], "Primary-quota stories"),
+            ):
                 if missing:
                     # ERROR: an explicit requirement, and a digest without the story looks complete.
                     logger.error("%s missing from the digest: %s", what, ", ".join(missing))
@@ -166,7 +166,7 @@ class DigestGenerator:
 
     def _item_prose_budget(self, item: CollectedItem) -> int:
         """The budget for one ranked candidate, off the provenance line its post will really carry."""
-        return self._prose_budget(self._threads_meta_line(item), "" if item.metadata.get("hide_link") else item.url)
+        return self._prose_budget(self._threads_meta_line(item), item.url if item.show_link else "")
 
     def _lead_budget(self, intro: str) -> int:
         """Characters the editor may spend on the lead. The lead IS the Threads root post, and the
@@ -183,12 +183,8 @@ class DigestGenerator:
     def _parse_content(self, raw: str) -> DigestContent:
         """Turn the editor's raw output into a DigestContent, or raise DigestContentError.
 
-        It NEVER degrades to a story-less digest. The old fallback returned
-        `DigestContent(lead=raw[:1000], items=[])` on any parse error, which shipped the raw
-        fenced JSON as the lead and zero stories — the 2026-08-13 and 2026-08-17 digests each lost
-        all five stories that way (the editor emitted a stray `]` after the lead string; downstream
-        the visual Lambda then posted a caption-only root and logged success). Raising lets the
-        caller re-ask, and a persistent failure surfaces as a failed run instead of a broken post.
+        It never degrades to a story-less digest: raising lets the caller re-ask, and a persistent
+        failure surfaces as a failed run instead of a post with the raw JSON as its lead.
         """
         try:
             data = parse_json_from_llm_output(raw)
@@ -303,7 +299,7 @@ class DigestGenerator:
             # or a tracking parameter); the prose budget was computed from this one too.
             item.url = src.url
             item.source_tag, item.metrics = self._source_tag_and_metrics(src)
-            item.show_link = not src.metadata.get("hide_link")
+            item.show_link = src.show_link
             kept.append(item)
             sources.append(src)
         if unmatched:
@@ -441,15 +437,6 @@ def _last_sentence(text: str) -> str:
     return last[:RECENT_LEAD_PREVIEW_CHARS].rstrip() + "…"
 
 
-def format_recent_titles(recent_titles: list[str] | None) -> str:
-    """The story titles recent digests carried, so today isn't a re-run of them. The URL ledger stays
-    the mechanism that actually suppresses a repeat; this is information, not a filter."""
-    titles = [t.strip() for t in (recent_titles or []) if t and t.strip()]
-    if not titles:
-        return "(No recent digest on record.)"
-    return "\n".join(f"- {t}" for t in titles)
-
-
 def render_digest_text(content: DigestContent) -> str:
     """Plain-prose rendering of the structured content — the system-of-record `digest_text`
     fed to the trend classifier, the AgentCore memory snapshot, and the research agent.
@@ -485,7 +472,7 @@ def _grounding_payload(content: DigestContent) -> str:
 
 def must_carry(item: CollectedItem) -> bool:
     """An item the digest must carry: an operator's --pin-url or the edition's primary quota."""
-    return bool(item.metadata.get("pinned") or item.metadata.get("primary"))
+    return item.pinned or item.primary
 
 
 def _apply_grounding_payload(content: DigestContent, corrected: str) -> DigestContent | None:

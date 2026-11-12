@@ -84,6 +84,11 @@ class TestLocalMemoryStore:
             store.put_raw(d, _snapshot(d))
         recent = store.get_recent_digests(date(2026, 6, 9), 4)
         assert [r.content.lead for r in recent] == ["2026-06-08", "2026-06-06"]
+        dated = store.get_recent_digests_dated(date(2026, 6, 9), 4)
+        assert [(d.isoformat(), r.content.lead) for d, r in dated] == [
+            ("2026-06-08", "2026-06-08"),
+            ("2026-06-06", "2026-06-06"),
+        ]
 
     def test_an_unreadable_day_is_skipped_not_fatal(self, tmp_path):
         store = LocalMemoryStore(tmp_path)

@@ -64,7 +64,7 @@ class TestContentAggregator:
         from domain.aggregator import normalize_url
 
         items = [
-            _item(item_id="id1", url="https://a.com/post/", title="Pinned", metadata={"pinned": True}),
+            _item(item_id="id1", url="https://a.com/post/", title="Pinned", pinned=True),
             _item(item_id="id2", url="http://b.com", title="Fresh"),
         ]
         exclude = {normalize_url("http://a.com/post")}
@@ -221,7 +221,7 @@ class TestContentAggregator:
         # (which only sees the post-aggregation list) can restore it.
         items = [
             _item(url="http://a.com", title="Same Title"),
-            _item(url="http://b.com", title="Same Title", metadata={"pinned": True}),
+            _item(url="http://b.com", title="Same Title", pinned=True),
         ]
         result = ContentAggregator().aggregate(items)
         urls = {it.url for it in result}
@@ -306,7 +306,7 @@ def test_two_pins_sharing_a_title_are_both_kept():
             title="Same Headline",
             text="body",
             published_at=datetime(2026, 10, 16, tzinfo=UTC),
-            metadata={"pinned": True},
+            pinned=True,
         )
         for url in ("https://a.example/1", "https://b.example/2")
     ]
@@ -350,9 +350,7 @@ def test_the_same_url_from_a_research_note_stays_unlinked_whichever_copy_survive
     from shared.constants import SourceType
 
     url = "https://stock.naver.com/research/company/1"
-    note = CollectedItem(
-        item_id="n", source_type=SourceType.RESEARCH, title="a", url=url, text="짧다", metadata={"hide_link": True}
-    )
+    note = CollectedItem(item_id="n", source_type=SourceType.RESEARCH, title="a", url=url, text="짧다", show_link=False)
     web = CollectedItem(item_id="w", source_type=SourceType.WEB, title="b", url=url, text="긴 본문 " * 40)
     [kept] = ContentAggregator().aggregate([note, web])
-    assert kept.item_id == "w" and kept.metadata.get("hide_link") is True
+    assert kept.item_id == "w" and kept.show_link is False

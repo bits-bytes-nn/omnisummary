@@ -17,6 +17,8 @@ from shared import SourceType, logger, retry_async
 from shared.config import YouTubeCollectorConfig
 
 from .base import (
+    PARK_META_TRANSCRIPTS_MISSING,
+    PARK_META_VIDEOS,
     RETRIABLE_STATUS_CODES,
     BaseCollector,
     TransientStatusError,
@@ -94,6 +96,8 @@ class YouTubeCollector(BaseCollector):
             self.api_key = await asyncio.to_thread(resolve_secret, "YOUTUBE_API_KEY", "youtube-api-key")
         return self.api_key
 
+    _transcripts_missing = 0
+
     def __del__(self) -> None:
         # Release pooled sockets when the collector is garbage-collected so warm Lambda
         # containers don't leak connections — only if a client was actually created.
@@ -110,7 +114,12 @@ class YouTubeCollector(BaseCollector):
         # collects videos WITH transcripts on a residential IP and parks them in S3 (same pattern
         # as RSSHub/X). In AWS we read that file; live collection from Lambda still works for the
         # metadata but yields transcript-less items, so the S3 file is strongly preferred.
-        parked = load_items_from_s3("youtube_items.json", max_age_hours=self.config.park_max_age_hours)
+        parked = await asyncio.to_thread(
+            load_items_from_s3,
+            "youtube_items.json",
+            max_age_hours=self.config.park_max_age_hours,
+            timeout=self.config.request_timeout,
+        )
         self.park_status = parked
         if parked.usable:
             # A FRESH park file says nothing about a sync that collected from 2 of 12 channels;
@@ -119,6 +128,9 @@ class YouTubeCollector(BaseCollector):
                 parked,
                 what="channels",
             )
+            videos, missing = (parked.meta.get(key) for key in (PARK_META_VIDEOS, PARK_META_TRANSCRIPTS_MISSING))
+            if isinstance(videos, int) and isinstance(missing, int):
+                self._flag_missing_transcripts(videos, missing, "parked sync: ")
             # Through the SAME window both live branches apply: a stale park file otherwise fed
             # videos older than lookback into ranking, and a --date backfill ingested today's.
             return parked_items_in_window(
@@ -150,6 +162,7 @@ class YouTubeCollector(BaseCollector):
         # acquired BEFORE the per-channel timeout, so the timeout measures the fetch, not the queue
         # wait. Mirrors rss.max_concurrency / rsshub.max_concurrency.
         semaphore = asyncio.Semaphore(self.config.max_concurrency)
+        self._transcripts_missing = 0
         tasks = [self._collect_channel_bounded(ch, semaphore) for ch in self.config.channels]
         result = await gather_collector_results(tasks, labels=self.config.channels, raise_if_all_failed=True)
         logger.info(
@@ -168,7 +181,22 @@ class YouTubeCollector(BaseCollector):
             empty=result.empty,
             what="channels",
         )
+        self.run_meta = {
+            **self.run_meta,
+            PARK_META_VIDEOS: len(result.items),
+            PARK_META_TRANSCRIPTS_MISSING: min(self._transcripts_missing, len(result.items)),
+        }
+        self._flag_missing_transcripts(len(result.items), self.run_meta[PARK_META_TRANSCRIPTS_MISSING])
         return result.items
+
+    def _flag_missing_transcripts(self, videos: int, missing: int, prefix: str = "") -> None:
+        """DEGRADED when too many kept videos came without a transcript. Reporting only."""
+        threshold = self.config.transcript_missing_threshold
+        if threshold is None or videos <= 0 or missing / videos * 100 <= threshold:
+            return
+        reason = f"{prefix}{missing}/{videos} videos have no transcript (>{threshold:.0f}%)"
+        self.degraded_detail = "; ".join(filter(None, [self.degraded_detail, reason]))
+        logger.warning("Collector is DEGRADED: %s", self.degraded_detail)
 
     async def _collect_channel_bounded(self, channel_url: str, semaphore: asyncio.Semaphore) -> list[CollectedItem]:
         """Run one channel inside the fan-out bound and a real wall-clock budget. The per-step
@@ -305,6 +333,8 @@ class YouTubeCollector(BaseCollector):
                 transcript = await self._fetch_transcript(video_id)
                 if transcript:
                     item.text = transcript
+                else:
+                    self._transcripts_missing += 1
                 logger.info("Collected YouTube video: '%s'", item.title)
                 items.append(item)
 
@@ -356,6 +386,8 @@ class YouTubeCollector(BaseCollector):
             transcript = await self._fetch_transcript(item.item_id)
             if transcript:
                 item.text = transcript
+            else:
+                self._transcripts_missing += 1
             logger.info("Collected YouTube video: '%s'", item.title)
             items.append(item)
 

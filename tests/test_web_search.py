@@ -409,7 +409,7 @@ class TestFetchPinnedItems:
             with patch("adapters.collectors.web_search.tavily_client", return_value=client):
                 items = await fetch_pinned_items(["https://darioamodei.com/post/policy-on-the-ai-exponential"])
         assert len(items) == 1
-        assert items[0].metadata["pinned"] is True
+        assert items[0].pinned is True
         assert items[0].text == "body text"
         # no extractor title → fall back to the URL slug
         assert "policy on the ai exponential" in items[0].title
@@ -448,7 +448,7 @@ class TestFetchPinnedItems:
         assert items[0].title == "The data black hole at the center of AI"
         assert items[0].author == "Dwarkesh Patel"
         assert items[0].source_type == SourceType.YOUTUBE
-        assert items[0].metadata["pinned"] is True
+        assert items[0].pinned is True
         assert items[0].text == "It is easy to forget how much data these models train on."
         tavily.extract.assert_not_called()  # YouTube never touches Tavily
 

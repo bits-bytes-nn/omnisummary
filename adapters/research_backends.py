@@ -17,6 +17,7 @@ from tavily import AsyncTavilyClient
 from adapters.aws import resolve_secret
 from adapters.metrics import emit_spend
 from adapters.og_image import fetch_og_image
+from application.ports import MarketDataUnavailable
 from domain.aggregator import normalize_url
 from domain.models import ImageAsset
 from shared import get_config, logger, retry_async
@@ -421,6 +422,15 @@ def _ticker(symbol: str) -> str:
     return symbol if ok else ""
 
 
+def _raise_unless_unknown(symbol: str, error: httpx.HTTPError) -> None:
+    """Yahoo answers 404 for a ticker it does not know; any other HTTP failure is the source's, not the ticker's."""
+    if isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 404:
+        logger.warning("Yahoo Finance does not know '%s'", symbol)
+        return
+    logger.warning("Yahoo Finance failed for '%s': %s", symbol, error)
+    raise MarketDataUnavailable(f"Yahoo Finance failed ({type(error).__name__})") from error
+
+
 def _price(value: float) -> str:
     """Thousands separators, cents below 1,000 and significant digits below 1 (225,000 / 344.60 / 0.0123)."""
     if abs(value) >= 1000:
@@ -456,8 +466,10 @@ async def yahoo_quote(symbol: str, period: str = "5d") -> str:
         result = ((resp.json() or {}).get("chart") or {}).get("result")
         first = result[0] if isinstance(result, list) and result else None
         return _format_quote(symbol, period, first) if isinstance(first, dict) else ""
+    except httpx.HTTPError as e:
+        _raise_unless_unknown(symbol, e)
+        return ""
     except (
-        httpx.HTTPError,
         ValueError,
         TypeError,
         AttributeError,
@@ -546,7 +558,10 @@ async def yahoo_analyst_ratings(symbol: str) -> str:
         result = ((resp.json() or {}).get("quoteSummary") or {}).get("result")
         first = result[0] if isinstance(result, list) and result else None
         return _format_ratings(symbol, first, time.time()) if isinstance(first, dict) else ""
-    except (httpx.HTTPError, ValueError, TypeError, AttributeError, IndexError, KeyError, OverflowError) as e:
+    except httpx.HTTPError as e:
+        _raise_unless_unknown(symbol, e)
+        return ""
+    except (ValueError, TypeError, AttributeError, IndexError, KeyError, OverflowError) as e:
         logger.warning("Analyst ratings for '%s' failed: %s", symbol, e)
         return ""
 

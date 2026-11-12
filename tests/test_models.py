@@ -105,3 +105,17 @@ class TestTrendMemory:
         memory = TrendMemory(trends=[Trend(id="x", title="X"), Trend(id="y", title="Y")])
         assert memory.by_id("y").title == "Y"
         assert memory.by_id("z") is None
+
+
+def test_a_stored_item_with_flag_metadata_keys_loads_them_as_fields():
+    from domain.models import CollectedItem
+
+    stored = {
+        "source_type": "research",
+        "title": "t",
+        "url": "https://e.com/a",
+        "metadata": {"hide_link": True, "primary": True, "pinned": False, "broker": "A"},
+    }
+    item = CollectedItem.model_validate(stored)
+    assert (item.show_link, item.primary, item.pinned) == (False, True, False)
+    assert item.metadata == {"broker": "A"}

@@ -1,6 +1,7 @@
 """The investing edition: one codebase, its own config, state prefix and memory sessions, and two tools."""
 
 import json
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -71,7 +72,7 @@ def test_the_investing_tools_are_bound_only_when_configured(monkeypatch):
 async def test_a_quote_is_a_citable_source_with_its_numbers():
     block = "- Apple Inc. (AAPL)\n  URL: https://finance.yahoo.com/quote/AAPL\n  Last close: 344.60 USD on 2026-10-30"
     sources = FakeSources(quote=block)
-    delivery = DeliveryContext(ports=ResearchPorts(sources=sources))
+    delivery = DeliveryContext(config=Config(), ports=ResearchPorts(sources=sources))
     with request_context(delivery):
         out = await research.market_quote("AAPL, AAPL nvda")
     assert out.count("Apple Inc.") == 2  # AAPL once, and nvda answers the same fake block
@@ -170,7 +171,7 @@ async def test_the_quote_uses_exchange_dates_labels_a_live_session_and_survives_
 async def test_analyst_ratings_are_a_citable_source():
     block = "- Analyst ratings for NVDA (Yahoo Finance, as of 2026-11-01)\n  URL: https://finance.yahoo.com/quote/NVDA/analysis\n  Analysts: 58"
     sources = FakeSources(quote=block)
-    delivery = DeliveryContext(ports=ResearchPorts(sources=sources))
+    delivery = DeliveryContext(config=Config(), ports=ResearchPorts(sources=sources))
     with request_context(delivery):
         out = await research.analyst_ratings("NVDA, nvda TSLA")
     assert sources.analyst_ratings.await_count == 2
@@ -216,3 +217,40 @@ def test_the_ratings_block_dates_recent_actions_and_drops_old_ones():
     assert "2026-10-25 Barclays: Equal-Weight -> Overweight, target 370.00 -> 450.00 (up)" in block
     assert "Old Firm" not in block and "Broken" not in block
     assert _format_ratings("X", {}, now) == ""
+
+
+def test_the_tool_specs_state_the_ticker_caps_the_tools_apply():
+    from adapters import research_tools
+
+    assert f"up to {research.MAX_QUOTE_TICKERS} tickers" in research_tools.market_quote.tool_spec["description"]
+    assert f"up to {research.MAX_RATINGS_TICKERS} stocks" in research_tools.analyst_ratings.tool_spec["description"]
+
+
+@pytest.mark.asyncio
+async def test_tickers_past_the_cap_are_named_as_not_queried():
+    sources = FakeSources(quote="- X\n  URL: https://finance.yahoo.com/quote/X")
+    tickers = [f"T{n}" for n in range(research.MAX_RATINGS_TICKERS + 2)]
+    with request_context(DeliveryContext(config=Config(), ports=ResearchPorts(sources=sources))):
+        out = await research.analyst_ratings(" ".join(tickers))
+    assert sources.analyst_ratings.await_count == research.MAX_RATINGS_TICKERS
+    assert f"Not queried (one call reads at most {research.MAX_RATINGS_TICKERS} tickers): T5, T6" in out
+
+
+@pytest.mark.asyncio
+async def test_a_failed_source_is_not_reported_as_a_bad_ticker(monkeypatch):
+    from adapters import research_backends
+    from application.ports import MarketDataUnavailable
+
+    statuses = [503, 404]
+    transport = httpx.MockTransport(lambda request: httpx.Response(statuses.pop(0)))
+    real = httpx.AsyncClient
+    monkeypatch.setattr(research_backends.httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw))
+    with pytest.raises(MarketDataUnavailable):
+        await research_backends.yahoo_quote("AAPL")
+    assert await research_backends.yahoo_quote("NOPE") == ""
+
+    sources = FakeSources()
+    sources.market_quote = AsyncMock(side_effect=MarketDataUnavailable("Yahoo Finance failed (HTTPStatusError)"))
+    with request_context(DeliveryContext(config=Config(), ports=ResearchPorts(sources=sources))):
+        out = await research.market_quote("AAPL")
+    assert "market data unavailable" in out and "check the ticker" not in out

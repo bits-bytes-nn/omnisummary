@@ -473,3 +473,12 @@ def test_a_domain_split_by_an_invisible_character_is_refused(hidden):
     from application.comment_replies import unsafe_reply_reason
 
     assert unsafe_reply_reason(f"여기 보세요 evil{hidden}.com", "reader") == "it carries a link or a domain"
+
+
+def test_a_comment_needs_its_draft_budget_plus_the_reply_publish_reserve(tmp_path):
+    from adapters.threads import THREADS_PUBLISH_RESERVE_SEC
+
+    responder = _responder(tmp_path, [])
+    assert (
+        responder.seconds_per_comment == responder.config.comment_reply_draft_budget_sec + THREADS_PUBLISH_RESERVE_SEC
+    )

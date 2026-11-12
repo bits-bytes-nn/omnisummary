@@ -302,3 +302,45 @@ def test_a_quiet_day_relaxes_the_origin_cap_only_up_to_top_n():
     items += [_ranked(0.7, SourceType.WEB, item_id="w", url="http://w.com/x")]
     picked = ranker._apply_source_slots(items, 12, [])
     assert [r.item.item_id for r in picked] == ["r0", "r1", "w"]
+
+
+def test_another_outlets_copy_of_a_pinned_story_takes_no_seat():
+    ranker = _ranker(source_slots={}, max_per_origin=1, top_n=5)
+    pin = _ranked(0.9, SourceType.WEB, item_id="pin", url="http://pin.com/x")
+    copy = _ranked(0.85, SourceType.WEB, item_id="copy", url="http://copy.com/x")
+    others = [_ranked(0.8 - i / 100, SourceType.WEB, item_id=f"o{i}", url=f"http://o{i}.com/x") for i in range(2)]
+    picked = ranker._apply_source_slots([copy, *others], 2, [pin], {"pin": 0, "copy": 0})
+    assert [r.item.item_id for r in picked] == ["o0", "o1"]
+
+
+def test_a_pin_counts_toward_the_quiet_day_relaxation_target():
+    ranker = _ranker(source_slots={}, max_per_origin=1, top_n=3)
+    pin = _ranked(0.95, SourceType.WEB, item_id="pin", url="http://pin.com/x")
+    items = [_ranked(0.9 - i / 100, SourceType.REDDIT, item_id=f"r{i}", sub="LocalLLaMA") for i in range(8)]
+    picked = ranker._apply_source_slots(items, 11, [pin])
+    assert [r.item.item_id for r in picked] == ["r0", "r1"]
+
+
+def test_pins_are_grouped_with_the_candidates():
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from langchain_core.messages import AIMessage
+    from langchain_core.runnables import RunnableLambda
+
+    from application.ranker import ContentRanker
+    from tests.fakes import StructuredLambda
+
+    items = [
+        CollectedItem(item_id=k, source_type=SourceType.WEB, title=f"t-{k}", url=f"http://{k}.com/x", pinned=k == "p")
+        for k in ("p", "a", "b")
+    ]
+    factory = MagicMock()
+    factory.truncate_to_tokens.side_effect = lambda text, max_tokens: text
+    answer = '{"rankings": [{"item": 1, "score": 0.9}, {"item": 2, "score": 0.9}, {"item": 3, "score": 0.9}]}'
+    factory.get_model.return_value = StructuredLambda(RunnableLambda(lambda _p: AIMessage(content=answer)))
+    ranker = ContentRanker(PipelineConfig(source_slots={}, top_n=1), factory)
+    groups = AsyncMock(return_value={})
+    ranker._story_groups = groups  # type: ignore[method-assign]
+    asyncio.run(ranker.rank(items, select_count=2))
+    assert "p" in {r.item.item_id for r in groups.await_args.args[0]}

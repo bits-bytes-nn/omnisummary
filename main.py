@@ -94,7 +94,7 @@ async def main() -> int:
         logger.error("No items collected. Exiting.")
         return 1
 
-    _, ranked_items, digest = await run_pipeline(
+    run = await run_pipeline(
         config,
         models,
         collected_items,
@@ -106,9 +106,10 @@ async def main() -> int:
         note_text=bootstrap.note_text(config),
         dry_run=args.dry_run,
     )
-    if digest is None or ranked_items is None:
+    if run is None:
         logger.error("No digest was produced")
         return 1
+    ranked_items, digest = run.ranked_items, run.digest
     if not args.dry_run:
         # Persisted BEFORE the post: a store that fails after the post went up would leave the day's
         # posted digest stored nowhere, and a re-run would record a different one.

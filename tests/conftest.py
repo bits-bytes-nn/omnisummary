@@ -1,3 +1,4 @@
+import logging
 import socket
 
 import pytest
@@ -37,6 +38,26 @@ LEAKY_ENV_VARS = (
     "LANGCHAIN_API_KEY",
     "LANGSMITH_API_KEY",
 )
+
+
+@pytest.fixture(autouse=True, scope="session")
+def log_file_in_tmp(tmp_path_factory):
+    """The suite's log lines go to a temp file, not logs/: the cost report and a reader of a real
+    run's log read that directory, and test lines carry fake spend."""
+    log = logging.getLogger("omnisummary")
+    real = [h for h in log.handlers if isinstance(h, logging.FileHandler)]
+    for handler in real:
+        log.removeHandler(handler)
+        handler.close()
+    if not real:
+        yield
+        return
+    temp = logging.FileHandler(tmp_path_factory.mktemp("logs") / real[0].baseFilename.rsplit("/", 1)[-1])
+    temp.setFormatter(real[0].formatter)
+    log.addHandler(temp)
+    yield
+    log.removeHandler(temp)
+    temp.close()
 
 
 @pytest.fixture(autouse=True)

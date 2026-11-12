@@ -492,3 +492,12 @@ def threads_item_overhead_chars(meta: str, url: str) -> int:
     blocks = [p for p in (url.strip(),) if p]
     inline_meta = len(meta.strip()) + len(" ()") if meta.strip() else 0
     return inline_meta + sum(len(p) for p in blocks) + len(THREADS_POST_SEPARATOR) * (len(blocks) + 2)
+
+
+def format_recent_titles(recent_titles: list[str] | None) -> str:
+    """The story titles recent digests carried, so today isn't a re-run of them. The URL ledger stays
+    the mechanism that actually suppresses a repeat; this is information, not a filter."""
+    titles = [t.strip() for t in (recent_titles or []) if t and t.strip()]
+    if not titles:
+        return "(No recent digest on record.)"
+    return "\n".join(f"- {t}" for t in titles)

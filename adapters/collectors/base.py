@@ -16,6 +16,7 @@ from typing import Any
 import boto3
 import feedparser
 import httpx
+from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field, ValidationError
@@ -145,6 +146,9 @@ _ABSENT_ERROR_CODES = frozenset({"NoSuchKey", "NoSuchBucket", "404"})
 PARK_META_ACCOUNTS_TOTAL = "accounts_total"
 PARK_META_ACCOUNTS_FAILED = "accounts_failed"
 PARK_META_ACCOUNTS_EMPTY = "accounts_empty"
+# Videos a YouTube sync kept, and how many of them came without a transcript.
+PARK_META_VIDEOS = "videos"
+PARK_META_TRANSCRIPTS_MISSING = "transcripts_missing"
 # When the sync BEFORE this file's ran. The previous digest could read no further than that sync's
 # file, so a reader reaches back to it when it is older than the lookback: a skipped sync otherwise
 # lost everything between its predecessor and the next sync's window for good.
@@ -238,7 +242,7 @@ class BaseCollector(ABC):
         running would otherwise look healthy for days), DEGRADED when only a fraction of the inputs
         answered, else None."""
         if self.park_status is not None and self.park_status.degraded:
-            return SourceStatus.STALE, self.park_status.detail
+            return SourceStatus.STALE, "; ".join(filter(None, [self.park_status.detail, self.degraded_detail]))
         if self.degraded_detail:
             return SourceStatus.DEGRADED, self.degraded_detail
         return None
@@ -454,7 +458,7 @@ def park_root_prefix(state_prefix: str) -> str:
     return prefix.rsplit("/", 1)[0] if "/" in prefix else ""
 
 
-def load_items_from_s3(filename: str, max_age_hours: int) -> ParkedItems:
+def load_items_from_s3(filename: str, max_age_hours: int, *, timeout: int) -> ParkedItems:
     """Load a collector's pre-fetched items from S3 (uploaded by a local sync script).
 
     Sources that YouTube/X block from datacenter (Lambda) IPs are collected locally on a
@@ -471,7 +475,7 @@ def load_items_from_s3(filename: str, max_age_hours: int) -> ParkedItems:
 
     Accepts both the newer envelope ({"generated_at", "items"}) and the legacy bare list; when a
     stamp is present and older than max_age_hours the items are still returned (stale beats empty)
-    but the outcome is STALE.
+    but the outcome is STALE. `timeout` bounds the S3 connect and read, in seconds.
 
     A zero-item file is treated as ABSENT only when it is ALSO older than max_age_hours: that
     combination means the local sync stopped producing, and falling through to live collection lets
@@ -486,7 +490,8 @@ def load_items_from_s3(filename: str, max_age_hours: int) -> ParkedItems:
     s3_key = park_file_key(filename, park_root_prefix(os.environ.get("S3_PREFIX", "")))
 
     try:
-        resp = boto3.client("s3").get_object(Bucket=bucket, Key=s3_key)
+        client = boto3.client("s3", config=BotoConfig(connect_timeout=timeout, read_timeout=timeout))
+        resp = client.get_object(Bucket=bucket, Key=s3_key)
         data = json.loads(resp["Body"].read().decode("utf-8"))
         raw_items, generated_at, meta = _unwrap_items_envelope(data)
         items = [CollectedItem.model_validate(item) for item in raw_items]

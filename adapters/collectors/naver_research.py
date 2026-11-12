@@ -47,6 +47,7 @@ class NaverResearchCollector(BaseCollector):
 
     def __init__(self, config: NaverResearchCollectorConfig):
         self.config = config
+        self._partial: list[str] = []
 
     async def collect(self) -> list[CollectedItem]:
         if not self.config.categories:
@@ -55,6 +56,7 @@ class NaverResearchCollector(BaseCollector):
         start = cutoff_datetime(self.config.lookback_hours, end).astimezone(_SEOUL).date()
         last = (end - timedelta(seconds=1)).astimezone(_SEOUL).date()
         categories = [str(c) for c in self.config.categories]
+        self._partial = []
         async with httpx.AsyncClient(
             headers=FEED_FETCH_HEADERS, timeout=self.config.request_timeout, follow_redirects=True
         ) as client:
@@ -68,6 +70,9 @@ class NaverResearchCollector(BaseCollector):
             result.failed,
         )
         self.record_run_health(total=result.total, failed=result.failed, empty=result.empty, what="categories")
+        if self._partial:
+            self.degraded_detail = "; ".join(filter(None, [self.degraded_detail, *self._partial]))
+            logger.warning("Collector is DEGRADED: %s", self.degraded_detail)
         return _one_item_per_stock_and_day(result.items)
 
     async def _collect_category(
@@ -76,7 +81,17 @@ class NaverResearchCollector(BaseCollector):
         items: list[CollectedItem] = []
         rows_seen = dated = attributed = 0
         for index in range(self.config.max_pages):
-            payload = await self._page(client, category, index, start, end)
+            try:
+                payload = await self._page(client, category, index, start, end)
+            except Exception as e:
+                if not index:
+                    raise
+                # The pages already read stay: one failed page must not cost the category's newest notes.
+                logger.warning(
+                    "Naver research '%s' page %d failed; keeping %d earlier page(s): %s", category, index, index, e
+                )
+                self._partial.append(f"'{category}' stopped at page {index} of the window ({e})")
+                break
             if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
                 raise ValueError(f"Naver research '{category}' answered without an items list")
             rows = payload["items"]
@@ -93,6 +108,7 @@ class NaverResearchCollector(BaseCollector):
                 category,
                 self.config.max_pages,
             )
+            self._partial.append(f"'{category}' still had pages after max_pages={self.config.max_pages}")
         if rows_seen and not dated:
             # Rows came back and none had a readable date: the API changed shape. Fail the category rather
             # than report it empty, which is what a quiet Sunday looks like.
@@ -164,10 +180,10 @@ class NaverResearchCollector(BaseCollector):
             text=f"{' · '.join(header)}\n{summary}",
             author=broker,
             published_at=published,
+            # Never linked: the post names the broker (owner's call, docs/design.md).
+            show_link=False,
             metadata={
                 "research_category": category,
-                # Never linked: the post names the broker (owner's call, docs/design.md 판).
-                "hide_link": True,
                 "stock": stock,
                 "day": day.isoformat(),
                 "opinion": str(row.get("opinionText") or ""),

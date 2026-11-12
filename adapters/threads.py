@@ -22,15 +22,13 @@ THREADS_ALT_TEXT_MAX_CHARS = 1000
 
 THREADS_API_BASE = "https://graph.threads.net/v1.0"
 # Meta processes every media container asynchronously, text replies too: a publish before the container
-# reads FINISHED answers code 24 for that container (2026-11-06: 20 such answers, two stories lost; each
-# of those containers read FINISHED the next day). Longest wait for FINISHED before publishing anyway.
+# reads FINISHED answers code 24 for that container. Longest wait for FINISHED before publishing anyway.
 THREADS_MEDIA_PROCESS_WAIT_SEC = 30
 THREADS_CONTAINER_POLL_SEC = 3
 # One digest's shared window for retrying a reply's code 24; a caller's deadline only shortens it.
 THREADS_INDEXING_BUDGET_SEC = 270
-# Retry cap on a reply's transient container-processing 400/429/5xx (a single such 400 dropped one
-# story from a 2026-07-17 digest). A genuine content rejection burns these attempts too, but is
-# logged with its body.
+# Retry cap on a reply's transient container-processing 400/429/5xx. A genuine content rejection burns
+# these attempts too, but is logged with its body.
 THREADS_REPLY_RETRY_ATTEMPTS = 3
 THREADS_REPLY_RETRY_BACKOFF_SEC = 10
 # Seconds the publish path still needs AFTER the indexing wait: one reply's full retry ladder, each
@@ -159,9 +157,8 @@ def is_media_not_found(exc: httpx.HTTPStatusError) -> bool:
 def is_transient_reply_error(exc: httpx.HTTPStatusError) -> bool:
     """True if a reply failure is worth another attempt. Meta's container-publish endpoint returns
     transient 400s while it finishes processing a freshly-created container, code 24 included, plus the
-    usual 429/5xx. A single such 400 silently dropped
-    one of five stories on 2026-07-17. Genuine content rejections also surface as 400 and will burn
-    the retries, but they are now logged with the response body so the cause is identifiable."""
+    usual 429/5xx. Genuine content rejections also surface as 400 and burn the retries; they are
+    logged with the response body so the cause is identifiable."""
     if is_media_not_found(exc):
         return True
     status = exc.response.status_code
@@ -415,8 +412,7 @@ async def post_to_threads(
                         client, user_id, token, post, root_id, indexing_deadline=indexing_deadline
                     )
                     if await _landed_detached(client, token, reply_id):
-                        # 2026-10-27: a reply retried after code 24 published as a standalone post although
-                        # Meta answered success, and the day logged "5/5 replies" with no alert.
+                        # A reply retried after code 24 can publish as a standalone post while Meta answers success.
                         logger.error(
                             "Threads reply %d/%d published as a STANDALONE post '%s', not under the root",
                             i,
@@ -543,6 +539,7 @@ class ThreadsGateway:
     sessions. Credentials are read per call, so a token the refresh Lambda rotated is picked up."""
 
     publish_budget_sec = float(THREADS_INDEXING_BUDGET_SEC + THREADS_PUBLISH_RESERVE_SEC)
+    reply_publish_reserve_sec = float(THREADS_PUBLISH_RESERVE_SEC)
 
     def __init__(self, config: Config) -> None:
         self.config = config
@@ -595,6 +592,7 @@ class ThreadsPreview:
     be read (and compared) exactly as it would have gone out."""
 
     publish_budget_sec = 0.0
+    reply_publish_reserve_sec = 0.0
 
     def __init__(self) -> None:
         self.posts: list[str] = []

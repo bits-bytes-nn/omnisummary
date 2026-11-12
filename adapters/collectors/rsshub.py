@@ -35,7 +35,12 @@ class RSSHubCollector(BaseCollector):
         self.config = config
 
     async def collect(self) -> list[CollectedItem]:
-        parked = load_items_from_s3("rsshub_items.json", max_age_hours=self.config.park_max_age_hours)
+        parked = await asyncio.to_thread(
+            load_items_from_s3,
+            "rsshub_items.json",
+            max_age_hours=self.config.park_max_age_hours,
+            timeout=self.config.request_timeout,
+        )
         self.park_status = parked
         if parked.usable:
             self.flag_degraded_park(

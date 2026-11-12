@@ -137,9 +137,9 @@ async def _digest(label: str, dates: list[str]) -> None:
     from application.digest_generator import DigestGenerator
     from application.digest_pipeline import (
         POOLS_PREFIX,
-        RECENT_TITLE_DAYS,
-        _recent_leads,
         _recent_story_titles,
+        read_recent_history,
+        recent_angles,
         sibling_snapshots,
     )
     from application.trend_tracker import TrendTracker
@@ -162,28 +162,26 @@ async def _digest(label: str, dates: list[str]) -> None:
             logger.warning("%s has no stored pool; replaying the snapshot's shortened items", day)
         today = date.fromisoformat(day)
         # The same inputs a real run on that date had: the earlier snapshots and the trends before it.
-        earlier = memory.get_recent_digests(today, config.pipeline.published_url_ttl_days - 1)
-        title_snapshots = memory.get_recent_digests(today, RECENT_TITLE_DAYS)
+        history = read_recent_history(config, lambda: memory, today)
         trends = TrendTracker(config.pipeline, models, bootstrap.state_store(config)).get_trends_context(today=today)
-        window = config.pipeline.recent_leads_window
         sibling = _posted_before(sibling_snapshots(lambda: bootstrap.sibling_memory_stores(config), today), snapshot)
         result = await DigestGenerator(config.pipeline, models).generate(
             pool,
             today=today,
             trends_context=trends,
-            recent_leads=_recent_leads(earlier, window) + _recent_leads(sibling, window),
-            recent_titles=list(dict.fromkeys(_recent_story_titles(title_snapshots) + _recent_story_titles(sibling))),
+            recent_leads=recent_angles(history.dedup, config.pipeline) + recent_angles(sibling, config.pipeline),
+            recent_titles=list(dict.fromkeys(_recent_story_titles(history.titles) + _recent_story_titles(sibling))),
         )
         # The judge always sees what the whole Threads account ran, the other editions included, whatever
         # the arm under test was given.
-        account = _recent_leads(earlier, window) + _recent_leads(
+        account = recent_angles(history.dedup, config.pipeline) + recent_angles(
             _posted_before(
                 sibling_snapshots(
                     lambda: [bootstrap.memory_store(config, edition=e) for e in _other_editions(config)], today
                 ),
                 snapshot,
             ),
-            window,
+            config.pipeline,
         )
         # The editor's own view of each source (its token cap), not a shorter cut: at 1,500 characters the
         # judge marked figures from further down the source as invented (2026-11-06: Evercore's 7,750 and

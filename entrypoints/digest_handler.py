@@ -42,8 +42,7 @@ def _maybe_alert(health: HealthReport, alert_on_empty: list[str] | None = None) 
     # A source that ran clean and returned NOTHING leaves no exception, no stale park file and no
     # degraded ratio — it is simply dark. Only the sources config NAMES alert (collectors.
     # alert_on_empty), so reddit/x quiet days can't page every morning.
-    watched = set(alert_on_empty or [])
-    empty = [name for name in health.empty_sources if name in watched]
+    empty = health.watched_empty(alert_on_empty)
     if not (failed or stale or degraded or empty):
         return
     fields = {}
@@ -152,10 +151,9 @@ async def _run(event: dict[str, Any] | None = None) -> None:
         note_text=bootstrap.note_text(config),
     )
 
-    items, ranked_items, digest = result
-    # Count the STORIES the digest actually carries (the curated content items), not the ranker's
-    # candidate list: on 2026-08-13/08-17 the editor's output failed to parse and the digest shipped
-    # zero stories, yet this metric reported the full candidate count and the alarm stayed green.
+    digest = result.digest if result else None
+    # Count the STORIES the digest carries, not the ranker's candidates: a digest whose stories were all
+    # lost still has a full candidate list.
     content_items = digest.content.items if digest and digest.content else []
     _emit_digest_items_metric(len(content_items))
     # Published SEPARATELY from the collector-health alert above (which runs before the pipeline):
@@ -165,9 +163,9 @@ async def _run(event: dict[str, Any] | None = None) -> None:
     _maybe_alert_ranking(digest, digest_date)
     _maybe_alert_grounding(digest, digest_date)
 
-    if items and ranked_items and digest:
+    if result is not None:
         try:
-            persist_digest(ranked_items, digest, digest_date, bootstrap.memory_store(config))
+            persist_digest(result.ranked_items, result.digest, digest_date, bootstrap.memory_store(config))
         except Exception as e:
             # The visual Lambda publishes off this snapshot and is the only Threads delivery path,
             # so a failed persist means the day produces NOTHING. Don't trigger the visual (it

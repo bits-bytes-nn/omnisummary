@@ -53,7 +53,7 @@ async def main() -> None:
             logger.info("Cached %d collected items to %s", len(collected), cache_path)
 
     digest_date, _ = resolve_digest_window(config)
-    _, _, digest = await run_pipeline(
+    run = await run_pipeline(
         config,
         models,
         collected,
@@ -65,8 +65,9 @@ async def main() -> None:
         note_text=bootstrap.note_text(config),
         dry_run=True,
     )
-    if digest is None:
+    if run is None:
         raise SystemExit("No digest: nothing survived aggregation and ranking")
+    digest = run.digest
 
     out_path.write_text(digest.digest_text, encoding="utf-8")
     stories = len(digest.content.items) if digest.content else 0

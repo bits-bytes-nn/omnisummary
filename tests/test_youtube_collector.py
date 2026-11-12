@@ -871,3 +871,51 @@ async def test_the_api_key_rides_in_a_header_not_the_url():
         await collector._get_api(client, "channels", {"part": "id"}, description="d")
     assert "secret-key" not in str(seen[0].url)
     assert seen[0].headers["X-Goog-Api-Key"] == "secret-key"
+
+
+class TestMissingTranscripts:
+    @pytest.mark.asyncio
+    async def test_a_sync_that_lost_every_transcript_reads_degraded_and_parks_the_count(self, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "k")
+        collector = YouTubeCollector(_config())
+        client = AsyncMock()
+        client.get.side_effect = [
+            _resp(200, _playlist_payload("vid00000001")),
+            _resp(200, _videos_payload("vid00000001")),
+        ]
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=client)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="UCabcdef")):
+            with patch("adapters.collectors.youtube.httpx.AsyncClient", return_value=ctx):
+                with patch.object(collector, "_get_transcript", return_value=""):
+                    items = await collector.collect()
+        assert len(items) == 1 and items[0].text == "desc"
+        assert collector.run_meta["videos"] == 1 and collector.run_meta["transcripts_missing"] == 1
+        assert "1/1 videos have no transcript" in collector.degraded_detail
+
+    @pytest.mark.asyncio
+    async def test_the_parked_count_degrades_the_reader(self):
+        collector = YouTubeCollector(_config())
+        park = ParkedItems(
+            outcome=ParkOutcome.FRESH,
+            items=[
+                CollectedItem(
+                    item_id="v1",
+                    source_type=SourceType.YOUTUBE,
+                    title="t",
+                    url="https://y/v1",
+                    published_at=datetime(2026, 6, 2, 12, tzinfo=UTC),
+                )
+            ],
+            meta={"videos": 4, "transcripts_missing": 3},
+        )
+        with patch("adapters.collectors.youtube.load_items_from_s3", return_value=park):
+            await collector.collect()
+        assert "parked sync: 3/4 videos have no transcript" in collector.degraded_detail
+
+    @pytest.mark.asyncio
+    async def test_a_share_at_the_threshold_stays_quiet(self):
+        collector = YouTubeCollector(_config(transcript_missing_threshold=50.0))
+        collector._flag_missing_transcripts(4, 2)
+        assert collector.degraded_detail == ""

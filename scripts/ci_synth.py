@@ -22,6 +22,14 @@ CONFIG_TEMPLATE = Path(__file__).resolve().parent.parent / "config" / "config-te
 
 def main() -> None:
     config = Config.from_yaml(str(CONFIG_TEMPLATE))
+    # The tracked edition templates, as deploy.py pairs them with the template: the investing Lambdas,
+    # alarms and IAM scope are then synthesized through the pinned CLI too.
+    editions = tuple(
+        edition
+        for path in sorted(CONFIG_TEMPLATE.parent.glob("*-template.yaml"))
+        if path != CONFIG_TEMPLATE
+        if (edition := Config.from_yaml(str(path))).edition
+    )
     # Env-agnostic (no concrete account), so synth runs fully offline while still exercising the
     # CLI↔aws-cdk-lib schema handshake — the exact break a bare in-process app.synth() misses.
     env = Environment(region=config.aws.region)
@@ -32,6 +40,8 @@ def main() -> None:
         f"{config.aws.project_name}-{config.aws.stage}-foundation",
         config=config,
         alert_email=os.getenv("ALERT_EMAIL", "ci@example.com"),
+        editions=tuple(edition.edition for edition in editions),
+        edition_prefixes=tuple(edition.aws.s3_prefix for edition in editions),
         env=env,
     )
     # Pass the SAME arg set as deploy.py (incl. a sha256 image ref) so the synthesized resource
@@ -44,10 +54,11 @@ def main() -> None:
         config=config,
         foundation=foundation,
         digest_image_ref=os.getenv("DIGEST_IMAGE_REF", "sha256:" + "0" * 64),
+        editions=editions,
         env=env,
     )
     app.synth()
-    print("CDK synth succeeded (offline CI mode)")
+    print(f"CDK synth succeeded (offline CI mode, editions: {', '.join(e.edition for e in editions) or 'none'})")
 
 
 if __name__ == "__main__":

@@ -15,11 +15,12 @@ from domain.digest_snapshot import DigestSnapshot
 from domain.formatting import normalize_citation_url
 from domain.models import ImageAsset
 from shared import get_config
+from shared.config import Config
 from tests.fakes import FakeSources
 
 
 def _with_sources(sources: FakeSources, **kwargs) -> DeliveryContext:
-    return DeliveryContext(ports=ResearchPorts(sources=sources), **kwargs)
+    return DeliveryContext(config=Config(), ports=ResearchPorts(sources=sources), **kwargs)
 
 
 class TestSearchTools:
@@ -64,7 +65,7 @@ class TestSearchTools:
     @pytest.mark.asyncio
     async def test_a_run_without_sources_reaches_nothing(self):
         # The run's ports decide what a tool can reach: a context bound with none answers, never calls out.
-        with request_context(DeliveryContext()):
+        with request_context(DeliveryContext(config=Config())):
             assert "not available" in await rt.web_search._tool_func("q")
             assert "not a source" in await rt.read_url._tool_func("http://x")
 
@@ -99,7 +100,9 @@ class TestRecallTrends:
             ]
         )
         with request_context(
-            DeliveryContext(ports=ResearchPorts(state_store=lambda: self._store(memory.model_dump_json())))
+            DeliveryContext(
+                config=Config(), ports=ResearchPorts(state_store=lambda: self._store(memory.model_dump_json()))
+            )
         ):
             result = await rt.recall_trends._tool_func()
         assert result.index("Diffusion LLMs") < result.index("Old Thread")
@@ -114,14 +117,16 @@ class TestRecallTrends:
         def broken():
             raise RuntimeError("boom")
 
-        with request_context(DeliveryContext(ports=ResearchPorts(state_store=broken))):
+        with request_context(DeliveryContext(config=Config(), ports=ResearchPorts(state_store=broken))):
             result = await rt.recall_trends._tool_func()
         assert "could not be READ" in result
         assert "No earlier trends recalled" not in result
 
     @pytest.mark.asyncio
     async def test_an_empty_store_still_reports_no_history(self):
-        with request_context(DeliveryContext(ports=ResearchPorts(state_store=lambda: self._store(None)))):
+        with request_context(
+            DeliveryContext(config=Config(), ports=ResearchPorts(state_store=lambda: self._store(None)))
+        ):
             result = await rt.recall_trends._tool_func()
         assert "No earlier trends recalled" in result
 
@@ -147,7 +152,7 @@ class TestRecallDigest:
     async def test_returns_the_lead_and_story_titles(self):
         store = MagicMock()
         store.get_digest.return_value = DigestSnapshot.from_dict(self._snapshot())
-        with request_context(DeliveryContext(ports=ResearchPorts(memory_store=lambda: store))):
+        with request_context(DeliveryContext(config=Config(), ports=ResearchPorts(memory_store=lambda: store))):
             result = await rt.recall_digest._tool_func("2026-08-17")
         store.get_digest.assert_called_once_with("2026-08-17")
         assert "2026-08-17" in result
@@ -158,7 +163,7 @@ class TestRecallDigest:
     async def test_missing_day_says_so_instead_of_serving_another_date(self):
         store = MagicMock()
         store.get_digest.return_value = None
-        with request_context(DeliveryContext(ports=ResearchPorts(memory_store=lambda: store))):
+        with request_context(DeliveryContext(config=Config(), ports=ResearchPorts(memory_store=lambda: store))):
             result = await rt.recall_digest._tool_func("2026-08-17")
         assert result == "No digest stored for 2026-08-17."
 
@@ -168,7 +173,7 @@ class TestRecallDigest:
         # report could assert the digest never covered a topic it in fact covered.
         store = MagicMock()
         store.get_digest.side_effect = RuntimeError("throttled")
-        with request_context(DeliveryContext(ports=ResearchPorts(memory_store=lambda: store))):
+        with request_context(DeliveryContext(config=Config(), ports=ResearchPorts(memory_store=lambda: store))):
             result = await rt.recall_digest._tool_func("2026-08-17")
         assert "could not be READ" in result
         assert "throttled" in result
@@ -177,7 +182,7 @@ class TestRecallDigest:
     @pytest.mark.asyncio
     async def test_malformed_date_is_rejected(self):
         store = MagicMock()
-        with request_context(DeliveryContext(ports=ResearchPorts(memory_store=store))):
+        with request_context(DeliveryContext(config=Config(), ports=ResearchPorts(memory_store=store))):
             result = await rt.recall_digest._tool_func("yesterday")
         store.assert_not_called()
         assert "not a YYYY-MM-DD date" in result
@@ -193,7 +198,7 @@ class TestRecallDigest:
         ]
         store = MagicMock()
         store.get_digest.return_value = DigestSnapshot.from_dict(snapshot)
-        with request_context(DeliveryContext(ports=ResearchPorts(memory_store=lambda: store))):
+        with request_context(DeliveryContext(config=Config(), ports=ResearchPorts(memory_store=lambda: store))):
             result = await rt.recall_digest._tool_func("2026-08-17")
         chars = get_config().agent.search_content_preview_chars
         lines = [ln for ln in result.splitlines() if ln.startswith("- ")]
@@ -226,7 +231,7 @@ class TestPlantedUrlsInEveryResultField:
         "cited", ["HTTPS://evil.example/promo", "Https://evil.example/promo", "www.evil.example/promo"]
     )
     def test_a_citation_in_any_scheme_case_or_as_www_is_checked(self, cited):
-        delivery = DeliveryContext()
+        delivery = DeliveryContext(config=Config())
         with request_context(delivery):
             assert research.uncited_urls(f"근거는 {cited} 이다.") != []
 
@@ -263,12 +268,12 @@ class TestKoreanParticleAfterACitation:
         assert time.monotonic() - start < 1
 
     def test_a_fullwidth_host_suffix_is_not_a_particle(self):
-        delivery = DeliveryContext(seen_urls={normalize_citation_url("https://openai.com/")})
+        delivery = DeliveryContext(config=Config(), seen_urls={normalize_citation_url("https://openai.com/")})
         with request_context(delivery):
             for url in ("https://openai.com．ｅｖｉｌ．ｃｏｍ", "https://openai.com.한국"):
                 assert research.uncited_urls(url) == [url]
         # Hangul right after a dot is part of a name, not a particle, even with a path before it.
-        delivery = DeliveryContext(seen_urls={normalize_citation_url("https://openai.com/blog")})
+        delivery = DeliveryContext(config=Config(), seen_urls={normalize_citation_url("https://openai.com/blog")})
         with request_context(delivery):
             assert research.uncited_urls("https://openai.com/blog.가짜") == ["https://openai.com/blog.가짜"]
 
@@ -278,7 +283,9 @@ class TestKoreanParticleAfterACitation:
         from langchain_core.runnables import RunnableLambda
 
         key = normalize_citation_url("https://openai.com/blog")
-        delivery = DeliveryContext(publish_threads=True, seen_urls={key}, source_texts={key: "THE SOURCE TEXT"})
+        delivery = DeliveryContext(
+            config=Config(), publish_threads=True, seen_urls={key}, source_texts={key: "THE SOURCE TEXT"}
+        )
         seen = {}
 
         def model(prompt):
@@ -292,17 +299,17 @@ class TestKoreanParticleAfterACitation:
         assert "THE SOURCE TEXT" in seen["text"]
 
     def test_a_fabricated_korean_path_does_not_pass_as_the_homepage(self):
-        delivery = DeliveryContext(seen_urls={normalize_citation_url("https://openai.com/")})
+        delivery = DeliveryContext(config=Config(), seen_urls={normalize_citation_url("https://openai.com/")})
         with request_context(delivery):
             assert research.uncited_urls("https://openai.com/가짜") == ["https://openai.com/가짜"]
 
     @pytest.mark.parametrize("url", ["https://[evil", "www.[회사].com"])
     def test_a_broken_host_is_refused_not_raised(self, url):
-        with request_context(DeliveryContext()):
+        with request_context(DeliveryContext(config=Config())):
             assert research.uncited_urls(f"근거 {url}") != []
 
     def test_closing_quotes_and_brackets_after_a_citation(self):
-        delivery = DeliveryContext(seen_urls={normalize_citation_url("https://openai.com/blog/gpt")})
+        delivery = DeliveryContext(config=Config(), seen_urls={normalize_citation_url("https://openai.com/blog/gpt")})
         with request_context(delivery):
             for text in (
                 "“https://openai.com/blog/gpt”에서",
@@ -312,7 +319,9 @@ class TestKoreanParticleAfterACitation:
                 assert research.uncited_urls(text) == []
 
     def test_a_particle_glued_to_a_seen_url_is_still_that_citation(self):
-        delivery = DeliveryContext(seen_urls={normalize_citation_url("https://www.anthropic.com/news")})
+        delivery = DeliveryContext(
+            config=Config(), seen_urls={normalize_citation_url("https://www.anthropic.com/news")}
+        )
         with request_context(delivery):
             assert research.uncited_urls("자세한 내용은 https://www.anthropic.com/news에서 볼 수 있다.") == []
             assert research.uncited_urls("www.anthropic.com/news에서") == []
@@ -321,7 +330,7 @@ class TestKoreanParticleAfterACitation:
 class TestHostsHiddenInAUrl:
     @pytest.mark.parametrize("url", ["https://openai.com%23@evil.example/x.png", "https://openai.com@evil.example/x"])
     def test_a_host_behind_userinfo_never_matches_the_host_it_spells(self, url):
-        delivery = DeliveryContext(seen_urls={normalize_citation_url("https://openai.com/")})
+        delivery = DeliveryContext(config=Config(), seen_urls={normalize_citation_url("https://openai.com/")})
         with request_context(delivery):
             assert research.uncited_urls(f"근거 {url}") == [url]
 
@@ -343,7 +352,7 @@ class TestHostsHiddenInAUrl:
         ],
     )
     def test_a_seen_url_written_in_these_forms_is_still_that_citation(self, text):
-        delivery = DeliveryContext(seen_urls={normalize_citation_url("https://openai.com/blog/gpt")})
+        delivery = DeliveryContext(config=Config(), seen_urls={normalize_citation_url("https://openai.com/blog/gpt")})
         with request_context(delivery):
             assert research.uncited_urls(text) == []
 
@@ -353,7 +362,7 @@ class TestThreadsDeliveryIsSerialized:
     async def test_two_identical_calls_in_one_turn_share_one_verdict(self):
         import asyncio
 
-        delivery = DeliveryContext(publish_threads=True)
+        delivery = DeliveryContext(config=Config(), publish_threads=True)
         verdicts = iter([[{"post": 1, "claim": "x", "source_says": "y"}], []])
 
         async def check(report, ctx):
@@ -375,7 +384,7 @@ class TestThreadsDeliveryIsSerialized:
     async def test_a_thread_that_will_be_sent_back_as_too_long_is_not_fact_checked(self):
         from tests.fakes import FakeThreads
 
-        delivery = DeliveryContext(publish_threads=True, ports=ResearchPorts(threads=FakeThreads()))
+        delivery = DeliveryContext(config=Config(), publish_threads=True, ports=ResearchPorts(threads=FakeThreads()))
         report = "\n---\n".join(f"소제목 {i}\n\n본문 {i}이다." for i in range(30))
         check = AsyncMock(return_value=[])
         with request_context(delivery):
@@ -450,7 +459,7 @@ class TestThreadFactCheck:
 
     @pytest.mark.asyncio
     async def test_a_failed_check_does_not_stop_publishing(self):
-        delivery = DeliveryContext(publish_threads=True)
+        delivery = DeliveryContext(config=Config(), publish_threads=True)
         delivery.seen_urls.add(normalize_citation_url("https://a.example/1"))
         delivery.source_texts[normalize_citation_url("https://a.example/1")] = "source"
         delivery.ports.models = MagicMock()
@@ -464,7 +473,7 @@ class TestThreadFactCheck:
         from langchain_core.messages import AIMessage
         from langchain_core.runnables import RunnableLambda
 
-        delivery = DeliveryContext(publish_threads=True)
+        delivery = DeliveryContext(config=Config(), publish_threads=True)
         delivery.seen_urls.add(normalize_citation_url("https://a.example/1"))
         delivery.source_texts[normalize_citation_url("https://a.example/1")] = "Muse is cheaper per task."
         seen = {}
@@ -484,7 +493,7 @@ class TestThreadFactCheck:
 
     @pytest.mark.asyncio
     async def test_the_check_is_skipped_once_the_thread_is_live(self):
-        delivery = DeliveryContext(publish_threads=True)
+        delivery = DeliveryContext(config=Config(), publish_threads=True)
         delivery.delivered_channels.add("threads")
         check = AsyncMock(return_value=[{"post": 1, "claim": "x"}])
         with request_context(delivery):
@@ -553,7 +562,7 @@ THREAD = "본문이다.\nhttps://a.example/1"
 
 
 def _threads_delivery() -> DeliveryContext:
-    delivery = DeliveryContext(publish_threads=True)
+    delivery = DeliveryContext(config=Config(), publish_threads=True)
     delivery.seen_urls.add(normalize_citation_url("https://a.example/1"))
     return delivery
 
@@ -561,7 +570,7 @@ def _threads_delivery() -> DeliveryContext:
 class TestDeliverReport:
     @pytest.mark.asyncio
     async def test_markdown_is_the_default_channel(self):
-        delivery = DeliveryContext()
+        delivery = DeliveryContext(config=Config())
         with request_context(delivery):
             with patch(
                 "application.research.deliver_research_report", new=AsyncMock(return_value=DeliveryOutcome.POSTED)
@@ -599,7 +608,7 @@ class TestDeliverReport:
     async def test_threads_is_refused_unless_the_caller_asked_for_it(self):
         # Publishing to the PUBLIC Threads account is the caller's flag, never the model's reading of
         # the request: a topic whose SUBJECT is Threads must not be able to publish.
-        delivery = DeliveryContext()
+        delivery = DeliveryContext(config=Config())
         with request_context(delivery):
             with patch(
                 "application.research.deliver_research_report", new=AsyncMock(return_value=DeliveryOutcome.POSTED)
@@ -687,15 +696,18 @@ class TestDeliverReport:
 
 class TestRequestContext:
     def test_binds_and_resets(self):
-        custom = DeliveryContext(publish_threads=True)
-        # Unbound: a fresh, non-shared context (never a module-level singleton).
-        unbound = current_delivery_context()
-        assert isinstance(unbound, DeliveryContext)
-        assert unbound.publish_threads is False
-        assert current_delivery_context() is not unbound  # a new instance each call when unbound
+        custom = DeliveryContext(config=Config(), publish_threads=True)
+        # Unbound: no config to read, so it fails loudly instead of reading the cached file config.
+        with pytest.raises(RuntimeError, match="No research run is bound"):
+            current_delivery_context()
         with request_context(custom):
             assert current_delivery_context() is custom
-        assert current_delivery_context() is not custom
+        with pytest.raises(RuntimeError):
+            current_delivery_context()
+
+    def test_a_context_needs_its_config(self):
+        with pytest.raises(TypeError):
+            DeliveryContext()  # type: ignore[call-arg]
 
 
 class TestCitationGuard:
@@ -704,7 +716,7 @@ class TestCitationGuard:
 
     @pytest.mark.asyncio
     async def test_a_url_no_tool_returned_blocks_delivery(self):
-        delivery = DeliveryContext(publish_threads=True)
+        delivery = DeliveryContext(config=Config(), publish_threads=True)
         with request_context(delivery):
             with patch(
                 "application.research.deliver_research_report", new=AsyncMock(return_value=DeliveryOutcome.POSTED)
@@ -716,7 +728,7 @@ class TestCitationGuard:
 
     @pytest.mark.asyncio
     async def test_a_url_a_search_tool_surfaced_is_allowed(self):
-        delivery = DeliveryContext(publish_threads=True)
+        delivery = DeliveryContext(config=Config(), publish_threads=True)
         with request_context(delivery):
             delivery.ports.sources = FakeSources(search="- T\n  URL: https://real.example/a\n  Content: x")
             await rt.web_search._tool_func("q")
@@ -730,7 +742,7 @@ class TestCitationGuard:
     @pytest.mark.asyncio
     async def test_an_http_to_https_rewrite_or_a_parenthesised_url_still_matches(self):
         # The comparison must refuse a FABRICATED citation, never a real one the model reformatted.
-        delivery = DeliveryContext()
+        delivery = DeliveryContext(config=Config())
         with request_context(delivery):
             delivery.ports.sources = FakeSources(search="URL: http://www.real.example/a/")
             await rt.web_search._tool_func("q")
@@ -742,7 +754,7 @@ class TestCitationGuard:
 
     @pytest.mark.asyncio
     async def test_a_read_page_counts_as_surfaced(self):
-        delivery = DeliveryContext()
+        delivery = DeliveryContext(config=Config())
         with request_context(delivery):
             delivery.ports.sources = FakeSources(page="page text, no urls")
             await rt.read_url._tool_func("https://primary.example/post")
@@ -754,7 +766,7 @@ class TestCitationGuard:
 
     @pytest.mark.asyncio
     async def test_a_failed_read_does_not_make_a_url_citable(self):
-        delivery = DeliveryContext()
+        delivery = DeliveryContext(config=Config())
         with request_context(delivery):
             delivery.ports.sources = FakeSources(page="")
             result = await rt.read_url._tool_func("https://invented.example/post")
@@ -768,7 +780,7 @@ class TestCitationGuard:
 
     @pytest.mark.asyncio
     async def test_a_report_citing_nothing_is_delivered(self):
-        delivery = DeliveryContext()
+        delivery = DeliveryContext(config=Config())
         with request_context(delivery):
             with patch(
                 "application.research.deliver_research_report", new=AsyncMock(return_value=DeliveryOutcome.POSTED)
@@ -788,7 +800,7 @@ class TestCitationGuard:
     async def test_the_markdown_link_form_the_system_prompt_asks_for_is_allowed(self, citation):
         # URL_RE does not stop at ')', so matching the raw pattern would read "[label](url)" with the
         # closing paren glued on and refuse every well-formed Markdown report.
-        delivery = DeliveryContext()
+        delivery = DeliveryContext(config=Config())
         with request_context(delivery):
             delivery.ports.sources = FakeSources(search="- T\n  URL: https://real.example/a\n  Content: x")
             await rt.web_search._tool_func("q")
@@ -801,7 +813,7 @@ class TestCitationGuard:
 
     @pytest.mark.asyncio
     async def test_a_fabricated_url_in_markdown_link_form_is_still_refused(self):
-        delivery = DeliveryContext()
+        delivery = DeliveryContext(config=Config())
         with request_context(delivery):
             with patch(
                 "application.research.deliver_research_report", new=AsyncMock(return_value=DeliveryOutcome.POSTED)

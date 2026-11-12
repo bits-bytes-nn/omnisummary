@@ -311,8 +311,9 @@ async def _fetch_youtube_pinned(url: str, video_id: str) -> CollectedItem | None
     if not api_key:
         logger.warning("YOUTUBE_API_KEY not set, cannot fetch pinned YouTube URL '%s'", url)
         return None
+    youtube = get_config().collectors.youtube
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=youtube.request_timeout) as client:
             resp = await client.get(
                 f"{YOUTUBE_API_BASE}/videos",
                 params={"part": "snippet", "id": video_id},
@@ -332,10 +333,7 @@ async def _fetch_youtube_pinned(url: str, video_id: str) -> CollectedItem | None
 
     title = (snippet.get("title") or "").strip() or _title_from_url(url)
     body = snippet.get("description", "")
-    # The socket timeout is the only real bound on this blocking fetch, so it comes from the YouTube
-    # collector's own knob rather than a second literal here.
-    transcript_timeout = get_config().collectors.youtube.transcript_timeout
-    transcript = await asyncio.to_thread(fetch_youtube_transcript, video_id, timeout_sec=transcript_timeout)
+    transcript = await asyncio.to_thread(fetch_youtube_transcript, video_id, timeout_sec=youtube.transcript_timeout)
     if transcript:
         body = transcript
     logger.info("Fetched pinned YouTube URL: '%s' (%s)", url, title)
@@ -346,7 +344,7 @@ async def _fetch_youtube_pinned(url: str, video_id: str) -> CollectedItem | None
         url=url,
         text=body,
         author=snippet.get("channelTitle", ""),
-        metadata={"pinned": True},
+        pinned=True,
     )
 
 
@@ -379,7 +377,7 @@ async def _fetch_tavily_pinned(urls: list[str]) -> list[CollectedItem]:
                 title=title,
                 url=url,
                 text=content,
-                metadata={"pinned": True},
+                pinned=True,
             )
         )
         logger.info("Fetched pinned URL: '%s' (%s)", url, title)
@@ -391,7 +389,7 @@ async def fetch_pinned_items(urls: list[str]) -> list[CollectedItem]:
     them into the digest regardless of ranking score. YouTube URLs go through the YouTube Data
     API (Tavily only sees a video page's metadata, never its content); everything else goes
     through Tavily extract. Best-effort: a URL that can't be fetched is logged and skipped,
-    never aborting the run. Returned items carry metadata['pinned']=True so the ranker
+    never aborting the run. Returned items carry pinned=True so the ranker
     guarantees them a slot."""
     urls = [u.strip() for u in (urls or []) if u and u.strip()]
     if not urls:
