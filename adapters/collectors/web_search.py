@@ -17,8 +17,8 @@ from adapters.research_backends import access_controlled, record_tavily_usage, t
 from application.ports import LanguageModels
 from application.prompts import RefineQueryPrompt
 from domain.models import CollectedItem, generate_item_id
-from shared import DOMAIN_TO_SOURCE, SourceType, get_config, logger, parse_json_from_llm_output, retry_async
-from shared.config import WebSearchCollectorConfig
+from shared import DOMAIN_TO_SOURCE, SourceType, logger, parse_json_from_llm_output, retry_async
+from shared.config import WebSearchCollectorConfig, YouTubeCollectorConfig
 
 from .base import BaseCollector, collection_window_dates, gather_collector_results, in_collection_window
 from .youtube import YOUTUBE_API_BASE, fetch_youtube_transcript
@@ -67,18 +67,20 @@ class WebSearchCollector(BaseCollector):
         # timeout measures the search rather than the queue wait. Mirrors rss.max_concurrency.
         semaphore = asyncio.Semaphore(self.config.max_concurrency)
         tasks: list[asyncio.Task] = []
+        labels: list[str] = []
 
         for trend in self.config.trend_searches:
             for query in trend.queries:
                 tasks.append(
                     asyncio.ensure_future(self._search_trend(query, trend.domains, trend.name, semaphore=semaphore))
                 )
+                labels.append(f"{trend.name}: {query}")
 
         if not tasks:
             logger.info("No web search queries configured, skipping")
             return []
 
-        broad = await gather_collector_results(tasks, raise_if_all_failed=True)
+        broad = await gather_collector_results(tasks, labels=labels, raise_if_all_failed=True)
         broad_items = broad.items
         logger.info(
             "Web search collector gathered %d items (broad phase) from %d/%d queries (%d failed)",
@@ -128,10 +130,12 @@ class WebSearchCollector(BaseCollector):
         ]
         # Refinement is intentionally non-fatal (broad results are the floor), but a total
         # failure should be visible to ops so degraded refinement isn't silent.
-        refined_items = (await gather_collector_results(tasks)).items
-        if tasks and not refined_items:
+        refined = await gather_collector_results(tasks, labels=[f"refined: {query}" for query in queries])
+        if refined.failed:
+            logger.warning("%d/%d refined web-search queries failed", refined.failed, refined.total)
+        if tasks and not refined.items:
             logger.warning("All %d refined web-search queries returned no items; using broad results only", len(tasks))
-        return refined_items
+        return refined.items
 
     async def _generate_refined_queries(self, items: list[CollectedItem]) -> list[str]:
         if not self._llm:
@@ -301,7 +305,7 @@ def _youtube_video_id(url: str) -> str:
     return match.group(1) if match else ""
 
 
-async def _fetch_youtube_pinned(url: str, video_id: str) -> CollectedItem | None:
+async def _fetch_youtube_pinned(url: str, video_id: str, youtube: YouTubeCollectorConfig) -> CollectedItem | None:
     """Resolve a pinned YouTube URL through the YouTube Data API + transcript API instead of
     Tavily. Tavily's extractor only returns a video page's metadata, never the spoken content,
     and YouTube videos are a common pin target — so go to the source: title + description from
@@ -311,7 +315,6 @@ async def _fetch_youtube_pinned(url: str, video_id: str) -> CollectedItem | None
     if not api_key:
         logger.warning("YOUTUBE_API_KEY not set, cannot fetch pinned YouTube URL '%s'", url)
         return None
-    youtube = get_config().collectors.youtube
     try:
         async with httpx.AsyncClient(timeout=youtube.request_timeout) as client:
             resp = await client.get(
@@ -384,7 +387,7 @@ async def _fetch_tavily_pinned(urls: list[str]) -> list[CollectedItem]:
     return items
 
 
-async def fetch_pinned_items(urls: list[str]) -> list[CollectedItem]:
+async def fetch_pinned_items(urls: list[str], youtube: YouTubeCollectorConfig) -> list[CollectedItem]:
     """Fetch user-specified URLs (via `--pin-url`) as CollectedItems so the pipeline can force
     them into the digest regardless of ranking score. YouTube URLs go through the YouTube Data
     API (Tavily only sees a video page's metadata, never its content); everything else goes
@@ -399,7 +402,7 @@ async def fetch_pinned_items(urls: list[str]) -> list[CollectedItem]:
     other_urls = [u for u in urls if u not in youtube_pins]
 
     items: list[CollectedItem] = []
-    yt_results = await asyncio.gather(*(_fetch_youtube_pinned(u, vid) for u, vid in youtube_pins.items()))
+    yt_results = await asyncio.gather(*(_fetch_youtube_pinned(u, vid, youtube) for u, vid in youtube_pins.items()))
     items.extend(it for it in yt_results if it is not None)
     # A pinned page goes through Tavily extract like any other, so it gets the same access check.
     refused = await access_controlled(other_urls)

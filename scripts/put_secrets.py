@@ -20,10 +20,9 @@ still hold the placeholder.
 
 SSM rejects a type change on an overwrite, so a parameter CloudFormation created as a String is
 DELETED and re-created as a SecureString — but only in the exact state CloudFormation leaves behind
-(Type == String AND Value == SSM_PLACEHOLDER). A String holding a real value is never deleted: the
-value is written in place with a loud notice, because losing a live credential is worse than storing
-it unencrypted. If a delete succeeds and the re-put then fails, that parameter is reported FAILED
-with the exact command to restore it.
+(Type == String AND Value == SSM_PLACEHOLDER). A String holding a real value is neither deleted nor
+overwritten as plaintext: it is reported FAILED with the delete-and-re-run command. If a delete succeeds
+and the re-put then fails, that parameter is reported FAILED with the exact command to restore it.
 """
 
 from __future__ import annotations
@@ -131,21 +130,15 @@ def main() -> int:
                 failed.append(f"{name} (DELETED but not re-created — restore it now)")
                 print(f"  !! {name}: {remediation}")
                 continue
-            # Any other String parameter holds a REAL value (e.g. the Threads token the refresh
-            # Lambda rotates in place). NEVER delete that to change its type — losing it is worse
-            # than leaving it unencrypted. Write the value in place and say so loudly.
-            try:
-                ssm.put_parameter(Name=path, Value=value, Overwrite=True)
-                written.append(f"{name} (value only, kept existing type; was {was})")
-                print(
-                    f"  !! {name}: SSM refused the SecureString type change and the parameter holds a "
-                    "real value, so it was NOT deleted — the value is stored as a plain String. To "
-                    f"encrypt it, delete it yourself once the value is safe elsewhere "
-                    f"(aws ssm delete-parameter --name {path}) and re-run this script."
-                )
-            except ClientError as e2:
-                failed.append(f"{name} ({e2.response['Error'].get('Code', 'ClientError')})")
-                print(f"  !! {name}: could not be written at all — this secret is NOT set.")
+            # Any other String parameter holds a REAL value (e.g. the Threads token the refresh Lambda
+            # rotates in place). It is never deleted to change its type, and never overwritten as
+            # plaintext either: it is left as it is and reported FAILED, so the run exits non-zero.
+            failed.append(f"{name} (a String holding a real value; left unchanged, not encrypted)")
+            print(
+                f"  !! {name}: SSM refused the SecureString type change and the parameter holds a real "
+                "value, so nothing was written. Once that value is safe elsewhere, delete it "
+                f"(aws ssm delete-parameter --name {path}) and re-run this script; --verify shows the result."
+            )
 
     for line in written:
         print(f"  written : {line}")

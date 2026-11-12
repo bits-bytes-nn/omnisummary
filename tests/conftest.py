@@ -107,20 +107,16 @@ def hermetic_env(monkeypatch):
     # Config.load() calls load_dotenv(), which would put the cleared secrets straight back.
     monkeypatch.setattr("shared.config.load_dotenv", lambda *args, **kwargs: False)
 
-    # resolve_secret falls back to SSM whenever an env var is absent, which meant a real
-    # credential-resolution + SSM round trip per call (seconds each, and dependent on whatever
-    # AWS profile the developer had). Stub the client FACTORY rather than resolve_secret itself:
-    # the env-first/SSM-fallback logic still executes, and tests that legitimately exercise the
-    # SSM path (tests/test_utils.py) patch this same target themselves and win.
+    # Stub the client FACTORIES rather than resolve_secret or the park reader themselves: the
+    # env-first/SSM-fallback and park-file logic still executes, and tests that exercise those paths
+    # patch the same targets and win. boto3.client covers the module-level clients; boto3.Session
+    # covers every client built from a session (the SSM client, the park reader, the state store and
+    # AgentCore memory).
     def _aws_disabled(*args, **kwargs):
         raise RuntimeError("AWS access is disabled in tests; patch boto3.client to opt in")
 
-    monkeypatch.setattr("adapters.aws.boto3.client", _aws_disabled)
-    # The SSM client is built on the configured profile where it exists (a developer laptop), which
-    # boto3.client does not cover: stub its factory too, so no test reads a real secret.
+    monkeypatch.setattr("boto3.client", _aws_disabled)
     monkeypatch.setattr("adapters.aws._ssm_client", _aws_disabled)
-    # boto3.client alone left boto3.Session(...).client() open: the state store and AgentCore memory
-    # build their clients from a session, and on 2026-10-28 a test reached real S3 that way.
     monkeypatch.setattr("boto3.Session", _DisabledSession)
     # The reply read-back GETs graph.threads.net on whatever client the test handed in: a real one
     # would go to the network. Tests of the read-back itself call `real_landed_detached`.

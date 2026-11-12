@@ -99,11 +99,11 @@ async def test_the_quote_parser_reads_the_chart_payload(monkeypatch):
     transport = httpx.MockTransport(lambda request: httpx.Response(200, content=json.dumps(payload)))
     real = httpx.AsyncClient
     monkeypatch.setattr(research_backends.httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw))
-    block = await research_backends.yahoo_quote("005930.ks")
+    block = await research_backends.yahoo_quote("005930.ks", timeout=10)
     assert "Samsung Electronics (005930.KS)" in block
     assert "225,000 KRW" in block and "+5.63%" in block
     assert "Period high / low: 225,000 on" in block
-    assert await research_backends.yahoo_quote("bad symbol!") == ""
+    assert await research_backends.yahoo_quote("bad symbol!", timeout=10) == ""
 
 
 def test_the_footer_closes_the_root_and_the_research_thread_within_the_cap():
@@ -151,7 +151,7 @@ async def test_the_quote_uses_exchange_dates_labels_a_live_session_and_survives_
             }
         }
     )
-    block = await research_backends.yahoo_quote("X.KS")
+    block = await research_backends.yahoo_quote("X.KS", timeout=10)
     assert "Latest price (session open): 101.00 KRW on" in block
     assert "2026-10-31 100.00" in block  # 15:00 UTC on 10-30 is 10-31 in Seoul
     odd_payloads = (
@@ -163,8 +163,8 @@ async def test_the_quote_uses_exchange_dates_labels_a_live_session_and_survives_
     )
     for odd in odd_payloads:
         payloads.append(odd)
-        assert await research_backends.yahoo_quote("AAPL") == ""
-    assert await research_backends.yahoo_quote("삼성") == ""
+        assert await research_backends.yahoo_quote("AAPL", timeout=10) == ""
+    assert await research_backends.yahoo_quote("삼성", timeout=10) == ""
 
 
 @pytest.mark.asyncio
@@ -246,8 +246,8 @@ async def test_a_failed_source_is_not_reported_as_a_bad_ticker(monkeypatch):
     real = httpx.AsyncClient
     monkeypatch.setattr(research_backends.httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw))
     with pytest.raises(MarketDataUnavailable):
-        await research_backends.yahoo_quote("AAPL")
-    assert await research_backends.yahoo_quote("NOPE") == ""
+        await research_backends.yahoo_quote("AAPL", timeout=10)
+    assert await research_backends.yahoo_quote("NOPE", timeout=10) == ""
 
     sources = FakeSources()
     sources.market_quote = AsyncMock(side_effect=MarketDataUnavailable("Yahoo Finance failed (HTTPStatusError)"))

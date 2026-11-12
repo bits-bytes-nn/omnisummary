@@ -134,13 +134,13 @@ def _slug(text: str) -> str:
 
 
 async def _digest(label: str, dates: list[str]) -> None:
-    from application.digest_generator import DigestGenerator
     from application.digest_pipeline import (
         POOLS_PREFIX,
-        _recent_story_titles,
+        editor_context,
         read_recent_history,
         recent_angles,
         sibling_snapshots,
+        write_digest,
     )
     from application.trend_tracker import TrendTracker
     from domain.models import RankedItem
@@ -165,13 +165,8 @@ async def _digest(label: str, dates: list[str]) -> None:
         history = read_recent_history(config, lambda: memory, today)
         trends = TrendTracker(config.pipeline, models, bootstrap.state_store(config)).get_trends_context(today=today)
         sibling = _posted_before(sibling_snapshots(lambda: bootstrap.sibling_memory_stores(config), today), snapshot)
-        result = await DigestGenerator(config.pipeline, models).generate(
-            pool,
-            today=today,
-            trends_context=trends,
-            recent_leads=recent_angles(history.dedup, config.pipeline) + recent_angles(sibling, config.pipeline),
-            recent_titles=list(dict.fromkeys(_recent_story_titles(history.titles) + _recent_story_titles(sibling))),
-        )
+        recent = editor_context(history, sibling, config.pipeline)
+        result = await write_digest(config.pipeline, models, pool, recent, trends_context=trends, today=today)
         # The judge always sees what the whole Threads account ran, the other editions included, whatever
         # the arm under test was given.
         account = recent_angles(history.dedup, config.pipeline) + recent_angles(

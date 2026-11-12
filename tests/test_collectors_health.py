@@ -198,3 +198,66 @@ async def test_stale_wins_over_degraded():
     )
 
     assert report.sources[0].status == SourceStatus.STALE
+
+
+@pytest.mark.asyncio
+async def test_a_collector_past_the_deadline_fails_and_the_others_are_kept():
+    import asyncio
+
+    from application import digest_pipeline as runner
+
+    async def ok():
+        return [_item("http://a.com")]
+
+    async def hung():
+        await asyncio.sleep(60)
+        return [_item("http://b.com")]
+
+    real_timeout = asyncio.timeout
+    with patch.object(runner.asyncio, "timeout", lambda _: real_timeout(0.01)):
+        items, report = await runner.run_collectors_with_health(
+            Config(), _sources([ok(), hung()], ["rss", "web_search"], [_Collector(), _Collector()])
+        )
+
+    assert [item.url for item in items] == ["http://a.com"]
+    by_name = {s.name: s for s in report.sources}
+    assert by_name["rss"].status == SourceStatus.OK
+    assert by_name["web_search"].status == SourceStatus.FAILED
+    assert "exceeded collection deadline" in by_name["web_search"].detail
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_raised_inside_a_collector_keeps_its_own_message():
+    from application import digest_pipeline as runner
+
+    async def times_out():
+        raise TimeoutError("upstream read timed out")
+
+    _items, report = await runner.run_collectors_with_health(Config(), _sources([times_out()], ["rss"], [_Collector()]))
+
+    assert report.sources[0].status == SourceStatus.FAILED
+    assert "exceeded collection deadline" not in report.sources[0].detail
+
+
+@pytest.mark.asyncio
+async def test_a_long_rsshub_detail_keeps_its_actionable_hint():
+    from adapters.collectors.rsshub import _FAILURE_HINT
+    from application import digest_pipeline as runner
+
+    async def parked_items():
+        return [_item("http://x.com/1")]
+
+    park = ParkedItems(
+        outcome=ParkOutcome.STALE,
+        detail=(
+            "park file 's3://omnisummary-dev-state-123456789012-ap-northeast-2/omnisummary/rsshub_items.json' is "
+            "26.4h old (>12h); the local sync may have stalled — using stale data"
+        ),
+    )
+    collector = _Collector(park, degraded_detail=f"parked sync: 31/42 account feeds failed (>50%); {_FAILURE_HINT}")
+    _items, report = await runner.run_collectors_with_health(
+        Config(), _sources([parked_items()], ["rsshub"], [collector])
+    )
+
+    assert len(report.sources[0].detail) > 200
+    assert "TWITTER_AUTH_TOKEN" in report.summary()

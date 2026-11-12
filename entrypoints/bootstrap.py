@@ -149,11 +149,11 @@ def daily_visual_maker(config: Config, models: BedrockLanguageModelFactory | Non
 
 def research_ports(config: Config) -> ResearchPorts:
     """A research run's reading, its Threads account, the fact check's model and the read-only stores
-    its recall tools use. The models are built here, the stores on first use."""
+    its recall tools use. The models are built here, each store once, on first use."""
     return ResearchPorts(
-        sources=WebResearchSources(),
+        sources=WebResearchSources(config),
         threads=threads(config),
         models=language_models(config),
-        state_store=lambda: state_store(config),
-        memory_store=lambda: memory_store(config),
+        state_store=functools.cache(lambda: state_store(config)),
+        memory_store=functools.cache(lambda: memory_store(config)),
     )

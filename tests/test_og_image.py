@@ -3,6 +3,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from adapters import og_image
+from shared.config import AgentConfig
+
+_AGENT = AgentConfig()
 
 _PAGE_WITH_OG = """
 <html><head>
@@ -94,7 +97,9 @@ class TestFetchOgImage:
     async def test_happy_path_returns_asset(self):
         ctx, _ = _client_with(_page_response(_PAGE_WITH_OG), _stream_response())
         with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
-            asset = await og_image.fetch_og_image("https://example.com/post")
+            asset = await og_image.fetch_og_image(
+                "https://example.com/post", timeout=_AGENT.og_image_timeout_sec, max_bytes=_AGENT.og_image_max_bytes
+            )
         assert asset is not None
         assert asset.image_url == "https://cdn.example.com/pic.jpg"
         assert asset.source_url == "https://example.com/post"
@@ -106,7 +111,9 @@ class TestFetchOgImage:
     async def test_no_og_tag_returns_none(self):
         ctx, _ = _client_with(_page_response(_PAGE_NONE), _stream_response())
         with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
-            asset = await og_image.fetch_og_image("https://example.com/post")
+            asset = await og_image.fetch_og_image(
+                "https://example.com/post", timeout=_AGENT.og_image_timeout_sec, max_bytes=_AGENT.og_image_max_bytes
+            )
         assert asset is None
 
     @pytest.mark.asyncio
@@ -114,14 +121,18 @@ class TestFetchOgImage:
         # SVG is an image/* type but not in the renderable allowlist — must be rejected.
         ctx, _ = _client_with(_page_response(_PAGE_WITH_OG), _stream_response(content_type="image/svg+xml"))
         with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
-            asset = await og_image.fetch_og_image("https://example.com/post")
+            asset = await og_image.fetch_og_image(
+                "https://example.com/post", timeout=_AGENT.og_image_timeout_sec, max_bytes=_AGENT.og_image_max_bytes
+            )
         assert asset is None
 
     @pytest.mark.asyncio
     async def test_oversize_image_rejected_mid_stream(self):
         ctx, _ = _client_with(_page_response(_PAGE_WITH_OG), _stream_response(body=b"x" * 100))
         with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
-            asset = await og_image.fetch_og_image("https://example.com/post", max_bytes=10)
+            asset = await og_image.fetch_og_image(
+                "https://example.com/post", max_bytes=10, timeout=_AGENT.og_image_timeout_sec
+            )
         assert asset is None
 
     @pytest.mark.asyncio
@@ -129,14 +140,18 @@ class TestFetchOgImage:
         # The declared Content-Length rejects before any body is read.
         ctx, _ = _client_with(_page_response(_PAGE_WITH_OG), _stream_response(body=b"x", content_length=999999))
         with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
-            asset = await og_image.fetch_og_image("https://example.com/post", max_bytes=10)
+            asset = await og_image.fetch_og_image(
+                "https://example.com/post", max_bytes=10, timeout=_AGENT.og_image_timeout_sec
+            )
         assert asset is None
 
     @pytest.mark.asyncio
     async def test_empty_body_returns_none(self):
         ctx, _ = _client_with(_page_response(_PAGE_WITH_OG), _stream_response(body=b""))
         with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
-            asset = await og_image.fetch_og_image("https://example.com/post")
+            asset = await og_image.fetch_og_image(
+                "https://example.com/post", timeout=_AGENT.og_image_timeout_sec, max_bytes=_AGENT.og_image_max_bytes
+            )
         assert asset is None
 
     @pytest.mark.asyncio
@@ -147,7 +162,9 @@ class TestFetchOgImage:
         ctx.__aenter__ = AsyncMock(return_value=client)
         ctx.__aexit__ = AsyncMock(return_value=False)
         with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
-            asset = await og_image.fetch_og_image("https://example.com/post")
+            asset = await og_image.fetch_og_image(
+                "https://example.com/post", timeout=_AGENT.og_image_timeout_sec, max_bytes=_AGENT.og_image_max_bytes
+            )
         assert asset is None
 
 
@@ -156,7 +173,12 @@ class TestTheWholeFetchIsBounded:
     async def test_an_oversize_page_is_abandoned(self):
         ctx, client = _client_with(_page_response(_PAGE_WITH_OG + "x" * 50_000), _stream_response())
         with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
-            assert await og_image.fetch_og_image("https://example.com/post", max_bytes=10_000) is None
+            assert (
+                await og_image.fetch_og_image(
+                    "https://example.com/post", max_bytes=10_000, timeout=_AGENT.og_image_timeout_sec
+                )
+                is None
+            )
         assert client.stream.call_count == 1  # the image was never requested
 
     @pytest.mark.asyncio
@@ -175,7 +197,15 @@ class TestTheWholeFetchIsBounded:
         resp.aiter_bytes = _trickle
         ctx, _ = _client_with(slow, _stream_response())
         with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
-            assert await asyncio.wait_for(og_image.fetch_og_image("https://example.com/post", timeout=0.3), 5) is None
+            assert (
+                await asyncio.wait_for(
+                    og_image.fetch_og_image(
+                        "https://example.com/post", timeout=0.3, max_bytes=_AGENT.og_image_max_bytes
+                    ),
+                    5,
+                )
+                is None
+            )
 
 
 class TestExtensionFor:
@@ -195,7 +225,14 @@ class TestFetchGuards:
         ctx, client = _client_with(_page_response(_PAGE_WITH_OG), _stream_response())
         with patch.object(og_image, "_resolve_addresses", return_value=["127.0.0.1"]):
             with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
-                assert await og_image.fetch_og_image("http://localhost/post") is None
+                assert (
+                    await og_image.fetch_og_image(
+                        "http://localhost/post",
+                        timeout=_AGENT.og_image_timeout_sec,
+                        max_bytes=_AGENT.og_image_max_bytes,
+                    )
+                    is None
+                )
         client.stream.assert_not_called()  # rejected before any request left the process
 
     @pytest.mark.asyncio
@@ -237,7 +274,14 @@ class TestFetchGuards:
 
         with patch.object(og_image, "_resolve_addresses", side_effect=_resolve):
             with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
-                assert await og_image.fetch_og_image("https://example.com/post") is None
+                assert (
+                    await og_image.fetch_og_image(
+                        "https://example.com/post",
+                        timeout=_AGENT.og_image_timeout_sec,
+                        max_bytes=_AGENT.og_image_max_bytes,
+                    )
+                    is None
+                )
         assert client.stream.call_count == 1  # the private hop was never requested
 
     @pytest.mark.asyncio
@@ -248,7 +292,12 @@ class TestFetchGuards:
         ctx.__aenter__ = AsyncMock(return_value=client)
         ctx.__aexit__ = AsyncMock(return_value=False)
         with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
-            assert await og_image.fetch_og_image("https://example.com/post") is None
+            assert (
+                await og_image.fetch_og_image(
+                    "https://example.com/post", timeout=_AGENT.og_image_timeout_sec, max_bytes=_AGENT.og_image_max_bytes
+                )
+                is None
+            )
         assert client.stream.call_count == og_image._MAX_REDIRECT_HOPS + 1
 
     @pytest.mark.asyncio
@@ -263,7 +312,9 @@ class TestFetchGuards:
         ctx.__aenter__ = AsyncMock(return_value=client)
         ctx.__aexit__ = AsyncMock(return_value=False)
         with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
-            asset = await og_image.fetch_og_image("https://example.com/post")
+            asset = await og_image.fetch_og_image(
+                "https://example.com/post", timeout=_AGENT.og_image_timeout_sec, max_bytes=_AGENT.og_image_max_bytes
+            )
         assert asset is not None and asset.image_url == "https://cdn.example.com/pic.jpg"
 
     @pytest.mark.asyncio
@@ -275,13 +326,25 @@ class TestFetchGuards:
 
         with patch.object(og_image, "_resolve_addresses", side_effect=_resolve):
             with patch.object(og_image.httpx, "AsyncClient", return_value=ctx):
-                assert await og_image.fetch_og_image("https://example.com/post") is None
+                assert (
+                    await og_image.fetch_og_image(
+                        "https://example.com/post",
+                        timeout=_AGENT.og_image_timeout_sec,
+                        max_bytes=_AGENT.og_image_max_bytes,
+                    )
+                    is None
+                )
 
     @pytest.mark.asyncio
     async def test_guard_failure_never_raises(self):
         # Best-effort contract: even an exploding resolver yields None.
         with patch.object(og_image, "_resolve_addresses", side_effect=RuntimeError("resolver blew up")):
-            assert await og_image.fetch_og_image("https://example.com/post") is None
+            assert (
+                await og_image.fetch_og_image(
+                    "https://example.com/post", timeout=_AGENT.og_image_timeout_sec, max_bytes=_AGENT.og_image_max_bytes
+                )
+                is None
+            )
 
 
 class TestPublicAddress:

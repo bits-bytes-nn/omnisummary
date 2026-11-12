@@ -4,6 +4,9 @@ import httpx
 import pytest
 
 from adapters import research_backends as rb
+from shared.config import AgentConfig, Config
+
+_AGENT = AgentConfig()
 
 
 class TestFormatSearchResults:
@@ -33,7 +36,7 @@ class TestTavilySearch:
     @pytest.mark.asyncio
     async def test_no_key_returns_message(self):
         with patch.object(rb, "tavily_client", return_value=None):
-            result = await rb.tavily_search("q")
+            result = await rb.tavily_search("q", agent=_AGENT, exclude_domains=[])
         assert "TAVILY_API_KEY not configured" in result
 
     @pytest.mark.asyncio
@@ -42,22 +45,21 @@ class TestTavilySearch:
         client.search = AsyncMock(return_value={"results": [{"title": "t", "url": "u", "content": "c"}]})
         client.close = AsyncMock()
         with patch.object(rb, "tavily_client", return_value=client):
-            await rb.tavily_search("q", topic="news", include_domains=["x.com"])
+            await rb.tavily_search("q", agent=_AGENT, exclude_domains=[], topic="news", include_domains=["x.com"])
         kwargs = client.search.call_args.kwargs
         assert kwargs["topic"] == "news"
         assert kwargs["include_domains"] == ["x.com"]
 
     @pytest.mark.asyncio
-    async def test_the_digests_content_farm_list_applies_to_research_search(self, monkeypatch):
-        monkeypatch.setattr(rb.get_config().collectors.web_search, "exclude_domains", ["farm.example"])
+    async def test_the_digests_content_farm_list_applies_to_research_search(self):
+        config = Config()
+        config.collectors.web_search.exclude_domains = ["farm.example"]
         client = MagicMock()
         client.search = AsyncMock(return_value={"results": [{"title": "t", "url": "u", "content": "c"}]})
         client.close = AsyncMock()
         with patch.object(rb, "tavily_client", return_value=client):
-            await rb.tavily_search("q")
-        assert (
-            client.search.call_args.kwargs["exclude_domains"] == rb.get_config().collectors.web_search.exclude_domains
-        )
+            await rb.WebResearchSources(config).web_search("q")
+        assert client.search.call_args.kwargs["exclude_domains"] == ["farm.example"]
 
     @pytest.mark.asyncio
     async def test_closes_client_after_search(self):
@@ -65,7 +67,7 @@ class TestTavilySearch:
         client.search = AsyncMock(return_value={"results": [{"title": "t", "url": "u", "content": "c"}]})
         client.close = AsyncMock()
         with patch.object(rb, "tavily_client", return_value=client):
-            await rb.tavily_search("q")
+            await rb.tavily_search("q", agent=_AGENT, exclude_domains=[])
         client.close.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -74,7 +76,7 @@ class TestTavilySearch:
         client.search = AsyncMock(return_value={"results": []})
         client.close = AsyncMock()
         with patch.object(rb, "tavily_client", return_value=client):
-            result = await rb.tavily_search("q")
+            result = await rb.tavily_search("q", agent=_AGENT, exclude_domains=[])
         assert result == "No results found."
 
     @pytest.mark.asyncio
@@ -83,7 +85,7 @@ class TestTavilySearch:
         client.search = AsyncMock(side_effect=RuntimeError("down"))
         client.close = AsyncMock()
         with patch.object(rb, "tavily_client", return_value=client):
-            result = await rb.tavily_search("q")
+            result = await rb.tavily_search("q", agent=_AGENT, exclude_domains=[])
         assert "Search failed" in result
 
 
@@ -91,7 +93,7 @@ class TestExtractUrl:
     @pytest.mark.asyncio
     async def test_no_key(self):
         with patch.object(rb, "tavily_client", return_value=None):
-            assert await rb.extract_url("http://x") == ""
+            assert await rb.extract_url("http://x", cap=_AGENT.research_content_cap_chars) == ""
 
     @pytest.mark.asyncio
     async def test_returns_capped_content(self):
@@ -99,9 +101,7 @@ class TestExtractUrl:
         client.extract = AsyncMock(return_value={"results": [{"raw_content": "X" * 100}]})
         client.close = AsyncMock()
         with patch.object(rb, "tavily_client", return_value=client):
-            with patch.object(rb, "get_config") as cfg:
-                cfg.return_value.agent.research_content_cap_chars = 10
-                result = await rb.extract_url("http://x")
+            result = await rb.extract_url("http://x", cap=10)
         assert result == "X" * 10
 
     @pytest.mark.asyncio
@@ -111,9 +111,7 @@ class TestExtractUrl:
         client.extract = AsyncMock(return_value={"results": [{"content": "Y" * 100}]})
         client.close = AsyncMock()
         with patch.object(rb, "tavily_client", return_value=client):
-            with patch.object(rb, "get_config") as cfg:
-                cfg.return_value.agent.research_content_cap_chars = 10
-                result = await rb.extract_url("http://x")
+            result = await rb.extract_url("http://x", cap=10)
         assert result == "Y" * 10
 
     @pytest.mark.asyncio
@@ -122,7 +120,7 @@ class TestExtractUrl:
         client.extract = AsyncMock(return_value={"results": [{}]})
         client.close = AsyncMock()
         with patch.object(rb, "tavily_client", return_value=client):
-            result = await rb.extract_url("http://x")
+            result = await rb.extract_url("http://x", cap=_AGENT.research_content_cap_chars)
         assert result == ""
 
     @pytest.mark.asyncio
@@ -131,7 +129,7 @@ class TestExtractUrl:
         client.extract = AsyncMock(return_value={"results": []})
         client.close = AsyncMock()
         with patch.object(rb, "tavily_client", return_value=client):
-            result = await rb.extract_url("http://x")
+            result = await rb.extract_url("http://x", cap=_AGENT.research_content_cap_chars)
         assert result == ""
 
     @pytest.mark.asyncio
@@ -140,7 +138,7 @@ class TestExtractUrl:
         client.extract = AsyncMock(side_effect=RuntimeError("boom"))
         client.close = AsyncMock()
         with patch.object(rb, "tavily_client", return_value=client):
-            result = await rb.extract_url("http://x")
+            result = await rb.extract_url("http://x", cap=_AGENT.research_content_cap_chars)
         assert result == ""
 
 
@@ -165,7 +163,7 @@ class TestSearchPapers:
     @pytest.mark.asyncio
     async def test_parses_works_with_date_citations_and_rebuilt_abstract(self):
         with patch.object(rb, "retry_async", new=AsyncMock(return_value=self._response({"results": [self.WORK]}))):
-            result = await rb.paper_search("diffusion recommendation")
+            result = await rb.paper_search("diffusion recommendation", agent_config=_AGENT)
         assert "Diffusion Language Model for Recommendation (2026-07-23; cited by 3) by Kim, Lee" in result
         assert "URL: https://arxiv.org/abs/2607.21519" in result
         assert "Abstract: Diffusion models recommend." in result
@@ -174,7 +172,7 @@ class TestSearchPapers:
     async def test_falls_back_to_the_doi_without_a_landing_page(self):
         work = {**self.WORK, "primary_location": None}
         with patch.object(rb, "retry_async", new=AsyncMock(return_value=self._response({"results": [work]}))):
-            result = await rb.paper_search("q")
+            result = await rb.paper_search("q", agent_config=_AGENT)
         assert "URL: https://doi.org/10.48550/arxiv.2607.21519" in result
 
     @pytest.mark.asyncio
@@ -184,13 +182,13 @@ class TestSearchPapers:
             "retry_async",
             new=AsyncMock(side_effect=httpx.HTTPStatusError("429", request=MagicMock(), response=MagicMock())),
         ):
-            result = await rb.paper_search("q")
+            result = await rb.paper_search("q", agent_config=_AGENT)
         assert "Search failed" in result
 
     @pytest.mark.asyncio
     async def test_no_papers(self):
         with patch.object(rb, "retry_async", new=AsyncMock(return_value=self._response({"results": []}))):
-            result = await rb.paper_search("q")
+            result = await rb.paper_search("q", agent_config=_AGENT)
         assert result == "No related papers found."
 
 
@@ -222,7 +220,7 @@ class TestWebResearchSources:
     """The adapter behind the research port: each port method reaches its own backend."""
 
     async def test_each_method_reaches_its_backend_with_its_arguments(self):
-        sources = rb.WebResearchSources()
+        sources = rb.WebResearchSources(Config())
         with (
             patch.object(rb, "tavily_search", new=AsyncMock(return_value="web")) as web,
             patch.object(rb, "paper_search", new=AsyncMock(return_value="papers")) as papers,
@@ -234,14 +232,24 @@ class TestWebResearchSources:
             assert await sources.paper_search("p") == "papers"
             assert await sources.read_page("https://a") == "page"
             assert await sources.fetch_image("https://b") is None
-        web.assert_awaited_once_with("q", topic="news", time_range="week", include_domains=["x.com"])
-        papers.assert_awaited_once_with("p")
-        page.assert_awaited_once_with("https://a")
-        image.assert_awaited_once_with("https://b")
+        agent = sources.agent
+        web.assert_awaited_once_with(
+            "q",
+            agent=agent,
+            exclude_domains=sources.exclude_domains,
+            topic="news",
+            time_range="week",
+            include_domains=["x.com"],
+        )
+        papers.assert_awaited_once_with("p", agent_config=agent)
+        page.assert_awaited_once_with("https://a", cap=agent.research_content_cap_chars)
+        image.assert_awaited_once_with(
+            "https://b", timeout=agent.og_image_timeout_sec, max_bytes=agent.og_image_max_bytes
+        )
 
     @pytest.mark.asyncio
     async def test_a_paid_or_bot_checked_page_is_not_read(self):
-        sources = rb.WebResearchSources()
+        sources = rb.WebResearchSources(Config())
         with (
             patch.object(rb, "access_controlled", new=AsyncMock(return_value={"https://a"})),
             patch.object(rb, "extract_url", new=AsyncMock(return_value="page")) as page,

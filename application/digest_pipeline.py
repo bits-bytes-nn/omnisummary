@@ -55,14 +55,15 @@ async def run_collectors_with_health(
     collectors = [collector for _, collector in sources]
     for label in labels:
         logger.info("Starting collector: '%s'", label)
-    tasks = [collector.collect() for collector in collectors]
+    deadline = config.collectors.collection_deadline_sec
+    tasks = [_collect_within(collector, deadline) for collector in collectors]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
     items: list[CollectedItem] = []
     health: list[SourceHealth] = []
     for label, collector, result in zip(labels, collectors, results, strict=True):
         if isinstance(result, BaseException):
-            health.append(SourceHealth(name=label, item_count=0, status=SourceStatus.FAILED, detail=str(result)[:200]))
+            health.append(SourceHealth(name=label, item_count=0, status=SourceStatus.FAILED, detail=str(result)))
             logger.warning("Collector '%s' failed: %s", label, result)
             continue
         items.extend(result)
@@ -70,7 +71,7 @@ async def run_collectors_with_health(
         # Reported, never filtered: every item still reaches the aggregator.
         if (issue := collector.health_issue) is not None:
             status, detail = issue
-            health.append(SourceHealth(name=label, item_count=len(result), status=status, detail=detail[:200]))
+            health.append(SourceHealth(name=label, item_count=len(result), status=status, detail=detail))
             logger.warning("Collector '%s' is %s: %s", label, status.value.upper(), detail)
             continue
         status = SourceStatus.OK if result else SourceStatus.EMPTY
@@ -83,6 +84,23 @@ async def run_collectors_with_health(
     if dark:
         logger.error("Source(s) returned NO items and are configured as must-not-be-empty: %s", ", ".join(dark))
     return items, report
+
+
+class CollectionDeadlineExceeded(RuntimeError):
+    """A collector ran past collectors.collection_deadline_sec and was cancelled."""
+
+
+async def _collect_within(collector: ContentSource, deadline: int) -> list[CollectedItem]:
+    """One collector's collect(), cancelled at the deadline so a slow source cannot spend the Lambda's
+    time budget the ranking and writing still need."""
+    scope = asyncio.timeout(deadline)
+    try:
+        async with scope:
+            return await collector.collect()
+    except TimeoutError as e:
+        if not scope.expired():
+            raise
+        raise CollectionDeadlineExceeded(f"exceeded collection deadline ({deadline}s)") from e
 
 
 class PipelineRun(NamedTuple):
@@ -170,9 +188,8 @@ async def run_pipeline(
     # Over-select (top_n + buffer): the editor picks the strongest top_n distinct stories from it.
     select_count = config.pipeline.top_n + config.pipeline.digest_candidate_buffer
     ranker = ContentRanker(config.pipeline, models, paid_check)
-    sibling = sibling_snapshots(sibling_memory, digest_date)
-    recent_titles = list(dict.fromkeys(_recent_story_titles(history.titles) + _recent_story_titles(sibling)))
-    ranked_items = await ranker.rank(items, select_count=select_count, recent_titles=recent_titles)
+    recent = editor_context(history, sibling_snapshots(sibling_memory, digest_date), config.pipeline)
+    ranked_items = await ranker.rank(items, select_count=select_count, recent_titles=recent.titles)
     logger.info("Ranked %d items (from %d)", len(ranked_items), len(items))
 
     if not ranked_items:
@@ -184,14 +201,8 @@ async def run_pipeline(
     trend_tracker = TrendTracker(config.pipeline, models, state_store)
     trends_context = trend_tracker.get_trends_context(today=digest_date)
 
-    recent_leads = recent_angles(history.dedup, config.pipeline) + recent_angles(sibling, config.pipeline)
-    generator = DigestGenerator(config.pipeline, models)
-    digest = await generator.generate(
-        ranked_items,
-        trends_context=trends_context,
-        today=digest_date,
-        recent_leads=recent_leads,
-        recent_titles=recent_titles,
+    digest = await write_digest(
+        config.pipeline, models, ranked_items, recent, trends_context=trends_context, today=digest_date
     )
     logger.info("Generated digest with %d ranked items", len(digest.ranked_items))
     # Carry the ranking verdict on the result so the delivery/alerting layer can say the digest was
@@ -226,8 +237,9 @@ async def run_pipeline(
         logger.error("Trend update failed (non-fatal; today's digest still ships)", exc_info=True)
 
     try:
-        # Every scored item, not just the pool: the only way to replay a change to the slots, the caps or
-        # the threshold on a past day without paying for its ranking again.
+        # Every scored item's score and origin, not just the pool: enough to replay a change to the slots,
+        # the caps or the threshold on a past day without re-ranking. A changed prompt, criteria or model
+        # still needs the ranking re-run (the items' text is not kept).
         state_store.write_json(
             f"{SCORED_ITEMS_PREFIX}{digest_date.isoformat()}.json",
             [
@@ -299,6 +311,37 @@ def sibling_snapshots(stores: Callable[[], list[MemoryStore]], digest_date: date
     except Exception:
         logger.warning("Could not read the other editions' recent digests (non-fatal)", exc_info=True)
     return out
+
+
+class EditorContext(NamedTuple):
+    """What the recent digests tell the ranker and the editor: story titles and angles, newest first."""
+
+    titles: list[str]
+    leads: list[str]
+
+
+def editor_context(history: RecentHistory, sibling: list[DigestSnapshot], config: PipelineConfig) -> EditorContext:
+    """This edition's recent snapshots joined by the other editions' on the same account."""
+    return EditorContext(
+        titles=list(dict.fromkeys(_recent_story_titles(history.titles) + _recent_story_titles(sibling))),
+        leads=recent_angles(history.dedup, config) + recent_angles(sibling, config),
+    )
+
+
+async def write_digest(
+    config: PipelineConfig,
+    models: LanguageModels,
+    pool: list[RankedItem],
+    recent: EditorContext,
+    *,
+    trends_context: str,
+    today: date,
+) -> DigestResult:
+    """The editor's call on a ranked pool: the one path run_pipeline and the eval harness's replay share,
+    so an input added to the editor reaches both."""
+    return await DigestGenerator(config, models).generate(
+        pool, trends_context=trends_context, today=today, recent_leads=recent.leads, recent_titles=recent.titles
+    )
 
 
 def _recent_story_titles(snapshots: list[DigestSnapshot]) -> list[str]:

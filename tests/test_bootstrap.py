@@ -102,8 +102,11 @@ class TestResearchPorts:
             assert ports.models is models.return_value
             store.assert_not_called()  # the stores are built on first use
             memory.assert_not_called()
-            ports.memory_store()
+            assert ports.memory_store() is ports.memory_store()
+            assert ports.state_store() is ports.state_store()
         memory.assert_called_once_with(config)
+        store.assert_called_once_with(config)
+        assert ports.sources.agent is config.agent
 
 
 class TestPaidCheckWiring:

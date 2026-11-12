@@ -328,6 +328,64 @@ class TestHandler:
                     comment_reply_handler.handler({}, None)
 
 
+class _LambdaContext:
+    aws_request_id = "req-1"
+
+    def __init__(self, remaining_ms: int) -> None:
+        self.remaining_ms = remaining_ms
+
+    def get_remaining_time_in_millis(self) -> int:
+        return self.remaining_ms
+
+
+class TestHandlerRealPath:
+    """The handler with only the outside replaced: the real responder, prompt and ledger run."""
+
+    @staticmethod
+    def _wired(monkeypatch, session: FakeComments, verdict: str):
+        from langchain_core.messages import AIMessage
+
+        from tests.fakes import MemoryStateStore, StructuredLambda
+
+        config = Config()
+        config.pipeline.enable_comment_replies = True
+        store = MemoryStateStore()
+        models = MagicMock()
+        models.get_model.return_value = StructuredLambda(RunnableLambda(lambda _: AIMessage(content=verdict)))
+        monkeypatch.setattr(comment_reply_handler.Config, "load", lambda: config)
+        monkeypatch.setattr(comment_reply_handler.bootstrap, "language_models", lambda _: models)
+        monkeypatch.setattr(comment_reply_handler.bootstrap, "state_store", lambda _: store)
+        monkeypatch.setattr(comment_reply_handler.bootstrap, "threads", lambda _: FakeThreads(session=session))
+        return store
+
+    @staticmethod
+    def _session() -> FakeComments:
+        at = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S+0000")
+        return FakeComments([POST], [_c("c1", "root", at=at)])
+
+    def test_a_comment_is_answered_and_recorded(self, monkeypatch):
+        session = self._session()
+        store = self._wired(monkeypatch, session, '{"reply": true, "text": "좋은 질문이에요."}')
+        result = comment_reply_handler.handler({}, _LambdaContext(remaining_ms=600_000))
+        assert result == {"statusCode": 200, "body": "1 replied, 0 declined"}
+        session.publish_reply.assert_awaited_once_with("좋은 질문이에요.", "c1")
+        assert CommentReplyLedger(store, retention=timedelta(days=14)).handled() == {"c1"}
+
+    def test_no_comment_is_started_past_the_lambdas_deadline(self, monkeypatch):
+        session = self._session()
+        self._wired(monkeypatch, session, '{"reply": true, "text": "답글이에요."}')
+        result = comment_reply_handler.handler({}, _LambdaContext(remaining_ms=1))
+        assert result["body"] == "0 replied, 0 declined"
+        session.publish_reply.assert_not_awaited()
+
+    def test_an_unreachable_threads_account_re_raises(self, monkeypatch):
+        session = self._session()
+        session.fetch_own_posts.side_effect = RuntimeError("graph.threads.net unreachable")
+        self._wired(monkeypatch, session, '{"reply": false}')
+        with pytest.raises(RuntimeError, match="unreachable"):
+            comment_reply_handler.handler({}, _LambdaContext(remaining_ms=600_000))
+
+
 class TestThreadsReads:
     async def test_follows_paging_and_drops_replies_with_the_token_out_of_the_url(self):
         pages = [

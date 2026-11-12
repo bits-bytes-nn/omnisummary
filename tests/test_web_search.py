@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
 from adapters.collectors.web_search import WebSearchCollector, fetch_pinned_items
-from shared.config import TrendSearch, WebSearchCollectorConfig
+from shared.config import TrendSearch, WebSearchCollectorConfig, YouTubeCollectorConfig
 from shared.constants import SourceType
 
 
@@ -360,6 +360,20 @@ class TestCollect:
         assert client.search.await_count == 3  # broad only
 
     @pytest.mark.asyncio
+    async def test_a_failed_query_is_logged_by_its_trend_and_query(self, monkeypatch):
+        monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
+        c = _search_collector()
+        client = MagicMock()
+        client.search = AsyncMock(
+            side_effect=[{"results": [_result(0.9, url="https://a.example/1", title="A")]}, ValueError("400"), {}]
+        )
+        c._client_instance = client
+        with patch("adapters.collectors.base.logger") as log:
+            await c.collect()
+        failed = [call.args[1] for call in log.warning.call_args_list if call.args[0].startswith("Collector task")]
+        assert failed == ["frontier: q2"]
+
+    @pytest.mark.asyncio
     async def test_refinement_llm_failure_keeps_broad_results(self, monkeypatch):
         monkeypatch.setattr("adapters.collectors.web_search.resolve_secret", lambda *a, **k: "key")
         factory = MagicMock()
@@ -391,7 +405,9 @@ class TestFetchPinnedItems:
                 new=AsyncMock(return_value={"https://paid.example/b"}),
             ),
         ):
-            items = await fetch_pinned_items(["https://free.example/a", "https://paid.example/b"])
+            items = await fetch_pinned_items(
+                ["https://free.example/a", "https://paid.example/b"], YouTubeCollectorConfig()
+            )
         assert [it.url for it in items] == ["https://free.example/a"]
         assert client.extract.await_args.kwargs["urls"] == ["https://free.example/a"]
 
@@ -407,7 +423,9 @@ class TestFetchPinnedItems:
         )
         with patch("adapters.collectors.web_search.resolve_secret", return_value="key"):
             with patch("adapters.collectors.web_search.tavily_client", return_value=client):
-                items = await fetch_pinned_items(["https://darioamodei.com/post/policy-on-the-ai-exponential"])
+                items = await fetch_pinned_items(
+                    ["https://darioamodei.com/post/policy-on-the-ai-exponential"], YouTubeCollectorConfig()
+                )
         assert len(items) == 1
         assert items[0].pinned is True
         assert items[0].text == "body text"
@@ -443,7 +461,9 @@ class TestFetchPinnedItems:
             with patch("adapters.collectors.web_search.httpx.AsyncClient", return_value=ctx):
                 with patch("adapters.collectors.web_search.fetch_youtube_transcript", return_value=""):
                     with patch("adapters.collectors.web_search.AsyncTavilyClient", return_value=tavily):
-                        items = await fetch_pinned_items(["https://www.youtube.com/watch?v=4pG3SJQPAwk"])
+                        items = await fetch_pinned_items(
+                            ["https://www.youtube.com/watch?v=4pG3SJQPAwk"], YouTubeCollectorConfig()
+                        )
         assert len(items) == 1
         assert items[0].title == "The data black hole at the center of AI"
         assert items[0].author == "Dwarkesh Patel"
@@ -466,7 +486,7 @@ class TestFetchPinnedItems:
         with patch("adapters.collectors.web_search.resolve_secret", return_value="key"):
             with patch("adapters.collectors.web_search.httpx.AsyncClient", return_value=ctx):
                 with patch("adapters.collectors.web_search.fetch_youtube_transcript", return_value="full transcript"):
-                    items = await fetch_pinned_items(["https://youtu.be/4pG3SJQPAwk"])
+                    items = await fetch_pinned_items(["https://youtu.be/4pG3SJQPAwk"], YouTubeCollectorConfig())
         assert items[0].text == "full transcript"  # transcript wins when present
 
     @pytest.mark.asyncio
@@ -485,7 +505,8 @@ class TestFetchPinnedItems:
                 with patch("adapters.collectors.web_search.fetch_youtube_transcript", return_value=""):
                     with patch("adapters.collectors.web_search.tavily_client", return_value=tavily):
                         items = await fetch_pinned_items(
-                            ["https://www.youtube.com/watch?v=4pG3SJQPAwk", "https://example.com/post"]
+                            ["https://www.youtube.com/watch?v=4pG3SJQPAwk", "https://example.com/post"],
+                            YouTubeCollectorConfig(),
                         )
         urls = {it.url for it in items}
         assert urls == {"https://www.youtube.com/watch?v=4pG3SJQPAwk", "https://example.com/post"}
@@ -507,7 +528,9 @@ class TestFetchPinnedItems:
         with patch("adapters.collectors.web_search.resolve_secret", return_value="key"):
             with patch("adapters.collectors.web_search.httpx.AsyncClient", return_value=ctx):
                 with patch("adapters.collectors.web_search.logger") as mock_logger:
-                    items = await fetch_pinned_items(["https://www.youtube.com/watch?v=4pG3SJQPAwk"])
+                    items = await fetch_pinned_items(
+                        ["https://www.youtube.com/watch?v=4pG3SJQPAwk"], YouTubeCollectorConfig()
+                    )
         assert items == []
         warned = " ".join(str(c.args) for c in mock_logger.warning.call_args_list)
         assert "could not be fetched" in warned
@@ -523,18 +546,20 @@ class TestFetchPinnedItems:
         ctx.__aexit__ = AsyncMock(return_value=False)
         with patch("adapters.collectors.web_search.resolve_secret", return_value="key"):
             with patch("adapters.collectors.web_search.httpx.AsyncClient", return_value=ctx):
-                items = await fetch_pinned_items(["https://www.youtube.com/watch?v=4pG3SJQPAwk"])
+                items = await fetch_pinned_items(
+                    ["https://www.youtube.com/watch?v=4pG3SJQPAwk"], YouTubeCollectorConfig()
+                )
         assert items == []
 
     @pytest.mark.asyncio
     async def test_empty_urls_short_circuits(self):
-        assert await fetch_pinned_items([]) == []
-        assert await fetch_pinned_items(["", "   "]) == []
+        assert await fetch_pinned_items([], YouTubeCollectorConfig()) == []
+        assert await fetch_pinned_items(["", "   "], YouTubeCollectorConfig()) == []
 
     @pytest.mark.asyncio
     async def test_no_api_key_returns_empty(self):
         with patch("adapters.collectors.web_search.resolve_secret", return_value=""):
-            assert await fetch_pinned_items(["https://x.com/a"]) == []
+            assert await fetch_pinned_items(["https://x.com/a"], YouTubeCollectorConfig()) == []
 
     @pytest.mark.asyncio
     async def test_extract_failure_returns_empty(self):
@@ -542,7 +567,7 @@ class TestFetchPinnedItems:
         client.extract = AsyncMock(side_effect=RuntimeError("boom"))
         with patch("adapters.collectors.web_search.resolve_secret", return_value="key"):
             with patch("adapters.collectors.web_search.tavily_client", return_value=client):
-                assert await fetch_pinned_items(["https://x.com/a"]) == []
+                assert await fetch_pinned_items(["https://x.com/a"], YouTubeCollectorConfig()) == []
 
 
 class TestTitleFromUrl:

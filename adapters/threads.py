@@ -211,8 +211,8 @@ async def _publish_reply_with_retry(
             budget_left = indexing_deadline - time.monotonic()
             keep_for_indexing = is_media_not_found(e) and budget_left > THREADS_REPLY_RETRY_BACKOFF_SEC
             # A 5xx from the publish step may come back for a reply that went live, and a retry
-            # creates a new container: the same story would post twice. A 4xx there is retried as it
-            # long was (all 80 threads checked on 2026-10-27 carry five replies, none twice).
+            # creates a new container: the same story would post twice. A 4xx there is retried, which
+            # has never doubled a reply (docs/decisions.md, rules from incidents).
             maybe_live = publish_may_be_live(e)
             # Past a digest's indexing deadline a further code 24 retry only pushes the chain past the
             # Lambda's time.
@@ -462,10 +462,10 @@ async def post_to_threads(
 def _root_may_be_live(exc: Exception) -> bool:
     """False when the root is known to have posted nothing: it failed at CONTAINER creation, or the
     publish step was rate-limited (429) or answered code 24, which names the container being published
-    as not found. Replies have retried code 24 77+ times, and all 80 digest threads checked on
-    2026-10-27 carry exactly five story replies with no duplicate. The root is held to that evidence and
-    no further, deliberately stricter than the replies' long-standing 4xx retry: a wrong guess here is a
-    second public root. Any other publish-step failure, or one whose request is unknown, may be live."""
+    as not found: the replies' code 24 retries never doubled a post (docs/decisions.md, rules from
+    incidents). The root is held to that evidence and no further, deliberately stricter than the replies'
+    4xx retry: a wrong guess here is a second public root. Any other publish-step failure, or one whose request is unknown, may be live.
+    """
     try:
         request = exc.request if isinstance(exc, httpx.HTTPStatusError | httpx.RequestError) else None
     except RuntimeError:

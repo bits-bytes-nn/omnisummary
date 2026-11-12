@@ -31,6 +31,9 @@ collectors:
     # transcripts), so an absent one is a DEGRADED source, not a quiet fall-through to live
     # metadata-only collection.
     park_required: true
+    # A park day carries 2-3 videos, where one caption-less upload is already a third of them: rates
+    # (failed or empty channels, videos without a transcript) are judged from 4 inputs up.
+    min_inputs_for_rate: 4
     # empty_rate_threshold is deliberately NOT armed for youtube (see rsshub below, where it is). The
     # all-200-and-empty shape it targets has no YouTube analogue — a revoked key, an exhausted quota
     # or a datacenter-IP block RAISES and already reports FAILED. Armed, it fires on a day when every
@@ -88,6 +91,9 @@ collectors:
   alert_on_empty: []
     # - "rss"
     # - "web_search"
+  # Wall-clock limit on one collector in a digest run: a source past it is reported FAILED and the
+  # others' items are kept, so ranking and writing keep their share of the Lambda's 15 minutes.
+  collection_deadline_sec: 300
 
 pipeline:
   top_n: 5

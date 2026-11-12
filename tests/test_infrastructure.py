@@ -80,6 +80,12 @@ class TestNoSecretsInTheTemplate:
                 # changed stack tag is a property change on each secret. Pinned to the deployed values.
                 assert resource["Properties"]["Tags"] == {"Project": "omnisummary", "Stage": "dev"}, logical_id
 
+    def test_secret_parameters_survive_a_stack_delete_or_replacement(self, templates):
+        _, application = templates
+        for logical_id, resource in application.find_resources("AWS::SSM::Parameter").items():
+            assert resource["DeletionPolicy"] == "Retain", logical_id
+            assert resource["UpdateReplacePolicy"] == "Retain", logical_id
+
     def test_secret_parameter_names_and_logical_ids_are_pinned(self, templates):
         # A changed Name or logical ID is a REPLACEMENT: CloudFormation creates a new parameter holding
         # the placeholder and deletes the live SecureString. Pinned to the deployed stack (2026-10-31).

@@ -12,17 +12,27 @@
           <mxGeometry x="40" y="80" width="680" height="740" as="geometry"/>
         </mxCell>
 
-        <mxCell id="eventbridge" value="EventBridge&#10;daily cron" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#BC1356;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.eventbridge;" vertex="1" parent="1">
+        <mxCell id="eventbridge" value="EventBridge&#10;crons: AI 19:00 · invest 07:30 KST" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#BC1356;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.eventbridge;" vertex="1" parent="1">
           <mxGeometry x="90" y="120" width="68" height="68" as="geometry"/>
         </mxCell>
-        <mxCell id="digestlambda" value="Digest Lambda&#10;(Docker)" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" vertex="1" parent="1">
+        <mxCell id="digestlambda" value="Digest Lambda&#10;(Docker, AI edition)" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" vertex="1" parent="1">
           <mxGeometry x="300" y="116" width="68" height="68" as="geometry"/>
         </mxCell>
 
-        <mxCell id="collectors" value="Collectors (async)&#10;RSS · Reddit (.rss) · YouTube&#10;WebSearch (Tavily) · X (S3 park file)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#888888;align=center;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="investlambda" value="Invest Lambdas&#10;digest + visual" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" vertex="1" parent="1">
+          <mxGeometry x="532" y="116" width="68" height="68" as="geometry"/>
+        </mxCell>
+        <mxCell id="dlq" value="SQS DLQ&#10;failed runs" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#FF4F8B;gradientDirection=north;fillColor=#BC1356;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sqs;" vertex="1" parent="1">
+          <mxGeometry x="648" y="116" width="68" height="68" as="geometry"/>
+        </mxCell>
+        <mxCell id="refreshlambda" value="Threads token refresh&#10;Lambda (weekly)" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" vertex="1" parent="1">
+          <mxGeometry x="600" y="650" width="68" height="68" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="collectors" value="Collectors (async)&#10;RSS · Reddit (.rss) · YouTube · WebSearch (Tavily)&#10;X (S3 park file) · Naver 증권 research (invest)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#888888;align=center;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="70" y="250" width="250" height="80" as="geometry"/>
         </mxCell>
-        <mxCell id="pipeline" value="Pipeline&#10;Aggregate → Rank (Opus 5.5) → pool&#10;→ Trends → Digest (Sonnet 5.5 picks top 5)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#888888;align=center;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="pipeline" value="Pipeline&#10;Aggregate → Rank (Opus 5.5 AI / Sonnet 5.5 invest)&#10;→ pool → Trends → Digest (Sonnet 5.5 picks top 5)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#888888;align=center;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="400" y="250" width="270" height="80" as="geometry"/>
         </mxCell>
 
@@ -91,6 +101,10 @@
         <mxCell id="e7c" value="image root + per-story replies" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="visuallambda" target="slack1"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;dashed=1;" edge="1" parent="1" source="digestlambda" target="sns"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;dashed=1;" edge="1" parent="1" source="digestlambda" target="cw"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;dashed=1;" edge="1" parent="1" source="eventbridge" target="investlambda"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="124" y="100"/><mxPoint x="566" y="100"/></Array></mxGeometry></mxCell>
+        <mxCell id="e12" value="on failure" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;dashed=1;fontSize=10;" edge="1" parent="1" source="investlambda" target="dlq"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e13" value="rotates the token" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;dashed=1;fontSize=10;" edge="1" parent="1" source="refreshlambda" target="ssm"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="634" y="790"/><mxPoint x="334" y="790"/></Array></mxGeometry></mxCell>
 
         <mxCell id="e10" value="park files" style="edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;rounded=1;html=1;endArrow=block;dashed=1;fontSize=10;" edge="1" parent="1" source="collectors" target="s3"><mxGeometry relative="1" as="geometry"/></mxCell>
 

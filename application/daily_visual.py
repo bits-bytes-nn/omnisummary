@@ -48,7 +48,7 @@ class DailyVisualMaker:
         self.llm = models.get_model(config.pipeline.digest_model, stage="visual-editor")
         self.publisher = DigestPublisher(config, store, threads)
         # What the last few comics drew, shown to the editor so today's does not repeat their sets,
-        # props and gags (2026-10-13, -16 and -17 all locked a model in a glass case).
+        # props and gags (docs/decisions.md).
         self.comic_log = RollingLog(store, RECENT_COMICS_KEY, config.pipeline.recent_leads_window) if store else None
         self.store = store
         self.generator = VisualGenerator(
@@ -114,7 +114,7 @@ class DailyVisualMaker:
         if self.store is not None:
             try:
                 # The brief the image model got, beside the day: without it a drawing defect could be
-                # traced only to the brief's title (the 2026-11-03 image audit).
+                # traced only to the brief's title.
                 self.store.write_json(f"{VISUAL_BRIEFS_PREFIX}{post_date.isoformat()}.json", brief.model_dump())
             except Exception:
                 logger.warning("Failed to keep the day's visual brief (non-fatal)", exc_info=True)
@@ -285,8 +285,8 @@ class DailyVisualMaker:
 
     async def _write_synopsis(self, headline_source: str, recent_comics: list[dict]) -> dict:
         """The editor's plan for the comic about the headline (it does not choose the story). It does not
-        see the digest's lead: given the lead, it drew the lead's argument one sentence per panel (four
-        comics, 2026-10-18 to 10-21), each panel adding a fact, a company and a new set."""
+        see the digest's lead: given the lead, it drew the lead's argument one sentence per panel, each
+        panel adding a fact, a company and a new set (docs/decisions.md)."""
         chain = VisualEditorPrompt.get_prompt() | self.llm | StrOutputParser()
         raw = await chain.ainvoke(
             {
@@ -297,9 +297,8 @@ class DailyVisualMaker:
                 "audience": self.config.pipeline.visual_audience_description,
                 "on_image_language": self.config.pipeline.visual_on_image_language,
                 # The edition's rules reach the cartoon too: a broker note's "Buy, target 580,000원" must
-                # not become the comic's own call. Empty for the AI/ML edition, whose prompt is unchanged.
-                # Passing only the advice rules (no sourcing rules) lost 1-4 blind with lower fidelity
-                # (2026-11-06): the sourcing rules are what keep the comic's facts straight.
+                # not become the comic's own call, and the sourcing rules keep its facts straight
+                # (docs/decisions.md). Empty for the AI/ML edition, whose prompt is unchanged.
                 "domain_rules": (
                     f"\n\nRules for this edition, which the cartoon follows too:\n{rules}"
                     if (rules := self.config.pipeline.domain_rules.strip())

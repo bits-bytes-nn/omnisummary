@@ -196,6 +196,7 @@ def degradation_reason(
     what: str,
     threshold: float,
     empty_threshold: float | None,
+    min_inputs: int = 1,
 ) -> str:
     """Why a source that produced items is nonetheless DEGRADED, or "" when it is healthy. Shared by
     the live path and the park-file path so the two verdicts cannot drift.
@@ -205,7 +206,11 @@ def degradation_reason(
     - `empty_threshold`: percent of inputs that answered with ZERO items. All-200-and-empty (expired
       RSSHub cookies, a paywalled 200, a playlist that resolves to nothing) is the same
       disappearance shape as a failure, but it trips no failure rate at all — and as long as ONE
-      input still produced an item, the source reported a clean OK."""
+      input still produced an item, the source reported a clean OK.
+
+    Below `min_inputs` inputs neither rate is judged: one miss out of two is not a rate."""
+    if total < min_inputs:
+        return ""
     fail_rate = failed / total * 100
     empty_rate = empty / total * 100
     if failed > 0 and fail_rate > threshold:
@@ -276,6 +281,7 @@ class BaseCollector(ABC):
             what=what,
             threshold=self.config.error_rate_threshold,
             empty_threshold=self.config.empty_rate_threshold,
+            min_inputs=self.config.min_inputs_for_rate,
         )
         if not reason:
             return
@@ -306,6 +312,7 @@ class BaseCollector(ABC):
             what=what,
             threshold=self.config.error_rate_threshold,
             empty_threshold=self.config.empty_rate_threshold,
+            min_inputs=self.config.min_inputs_for_rate,
         )
         if not reason:
             return
@@ -490,7 +497,14 @@ def load_items_from_s3(filename: str, max_age_hours: int, *, timeout: int) -> Pa
     s3_key = park_file_key(filename, park_root_prefix(os.environ.get("S3_PREFIX", "")))
 
     try:
-        client = boto3.client("s3", config=BotoConfig(connect_timeout=timeout, read_timeout=timeout))
+        # A Session per call: this runs in worker threads beside other client creations, and boto3's
+        # shared default session is not thread-safe.
+        client = boto3.Session().client("s3", config=BotoConfig(connect_timeout=timeout, read_timeout=timeout))
+    except Exception as e:
+        detail = f"could not create an S3 client for park file 's3://{bucket}/{s3_key}': {e!r}"
+        logger.warning("%s — falling back to live collection", detail)
+        return ParkedItems(outcome=ParkOutcome.ERROR, detail=detail)
+    try:
         resp = client.get_object(Bucket=bucket, Key=s3_key)
         data = json.loads(resp["Body"].read().decode("utf-8"))
         raw_items, generated_at, meta = _unwrap_items_envelope(data)
@@ -614,9 +628,11 @@ async def fetch_feed(url: str, *, description: str, timeout: float) -> Any:
     Raises TransientStatusError for a timeout / transport failure / 429 / 5xx (the caller retries),
     and a plain RuntimeError for a permanent status or an unparseable document."""
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=FEED_FETCH_HEADERS) as client:
-            response = await client.get(url)
-    except httpx.TimeoutException as e:
+        # httpx's timeout bounds each read, not the whole body: a host trickling bytes never trips it.
+        async with asyncio.timeout(timeout):
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=FEED_FETCH_HEADERS) as client:
+                response = await client.get(url)
+    except (httpx.TimeoutException, TimeoutError) as e:
         raise TransientStatusError(f"{description} timed out after {timeout}s") from e
     except httpx.HTTPError as e:
         # A transport failure (DNS, reset, TLS) is transient: a DNS hiccup used to lose the feed for

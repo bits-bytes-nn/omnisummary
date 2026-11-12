@@ -210,8 +210,8 @@ def _dated(row: dict[str, Any]):
 def _one_item_per_stock_and_day(items: list[CollectedItem]) -> list[CollectedItem]:
     """Several brokers' notes on one stock on one day become one item that lists every rating and target.
 
-    On 2026-11-02, 95 of 121 company notes fell on 18 stocks: each note took a ranking slot of its own,
-    and the pool filled with copies of one earnings day. Together they are the consensus a reader wants."""
+    On an earnings day most company notes fall on a few stocks: each note took a ranking slot of its own,
+    and the pool filled with copies of one day (docs/decisions.md). Together they are the consensus a reader wants."""
     groups: dict[tuple[str, str], list[CollectedItem]] = {}
     out: list[CollectedItem] = []
     for item in items:

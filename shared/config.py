@@ -92,6 +92,9 @@ class BaseCollectorConfig(_StrictModel):
     # broken session. None (the default) disables the check; set it per source in config.yaml for the
     # sources whose silence is never legitimate.
     empty_rate_threshold: float | None = Field(default=None, ge=0.0, le=100.0)
+    # Fewest inputs a rate check (failed, empty, a YouTube video without a transcript) judges at all;
+    # below it the source is not reported DEGRADED on a rate, since one miss out of two is not a rate.
+    min_inputs_for_rate: int = Field(default=1, ge=1)
 
 
 class YouTubeCollectorConfig(BaseCollectorConfig):
@@ -197,6 +200,10 @@ class CollectorsConfig(_StrictModel):
     # this is an explicit opt-in list rather than "alert whenever any source is empty" — that would
     # page daily and be muted within a week. Empty (the default) never alerts on EMPTY.
     alert_on_empty: list[str] = Field(default_factory=list)
+    # Wall-clock limit on ONE collector's collect() in a digest run. A source past it is cancelled and
+    # reported FAILED, the others' items are kept: the per-request timeouts bound each read, not a
+    # whole fan-out, and the digest Lambda still has to rank and write after collection.
+    collection_deadline_sec: int = Field(default=300, ge=1)
 
     @model_validator(mode="after")
     def _alert_on_empty_names_known_collectors(self) -> "CollectorsConfig":
@@ -371,14 +378,11 @@ class PipelineConfig(_StrictModel):
     )
     max_per_origin: int = Field(default=1, ge=1)
     # An edition's extra sentence on how the editor picks its stories as a set (empty: the prompt is
-    # unchanged). The investing edition's: measured 3-0 on its stored days and the only variant that shipped
-    # an X post on 11-03's live pool; the same sentence lost 2-4 on AI days, which keep it empty.
+    # unchanged). Only the investing edition sets one; it lost on AI days (docs/decisions.md).
     selection_guidance: str = ""
     # The editor must carry this many stories from these source types, the best-scored ones in the pool:
     # an analyst's or investor's own note or post over the press report of it. Research notes among them
-    # get their full text (the note's PDF). Investing (2026-11-07, 7 stored days): research and X, 2 of
-    # 5 won 12-2 blind in both orders, fidelity 3.21 -> 3.86, press stories 22 -> 17 of 35; without the
-    # full text the same quota tied 7-7 and fidelity fell.
+    # get their full text (the note's PDF): the quota alone tied, with the text it won (docs/decisions.md).
     primary_quota: int = Field(default=0, ge=0)
     primary_source_types: list[SourceType] = Field(default_factory=list)
     # Score-calibration buckets the ranking prompt applies, injected as template text so
@@ -402,9 +406,8 @@ class PipelineConfig(_StrictModel):
     trend_max_evidence: int = Field(default=5, ge=1)
     trend_max_active_trends: int = Field(default=10, ge=1)
     # Whether the editor's trend context carries each trend's latest note or only its title. The AI/ML
-    # edition shows titles only (2026-11-06, blind on 6 stored days in both orders: 9-3, fidelity 2.8 to
-    # 3.9): given the notes, its leads re-told yesterday's figures as the "wider arc". Investing keeps the
-    # notes, whose market figures its editor uses (titles only lost 2-8 there).
+    # edition shows titles only: given the notes, its leads re-told yesterday's figures as the "wider arc".
+    # Investing keeps the notes, whose market figures its editor uses (docs/decisions.md).
     trend_context_notes: bool = True
     trend_momentum_half_life_days: float = Field(default=7.0, gt=0)
     # The digest's delivery channel. Off until the Threads access token / user id are provisioned in SSM.
@@ -682,8 +685,9 @@ class Config(_StrictModel):
         return cls(**config_data if config_data else {})
 
     @classmethod
-    def load(cls) -> "Config":
-        """The deployed config: `config/config.yaml`, falling back to the tracked template.
+    def load(cls, edition: str | None = None) -> "Config":
+        """The deployed config: `config/config.yaml` (`config/<edition>.yaml` for an edition, by default
+        the one OMNISUMMARY_EDITION names), falling back to the tracked template.
 
         Returning bare code defaults for a missing file was silent and wrong. config.yaml is
         gitignored, the Dockerfile COPYs config/, so a clean-checkout image — which is exactly what
@@ -697,13 +701,13 @@ class Config(_StrictModel):
         placeholders, rank and publish a thin digest with only a log line to show for it."""
         load_dotenv()
         config_dir = Path(__file__).parent.parent / "config"
-        edition = os.environ.get(EDITION_ENV, "").strip()
+        edition = (os.environ.get(EDITION_ENV, "") if edition is None else edition).strip()
         stem = edition or "config"
         config_path = config_dir / f"{stem}.yaml"
         if config_path.exists():
             config = cls.from_yaml(str(config_path))
             if config.edition != edition:
-                raise ValueError(f"'{config_path}' declares edition '{config.edition}', but {EDITION_ENV}='{edition}'")
+                raise ValueError(f"'{config_path}' declares edition '{config.edition}', but '{edition}' was asked for")
             return config
         if is_running_in_aws():
             raise FileNotFoundError(

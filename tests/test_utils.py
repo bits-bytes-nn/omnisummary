@@ -114,14 +114,15 @@ class TestSsmClient:
         assert session.call_args.kwargs == {"profile_name": "research", "region_name": "ap-northeast-2"}
         session.return_value.client.assert_called_once_with("ssm")
 
-    def test_without_a_profile_it_is_the_runtimes_own_client_as_before(self, monkeypatch):
+    def test_without_a_profile_it_is_the_runtimes_own_client_from_a_fresh_session(self, monkeypatch):
         from adapters import aws as utils
 
         monkeypatch.setenv("AWS_REGION", "ap-northeast-2")
         with patch.object(utils, "available_boto_profile", return_value=None):
-            with patch.object(utils.boto3, "client") as client:
+            with patch.object(utils.boto3, "Session") as session:
                 _REAL_SSM_CLIENT()
-        client.assert_called_once_with("ssm", region_name="ap-northeast-2")
+        session.assert_called_once_with()
+        session.return_value.client.assert_called_once_with("ssm", region_name="ap-northeast-2")
 
 
 class TestGenerateItemId:

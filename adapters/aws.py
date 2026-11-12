@@ -97,7 +97,8 @@ def _ssm_client():
     profile = available_boto_profile(config.aws.profile)
     if profile:
         return boto3.Session(profile_name=profile, region_name=config.aws.region or None).client("ssm")
-    return boto3.client("ssm", region_name=aws_region())
+    # A Session per call: secrets are resolved in worker threads beside other client creations.
+    return boto3.Session().client("ssm", region_name=aws_region())
 
 
 class SecretUnavailableError(RuntimeError):

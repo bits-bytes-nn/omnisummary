@@ -192,7 +192,7 @@ class YouTubeCollector(BaseCollector):
     def _flag_missing_transcripts(self, videos: int, missing: int, prefix: str = "") -> None:
         """DEGRADED when too many kept videos came without a transcript. Reporting only."""
         threshold = self.config.transcript_missing_threshold
-        if threshold is None or videos <= 0 or missing / videos * 100 <= threshold:
+        if threshold is None or videos < self.config.min_inputs_for_rate or missing / videos * 100 <= threshold:
             return
         reason = f"{prefix}{missing}/{videos} videos have no transcript (>{threshold:.0f}%)"
         self.degraded_detail = "; ".join(filter(None, [self.degraded_detail, reason]))

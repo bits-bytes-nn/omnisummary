@@ -80,7 +80,7 @@ async def main() -> int:
     if args.pin_url:
         from adapters.collectors.web_search import fetch_pinned_items
 
-        pinned = await fetch_pinned_items(args.pin_url)
+        pinned = await fetch_pinned_items(args.pin_url, config.collectors.youtube)
         logger.info("Fetched %d pinned item(s) from %d URL(s)", len(pinned), len(args.pin_url))
         fetched = {normalize_url(it.url) for it in pinned}
         missing = sorted(u.strip() for u in args.pin_url if u.strip() and normalize_url(u.strip()) not in fetched)

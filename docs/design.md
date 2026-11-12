@@ -170,11 +170,12 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 `extra="forbid"`라서, 코드에서 지운 키가 gitignore된 `config.yaml`에 남아 있으면 `Config.load()`가 실패한다.
 필드를 지우는 변경은 운영자의 `config.yaml`도 함께 고쳐야 한다.
 
-`Config.load()`는 호출마다 YAML을 다시 읽고 전체를 재검증한다. 리서치 한 번이면 도구 호출마다 그 작업이
-반복되므로, 값을 읽기만 하는 리프 호출자는 `lru_cache(maxsize=1)`로 감싼 `get_config()`를 쓴다. 반면 Config를 변경하는 쪽은 자기 인스턴스가 필요하니 계속
-`Config.load()`나 `from_yaml`을 쓴다. `main`과 핸들러의 `set_reference_time`, 인프라
-테스트의 버킷 오버라이드가 여기 해당한다. 테스트에서는 conftest의 autouse 픽스처가 매 테스트 전후로 캐시를
-비운다.
+`Config.load(edition)`은 호출마다 YAML을 다시 읽고 전체를 재검증한다. 판을 넘기지 않으면 `OMNISUMMARY_EDITION`을
+따르고, CLI의 `--edition`은 환경 변수를 고치지 않고 이 인자로 넘긴다. 실행의 Config는 진입점이 한 번 읽어
+어댑터에 넘긴다. 리서치 백엔드(`WebResearchSources`), og:image, 고정 URL 수집도 이 Config에서 한도를 받으므로 한
+실행이 두 설정을 읽는 일이 없다. `lru_cache(maxsize=1)`로 감싼 `get_config()`는 판과 무관한 `aws` 값만 읽는
+`adapters/aws.py`와 `adapters/bedrock.py`, 평가 하네스에 남아 있다. 테스트에서는 conftest의 autouse 픽스처가 매
+테스트 전후로 캐시를 비운다.
 
 ### 3.1 `collectors.*`
 
@@ -182,11 +183,11 @@ orientation 어휘, 전달 토글의 명시성)는 `config/*.yaml` **전체**를
 
 | 그룹 | 필드 | 설명 |
 |------|------|------|
-| 공통(상속) | `enabled`, `lookback_hours`, `reference_time`, `request_timeout`, `max_retries`, `retry_backoff_sec`, `park_max_age_hours`(기본 12), `error_rate_threshold`(기본 50.0), `empty_rate_threshold`(기본 없음=비활성) | 활성화 여부, 조회 윈도, 타임아웃, 재시도, S3 park 파일의 나이 예산(초과하면 항목은 쓰되 헬스를 STALE로 보고한다), 그리고 DEGRADED 판정 두 갈래: 입력(피드·계정·채널·쿼리) 실패율과 입력 빈 응답률. 어느 하나만 걸려도 DEGRADED이고 보고만 할 뿐 항목은 그대로 전달한다 |
+| 공통(상속) | `enabled`, `lookback_hours`, `reference_time`, `request_timeout`, `max_retries`, `retry_backoff_sec`, `park_max_age_hours`(기본 12), `error_rate_threshold`(기본 50.0), `empty_rate_threshold`(기본 없음=비활성), `min_inputs_for_rate`(기본 1) | 활성화 여부, 조회 윈도, 타임아웃, 재시도, S3 park 파일의 나이 예산(초과하면 항목은 쓰되 헬스를 STALE로 보고한다), 그리고 DEGRADED 판정 두 갈래: 입력(피드·계정·채널·쿼리) 실패율과 입력 빈 응답률. 어느 하나만 걸려도 DEGRADED이고 보고만 할 뿐 항목은 그대로 전달한다. 입력이 `min_inputs_for_rate`개보다 적으면 비율로 판정하지 않는다 |
 | `rss` | `feeds`, `max_concurrency`(기본 5) | RSS 피드 URL 목록과 동시 fetch 상한 |
 | `reddit` | `subreddits`, `sort`, `limit` | 서브레딧, 정렬, 개수 |
 | `youtube` | `channels`, `max_videos_per_channel`, `resolve_timeout`, `transcript_timeout`, `transcript_language`, `transcript_missing_threshold`(기본 50), `max_concurrency`, `park_required` | 채널, 영상 수, 자막 관련 설정, 자막 없는 영상 비율이 이 퍼센트를 넘으면 DEGRADED, 동시 채널 상한, AWS에서 park 파일 부재를 DEGRADED로 볼지([§4.2](#42-s3-park-파일-로더)) |
-| `web_search` | `trend_searches`, `max_results_per_query`, `max_refine_queries`, `refine_model`(Sonnet 5.5), `max_concurrency` | Tavily 검색, 쿼리 정제 모델 |
+| `web_search` | `trend_searches`, `max_results_per_query`, `max_refine_queries`, `refine_model`(Sonnet 5.5), `refine_rules`, `max_concurrency` | Tavily 검색, 쿼리 정제 모델과 정제 쿼리의 규칙(판마다 다르다) |
 | `rsshub` | `base_url`, `accounts`, `max_concurrency` | X 계정(로컬 컨테이너 또는 S3)과 동시 fetch 상한 |
 | `naver_research` | `categories`(코드 기본 company·industry·invest·economy, 투자판은 debenture를 더한다; 같은 종목·같은 날 기업 리포트는 한 건으로 묶는다), `max_pages`(기본 10, 쪽당 50건), `page_delay_sec` | 네이버 증권 리서치의 국내 증권사 리포트([§4.4](#44-네이버-증권-리서치-naver_researchpy)). 기본은 꺼짐이고 투자판이 켠다 |
 
@@ -214,9 +215,16 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 블로그는 하루 글이 없는 게 정상이고, X 계정 40개가 모두 조용한 건 세션이 깨진 것이다) 기본값은 비활성(값
 없음)이고 config.yaml에서 소스별로 켠다.
 
-**절대 개수로 판정하는 노브는 두지 않는다.** 비율은 입력이 적은 소스에서 판정을 표현하지 못하지만, 입력이 적은
-유일한 소스인 reddit은 서브레딧 전체를 요청 한 번으로 받으니([§4.5](#45-reddit-redditpy)) 실패가 소스
-단위로만 일어나고 FAILED로 충분하다.
+**표본이 작으면 비율로 판정하지 않는다(`min_inputs_for_rate`).** park된 YouTube는 하루 영상이 2~3개라 자막 없는 영상
+하나가 이미 3분의 1이다. DEGRADED는 SNS 알림을 보내고 sync의 정상 기록도 건너뛰게 하니, 그 정도 표본으로 낸 판정은
+알림 피로만 남긴다. 하한은 실패율, 빈 응답률, 자막 없는 영상 비율에 똑같이 적용되고 기본값 1은 판정을 바꾸지 않는다.
+운영 config는 youtube에 4를 둔다. 소스 전체가 실패하면 하한과 무관하게 FAILED다. reddit은 서브레딧 전체를 요청 한
+번으로 받으니([§4.5](#45-reddit-redditpy)) 실패가 소스 단위로만 일어난다.
+
+`collectors.collection_deadline_sec`(기본 300)는 다이제스트 실행에서 수집기 하나의 `collect()`에 주는 벽시계 한도다. 요청별
+타임아웃은 읽기 한 번씩만 묶어서, 피드가 많은 소스는 재시도까지 합치면 Lambda 15분의 대부분을 쓸 수 있다. 한도를 넘긴
+수집기는 취소되고 FAILED("exceeded collection deadline")로 보고되며 나머지 소스의 항목은 그대로 쓴다. 피드 fetch도 시도
+하나를 `request_timeout` 안에 끝낸다. 바이트를 조금씩 흘리는 호스트는 읽기 타임아웃에 걸리지 않기 때문이다.
 
 `collectors.alert_on_empty`(기본 `[]`)는 EMPTY가 사건인 소스의 이름 목록이다(예: `["rss", "web_search"]`).
 목록이 필요한 이유는 이렇다. 어두워진 소스는 예외도 남기지 않고 stale park 파일도 남기지 않고 실패율도
@@ -233,6 +241,7 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | 영역 | 필드 | 설명 |
 |------|------|------|
 | 모델 | `ranking_model`(기본 Sonnet 5.5, AI판 config는 Opus 5.5), `digest_model`(Sonnet 5.5, 그라운딩과 비주얼 편집기·아트 디렉터도 이 모델을 쓴다), `trend_model`(Sonnet 5.5) | 단계별 모델([§6](#모델-팩토리)) |
+| 다이제스트 재질의 | `digest_max_retries`(기본 3), `digest_retry_backoff_sec`(기본 5) | 에디터의 JSON이 깨졌을 때 다시 묻는 횟수와 간격 |
 | 랭킹 | `ranking_batch_size`(기본 40), `ranking_max_concurrency`(기본 4), `ranking_max_retries`(기본 3), `ranking_retry_backoff_sec`(기본 5), `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치, Bedrock fan-out 상한, 배치 재시도, 점수 루브릭 |
 | 후보 풀 | `top_n`(기본 5), `min_score`(기본 0.6), `digest_candidate_buffer`(기본 7), `source_slots`(소스마다 1), `max_per_origin`(기본 1) | 에디터에게 넘기는 후보는 `top_n + digest_candidate_buffer`개이고, 소스 슬롯과 origin 상한은 이 풀을 채우는 데만 쓴다. 실제로 나가는 `top_n`개는 에디터가 고른다([§5.2](#52-랭커-rankerpy)) |
 | 중복 | `published_url_ttl_days`(기본 6, 최소 2), `recent_leads_window`(기본 5), `recent_title_days`(기본 14), `recent_implication_days`(기본 2) | cross-day dedup 원장 TTL, 반복 방지용 최근 lead와 최근 만화의 윈도, 랭커와 에디터가 보는 최근 기사 제목의 일수, lead와 함께 보여 주는 최근 implication의 일수([§5.6](#56-데일리-비주얼-daily_visualpy)). TTL이 최소 2인 것은 날짜만 있는 웹 결과가 이틀 연속 윈도에 들어가고([§4.8](#48-websearch-web_searchpy)) 두 번째 게시를 원장이 막기 때문이다 |
@@ -258,6 +267,8 @@ alias하며 web_search와 rsshub는 72를 따로 적는다.
 | 필드 | 설명 |
 |------|------|
 | `model_id` | 에이전트 모델(기본 Opus 5.5) |
+| `market_quotes` | 켜면 `market_quote`(주식·지수·환율·가상자산 시세)와 `analyst_ratings`(컨센서스와 날짜별 의견·목표가 변경) 도구가 생긴다. 투자판이 켠다 |
+| `report_search_domains` | 애널리스트·전략 리포트 발행처 목록. 비어 있지 않으면 `search_reports` 도구가 생긴다 |
 | `research_max_turns`, `research_max_total_tokens`, `research_max_output_tokens` | 툴 루프의 하드 상한(`strands.types.agent.Limits`로 실행마다 전달한다). SDK가 매 턴 경계에서 검사하고 `stop_reason="limit_*"`으로 멈춘다. 사이클마다 대화 전체를 다시 보내므로, 이 값들이 없으면 비용과 벽시계 시간에 상한이 없다 |
 | `research_target_words` | Markdown 리포트의 목표 분량(단어) 가이던스(기본 1500) |
 | `research_max_threads_posts` | Threads 게시물(root와 reply) 총수 하드 캡(기본 10). 너무 긴 리포트가 공개 게시물 수십 개로 퍼지지 않게 코드가 트림한다. 이 값이 Threads 리포트의 산문 예산을 정한다([§9의 `<delivery>`](#system_prompt_template) 참조) |
@@ -313,7 +324,13 @@ SecureString으로 기록한다. 재배포가 값을 되돌리지 않는데, Clo
 Lambda가 제자리에서 회전시키니, 로컬 `.env` 사본을 다시 쓰면 만료된 토큰으로 되돌아간다(`--force`로만
 덮어쓴다). 둘째, 비어 있는 환경 변수로 기존 값을 지우지 않는다. 여기에 `resolve_secret`이 플레이스홀더를
 미설정으로 취급하니, put_secrets를 건너뛴 배포는 플레이스홀더를 API 토큰으로 보내는 대신 정상적인 '자격증명
-없음' 경로로 degrade한다. Lambda와 로컬 CLI는 env를 먼저 보고 그다음 SSM을 본다.
+없음' 경로로 degrade한다. Lambda와 로컬 CLI는 env를 먼저 보고 그다음 SSM을 본다. SecureString으로 바꿀 수
+없는 String 파라미터에 실제 값이 들어 있으면 지우지도, 평문으로 덮어쓰지도 않는다. 실패로 보고하고 0이 아닌
+코드로 끝나며, 지운 뒤 다시 실행하는 명령을 출력한다.
+
+시크릿 파라미터는 상태 버킷, AgentCore Memory와 같이 `RemovalPolicy.RETAIN`이다. 스택을 지우거나 리소스가
+교체돼도 갱신 Lambda가 회전시킨 토큰이 남는다. DeletionPolicy는 템플릿의 `Properties`가 아니라 리소스 수준
+설정이라서 아래의 "속성을 바꾸지 않는다" 규칙에 걸리지 않는다.
 
 X 세션 쿠키는 SSM에 두지 않는다. 로컬 RSSHub Docker 컨테이너(`localhost:RSSHUB_PORT`, 기본 `1200`)만 쓰고, AWS의
 다이제스트는 로컬 sync가 올린 S3 park 파일에서 X 항목을 읽는다.
@@ -493,8 +510,8 @@ Google Research, Hugging Face 피드는 설명이 비어 있거나 한 줄이고
 피드도 있다(Simon Willison, 중앙값 1712자). 그 페이지를 받으면 깨끗한 본문이 내비게이션과 푸터가 섞인 텍스트로
 바뀌니, 요약이 500자(`THIN_SUMMARY_MAX_CHARS`) 미만일 때만 채운다. 얇은 피드의 중앙값은 19자(research.google)와
 149자(openai.com)였다. 읽기 실패나 더 짧은 페이지는 피드 문구를 그대로 둔다. 페이지 본문은 피드 요약을 **대신하지 않고 뒤에 붙는다.**
-뉴스 페이지는 메뉴와 다른 기사 제목으로 시작하는데(매경·이데일리 100건 중 81건은 기사가 1,500자 뒤에서 시작했다, 2026-11-03), 투자판 랭커는
-앞 1,500자(`ranking_text_max_chars`)만 읽어 남의 헤드라인으로 점수를 매겼다. 발행사가 쓴 100~200자 리드가 맨 앞에 남는다.
+뉴스 페이지는 메뉴와 다른 기사 제목으로 시작해서, 앞 1,500자(`ranking_text_max_chars`)만 읽는 투자판 랭커가 남의 헤드라인으로
+점수를 매겼다. 발행사가 쓴 100~200자 리드가 맨 앞에 남는다([결정 기록](decisions.md#2026-11-03-페이지-본문은-피드-요약-뒤에-붙인다)).
 
 **fan-out 상한(`max_concurrency`, 기본 5)이 필요한 이유.** 한 번에 도는 fetch 수를 묶어서 수집기의 최악
 wall time을 계산 가능하게 유지한다. 세마포어는 `collect()` 안에서, 다시 말해 실행 중인 루프에서 만든다
@@ -766,8 +783,8 @@ GUID(RSS와 X는 기사 URL, 그 밖은 글이나 영상 id)라서 그대로 정
 `_recent_story_titles(snapshots)`(1일 전부터 `pipeline.recent_title_days`(기본 14)일 전까지의 출고 스토리 제목)를 받아 RankingPrompt의
 *Already in recent digests* 블록에 넣는다(`format_recent_titles`). Novelty 기준은 목록에 있는 스토리를 실질적
 새 진전이 없으면 재탕으로 본다. URL 원장은 정확한 URL만 맞추므로, 다른 매체나 주간 정리로 돌아온 같은 사건은
-랭커가 볼 근거가 없어 0.67–0.85를 받고 풀에 들어왔다. 2026-10-11 풀에서 기존 흐름은 1–4일 전에 나간 스토리 3개를
-다시 내보냈고, 제목을 랭커에 주자 그 3개가 풀에서 빠졌다. 정보일 뿐 필터가 아니다.
+랭커가 볼 근거가 없어 높은 점수로 풀에 들어왔다([결정 기록](decisions.md#2026-10-11-최근-제목을-랭커와-에디터에)). 정보일 뿐
+필터가 아니다.
 
 **후보 풀과 품질 우선 선정.** `rank(items, select_count)`는 `top_n + digest_candidate_buffer`(기본 5 + 7 = 12)개의
 후보 풀을 고른다. 소스 슬롯과 origin 상한은 이 **풀**을 채우는 데 쓰여서, 각 소스의 `min_score` 이상 최선
@@ -782,7 +799,7 @@ Anthropic 보고서를 밀어냈다([결정 기록](decisions.md#2026-10-품질-
 
 **선정과 다양성 (`_apply_source_slots`).** 먼저 `source_slots`로 소스별 기본 슬롯을 config 순서대로 채운다.
 나머지 풀은 점수 순으로 채우되 `max_per_origin`으로 하나의 origin 키가 차지하는 항목 수를 제한한다(①). 그래도
-모자라면 origin 캡을 풀고 채우되(②), 실릴 `top_n`개까지만 푼다. 버퍼까지 채우려 풀던 때는 대량 발행처가 조용한 날의 풀을 차지했다([결정 기록](decisions.md#2026-11-03-큐레이션-재검토-실리는-것은-랭킹-기준이-정한다)).
+모자라면 origin 캡을 풀고 채우되(②), 고정 URL(pin)과 합쳐 실릴 `top_n`개가 될 때까지만 푼다. 핀이 둘이면 캡을 풀어 채우는 몫은 `top_n - 2`개다. 버퍼까지 채우려 풀던 때는 대량 발행처가 조용한 날의 풀을 차지했다([결정 기록](decisions.md#2026-11-03-큐레이션-재검토-실리는-것은-랭킹-기준이-정한다)).
 수집기(소스) 단위 상한은 없다. "rss"는 13개 매체를 묶고, 매체 단위 다양성은 `max_per_origin`이 이미 지킨다. 수집기당 2개 상한을 두었을 때 16일 중 9일, 0.72–0.80 항목이 풀 밖에 남고 0.60–0.68 항목이 들어갔다. 슬롯은 운영 config에서 소스별로 뺄 수 있다. AI판은 Reddit 슬롯이 없다(r/LocalLLaMA의 개인 모델 튜닝 글이 매일 그 자리를 차지했다). Reddit 글은 점수로 들어온다. AI판 소스를 넣고 되살린 기록과 빠진 채인 소스(openai.com 피드는 Cloudflare 확인, xai는 계정 이전으로 빈 피드)는 [결정 기록](decisions.md#2026-11-02-ai판-소스-재검토)에 있고, 빼는 기준은 [수집 원칙](#수집-원칙)이다. 유료 글이 섞인 뉴스레터는 후보 풀의 유료 확인이 유료 글을 뺀다.
 
 origin은 `resolve_origin_key`로 해석한다. YouTube는 channel_url, Reddit은 subreddit, RSS는 feed_url, X는
@@ -906,8 +923,8 @@ private 헬퍼를 부르면 파이프라인이 출력 채널의 내부 이름에
   목록에 넣는다. 논지의 틀이 lead보다 implication에서 더 자주 되풀이됐다. 규칙을 더하지 않고 입력만 늘린 변경이다
   ([결정 기록](decisions.md#2026-11-01-반복-방지-입력에-최근-implication-추가)).
 - `recent_titles`는 1일 전부터 `pipeline.recent_title_days`(기본 14)일 전까지 **모든** 스냅샷의 스토리 제목을 최신순으로 중복 없이 모은
-  목록이다. 주간 요약 글이 이미 실린 이야기를 새 URL로 다시 가져오면 URL 원장은 그것을 알아보지 못하고, 직전
-  하루치 제목만 보여주던 때는 2026-10-11 다섯 이야기 중 셋이 1~4일 전에 실린 것이었다. 프레이밍은 한 줄이다.
+  목록이다. 주간 요약 글이 이미 실린 이야기를 새 URL로 다시 가져오면 URL 원장은 그것을 알아보지 못한다
+  ([결정 기록](decisions.md#2026-10-11-최근-제목을-랭커와-에디터에)). 프레이밍은 한 줄이다.
   실질적 새 진전이 있을 때만 다시 싣고, 그때는 지난번 이후 무엇이 새로운지 본문에 말하라고 한다. 같은 목록을
   랭커도 받는다([§5.2](#52-랭커-rankerpy)). 임계나 유사도 휴리스틱은 없다. 실제로 재발행을 막는 것은 여전히 URL 원장이다. `application.digest_pipeline.run_pipeline`이
   cross-day dedup이 이미 가져온 스냅샷에서 뽑으니 추가 호출도 없다.
@@ -1044,7 +1061,8 @@ reply 하나를 만든다. 500자 이하로 문장 경계에서 트림하며 tit
 담은 기준 시트 이미지(`assets/persona.jpg`)가 입력 이미지로 함께 간다. 그래서 그 날의 렌더는 `images.generate`가
 아니라 `images.edit`이고, 프롬프트 앞에 "첨부 이미지가 화자의 기준 시트이니 그대로 그려라"는 고정 문구
 (`REFERENCE_NOTE`)가 붙는다. 문장만으로는 날마다 얼굴과 옷이 달랐다([결정 기록](decisions.md#2026-10-화자-기준-시트-이미지)). 시트 파일을 못 읽으면
-경고하고 참조 없이 그린다. 시트를 바꾸려면 이 파일만 교체하면 된다.
+경고하고 참조 없이 그린다. 화자의 외모는 세 곳에 있다. 기준 시트 이미지, 문장 시트(`visual_character_sheet`), 그리고
+`REFERENCE_NOTE`가 이름으로 부르는 특징(얼굴, 머리, 안경, 투톤 카디건)이다. 외모를 바꾸려면 셋을 함께 고친다.
 
 **얼굴이 알려진 실존 인물만 그 모습으로 그린다.** 대중이 얼굴을 아는 인물은 이름과 알려진 모습으로 그리고, 모든
 컷에서 같게 유지한다. 그 밖의 인물은 역할로 그리고 외모를 지어내지 않는다. 모든 인물의 특징을 적게 하면 잘 알려지지 않은 연구자에게
@@ -1068,7 +1086,7 @@ reply 하나를 만든다. 500자 이하로 문장 경계에서 트림하며 tit
 
 **만화와 글의 프롬프트 변경은 블라인드로 판정한다 (`scripts/eval_harness.py`).** 기준은 오너가 정했다. 만화는 뉴스 이해, 인사이트·유머,
 상식, 미감, 사실 충실성이고, 글은 맥락, 쉬운 설명, 정보 정확성, 인사이트, 500자 적합성, 한국어다. 평가자는 원문(에디터가 본 것과 같은 길이)을 받고 두 버전을 이름
-없이 비교하며, 라벨을 바꿔 두 순서로 판정한다. 변경은 저장된 날에서 두 순서 모두 이겨야 반영하고, 단순화도 진 적이 있다(2026-11-07 시사점 3:9, 만평 문장 10:12). 개발 날과 처음 보는 보류 날로 나눠 재고, 만화 변경은 브리프 판정과 이미지 판정이 갈린 적이 있어 그린
+없이 비교하며, 라벨을 바꿔 두 순서로 판정한다. 변경은 저장된 날에서 두 순서 모두 이겨야 반영하고, 단순화도 진 적이 있다. 개발 날과 처음 보는 보류 날로 나눠 재고, 만화 변경은 브리프 판정과 이미지 판정이 갈린 적이 있어 그린
 이미지로도 판정한다([결정 기록](decisions.md#2026-11-07-만평-편집자-연속성-문장-삭제-반영하지-않음)). 지금의 형식 규칙(기사가 형식을 정하고 비유가
 아닌 실제 장면)은 [2026-10-26 평가](decisions.md#2026-10-26-만화와-글의-루브릭-블라인드-평가)와
 [2026-11-01 재설계 평가](decisions.md#2026-11-01-만화-재설계-형식은-기사가-정한다-scriptseval_harnesspy)에서 정해졌다. 패러디·연재·여러 장
@@ -1137,7 +1155,7 @@ Lambda가 "올라간 글을 지운 뒤에만 다시 올리라"는 Threads Delive
 `countdown_template`). D-day 이전에는 카운트다운, D-day 당일과 이후에는 `countdown_after`로
 카운트업한다("…AGI 등장 예정일 D+N일째, 아직이다"). `countdown_date`가 비면 비활성이다. 기준일은 인용한 사람의 말에 맞춘다.
 아모데이는 2025-02 파리 AI 정상회의 성명(anthropic.com)에서 "빠르면 2026년이나 2027년(늦어도 거의 확실히 2030년)"이라고 했고,
-그 앞쪽 범위의 끝인 2027년 말을 쓴다(2026-11-01까지는 젠슨 황과 아모데이를 섞어 반올림한 2029-01-01을 인용 없이 썼다).
+그 앞쪽 범위의 끝인 2027년 말을 쓴다([결정 기록](decisions.md#2026-11-01-카운트다운-기준일은-인용한-말에서)).
 투자판(`config/invest.yaml`)은 같은 틀("보편적 고소득 시대까지 N일 남았다", 그가 쓴 말은 "universal high income")로, 일론 머스크가 2025-11-19
 미·사우디 투자 포럼에서 "10~20년 안에" 일은 선택이 되고 돈은 의미가 없어진다고 한 날까지 센다. 기준일은 그 범위의 이른 끝인
 2035-11-19다. 두 판의 첫 문장이 대구를 이루고 인용한 사람의 이름은 문장에 넣지 않는 것은 운영자 결정이다(날짜만 그들의 말을 따른다). 템플릿은 운영자가
@@ -1173,8 +1191,8 @@ config가 형식을 검증한다)를 싣고 reply에는 붙이지 않는다. 다
 리포트의 root도 같은 태그를 쓴다. 만화 root는 `alt_text`(최대 1000자)로 `VisualBrief.alt_text`를 보낸다. 아트
 디렉터가 쓰는 한국어 설명으로 컷마다 한 문장과 대사를 담는다. 그러지 않으면 만화의 한국어 대사가 픽셀로만 남아
 스크린 리더가 읽을 것이 없다. 검색 효과는 Meta가 문서화하지 않았으니 접근성 개선이다. `alt_text`가 빈 브리프는
-비정상 응답의 신호라 한 번 다시 받는다(`VisualGenerator.brief`). 2026-11-11에 이런 브리프가 편집자 콘티를 버리고
-영어 대사의 일반적인 만화를 냈고, 같은 날 재실행 두 번은 정상이었다. 다시 받은 브리프도 비어 있거나 요청이 실패하면 받은 것을 그대로 그린다.
+비정상 응답의 신호라 한 번 다시 받는다(`VisualGenerator.brief`, [장애에서 나온 규칙](decisions.md#장애에서-나온-규칙)). 다시 받은
+브리프도 비어 있거나 요청이 실패하면 받은 것을 그대로 그린다.
 
 **이미지 호스팅.** Threads는 바이트 업로드를 받지 않고 공개 URL만 fetch하니, PNG를 S3에 올리고 단기 presigned
 URL을 Meta에 한 번 넘긴다(`_upload_image_for_hosting`).
@@ -1984,7 +2002,8 @@ AgentCore Browser도 쓰지 않는다. 다이제스트에 실린 실제 URL 10�
 `threads_lock`(Threads 전달을 사실 확인까지 한 번에 하나로 묶는다), `refused_for_facts`·`fact_issues`(사실 확인으로 돌려보낸
 텍스트와 그 지적), `last_refusal`(마지막으로 돌려보낸 이유), `threads_attempted`,
 `report`(제출된 최신 Markdown), `threads_stats`(Threads 전달이 실제로 낸 렌더·게시·드롭·트림 수), 실행이 바깥에 닿는 유일한 통로인 `ports`(`ResearchPorts`)가 있다. `request_context`는 contextvar로 바인딩해
-상태가 실행 사이에 쌓이지 않게 하고, `current_delivery_context`는 바인딩이 없으면 새 인스턴스를 반환한다.
+상태가 실행 사이에 쌓이지 않게 하고, `current_delivery_context`는 바인딩이 없으면 `RuntimeError`를 낸다. 바인딩
+없이 불린 도구가 캐시된 파일 설정을 읽는 대신 그 자리에서 실패하게 하려는 것이다.
 
 **`deliver_research_report`** — `MARKDOWN`은 리포트를 기록하고 `POSTED`를 돌려준다. `THREADS`는 멱등이고
 `DeliveryOutcome`(`POSTED`, `NOT_POSTED`, `FAILED`, `TOO_LONG`)을 돌려준다. bool이 아닌 이유는 "이미 게시돼 이번 텍스트는

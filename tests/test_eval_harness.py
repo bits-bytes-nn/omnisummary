@@ -84,3 +84,43 @@ def test_a_judge_that_always_prefers_the_first_position_splits_by_the_shuffle(ha
     asyncio.run(harness._judge("digest", "base", "arm"))
     expected = {n: "base" if int(hashlib.sha256(n.encode()).hexdigest(), 16) % 2 == 0 else "arm" for n in names}
     assert {r["case"]: r["winner"] for r in _verdicts(tmp_path)} == expected
+
+
+def test_a_digest_replay_takes_the_editors_path_and_shows_the_judge_the_editors_cut(harness, monkeypatch, tmp_path):
+    from application import digest_pipeline
+    from domain.models import CollectedItem, DigestResult, RankedItem
+    from shared.constants import SourceType
+    from tests.fakes import MemoryStateStore, snapshot
+
+    config = Config()
+    config.pipeline.item_text_max_tokens = 3000
+    item = CollectedItem(source_type=SourceType.RSS, title="T", url="https://e.com/a", text="x" * 5000)
+    store = MemoryStateStore()
+    store.write_json(
+        f"{digest_pipeline.POOLS_PREFIX}2026-11-10.json", [RankedItem(item=item, score=0.9).model_dump(mode="json")]
+    )
+    memory = MagicMock()
+    memory.get_digest.return_value = snapshot(lead="어제의 리드.", items=[{"title": "Yesterday"}])
+    memory.get_recent_digests_dated.return_value = []
+    models = MagicMock()
+    models.truncate_to_tokens = lambda text, tokens: text[:tokens]
+    write = MagicMock(side_effect=lambda *a, **k: asyncio.sleep(0, DigestResult(digest_text="digest")))
+
+    monkeypatch.setattr(harness, "ROOT", tmp_path)
+    monkeypatch.setattr(harness, "get_config", lambda: config)
+    monkeypatch.setattr(harness.Config, "load", classmethod(lambda cls, *a, **k: config))
+    monkeypatch.setattr(harness, "_other_editions", lambda _config: [])
+    monkeypatch.setattr(harness.bootstrap, "language_models", lambda _config: models)
+    monkeypatch.setattr(harness.bootstrap, "memory_store", lambda *_a, **_k: memory)
+    monkeypatch.setattr(harness.bootstrap, "state_store", lambda _config: store)
+    monkeypatch.setattr(harness.bootstrap, "sibling_memory_stores", lambda _config: [])
+    monkeypatch.setattr(digest_pipeline, "write_digest", write)
+
+    asyncio.run(harness._digest("arm", ["2026-11-10"]))
+
+    args, kwargs = write.call_args
+    assert args[2][0].item.url == "https://e.com/a"
+    assert isinstance(args[3], digest_pipeline.EditorContext) and kwargs["today"].isoformat() == "2026-11-10"
+    case = json.loads((tmp_path / "digest" / "arm" / "2026-11-10.json").read_text())
+    assert "x" * 3000 in case["context"] and "x" * 3001 not in case["context"]
+    assert case["artifact"] == "digest"

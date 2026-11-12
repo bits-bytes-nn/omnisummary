@@ -211,7 +211,7 @@ class ThreadsDelivery(NamedTuple):
     one per reply, so a 5-story digest is 6 expected posts.
 
     Deliberately NOT a bool: "the root went up" and "the digest went up" are different outcomes,
-    and a partial reply chain (4 of 6 posts on 2026-07-17) used to be reported as plain success.
+    and a partial reply chain (4 of 6 posts) used to be reported as plain success.
     CALLERS: a NamedTuple is ALWAYS truthy, so never branch on the value itself — use `published`.
     """
 
@@ -226,7 +226,7 @@ class ThreadsDelivery(NamedTuple):
     # that can come back for a post that went up (an error status, a timeout). Callers keep the
     # date's marker so a replay cannot post a second root.
     uncertain: bool = False
-    # The live root, and replies Threads published as standalone posts instead (2026-10-27): the
+    # The live root, and replies Threads published as standalone posts instead: the
     # operator's alert names them, because only they can delete one or reply the story by hand.
     root_id: str = ""
     detached: tuple[str, ...] = ()
