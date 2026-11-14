@@ -16,6 +16,7 @@ from typing import Any
 import boto3
 import feedparser
 import httpx
+from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field, ValidationError
@@ -228,6 +229,13 @@ class BaseCollector(ABC):
     # Every collector's config; the health verdicts below read their thresholds from it, so a
     # source can never forget to forward a configured knob.
     config: BaseCollectorConfig
+    # The run's reference time (midnight at the END of the digest date; None: now), handed in by the
+    # composition root.
+    reference_time: datetime | None = None
+
+    def __init__(self, config: BaseCollectorConfig, *, reference_time: datetime | None = None) -> None:
+        self.config = config
+        self.reference_time = reference_time
 
     @abstractmethod
     async def collect(self) -> list[CollectedItem]: ...
@@ -238,10 +246,14 @@ class BaseCollector(ABC):
         running would otherwise look healthy for days), DEGRADED when only a fraction of the inputs
         answered, else None."""
         if self.park_status is not None and self.park_status.degraded:
-            return SourceStatus.STALE, self.park_status.detail
+            return SourceStatus.STALE, "; ".join(filter(None, [self.park_status.detail, self.degraded_detail]))
         if self.degraded_detail:
             return SourceStatus.DEGRADED, self.degraded_detail
         return None
+
+    def _add_degraded_detail(self, reason: str) -> None:
+        """Append one more reason, so a later verdict never erases an earlier one."""
+        self.degraded_detail = "; ".join(filter(None, [self.degraded_detail, reason]))
 
     def record_run_health(
         self,
@@ -275,7 +287,7 @@ class BaseCollector(ABC):
         )
         if not reason:
             return
-        self.degraded_detail = reason + (f"; {hint}" if hint else "")
+        self._add_degraded_detail(reason + (f"; {hint}" if hint else ""))
         logger.warning("Collector is DEGRADED: %s", self.degraded_detail)
 
     def flag_degraded_park(
@@ -305,7 +317,7 @@ class BaseCollector(ABC):
         )
         if not reason:
             return
-        self.degraded_detail = f"parked sync: {reason}" + (f"; {hint}" if hint else "")
+        self._add_degraded_detail(f"parked sync: {reason}" + (f"; {hint}" if hint else ""))
         logger.warning("Park file is DEGRADED: %s", self.degraded_detail)
 
     def flag_missing_park(self, parked: ParkedItems, *, required: bool, hint: str = "") -> None:
@@ -319,8 +331,8 @@ class BaseCollector(ABC):
         every day. Reporting only: the live items still reach the aggregator."""
         if not required or parked.outcome is not ParkOutcome.ABSENT or not is_running_in_aws():
             return
-        self.degraded_detail = f"park file required but absent: {parked.detail or 'no park file found'}" + (
-            f"; {hint}" if hint else ""
+        self._add_degraded_detail(
+            f"park file required but absent: {parked.detail or 'no park file found'}" + (f"; {hint}" if hint else "")
         )
         logger.error("Collector is DEGRADED: %s", self.degraded_detail)
 
@@ -454,7 +466,7 @@ def park_root_prefix(state_prefix: str) -> str:
     return prefix.rsplit("/", 1)[0] if "/" in prefix else ""
 
 
-def load_items_from_s3(filename: str, max_age_hours: int) -> ParkedItems:
+def load_items_from_s3(filename: str, max_age_hours: int, *, timeout: int) -> ParkedItems:
     """Load a collector's pre-fetched items from S3 (uploaded by a local sync script).
 
     Sources that YouTube/X block from datacenter (Lambda) IPs are collected locally on a
@@ -471,7 +483,7 @@ def load_items_from_s3(filename: str, max_age_hours: int) -> ParkedItems:
 
     Accepts both the newer envelope ({"generated_at", "items"}) and the legacy bare list; when a
     stamp is present and older than max_age_hours the items are still returned (stale beats empty)
-    but the outcome is STALE.
+    but the outcome is STALE. `timeout` bounds the S3 connect and read, in seconds.
 
     A zero-item file is treated as ABSENT only when it is ALSO older than max_age_hours: that
     combination means the local sync stopped producing, and falling through to live collection lets
@@ -486,7 +498,10 @@ def load_items_from_s3(filename: str, max_age_hours: int) -> ParkedItems:
     s3_key = park_file_key(filename, park_root_prefix(os.environ.get("S3_PREFIX", "")))
 
     try:
-        resp = boto3.client("s3").get_object(Bucket=bucket, Key=s3_key)
+        # A Session per call: this runs in worker threads beside other client creations, and boto3's
+        # shared default session is not thread-safe.
+        client = boto3.Session().client("s3", config=BotoConfig(connect_timeout=timeout, read_timeout=timeout))
+        resp = client.get_object(Bucket=bucket, Key=s3_key)
         data = json.loads(resp["Body"].read().decode("utf-8"))
         raw_items, generated_at, meta = _unwrap_items_envelope(data)
         items = [CollectedItem.model_validate(item) for item in raw_items]

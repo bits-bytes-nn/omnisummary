@@ -69,7 +69,7 @@
       "type": "rectangle",
       "x": 40,
       "y": 84,
-      "width": 150,
+      "width": 126,
       "height": 64
     },
     {
@@ -96,7 +96,7 @@
       "type": "text",
       "x": 50,
       "y": 106.625,
-      "width": 130,
+      "width": 106,
       "height": 18.75,
       "text": "RSS feeds",
       "fontSize": 15,
@@ -137,9 +137,9 @@
         "type": 3
       },
       "type": "rectangle",
-      "x": 204,
+      "x": 176,
       "y": 84,
-      "width": 150,
+      "width": 126,
       "height": 64
     },
     {
@@ -164,9 +164,9 @@
       "frameId": null,
       "roundness": null,
       "type": "text",
-      "x": 214,
+      "x": 186,
       "y": 97.25,
-      "width": 130,
+      "width": 106,
       "height": 37.5,
       "text": "Reddit\n(.rss)",
       "fontSize": 15,
@@ -207,9 +207,9 @@
         "type": 3
       },
       "type": "rectangle",
-      "x": 368,
+      "x": 312,
       "y": 84,
-      "width": 150,
+      "width": 126,
       "height": 64
     },
     {
@@ -234,9 +234,9 @@
       "frameId": null,
       "roundness": null,
       "type": "text",
-      "x": 378,
+      "x": 322,
       "y": 106.625,
-      "width": 130,
+      "width": 106,
       "height": 18.75,
       "text": "YouTube",
       "fontSize": 15,
@@ -277,9 +277,9 @@
         "type": 3
       },
       "type": "rectangle",
-      "x": 532,
+      "x": 448,
       "y": 84,
-      "width": 150,
+      "width": 126,
       "height": 64
     },
     {
@@ -304,9 +304,9 @@
       "frameId": null,
       "roundness": null,
       "type": "text",
-      "x": 542,
+      "x": 458,
       "y": 97.25,
-      "width": 130,
+      "width": 106,
       "height": 37.5,
       "text": "Web Search\n(Tavily)",
       "fontSize": 15,
@@ -347,9 +347,9 @@
         "type": 3
       },
       "type": "rectangle",
-      "x": 696,
+      "x": 584,
       "y": 84,
-      "width": 150,
+      "width": 126,
       "height": 64
     },
     {
@@ -374,9 +374,9 @@
       "frameId": null,
       "roundness": null,
       "type": "text",
-      "x": 706,
+      "x": 594,
       "y": 97.25,
-      "width": 130,
+      "width": 106,
       "height": 37.5,
       "text": "X / Twitter\n(RSSHub)",
       "fontSize": 15,
@@ -588,13 +588,13 @@
       "y": 413.0,
       "width": 340,
       "height": 40.0,
-      "text": "Rank  —  Claude Opus 5.5\n(source slots + origin caps → pool)",
+      "text": "Rank  —  Opus 5.5 AI / Sonnet 5.5 invest\n(source slots + origin caps → pool)",
       "fontSize": 16,
       "fontFamily": 5,
       "textAlign": "center",
       "verticalAlign": "middle",
       "containerId": "ds0r34i1ixq4c6kb",
-      "originalText": "Rank  —  Claude Opus 5.5\n(source slots + origin caps → pool)",
+      "originalText": "Rank  —  Opus 5.5 AI / Sonnet 5.5 invest\n(source slots + origin caps → pool)",
       "lineHeight": 1.25,
       "baseline": 16
     },
@@ -628,7 +628,7 @@
       },
       "type": "rectangle",
       "x": 40,
-      "y": 510,
+      "y": 600,
       "width": 360,
       "height": 66
     },
@@ -655,7 +655,7 @@
       "roundness": null,
       "type": "text",
       "x": 50,
-      "y": 523.0,
+      "y": 613.0,
       "width": 340,
       "height": 40.0,
       "text": "Digest  —  Claude Sonnet 5.5\n(picks the strongest 5, Korean)",
@@ -698,8 +698,8 @@
       },
       "type": "rectangle",
       "x": 40,
-      "y": 620,
-      "width": 170,
+      "y": 900,
+      "width": 360,
       "height": 60
     },
     {
@@ -725,16 +725,16 @@
       "roundness": null,
       "type": "text",
       "x": 50,
-      "y": 631.25,
-      "width": 150,
+      "y": 911.25,
+      "width": 340,
       "height": 37.5,
-      "text": "Threads\n(comic + stories)",
+      "text": "Threads\n(comic root + story replies)",
       "fontSize": 15,
       "fontFamily": 5,
       "textAlign": "center",
       "verticalAlign": "middle",
       "containerId": "mdiju50oosnmcj8e",
-      "originalText": "Threads\n(comic + stories)",
+      "originalText": "Threads\n(comic root + story replies)",
       "lineHeight": 1.25,
       "baseline": 15
     },
@@ -767,9 +767,9 @@
         "type": 3
       },
       "type": "rectangle",
-      "x": 230,
-      "y": 620,
-      "width": 170,
+      "x": 40,
+      "y": 700,
+      "width": 360,
       "height": 60
     },
     {
@@ -794,9 +794,9 @@
       "frameId": null,
       "roundness": null,
       "type": "text",
-      "x": 240,
-      "y": 632.5,
-      "width": 150,
+      "x": 50,
+      "y": 712.5,
+      "width": 340,
       "height": 35.0,
       "text": "AgentCore Memory\n(digest snapshot)",
       "fontSize": 14,
@@ -917,7 +917,7 @@
       "x": 220,
       "y": 466,
       "width": 0,
-      "height": 44,
+      "height": 34,
       "points": [
         [
           0,
@@ -925,7 +925,7 @@
         ],
         [
           0,
-          44
+          34
         ]
       ],
       "endArrowhead": "arrow",
@@ -955,10 +955,10 @@
         "type": 2
       },
       "type": "arrow",
-      "x": 125,
-      "y": 576,
+      "x": 220,
+      "y": 666,
       "width": 0,
-      "height": 44,
+      "height": 34,
       "points": [
         [
           0,
@@ -966,7 +966,7 @@
         ],
         [
           0,
-          44
+          34
         ]
       ],
       "endArrowhead": "arrow",
@@ -996,10 +996,10 @@
         "type": 2
       },
       "type": "arrow",
-      "x": 315,
-      "y": 576,
+      "x": 220,
+      "y": 760,
       "width": 0,
-      "height": 44,
+      "height": 40,
       "points": [
         [
           0,
@@ -1007,7 +1007,7 @@
         ],
         [
           0,
-          44
+          40
         ]
       ],
       "endArrowhead": "arrow",
@@ -1587,17 +1587,17 @@
       },
       "type": "arrow",
       "x": 400,
-      "y": 650,
-      "width": 494,
-      "height": -352,
+      "y": 730,
+      "width": 500,
+      "height": 428,
       "points": [
         [
           0,
           0
         ],
         [
-          494,
-          -352
+          500,
+          -428
         ]
       ],
       "endArrowhead": "arrow",
@@ -1627,7 +1627,7 @@
         "type": 2
       },
       "type": "arrow",
-      "x": 115.0,
+      "x": 103.0,
       "y": 148,
       "width": 0,
       "height": 52,
@@ -1668,7 +1668,7 @@
         "type": 2
       },
       "type": "arrow",
-      "x": 279.0,
+      "x": 239.0,
       "y": 148,
       "width": 0,
       "height": 52,
@@ -1709,7 +1709,7 @@
         "type": 2
       },
       "type": "arrow",
-      "x": 443.0,
+      "x": 375.0,
       "y": 148,
       "width": 0,
       "height": 52,
@@ -1750,7 +1750,7 @@
         "type": 2
       },
       "type": "arrow",
-      "x": 607.0,
+      "x": 511.0,
       "y": 148,
       "width": 0,
       "height": 52,
@@ -1791,7 +1791,7 @@
         "type": 2
       },
       "type": "arrow",
-      "x": 771.0,
+      "x": 647.0,
       "y": 148,
       "width": 0,
       "height": 52,
@@ -1803,6 +1803,339 @@
         [
           0,
           52
+        ]
+      ],
+      "endArrowhead": "arrow",
+      "startArrowhead": null
+    },
+    {
+      "id": "6zn2q5k86yj398u4",
+      "strokeColor": "#1971c2",
+      "backgroundColor": "#a5d8ff",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 359385784,
+      "versionNonce": 448798719,
+      "version": 1,
+      "isDeleted": false,
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "q0vvb5nf5gyaa0cq"
+        }
+      ],
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "groupIds": [],
+      "frameId": null,
+      "roundness": {
+        "type": 3
+      },
+      "type": "rectangle",
+      "x": 720,
+      "y": 84,
+      "width": 126,
+      "height": 64
+    },
+    {
+      "id": "q0vvb5nf5gyaa0cq",
+      "strokeColor": "#1971c2",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 391898189,
+      "versionNonce": 1677531300,
+      "version": 1,
+      "isDeleted": false,
+      "boundElements": [],
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "groupIds": [],
+      "frameId": null,
+      "roundness": null,
+      "type": "text",
+      "x": 730,
+      "y": 97.25,
+      "width": 106,
+      "height": 37.5,
+      "text": "Naver 증권\n(invest)",
+      "fontSize": 15,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "6zn2q5k86yj398u4",
+      "originalText": "Naver 증권\n(invest)",
+      "lineHeight": 1.25,
+      "baseline": 15
+    },
+    {
+      "id": "wuh0p0869duz3ubg",
+      "strokeColor": "#1971c2",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 246306687,
+      "versionNonce": 205741105,
+      "version": 1,
+      "isDeleted": false,
+      "boundElements": [],
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "groupIds": [],
+      "frameId": null,
+      "roundness": {
+        "type": 2
+      },
+      "type": "arrow",
+      "x": 783.0,
+      "y": 148,
+      "width": 0,
+      "height": 52,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          52
+        ]
+      ],
+      "endArrowhead": "arrow",
+      "startArrowhead": null
+    },
+    {
+      "id": "na0hs7odjlgoacfq",
+      "strokeColor": "#e8590c",
+      "backgroundColor": "#ffd8a8",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 932708375,
+      "versionNonce": 1892251081,
+      "version": 1,
+      "isDeleted": false,
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "u8ijr83z1upcp26x"
+        }
+      ],
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "groupIds": [],
+      "frameId": null,
+      "roundness": {
+        "type": 3
+      },
+      "type": "rectangle",
+      "x": 40,
+      "y": 500,
+      "width": 360,
+      "height": 66
+    },
+    {
+      "id": "u8ijr83z1upcp26x",
+      "strokeColor": "#e8590c",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 1504344498,
+      "versionNonce": 2142691661,
+      "version": 1,
+      "isDeleted": false,
+      "boundElements": [],
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "groupIds": [],
+      "frameId": null,
+      "roundness": null,
+      "type": "text",
+      "x": 50,
+      "y": 513.0,
+      "width": 340,
+      "height": 40.0,
+      "text": "Trends  —  Claude Sonnet 5.5\n(trends.json for tomorrow's lead)",
+      "fontSize": 16,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "na0hs7odjlgoacfq",
+      "originalText": "Trends  —  Claude Sonnet 5.5\n(trends.json for tomorrow's lead)",
+      "lineHeight": 1.25,
+      "baseline": 16
+    },
+    {
+      "id": "asul1enjctdafgk1",
+      "strokeColor": "#e8590c",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 1084544701,
+      "versionNonce": 697444708,
+      "version": 1,
+      "isDeleted": false,
+      "boundElements": [],
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "groupIds": [],
+      "frameId": null,
+      "roundness": {
+        "type": 2
+      },
+      "type": "arrow",
+      "x": 220,
+      "y": 566,
+      "width": 0,
+      "height": 34,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          34
+        ]
+      ],
+      "endArrowhead": "arrow",
+      "startArrowhead": null
+    },
+    {
+      "id": "kbi79urc4ban56af",
+      "strokeColor": "#0c8599",
+      "backgroundColor": "#c3fae8",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 61271251,
+      "versionNonce": 84209927,
+      "version": 1,
+      "isDeleted": false,
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "sudpsh0czy26nas5"
+        }
+      ],
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "groupIds": [],
+      "frameId": null,
+      "roundness": {
+        "type": 3
+      },
+      "type": "rectangle",
+      "x": 40,
+      "y": 800,
+      "width": 360,
+      "height": 60
+    },
+    {
+      "id": "sudpsh0czy26nas5",
+      "strokeColor": "#0c8599",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 1594704827,
+      "versionNonce": 151335103,
+      "version": 1,
+      "isDeleted": false,
+      "boundElements": [],
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "groupIds": [],
+      "frameId": null,
+      "roundness": null,
+      "type": "text",
+      "x": 50,
+      "y": 812.5,
+      "width": 340,
+      "height": 35.0,
+      "text": "Daily Visual Lambda\n(Korean comic · the only publish path)",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "kbi79urc4ban56af",
+      "originalText": "Daily Visual Lambda\n(Korean comic · the only publish path)",
+      "lineHeight": 1.25,
+      "baseline": 14
+    },
+    {
+      "id": "s17g5px4wast6hht",
+      "strokeColor": "#0c8599",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 446581242,
+      "versionNonce": 544735551,
+      "version": 1,
+      "isDeleted": false,
+      "boundElements": [],
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "groupIds": [],
+      "frameId": null,
+      "roundness": {
+        "type": 2
+      },
+      "type": "arrow",
+      "x": 220,
+      "y": 860,
+      "width": 0,
+      "height": 40,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          40
         ]
       ],
       "endArrowhead": "arrow",

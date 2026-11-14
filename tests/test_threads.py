@@ -85,7 +85,12 @@ class TestPostToThreads:
             with patch.object(threads_handler, "_upload_image_for_hosting", return_value="https://s3/img.png") as up:
                 with patch.object(threads_handler, "_publish_post", new=AsyncMock(return_value="rid")) as pub:
                     ok = await post_to_threads(
-                        root_text="R", replies=[], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
+                        config=MagicMock(),
+                        root_text="R",
+                        replies=[],
+                        image_bytes=b"PNG",
+                        image_bucket="b",
+                        image_key="k.png",
                     )
         assert ok.published is True
         up.assert_called_once()
@@ -576,6 +581,7 @@ class TestWireProtocol:
                 with patch.object(threads_handler.asyncio, "sleep", new=AsyncMock()):
                     with patch.object(threads_handler.httpx, "AsyncClient", new=self._client_factory(recorded)):
                         ok = await post_to_threads(
+                            config=MagicMock(),
                             root_text="LEAD",
                             replies=["STORY"],
                             image_bytes=b"PNG",
@@ -641,7 +647,9 @@ class TestImageHosting:
         s3.generate_presigned_url.return_value = "https://s3/presigned"
         with patch("adapters.state_store.state_boto_session") as session:
             session.return_value.client.return_value = s3
-            url = threads_handler._upload_image_for_hosting(b"PNG", "bucket", "k/p.jpg", content_type="image/jpeg")
+            url = threads_handler._upload_image_for_hosting(
+                MagicMock(), b"PNG", "bucket", "k/p.jpg", content_type="image/jpeg"
+            )
         assert url == "https://s3/presigned"
         assert s3.put_object.call_args.kwargs["ContentType"] == "image/jpeg"
         assert s3.put_object.call_args.kwargs["Key"] == "k/p.jpg"
@@ -654,7 +662,12 @@ class TestImageHosting:
             with patch.object(threads_handler, "_upload_image_for_hosting", side_effect=RuntimeError("denied")):
                 with patch.object(threads_handler, "_publish_post", new=AsyncMock(return_value="rid")) as pub:
                     ok = await post_to_threads(
-                        root_text="R", replies=[], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
+                        config=MagicMock(),
+                        root_text="R",
+                        replies=[],
+                        image_bytes=b"PNG",
+                        image_bucket="b",
+                        image_key="k.png",
                     )
         assert ok.published is True
         assert pub.await_args_list[0].kwargs["image_url"] == ""
@@ -674,7 +687,12 @@ class TestImageHosting:
                 ) as pub:
                     with patch.object(threads_handler, "_publish_reply_with_retry", new=AsyncMock()):
                         outcome = await post_to_threads(
-                            root_text="R", replies=["a"], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
+                            config=MagicMock(),
+                            root_text="R",
+                            replies=["a"],
+                            image_bytes=b"PNG",
+                            image_bucket="b",
+                            image_key="k.png",
                         )
         assert outcome.published is True and outcome.with_image is False
         assert [c.kwargs["image_url"] for c in pub.await_args_list[:2]] == ["https://s3/x", ""]
@@ -696,7 +714,12 @@ class TestImageHosting:
                 ) as pub:
                     with patch.object(threads_handler, "_publish_reply_with_retry", new=AsyncMock(return_value="r1")):
                         outcome = await post_to_threads(
-                            root_text="R", replies=["a"], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
+                            config=MagicMock(),
+                            root_text="R",
+                            replies=["a"],
+                            image_bytes=b"PNG",
+                            image_bucket="b",
+                            image_key="k.png",
                         )
         assert outcome.published is True and outcome.with_image is True
         assert [c.kwargs["image_url"] for c in pub.await_args_list] == ["https://s3/x", "https://s3/x"]
@@ -732,7 +755,12 @@ class TestImageHosting:
                 ) as pub:
                     with patch.object(threads_handler, "_publish_reply_with_retry", new=AsyncMock(return_value="r1")):
                         outcome = await post_to_threads(
-                            root_text="R", replies=["a"], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
+                            config=MagicMock(),
+                            root_text="R",
+                            replies=["a"],
+                            image_bytes=b"PNG",
+                            image_bucket="b",
+                            image_key="k.png",
                         )
         assert outcome.published is True and outcome.with_image is False
         assert [c.kwargs["image_url"] for c in pub.await_args_list] == ["https://s3/x"] * attempts + [""]
@@ -749,7 +777,12 @@ class TestImageHosting:
             with patch.object(threads_handler, "_upload_image_for_hosting", return_value="https://s3/x"):
                 with patch.object(threads_handler, "_publish_post", new=AsyncMock(side_effect=[failed])) as pub:
                     outcome = await post_to_threads(
-                        root_text="R", replies=["a"], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
+                        config=MagicMock(),
+                        root_text="R",
+                        replies=["a"],
+                        image_bytes=b"PNG",
+                        image_bucket="b",
+                        image_key="k.png",
                     )
         assert outcome.posted == 0
         assert outcome.uncertain is True  # the root may be live: the caller keeps the date marked
@@ -817,7 +850,12 @@ class TestImageHosting:
             with patch.object(threads_handler, "_upload_image_for_hosting", return_value="https://s3/x"):
                 with patch.object(threads_handler, "_publish_post", new=AsyncMock(return_value="rid")):
                     with_image = await post_to_threads(
-                        root_text="R", replies=["a"], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
+                        config=MagicMock(),
+                        root_text="R",
+                        replies=["a"],
+                        image_bytes=b"PNG",
+                        image_bucket="b",
+                        image_key="k.png",
                     )
         assert with_image.published is True and with_image.with_image is True
 
@@ -825,7 +863,12 @@ class TestImageHosting:
             with patch.object(threads_handler, "_upload_image_for_hosting", side_effect=RuntimeError("denied")):
                 with patch.object(threads_handler, "_publish_post", new=AsyncMock(return_value="rid")):
                     text_only = await post_to_threads(
-                        root_text="R", replies=["a"], image_bytes=b"PNG", image_bucket="b", image_key="k.png"
+                        config=MagicMock(),
+                        root_text="R",
+                        replies=["a"],
+                        image_bytes=b"PNG",
+                        image_bucket="b",
+                        image_key="k.png",
                     )
         assert text_only.published is True and text_only.with_image is False
 
@@ -834,7 +877,9 @@ class TestImageHosting:
         with patch.object(threads_handler, "resolve_secret", side_effect=["tok", "user1"]):
             with patch.object(threads_handler, "_upload_image_for_hosting") as up:
                 with patch.object(threads_handler, "_publish_post", new=AsyncMock(return_value="rid")) as pub:
-                    ok = await post_to_threads(root_text="R", image_bytes=b"PNG", image_bucket="", image_key="")
+                    ok = await post_to_threads(
+                        config=MagicMock(), root_text="R", image_bytes=b"PNG", image_bucket="", image_key=""
+                    )
         assert ok.published is True
         up.assert_not_called()
         assert pub.await_args_list[0].kwargs["image_url"] == ""

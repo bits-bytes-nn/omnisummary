@@ -6,7 +6,7 @@ import unicodedata
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from typing import NamedTuple
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, urlsplit
 
 from domain.models import CollectedItem
 from shared.constants import THREADS_POST_SEPARATOR, SourceType
@@ -169,6 +169,15 @@ def clean_rss_feed_name(feed_title: str, feed_url: str) -> str:
     return ""
 
 
+def host_matches(url: str, domains: list[str]) -> bool:
+    """Whether the URL's host is one of `domains` or a subdomain of one (`www.` ignored on both sides)."""
+    try:
+        host = (urlsplit(url).hostname or "").lower().removeprefix("www.")
+    except ValueError:
+        return False
+    return any(host == d or host.endswith("." + d) for d in (x.lower().removeprefix("www.") for x in domains))
+
+
 def item_netloc(item: CollectedItem) -> str:
     """The item's host, normalized the way clean_rss_feed_name does it (`netloc` minus a `www.`
     prefix). Deliberately NOT a registrable-domain / public-suffix heuristic: no new dependency, and
@@ -235,7 +244,8 @@ SOURCE_DESCRIPTORS: dict[SourceType, SourceDescriptor] = {
         metrics=_no_metrics,
     ),
     SourceType.RSS: SourceDescriptor(
-        origin_key=lambda item: item.metadata.get("feed_url", ""),
+        # The publisher's host, as for WEB: one publisher's several feeds are one origin.
+        origin_key=lambda item: item_netloc(item) or item.metadata.get("feed_url", ""),
         label=lambda item: item.metadata.get("feed_title", "") or item.metadata.get("feed_url", ""),
         tag=_rss_name,
         metrics=_no_metrics,
@@ -492,3 +502,12 @@ def threads_item_overhead_chars(meta: str, url: str) -> int:
     blocks = [p for p in (url.strip(),) if p]
     inline_meta = len(meta.strip()) + len(" ()") if meta.strip() else 0
     return inline_meta + sum(len(p) for p in blocks) + len(THREADS_POST_SEPARATOR) * (len(blocks) + 2)
+
+
+def format_recent_titles(recent_titles: list[str] | None) -> str:
+    """The story titles recent digests carried, so today isn't a re-run of them. The URL ledger stays
+    the mechanism that actually suppresses a repeat; this is information, not a filter."""
+    titles = [t.strip() for t in (recent_titles or []) if t and t.strip()]
+    if not titles:
+        return "(No recent digest on record.)"
+    return "\n".join(f"- {t}" for t in titles)

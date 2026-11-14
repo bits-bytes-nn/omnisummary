@@ -442,7 +442,7 @@ class TestTargetCountTrim:
                     source_type=SourceType.RSS,
                     title=f"T{i}",
                     url=f"u{i}",
-                    metadata={"pinned": True} if i >= 1 else {},  # u1..u4 pinned, u0 headline
+                    pinned=i >= 1,  # u1..u4 pinned, u0 headline
                 ),
                 score=0.8,
             )
@@ -475,7 +475,7 @@ class TestTargetCountTrim:
                     source_type=SourceType.RSS,
                     title=f"T{i}",
                     url=f"u{i}",
-                    metadata={"pinned": True} if i == 4 else {},
+                    pinned=i == 4,
                 ),
                 score=0.8,
             )
@@ -505,7 +505,7 @@ class TestTargetCountTrim:
                     source_type=SourceType.RSS,
                     title=f"T{i}",
                     url=f"u{i}",
-                    metadata={"pinned": True} if i == 2 else {},
+                    pinned=i == 2,
                 ),
                 score=0.8,
             )
@@ -537,7 +537,7 @@ class TestTargetCountTrim:
                     source_type=SourceType.RSS,
                     title="T",
                     url=f"u{i}",
-                    metadata={} if i == 0 else {"pinned": True},
+                    pinned=i != 0,
                 ),
                 score=0.5,
             )
@@ -587,12 +587,12 @@ class TestFormatRecentTitles:
     only — the URL ledger stays the mechanism that suppresses a repeat."""
 
     def test_bullets_the_titles(self):
-        from application.digest_generator import format_recent_titles
+        from domain.formatting import format_recent_titles
 
         assert format_recent_titles(["첫 스토리", "둘째 스토리"]) == "- 첫 스토리\n- 둘째 스토리"
 
     def test_states_when_there_is_no_recent_digest(self):
-        from application.digest_generator import format_recent_titles
+        from domain.formatting import format_recent_titles
 
         assert "No recent digest" in format_recent_titles([])
         assert "No recent digest" in format_recent_titles(None)
@@ -907,8 +907,6 @@ def test_grounding_checks_and_corrects_the_editors_titles():
 def test_a_primary_quota_story_is_carried_and_labelled_like_a_pin():
     from application.digest_generator import must_carry
 
-    primary = CollectedItem(
-        item_id="p", source_type=SourceType.RESEARCH, title="T", url="u", metadata={"primary": True}
-    )
+    primary = CollectedItem(item_id="p", source_type=SourceType.RESEARCH, title="T", url="u", primary=True)
     plain = CollectedItem(item_id="q", source_type=SourceType.RSS, title="T", url="v")
     assert must_carry(primary) and not must_carry(plain)

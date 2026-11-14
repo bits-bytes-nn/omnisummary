@@ -71,7 +71,7 @@ def test_the_investing_tools_are_bound_only_when_configured(monkeypatch):
 async def test_a_quote_is_a_citable_source_with_its_numbers():
     block = "- Apple Inc. (AAPL)\n  URL: https://finance.yahoo.com/quote/AAPL\n  Last close: 344.60 USD on 2026-10-30"
     sources = FakeSources(quote=block)
-    delivery = DeliveryContext(ports=ResearchPorts(sources=sources))
+    delivery = DeliveryContext(config=Config(), ports=ResearchPorts(sources=sources))
     with request_context(delivery):
         out = await research.market_quote("AAPL, AAPL nvda")
     assert out.count("Apple Inc.") == 2  # AAPL once, and nvda answers the same fake block
@@ -98,11 +98,11 @@ async def test_the_quote_parser_reads_the_chart_payload(monkeypatch):
     transport = httpx.MockTransport(lambda request: httpx.Response(200, content=json.dumps(payload)))
     real = httpx.AsyncClient
     monkeypatch.setattr(research_backends.httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw))
-    block = await research_backends.yahoo_quote("005930.ks")
+    block = await research_backends.yahoo_quote("005930.ks", timeout=10)
     assert "Samsung Electronics (005930.KS)" in block
     assert "225,000 KRW" in block and "+5.63%" in block
     assert "Period high / low: 225,000 on" in block
-    assert await research_backends.yahoo_quote("bad symbol!") == ""
+    assert await research_backends.yahoo_quote("bad symbol!", timeout=10) == ""
 
 
 def test_the_footer_closes_the_root_and_the_research_thread_within_the_cap():
@@ -150,7 +150,7 @@ async def test_the_quote_uses_exchange_dates_labels_a_live_session_and_survives_
             }
         }
     )
-    block = await research_backends.yahoo_quote("X.KS")
+    block = await research_backends.yahoo_quote("X.KS", timeout=10)
     assert "Latest price (session open): 101.00 KRW on" in block
     assert "2026-10-31 100.00" in block  # 15:00 UTC on 10-30 is 10-31 in Seoul
     odd_payloads = (
@@ -162,15 +162,15 @@ async def test_the_quote_uses_exchange_dates_labels_a_live_session_and_survives_
     )
     for odd in odd_payloads:
         payloads.append(odd)
-        assert await research_backends.yahoo_quote("AAPL") == ""
-    assert await research_backends.yahoo_quote("삼성") == ""
+        assert await research_backends.yahoo_quote("AAPL", timeout=10) == ""
+    assert await research_backends.yahoo_quote("삼성", timeout=10) == ""
 
 
 @pytest.mark.asyncio
 async def test_analyst_ratings_are_a_citable_source():
     block = "- Analyst ratings for NVDA (Yahoo Finance, as of 2026-11-01)\n  URL: https://finance.yahoo.com/quote/NVDA/analysis\n  Analysts: 58"
     sources = FakeSources(quote=block)
-    delivery = DeliveryContext(ports=ResearchPorts(sources=sources))
+    delivery = DeliveryContext(config=Config(), ports=ResearchPorts(sources=sources))
     with request_context(delivery):
         out = await research.analyst_ratings("NVDA, nvda TSLA")
     assert sources.analyst_ratings.await_count == 2
@@ -216,3 +216,20 @@ def test_the_ratings_block_dates_recent_actions_and_drops_old_ones():
     assert "2026-10-25 Barclays: Equal-Weight -> Overweight, target 370.00 -> 450.00 (up)" in block
     assert "Old Firm" not in block and "Broken" not in block
     assert _format_ratings("X", {}, now) == ""
+
+
+def test_the_tool_specs_state_the_ticker_caps_the_tools_apply():
+    from adapters import research_tools
+
+    assert f"up to {research.MAX_QUOTE_TICKERS} tickers" in research_tools.market_quote.tool_spec["description"]
+    assert f"up to {research.MAX_RATINGS_TICKERS} stocks" in research_tools.analyst_ratings.tool_spec["description"]
+
+
+@pytest.mark.asyncio
+async def test_tickers_past_the_cap_are_named_as_not_queried():
+    sources = FakeSources(quote="- X\n  URL: https://finance.yahoo.com/quote/X")
+    tickers = [f"T{n}" for n in range(research.MAX_RATINGS_TICKERS + 2)]
+    with request_context(DeliveryContext(config=Config(), ports=ResearchPorts(sources=sources))):
+        out = await research.analyst_ratings(" ".join(tickers))
+    assert sources.analyst_ratings.await_count == research.MAX_RATINGS_TICKERS
+    assert f"Not queried (one call reads at most {research.MAX_RATINGS_TICKERS} tickers): T5, T6" in out

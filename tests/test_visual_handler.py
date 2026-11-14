@@ -8,6 +8,7 @@ import pytest
 from application.ports import MemoryReadError
 from domain.models import ThreadsDelivery
 from entrypoints import visual_handler
+from entrypoints.invocation import remaining_deadline
 
 
 class TestVisualHandler:
@@ -194,12 +195,12 @@ class TestRemainingDeadline:
     itself is never threaded into the pipeline."""
 
     def test_none_without_a_context(self):
-        assert visual_handler._remaining_deadline(None) is None
+        assert remaining_deadline(None) is None
 
     def test_derived_from_the_remaining_millis(self):
         context = MagicMock()
         context.get_remaining_time_in_millis.return_value = 600_000
-        deadline = visual_handler._remaining_deadline(context)
+        deadline = remaining_deadline(context)
         assert deadline is not None
         assert 500 < deadline - time.monotonic() <= 600
 

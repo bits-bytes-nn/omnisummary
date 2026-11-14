@@ -107,6 +107,31 @@ class TestFoundationStack:
             {"Protocol": "email", "Endpoint": "alerts@example.com"},
         )
 
+    def test_a_named_state_bucket_is_created_and_kept_not_imported(self):
+        # A pre-existing shared bucket carried none of the protections below and could be written by any
+        # other role in the account; the stack owns the bucket it names.
+        config = Config.from_yaml(str(CONFIG_TEMPLATE))
+        config.aws.state_bucket_name = "omnisummary-test-state"
+        foundation = Template.from_stack(
+            OmniSummaryFoundationStack(
+                App(), "fnd-named", config=config, env=Environment(account="123456789012", region=config.aws.region)
+            )
+        )
+        foundation.has_resource(
+            "AWS::S3::Bucket",
+            {
+                "Properties": Match.object_like(
+                    {
+                        "BucketName": "omnisummary-test-state",
+                        "VersioningConfiguration": {"Status": "Enabled"},
+                        "LifecycleConfiguration": Match.any_value(),
+                    }
+                ),
+                "DeletionPolicy": "Retain",
+                "UpdateReplacePolicy": "Retain",
+            },
+        )
+
     def test_s3_bucket_encrypted_and_versioned(self, templates):
         foundation, _ = templates
         foundation.has_resource_properties(
@@ -642,3 +667,66 @@ def test_the_investing_lambdas_run_on_the_investing_role():
         assert "InvestLambdaRole" in roles[name], roles[name]
     for name in (f"{prefix}-digest", f"{prefix}-visual"):
         assert "InvestLambdaRole" not in roles[name]
+
+
+def test_a_monthly_budget_guards_the_projects_tagged_spend():
+    config = Config.from_yaml(str(CONFIG_TEMPLATE))
+    config.aws.monthly_budget_usd = 300
+    foundation = Template.from_stack(
+        OmniSummaryFoundationStack(
+            App(),
+            "fnd-budget",
+            config=config,
+            alert_email="alerts@example.com",
+            env=Environment(account="123456789012", region=config.aws.region),
+        )
+    )
+    foundation.has_resource_properties(
+        "AWS::Budgets::Budget",
+        {"Budget": Match.object_like({"CostFilters": {"TagKeyValue": [f"user:Project${config.aws.project_name}"]}})},
+    )
+    foundation.resource_count_is("AWS::CE::AnomalyMonitor", 1)
+    foundation.resource_count_is("AWS::CE::AnomalySubscription", 1)
+
+
+def test_no_budget_is_created_without_an_amount():
+    config = Config.from_yaml(str(CONFIG_TEMPLATE))
+    foundation = Template.from_stack(
+        OmniSummaryFoundationStack(
+            App(),
+            "fnd-nobudget",
+            config=config,
+            alert_email="a@example.com",
+            env=Environment(account="123456789012", region=config.aws.region),
+        )
+    )
+    foundation.resource_count_is("AWS::Budgets::Budget", 0)
+
+
+def test_the_sync_user_gets_put_object_on_the_state_prefix_only():
+    # Managed by hand, the sync user's grant still pointed at the old bucket after the state moved.
+    config = Config.from_yaml(str(CONFIG_TEMPLATE))
+    config.aws.s3_sync_user = "sync-user"
+    config.aws.s3_prefix = "omnisummary"
+    foundation = Template.from_stack(
+        OmniSummaryFoundationStack(
+            App(), "fnd-sync", config=config, env=Environment(account="123456789012", region=config.aws.region)
+        )
+    )
+    bucket_id = next(iter(foundation.find_resources("AWS::S3::Bucket")))
+    foundation.has_resource_properties(
+        "AWS::IAM::Policy",
+        {
+            "Users": ["sync-user"],
+            "PolicyDocument": {
+                "Statement": [
+                    {
+                        "Action": "s3:PutObject",
+                        "Effect": "Allow",
+                        "Resource": {"Fn::Join": ["", [{"Fn::GetAtt": [bucket_id, "Arn"]}, "/omnisummary/*"]]},
+                    }
+                ],
+                "Version": "2012-10-17",
+            },
+        },
+    )

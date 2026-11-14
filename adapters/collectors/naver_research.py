@@ -45,13 +45,10 @@ class NaverResearchCollector(BaseCollector):
 
     config: NaverResearchCollectorConfig
 
-    def __init__(self, config: NaverResearchCollectorConfig):
-        self.config = config
-
     async def collect(self) -> list[CollectedItem]:
         if not self.config.categories:
             return []
-        end = self.config.reference_time or datetime.now(_SEOUL)
+        end = self.reference_time or datetime.now(_SEOUL)
         start = cutoff_datetime(self.config.lookback_hours, end).astimezone(_SEOUL).date()
         last = (end - timedelta(seconds=1)).astimezone(_SEOUL).date()
         categories = [str(c) for c in self.config.categories]
@@ -136,7 +133,7 @@ class NaverResearchCollector(BaseCollector):
         # the shipped-URL ledger keeps a story from running twice).
         published = datetime.combine(day, time(23, 59, 59), tzinfo=_SEOUL)
         if not in_collection_window(
-            published, lookback_hours=self.config.lookback_hours, reference_time=self.config.reference_time
+            published, lookback_hours=self.config.lookback_hours, reference_time=self.reference_time
         ):
             return None
         stock = str(row.get("itemName") or "")
@@ -164,10 +161,10 @@ class NaverResearchCollector(BaseCollector):
             text=f"{' · '.join(header)}\n{summary}",
             author=broker,
             published_at=published,
+            # Never linked: the post names the broker (owner's call, docs/design.md).
+            show_link=False,
             metadata={
                 "research_category": category,
-                # Never linked: the post names the broker (owner's call, docs/design.md 판).
-                "hide_link": True,
                 "stock": stock,
                 "day": day.isoformat(),
                 "opinion": str(row.get("opinionText") or ""),
@@ -194,8 +191,8 @@ def _dated(row: dict[str, Any]):
 def _one_item_per_stock_and_day(items: list[CollectedItem]) -> list[CollectedItem]:
     """Several brokers' notes on one stock on one day become one item that lists every rating and target.
 
-    On 2026-11-02, 95 of 121 company notes fell on 18 stocks: each note took a ranking slot of its own,
-    and the pool filled with copies of one earnings day. Together they are the consensus a reader wants."""
+    On an earnings day most company notes fall on a few stocks: each note took a ranking slot of its own,
+    and the pool filled with copies of one day (docs/decisions.md). Together they are the consensus a reader wants."""
     groups: dict[tuple[str, str], list[CollectedItem]] = {}
     out: list[CollectedItem] = []
     for item in items:

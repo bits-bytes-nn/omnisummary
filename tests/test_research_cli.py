@@ -8,6 +8,7 @@ import pytest
 
 import research_cli
 from application.research import ResearchPorts, current_delivery_context
+from shared.config import Config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -198,7 +199,7 @@ class TestEveryInvocationIsBudgeted:
         from adapters.research_agent import research_run_limits
 
         _, _, cap = _run(["주제", "--output-dir", str(tmp_path)])
-        assert cap["kwargs"]["limits"] == research_run_limits()
+        assert cap["kwargs"]["limits"] == research_run_limits(Config.load())
 
     def test_every_agent_invocation_carries_limits(self):
         # Source-level (over the AST, so a docstring mentioning a bare call doesn't count): an

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+
 from aws_cdk import Duration, RemovalPolicy, Stack, Tags
+from aws_cdk import aws_budgets as budgets
+from aws_cdk import aws_ce as ce
 from aws_cdk import aws_ecr as ecr
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_s3 as s3
@@ -11,7 +15,8 @@ from aws_cdk.aws_bedrockagentcore import CfnMemory
 from constructs import Construct
 
 from shared import Config
-from shared.naming import digest_memory_name
+from shared.constants import THREADS_TOKEN_SECRET, THREADS_USER_SECRET
+from shared.naming import digest_memory_name, state_bucket_name
 
 
 class OmniSummaryFoundationStack(Stack):
@@ -30,25 +35,24 @@ class OmniSummaryFoundationStack(Stack):
 
         project_name = config.aws.project_name
         stage = config.aws.stage
-        is_prod = stage == "prod"
 
         Tags.of(self).add("Project", project_name)
         Tags.of(self).add("Stage", stage)
 
-        if config.aws.state_bucket_name:
-            self.state_bucket = s3.Bucket.from_bucket_name(self, "StateBucket", config.aws.state_bucket_name)
-        else:
-            self.state_bucket = s3.Bucket(
-                self,
-                "StateBucket",
-                bucket_name=f"{project_name}-{stage}-state",
-                removal_policy=RemovalPolicy.RETAIN if is_prod else RemovalPolicy.DESTROY,
-                auto_delete_objects=not is_prod,
-                encryption=s3.BucketEncryption.S3_MANAGED,
-                block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
-                enforce_ssl=True,
-                versioned=True,
-            )
+        # The stack owns the state bucket, on every stage: it holds the post ledger that stops a second
+        # post, so it is versioned (old versions kept 30 days), retained when the stack goes, private and
+        # TLS-only. A shared pre-existing bucket carried none of that.
+        self.state_bucket = s3.Bucket(
+            self,
+            "StateBucket",
+            bucket_name=state_bucket_name(config.aws.state_bucket_name, project_name, stage),
+            removal_policy=RemovalPolicy.RETAIN,
+            encryption=s3.BucketEncryption.S3_MANAGED,
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            enforce_ssl=True,
+            versioned=True,
+            lifecycle_rules=[s3.LifecycleRule(noncurrent_version_expiration=Duration.days(30))],
+        )
 
         self.ecr_repo = ecr.Repository(
             self,
@@ -130,7 +134,7 @@ class OmniSummaryFoundationStack(Stack):
             actions=["ssm:GetParameter"],
             resources=[
                 f"arn:aws:ssm:{self.region}:{self.account}:parameter/{project_name}/{stage}/{name}"
-                for name in ("threads-access-token", "threads-user-id")
+                for name in (THREADS_TOKEN_SECRET, THREADS_USER_SECRET)
             ],
         )
         for role in (*pipeline_roles, self.comment_reply_role, self.token_refresh_role):
@@ -142,9 +146,8 @@ class OmniSummaryFoundationStack(Stack):
         for role in (*pipeline_roles, self.comment_reply_role):
             role.add_to_policy(bedrock_invoke_statement)
             role.add_to_policy(bedrock_profile_statement)
-        # Scope object access to the project's own prefix instead of the entire bucket. The bucket
-        # can be a pre-existing shared one (config.aws.state_bucket_name), so a bucket-wide
-        # grant hands every other tenant's objects to this role. The root prefix provably covers
+        # Scope object access to the project's own prefix instead of the entire bucket, and per edition
+        # below. The root prefix provably covers
         # everything the project touches: {prefix}/digest_state/* (state_store), {prefix}/<file>
         # park files (adapters.collectors.base.park_file_key) and {prefix}/threads/*.png (daily visual).
         # Exactly the calls the code makes: get_object/put_object (and the presigned GET Threads
@@ -213,7 +216,7 @@ class OmniSummaryFoundationStack(Stack):
             iam.PolicyStatement(
                 actions=["ssm:PutParameter"],
                 resources=[
-                    f"arn:aws:ssm:{self.region}:{self.account}:parameter/{project_name}/{stage}/threads-access-token"
+                    f"arn:aws:ssm:{self.region}:{self.account}:parameter/{project_name}/{stage}/{THREADS_TOKEN_SECRET}"
                 ],
             )
         )
@@ -221,6 +224,20 @@ class OmniSummaryFoundationStack(Stack):
         self.alerts_topic = sns.Topic(self, "AlertsTopic", topic_name=f"{project_name}-{stage}-alerts")
         if alert_email:
             self.alerts_topic.add_subscription(subs.EmailSubscription(alert_email))
+        if config.aws.s3_sync_user:
+            # The local sync writes the park files (X, YouTube) under the project's prefix and nothing else.
+            iam.Policy(
+                self,
+                "S3SyncPolicy",
+                statements=[
+                    iam.PolicyStatement(
+                        actions=["s3:PutObject"], resources=[self.state_bucket.arn_for_objects(f"{root}*")]
+                    )
+                ],
+                users=[iam.User.from_user_name(self, "S3SyncUser", config.aws.s3_sync_user)],
+            )
+        if alert_email and config.aws.monthly_budget_usd:
+            self._spend_guards(project_name, stage, config.aws.monthly_budget_usd, alert_email)
         for role in pipeline_roles:
             self.alerts_topic.grant_publish(role)
 
@@ -259,3 +276,53 @@ class OmniSummaryFoundationStack(Stack):
                     resources=[self.memory.attr_memory_arn, f"{self.memory.attr_memory_arn}/*"],
                 )
             )
+
+    def _spend_guards(self, project_name: str, stage: str, monthly_usd: float, email: str) -> None:
+        """A budget and an anomaly monitor on everything tagged Project=<project_name>: the account-wide
+        budget could not tell this project's spend from the account's."""
+        subscriber = budgets.CfnBudget.SubscriberProperty(subscription_type="EMAIL", address=email)
+        budgets.CfnBudget(
+            self,
+            "SpendBudget",
+            budget=budgets.CfnBudget.BudgetDataProperty(
+                budget_name=f"{project_name}-{stage}-monthly",
+                budget_type="COST",
+                time_unit="MONTHLY",
+                budget_limit=budgets.CfnBudget.SpendProperty(amount=monthly_usd, unit="USD"),
+                cost_filters={"TagKeyValue": [f"user:Project${project_name}"]},
+            ),
+            notifications_with_subscribers=[
+                budgets.CfnBudget.NotificationWithSubscribersProperty(
+                    notification=budgets.CfnBudget.NotificationProperty(
+                        notification_type=kind, comparison_operator="GREATER_THAN", threshold=percent
+                    ),
+                    subscribers=[subscriber],
+                )
+                for kind, percent in (("ACTUAL", 80), ("FORECASTED", 100))
+            ],
+        )
+        monitor = ce.CfnAnomalyMonitor(
+            self,
+            "SpendAnomalyMonitor",
+            monitor_name=f"{project_name}-{stage}",
+            monitor_type="CUSTOM",
+            monitor_specification=json.dumps({"Tags": {"Key": "Project", "Values": [project_name]}}),
+        )
+        ce.CfnAnomalySubscription(
+            self,
+            "SpendAnomalySubscription",
+            subscription_name=f"{project_name}-{stage}",
+            frequency="DAILY",
+            monitor_arn_list=[monitor.attr_monitor_arn],
+            subscribers=[ce.CfnAnomalySubscription.SubscriberProperty(type="EMAIL", address=email)],
+            # An anomaly worth a day of the monthly budget.
+            threshold_expression=json.dumps(
+                {
+                    "Dimensions": {
+                        "Key": "ANOMALY_TOTAL_IMPACT_ABSOLUTE",
+                        "MatchOptions": ["GREATER_THAN_OR_EQUAL"],
+                        "Values": [str(round(monthly_usd / 30, 2))],
+                    }
+                }
+            ),
+        )

@@ -19,12 +19,12 @@ from domain.renderers import footer_overhead, research_post_budget
 from shared import KOREAN_STYLE_RULES, Config, logger
 
 
-def research_run_limits(config: Config | None = None) -> Limits:
+def research_run_limits(config: Config) -> Limits:
     """Hard per-invocation bounds for the tool loop, for EVERY caller of the agent.
 
     The Strands SDK checks them at each turn boundary and stops with stop_reason='limit_*'; the
     system prompt enforces nothing. Lives beside the agent so no caller can construct a run without it."""
-    agent_config = (config or Config.load()).agent
+    agent_config = config.agent
     return Limits(
         turns=agent_config.research_max_turns,
         total_tokens=agent_config.research_max_total_tokens,
@@ -187,9 +187,7 @@ def _render_tools_block(tools: list[Any]) -> str:
     return "\n".join(lines)
 
 
-def create_research_agent(config: Config | None = None, tools: list[Any] | None = None) -> Agent:
-    config = config or Config.load()
-
+def create_research_agent(config: Config, tools: list[Any] | None = None) -> Agent:
     # Ambient credentials by default, the configured profile only where it resolves.
     boto_session = boto3.Session(
         region_name=config.aws.bedrock_region,
@@ -209,6 +207,7 @@ def create_research_agent(config: Config | None = None, tools: list[Any] | None 
         boto_session,
         model_id,
         config.aws.bedrock_region,
+        config.aws,
     )
 
     model_kwargs: dict[str, Any] = {

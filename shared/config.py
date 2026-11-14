@@ -60,25 +60,17 @@ KOREAN_STYLE_RULES: str = (
 
 class BaseCollectorConfig(_StrictModel):
     enabled: bool = True
-    # Must reach back to the PREVIOUS run, not just cover one day: the cutoff is anchored at midnight
-    # at the END of the digest date while the cron collects hours before that midnight, so at 24 the
-    # slice between the run and midnight was unpublished when that day's run collected and already
-    # before the next run's cutoff. Config._lookback_reaches_the_previous_run validates the floor
-    # (48 - the run's local hour); this default is the floor for the shipped 19:00 KST cron plus
-    # an hour of margin. Declared ONCE here: web_search and rsshub used to re-declare it as a bare
-    # `lookback_hours: int = 72`, which replaces the FieldInfo wholesale and took the ge=1 with it —
-    # those two sources accepted a negative window while the other three failed loudly. A source that
-    # wants a wider window states it in the YAML, where every other per-source value lives.
+    # Must reach back to the PREVIOUS run (floor 48 - run's local hour, checked by
+    # Config._lookback_reaches_the_previous_run); 30 is the 19:00 KST floor plus an hour. Declared ONCE:
+    # a subclass re-declaration replaces the FieldInfo and drops ge=1. Wider windows go in the YAML.
     lookback_hours: int = Field(default=30, ge=1)
-    reference_time: datetime | None = None
     request_timeout: int = Field(default=30, ge=1)
     max_retries: int = Field(default=3, ge=1)
     retry_backoff_sec: int = Field(default=5, ge=0)
     # Age budget for a source's S3 park file (written by the local sync scripts). Beyond it the
     # items are still used — stale beats empty — but the source is reported STALE so a stopped
-    # local cron is visible instead of looking like a healthy run. A healthy park is about half an hour
-    # old at the digest (18:30 sync, 19:00 run); at 24h a stray daytime sync made the next day's FAILED
-    # 18:30 sync read FRESH (2026-10-28: X lost about 17h of posts with health OK).
+    # local cron is visible. A healthy park is ~30 min old at the digest; a looser budget let a stray
+    # daytime sync hide the next evening's failed one.
     park_max_age_hours: int = Field(default=12, ge=1)
     # Whether the park file is this source's PRIMARY path in AWS. When it is, an ABSENT file is a
     # DEGRADED source rather than a quiet fall-through: YouTube transcripts cannot be fetched from a
@@ -151,7 +143,6 @@ class NaverResearchCollectorConfig(BaseCollectorConfig):
     # category still paging at the cap is logged.
     max_pages: int = Field(default=10, ge=1)
     page_delay_sec: float = Field(default=1.0, ge=0.0)
-    # The post names the broker and the analyst; the Naver page is not linked unless this is set.
 
 
 class TrendSearch(_StrictModel):
@@ -165,8 +156,7 @@ class WebSearchCollectorConfig(BaseCollectorConfig):
     max_results_per_query: int = Field(default=10, ge=1)
     refine_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
     max_refine_queries: int = Field(default=3, ge=1)
-    # The field the refine step asks for queries about (the edition's pipeline.domain), and its rules.
-    domain: str = "AI/ML"
+    # The refine step's rules; the field it asks about is the edition's pipeline.domain.
     refine_rules: str = (
         "- Prefer: technical blog posts, paper analyses, benchmarks, tool releases, practitioner discussions\n"
         '- No generic terms ("AI news", "machine learning update")'
@@ -216,10 +206,6 @@ class CollectorsConfig(_StrictModel):
             )
         return self
 
-    def set_reference_time(self, reference_time: datetime) -> None:
-        for name in COLLECTOR_NAMES:
-            getattr(self, name).reference_time = reference_time
-
 
 def _utc_offset_hours(timezone: str) -> int:
     """Whole-hour UTC offset of `timezone` right now, for turning the UTC cron hour into a local one.
@@ -253,14 +239,12 @@ class PipelineConfig(_StrictModel):
     recent_leads_window: int = Field(default=5, ge=0)
     # The other editions posting to the same Threads account ("" is the AI/ML edition). Their last day or
     # two of story titles, leads and implications join this edition's own, so one account does not run
-    # the same story and thesis twice in a day (2026-11-05: both editions led on the midterms and data
-    # centres, 12 hours apart; the Anthropic S-1 ran 7 times in 9 days across the two).
+    # the same story and thesis twice in a day.
     sibling_editions: list[str] = Field(default_factory=list)
     ranking_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
     digest_model: LanguageModelId = LanguageModelId.CLAUDE_V5_5_SONNET
-    # A digest whose JSON the editor emits malformed (a stray bracket after the lead string cost
-    # the 2026-08-13 and 2026-08-17 digests every story) is RE-ASKED before it is given up on.
-    # Regeneration is one Bedrock call; the alternative is a day with no stories at all.
+    # A digest whose JSON the editor emits malformed is RE-ASKED before it is given up on: regeneration
+    # is one Bedrock call, the alternative a day with no stories at all.
     digest_max_retries: int = Field(default=3, ge=1)
     digest_retry_backoff_sec: float = Field(default=5.0, ge=0)
     # Post-generation faithfulness pass: verify the digest's specific claims against the
@@ -373,14 +357,11 @@ class PipelineConfig(_StrictModel):
     )
     max_per_origin: int = Field(default=1, ge=1)
     # An edition's extra sentence on how the editor picks its stories as a set (empty: the prompt is
-    # unchanged). The investing edition's: measured 3-0 on its stored days and the only variant that shipped
-    # an X post on 11-03's live pool; the same sentence lost 2-4 on AI days, which keep it empty.
+    # unchanged). Only the investing edition sets one; it lost on AI days (docs/decisions.md).
     selection_guidance: str = ""
     # The editor must carry this many stories from these source types, the best-scored ones in the pool:
     # an analyst's or investor's own note or post over the press report of it. Research notes among them
-    # get their full text (the note's PDF). Investing (2026-11-07, 7 stored days): research and X, 2 of
-    # 5 won 12-2 blind in both orders, fidelity 3.21 -> 3.86, press stories 22 -> 17 of 35; without the
-    # full text the same quota tied 7-7 and fidelity fell.
+    # get their full text (the note's PDF): the quota alone tied, with the text it won (docs/decisions.md).
     primary_quota: int = Field(default=0, ge=0)
     primary_source_types: list[SourceType] = Field(default_factory=list)
     # Score-calibration buckets the ranking prompt applies, injected as template text so
@@ -404,9 +385,8 @@ class PipelineConfig(_StrictModel):
     trend_max_evidence: int = Field(default=5, ge=1)
     trend_max_active_trends: int = Field(default=10, ge=1)
     # Whether the editor's trend context carries each trend's latest note or only its title. The AI/ML
-    # edition shows titles only (2026-11-06, blind on 6 stored days in both orders: 9-3, fidelity 2.8 to
-    # 3.9): given the notes, its leads re-told yesterday's figures as the "wider arc". Investing keeps the
-    # notes, whose market figures its editor uses (titles only lost 2-8 there).
+    # edition shows titles only: given the notes, its leads re-told yesterday's figures as the "wider arc".
+    # Investing keeps the notes, whose market figures its editor uses (docs/decisions.md).
     trend_context_notes: bool = True
     trend_momentum_half_life_days: float = Field(default=7.0, gt=0)
     # The digest's delivery channel. Off until the Threads access token / user id are provisioned in SSM.
@@ -478,12 +458,8 @@ class PipelineConfig(_StrictModel):
         "passing through anything else, natural anatomy with five-fingered hands, and a drawn face with "
         "eyes and an expression on every person, background figures included"
     )
-    # Appended to every art-director instruction: something the image must not DO. A 2026-08-15
-    # visual cast the model race as four athletes whose ethnicity stood in for their lab's country.
-    # Depicting real, identifiable people IS allowed and wanted (normal editorial-cartoon practice),
-    # but a company or a country is not a race. The tone guardrail that once sat here went with the
-    # angle it guarded: the art director no longer gets the angle, the editor matches its tone.
-    # Empty disables it.
+    # Appended to every art-director instruction. Real people may be drawn (editorial-cartoon
+    # practice), but a company or country is never an ethnically-coded human. Empty disables it.
     visual_guardrails: str = (
         "Recognisable depictions of real people are fine. Do NOT, however, personify a company or "
         "a country as an ethnically-coded human; use the real people involved, or the company's "
@@ -589,13 +565,8 @@ class AgentConfig(_StrictModel):
     research_max_total_tokens: int = Field(default=2_000_000, ge=10_000)
     research_max_output_tokens: int = Field(default=100_000, ge=1_000)
     # Hard cap on the number of Threads posts (root + replies) a research report may become.
-    # Code-enforced so a too-long report can't fan out into dozens of public posts even if the
-    # agent ignores the prompt's post-count instruction.
-    #
-    # 10, not 6: the cap sets the whole thread's ceiling (6 * 500 = 3000 chars gross, ~2500 of prose
-    # after subheadings and citation URLs) against a full report of ~8700 chars (research_target_words
-    # 1500 * 5.8 chars/word in this repo's Korean). At 3.5:1 a thread could only keep the facts by
-    # cutting the explanation, so it read as an assertion list; ~2:1 is what a narrowed scope fills.
+    # Code-enforced so a report can't fan out into dozens of public posts. 10 keeps the thread at
+    # about half a full report (~8700 chars); at 6 it could only keep facts by cutting explanation.
     research_max_threads_posts: int = Field(default=10, ge=1)
     # Hard cap on a single page's extracted text (read_url tool).
     research_content_cap_chars: int = Field(default=50000, ge=1000)
@@ -627,6 +598,13 @@ class AWSConfig(_StrictModel):
     # How often the comment-reply Lambda looks for new comments. At least its 10-minute timeout, so
     # runs never queue behind the single concurrency slot.
     comment_reply_interval_minutes: int = Field(default=60, ge=10)
+    # Monthly spend budget on everything tagged Project=<project_name> (0: none). The foundation stack
+    # emails the alert address at 80% actual and 100% forecast, and on a daily cost anomaly worth a
+    # day of this budget.
+    monthly_budget_usd: float = Field(default=0.0, ge=0.0)
+    # The IAM user the local X/YouTube sync runs as (its keys are the S3_SYNC_* in .env); the stack grants it
+    # PutObject on the state prefix. Managed by hand, its policy pointed at the old bucket after the move.
+    s3_sync_user: str = ""
 
 
 EDITION_ENV = "OMNISUMMARY_EDITION"
@@ -647,12 +625,11 @@ class Config(_StrictModel):
         single day appears in no digest ever.
 
         The cutoff is anchored at midnight at the END of the digest date (`resolve_digest_window`),
-        but the run happens hours BEFORE that midnight. All five sources shipped `lookback_hours: 24`
-        against a 10:00 UTC (19:00 KST) cron, so the window was exactly the digest date while the
-        collectors ran at 19:00 — and everything published 19:00-24:00 KST was still unpublished when
-        that day's run collected and already before the next run's cutoff. Five hours of every day,
-        permanently. The required minimum is therefore `48 - <run hour, local>`: the span from the
-        previous run's clock time to this run's reference time.
+        but the run happens hours BEFORE that midnight. With `lookback_hours: 24` on all six sources
+        (COLLECTOR_NAMES) against a 19:00 KST cron, everything published 19:00-24:00 KST was still
+        unpublished when that day's run collected and already before the next run's cutoff. The
+        required minimum is therefore `48 - <run hour, local>`: the span from the previous run's
+        clock time to this run's reference time.
 
         Widening is safe rather than duplicative because cross-day repeats are excluded by identity,
         not by the window (`PublishedUrlLedger` plus recent AgentCore snapshots), and it restores the
@@ -684,8 +661,9 @@ class Config(_StrictModel):
         return cls(**config_data if config_data else {})
 
     @classmethod
-    def load(cls) -> "Config":
-        """The deployed config: `config/config.yaml`, falling back to the tracked template.
+    def load(cls, edition: str | None = None) -> "Config":
+        """The deployed config: `config/config.yaml` (`config/<edition>.yaml` for an edition, by default
+        the one OMNISUMMARY_EDITION names), falling back to the tracked template.
 
         Returning bare code defaults for a missing file was silent and wrong. config.yaml is
         gitignored, the Dockerfile COPYs config/, so a clean-checkout image — which is exactly what
@@ -699,13 +677,13 @@ class Config(_StrictModel):
         placeholders, rank and publish a thin digest with only a log line to show for it."""
         load_dotenv()
         config_dir = Path(__file__).parent.parent / "config"
-        edition = os.environ.get(EDITION_ENV, "").strip()
+        edition = (os.environ.get(EDITION_ENV, "") if edition is None else edition).strip()
         stem = edition or "config"
         config_path = config_dir / f"{stem}.yaml"
         if config_path.exists():
             config = cls.from_yaml(str(config_path))
             if config.edition != edition:
-                raise ValueError(f"'{config_path}' declares edition '{config.edition}', but {EDITION_ENV}='{edition}'")
+                raise ValueError(f"'{config_path}' declares edition '{config.edition}', but '{edition}' was asked for")
             return config
         if is_running_in_aws():
             raise FileNotFoundError(
@@ -728,12 +706,7 @@ class Config(_StrictModel):
 
 @lru_cache(maxsize=1)
 def get_config() -> Config:
-    """Process-wide cached Config for READ-ONLY leaf callers (delivery, research backends, agent
-    tools, og-image). Config.load() re-reads and re-validates the whole YAML on every call, which
-    a single research run did dozens of times — once per tool invocation.
-
-    Deliberately NOT used where the Config is MUTATED (main/handlers' set_reference_time, the infra
-    tests' bucket override): those callers need their own instance, and
-    a shared cached object would leak their edits everywhere. Tests clear the cache via an autouse
-    fixture in tests/conftest.py."""
+    """Process-wide cached Config for the SSM secret helpers in adapters/aws.py, whose many callers
+    hold no config. Everything else is handed its Config by the composition root. Tests clear the
+    cache via an autouse fixture in tests/conftest.py."""
     return Config.load()

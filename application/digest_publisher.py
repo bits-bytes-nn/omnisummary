@@ -81,32 +81,18 @@ class DigestPublisher:
             return False
         post_date = today or datetime.now(ZoneInfo(self.config.aws.timezone)).date()
 
-        # Root = the digest lead (which already carries the AGI-countdown intro, prepended at digest
-        # generation) plus the visual when there is one; replies = one per story.
-        #
-        # A digest with no stories is NOT posted. There used to be a fallback that published the
-        # visual's own title/caption as a lone root with no replies: on 2026-08-13 and 2026-08-17 a
-        # digest whose content failed to parse took that branch and published a story-less post
-        # (one of them carrying leaked `</caption>` markup), consuming the day's ledger slot and
-        # logging success. Skipping instead keeps the day retryable and never ships a broken digest.
+        # Root = the lead (countdown already prepended) plus the visual; one reply per story. A digest
+        # with no stories is never posted: a story-less root ships a broken post and spends the day.
         if not (content and content.items):
             logger.error("No digest stories to post to Threads for %s; skipping (day stays retryable)", post_date)
-            # Leave a VERDICT behind, don't just return: this is the 2026-08-13/08-17 story-loss
-            # shape (the channel was enabled, the day was unpublished, and nothing went out), and
-            # with threads_outcome left at None the caller's alert was a no-op. expected=1 keeps
-            # posted >= expected false, so the "nothing to report" early-return can't swallow it.
+            # Record a verdict so the caller alerts: expected=1, posted=0 cannot read as success.
             self.threads_outcome = ThreadsDelivery(0, 1)
             return False
         root_text, replies = render_threads_posts(content, self.config.pipeline.threads_footer)
 
-        # Idempotency: a same-day re-run (manual `main.py`) or a replay of the visual Lambda must not
-        # post the whole root+replies set again, so a date already on the ledger is skipped unless
-        # forced. The date is claimed BEFORE the multi-minute post so a concurrent invocation (a
-        # client that retried a timed-out invoke) sees it taken and skips. Roll back if the post fails so a
-        # genuine failure stays retryable — but only if WE added the mark, so a force-republish
-        # failure doesn't wipe out a prior day's successful-post record.
-        # run_id scopes marker ownership: a rollback only releases the marker THIS run wrote, so a
-        # concurrent invocation's failure can't erase the marker of one that succeeded.
+        # Idempotency: a dated ledger marker, claimed BEFORE the multi-minute post so a concurrent
+        # invoke skips, and rolled back on failure only if THIS run (run_id) wrote it, so a retry stays
+        # possible without erasing another run's successful post.
         run_id = get_correlation_id() or ""
         was_marked = bool(self.threads_ledger and self.threads_ledger.already_posted(post_date))
         if was_marked and not force_republish:

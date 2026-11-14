@@ -10,7 +10,6 @@ import argparse
 import hashlib
 import json
 import logging
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -36,8 +35,7 @@ from domain.formatting import (
     extract_urls,  # noqa: E402
 )
 from entrypoints import bootstrap  # noqa: E402
-from shared import Config, get_config, logger  # noqa: E402
-from shared.config import EDITION_ENV  # noqa: E402
+from shared import Config, logger  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "reports"
 
@@ -171,12 +169,8 @@ def run(argv: list[str] | None = None) -> tuple[dict[str, Any], int]:
         result.update(status="rejected", error="The topic is empty.")
         return result, EXIT_REJECTED
 
-    if args.edition:
-        # Every reader of get_config() (the tools, the backends) must see this edition too.
-        os.environ[EDITION_ENV] = args.edition
-        get_config.cache_clear()
     try:
-        config = Config.load()
+        config = Config.load(args.edition or None)
     except Exception as e:
         # Still one JSON object on stdout: the caller (the OpenClaw skill) parses it either way.
         result["error"] = f"Config could not be loaded: {type(e).__name__}: {e}"

@@ -16,21 +16,20 @@ from application.ports import PublishError
 from domain.models import ThreadsComment, ThreadsDelivery
 from shared import THREADS_MAX_POST_CHARS, logger
 from shared.config import Config
+from shared.constants import THREADS_TOKEN_SECRET, THREADS_USER_SECRET
 
 # Meta's cap on an image post's alt_text.
 THREADS_ALT_TEXT_MAX_CHARS = 1000
 
 THREADS_API_BASE = "https://graph.threads.net/v1.0"
 # Meta processes every media container asynchronously, text replies too: a publish before the container
-# reads FINISHED answers code 24 for that container (2026-11-06: 20 such answers, two stories lost; each
-# of those containers read FINISHED the next day). Longest wait for FINISHED before publishing anyway.
+# reads FINISHED answers code 24 for that container. Longest wait for FINISHED before publishing anyway.
 THREADS_MEDIA_PROCESS_WAIT_SEC = 30
 THREADS_CONTAINER_POLL_SEC = 3
 # One digest's shared window for retrying a reply's code 24; a caller's deadline only shortens it.
 THREADS_INDEXING_BUDGET_SEC = 270
-# Retry cap on a reply's transient container-processing 400/429/5xx (a single such 400 dropped one
-# story from a 2026-07-17 digest). A genuine content rejection burns these attempts too, but is
-# logged with its body.
+# Retry cap on a reply's transient container-processing 400/429/5xx. A genuine content rejection burns
+# these attempts too, but is logged with its body.
 THREADS_REPLY_RETRY_ATTEMPTS = 3
 THREADS_REPLY_RETRY_BACKOFF_SEC = 10
 # Seconds the publish path still needs AFTER the indexing wait: one reply's full retry ladder, each
@@ -45,16 +44,17 @@ THREADS_PUBLISH_RESERVE_SEC = THREADS_REPLY_RETRY_ATTEMPTS * (
 THREADS_IMAGE_URL_TTL_SEC = 900
 
 
-def _upload_image_for_hosting(image_bytes: bytes, bucket: str, key: str, content_type: str = "image/png") -> str:
+def _upload_image_for_hosting(
+    config: Config, image_bytes: bytes, bucket: str, key: str, content_type: str = "image/png"
+) -> str:
     """Threads can only fetch images from a public URL (no byte upload), so host the image on
     S3 and hand back a short-lived presigned URL Meta can cURL once. The ContentType must match
     the real image type or Meta may reject/mis-render it. The client is on the state store's session
     (configured profile + region): a local shell's inherited AWS_PROFILE / AWS_REGION may be another
     account, or sign the URL for a region Meta cannot fetch from."""
     from adapters.state_store import state_boto_session
-    from shared.config import get_config
 
-    s3 = state_boto_session(get_config()).client("s3")
+    s3 = state_boto_session(config).client("s3")
     s3.put_object(Bucket=bucket, Key=key, Body=image_bytes, ContentType=content_type)
     return s3.generate_presigned_url(
         "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=THREADS_IMAGE_URL_TTL_SEC
@@ -158,9 +158,8 @@ def is_media_not_found(exc: httpx.HTTPStatusError) -> bool:
 def is_transient_reply_error(exc: httpx.HTTPStatusError) -> bool:
     """True if a reply failure is worth another attempt. Meta's container-publish endpoint returns
     transient 400s while it finishes processing a freshly-created container, code 24 included, plus the
-    usual 429/5xx. A single such 400 silently dropped
-    one of five stories on 2026-07-17. Genuine content rejections also surface as 400 and will burn
-    the retries, but they are now logged with the response body so the cause is identifiable."""
+    usual 429/5xx. Genuine content rejections also surface as 400 and burn the retries; they are
+    logged with the response body so the cause is identifiable."""
     if is_media_not_found(exc):
         return True
     status = exc.response.status_code
@@ -213,8 +212,8 @@ async def _publish_reply_with_retry(
             budget_left = indexing_deadline - time.monotonic()
             keep_for_indexing = is_media_not_found(e) and budget_left > THREADS_REPLY_RETRY_BACKOFF_SEC
             # A 5xx from the publish step may come back for a reply that went live, and a retry
-            # creates a new container: the same story would post twice. A 4xx there is retried as it
-            # long was (all 80 threads checked on 2026-10-27 carry five replies, none twice).
+            # creates a new container: the same story would post twice. A 4xx there is retried, which
+            # has never doubled a reply (docs/decisions.md, rules from incidents).
             maybe_live = publish_may_be_live(e)
             # Past a digest's indexing deadline a further code 24 retry only pushes the chain past the
             # Lambda's time.
@@ -340,6 +339,7 @@ async def _publish_root(
 
 async def post_to_threads(
     *,
+    config: Config | None = None,
     root_text: str,
     replies: list[str] | None = None,
     image_bytes: bytes | None = None,
@@ -363,8 +363,8 @@ async def post_to_threads(
     Returns a ThreadsDelivery (posted, expected) count — NOT a bool, so a partial reply chain is
     distinguishable from a complete post. Branch on `.published`, never on the value itself."""
     expected = 1 + len([r for r in (replies or []) if r.strip()])
-    token = resolve_secret("THREADS_ACCESS_TOKEN", "threads-access-token")
-    user_id = resolve_secret("THREADS_USER_ID", "threads-user-id")
+    token = resolve_secret("THREADS_ACCESS_TOKEN", THREADS_TOKEN_SECRET)
+    user_id = resolve_secret("THREADS_USER_ID", THREADS_USER_SECRET)
     if not token or not user_id:
         # ERROR, not INFO: with enable_threads_post on, empty credentials mean the day's digest is
         # NOT delivered anywhere. That read as a routine "skipping" line in the logs.
@@ -372,10 +372,10 @@ async def post_to_threads(
         return ThreadsDelivery(0, expected)
 
     image_url = ""
-    if image_bytes and image_bucket and image_key:
+    if image_bytes and image_bucket and image_key and config is not None:
         try:
             image_url = await asyncio.to_thread(
-                _upload_image_for_hosting, image_bytes, image_bucket, image_key, image_content_type
+                _upload_image_for_hosting, config, image_bytes, image_bucket, image_key, image_content_type
             )
         except Exception as e:
             logger.warning("Failed to host Threads image on S3, posting text-only: %s", e)
@@ -413,8 +413,7 @@ async def post_to_threads(
                         client, user_id, token, post, root_id, indexing_deadline=indexing_deadline
                     )
                     if await _landed_detached(client, token, reply_id):
-                        # 2026-10-27: a reply retried after code 24 published as a standalone post although
-                        # Meta answered success, and the day logged "5/5 replies" with no alert.
+                        # A reply retried after code 24 can publish as a standalone post while Meta answers success.
                         logger.error(
                             "Threads reply %d/%d published as a STANDALONE post '%s', not under the root",
                             i,
@@ -464,10 +463,10 @@ async def post_to_threads(
 def _root_may_be_live(exc: Exception) -> bool:
     """False when the root is known to have posted nothing: it failed at CONTAINER creation, or the
     publish step was rate-limited (429) or answered code 24, which names the container being published
-    as not found. Replies have retried code 24 77+ times, and all 80 digest threads checked on
-    2026-10-27 carry exactly five story replies with no duplicate. The root is held to that evidence and
-    no further, deliberately stricter than the replies' long-standing 4xx retry: a wrong guess here is a
-    second public root. Any other publish-step failure, or one whose request is unknown, may be live."""
+    as not found: the replies' code 24 retries never doubled a post (docs/decisions.md, rules from
+    incidents). The root is held to that evidence and no further, deliberately stricter than the replies'
+    4xx retry: a wrong guess here is a second public root. Any other publish-step failure, or one whose request is unknown, may be live.
+    """
     try:
         request = exc.request if isinstance(exc, httpx.HTTPStatusError | httpx.RequestError) else None
     except RuntimeError:
@@ -541,6 +540,7 @@ class ThreadsGateway:
     sessions. Credentials are read per call, so a token the refresh Lambda rotated is picked up."""
 
     publish_budget_sec = float(THREADS_INDEXING_BUDGET_SEC + THREADS_PUBLISH_RESERVE_SEC)
+    reply_publish_reserve_sec = float(THREADS_PUBLISH_RESERVE_SEC)
 
     def __init__(self, config: Config) -> None:
         self.config = config
@@ -565,6 +565,7 @@ class ThreadsGateway:
             else:
                 logger.warning("No state bucket configured; the Threads image is skipped (text-only post)")
         return await post_to_threads(
+            config=self.config,
             root_text=root_text,
             replies=replies,
             image_bytes=image_bytes,
@@ -579,8 +580,8 @@ class ThreadsGateway:
     @asynccontextmanager
     async def comments(self) -> AsyncIterator[_CommentSession]:
         # Strict: an SSM read failure must fail the run, not read as "nothing to answer".
-        token = resolve_secret("THREADS_ACCESS_TOKEN", "threads-access-token", strict=True)
-        user_id = resolve_secret("THREADS_USER_ID", "threads-user-id", strict=True)
+        token = resolve_secret("THREADS_ACCESS_TOKEN", THREADS_TOKEN_SECRET, strict=True)
+        user_id = resolve_secret("THREADS_USER_ID", THREADS_USER_SECRET, strict=True)
         if not token or not user_id:
             raise RuntimeError("Threads access token / user id not configured; cannot answer comments")
         async with threads_client(token, COMMENT_REQUEST_TIMEOUT_SEC) as client:
@@ -592,6 +593,7 @@ class ThreadsPreview:
     be read (and compared) exactly as it would have gone out."""
 
     publish_budget_sec = 0.0
+    reply_publish_reserve_sec = 0.0
 
     def __init__(self) -> None:
         self.posts: list[str] = []

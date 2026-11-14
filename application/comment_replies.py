@@ -142,6 +142,10 @@ def _thread_text(pending: PendingComment) -> str:
     return "\n\n".join(f"[{author(item)}]\n{text(item)}" for item in pending.thread)
 
 
+# Seconds one comment's draft may take.
+_DRAFT_BUDGET_SEC = 60
+
+
 class CommentResponder:
     """Answers readers' comments on the account's recent posts: one model call per comment, which
     may decline it, then one reply under the comment."""
@@ -155,6 +159,12 @@ class CommentResponder:
             CommentReply, method="json_schema"
         )
         self.ledger = CommentReplyLedger(store, retention=timedelta(days=2 * self.config.comment_reply_lookback_days))
+
+    @property
+    def seconds_per_comment(self) -> float:
+        """A comment is started only with a draft and a publish's worst case left: a run killed between
+        the publish and the ledger write answers the comment again."""
+        return _DRAFT_BUDGET_SEC + self.threads.reply_publish_reserve_sec
 
     async def draft(self, pending: PendingComment) -> CommentReply:
         chain = CommentReplyPrompt.get_prompt() | self.llm
@@ -177,11 +187,6 @@ class CommentResponder:
                 self.ledger.record_failed_attempt(comment_id, now)
         except Exception:
             logger.warning("Could not record the failure on comment %s", comment_id, exc_info=True)
-
-    # A comment is started only with this much of the run's time left, a draft plus a publish's worst case
-    # (three attempts, each waiting up to 30 s for its container and 10 s before the next): a run killed
-    # between the publish and the ledger write answers the comment again.
-    MIN_SECONDS_PER_COMMENT = 180
 
     async def run(self, now: datetime, *, dry_run: bool = False, deadline: float | None = None) -> CommentReplyRun:
         """Answer what is pending. `dry_run` drafts the replies and posts and records nothing.
@@ -209,7 +214,7 @@ class CommentResponder:
             if len(pending) > cap:
                 logger.info("%d comments pending; answering the oldest %d this run", len(pending), cap)
             for item in pending[:cap]:
-                if deadline is not None and deadline - time.monotonic() < self.MIN_SECONDS_PER_COMMENT:
+                if deadline is not None and deadline - time.monotonic() < self.seconds_per_comment:
                     logger.info("Out of time; the remaining comments wait for the next run")
                     break
                 comment_id = item.comment.id
