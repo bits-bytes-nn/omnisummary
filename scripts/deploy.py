@@ -57,7 +57,10 @@ def main():
     # STS call through config.aws.profile, which can name a different account.
     account = os.environ.get("CDK_DEFAULT_ACCOUNT")
     if not account:
-        raise SystemExit("CDK_DEFAULT_ACCOUNT is unset: run this through the CDK CLI (npx cdk deploy -a ...)")
+        raise SystemExit(
+            "CDK_DEFAULT_ACCOUNT is unset: run this through the CDK CLI (npx cdk deploy -a ...); if you did, "
+            "the CDK CLI could not resolve AWS credentials (often an expired SSO token: run aws sso login)"
+        )
     env = Environment(account=account, region=config.aws.region)
 
     app = App()
