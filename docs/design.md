@@ -631,7 +631,7 @@ LLM 쿼리 정제(`RefineQueryPrompt`)를 곁들인 Tavily 검색이다. `exclud
 검색에도 속하지 않아서 트렌드별 필드로는 그 검색에 닿지 않는다. 운영 config는 최근 게시 URL 33개 중 6개를
 차지한 `finance.biggo.com`과 `tech-insider.org`, 원문(The Decoder 등)을 AI로 다시 쓴 `ai-deep-signal.com`과 `kingy.ai`를
 제외한다(재작성본이 본문이 더 길어 원문을 이기고 실렸다). 트렌드 검색은 `frontier_models`와 `industry` 둘이다. 연구
-트렌드 쿼리는 결과가 채용 공고와 포럼 글이었고 32일에 3건만 실려 뺐다. 연구는 연구소 블로그 피드(Google, DeepMind, Microsoft, Apple, Ai2, BAIR, Thinking Machines), 연구자 글과 논문 리뷰(Import AI, Elvis Saravia, Lilian Weng, Cameron Wolfe, gonzo-ml), omarsar0·arankomatsuzaki X 계정이 덮는다.
+트렌드 쿼리는 결과가 채용 공고와 포럼 글이었고 32일에 3건만 실려 뺐다. 연구는 연구소 블로그 피드(Google, DeepMind, Microsoft, Apple, Ai2, BAIR), 연구자 글과 논문 리뷰(Import AI, Elvis Saravia, Lilian Weng, Cameron Wolfe, gonzo-ml), omarsar0·arankomatsuzaki·thinkymachines X 계정이 덮는다. Thinking Machines는 2026-11-14 블로그 피드를 내려(404) X 계정으로만 받는다.
 
 날짜 파싱에 주의점이 있다. `_parse_date`는 tz 없는 ISO 문자열을 UTC로 정규화한다. naive datetime을 tz-aware
 cutoff와 비교하면 TypeError가 나고, 그 예외는 결과를 조용히 드롭한다. 날짜만 있는 값(`2026-07-10`)은

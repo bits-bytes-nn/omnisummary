@@ -46,7 +46,18 @@ DIGEST_IMAGE_REF="$(aws ecr describe-images --profile "$PROFILE" --region "$REGI
   --image-ids imageTag="$SHA" --query 'imageDetails[0].imageDigest' --output text)"
 export DIGEST_IMAGE_REF
 echo "Deploying ${SHA:0:12} as ${DIGEST_IMAGE_REF}"
-AWS_PROFILE="$PROFILE" npx cdk deploy --all -a "uv run python scripts/deploy.py" --require-approval never
+# The CDK CLI's SDK can fail to resolve an SSO profile the aws CLI still reads (near token expiry it drops the
+# account silently), so cdk gets the credentials the aws CLI resolved for the profile. A failed export must abort
+# (a bare eval of an empty string would not), and cdk must deploy to the account the image was pushed to.
+(
+  CREDS="$(aws configure export-credentials --profile "$PROFILE" --format env)"
+  eval "$CREDS"
+  unset AWS_PROFILE
+  export AWS_REGION="$REGION"
+  [ "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT" ] \
+    || { echo "Exported credentials are not for account $ACCOUNT" >&2; exit 1; }
+  npx cdk deploy --all -a "uv run python scripts/deploy.py" --require-approval never
+)
 
 # Read-only smoke check: every image function of the stage runs the image just pushed, and its update landed.
 FUNCTIONS="$(aws lambda list-functions --profile "$PROFILE" --region "$REGION" --output text \
