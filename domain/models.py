@@ -23,6 +23,26 @@ class CollectedItem(BaseModel):
     author: str | None = None
     published_at: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # An operator's --pin-url: bypasses cross-day dedup, takes a pool seat and must ship.
+    pinned: bool = False
+    # One of the edition's primary-quota stories the editor must carry.
+    primary: bool = False
+    # False for a source whose page the post must not link (the source line still names it).
+    show_link: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def lift_stored_flags(cls, data: Any) -> Any:
+        """Pools and snapshots stored before the flags were fields carry them as metadata keys."""
+        if isinstance(data, dict) and isinstance(meta := data.get("metadata"), dict):
+            if legacy := meta.keys() & {"pinned", "primary", "hide_link"}:
+                meta = {k: v for k, v in meta.items() if k not in legacy}
+                lifted = dict(data, metadata=meta)
+                lifted.setdefault("pinned", bool(data["metadata"].get("pinned")))
+                lifted.setdefault("primary", bool(data["metadata"].get("primary")))
+                lifted.setdefault("show_link", not data["metadata"].get("hide_link"))
+                return lifted
+        return data
 
     @model_validator(mode="after")
     def ensure_item_id(self) -> CollectedItem:
@@ -91,13 +111,7 @@ class RankingHealth(BaseModel):
 
     @property
     def degraded(self) -> bool:
-        """True when candidates were LOST: a batch that failed every retry, or a split batch whose half did.
-
-        A `coverage < min_coverage_ratio` arm sat beside this. It was added for the batch whose
-        response never parsed twice over, leaving every counter at zero while the alerting stayed
-        silent — but the same commit made that case RAISE, so the arm was dead by its own docstring.
-        Measured over 30 production runs, per-day coverage is bimodal (0.93-1.0 or 0.0), so the
-        tuned ratio never separated anything the batches_failed count did not already catch."""
+        """True when candidates were LOST: a batch that failed every retry, or a split batch whose half did."""
         return self.batches_failed > 0 or self.batches_partly_lost > 0
 
     def summary(self) -> str:
@@ -137,6 +151,40 @@ class VisualBrief(BaseModel):
         default="",
         description="The comic for a screen reader, in Korean: one sentence per panel, with its line of dialogue.",
     )
+
+
+def _without_nulls(data: object) -> object:
+    """A model's JSON null means it left the field out, so the field keeps its default."""
+    return {k: v for k, v in data.items() if v is not None} if isinstance(data, dict) else data
+
+
+class VisualPlan(BaseModel):
+    """The visual editor's plan for the day's comic. Pydantic reads a STRING "false" as False: read by
+    truthiness, an editor that wrote it silently killed the day's visual."""
+
+    _drop_nulls = model_validator(mode="before")(_without_nulls)
+
+    skip: bool = False
+    use_character: bool = False
+    instruction: str = ""
+
+
+class RecentComic(BaseModel):
+    """One entry of the recent-comics log the editor is shown so today's comic does not repeat it."""
+
+    date: str
+    orientation: str = ""
+    comic: str = ""
+
+
+class FactIssue(BaseModel):
+    """A thread claim the research fact check found its cited source does not support."""
+
+    _drop_nulls = model_validator(mode="before")(_without_nulls)
+
+    post: int | str = "?"
+    claim: str = Field(min_length=1)
+    source_says: str = ""
 
 
 class RankingEntry(BaseModel):
@@ -197,7 +245,7 @@ class ThreadsDelivery(NamedTuple):
     one per reply, so a 5-story digest is 6 expected posts.
 
     Deliberately NOT a bool: "the root went up" and "the digest went up" are different outcomes,
-    and a partial reply chain (4 of 6 posts on 2026-07-17) used to be reported as plain success.
+    and a partial reply chain (4 of 6 posts) used to be reported as plain success.
     CALLERS: a NamedTuple is ALWAYS truthy, so never branch on the value itself — use `published`.
     """
 
@@ -212,7 +260,7 @@ class ThreadsDelivery(NamedTuple):
     # that can come back for a post that went up (an error status, a timeout). Callers keep the
     # date's marker so a replay cannot post a second root.
     uncertain: bool = False
-    # The live root, and replies Threads published as standalone posts instead (2026-10-27): the
+    # The live root, and replies Threads published as standalone posts instead: the
     # operator's alert names them, because only they can delete one or reply the story by hand.
     root_id: str = ""
     detached: tuple[str, ...] = ()
@@ -308,6 +356,11 @@ class HealthReport(BaseModel):
         legitimately quiet some days), so callers decide which of these matter — see
         CollectorsConfig.alert_on_empty."""
         return [s.name for s in self.sources if s.status == SourceStatus.EMPTY]
+
+    def watched_empty(self, watched: list[str] | None) -> list[str]:
+        """The empty sources among `watched` (CollectorsConfig.alert_on_empty): the dark ones that matter."""
+        names = set(watched or [])
+        return [name for name in self.empty_sources if name in names]
 
     def summary(self) -> str:
         return "\n".join(

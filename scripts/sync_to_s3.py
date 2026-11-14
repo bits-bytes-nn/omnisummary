@@ -145,7 +145,7 @@ async def main(source: str) -> None:
     s3 = session.client("s3")
     # Park HOW the sync went next to the items: a fresh file full of items from 3 of 40 inputs is
     # otherwise indistinguishable from a healthy one.
-    meta = dict(collector.run_meta)
+    meta: dict[str, object] = dict(collector.run_meta)
     previous = _previous_sync_at(source, config, datetime.now(UTC))
     if previous:
         meta[PARK_META_PREVIOUS_SYNC_AT] = previous

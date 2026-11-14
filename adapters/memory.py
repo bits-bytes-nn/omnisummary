@@ -10,7 +10,7 @@ import boto3
 
 from adapters.aws import available_boto_profile, aws_region
 from application.ports import MemoryReadError, MemoryStore
-from shared.config import Config, get_config
+from shared.config import Config
 from shared.logger import logger
 from shared.naming import digest_memory_name
 
@@ -240,19 +240,29 @@ def _deployed_memory_id(config: Config, session: boto3.Session) -> str:
         raise MemoryReadError(f"Could not look up AgentCore memory '{prefix}*': {e}") from e
 
 
-def create_memory_store(base_dir: Path | None = None, *, edition: str | None = None) -> MemoryStore:
-    """The AgentCore-backed store when the stack's memory exists (MEMORY_ID, or looked up by name for
-    a local run), else the local store. The lookup and the reads share ONE session on the configured
-    profile and config.aws.region, where the stack lives: a shell's AWS_PROFILE / AWS_REGION may point
-    at another account or the Bedrock region, and a read client on them found the memory by name and
-    then answered "Memory not found" for it. `edition` reads another edition's snapshots (default: this
-    config's)."""
-    config = get_config()
+def create_memory_store(config: Config, base_dir: Path | None = None, *, edition: str | None = None) -> MemoryStore:
+    """The AgentCore-backed store (MEMORY_ID, or looked up by name for a local run), or the local store
+    when one is chosen: `base_dir` given, or no AWS profile configured. The lookup and the reads share
+    ONE session on the configured profile and config.aws.region, where the stack lives: a shell's
+    AWS_PROFILE / AWS_REGION may point at another account or the Bedrock region, and a read client on
+    them found the memory by name and then answered "Memory not found" for it. `edition` reads another
+    edition's snapshots (default: this config's).
+
+    With a profile configured, a lookup that matches no memory raises MemoryReadError: on ambient
+    credentials for another account the lookup matched nothing, and the local fallback then answered
+    "no digest stored" for a day production had written."""
     edition = config.edition if edition is None else edition
+    if base_dir is not None:
+        return LocalMemoryStore(base_dir)
     session = boto3.Session(profile_name=available_boto_profile(config.aws.profile), region_name=config.aws.region)
     memory_id = os.environ.get("MEMORY_ID", "") or _deployed_memory_id(config, session)
     if memory_id:
         return AgentCoreMemoryStore(memory_id, region_name=config.aws.region, session=session, edition=edition)
-    fallback = base_dir or (Path("digest_state") / edition if edition else Path("digest_state"))
+    if config.aws.profile:
+        raise MemoryReadError(
+            f"No AgentCore memory '{digest_memory_name(config.aws.project_name, config.aws.stage)}-*' "
+            f"in {config.aws.region} for profile '{config.aws.profile}'"
+        )
+    fallback = Path("digest_state") / edition if edition else Path("digest_state")
     logger.info("No AgentCore memory found — using LocalMemoryStore at '%s'", fallback)
     return LocalMemoryStore(fallback)

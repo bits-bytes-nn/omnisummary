@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import main
+from application.digest_pipeline import PipelineRun
 from domain.models import CollectedItem
 from shared.constants import SourceType
 
@@ -59,7 +60,7 @@ async def test_no_digest_exits_nonzero():
             with patch.object(main, "resolve_digest_window", return_value=window):
                 collect = AsyncMock(return_value=([MagicMock()], MagicMock()))
                 with patch.object(main, "run_collectors_with_health", new=collect):
-                    with patch.object(main, "run_pipeline", new=AsyncMock(return_value=(None, None, None))):
+                    with patch.object(main, "run_pipeline", new=AsyncMock(return_value=None)):
                         assert await main.main() == 1
 
 
@@ -75,14 +76,16 @@ async def test_a_local_run_stores_the_digest_before_posting_it_inline():
             with patch.object(main, "resolve_digest_window", return_value=window):
                 collect = AsyncMock(return_value=([MagicMock()], MagicMock()))
                 with patch.object(main, "run_collectors_with_health", new=collect):
-                    with patch.object(main, "run_pipeline", new=AsyncMock(return_value=([], [MagicMock()], digest))):
+                    with patch.object(
+                        main, "run_pipeline", new=AsyncMock(return_value=PipelineRun([], [MagicMock()], digest))
+                    ):
                         with patch.object(main, "persist_digest", side_effect=lambda *a: order.append("persist")):
                             publish = AsyncMock(side_effect=lambda *a, **k: order.append("publish"))
                             with patch.object(main, "publish_inline", new=publish):
                                 assert await main.main() == 0
     assert order == ["persist", "publish"]
     assert publish.await_args.kwargs["force_republish"] is True
-    main.bootstrap.memory_store.assert_any_call()  # the edition-scoped default, never a shared path
+    main.bootstrap.memory_store.assert_any_call(config)  # this edition's config, never a shared path
 
 
 async def test_an_incomplete_local_post_exits_nonzero():
@@ -97,7 +100,9 @@ async def test_an_incomplete_local_post_exits_nonzero():
                     collect = AsyncMock(return_value=([MagicMock()], MagicMock()))
                     with patch.object(main, "run_collectors_with_health", new=collect):
                         with patch.object(
-                            main, "run_pipeline", new=AsyncMock(return_value=([], [MagicMock()], MagicMock()))
+                            main,
+                            "run_pipeline",
+                            new=AsyncMock(return_value=PipelineRun([], [MagicMock()], MagicMock())),
                         ):
                             with patch.object(main, "persist_digest"), patch.object(main, "publish_inline", new=failed):
                                 assert await main.main() == 1
@@ -113,7 +118,7 @@ async def test_a_dry_run_stores_and_posts_nothing():
                 collect = AsyncMock(return_value=([MagicMock()], MagicMock()))
                 with patch.object(main, "run_collectors_with_health", new=collect):
                     with patch.object(
-                        main, "run_pipeline", new=AsyncMock(return_value=([], [MagicMock()], MagicMock()))
+                        main, "run_pipeline", new=AsyncMock(return_value=PipelineRun([], [MagicMock()], MagicMock()))
                     ):
                         with patch.object(main, "persist_digest") as persist:
                             with patch.object(main, "publish_inline", new=AsyncMock()) as publish:

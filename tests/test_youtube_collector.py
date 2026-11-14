@@ -11,6 +11,12 @@ from domain.models import CollectedItem
 from shared.config import YouTubeCollectorConfig
 from shared.constants import SourceType
 
+REFERENCE_TIME = datetime(2026, 6, 3, tzinfo=UTC)
+
+
+def _collector(cfg, **kwargs) -> YouTubeCollector:
+    return YouTubeCollector(cfg, reference_time=kwargs.pop("reference_time", REFERENCE_TIME), **kwargs)
+
 
 def _absent_park() -> ParkedItems:
     """No S3 park file → the collector must fall through to live collection."""
@@ -21,7 +27,6 @@ def _config(**kwargs) -> YouTubeCollectorConfig:
     base = {"channels": ["https://www.youtube.com/@example"], "max_videos_per_channel": 3}
     base.update(kwargs)
     cfg = YouTubeCollectorConfig(**base)
-    cfg.reference_time = datetime(2026, 6, 3, tzinfo=UTC)
     cfg.lookback_hours = 24
     return cfg
 
@@ -59,7 +64,7 @@ class TestApiPath:
     @pytest.mark.asyncio
     async def test_api_happy_path(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
 
         client = AsyncMock()
         client.get.side_effect = [
@@ -86,7 +91,7 @@ class TestApiPath:
     async def test_long_form_uploads_first_then_all_uploads_on_404(self, monkeypatch):
         # UULF excludes Shorts, which otherwise displace the episode at max_videos_per_channel=1.
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         client = AsyncMock()
         client.get.side_effect = [
             _resp(404, {"error": {"errors": [{"reason": "playlistNotFound"}]}}),
@@ -110,7 +115,7 @@ class TestApiPath:
         # taking only the top row dropped a fresh in-window video that sat below a stale one
         # (the Dwarkesh miss). Over-fetch + sort-by-date must surface the fresh video instead.
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config(max_videos_per_channel=1))
+        collector = _collector(_config(max_videos_per_channel=1))
 
         # Playlist order: STALE first (out of the 24h window), FRESH second (in window).
         videos_payload = {
@@ -160,7 +165,7 @@ class TestApiPath:
         # with a single configured channel the all-failed check propagates it so the source is
         # reported FAILED instead of looking like a day with no uploads.
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
 
         client = AsyncMock()
         client.get.return_value = _resp(403, {})
@@ -176,7 +181,7 @@ class TestApiPath:
     @pytest.mark.asyncio
     async def test_malformed_playlist_json_raises_for_health(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
 
         bad = MagicMock(status_code=200)
         bad.json.side_effect = ValueError("truncated body")
@@ -194,7 +199,7 @@ class TestApiPath:
     @pytest.mark.asyncio
     async def test_malformed_videos_json_raises_for_health(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
 
         bad_details = MagicMock(status_code=200)
         bad_details.json.side_effect = ValueError("truncated body")
@@ -216,7 +221,7 @@ class TestApiPath:
     async def test_videos_persistent_5xx_raises_for_health(self, monkeypatch):
         # A 5xx is retriable, but an exhausted retry chain is still a channel FAILURE.
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config(max_retries=2, retry_backoff_sec=0))
+        collector = _collector(_config(max_retries=2, retry_backoff_sec=0))
 
         client = AsyncMock()
         client.get.side_effect = lambda *a, **k: (
@@ -238,7 +243,7 @@ class TestApiPath:
         # blackholed channel is distinguishable from one with no recent uploads. With a
         # single configured channel, gather(raise_if_all_failed=True) propagates.
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         with patch.object(collector, "_resolve_channel_id_via_api", AsyncMock(return_value="")):
             with patch.object(collector, "_resolve_channel_id", return_value=""):
                 with pytest.raises(RuntimeError, match="resolve canonical channel ID"):
@@ -248,7 +253,7 @@ class TestApiPath:
     async def test_one_failing_channel_among_many_is_tolerated(self, monkeypatch):
         # Partial tolerance: only an ALL-channels failure escalates to FAILED.
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config(channels=["https://www.youtube.com/@a", "https://www.youtube.com/@b"]))
+        collector = _collector(_config(channels=["https://www.youtube.com/@a", "https://www.youtube.com/@b"]))
 
         async def _collect(channel_url):
             if channel_url.endswith("@a"):
@@ -266,7 +271,7 @@ class TestRetriableStatuses:
     async def test_transient_5xx_is_retried_then_succeeds(self, monkeypatch):
         # A 503 on the playlist call used to fail the channel outright; it must be retried.
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config(retry_backoff_sec=0))
+        collector = _collector(_config(retry_backoff_sec=0))
 
         client = AsyncMock()
         client.get.side_effect = [
@@ -289,7 +294,7 @@ class TestRetriableStatuses:
         # 403 (quota exhausted / revoked key) is a verdict, not a hiccup: fail on the first response
         # instead of burning the channel's whole time budget on retries.
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config(max_retries=3, retry_backoff_sec=0))
+        collector = _collector(_config(max_retries=3, retry_backoff_sec=0))
 
         client = AsyncMock()
         client.get.return_value = _resp(403, {})
@@ -308,7 +313,7 @@ class TestChannelFanOut:
     @pytest.mark.asyncio
     async def test_fan_out_is_bounded_by_config(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(
+        collector = _collector(
             _config(channels=[f"https://www.youtube.com/@c{n}" for n in range(6)], max_concurrency=2)
         )
         state = {"active": 0, "peak": 0}
@@ -330,7 +335,7 @@ class TestChannelFanOut:
         # A wedged channel must fail its task (so an all-channels hang reports FAILED) rather than
         # holding the digest until the Lambda itself times out.
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
 
         async def _hang(channel_url):
             await asyncio.sleep(10)
@@ -400,7 +405,7 @@ class TestTranscriptSocketTimeout:
 
     @pytest.mark.asyncio
     async def test_the_collector_passes_its_transcript_timeout_through(self):
-        collector = YouTubeCollector(_config(transcript_timeout=9))
+        collector = _collector(_config(transcript_timeout=9))
         with patch("adapters.collectors.youtube.fetch_youtube_transcript", return_value="") as fetch:
             collector._get_transcript("vid")
         assert fetch.call_args.kwargs["timeout_sec"] == 9
@@ -412,7 +417,7 @@ class TestS3Preload:
         # When a local sync has parked transcript-bearing items in S3, AWS reads those and
         # skips live collection entirely (which would yield transcript-less metadata).
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         parked = [
             CollectedItem(
                 item_id="vS3",
@@ -436,7 +441,7 @@ class TestS3Preload:
         # Stale beats empty: the parked items are still returned, but park_status must record the
         # staleness so run_collectors_with_health can report STALE instead of OK.
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         parked = [CollectedItem(item_id="vOld", source_type=SourceType.YOUTUBE, title="t", url="https://y/v")]
         stale = ParkedItems(outcome=ParkOutcome.STALE, items=parked, detail="72.0h old")
         with patch("adapters.collectors.youtube.load_items_from_s3", return_value=stale):
@@ -449,7 +454,7 @@ class TestS3Preload:
     @pytest.mark.asyncio
     async def test_after_a_skipped_sync_the_read_reaches_back_to_the_previous_one(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         collector.config.lookback_hours, collector.config.park_max_age_hours = 24, 24
         missed = CollectedItem(
             item_id="vMissed",
@@ -469,7 +474,7 @@ class TestS3Preload:
         # Both live branches drop entries published before the cutoff; the park branch returned the
         # file's items verbatim, so a stale park file re-ingested days-old videos every run.
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         parked = [
             CollectedItem(
                 item_id="vFresh",
@@ -498,7 +503,7 @@ class TestS3Preload:
         # every dated item in a STALE file fell before it and the source reported STALE carrying ZERO
         # items — the contract inverted. The shipped default reaches back past the previous run.
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         collector.config.lookback_hours = YouTubeCollectorConfig().lookback_hours
         parked = [
             CollectedItem(
@@ -517,7 +522,7 @@ class TestS3Preload:
     @pytest.mark.asyncio
     async def test_a_backfill_run_does_not_ingest_todays_parked_items(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         parked = [
             CollectedItem(
                 item_id="vLater",
@@ -538,7 +543,7 @@ class TestS3Preload:
     @pytest.mark.asyncio
     async def test_park_age_budget_comes_from_config(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config(park_max_age_hours=72))
+        collector = _collector(_config(park_max_age_hours=72))
         with patch("adapters.collectors.youtube.load_items_from_s3", return_value=_absent_park()) as load:
             with patch.object(collector, "_collect_channel", new=AsyncMock(return_value=[])):
                 await collector.collect()
@@ -547,7 +552,7 @@ class TestS3Preload:
     @pytest.mark.asyncio
     async def test_live_collection_when_no_s3(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         with patch("adapters.collectors.youtube.load_items_from_s3", return_value=_absent_park()):
             with patch.object(collector, "_collect_channel", new=AsyncMock(return_value=[])):
                 items = await collector.collect()
@@ -558,7 +563,7 @@ class TestS3Preload:
         # The park file is the ONLY transcript-carrying path in AWS, so falling through to live
         # collection returns videos with no transcript at all — and reported OK on every such day.
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config(park_required=True))
+        collector = _collector(_config(park_required=True))
         park = ParkedItems(outcome=ParkOutcome.ABSENT, detail="no object at 's3://b/youtube_items.json'")
         with patch("adapters.collectors.base.is_running_in_aws", return_value=True):
             with patch("adapters.collectors.youtube.load_items_from_s3", return_value=park):
@@ -579,7 +584,7 @@ class TestS3Preload:
     @pytest.mark.asyncio
     async def test_a_missing_park_file_is_silent_when_it_is_not_required(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         with patch("adapters.collectors.base.is_running_in_aws", return_value=True):
             with patch("adapters.collectors.youtube.load_items_from_s3", return_value=_absent_park()):
                 with patch.object(collector, "_collect_channel", new=AsyncMock(return_value=[])):
@@ -594,7 +599,7 @@ class TestApiKeyResolution:
         # read inside the async fan-out — on the loop thread, once per channel. It must now happen
         # exactly once per run, in a worker thread, before any channel task starts.
         monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
-        collector = YouTubeCollector(_config(channels=[f"https://www.youtube.com/@c{n}" for n in range(4)]))
+        collector = _collector(_config(channels=[f"https://www.youtube.com/@c{n}" for n in range(4)]))
         calls: list[tuple] = []
 
         def _resolve(*args):
@@ -613,7 +618,7 @@ class TestApiKeyResolution:
     async def test_parked_run_never_resolves_the_key(self, monkeypatch):
         # The S3 park path short-circuits before any HTTP, so it must not pay for an SSM lookup.
         monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         parked = [CollectedItem(item_id="v", source_type=SourceType.YOUTUBE, title="t", url="https://y/v")]
         with patch(
             "adapters.collectors.youtube.load_items_from_s3",
@@ -655,7 +660,7 @@ class TestRssFallback:
     @pytest.mark.asyncio
     async def test_rss_fallback_when_no_api_key(self, monkeypatch):
         monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
 
         with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
             with patch(
@@ -677,7 +682,7 @@ class TestRssFallback:
         # and the un-cancellable worker thread outlived the channel's wait_for budget.
         monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
         config = _config()
-        collector = YouTubeCollector(config)
+        collector = _collector(config)
         fetch = AsyncMock(return_value=self._feed(self._entry()))
         with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
             with patch("adapters.collectors.youtube.fetch_feed_with_retry", new=fetch):
@@ -693,7 +698,7 @@ class TestRssFallback:
         # The transcript lookup and the canonical watch URL are both derived from the video id, so a
         # hashed fallback id would be useless downstream.
         monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         feed = self._feed(self._entry(), self._entry("", link="https://www.youtube.com/@x"))
         with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
             with patch("adapters.collectors.youtube.fetch_feed_with_retry", new=AsyncMock(return_value=feed)):
@@ -704,7 +709,7 @@ class TestRssFallback:
     @pytest.mark.asyncio
     async def test_the_video_id_is_read_off_the_link_when_the_feed_omits_it(self, monkeypatch):
         monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         feed = self._feed(self._entry("", link="https://www.youtube.com/watch?v=fromlink001"))
         with patch.object(collector, "_resolve_channel_id", return_value="UCabcdef"):
             with patch("adapters.collectors.youtube.fetch_feed_with_retry", new=AsyncMock(return_value=feed)):
@@ -715,7 +720,7 @@ class TestRssFallback:
 
 class TestResolveChannelId:
     def test_resolves_canonical_channel_id(self):
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         cid = "UC" + "a1b2c3d4e5f6g7h8i9j0k1"  # UC + exactly 22 base64url chars
         resp = MagicMock(text=f'...{{"channelId":"{cid}"}}...')
         with patch.object(collector._sync_client, "get", return_value=resp):
@@ -724,14 +729,14 @@ class TestResolveChannelId:
     def test_rejects_noncanonical_channel_id(self):
         # too-short UC ids and the loose channel_id= param no longer resolve — they
         # would have produced a malformed UU... uploads playlist and a silent empty result.
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         for text in ('...{"channelId":"UC1234567890abcdef"}...', '<link href="...channel_id=UCfromparam">'):
             resp = MagicMock(text=text)
             with patch.object(collector._sync_client, "get", return_value=resp):
                 assert collector._resolve_channel_id("https://youtube.com/@x") == ""
 
     def test_returns_empty_on_no_match(self):
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         resp = MagicMock(text="no ids here")
         with patch.object(collector._sync_client, "get", return_value=resp):
             assert collector._resolve_channel_id("https://youtube.com/@x") == ""
@@ -742,7 +747,7 @@ class TestResolveChannelIdViaApi:
     async def test_resolves_handle_via_data_api(self, monkeypatch):
         # The API forHandle lookup works from datacenter IPs where the page scrape is blocked.
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         client = AsyncMock()
         client.get.return_value = _resp(200, {"items": [{"id": "UCabc123"}]})
         cid = await collector._resolve_channel_id_via_api("https://www.youtube.com/@AndrejKarpathy", client)
@@ -755,7 +760,7 @@ class TestResolveChannelIdViaApi:
     )
     async def test_resolves_a_non_latin_handle(self, monkeypatch, url):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         client = AsyncMock()
         client.get.return_value = _resp(200, {"items": [{"id": "UCabc123"}]})
         assert await collector._resolve_channel_id_via_api(url, client) == "UCabc123"
@@ -764,7 +769,7 @@ class TestResolveChannelIdViaApi:
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_handle(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         client = AsyncMock()
         cid = await collector._resolve_channel_id_via_api("https://www.youtube.com/channel/UCx", client)
         assert cid == ""
@@ -773,7 +778,7 @@ class TestResolveChannelIdViaApi:
     @pytest.mark.asyncio
     async def test_returns_empty_on_empty_items(self, monkeypatch):
         monkeypatch.setenv("YOUTUBE_API_KEY", "k")
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         client = AsyncMock()
         client.get.return_value = _resp(200, {"items": []})
         assert await collector._resolve_channel_id_via_api("https://www.youtube.com/@x", client) == ""
@@ -781,12 +786,12 @@ class TestResolveChannelIdViaApi:
 
 class TestTranscript:
     def test_transcript_failure_returns_empty(self):
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         with patch("adapters.collectors.youtube.YouTubeTranscriptApi", side_effect=RuntimeError("boom")):
             assert collector._get_transcript("vid") == ""
 
     def test_fetch_uses_configured_language_first(self):
-        collector = YouTubeCollector(_config(transcript_language="ko"))
+        collector = _collector(_config(transcript_language="ko"))
         api = MagicMock()
         api.fetch.return_value = MagicMock(snippets=[MagicMock(text="안녕")])
         with patch("adapters.collectors.youtube.YouTubeTranscriptApi", return_value=api):
@@ -797,7 +802,7 @@ class TestTranscript:
     def test_falls_back_to_any_available_language(self):
         from youtube_transcript_api._errors import YouTubeTranscriptApiException
 
-        collector = YouTubeCollector(_config(transcript_language="en"))
+        collector = _collector(_config(transcript_language="en"))
         api = MagicMock()
         # Configured 'en' missing → raise, then fall back to listed languages.
         api.fetch.side_effect = YouTubeTranscriptApiException("no en")
@@ -813,7 +818,7 @@ class TestTranscript:
 
     @pytest.mark.asyncio
     async def test_fetch_transcript_times_out_and_skips(self):
-        collector = YouTubeCollector(_config(transcript_timeout=1))
+        collector = _collector(_config(transcript_timeout=1))
 
         async def timeout(awaitable, timeout):
             awaitable.close()  # avoid an un-awaited to_thread coroutine warning
@@ -828,7 +833,7 @@ class TestTranscript:
 class TestResolveChannelIdTimeout:
     @pytest.mark.asyncio
     async def test_resolve_channel_id_times_out_and_skips(self):
-        collector = YouTubeCollector(_config(resolve_timeout=1))
+        collector = _collector(_config(resolve_timeout=1))
 
         async def timeout(awaitable, timeout):
             awaitable.close()  # avoid an un-awaited to_thread coroutine warning
@@ -842,7 +847,7 @@ class TestResolveChannelIdTimeout:
 
 class TestLifecycle:
     def test_del_closes_pooled_client(self):
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         with patch.object(collector._sync_client, "close") as close:
             collector.__del__()
         close.assert_called_once()
@@ -850,7 +855,7 @@ class TestLifecycle:
     def test_sync_client_not_created_until_used(self):
         # The S3-parked path short-circuits before any HTTP, so the sync client must not be
         # eagerly opened at construction — and __del__ must be a safe no-op when it never was.
-        collector = YouTubeCollector(_config())
+        collector = _collector(_config())
         assert collector._sync_client_instance is None
         collector.__del__()  # no client created → must not raise
         assert collector._sync_client_instance is None
@@ -865,7 +870,7 @@ async def test_the_api_key_rides_in_a_header_not_the_url():
         seen.append(request)
         return httpx.Response(200, json={"items": []})
 
-    collector = YouTubeCollector(_config())
+    collector = _collector(_config())
     collector.api_key = "secret-key"
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         await collector._get_api(client, "channels", {"part": "id"}, description="d")

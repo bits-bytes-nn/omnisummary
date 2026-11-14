@@ -78,12 +78,44 @@ class TestBrief:
         # with_structured_output yields a validated VisualBrief; brief() returns it as-is,
         # with no text-JSON parsing in between.
         factory = MagicMock()
-        out = VisualBrief(title="T", prompt="draw X", orientation="landscape")
+        out = VisualBrief(title="T", prompt="draw X", orientation="landscape", alt_text="1컷: X.")
         factory.get_model.return_value.with_structured_output.return_value = RunnableLambda(lambda _: out)
         factory.truncate_to_tokens.side_effect = lambda text, _: text
         gen = VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET, _renderer(), **_visual_kwargs())
         brief = await gen.brief("a 1-page slide", "source text")
         assert brief == out
+
+    @pytest.mark.asyncio
+    async def test_a_brief_without_alt_text_is_asked_for_once_more(self):
+        factory = MagicMock()
+        answers = [
+            VisualBrief(prompt="generic strip", orientation="tall"),
+            VisualBrief(prompt="still no alt text", orientation="tall"),
+            VisualBrief(prompt="never asked", orientation="tall", alt_text="1컷: X."),
+        ]
+        factory.get_model.return_value.with_structured_output.return_value = RunnableLambda(lambda _: answers.pop(0))
+        factory.truncate_to_tokens.side_effect = lambda text, _: text
+        gen = VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET, _renderer(), **_visual_kwargs())
+        # One retry, then the second answer ships: the day's visual is never lost to a missing alt text.
+        assert (await gen.brief("synopsis", "source")).prompt == "still no alt text"
+        assert len(answers) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failed_re_ask_keeps_the_first_brief(self):
+        factory = MagicMock()
+        first = VisualBrief(prompt="first", orientation="tall")
+        answers: list = [first, RuntimeError("Bedrock down")]
+
+        def answer(_):
+            a = answers.pop(0)
+            if isinstance(a, Exception):
+                raise a
+            return a
+
+        factory.get_model.return_value.with_structured_output.return_value = RunnableLambda(answer)
+        factory.truncate_to_tokens.side_effect = lambda text, _: text
+        gen = VisualGenerator(factory, LanguageModelId.CLAUDE_V4_6_SONNET, _renderer(), **_visual_kwargs())
+        assert await gen.brief("synopsis", "source") == first
 
     def test_the_brief_is_asked_for_as_json_schema_constrained_output(self):
         factory = MagicMock()

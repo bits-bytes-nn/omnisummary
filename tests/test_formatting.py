@@ -75,8 +75,19 @@ class TestResolveOriginKey:
     def test_other_sources_unchanged(self):
         assert resolve_origin_key(_sourced(SourceType.YOUTUBE, channel_url="c")) == "c"
         assert resolve_origin_key(_sourced(SourceType.REDDIT, subreddit="LocalLLaMA")) == "LocalLLaMA"
-        assert resolve_origin_key(_sourced(SourceType.RSS, feed_url="f")) == "f"
         assert resolve_origin_key(_sourced(SourceType.X, author="karpathy")) == "karpathy"
+
+    def test_rss_origin_is_the_publisher_host_not_the_feed(self):
+        news = _sourced(
+            SourceType.RSS, url="https://news.einfomax.co.kr/a", feed_url="https://news.einfomax.co.kr/rss/S1N2.xml"
+        )
+        bonds = _sourced(
+            SourceType.RSS, url="https://news.einfomax.co.kr/b", feed_url="https://news.einfomax.co.kr/rss/S1N9.xml"
+        )
+        assert resolve_origin_key(news) == resolve_origin_key(bonds) == "news.einfomax.co.kr"
+
+    def test_an_rss_item_without_a_host_falls_back_to_its_feed(self):
+        assert resolve_origin_key(_sourced(SourceType.RSS, url="notaurl", feed_url="f")) == "f"
 
     def test_missing_source_metadata_falls_back_to_the_host(self):
         # An origin-less item escaped max_per_origin entirely, was skipped by pin-origin seeding, and
@@ -252,3 +263,13 @@ class TestCleanRssFeedName:
         from domain.formatting import clean_rss_feed_name
 
         assert clean_rss_feed_name(feed_title, "https://www.example.com/feed") == expected
+
+
+class TestHostMatches:
+    def test_a_domain_matches_itself_and_its_subdomains_not_a_lookalike(self):
+        from domain.formatting import host_matches
+
+        assert host_matches("https://www.Example.com/a", ["example.com"])
+        assert host_matches("https://news.example.com/a", ["www.example.com"])
+        assert not host_matches("https://notexample.com/a", ["example.com"])
+        assert not host_matches("https://[broken/a", ["example.com"])

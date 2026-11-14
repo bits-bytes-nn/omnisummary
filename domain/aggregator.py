@@ -6,6 +6,7 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 from domain.formatting import RETWEET_PREFIX, normalize_title
 from domain.models import CollectedItem, generate_item_id
 from shared import logger
+from shared.constants import SourceType
 
 _TRACKING_PARAM_PREFIXES = ("utm_",)
 _TRACKING_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src", "ref_url"}
@@ -17,7 +18,7 @@ _HOST_ALIASES = {
     "old.reddit.com": "reddit.com",
     "m.youtube.com": "youtube.com",
 }
-_YOUTUBE_VIDEO_PATH = re.compile(r"^/(?:shorts|live)/([\w-]+)$")
+_YOUTUBE_VIDEO_PATH = re.compile(r"^/(?:shorts|live|embed)/([\w-]+)$")
 _X_STATUS_PATH = re.compile(r"^/(?:i/web|[^/]+)/status/(\d+)")
 _NON_ASCII_ESCAPES = re.compile(r"(?:%[89A-Fa-f][0-9A-Fa-f])+")
 _HOST_TRACKING_PARAMS = {"x.com": {"s", "t"}, "youtube.com": {"si", "feature", "t"}}
@@ -54,6 +55,15 @@ def normalize_url(url: str) -> str:
     ]
     query = urlencode(sorted(kept))
     return urlunsplit(("https", host, path, query, ""))
+
+
+def youtube_video_id(url: str) -> str:
+    """The video id of a YouTube URL in any form normalize_url folds into watch?v= (youtu.be/, /shorts/,
+    /live/, /embed/, m.youtube.com), else ""."""
+    parts = urlsplit(normalize_url(url))
+    if parts.netloc != "youtube.com" or parts.path != "/watch":
+        return ""
+    return dict(parse_qsl(parts.query)).get("v", "")
 
 
 _SHIPPED_TRACKING_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid"}
@@ -108,16 +118,15 @@ class ContentAggregator:
             key = normalize_url(item.url)
             # Pinned items (user-specified via --pin-url) bypass cross-day dedup: the user
             # asked for this exact URL today, even if it was published in a recent digest.
-            if key in exclude and not item.metadata.get("pinned"):
+            if key in exclude and not item.pinned:
                 cross_day_skipped += 1
                 continue
             if key in seen_urls:
                 logger.debug("Duplicate URL skipped: '%s'", item.url)
-                hidden = seen_urls[key].metadata.get("hide_link") or item.metadata.get("hide_link")
+                linkable = seen_urls[key].show_link and item.show_link
                 seen_urls[key] = self._pick_survivor(seen_urls[key], item)
-                if hidden:
-                    # The same URL: a page that must not be linked stays unlinked whichever copy survives.
-                    seen_urls[key].metadata["hide_link"] = True
+                # The same URL: a page that must not be linked stays unlinked whichever copy survives.
+                seen_urls[key].show_link = linkable
                 url_dupes += 1
             else:
                 seen_urls[key] = item
@@ -128,6 +137,9 @@ class ContentAggregator:
         url_deduped = list(seen_urls.values())
 
         seen_titles: dict[str, CollectedItem] = {}
+        # X posts by their text: RSSHub cuts a retweet's title shorter ("RT name:" takes room), so a
+        # retweet and its post can share no title while their text is the same.
+        seen_posts: dict[str, CollectedItem] = {}
         deduplicated: list[CollectedItem] = []
         title_dupes = 0
         empty_norm = 0
@@ -143,8 +155,9 @@ class ContentAggregator:
                 continue
             # A pinned duplicate is not lost here: _pick_survivor always keeps the pinned copy. Two pins
             # sharing a title are both kept, since each was asked for by URL.
-            if norm in seen_titles and not (item.metadata.get("pinned") and seen_titles[norm].metadata.get("pinned")):
-                prev = seen_titles[norm]
+            post = x_post_key(item)
+            prev = seen_titles.get(norm) or (seen_posts.get(post) if post else None)
+            if prev is not None and not (item.pinned and prev.pinned):
                 logger.debug(
                     "Duplicate title skipped: '%s' (same as '%s')",
                     item.title[:60],
@@ -153,12 +166,22 @@ class ContentAggregator:
                 survivor = self._pick_survivor(prev, item)
                 if survivor is not prev:
                     # A later duplicate has richer content; swap it in at the survivor's position
-                    # so the digest reads the fuller text (order otherwise preserved).
-                    seen_titles[norm] = survivor
+                    # so the digest reads the fuller text (order otherwise preserved). Every key that
+                    # led to the replaced copy now leads to the survivor, so no lookup finds an item
+                    # that has left the list.
                     deduplicated[deduplicated.index(prev)] = survivor
+                    for seen in (seen_titles, seen_posts):
+                        for key, kept in seen.items():
+                            if kept is prev:
+                                seen[key] = survivor
+                seen_titles[norm] = survivor
+                if post:
+                    seen_posts[post] = survivor
                 title_dupes += 1
             else:
                 seen_titles[norm] = item
+                if post:
+                    seen_posts[post] = item
                 deduplicated.append(item)
 
         if empty_norm:
@@ -191,9 +214,9 @@ class ContentAggregator:
         the same article's full-text RSS/web entry just because its collector ran first). A pinned
         item always wins; otherwise the longer body wins; ties keep the incumbent so
         collector order still breaks ties deterministically."""
-        if dupe.metadata.get("pinned") and not incumbent.metadata.get("pinned"):
+        if dupe.pinned and not incumbent.pinned:
             winner, loser = dupe, incumbent
-        elif incumbent.metadata.get("pinned"):
+        elif incumbent.pinned:
             winner, loser = incumbent, dupe
         elif bool(RETWEET_PREFIX.match(incumbent.title)) != bool(RETWEET_PREFIX.match(dupe.title)):
             # The post itself over its retweet: the retweet's body is longer only by its "RT name:".
@@ -209,9 +232,21 @@ class ContentAggregator:
     def _fill_missing_metadata(kept: CollectedItem, dupe: CollectedItem) -> None:
         # Only fill keys the kept item lacks — never overwrite its own origin/engagement
         # metadata (feed_url, subreddit, channel_url, view_count) with a lower-priority dupe's.
-        # Metadata keys belong to a source type (subreddit, channel_url, broker, hide_link ...): a news
+        # Metadata keys belong to a source type (subreddit, channel_url, broker ...): a news
         # item that wins a title tie with a research note must not take the note's hidden link or broker.
         if dupe.source_type != kept.source_type:
             return
         for k, v in dupe.metadata.items():
             kept.metadata.setdefault(k, v)
+
+
+def x_post_key(item: CollectedItem) -> str:
+    """An X post's normalized text, a retweet's without its "RT <name>" lead (the title's name, in any
+    spacing or punctuation), so a retweet and the post it carries share a key. "" for anything else."""
+    if item.source_type != SourceType.X or not item.text.strip():
+        return ""
+    text = item.text
+    if match := RETWEET_PREFIX.match(item.title):
+        name = match.group(0).strip()[2:].rstrip(":").strip()
+        text = re.sub(rf"^\s*RT\s+{re.escape(name)}\s*:?", "", text)
+    return normalize_title(text)

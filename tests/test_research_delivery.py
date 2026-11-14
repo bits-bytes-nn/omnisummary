@@ -6,6 +6,7 @@ from application import research as dlv
 from application.research import DeliveryContext
 from domain.formatting import normalize_citation_url
 from domain.models import ImageAsset, ThreadsDelivery
+from shared.config import Config
 from tests.fakes import FakeThreads
 
 
@@ -26,7 +27,7 @@ def _threads_config(d, *, max_posts: int = 8) -> None:
 class TestMarkdownReport:
     @pytest.mark.asyncio
     async def test_the_report_is_recorded_and_publishes_nothing(self):
-        d = DeliveryContext()
+        d = DeliveryContext(config=Config())
         d.ports.threads = FakeThreads()
         d.ports.threads.post_thread = AsyncMock()
         pt = d.ports.threads.post_thread
@@ -39,21 +40,23 @@ class TestMarkdownReport:
     @pytest.mark.asyncio
     async def test_a_revision_replaces_the_recorded_report(self):
         # Nothing external happened, so a corrected report is simply the better answer.
-        d = DeliveryContext()
+        d = DeliveryContext(config=Config())
         await dlv.deliver_research_report("첫 보고서다.", channel="markdown", delivery=d)
         again = await dlv.deliver_research_report("고친 보고서다.", channel="markdown", delivery=d)
         assert again is dlv.DeliveryOutcome.POSTED
         assert d.report == "고친 보고서다."
 
     def test_threads_is_allowed_only_when_the_caller_asked(self):
-        assert DeliveryContext().allowed_channels == {"markdown"}
-        assert DeliveryContext(publish_threads=True).allowed_channels == {"markdown", "threads"}
+        assert DeliveryContext(config=Config()).allowed_channels == {"markdown"}
+        assert DeliveryContext(config=Config(), publish_threads=True).allowed_channels == {"markdown", "threads"}
 
 
 class TestDeliverThreads:
     @pytest.mark.asyncio
     async def test_passes_first_image_with_content_type_and_key(self):
-        d = DeliveryContext(publish_threads=True, staged_images=[_img("image/jpeg"), _img("image/png")])
+        d = DeliveryContext(
+            config=Config(), publish_threads=True, staged_images=[_img("image/jpeg"), _img("image/png")]
+        )
         d.seen_urls.add(normalize_citation_url("https://src/article"))
         d.ports.threads = FakeThreads()
         d.ports.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(1, 1))
@@ -68,7 +71,7 @@ class TestDeliverThreads:
     @pytest.mark.asyncio
     async def test_empty_report_skips_threads_api(self):
         # An empty report must not call post_to_threads (an empty root 400s the Threads API).
-        d = DeliveryContext(publish_threads=True)
+        d = DeliveryContext(config=Config(), publish_threads=True)
         d.ports.threads = FakeThreads()
         d.ports.threads.post_thread = AsyncMock()
         pt = d.ports.threads.post_thread
@@ -80,7 +83,7 @@ class TestDeliverThreads:
 
     @pytest.mark.asyncio
     async def test_no_images_text_only(self):
-        d = DeliveryContext(publish_threads=True)
+        d = DeliveryContext(config=Config(), publish_threads=True)
         d.ports.threads = FakeThreads()
         d.ports.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(1, 1))
         pt = d.ports.threads.post_thread
@@ -91,7 +94,7 @@ class TestDeliverThreads:
     async def test_a_repeat_threads_call_posts_nothing_and_says_so(self):
         # The likely reason for a second call is a REVISED report; announcing it as delivered told
         # the requester a correction had gone out that never did.
-        d = DeliveryContext(publish_threads=True)
+        d = DeliveryContext(config=Config(), publish_threads=True)
         d.ports.threads = FakeThreads()
         d.ports.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(1, 1))
         pt = d.ports.threads.post_thread
@@ -105,7 +108,7 @@ class TestDeliverThreads:
     async def test_an_image_from_a_page_the_thread_does_not_cite_is_not_posted(self):
         # The image is shown as the thread's own; one from an uncited page named no source for it.
         uncited = _img().model_copy(update={"source_url": "https://elsewhere/page"})
-        d = DeliveryContext(publish_threads=True, staged_images=[uncited, _img("image/png")])
+        d = DeliveryContext(config=Config(), publish_threads=True, staged_images=[uncited, _img("image/png")])
         d.seen_urls |= {normalize_citation_url("https://src/article"), normalize_citation_url("https://elsewhere/page")}
         d.ports.threads = FakeThreads()
         d.ports.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(1, 1))
@@ -117,7 +120,7 @@ class TestDeliverThreads:
     @pytest.mark.asyncio
     async def test_a_citation_with_a_korean_particle_still_carries_its_image(self):
         # The citation guard strips a glued particle ("...article에서"); the image match must too.
-        d = DeliveryContext(publish_threads=True, staged_images=[_img()])
+        d = DeliveryContext(config=Config(), publish_threads=True, staged_images=[_img()])
         d.seen_urls.add(normalize_citation_url("https://src/article"))
         d.ports.threads = FakeThreads()
         d.ports.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(1, 1))
@@ -128,7 +131,7 @@ class TestDeliverThreads:
 
     @pytest.mark.asyncio
     async def test_the_per_channel_outcome_is_kept_for_the_caller(self):
-        d = DeliveryContext(publish_threads=True)
+        d = DeliveryContext(config=Config(), publish_threads=True)
         d.ports.threads = FakeThreads()
         d.ports.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(4, 6))
         _threads_config(d)
@@ -145,7 +148,7 @@ class TestARootThatLandedAloneIsNotAPlainFailure:
 
     @pytest.mark.asyncio
     async def test_a_lone_root_spends_the_channel(self):
-        d = DeliveryContext(publish_threads=True)
+        d = DeliveryContext(config=Config(), publish_threads=True)
         report = "\n---\n".join(f"{i}/6 소제목\n\n본문 {i}이다." for i in range(6))
         d.ports.threads = FakeThreads()
         d.ports.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(1, 8))
@@ -162,7 +165,7 @@ class TestARootThatLandedAloneIsNotAPlainFailure:
     @pytest.mark.asyncio
     async def test_a_root_that_may_be_live_spends_the_channel(self):
         # A publish step that failed ambiguously may have posted: a second call would be a second root.
-        d = DeliveryContext(publish_threads=True)
+        d = DeliveryContext(config=Config(), publish_threads=True)
         report = "\n---\n".join(f"{i}/6 소제목\n\n본문 {i}이다." for i in range(6))
         outcome = ThreadsDelivery(0, 8, uncertain=True)
         d.ports.threads = FakeThreads()
@@ -177,7 +180,7 @@ class TestARootThatLandedAloneIsNotAPlainFailure:
 
     @pytest.mark.asyncio
     async def test_a_delivery_where_nothing_landed_is_still_a_failure(self):
-        d = DeliveryContext(publish_threads=True)
+        d = DeliveryContext(config=Config(), publish_threads=True)
         d.ports.threads = FakeThreads()
         d.ports.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(0, 8))
         _threads_config(d)
@@ -192,7 +195,7 @@ class TestATooLongThreadNeverPosts:
 
     @pytest.mark.asyncio
     async def test_every_over_long_text_is_sent_back(self):
-        d = DeliveryContext(publish_threads=True)
+        d = DeliveryContext(config=Config(), publish_threads=True)
         report = "\n---\n".join(f"{i}/20 소제목\n\n본문 {i}이다." for i in range(20))
         d.ports.threads = FakeThreads()
         d.ports.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(4, 4))
@@ -206,8 +209,8 @@ class TestATooLongThreadNeverPosts:
 
     def test_a_trimmed_post_alone_is_too_long(self):
         # One post over the cap and no dropped post: the trim alone sends it back.
-        assert dlv.sends_back_as_too_long("소제목\n\n" + "문장이다. " * 120, DeliveryContext())
-        assert not dlv.sends_back_as_too_long("소제목\n\n짧은 본문이다.", DeliveryContext())
+        assert dlv.sends_back_as_too_long("소제목\n\n" + "문장이다. " * 120, DeliveryContext(config=Config()))
+        assert not dlv.sends_back_as_too_long("소제목\n\n짧은 본문이다.", DeliveryContext(config=Config()))
 
 
 @pytest.mark.asyncio

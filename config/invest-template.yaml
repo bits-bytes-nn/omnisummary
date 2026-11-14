@@ -151,7 +151,6 @@ collectors:
           - "market outlook strategist view stocks rates"
           - "economic outlook inflation Fed recession strategist"
         domains: ["goldmansachs.com", "jpmorgan.com", "morganstanley.com", "blackrock.com", "pimco.com", "schroders.com", "invesco.com"]
-    domain: "investing (Korean, US and global stocks, macro and markets, crypto assets, and Korean real estate)"
     refine_rules: |-
       - Prefer: earnings and guidance, filings, central-bank and policy decisions, analyst actions, wire reports
       - No generic terms ("stock market news", "crypto update")

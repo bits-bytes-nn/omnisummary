@@ -3,7 +3,17 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
-from domain.models import CollectedItem, RankedItem, Trend, TrendEvidence, TrendMemory, VisualBrief, generate_item_id
+from domain.models import (
+    CollectedItem,
+    FactIssue,
+    RankedItem,
+    Trend,
+    TrendEvidence,
+    TrendMemory,
+    VisualBrief,
+    VisualPlan,
+    generate_item_id,
+)
 from shared.constants import SourceType
 
 
@@ -105,3 +115,31 @@ class TestTrendMemory:
         memory = TrendMemory(trends=[Trend(id="x", title="X"), Trend(id="y", title="Y")])
         assert memory.by_id("y").title == "Y"
         assert memory.by_id("z") is None
+
+
+def test_a_stored_item_with_flag_metadata_keys_loads_them_as_fields():
+    from domain.models import CollectedItem
+
+    stored = {
+        "source_type": "research",
+        "title": "t",
+        "url": "https://e.com/a",
+        "metadata": {"hide_link": True, "primary": True, "pinned": False, "broker": "A"},
+    }
+    item = CollectedItem.model_validate(stored)
+    assert (item.show_link, item.primary, item.pinned) == (False, True, False)
+    assert item.metadata == {"broker": "A"}
+
+
+class TestModelNulls:
+    def test_a_null_plan_flag_keeps_its_default(self):
+        plan = VisualPlan.model_validate({"skip": None, "use_character": None, "instruction": "draw"})
+        assert (plan.skip, plan.use_character, plan.instruction) == (False, False, "draw")
+
+    def test_a_fact_issue_with_null_fields_is_kept(self):
+        issue = FactIssue.model_validate({"post": None, "claim": "x", "source_says": None})
+        assert issue.claim == "x" and issue.source_says == ""
+
+    def test_a_fact_issue_still_needs_a_claim(self):
+        with pytest.raises(ValidationError):
+            FactIssue.model_validate({"post": 1, "claim": None})

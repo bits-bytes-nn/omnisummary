@@ -1,3 +1,5 @@
+from urllib.parse import urlparse
+
 from domain.models import CollectedItem, RankedItem
 from shared.config import PipelineConfig
 from shared.constants import SourceType
@@ -25,7 +27,7 @@ def _ranked(
         item_id=item_id,
         source_type=source,
         title=f"title-{item_id}",
-        url=url or f"http://example.com/{item_id}",
+        url=url or (f"https://{urlparse(feed).netloc}/{item_id}" if feed else f"http://example.com/{item_id}"),
         author=author or None,
         metadata=metadata,
     )
@@ -112,10 +114,22 @@ class TestOriginCap:
             _ranked(0.95, SourceType.RSS, item_id="r1"),
             _ranked(0.94, SourceType.RSS, item_id="r2"),
             _ranked(0.93, SourceType.RSS, item_id="r3"),
-            _ranked(0.60, SourceType.RSS, item_id="r4", feed="https://other.example/feed"),
+            _ranked(0.60, SourceType.RSS, item_id="r4", url="https://other.example/r4"),
         ]
         selected = ranker._apply_source_slots(items, ranker.config.top_n)
         assert {r.item.item_id for r in selected} == {"r1", "r4"}
+
+    def test_two_feeds_of_one_publisher_compete_for_one_origin_seat(self):
+        ranker = _ranker(top_n=2, min_score=0.5, source_slots={}, max_per_origin=1)
+        items = [
+            _ranked(0.95, SourceType.RSS, item_id="a", feed="https://pub.example/rss/1", url="https://pub.example/a"),
+            _ranked(0.94, SourceType.RSS, item_id="b", feed="https://pub.example/rss/2", url="https://pub.example/b"),
+            _ranked(
+                0.60, SourceType.RSS, item_id="c", feed="https://other.example/feed", url="https://other.example/c"
+            ),
+        ]
+        selected = ranker._apply_source_slots(items, ranker.config.top_n)
+        assert {r.item.item_id for r in selected} == {"a", "c"}
 
     def test_an_author_less_x_item_is_capped_by_its_host(self):
         # Observed live on 2026-08-18: DOMAIN_TO_SOURCE relabels a web-search hit or a pinned x.com
@@ -302,3 +316,45 @@ def test_a_quiet_day_relaxes_the_origin_cap_only_up_to_top_n():
     items += [_ranked(0.7, SourceType.WEB, item_id="w", url="http://w.com/x")]
     picked = ranker._apply_source_slots(items, 12, [])
     assert [r.item.item_id for r in picked] == ["r0", "r1", "w"]
+
+
+def test_another_outlets_copy_of_a_pinned_story_takes_no_seat():
+    ranker = _ranker(source_slots={}, max_per_origin=1, top_n=5)
+    pin = _ranked(0.9, SourceType.WEB, item_id="pin", url="http://pin.com/x")
+    copy = _ranked(0.85, SourceType.WEB, item_id="copy", url="http://copy.com/x")
+    others = [_ranked(0.8 - i / 100, SourceType.WEB, item_id=f"o{i}", url=f"http://o{i}.com/x") for i in range(2)]
+    picked = ranker._apply_source_slots([copy, *others], 2, [pin], {"pin": 0, "copy": 0})
+    assert [r.item.item_id for r in picked] == ["o0", "o1"]
+
+
+def test_a_pin_counts_toward_the_quiet_day_relaxation_target():
+    ranker = _ranker(source_slots={}, max_per_origin=1, top_n=3)
+    pin = _ranked(0.95, SourceType.WEB, item_id="pin", url="http://pin.com/x")
+    items = [_ranked(0.9 - i / 100, SourceType.REDDIT, item_id=f"r{i}", sub="LocalLLaMA") for i in range(8)]
+    picked = ranker._apply_source_slots(items, 11, [pin])
+    assert [r.item.item_id for r in picked] == ["r0", "r1"]
+
+
+def test_pins_are_grouped_with_the_candidates():
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from langchain_core.messages import AIMessage
+    from langchain_core.runnables import RunnableLambda
+
+    from application.ranker import ContentRanker
+    from tests.fakes import StructuredLambda
+
+    items = [
+        CollectedItem(item_id=k, source_type=SourceType.WEB, title=f"t-{k}", url=f"http://{k}.com/x", pinned=k == "p")
+        for k in ("p", "a", "b")
+    ]
+    factory = MagicMock()
+    factory.truncate_to_tokens.side_effect = lambda text, max_tokens: text
+    answer = '{"rankings": [{"item": 1, "score": 0.9}, {"item": 2, "score": 0.9}, {"item": 3, "score": 0.9}]}'
+    factory.get_model.return_value = StructuredLambda(RunnableLambda(lambda _p: AIMessage(content=answer)))
+    ranker = ContentRanker(PipelineConfig(source_slots={}, top_n=1), factory)
+    groups = AsyncMock(return_value={})
+    ranker._story_groups = groups  # type: ignore[method-assign]
+    asyncio.run(ranker.rank(items, select_count=2))
+    assert "p" in {r.item.item_id for r in groups.await_args.args[0]}

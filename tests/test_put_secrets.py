@@ -71,10 +71,12 @@ class TestMidWayAbort:
         # Every parameter was attempted: one rejection must not end the run.
         assert len({c.kwargs["Name"] for c in client.put_parameter.call_args_list}) == len(names)
 
-    def test_a_string_holding_a_real_value_is_never_deleted(self, put_secrets, monkeypatch, capsys):
+    def test_a_string_holding_a_real_value_is_neither_deleted_nor_rewritten_as_plaintext(
+        self, put_secrets, monkeypatch, capsys
+    ):
         # The Threads token is rotated in place by the refresh Lambda, which cannot change the
         # parameter's type — so a String can hold a LIVE credential. Deleting it to encrypt it would
-        # destroy the value; write it in place and say so instead.
+        # destroy the value, and writing the secret as plaintext is not "written": leave it and fail.
         names = list(SSM_SECRET_ENV_VARS)
         for env_var in SSM_SECRET_ENV_VARS.values():
             monkeypatch.setenv(env_var, "real-value")
@@ -90,10 +92,11 @@ class TestMidWayAbort:
                 with patch.object(sys, "argv", ["put_secrets.py"]):
                     rc = put_secrets.main()
         out = capsys.readouterr().out
-        assert rc == 0
+        assert rc == 1
         client.delete_parameter.assert_not_called()
-        assert [c for c in client.put_parameter.call_args_list if "Type" not in c.kwargs]
-        assert "delete-parameter" in out  # the operator is told how to encrypt it deliberately
+        assert all(c.kwargs.get("Type") == "SecureString" for c in client.put_parameter.call_args_list)
+        assert f"aws ssm delete-parameter --name /omnisummary/dev/{names[0]}" in out
+        assert "FAILED  : " in out and "written : " + names[0] not in out
 
     def test_a_deleted_parameter_that_cannot_be_rewritten_is_reported_as_failed(self, put_secrets, monkeypatch, capsys):
         # The one state worse than a plaintext secret: the placeholder is gone and nothing replaced
@@ -181,3 +184,45 @@ class TestConfigGuard:
                         put_secrets.main()
         cfg.load.assert_not_called()
         client.assert_not_called()
+
+
+def _run_main(put_secrets, client, argv):
+    config = MagicMock()
+    config.aws.project_name, config.aws.stage, config.aws.region = "omnisummary", "dev", "ap-northeast-2"
+    with patch.object(put_secrets, "Config") as cfg:
+        cfg.load.return_value = config
+        with patch.object(put_secrets.boto3, "Session", return_value=MagicMock(client=MagicMock(return_value=client))):
+            with patch.object(sys, "argv", ["put_secrets.py", *argv]):
+                return put_secrets.main()
+
+
+class TestTheLiveValueIsKept:
+    """The refresh Lambda rotates the Threads token in place: reasserting .env would restore an expired one."""
+
+    @pytest.fixture(autouse=True)
+    def _env(self, monkeypatch):
+        for env_var in SSM_SECRET_ENV_VARS.values():
+            monkeypatch.setenv(env_var, "local-value")
+
+    def test_an_existing_secure_string_is_left_alone_without_force(self, put_secrets, capsys):
+        client = _ssm()
+        client.get_parameter.return_value = {"Parameter": {"Type": "SecureString", "Value": "rotated-value"}}
+        assert _run_main(put_secrets, client, []) == 0
+        client.put_parameter.assert_not_called()
+        client.delete_parameter.assert_not_called()
+        assert "live value differs from .env" in capsys.readouterr().out
+
+    def test_force_overwrites_an_existing_secure_string(self, put_secrets):
+        client = _ssm()
+        client.get_parameter.return_value = {"Parameter": {"Type": "SecureString", "Value": "rotated-value"}}
+        assert _run_main(put_secrets, client, ["--force"]) == 0
+        assert len(client.put_parameter.call_args_list) == len(SSM_SECRET_ENV_VARS)
+        assert all(c.kwargs["Value"] == "local-value" for c in client.put_parameter.call_args_list)
+
+    def test_dry_run_writes_and_deletes_nothing(self, put_secrets, capsys):
+        client = _ssm()
+        client.get_parameter.return_value = {"Parameter": {"Type": "String", "Value": SSM_PLACEHOLDER}}
+        assert _run_main(put_secrets, client, ["--dry-run"]) == 0
+        client.put_parameter.assert_not_called()
+        client.delete_parameter.assert_not_called()
+        assert "would write SecureString" in capsys.readouterr().out

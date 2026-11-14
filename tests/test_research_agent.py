@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from adapters.bedrock import LANGUAGE_MODEL_INFO
+from shared.config import Config
 from shared.constants import LanguageModelId
 
 
@@ -34,7 +35,7 @@ class TestAgentPromptCaching:
         ):
             from adapters.research_agent import create_research_agent
 
-            create_research_agent()
+            create_research_agent(Config.load())
         return captured
 
     def test_cache_strategy_is_stated_not_sniffed(self):
@@ -78,7 +79,7 @@ class TestAgentToolInjection:
         ):
             from adapters.research_agent import create_research_agent
 
-            create_research_agent(tools=sentinel_tools)
+            create_research_agent(Config.load(), tools=sentinel_tools)
 
         assert captured.get("tools") is sentinel_tools
 
@@ -100,7 +101,7 @@ class TestAgentToolInjection:
         ):
             from adapters.research_agent import create_research_agent
 
-            create_research_agent()
+            create_research_agent(Config.load())
 
         # Assert tool IDENTITIES, not a magic count — a 1-for-1 wrong swap would pass a count check.
         from adapters.research_tools import (
@@ -147,7 +148,7 @@ class TestVoiceInjection:
             from adapters.research_agent import create_research_agent
             from shared import Config
 
-            create_research_agent()
+            create_research_agent(Config.load())
             cfg = Config.load()
 
         prompt = captured["system_prompt"]
@@ -194,7 +195,7 @@ class TestVoiceInjection:
             from adapters.research_agent import create_research_agent
             from shared import Config
 
-            create_research_agent()
+            create_research_agent(Config.load())
             cfg = Config.load()
 
         prompt = captured["system_prompt"]
@@ -278,7 +279,7 @@ class TestAgentTemperatureGating:
         ):
             from adapters.research_agent import create_research_agent
 
-            create_research_agent()
+            create_research_agent(Config.load())
 
         assert "temperature" not in captured
 
@@ -306,7 +307,7 @@ class TestAgentTemperatureGating:
 
             model_id = Config.load().agent.model_id
             with patch.dict(ra.LANGUAGE_MODEL_INFO, {model_id: temp_ok}, clear=False):
-                ra.create_research_agent()
+                ra.create_research_agent(Config.load())
 
         assert captured.get("temperature") == 0.0
         # A model that takes temperature gets no effort field (effort is the newer models' knob).
@@ -326,7 +327,7 @@ class TestAgentTemperatureGating:
         ):
             from adapters.research_agent import create_research_agent
 
-            create_research_agent()
+            create_research_agent(Config.load())
         assert agent_cls.call_args.kwargs["callback_handler"] is None
 
 
@@ -359,7 +360,6 @@ class TestAgentClaude55Request:
             return MagicMock()
 
         with (
-            patch("adapters.research_agent.Config.load", return_value=cfg),
             patch("adapters.research_agent.BedrockModel", side_effect=fake_bedrock_model),
             patch("adapters.research_agent.Agent", return_value=MagicMock(tool_names=["t"])),
             patch("adapters.research_agent.boto3.Session", return_value=MagicMock()),
@@ -370,7 +370,7 @@ class TestAgentClaude55Request:
         ):
             from adapters.research_agent import create_research_agent
 
-            create_research_agent()
+            create_research_agent(cfg)
 
         assert "temperature" not in captured
         assert captured["max_tokens"] == 64000
@@ -404,7 +404,7 @@ class TestAgentCredentialSelection:
         ):
             from adapters.research_agent import create_research_agent
 
-            create_research_agent()
+            create_research_agent(Config.load())
         return session.call_args.kwargs
 
     def test_an_unresolvable_profile_means_ambient_credentials(self):

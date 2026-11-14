@@ -125,6 +125,10 @@ class MemoryStore(ABC):
             raise MemoryReadError(f"The digest snapshot for {digest_date} does not parse: {e}") from e
 
     def get_recent_digests(self, before: date, days: int) -> list[DigestSnapshot]:
+        """The snapshots of get_recent_digests_dated, without their dates."""
+        return [snapshot for _, snapshot in self.get_recent_digests_dated(before, days)]
+
+    def get_recent_digests_dated(self, before: date, days: int) -> list[tuple[date, DigestSnapshot]]:
         """The snapshots for the `days` dates preceding `before` (newest first), skipping dates that
         have none. Seeds cross-day dedup with the SAME window the published-URL ledger uses, and
         never includes `before` itself, so a same-day re-run keeps its own stories.
@@ -133,16 +137,16 @@ class MemoryStore(ABC):
         instead of listing every session ever stored. Best-effort per date: it only ENRICHES the
         dedup seed, so one unreadable day (a snapshot that no longer parses included) is logged and
         skipped whole rather than failing the read; the URL ledger still excludes that day's stories."""
-        out: list[DigestSnapshot] = []
+        out: list[tuple[date, DigestSnapshot]] = []
         for offset in range(1, max(0, days) + 1):
-            day = (before - timedelta(days=offset)).isoformat()
+            day = before - timedelta(days=offset)
             try:
-                snapshot = self.get_digest(day)
+                snapshot = self.get_digest(day.isoformat())
             except MemoryReadError as e:
                 logger.warning("Skipping the digest snapshot for %s: %s", day, e)
                 continue
             if snapshot is not None:
-                out.append(snapshot)
+                out.append((day, snapshot))
         return out
 
 
@@ -197,6 +201,8 @@ class ThreadsPublisher(Protocol):
     # Seconds a post set may still need once its image is ready (the root's indexing wait plus the
     # reply chain's reserve), so a caller under a deadline stops the image work in time.
     publish_budget_sec: float
+    # Seconds one reply's publish may take at worst (its full retry ladder).
+    reply_publish_reserve_sec: float
 
     async def post_thread(
         self,

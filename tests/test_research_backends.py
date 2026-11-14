@@ -4,6 +4,9 @@ import httpx
 import pytest
 
 from adapters import research_backends as rb
+from shared.config import AgentConfig, Config
+
+_AGENT = AgentConfig()
 
 
 class TestFormatSearchResults:
@@ -32,8 +35,8 @@ class TestFormatSearchResults:
 class TestTavilySearch:
     @pytest.mark.asyncio
     async def test_no_key_returns_message(self):
-        with patch.object(rb, "_get_tavily_client", return_value=None):
-            result = await rb.tavily_search("q")
+        with patch.object(rb, "tavily_client", return_value=None):
+            result = await rb.tavily_search("q", agent=_AGENT, exclude_domains=[])
         assert "TAVILY_API_KEY not configured" in result
 
     @pytest.mark.asyncio
@@ -41,31 +44,30 @@ class TestTavilySearch:
         client = MagicMock()
         client.search = AsyncMock(return_value={"results": [{"title": "t", "url": "u", "content": "c"}]})
         client.close = AsyncMock()
-        with patch.object(rb, "_get_tavily_client", return_value=client):
-            await rb.tavily_search("q", topic="news", include_domains=["x.com"])
+        with patch.object(rb, "tavily_client", return_value=client):
+            await rb.tavily_search("q", agent=_AGENT, exclude_domains=[], topic="news", include_domains=["x.com"])
         kwargs = client.search.call_args.kwargs
         assert kwargs["topic"] == "news"
         assert kwargs["include_domains"] == ["x.com"]
 
     @pytest.mark.asyncio
-    async def test_the_digests_content_farm_list_applies_to_research_search(self, monkeypatch):
-        monkeypatch.setattr(rb.get_config().collectors.web_search, "exclude_domains", ["farm.example"])
+    async def test_the_digests_content_farm_list_applies_to_research_search(self):
+        config = Config()
+        config.collectors.web_search.exclude_domains = ["farm.example"]
         client = MagicMock()
         client.search = AsyncMock(return_value={"results": [{"title": "t", "url": "u", "content": "c"}]})
         client.close = AsyncMock()
-        with patch.object(rb, "_get_tavily_client", return_value=client):
-            await rb.tavily_search("q")
-        assert (
-            client.search.call_args.kwargs["exclude_domains"] == rb.get_config().collectors.web_search.exclude_domains
-        )
+        with patch.object(rb, "tavily_client", return_value=client):
+            await rb.WebResearchSources(config).web_search("q")
+        assert client.search.call_args.kwargs["exclude_domains"] == ["farm.example"]
 
     @pytest.mark.asyncio
     async def test_closes_client_after_search(self):
         client = MagicMock()
         client.search = AsyncMock(return_value={"results": [{"title": "t", "url": "u", "content": "c"}]})
         client.close = AsyncMock()
-        with patch.object(rb, "_get_tavily_client", return_value=client):
-            await rb.tavily_search("q")
+        with patch.object(rb, "tavily_client", return_value=client):
+            await rb.tavily_search("q", agent=_AGENT, exclude_domains=[])
         client.close.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -73,8 +75,8 @@ class TestTavilySearch:
         client = MagicMock()
         client.search = AsyncMock(return_value={"results": []})
         client.close = AsyncMock()
-        with patch.object(rb, "_get_tavily_client", return_value=client):
-            result = await rb.tavily_search("q")
+        with patch.object(rb, "tavily_client", return_value=client):
+            result = await rb.tavily_search("q", agent=_AGENT, exclude_domains=[])
         assert result == "No results found."
 
     @pytest.mark.asyncio
@@ -82,26 +84,24 @@ class TestTavilySearch:
         client = MagicMock()
         client.search = AsyncMock(side_effect=RuntimeError("down"))
         client.close = AsyncMock()
-        with patch.object(rb, "_get_tavily_client", return_value=client):
-            result = await rb.tavily_search("q")
+        with patch.object(rb, "tavily_client", return_value=client):
+            result = await rb.tavily_search("q", agent=_AGENT, exclude_domains=[])
         assert "Search failed" in result
 
 
 class TestExtractUrl:
     @pytest.mark.asyncio
     async def test_no_key(self):
-        with patch.object(rb, "_get_tavily_client", return_value=None):
-            assert await rb.extract_url("http://x") == ""
+        with patch.object(rb, "tavily_client", return_value=None):
+            assert await rb.extract_url("http://x", cap=_AGENT.research_content_cap_chars) == ""
 
     @pytest.mark.asyncio
     async def test_returns_capped_content(self):
         client = MagicMock()
         client.extract = AsyncMock(return_value={"results": [{"raw_content": "X" * 100}]})
         client.close = AsyncMock()
-        with patch.object(rb, "_get_tavily_client", return_value=client):
-            with patch.object(rb, "get_config") as cfg:
-                cfg.return_value.agent.research_content_cap_chars = 10
-                result = await rb.extract_url("http://x")
+        with patch.object(rb, "tavily_client", return_value=client):
+            result = await rb.extract_url("http://x", cap=10)
         assert result == "X" * 10
 
     @pytest.mark.asyncio
@@ -110,10 +110,8 @@ class TestExtractUrl:
         client = MagicMock()
         client.extract = AsyncMock(return_value={"results": [{"content": "Y" * 100}]})
         client.close = AsyncMock()
-        with patch.object(rb, "_get_tavily_client", return_value=client):
-            with patch.object(rb, "get_config") as cfg:
-                cfg.return_value.agent.research_content_cap_chars = 10
-                result = await rb.extract_url("http://x")
+        with patch.object(rb, "tavily_client", return_value=client):
+            result = await rb.extract_url("http://x", cap=10)
         assert result == "Y" * 10
 
     @pytest.mark.asyncio
@@ -121,8 +119,8 @@ class TestExtractUrl:
         client = MagicMock()
         client.extract = AsyncMock(return_value={"results": [{}]})
         client.close = AsyncMock()
-        with patch.object(rb, "_get_tavily_client", return_value=client):
-            result = await rb.extract_url("http://x")
+        with patch.object(rb, "tavily_client", return_value=client):
+            result = await rb.extract_url("http://x", cap=_AGENT.research_content_cap_chars)
         assert result == ""
 
     @pytest.mark.asyncio
@@ -130,8 +128,8 @@ class TestExtractUrl:
         client = MagicMock()
         client.extract = AsyncMock(return_value={"results": []})
         client.close = AsyncMock()
-        with patch.object(rb, "_get_tavily_client", return_value=client):
-            result = await rb.extract_url("http://x")
+        with patch.object(rb, "tavily_client", return_value=client):
+            result = await rb.extract_url("http://x", cap=_AGENT.research_content_cap_chars)
         assert result == ""
 
     @pytest.mark.asyncio
@@ -139,8 +137,8 @@ class TestExtractUrl:
         client = MagicMock()
         client.extract = AsyncMock(side_effect=RuntimeError("boom"))
         client.close = AsyncMock()
-        with patch.object(rb, "_get_tavily_client", return_value=client):
-            result = await rb.extract_url("http://x")
+        with patch.object(rb, "tavily_client", return_value=client):
+            result = await rb.extract_url("http://x", cap=_AGENT.research_content_cap_chars)
         assert result == ""
 
 
@@ -165,7 +163,7 @@ class TestSearchPapers:
     @pytest.mark.asyncio
     async def test_parses_works_with_date_citations_and_rebuilt_abstract(self):
         with patch.object(rb, "retry_async", new=AsyncMock(return_value=self._response({"results": [self.WORK]}))):
-            result = await rb.paper_search("diffusion recommendation")
+            result = await rb.paper_search("diffusion recommendation", agent_config=_AGENT)
         assert "Diffusion Language Model for Recommendation (2026-07-23; cited by 3) by Kim, Lee" in result
         assert "URL: https://arxiv.org/abs/2607.21519" in result
         assert "Abstract: Diffusion models recommend." in result
@@ -174,7 +172,7 @@ class TestSearchPapers:
     async def test_falls_back_to_the_doi_without_a_landing_page(self):
         work = {**self.WORK, "primary_location": None}
         with patch.object(rb, "retry_async", new=AsyncMock(return_value=self._response({"results": [work]}))):
-            result = await rb.paper_search("q")
+            result = await rb.paper_search("q", agent_config=_AGENT)
         assert "URL: https://doi.org/10.48550/arxiv.2607.21519" in result
 
     @pytest.mark.asyncio
@@ -184,13 +182,13 @@ class TestSearchPapers:
             "retry_async",
             new=AsyncMock(side_effect=httpx.HTTPStatusError("429", request=MagicMock(), response=MagicMock())),
         ):
-            result = await rb.paper_search("q")
+            result = await rb.paper_search("q", agent_config=_AGENT)
         assert "Search failed" in result
 
     @pytest.mark.asyncio
     async def test_no_papers(self):
         with patch.object(rb, "retry_async", new=AsyncMock(return_value=self._response({"results": []}))):
-            result = await rb.paper_search("q")
+            result = await rb.paper_search("q", agent_config=_AGENT)
         assert result == "No related papers found."
 
 
@@ -206,7 +204,7 @@ class TestExtractPages:
             ]
         )
         client.close = AsyncMock()
-        with patch.object(rb, "_get_tavily_client", return_value=client):
+        with patch.object(rb, "tavily_client", return_value=client):
             pages = await rb.extract_pages(urls)
         assert pages == {"http://x/0": "page"}
         assert [len(c.kwargs["urls"]) for c in client.extract.call_args_list] == [rb.EXTRACT_BATCH_SIZE, 1]
@@ -214,7 +212,7 @@ class TestExtractPages:
 
     @pytest.mark.asyncio
     async def test_no_key_reads_nothing(self):
-        with patch.object(rb, "_get_tavily_client", return_value=None):
+        with patch.object(rb, "tavily_client", return_value=None):
             assert await rb.extract_pages(["http://x"]) == {}
 
 
@@ -222,7 +220,7 @@ class TestWebResearchSources:
     """The adapter behind the research port: each port method reaches its own backend."""
 
     async def test_each_method_reaches_its_backend_with_its_arguments(self):
-        sources = rb.WebResearchSources()
+        sources = rb.WebResearchSources(Config())
         with (
             patch.object(rb, "tavily_search", new=AsyncMock(return_value="web")) as web,
             patch.object(rb, "paper_search", new=AsyncMock(return_value="papers")) as papers,
@@ -234,14 +232,24 @@ class TestWebResearchSources:
             assert await sources.paper_search("p") == "papers"
             assert await sources.read_page("https://a") == "page"
             assert await sources.fetch_image("https://b") is None
-        web.assert_awaited_once_with("q", topic="news", time_range="week", include_domains=["x.com"])
-        papers.assert_awaited_once_with("p")
-        page.assert_awaited_once_with("https://a")
-        image.assert_awaited_once_with("https://b")
+        agent = sources.agent
+        web.assert_awaited_once_with(
+            "q",
+            agent=agent,
+            exclude_domains=sources.exclude_domains,
+            topic="news",
+            time_range="week",
+            include_domains=["x.com"],
+        )
+        papers.assert_awaited_once_with("p", agent_config=agent)
+        page.assert_awaited_once_with("https://a", cap=agent.research_content_cap_chars)
+        image.assert_awaited_once_with(
+            "https://b", timeout=agent.og_image_timeout_sec, max_bytes=agent.og_image_max_bytes
+        )
 
     @pytest.mark.asyncio
     async def test_a_paid_or_bot_checked_page_is_not_read(self):
-        sources = rb.WebResearchSources()
+        sources = rb.WebResearchSources(Config())
         with (
             patch.object(rb, "access_controlled", new=AsyncMock(return_value={"https://a"})),
             patch.object(rb, "extract_url", new=AsyncMock(return_value="page")) as page,
@@ -263,7 +271,10 @@ class TestAccessControlled:
                 "/open": httpx.Response(
                     200, text='<script type="application/ld+json">{"isAccessibleForFree": true}</script>'
                 ),
-                "/paid": httpx.Response(200, text='{"@type":"NewsArticle","isAccessibleForFree":"False"}'),
+                "/paid": httpx.Response(
+                    200,
+                    text='<script type="application/ld+json">{"@type":"NewsArticle","isAccessibleForFree":"False"}</script>',
+                ),
                 "/bot": httpx.Response(403, text="press and hold"),
                 "/limited": httpx.Response(429),
                 "/login": httpx.Response(401),
@@ -303,3 +314,56 @@ class TestTavilyUsage:
             "Search usage stage=web-search operation=search credits=2",
             "Search usage stage=page-fill operation=extract credits=unreported",
         ]
+
+
+class TestDeclaresPaid:
+    PAGE = "https://news.example/a"
+
+    @staticmethod
+    def _ld(obj) -> str:
+        import json as _json
+
+        return f'<script type="application/ld+json">{_json.dumps(obj)}</script>'
+
+    def test_the_pages_own_entity_declaring_itself_paid(self):
+        assert rb.declares_paid(self._ld({"@type": "NewsArticle", "isAccessibleForFree": False}), self.PAGE)
+        assert rb.declares_paid(
+            self._ld({"@graph": [{"@type": "WebPage"}, {"isAccessibleForFree": "false", "url": self.PAGE + "/"}]}),
+            self.PAGE,
+        )
+        assert rb.declares_paid('<meta itemprop="isAccessibleForFree" content="false">', self.PAGE)
+        assert rb.declares_paid(self._ld({"@type": "WebPage", "mainEntity": {"isAccessibleForFree": False}}), self.PAGE)
+
+    @pytest.mark.parametrize(
+        "html",
+        [
+            '<script type="application/ld+json; charset=utf-8">{"isAccessibleForFree": false}</script>',
+            '<script type="application/ld+json">{"headline": "a\nb", "isAccessibleForFree": false,}</script>',
+            '<script type="application/ld+json"><!-- {"isAccessibleForFree": "False"} --></script>',
+            '<script type="application/ld+json">{"@type": "NewsArticle", "hasPart": {"@type": "WebPageElement",'
+            ' "isAccessibleForFree": false, "cssSelector": ".paywall"}}</script>',
+            '<script type="application/ld+json">{"isAccessibleForFree": false, "url": "/a"}</script>',
+            '<script type="application/ld+json">{"isAccessibleForFree": "https://schema.org/False"}</script>',
+        ],
+    )
+    def test_real_world_shapes_of_a_paid_declaration_are_read(self, html):
+        # Each read as paid under the old pattern match; failing open lets Tavily extract a paid page.
+        assert rb.declares_paid(html, self.PAGE)
+
+    def test_an_unparseable_entity_url_does_not_raise(self):
+        # A ValueError here would abort the whole ranking run, not just this page.
+        html = self._ld({"@type": "NewsArticle", "isAccessibleForFree": False, "url": "https://[bad"})
+        assert rb.declares_paid(html, self.PAGE) is False
+
+    def test_a_related_articles_entity_or_text_mentioning_the_field_is_not_the_page(self):
+        # A paid related-story card on a free page, and the field named in body text, both read as paid
+        # under the old pattern match over the raw HTML.
+        related = self._ld(
+            [
+                {"@type": "NewsArticle", "url": self.PAGE},
+                {"isAccessibleForFree": False, "url": "https://news.example/b"},
+            ]
+        )
+        assert not rb.declares_paid(related, self.PAGE)
+        assert not rb.declares_paid('<p>"isAccessibleForFree": false is how sites mark paywalls</p>', self.PAGE)
+        assert not rb.declares_paid('<script type="application/ld+json">{not json</script>', self.PAGE)

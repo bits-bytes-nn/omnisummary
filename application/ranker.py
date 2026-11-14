@@ -8,10 +8,9 @@ from collections.abc import Sequence
 
 from langchain_core.exceptions import OutputParserException
 
-from application.digest_generator import format_recent_titles
 from application.ports import LanguageModels, PaidPageCheck
 from application.prompts import RankingPrompt, StoryGroupPrompt
-from domain.formatting import format_collected_item, format_origin_label, resolve_origin_key
+from domain.formatting import format_collected_item, format_origin_label, format_recent_titles, resolve_origin_key
 from domain.models import CollectedItem, RankedItem, RankingEntry, RankingHealth, Rankings, StoryGroups
 from shared import SourceType, logger, retry_async
 from shared.config import PipelineConfig
@@ -25,8 +24,7 @@ _PAID_CHECK_POOLS = 3
 
 
 def _tiebreak(item_id: str) -> str:
-    """Equal scores ordered by a hash of the id: by the raw id, Reddit's ids sorted ahead of every URL-
-    and hash-keyed source, so Reddit won every tie at the pool's cutoff."""
+    """Equal scores ordered by a hash of the id, so no source's id format wins every tie at the cutoff."""
     return hashlib.sha256(item_id.encode()).hexdigest()
 
 
@@ -52,8 +50,7 @@ class ContentRanker:
 
     def _ranking_truncate(self, text: str, max_tokens: int) -> str:
         """The ranker scores on the opening of each item. With ranking_text_max_chars set that cut is by
-        characters, with no CountTokens calls: measuring 300 of 700 weekday investing items cost about
-        1,600 calls and held the first ranking response back 3.5 minutes inside a 15-minute Lambda."""
+        characters, with no CountTokens calls (one per item held a large pool's first batch back minutes)."""
         chars = self.config.ranking_text_max_chars
         if chars is None:
             return self._truncate(text, max_tokens)
@@ -69,9 +66,7 @@ class ContentRanker:
         `recent_titles` are the stories recent digests ran, so Novelty can be judged against them.
 
         The source slots and max_per_origin shape the POOL, so every source's best item is
-        considered; the editor then picks the strongest top_n distinct stories from it. Quality wins
-        over a guaranteed seat: enforcing the slots on what ships put a 0.62 link-only post ahead of a
-        0.70 report, and the editor overrode the guarantee on 14 of 30 runs anyway."""
+        considered; the editor then picks the strongest top_n distinct stories from it."""
         if not items:
             logger.warning("No items to rank")
             return []
@@ -80,13 +75,9 @@ class ContentRanker:
 
         logger.info("Ranking %d items with model '%s'", len(items), self.config.ranking_model.value)
 
-        # Scoring is absolute (the prompt calibrates each item to fixed 0-1 criteria), so
-        # large inputs are split into batches scored CONCURRENTLY and merged — a single
-        # call over 100+ items dominated the Lambda runtime. Results are independent.
-        # Ordered by a HASH of item_id so batch membership is deterministic and every batch mixes
-        # sources and scripts. item_id itself is the feed GUID (an article URL for RSS/X, a post or
-        # video id elsewhere), and sorting on it put 33 GeekNews items in one batch and all of X in
-        # another.
+        # Scores are absolute (fixed 0-1 criteria), so batches run concurrently and merge. Batches are
+        # ordered by a hash of item_id: deterministic, and every batch mixes sources (sorting on the
+        # raw feed GUID clustered one feed or all of X into a single batch).
         ordered = sorted(items, key=lambda it: hashlib.sha256(it.item_id.encode()).hexdigest())
         batches = self._make_batches(ordered)
         if len(batches) > 1:
@@ -133,13 +124,13 @@ class ContentRanker:
         )
         # Pinned items (user-specified via --pin-url) are guaranteed a slot regardless of score
         # or diversity caps — they're kept aside and prepended after slotting fills the rest.
-        pinned = [r for r in ranked_items if r.item.metadata.get("pinned")]
+        pinned = [r for r in ranked_items if r.item.pinned]
         # Reconcile against the pinned INPUTS: if the ranking LLM dropped a pinned item (omitted
         # its id, hallucinated it away, or its whole batch threw and returned []), it never became
         # a RankedItem and the user's explicit pin would be silently lost. Synthesize a RankedItem
         # at min_score for any such pin so the force-inclusion guarantee actually holds.
         scored_ids = {r.item.item_id for r in ranked_items}
-        missing_pins = [it for it in items if it.metadata.get("pinned") and it.item_id not in scored_ids]
+        missing_pins = [it for it in items if it.pinned and it.item_id not in scored_ids]
         if missing_pins:
             logger.warning(
                 "Ranking did not score %d pinned item(s); force-including at min_score: %s",
@@ -158,11 +149,9 @@ class ContentRanker:
         ]
         above_threshold.sort(key=lambda r: (-r.score, _tiebreak(r.item.item_id)))
         if self.paid_check is not None:
-            # A newsletter feed carries a paid post's free preview, so the post scores like any other and
-            # then links readers to a paywall (SemiAnalysis on 11-04, Interconnects on 11-05). Checked here,
-            # before the pool is built, so the post's feed and story seats go to a free copy; and only
-            # near the top, since checking every collected feed page puts hundreds of requests on a few
-            # hosts. Web results are checked at collection.
+            # A newsletter feed carries a paid post's free preview, which scores like any other post and
+            # links readers to a paywall. Checked before the pool is built, so its seats go to a free copy,
+            # and only near the top, to keep the requests per host few. Web results are checked at collection.
             head = above_threshold[: _PAID_CHECK_POOLS * limit]
             paid = await self.paid_check([r.item.url for r in head if r.item.source_type == SourceType.RSS])
             above_threshold = [r for r in above_threshold if r.item.url not in paid]
@@ -185,7 +174,7 @@ class ContentRanker:
         # Reserve slots for the pinned items so the source-slotting fills only the remainder,
         # then prepend the pinned items so they always lead and never get crowded out.
         remaining = max(0, limit - len(pinned))
-        stories = await self._story_groups(above_threshold) if len(above_threshold) > remaining else {}
+        stories = await self._story_groups(pinned + above_threshold) if len(above_threshold) > remaining else {}
         selected = pinned + self._apply_source_slots(above_threshold, remaining, pinned, stories)
 
         if pinned:
@@ -209,11 +198,9 @@ class ContentRanker:
     async def _story_groups(self, candidates: list[RankedItem]) -> dict[str, int]:
         """item_id -> story number for the candidates that report the same story as another one.
 
-        URL and title dedup miss the same story from several outlets, so one story took several of the
-        12 pool seats: 27 of 216 AI seats over 18 runs, and Korea's October exports took 6 seats from 6
-        hosts on 2026-11-02 while 52 items cleared the bar. Asked once over every candidate together, not
-        per ranking batch, whose boundaries made a same-event penalty inconsistent. Best-effort: on any
-        failure the pool is filled as before."""
+        URL and title dedup miss the same story from several outlets. Asked once over every candidate
+        together, not per ranking batch, whose boundaries made a same-event penalty inconsistent.
+        Best-effort: on any failure the pool is filled without it."""
         shown = candidates[:_MAX_GROUPED]
         items_text = "\n".join(
             f"{n}. {r.item.title.strip()[:160]} ({format_origin_label(r.item)})" for n, r in enumerate(shown, start=1)
@@ -343,23 +330,19 @@ class ContentRanker:
             story = stories.get(candidate.item.item_id)
             if story is not None:
                 best_copy.setdefault(story, candidate.item.item_id)
-        # NOTE: an empty source_slots skips only the GUARANTEED-SLOT pass below (the loop simply has
-        # nothing to iterate) — the origin-cap fill passes still run. Returning above_threshold[:limit]
-        # here instead dropped max_per_origin along with the slots, so one feed could take every
-        # story: the exact failure the origin cap exists to prevent.
+        # An empty source_slots skips only the guaranteed-slot pass; the origin-cap fill passes still run.
         selected: list[RankedItem] = []
         selected_ids: set[str] = set()
         source_counts: dict[str, int] = defaultdict(int)
         origin_counts: dict[str, int] = defaultdict(int)
         max_per_origin = self.config.max_per_origin
 
-        # Pinned items are prepended to the result by rank() and never enter this fill, so their
-        # source/origin used to go uncounted — a pin plus a slotted item from the SAME origin both
-        # landed, breaking max_per_origin exactly where the user forced an item in. Seed the
-        # counters with them (without selecting them); the relaxed final pass still fills to the
-        # limit when the caps would otherwise leave the digest short.
+        # Pinned items are prepended by rank() and never enter this fill: seed the source, origin and story
+        # counters with them (without selecting them), so a pin's origin and story are not taken twice.
         for item in pinned or []:
             source_counts[item.item.source_type.value] += 1
+            if item.item.item_id in stories:
+                stories_taken.add(stories[item.item.item_id])
             pinned_origin = resolve_origin_key(item.item)
             if pinned_origin:
                 origin_counts[pinned_origin] += 1
@@ -385,10 +368,7 @@ class ContentRanker:
                 origin_counts[origin_key] += 1
 
         for source_key, slot_count in source_slots.items():
-            # Start from what the pins already consumed of THIS source's slots. Starting at 0
-            # ignored the seed above, so a pinned `web` item plus web's guaranteed slot produced two
-            # web stories and pushed the lowest-scoring source out of the core entirely — breaking
-            # the diversity guarantee exactly on the days the operator intervened.
+            # Start from what the pins already consumed of this source's slots.
             taken = source_counts[source_key]
             for item in above_threshold:
                 if taken >= slot_count or len(selected) >= limit:
@@ -418,10 +398,9 @@ class ContentRanker:
 
         # The rest of the pool goes by score; max_per_origin keeps one publisher from taking it, and one
         # story keeps one seat. On a quiet day the caps are relaxed only far enough for the editor to have
-        # top_n stories, never to fill the buffer: filling it let the highest-volume origins (r/LocalLLaMA,
-        # one X curator, GeekNews) take 27 extra seats on 7 of 15 AI days, and 4 of 11-01's 5 stories came
-        # from two origins. The origin cap is relaxed first, the story cap last.
-        enough = min(limit, self.config.top_n)
+        # top_n stories with the pins, never to fill the buffer, which the highest-volume origins then took.
+        # The origin cap is relaxed first, the story cap last.
+        enough = min(limit, max(0, self.config.top_n - len(pinned or [])))
         fill(respect_origin=True)
         fill(respect_origin=False, until=enough)
         fill(respect_origin=False, respect_story=False, until=enough)

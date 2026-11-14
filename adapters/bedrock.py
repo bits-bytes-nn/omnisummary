@@ -13,6 +13,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from pydantic import BaseModel
 
 from adapters.metrics import emit_spend
+from shared.config import AWSConfig
 from shared.constants import LanguageModelId
 from shared.logger import logger
 
@@ -110,11 +111,10 @@ LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
 class _TokenUsageLogger(BaseCallbackHandler):
     """Log the token usage of every LLM call, tagged with the pipeline stage that made it.
 
-    Cost Explorer bills per MODEL, not per stage, so a bill of "Sonnet 5: 4.7M input tokens / 30d"
-    could not be attributed: the digest, the grounding pass, trend classification, the visual editor,
-    the visual synopsis, query refinement and the ad-hoc research agent all share that one model. Any
-    optimisation without this is a guess. Best-effort by construction — a callback must never be able
-    to fail a generation, so every read is defensive."""
+    Cost Explorer bills per MODEL, not per stage, and several stages share one model (Sonnet 5.5 runs
+    the digest, grounding, visual editor and art director, trends, query refinement, story groups and
+    comment replies), so the per-stage line (with its list-price `usd`) is what attributes the spend.
+    Best-effort by construction: a callback must never fail a generation, so every read is defensive."""
 
     def __init__(self, stage: str, model_id: str, price: TokenPrice | None = None) -> None:
         self.stage = stage
@@ -170,15 +170,16 @@ class BedrockCrossRegionModelHelper:
     # Resolution is identical for a given (model_id, region) within a process, but each
     # call hits list_inference_profiles. Cache it so ranker/digest/trend/refine model
     # builds don't each pay the round-trip (and don't each risk the AccessDenied path).
-    _resolution_cache: ClassVar[dict[tuple[str, str], str]] = {}
+    _resolution_cache: ClassVar[dict[tuple[str, str, str], str]] = {}
 
     @staticmethod
     def get_cross_region_model_id(
         boto_session: boto3.Session,
         model_id: LanguageModelId,
         region_name: str,
+        aws: AWSConfig,
     ) -> str:
-        cache_key = (model_id.value, region_name)
+        cache_key = (model_id.value, region_name, BedrockCrossRegionModelHelper._profile_name(model_id, aws))
         cached = BedrockCrossRegionModelHelper._resolution_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -190,7 +191,7 @@ class BedrockCrossRegionModelHelper:
             # against the same models. Resolution goes through here, so BOTH the LangChain factory and
             # the Strands research agent pick it up. Absent → today's system-defined id, unchanged.
             resolved = BedrockCrossRegionModelHelper._application_profile_arn(
-                boto_session, model_id, region_name, resolved
+                boto_session, model_id, region_name, resolved, aws
             )
         except _LookupFailed as e:
             # A throttled or denied lookup is not an answer: cached, it pinned a warm container to the fallback.
@@ -207,20 +208,28 @@ class BedrockCrossRegionModelHelper:
         return f"{project}-{stage}-{slug}"
 
     @staticmethod
+    def _profile_name(model_id: LanguageModelId, aws: AWSConfig) -> str:
+        """The application profile this process bills to. The Lambdas carry PROJECT_NAME/STAGE; a local
+        run (research, evals, judges) bills to its own `<stage>-local` profiles, so its spend is not read
+        as production's."""
+        return BedrockCrossRegionModelHelper.application_profile_name(
+            model_id, os.getenv("PROJECT_NAME") or aws.project_name, os.getenv("STAGE") or f"{aws.stage}-local"
+        )
+
+    @staticmethod
     def _application_profile_arn(
         boto_session: boto3.Session,
         model_id: LanguageModelId,
         region_name: str,
         fallback: str,
+        aws: AWSConfig,
     ) -> str:
         """The ARN of this project's application inference profile for the model, or `fallback`.
 
         Best-effort by design: cost attribution must never be able to stop a generation, so a
         missing profile, a denied ListInferenceProfiles or any unexpected error keeps the
         system-defined id the caller would have used anyway."""
-        wanted = BedrockCrossRegionModelHelper.application_profile_name(
-            model_id, os.getenv("PROJECT_NAME", "omnisummary"), os.getenv("STAGE", "dev")
-        )
+        wanted = BedrockCrossRegionModelHelper._profile_name(model_id, aws)
         try:
             client = boto_session.client("bedrock", region_name=region_name)
             paginator = client.get_paginator("list_inference_profiles")
@@ -300,9 +309,12 @@ class BedrockLanguageModelFactory:
 
     def __init__(
         self,
+        *,
+        aws: AWSConfig,
         boto_session: boto3.Session | None = None,
         region_name: str | None = None,
     ) -> None:
+        self.aws = aws
         self.boto_session = boto_session or boto3.Session()
         self.region_name = region_name or self.boto_session.region_name
         boto_config = BotoConfig(
@@ -396,7 +408,7 @@ class BedrockLanguageModelFactory:
         one model, so without it a token total cannot be traced to the call that spent it."""
         model_info = self.get_model_info(model_id)
         resolved_model_id = BedrockCrossRegionModelHelper.get_cross_region_model_id(
-            self.boto_session, model_id, self.region_name or ""
+            self.boto_session, model_id, self.region_name or "", self.aws
         )
         model_config = self._build_model_config(
             model_info, resolved_model_id, stage=stage, registry_id=model_id.value, **kwargs

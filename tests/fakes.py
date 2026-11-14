@@ -34,6 +34,7 @@ class FakeThreads:
     """`post_thread` is an AsyncMock answering `outcome`; `comments()` yields `session`."""
 
     publish_budget_sec = ThreadsGateway.publish_budget_sec
+    reply_publish_reserve_sec = ThreadsGateway.reply_publish_reserve_sec
 
     def __init__(self, outcome: ThreadsDelivery | None = None, *, side_effect=None, session=None) -> None:
         self.post_thread = AsyncMock(return_value=outcome or ThreadsDelivery(2, 2), side_effect=side_effect)

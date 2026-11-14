@@ -11,6 +11,12 @@ from domain.models import CollectedItem
 from shared.config import RSSHubCollectorConfig
 from shared.constants import SourceType
 
+REFERENCE_TIME = datetime(2026, 6, 3, tzinfo=UTC)
+
+
+def _collector(cfg, **kwargs) -> RSSHubCollector:
+    return RSSHubCollector(cfg, reference_time=kwargs.pop("reference_time", REFERENCE_TIME), **kwargs)
+
 
 def _absent_park() -> ParkedItems:
     """No S3 park file → the collector must fall through to live collection."""
@@ -30,7 +36,6 @@ def _config(**kwargs) -> RSSHubCollectorConfig:
     }
     base.update(kwargs)
     cfg = RSSHubCollectorConfig(**base)
-    cfg.reference_time = datetime(2026, 6, 3, tzinfo=UTC)
     cfg.lookback_hours = 24
     return cfg
 
@@ -105,7 +110,7 @@ class TestReachability:
     @pytest.mark.asyncio
     async def test_in_aws_an_unusable_park_file_raises_without_probing(self):
         # Nothing in AWS runs RSSHub, so a probe of localhost would only name the wrong cause.
-        c = RSSHubCollector(_config())
+        c = _collector(_config())
         with patch("adapters.collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with patch("adapters.collectors.rsshub.is_running_in_aws", return_value=True):
                 with patch("adapters.collectors.rsshub.httpx.AsyncClient") as client:
@@ -116,7 +121,7 @@ class TestReachability:
     @pytest.mark.asyncio
     async def test_unreachable_service_raises(self, monkeypatch):
         monkeypatch.delenv("STATE_BUCKET", raising=False)
-        c = RSSHubCollector(_config())
+        c = _collector(_config())
         with patch("adapters.collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with _probe(httpx.ConnectError("connection refused")):
                 with pytest.raises(RuntimeError, match="unreachable"):
@@ -125,7 +130,7 @@ class TestReachability:
     @pytest.mark.asyncio
     async def test_5xx_raises(self, monkeypatch):
         monkeypatch.delenv("STATE_BUCKET", raising=False)
-        c = RSSHubCollector(_config())
+        c = _collector(_config())
         with patch("adapters.collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with _probe(httpx.Response(status_code=503)):
                 with pytest.raises(RuntimeError, match="503"):
@@ -134,7 +139,7 @@ class TestReachability:
     @pytest.mark.asyncio
     async def test_reachable_proceeds(self, monkeypatch):
         monkeypatch.delenv("STATE_BUCKET", raising=False)
-        c = RSSHubCollector(_config())
+        c = _collector(_config())
         with patch("adapters.collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with _reachable():
                 with patch("adapters.collectors.base.fetch_feed", return_value=_feed([])):
@@ -146,7 +151,7 @@ class TestReachability:
         # A feed host that never returns must not take the source down: its own timeout fails THAT
         # feed while the healthy account still delivers, and collect() neither hangs nor raises.
         monkeypatch.delenv("STATE_BUCKET", raising=False)
-        c = RSSHubCollector(
+        c = _collector(
             _config(
                 accounts=["hangs", "ok"],
                 request_timeout=1,
@@ -169,7 +174,7 @@ class TestReachability:
         # Reachable service but nothing parseable on ANY account is an outage, not a quiet day:
         # it must surface as FAILED instead of a silent empty result.
         monkeypatch.delenv("STATE_BUCKET", raising=False)
-        c = RSSHubCollector(_config(accounts=["a", "b"]))
+        c = _collector(_config(accounts=["a", "b"]))
         with patch("adapters.collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with _reachable():
                 with patch("adapters.collectors.base.fetch_feed", side_effect=RuntimeError("bozo")):
@@ -179,7 +184,7 @@ class TestReachability:
     @pytest.mark.asyncio
     async def test_partial_failure_keeps_succeeding_accounts(self, monkeypatch):
         monkeypatch.delenv("STATE_BUCKET", raising=False)
-        c = RSSHubCollector(_config(accounts=["bad", "ok"]))
+        c = _collector(_config(accounts=["bad", "ok"]))
         fetch = _fetch_by_username({"bad": RuntimeError("bozo"), "ok": _feed([_entry()])})
         with patch("adapters.collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with _reachable():
@@ -196,7 +201,7 @@ class TestAccountRetries:
     @pytest.mark.asyncio
     async def test_transient_status_is_retried_then_succeeds(self, monkeypatch):
         monkeypatch.delenv("STATE_BUCKET", raising=False)
-        c = RSSHubCollector(_config(max_retries=3))
+        c = _collector(_config(max_retries=3))
         outcomes: list = [TransientStatusError("returned HTTP 502"), _feed([_entry()])]
 
         async def _fetch(url, **kwargs):
@@ -215,7 +220,7 @@ class TestAccountRetries:
     @pytest.mark.asyncio
     async def test_permanent_failure_is_not_retried(self, monkeypatch):
         monkeypatch.delenv("STATE_BUCKET", raising=False)
-        c = RSSHubCollector(_config(max_retries=3))
+        c = _collector(_config(max_retries=3))
         with patch("adapters.collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with _reachable():
                 with patch("adapters.collectors.base.fetch_feed", side_effect=RuntimeError("bozo")) as fetch:
@@ -225,7 +230,7 @@ class TestAccountRetries:
 
     @pytest.mark.asyncio
     async def test_every_attempt_carries_the_configured_timeout(self):
-        c = RSSHubCollector(_config(max_retries=3, request_timeout=9))
+        c = _collector(_config(max_retries=3, request_timeout=9))
         timeouts: list[float] = []
         outcomes: list = [TransientStatusError("returned HTTP 502"), _feed([_entry()])]
 
@@ -250,7 +255,7 @@ class TestFailureHint:
     async def test_hint_names_twitter_cookies_when_x_feeds_fail(self, monkeypatch):
         monkeypatch.delenv("STATE_BUCKET", raising=False)
         accounts = ["a", "b"]
-        c = RSSHubCollector(_config(accounts=accounts, error_rate_threshold=40.0))
+        c = _collector(_config(accounts=accounts, error_rate_threshold=40.0))
         fetch = _fetch_by_username({"a": _feed([_entry()]), "b": RuntimeError("feed down")})
         with patch("adapters.collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with _reachable():
@@ -264,7 +269,7 @@ class TestFanOutBound:
     async def test_concurrency_is_bounded_by_config(self, monkeypatch):
         # Unbounded fan-out let a feed's timeout expire before its fetch had even started.
         monkeypatch.delenv("STATE_BUCKET", raising=False)
-        c = RSSHubCollector(
+        c = _collector(
             _config(
                 accounts=[f"u{i}" for i in range(6)],
                 max_concurrency=2,
@@ -292,7 +297,7 @@ class TestFeedParsing:
     tests/test_base_collector.py)."""
 
     async def _collect_one(self, feed, **config_kwargs):
-        c = RSSHubCollector(_config(**config_kwargs))
+        c = _collector(_config(**config_kwargs))
         with patch("adapters.collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with patch.object(c, "_check_reachable"):
                 with patch("adapters.collectors.base.fetch_feed", return_value=feed):
@@ -323,7 +328,7 @@ class TestParkedItems:
     async def test_park_file_short_circuits_live_collection(self):
         # The AWS path: X is collected locally and parked in S3, so the Lambda must not fetch live
         # (a datacenter IP gets blocked) and must not even probe RSSHub for reachability.
-        c = RSSHubCollector(_config())
+        c = _collector(_config())
         parked = ParkedItems(outcome=ParkOutcome.FRESH, items=[_item("parked")])
         with patch("adapters.collectors.rsshub.load_items_from_s3", return_value=parked):
             with patch.object(c, "_check_reachable") as reach:
@@ -334,7 +339,7 @@ class TestParkedItems:
 
     @pytest.mark.asyncio
     async def test_stale_park_items_are_used_and_flagged(self):
-        c = RSSHubCollector(_config())
+        c = _collector(_config())
         stale = ParkedItems(outcome=ParkOutcome.STALE, items=[_item("old")], detail="72h")
         with patch("adapters.collectors.rsshub.load_items_from_s3", return_value=stale):
             items = await c.collect()
@@ -346,7 +351,7 @@ class TestParkedItems:
         # A STALE-but-usable park file carries posts older than lookback_hours. The live branch
         # filters every entry against the cutoff; returning parked.items verbatim did not, so items
         # up to park_max_age + lookback old reached the ranker.
-        c = RSSHubCollector(_config())
+        c = _collector(_config())
         in_window = _item("fresh")
         in_window.published_at = datetime(2026, 6, 2, 12, tzinfo=UTC)
         too_old = _item("ancient")
@@ -360,7 +365,7 @@ class TestParkedItems:
     async def test_after_a_skipped_sync_the_read_reaches_back_to_the_previous_one(self):
         # Reference 06-03 00:00, lookback 30h: a post from 06-01 13:00 is older than the window, but the
         # previous sync ran at 06-01 09:00, so no digest has read it yet.
-        c = RSSHubCollector(_config(lookback_hours=30, park_max_age_hours=24))
+        c = _collector(_config(lookback_hours=30, park_max_age_hours=24))
         missed = _item("missed")
         missed.published_at = datetime(2026, 6, 1, 13, tzinfo=UTC)
         meta = {"previous_sync_at": "2026-06-01T09:00:00+00:00"}
@@ -373,7 +378,7 @@ class TestParkedItems:
     async def test_a_backfill_run_does_not_ingest_todays_parked_items(self):
         # `--date` moves reference_time to midnight at the END of the requested day, so a post from
         # after it belongs to a LATER digest. The park path ignored reference_time entirely.
-        c = RSSHubCollector(_config())
+        c = _collector(_config())
         later = _item("tomorrow")
         later.published_at = datetime(2026, 6, 5, tzinfo=UTC)
         parked = ParkedItems(outcome=ParkOutcome.FRESH, items=[later])
@@ -383,7 +388,7 @@ class TestParkedItems:
     @pytest.mark.asyncio
     async def test_a_parked_item_with_no_date_is_kept(self):
         # A missing published_at is a metadata gap, not evidence of being out of window.
-        c = RSSHubCollector(_config())
+        c = _collector(_config())
         parked = ParkedItems(outcome=ParkOutcome.FRESH, items=[_item("undated")])
         with patch("adapters.collectors.rsshub.load_items_from_s3", return_value=parked):
             items = await c.collect()
@@ -391,7 +396,7 @@ class TestParkedItems:
 
     @pytest.mark.asyncio
     async def test_park_age_budget_comes_from_config(self):
-        c = RSSHubCollector(_config(park_max_age_hours=72))
+        c = _collector(_config(park_max_age_hours=72))
         with patch("adapters.collectors.rsshub.load_items_from_s3", return_value=_absent_park()) as load:
             with patch.object(c, "_check_reachable"):
                 with patch("adapters.collectors.base.fetch_feed", return_value=_feed([])):
@@ -400,7 +405,7 @@ class TestParkedItems:
 
     @pytest.mark.asyncio
     async def test_no_accounts_configured_returns_empty(self):
-        c = RSSHubCollector(_config(accounts=[]))
+        c = _collector(_config(accounts=[]))
         with patch("adapters.collectors.rsshub.load_items_from_s3", return_value=_absent_park()):
             with patch.object(c, "_check_reachable") as reach:
                 assert await c.collect() == []
@@ -413,7 +418,7 @@ class TestDegradedReporting:
 
     @pytest.mark.asyncio
     async def test_park_meta_over_the_threshold_flags_degraded(self):
-        c = RSSHubCollector(_config(error_rate_threshold=50.0))
+        c = _collector(_config(error_rate_threshold=50.0))
         parked = ParkedItems(
             outcome=ParkOutcome.FRESH,
             items=[_item("parked")],
@@ -427,7 +432,7 @@ class TestDegradedReporting:
 
     @pytest.mark.asyncio
     async def test_park_meta_under_the_threshold_is_clean(self):
-        c = RSSHubCollector(_config(error_rate_threshold=50.0))
+        c = _collector(_config(error_rate_threshold=50.0))
         parked = ParkedItems(
             outcome=ParkOutcome.FRESH,
             items=[_item("parked")],
@@ -439,7 +444,7 @@ class TestDegradedReporting:
 
     @pytest.mark.asyncio
     async def test_legacy_park_file_without_meta_is_not_flagged(self):
-        c = RSSHubCollector(_config())
+        c = _collector(_config())
         parked = ParkedItems(outcome=ParkOutcome.FRESH, items=[_item("parked")])
         with patch("adapters.collectors.rsshub.load_items_from_s3", return_value=parked):
             await c.collect()
@@ -449,7 +454,7 @@ class TestDegradedReporting:
     async def test_a_park_file_whose_every_feed_came_back_empty_is_flagged(self):
         # Expired X cookies make every account feed answer 200 with no entries: no failure rate
         # trips, and the fresh park file used to read as perfectly healthy.
-        c = RSSHubCollector(_config(empty_rate_threshold=90.0))
+        c = _collector(_config(empty_rate_threshold=90.0))
         parked = ParkedItems(
             outcome=ParkOutcome.FRESH,
             items=[_item("parked")],
@@ -463,7 +468,7 @@ class TestDegradedReporting:
     @pytest.mark.asyncio
     async def test_live_run_records_meta_and_flags_a_mostly_failed_fan_out(self):
         accounts = [f"u{i}" for i in range(4)]
-        c = RSSHubCollector(_config(accounts=accounts, error_rate_threshold=50.0))
+        c = _collector(_config(accounts=accounts, error_rate_threshold=50.0))
         fetch = _fetch_by_username(
             {
                 "u0": _feed([_entry()]),

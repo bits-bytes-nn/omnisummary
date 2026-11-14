@@ -198,3 +198,27 @@ async def test_stale_wins_over_degraded():
     )
 
     assert report.sources[0].status == SourceStatus.STALE
+
+
+@pytest.mark.asyncio
+async def test_a_long_rsshub_detail_keeps_its_actionable_hint():
+    from adapters.collectors.rsshub import _FAILURE_HINT
+    from application import digest_pipeline as runner
+
+    async def parked_items():
+        return [_item("http://x.com/1")]
+
+    park = ParkedItems(
+        outcome=ParkOutcome.STALE,
+        detail=(
+            "park file 's3://omnisummary-dev-state-123456789012-ap-northeast-2/omnisummary/rsshub_items.json' is "
+            "26.4h old (>12h); the local sync may have stalled — using stale data"
+        ),
+    )
+    collector = _Collector(park, degraded_detail=f"parked sync: 31/42 account feeds failed (>50%); {_FAILURE_HINT}")
+    _items, report = await runner.run_collectors_with_health(
+        Config(), _sources([parked_items()], ["rsshub"], [collector])
+    )
+
+    assert len(report.sources[0].detail) > 200
+    assert "TWITTER_AUTH_TOKEN" in report.summary()

@@ -10,7 +10,6 @@ from adapters.collectors.base import parse_feed_published_date
 from domain.models import generate_item_id
 from shared.utils import (
     backoff_delay,
-    coerce_bool,
     extract_json_from_llm_output,
     parse_json_from_llm_output,
     retry_async,
@@ -114,14 +113,15 @@ class TestSsmClient:
         assert session.call_args.kwargs == {"profile_name": "research", "region_name": "ap-northeast-2"}
         session.return_value.client.assert_called_once_with("ssm")
 
-    def test_without_a_profile_it_is_the_runtimes_own_client_as_before(self, monkeypatch):
+    def test_without_a_profile_it_is_the_runtimes_own_client_from_a_fresh_session(self, monkeypatch):
         from adapters import aws as utils
 
         monkeypatch.setenv("AWS_REGION", "ap-northeast-2")
         with patch.object(utils, "available_boto_profile", return_value=None):
-            with patch.object(utils.boto3, "client") as client:
+            with patch.object(utils.boto3, "Session") as session:
                 _REAL_SSM_CLIENT()
-        client.assert_called_once_with("ssm", region_name="ap-northeast-2")
+        session.assert_called_once_with()
+        session.return_value.client.assert_called_once_with("ssm", region_name="ap-northeast-2")
 
 
 class TestGenerateItemId:
@@ -342,25 +342,6 @@ class TestBackoffDelay:
             assert 4.0 * attempt <= delay < 4.0 * (attempt + 1)
 
 
-class TestCoerceBool:
-    """LLM plan flags arrive as JSON the model wrote by hand, so a boolean may be a STRING. Bare
-    truthiness read "false" as True: the visual editor's `skip` silently killed the day's visual and
-    `use_character` injected the mascot against the editor's judgment."""
-
-    def test_false_spellings_are_false(self):
-        for value in ("false", "False", " FALSE ", "0", "no", "off", "none", "null", ""):
-            assert coerce_bool(value) is False, value
-
-    def test_true_spellings_and_real_booleans(self):
-        for value in ("true", "True", "yes", "1", True, 1):
-            assert coerce_bool(value) is True, value
-        assert coerce_bool(False) is False
-
-    def test_missing_falls_back_to_the_default(self):
-        assert coerce_bool(None) is False
-        assert coerce_bool(None, default=True) is True
-
-
 class TestAvailableBotoProfile:
     """Credential selection by platform sniff was wrong in both directions, so the question the code
     asks is now the only one that matters: does this profile actually resolve here?"""
@@ -412,3 +393,15 @@ class TestSecretParameterName:
         config.aws.project_name, config.aws.stage = "omnisummary", "prod"
         with patch.object(aws, "get_config", return_value=config):
             assert aws.secret_parameter_name("tavily-api-key") == "/omnisummary/prod/tavily-api-key"
+
+    def test_an_unreadable_config_raises_instead_of_naming_the_dev_secrets(self, monkeypatch):
+        from adapters import aws
+
+        monkeypatch.delenv("PROJECT_NAME", raising=False)
+        monkeypatch.delenv("STAGE", raising=False)
+        with patch.object(aws, "get_config", side_effect=ValueError("bad yaml")):
+            with pytest.raises(ValueError, match="bad yaml"):
+                aws.secret_parameter_name("tavily-api-key")
+            assert aws.resolve_secret("TAVILY_UNSET_FOR_TEST", "tavily-api-key") == ""
+            with pytest.raises(aws.SecretUnavailableError):
+                aws.resolve_secret("TAVILY_UNSET_FOR_TEST", "tavily-api-key", strict=True)
