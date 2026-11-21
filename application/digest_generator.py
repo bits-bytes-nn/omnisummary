@@ -149,30 +149,24 @@ class DigestGenerator:
         )
 
         evidence: dict[str, str] = {}
-        editor_remarks = [item.implication for item in content.items]
-        rewritten: set[int] = set()
         if research is not None:
             try:
                 # Bounded: the step is on the critical path of a Lambda with no retry, and a run that times out
                 # posts nothing that day.
                 async with asyncio.timeout(_EVIDENCE_TIMEOUT_SEC):
                     evidence = await gather_evidence(self.config, self.models, research, shipped_sources)
-                    rewritten = await self._argue_from_evidence(content, shipped_sources, evidence)
+                    await self._argue_from_evidence(content, shipped_sources, evidence)
             except TimeoutError:
+                # The remarks change only after the step's last await, so a timeout leaves them all the editor's.
                 logger.warning(
                     "Evidence step timed out after %ds; the remarks stay the editor's", _EVIDENCE_TIMEOUT_SEC
                 )
-                for item, remark in zip(content.items, editor_remarks, strict=True):
-                    item.implication = remark
 
         grounding_skipped = False
         if self.config.enable_grounding_check:
             content, grounding_skipped = await self._verify_grounding(
                 content, shipped_sources, trends_context, evidence
             )
-
-        if research is not None:
-            self._restore_overflowing_remarks(content, shipped_sources, editor_remarks, rewritten)
 
         # Attach the AGI countdown to the lead at generation time, using the digest's own date
         # (the single KST clock for the run) so the countdown is consistent with trend stamps and
@@ -419,23 +413,6 @@ class DigestGenerator:
         # shorter bodies for nothing.
         (logger.info if changed else logger.warning)("Evidence rewrote %d of %d remark(s)", len(changed), len(limits))
         return changed
-
-    def _restore_overflowing_remarks(
-        self,
-        content: DigestContent,
-        sources: list[CollectedItem],
-        editor_remarks: list[str],
-        rewritten: set[int],
-    ) -> None:
-        """A rewritten remark took the post's last free characters, so a grounding edit that lengthened the
-        title or body would push the post past 500 and the renderer would drop the body's closing sentence.
-        Such a post gets the editor's shorter remark back."""
-        for i, (item, src, remark) in enumerate(zip(content.items, sources, editor_remarks, strict=True)):
-            if i not in rewritten:
-                continue
-            if len(item.title) + len(item.body) + len(item.implication) > self._item_prose_budget(src):
-                logger.info("Story %d over its post after grounding; the editor's remark restored", i + 1)
-                item.implication = remark
 
     async def _verify_grounding(
         self,

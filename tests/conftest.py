@@ -1,5 +1,10 @@
 import logging
+import os
 import socket
+
+# The CLIs call load_dotenv() at import, which would load the developer's real .env into the test process
+# while tests are collected (python-dotenv honours this switch).
+os.environ["PYTHON_DOTENV_DISABLED"] = "1"
 
 import pytest
 

@@ -119,7 +119,7 @@ class TestRequestGating:
     @pytest.mark.parametrize("resolved", ["global", "arn"])
     @pytest.mark.parametrize(
         "model",
-        [LanguageModelId.CLAUDE_V5_SONNET, LanguageModelId.CLAUDE_V5_5_HAIKU, LanguageModelId.GPT_V6_1_SOL],
+        [LanguageModelId.CLAUDE_V4_6_SONNET, LanguageModelId.CLAUDE_V5_5_HAIKU, LanguageModelId.GPT_V6_1_SOL],
         ids=lambda m: m.name,
     )
     def test_models_that_accept_forced_tool_choice_say_so_for_any_resolved_id(self, model, resolved):
@@ -140,7 +140,7 @@ class TestRequestGating:
         cfg = _factory()._build_model_config(LANGUAGE_MODEL_INFO[model], f"global.{model.value}")
         assert cfg["additional_model_request_fields"] == {"reasoning": {"effort": "high"}}
 
-    @pytest.mark.parametrize("model", [LanguageModelId.CLAUDE_V5_SONNET, LanguageModelId.CLAUDE_V5_5_SONNET])
+    @pytest.mark.parametrize("model", [LanguageModelId.CLAUDE_V4_6_SONNET, LanguageModelId.CLAUDE_V5_5_SONNET])
     def test_a_high_default_effort_sends_nothing(self, model):
         cfg = _factory()._build_model_config(LANGUAGE_MODEL_INFO[model], f"global.{model.value}")
         assert "additional_model_request_fields" not in cfg
@@ -196,7 +196,7 @@ class TestStructuredOutputRequest:
         assert request.get("additionalModelRequestFields") == (LANGUAGE_MODEL_INFO[model].request_fields() or None)
 
     @pytest.mark.parametrize("resolved", ["global", "arn"])
-    @pytest.mark.parametrize("model", [LanguageModelId.CLAUDE_V5_SONNET, LanguageModelId.GPT_V6_1_SOL])
+    @pytest.mark.parametrize("model", [LanguageModelId.CLAUDE_V4_6_SONNET, LanguageModelId.GPT_V6_1_SOL])
     def test_a_model_that_accepts_forced_tool_choice_gets_it(self, model, resolved):
         request = self._converse_request(model, PROFILE_ARN if resolved == "arn" else f"global.{model.value}")
         assert request["toolConfig"]["toolChoice"] == {"tool": {"name": "VisualBrief"}}
@@ -228,7 +228,7 @@ class TestModelClassConstructorSurface:
         from langchain_aws import ChatBedrockConverse
 
         f = _factory()
-        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
         cfg = f._build_model_config(
             info, "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc", stage="digest"
         )
@@ -245,18 +245,18 @@ class TestTokenUsageAttribution:
         from adapters.bedrock import _TokenUsageLogger
 
         f = _factory()
-        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
-        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", stage="ranking")
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
+        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-4-6", stage="ranking")
         loggers = [c for c in cfg["callbacks"] if isinstance(c, _TokenUsageLogger)]
         assert [h.stage for h in loggers] == ["ranking"]
-        assert loggers[0].model_id == "global.anthropic.claude-sonnet-5"
+        assert loggers[0].model_id == "global.anthropic.claude-sonnet-4-6"
 
     def test_untagged_call_is_labelled_rather_than_dropped(self):
         from adapters.bedrock import _TokenUsageLogger
 
         f = _factory()
-        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
-        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5")
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
+        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-4-6")
         assert [c.stage for c in cfg["callbacks"] if isinstance(c, _TokenUsageLogger)] == ["unattributed"]
 
     def test_a_caller_supplied_callback_is_kept(self):
@@ -264,15 +264,15 @@ class TestTokenUsageAttribution:
 
         mine = MagicMock()
         f = _factory()
-        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
-        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-5", callbacks=[mine], stage="digest")
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
+        cfg = f._build_model_config(info, "global.anthropic.claude-sonnet-4-6", callbacks=[mine], stage="digest")
         assert mine in cfg["callbacks"]
         assert any(isinstance(c, _TokenUsageLogger) for c in cfg["callbacks"])
 
     def test_a_response_without_usage_metadata_is_survivable(self):
         from adapters.bedrock import _TokenUsageLogger
 
-        handler = _TokenUsageLogger("digest", "global.anthropic.claude-sonnet-5")
+        handler = _TokenUsageLogger("digest", "global.anthropic.claude-sonnet-4-6")
         handler.on_llm_end(MagicMock(generations=[], llm_output=None))  # must not raise
         handler.on_llm_end(object())  # not even the expected shape
 
@@ -345,8 +345,8 @@ class TestApplicationProfileResolution:
     def test_profile_name_is_deterministic_and_slugged(self):
         from adapters.bedrock import BedrockCrossRegionModelHelper as H
 
-        name = H.application_profile_name(LanguageModelId.CLAUDE_V4_8_OPUS, "omnisummary", "dev")
-        assert name == "omnisummary-dev-anthropic-claude-opus-4-8"
+        name = H.application_profile_name(LanguageModelId.CLAUDE_V5_5_OPUS, "omnisummary", "dev")
+        assert name == "omnisummary-dev-anthropic-claude-opus-5-5"
         # dots and colons in a model id are not valid in a profile name
         name = H.application_profile_name(LanguageModelId.CLAUDE_V5_5_OPUS, "omnisummary", "prod")
         assert name.startswith("omnisummary-prod-") and "." not in name and ":" not in name
@@ -400,14 +400,14 @@ class TestApplicationProfileResolution:
             {
                 "inferenceProfileSummaries": [
                     {"inferenceProfileName": "someone-elses", "inferenceProfileArn": "arn:other"},
-                    {"inferenceProfileName": "omnisummary-dev-anthropic-claude-opus-4-8", "inferenceProfileArn": arn},
+                    {"inferenceProfileName": "omnisummary-dev-anthropic-claude-opus-5-5", "inferenceProfileArn": arn},
                 ]
             }
         ]
         session = MagicMock()
         session.client.return_value = client
         got = H._application_profile_arn(
-            session, LanguageModelId.CLAUDE_V4_8_OPUS, "us-west-2", "fallback-id", AWSConfig()
+            session, LanguageModelId.CLAUDE_V5_5_OPUS, "us-west-2", "fallback-id", AWSConfig()
         )
         assert got == arn
 
@@ -421,7 +421,7 @@ class TestApplicationProfileResolution:
         session.client.return_value = client
         assert (
             H._application_profile_arn(
-                session, LanguageModelId.CLAUDE_V5_SONNET, "us-west-2", "global.anthropic.x", AWSConfig()
+                session, LanguageModelId.CLAUDE_V4_6_SONNET, "us-west-2", "global.anthropic.x", AWSConfig()
             )
             == "global.anthropic.x"
         )
@@ -434,7 +434,7 @@ class TestApplicationProfileResolution:
         monkeypatch.setattr(H, "_resolve", staticmethod(lambda *a: "global.anthropic.x"))
         session = MagicMock()
         session.client.side_effect = RuntimeError("ThrottlingException")
-        model = LanguageModelId.CLAUDE_V5_SONNET
+        model = LanguageModelId.CLAUDE_V4_6_SONNET
         assert H.get_cross_region_model_id(session, model, "us-west-2", AWSConfig()) == "global.anthropic.x"
         assert H._resolution_cache == {}
 
@@ -442,10 +442,10 @@ class TestApplicationProfileResolution:
         # ChatBedrockConverse refuses an ARN without a provider ("Model provider should be supplied
         # when passing a model ARN as model_id"), which is exactly what a profile ARN is.
         f = _factory()
-        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V5_SONNET]
+        info = LANGUAGE_MODEL_INFO[LanguageModelId.CLAUDE_V4_6_SONNET]
         cfg = f._build_model_config(info, "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc")
         assert cfg["provider"] == "anthropic"
-        assert "provider" not in f._build_model_config(info, "global.anthropic.claude-sonnet-5")
+        assert "provider" not in f._build_model_config(info, "global.anthropic.claude-sonnet-4-6")
         gpt = LANGUAGE_MODEL_INFO[LanguageModelId.GPT_V6_1_SOL]
         assert f._build_model_config(gpt, PROFILE_ARN)["provider"] == "openai"
 
@@ -472,7 +472,7 @@ class TestCrossRegionResolution:
     broad except decide that, and nothing exercised them: get_model is mocked in every consumer test.
     A ladder that silently always returned the standard id would look identical in the logs."""
 
-    MODEL = LanguageModelId.CLAUDE_V5_SONNET
+    MODEL = LanguageModelId.CLAUDE_V4_6_SONNET
 
     def test_a_global_profile_wins(self):
         from adapters.bedrock import BedrockCrossRegionModelHelper as H
@@ -558,8 +558,8 @@ class TestGetModel:
     def test_a_cross_region_id_builds_the_converse_class_with_that_id(self):
         from langchain_aws import ChatBedrockConverse
 
-        resolved = f"global.{LanguageModelId.CLAUDE_V5_SONNET.value}"
-        model = self._built(LanguageModelId.CLAUDE_V5_SONNET, resolved, stage="digest")
+        resolved = f"global.{LanguageModelId.CLAUDE_V4_6_SONNET.value}"
+        model = self._built(LanguageModelId.CLAUDE_V4_6_SONNET, resolved, stage="digest")
         assert isinstance(model, ChatBedrockConverse)
         assert model.model_id == resolved
 
@@ -568,7 +568,7 @@ class TestGetModel:
         # token total is attributable at all.
         from adapters.bedrock import _TokenUsageLogger
 
-        model = self._built(LanguageModelId.CLAUDE_V5_SONNET, "global.anthropic.claude-sonnet-5", stage="ranking")
+        model = self._built(LanguageModelId.CLAUDE_V4_6_SONNET, "global.anthropic.claude-sonnet-4-6", stage="ranking")
         loggers = [c for c in (model.callbacks or []) if isinstance(c, _TokenUsageLogger)]
         assert [c.stage for c in loggers] == ["ranking"]
 
@@ -586,7 +586,7 @@ def test_a_failed_cross_region_lookup_is_not_cached(monkeypatch):
     monkeypatch.setattr(H, "_application_profile_arn", staticmethod(lambda session, model, region, resolved: resolved))
     session = MagicMock()
     session.client.side_effect = RuntimeError("ThrottlingException")
-    model = LanguageModelId.CLAUDE_V5_SONNET
+    model = LanguageModelId.CLAUDE_V4_6_SONNET
     assert H.get_cross_region_model_id(session, model, "us-west-2", AWSConfig()) == model.value
     assert H._resolution_cache == {}
 

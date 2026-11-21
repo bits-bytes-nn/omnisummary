@@ -93,9 +93,6 @@ class LanguageModelInfo(BaseModel):
 # only raise the HTTP-timeout risk with no caller needing that much output.
 LANGUAGE_MODEL_INFO: dict[LanguageModelId, LanguageModelInfo] = {
     LanguageModelId.CLAUDE_V4_6_SONNET: LanguageModelInfo(max_output_tokens=64000, supports_temperature=True),
-    LanguageModelId.CLAUDE_V5_SONNET: LanguageModelInfo(max_output_tokens=64000),
-    LanguageModelId.CLAUDE_V4_8_OPUS: LanguageModelInfo(max_output_tokens=64000),
-    LanguageModelId.CLAUDE_V5_OPUS: LanguageModelInfo(max_output_tokens=64000),
     LanguageModelId.CLAUDE_V5_5_HAIKU: LanguageModelInfo(max_output_tokens=64000, effort="high"),
     LanguageModelId.CLAUDE_V5_5_SONNET: LanguageModelInfo(
         max_output_tokens=64000, supports_forced_tool_choice=False, price=SONNET_5_5_PRICE
@@ -402,7 +399,7 @@ class BedrockLanguageModelFactory:
         logger.warning("Text truncated to <=%d tokens (%d chars)", max_tokens, len(truncated))
         return truncated
 
-    def get_model(self, model_id: LanguageModelId, *, stage: str = "", **kwargs: Any) -> ChatBedrockConverse:
+    def get_model(self, model_id: LanguageModelId, *, stage: str, **kwargs: Any) -> ChatBedrockConverse:
         """Build a chat model. `stage` names the caller (ranking / digest / grounding / ...) purely so
         token usage can be attributed in the logs — the bill is per MODEL, and several stages share
         one model, so without it a token total cannot be traced to the call that spent it."""

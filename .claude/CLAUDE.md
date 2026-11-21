@@ -151,11 +151,11 @@ Ports and adapters (hexagonal). Dependencies point inward only, checked in CI by
 - The daily-visual Lambda is the ONLY digest publish path (the comment-reply Lambda only answers comments): it loads the snapshot for the date the
   digest Lambda passed it, and both Lambdas re-raise on failure (retry_attempts=0, so a re-raise
   cannot duplicate a post).
-- Prompt changes must SIMPLIFY or restructure AND win a blind both-order judge on stored days (one owner exception:
-  `pipeline.evidence_remarks` is on for the investing edition too, where it lost 4-8; docs/decisions.md 2026-11-21)
+- Prompt changes must SIMPLIFY or restructure AND win a blind both-order judge on stored days
   (`scripts/eval_harness.py`) — iteratively adding rules to these prompts has a documented history of
   making the output worse, and simplifications lose too (2026-11-07: the implication spec 3-9, the comic
-  frame clause 10-12 on images).
+  frame clause 10-12 on images). One owner exception: `pipeline.evidence_remarks` is on for the investing
+  edition too, where it lost 4-8 (docs/decisions.md 2026-11-21).
 - **Do NOT regex-check the editor's Korean.** A `shared/prose_lint.py` existed for one release and was
   deleted whole. Measured over the stored corpus (14 digests, 44 prose fields) it found ONE true
   positive while an em-dash pattern fired on 3 of 4 digests over idiomatic Korean, a figure check read

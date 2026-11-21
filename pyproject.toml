@@ -19,7 +19,7 @@ dependencies = [
     "pydantic>=2.12.0",
     # Research notes' attached PDFs (the investing edition's primary stories): text only, pure Python.
     "pypdf>=7.0.0",
-    "python-dotenv>=1.1.1",
+    "python-dotenv>=1.2.3",
     # Declared because adapters/collectors/youtube.py imports it directly: youtube-transcript-api's fetch is
     # synchronous and builds a Session with NO socket timeout, so the only real bound is a Session
     # subclass we pass in. It was already installed transitively; an undeclared import is a break

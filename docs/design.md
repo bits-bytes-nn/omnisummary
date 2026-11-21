@@ -55,6 +55,7 @@ OpenClaw 스킬(`~/Projects/agent-config/skills/omnisummary-research/SKILL.md`)�
    → 집계기 (URL + 제목 중복 제거)
    → 랭커 (AI판 Claude Opus 5.5, 투자판 Sonnet 5.5, 소스 슬롯과 origin 상한으로 후보 풀 구성)
    → 다이제스트 생성기 (Claude Sonnet 5.5, 후보 풀에서 가장 강한 5개를 골라 한국어 DigestContent 작성)
+   → 근거 시사점 (evidence_remarks: 기사마다 Tavily + OpenAlex로 이론·연구·사례·데이터를 찾아 implication만 다시 쓰고, 그라운딩이 함께 검사)
    → 트렌드 트래커 (작성된 기사로 구조화 trends.json 갱신, StateStore, dry run에서는 건너뜀)
    → AgentCore Memory (다이제스트 스냅샷)
    → 데일리 비주얼 Lambda 비동기 트리거
@@ -931,8 +932,9 @@ Tavily 웹 검색 하나와 OpenAlex 논문 검색 하나), 별도 단계(`Evide
 없으면 에디터의 문장을 그대로 둔다. 단계를 120초에서 끊고 에디터의 문장으로 돌아간다(재시도 없는 Lambda에서 시간 초과는 그날
 게시 실패다). 끊어도 Bedrock 호출 스레드는 읽기 타임아웃까지 남을 수 있지만, 만화 Lambda는 그 전에 호출되고 다이제스트
 Lambda의 제한은 15분이다. 검색 결과는 그라운딩의 소스로 함께 들어가 인용한 이론과 수치도 검사를 받되,
-implication의 근거로만 쓰인다. 그라운딩이 제목이나 본문을 늘려 게시물이 500자를 넘으면 그 스토리는 에디터의 문장으로
-되돌린다(렌더러는 본문의 마지막 문장을 먼저 버린다). Tavily 사용량은 `evidence-search` 단계로 기록된다. 저장은
+implication의 근거로만 쓰인다. 질의 작성기 앞의 토큰 자르기(CountTokens)는 이 시간 안에서 돌지만 동기 호출이라 중간에 끊기지 않는다. 실패하는 호출은
+읽기 타임아웃(300초)과 재시도까지 이벤트 루프를 붙잡을 수 있고, 첫 실패 뒤에는 그 실행의 남은 카운트가 글자 수로 바뀐다.
+그라운딩이 제목이나 본문을 늘려 500자를 넘기면 렌더러가 본문 끝 문장부터 버리고 경고를 남긴다(다른 게시물과 같은 경로). Tavily 사용량은 `evidence-search` 단계로 기록된다. 저장은
 하지 않는다(`DigestResult.evidence`는 직렬화에서 빠진다). 에디터에게 같은 근거를 후보 옆에 주었을 때는 세 번 고쳐도
 implication을 하나도 바꾸지 않아 따로 떼었다([결정 기록](decisions.md#2026-11-21-근거-시사점-이론연구데이터로-쓰는-implication)).
 
@@ -1339,7 +1341,7 @@ Sonnet 5.5는 도구 호출을 강제할 수 없어 `auto`로 둔 스키마 도�
 `TestModelClassConstructorSurface`가 배포 환경에서만 도는 profile ARN 경로까지 포함해 실제 인스턴스를 생성한다.
 
 **모델 ID와 단계별 선택.** `shared/constants.py`의 `LanguageModelId`는 선택 가능한 모델만 담는다. Claude는
-Sonnet 4.6, Sonnet 5, Opus 4.8, Opus 5와 5.5 계열이고, GPT는 `openai.gpt-6.1-terra`와 `openai.gpt-6.1-sol`이다.
+Sonnet 4.6과 5.5 계열(Sonnet, Opus, Haiku)이고, GPT는 `openai.gpt-6.1-terra`와 `openai.gpt-6.1-sol`이다.
 GPT도 같은 Bedrock Converse API로 `global.` 프로필을 거쳐 호출하니 모델 클래스와 해석 경로가 그대로다. 어느
 `*_model` 설정에든 넣을 수 있다. 단계별 모델은 다음과 같다. 이 표가 정본이고, README와 CLAUDE.md는 모델 id만 옮긴다.
 
@@ -1441,11 +1443,10 @@ AccessDenied 또는 'doesn't support counting tokens'로 거부한다) 호출자
 CountTokens가 없어 같은 Sonnet 4.6 카운트를 쓴다. 토크나이저가 다르니 GPT에는 근사치지만, 잘라내기 예산에는
 그 정도면 충분하다.
 
-**토크나이저 주의.** Opus 4.7 이후 모델과 Sonnet 5 계열은 토크나이저가 달라서 같은 텍스트를 더 많은 토큰으로
-센다(최대 약 1.35배). 따라서 이 카운트는 실제 사용량을 약간 과소평가한다. 다만 `item_text_max_tokens` 컷이 더 넉넉한 상한이 되니 컨텍스트
-초과 위험은 없고 보수적인 방향이다.
+**토크나이저 주의.** 카운트를 맡는 Sonnet 4.6과 실제로 읽는 5.5 모델은 토크나이저가 다르다. 측정해 보니 Sonnet 4.6은
+영어를 약 1.7배 적게 센다(`adapters/bedrock.py`). 그래서 `item_text_max_tokens`는 5.5 모델이 읽는 실제 토큰보다 작게 잡힌 상한이다.
 
-cross-region `global.`이나 `us.` 같은 프리픽스는 베이스 id로 스트립하고, 오류가 나면 char/4 추정으로
+cross-region `global.`이나 `us.` 같은 프리픽스는 베이스 id로 스트립하고, 오류가 나면 그 실행의 남은 카운트를 글자 수(`len(text)`)로
 폴백한다. `truncate_to_tokens`는 전체 토큰 수에 비례해 문자 컷 지점을 잡고, 넘치면 같은 비율로 다시 줄여 몇 번 안에 맞춘다(맞지 않을 때만 그 아래를 이진 탐색한다). 그래도 수백 항목을 자르는 랭킹 입력에서는 CountTokens가 스로틀되므로, 랭커는 `pipeline.ranking_text_max_chars`(투자판 1,500자)가 있으면 CountTokens 없이 글자 수로 자른다([결정 기록](decisions.md#2026-11-02-랭킹-입력의-counttokens-스로틀)). 점수는 앞부분으로 매기고, 에디터와 그라운딩은 `item_text_max_tokens`로 잰 전문을 읽는다.
 
 **메모이제이션.** 결과를 팩토리 인스턴스에 텍스트 해시로 캐시한다. 프롬프트 빌드가 같은 항목 텍스트를
@@ -2115,8 +2116,9 @@ Lambda의 RSSHub 수집은 RSSHub에 연결을 시도하지 않고 "X park file 
 
 **IAM은 최소 권한으로 잡는다.**
 
-- 역할은 셋이다. 다이제스트와 비주얼 Lambda가 쓰는 `LambdaRole`, 댓글 답글 Lambda의 `CommentReplyRole`, 토큰 갱신
-  Lambda의 `TokenRefreshRole`이다. 낯선 사람의 댓글을 읽는 댓글 Lambda에는 토큰 쓰기(`ssm:PutParameter`)와 비주얼 Lambda
+- 역할은 셋이고, 투자판(`config/invest.yaml`)이 있으면 넷이다. AI판 다이제스트와 비주얼 Lambda가 쓰는 `LambdaRole`, 투자판의
+  `InvestLambdaRole`, 댓글 답글 Lambda의 `CommentReplyRole`, 토큰 갱신 Lambda의 `TokenRefreshRole`이다. 판마다 자기 비주얼 함수만
+  호출한다. `LambdaRole`에는 투자판 상태 prefix에 대한 S3 `Deny`가 걸리고, `InvestLambdaRole`은 AI판 prefix를 받지 않는다. 낯선 사람의 댓글을 읽는 댓글 Lambda에는 토큰 쓰기(`ssm:PutParameter`)와 비주얼 Lambda
   호출, Memory 쓰기가 없다(로그, SSM 읽기, Bedrock, 상태 prefix의 S3만). 토큰 쓰기는 갱신 역할에만 있다. 한 역할을
   같이 쓰던 때에는 댓글 Lambda의 회귀 하나가 토큰을 덮어쓰거나 게시를 일으킬 수 있었다.
 
