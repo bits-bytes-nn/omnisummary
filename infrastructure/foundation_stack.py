@@ -71,7 +71,7 @@ class OmniSummaryFoundationStack(Stack):
         )
         bedrock_invoke_statement = iam.PolicyStatement(
             # CountTokens powers token counting/truncation (replaces the local tiktoken heuristic);
-            # without it the calls AccessDeny and silently fall back to a char/4 estimate.
+            # without it the calls AccessDeny and silently fall back to a character count.
             # No streaming action: every Lambda call is a non-streaming Converse (only the local
             # research CLI streams, under the operator's own credentials).
             actions=["bedrock:InvokeModel", "bedrock:CountTokens"],

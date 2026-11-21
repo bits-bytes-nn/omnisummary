@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import boto3
@@ -8,6 +9,10 @@ import httpx
 from adapters.aws import resolve_secret, secret_parameter_name
 from shared import logger, set_correlation_id
 from shared.constants import THREADS_TOKEN_SECRET
+
+# httpx logs each request URL at INFO, and this one carries the token in its query string: pinned so a
+# Lambda log level raised to INFO cannot write the token to CloudWatch.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 THREADS_REFRESH_URL = "https://graph.threads.net/refresh_access_token"
 

@@ -14,9 +14,6 @@ class SourceType(str, Enum):
 
 class LanguageModelId(str, Enum):
     CLAUDE_V4_6_SONNET = "anthropic.claude-sonnet-4-6"
-    CLAUDE_V5_SONNET = "anthropic.claude-sonnet-5"
-    CLAUDE_V4_8_OPUS = "anthropic.claude-opus-4-8"
-    CLAUDE_V5_OPUS = "anthropic.claude-opus-5"
     CLAUDE_V5_5_HAIKU = "anthropic.claude-haiku-5-5"
     CLAUDE_V5_5_SONNET = "anthropic.claude-sonnet-5-5"
     CLAUDE_V5_5_OPUS = "anthropic.claude-opus-5-5"

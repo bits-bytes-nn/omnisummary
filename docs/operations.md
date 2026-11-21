@@ -173,6 +173,17 @@ aws sqs delete-message --profile research --region ap-northeast-2 --queue-url "$
 digest로 돌고(`ResolvedImageUri`), `State`가 `Active`, `LastUpdateStatus`가 `Successful`인지 읽기만 해서 확인하고, 하나라도 다르면
 실패로 끝난다.
 
+되돌리기는 보통 되돌리는 커밋을 main에 올리고 CI를 거쳐 다시 `release.sh`를 돌린다. 급하면 이전 이미지로 바로 되돌린다.
+ECR은 이미지를 30개까지(`latest` 포함) 남긴다. 태그는 다시 빌드하면 옮겨질 수 있으니 digest로 고른다.
+
+1. 이전 이미지의 digest를 찾는다: `aws ecr describe-images --profile <aws.profile> --region <aws.region> --repository-name <project>-<stage>-agent --query 'sort_by(imageDetails,&imagePushedAt)[].[imageTags[0],imageDigest]' --output text`
+2. 그 이미지의 커밋을 체크아웃한다(`git checkout <커밋>`). 스택과 설정이 지금 checkout에서 합성되므로, 다른 커밋에서 배포하면
+   옛 이미지 주위에 새 스택이 놓인다.
+3. `release.sh`의 cdk 단계와 같이 배포한다:
+   `eval "$(aws configure export-credentials --profile <aws.profile> --format env)"; unset AWS_PROFILE; export AWS_REGION=<aws.region>`
+   뒤에 `DIGEST_IMAGE_REF=<digest> npx cdk deploy --all -a "uv run python scripts/deploy.py" --require-approval never`.
+4. main을 고칠 때까지 `release.sh`를 돌리지 않는다.
+
 ## 자주 하는 점검
 
 | 무엇을 | 명령 |
@@ -185,6 +196,11 @@ digest로 돌고(`ResolvedImageUri`), `State`가 `Active`, `LastUpdateStatus`가
 | 지금 답할 댓글 초안(게시하지 않는다) | `uv run python scripts/sample_comment_replies.py` |
 | 저장된 날의 만화 계획(그리지 않는다) | `uv run python scripts/sample_visual_brief.py 2026-10-28 /tmp/vis` |
 | 최근 비용(일별, Lambda별 또는 단계별) | `uv run python scripts/cost_report.py --days 7 [--by stage]` |
+| 근거 시사점이 도는지(다시 쓴 수, 실패, 시간 초과) | Logs Insights, digest Lambda: `filter @message like /Evidence rewrote\|Evidence queries failed\|Evidence implications failed\|Evidence step timed out\|Background evidence/` |
+
+근거 시사점(`pipeline.evidence_remarks`)을 끄려면 `config/config.yaml`이나 `config/invest.yaml`에서 `false`로 바꾸고
+`scripts/release.sh`로 배포한다. 설정이 이미지에 들어가므로 배포 전에는 반영되지 않는다. 끄면 에디터 예산의 유보(80자)도 함께
+사라진다.
 
 ## 하지 말 것
 

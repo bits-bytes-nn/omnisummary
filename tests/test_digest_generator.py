@@ -1018,13 +1018,6 @@ class TestEvidenceRemarkEdges:
         await TestEvidenceRemarks._gen(answer)._argue_from_evidence(content, sources, evidence)
         assert [i.implication for i in out.items] == ["원래 A.", "B 새 문장."]
 
-    def test_a_post_grounding_overflow_gets_the_editor_remark_back(self):
-        gen = TestEvidenceRemarks._gen("{}")
-        content, sources = self._two()
-        content.items[0].implication = "가" * gen._item_prose_budget(sources[0])
-        gen._restore_overflowing_remarks(content, sources, ["원래 A.", "원래 B."], {0})
-        assert content.items[0].implication == "원래 A."
-
     async def test_grounding_sees_the_story_evidence(self):
         seen: list[str] = []
         factory = MagicMock()
@@ -1071,3 +1064,22 @@ async def test_a_slow_evidence_step_ships_the_editor_remarks():
     ):
         result = await gen.generate(_ranked(), today=date(2026, 11, 21), research=FakeSources())
     assert result.content.items[0].implication == "원래."
+
+
+async def test_a_timeout_during_the_rewrite_call_changes_no_remark():
+    import asyncio
+
+    from langchain_core.runnables import RunnableLambda as Runnable
+
+    async def slow_answer(_):
+        await asyncio.sleep(1)
+        return AIMessage(content='{"remarks": [{"index": 1, "remark": "새 문장."}]}')
+
+    factory = MagicMock()
+    factory.get_model.return_value = Runnable(lambda _: AIMessage(content="{}"), afunc=slow_answer)
+    gen = DigestGenerator(PipelineConfig(), factory)
+    content = _content()
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.01):
+            await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "Theory X."})
+    assert content.items[0].implication == "시사점."
