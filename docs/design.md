@@ -233,7 +233,8 @@ DEGRADED 사유는 덮어쓰지 않고 이어 붙인다. park 파일이 없다�
 
 | 영역 | 필드 | 설명 |
 |------|------|------|
-| 모델 | `ranking_model`(기본 Sonnet 5.5, AI판 config는 Opus 5.5), `digest_model`(Sonnet 5.5, 그라운딩과 비주얼 편집기·아트 디렉터도 이 모델을 쓴다), `trend_model`(Sonnet 5.5) | 단계별 모델([§6](#모델-팩토리)) |
+| 모델 | `ranking_model`(기본 Sonnet 5.5, AI판 config는 Opus 5.5), `digest_model`(Sonnet 5.5, 그라운딩, 근거 시사점, 비주얼 편집기·아트 디렉터도 이 모델을 쓴다), `trend_model`(Sonnet 5.5) | 단계별 모델([§6](#모델-팩토리)) |
+| 근거 시사점 | `evidence_remarks`(코드 기본 off, 두 판 배포 설정 on), `evidence_remark_chars`(기본 80), `evidence_story_tokens`(기본 500) | 실린 스토리마다 이론·연구·사례·데이터를 검색해 implication을 그 근거로 다시 쓰는 단계, 에디터가 게시물마다 남겨 두는 자리, 질의 작성기가 읽는 스토리 앞부분([§5.4](#54-다이제스트-생성기-digest_generatorpy)) |
 | 다이제스트 재질의 | `digest_max_retries`(기본 3), `digest_retry_backoff_sec`(기본 5) | 에디터의 JSON이 깨졌을 때 다시 묻는 횟수와 간격 |
 | 랭킹 | `ranking_batch_size`(기본 40), `ranking_max_concurrency`(기본 4), `ranking_max_retries`(기본 3), `ranking_retry_backoff_sec`(기본 5), `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치, Bedrock fan-out 상한, 배치 재시도, 점수 루브릭 |
 | 후보 풀 | `top_n`(기본 5), `min_score`(기본 0.6), `digest_candidate_buffer`(기본 7), `source_slots`(소스마다 1), `max_per_origin`(기본 1) | 에디터에게 넘기는 후보는 `top_n + digest_candidate_buffer`개이고, 소스 슬롯과 origin 상한은 이 풀을 채우는 데만 쓴다. 실제로 나가는 `top_n`개는 에디터가 고른다([§5.2](#52-랭커-rankerpy)) |
@@ -925,9 +926,13 @@ AgentCore 스냅샷이 그것을 쓴다. 트렌드 분류기는 lead와 implicat
 **근거 시사점(`evidence_remarks`, 두 판 모두 켬).** 다이제스트를 쓴 뒤 실린 스토리 다섯 개마다 그 스토리가 닿는
 확립된 이론, 연구, 과거 사례와 데이터를 검색하고(`application/evidence.py`: Sonnet이 질의를 한 번에 쓰고 스토리마다
 Tavily 웹 검색 하나와 OpenAlex 논문 검색 하나), 별도 단계(`EvidenceImplicationPrompt`)가 implication만 그 근거로 다시 쓴다.
-이론이나 사례가 무엇이고 무엇을 보였는지, 그래서 이 스토리에 어떤 입장이 서는지를 2~3문장으로 풀어 쓴다. 에디터는 각
-게시물에서 `evidence_remark_chars`(150자)를 남겨 두고 쓰고, 다시 쓴 문장이 그 스토리의 남은 예산을 넘거나 응답을 읽을 수
-없으면 에디터의 문장을 그대로 둔다. 검색 결과는 그라운딩의 소스로 함께 들어가 인용한 이론과 수치도 검사를 받는다. 저장은
+근거 하나를 이름과 함께 짧게 풀고 그 근거로 이 스토리에 서는 입장을 1~2문장, 100자 안팎으로 쓴다. 에디터는 각
+게시물에서 `evidence_remark_chars`(80자)를 남겨 두고 쓰고, 다시 쓴 문장이 그 스토리의 남은 예산을 넘거나 응답을 읽을 수
+없으면 에디터의 문장을 그대로 둔다. 단계를 120초에서 끊고 에디터의 문장으로 돌아간다(재시도 없는 Lambda에서 시간 초과는 그날
+게시 실패다). 끊어도 Bedrock 호출 스레드는 읽기 타임아웃까지 남을 수 있지만, 만화 Lambda는 그 전에 호출되고 다이제스트
+Lambda의 제한은 15분이다. 검색 결과는 그라운딩의 소스로 함께 들어가 인용한 이론과 수치도 검사를 받되,
+implication의 근거로만 쓰인다. 그라운딩이 제목이나 본문을 늘려 게시물이 500자를 넘으면 그 스토리는 에디터의 문장으로
+되돌린다(렌더러는 본문의 마지막 문장을 먼저 버린다). Tavily 사용량은 `evidence-search` 단계로 기록된다. 저장은
 하지 않는다(`DigestResult.evidence`는 직렬화에서 빠진다). 에디터에게 같은 근거를 후보 옆에 주었을 때는 세 번 고쳐도
 implication을 하나도 바꾸지 않아 따로 떼었다([결정 기록](decisions.md#2026-11-21-근거-시사점-이론연구데이터로-쓰는-implication)).
 
@@ -1395,7 +1400,7 @@ langchain-aws의 `input_tokens`는 캐시 읽기·쓰기를 포함하므로 그�
 
 같은 방식으로 이미지는 `Image usage stage=visual-render model=... input_tokens=... text_input_tokens=...
 image_input_tokens=... output_tokens=... usd=...`(OpenAI 토큰 단가: 텍스트 입력 $5, 이미지 입력 $8, 이미지 출력 $30
-per MTok), Tavily는 `Search usage stage=web-search|page-fill|pin-extract|research-search|research-read credits=...`를
+per MTok), Tavily는 `Search usage stage=web-search|page-fill|pin-extract|research-search|research-read|evidence-search credits=...`를
 남긴다. Tavily는 요금제마다 크레딧 단가가 달라 크레딧 수만 잰다(`include_usage=True`로 응답이 보고한다).
 
 Lambda에서는 호출마다 EMF 레코드도 하나 남긴다. `LLMCostUSD`·`ImageCostUSD`·`TavilyCredits` 지표가

@@ -300,13 +300,14 @@ async def _judge(kind: str, label_a: str, label_b: str) -> None:
         # Deterministic shuffle per case, so a rerun judges the same order.
         a_first = int(hashlib.sha256(path_a.name.encode()).hexdigest(), 16) % 2 == 0
         first, second = (a, b) if a_first else (b, a)
-        # Background evidence one arm was given is input the judge must see, or a theory or figure cited
-        # from it reads as invented; shown whichever label comes first, so both orders judge the same input.
-        evidence = "\n\n".join(v for arm in (a, b) for v in (arm.get("evidence") or {}).values())
+        # Evidence either arm was given is reference the judge needs, or a theory or figure cited from it
+        # reads as invented. Both arms' texts, deduplicated and sorted, and worded as neutral reference so it neither says
+        # which arm had it nor differs between the two orders.
+        reference = "\n\n".join(sorted({text for arm in (a, b) for text in (arm.get("evidence") or {}).values()}))
         context = a["context"] + (
-            f"\n\nBACKGROUND EVIDENCE (search results on theory, research, precedents and data that a writer "
-            f"may have been given):\n{evidence}"
-            if evidence
+            f"\n\nREFERENCE MATERIAL (search results on theory, research, past cases and data around these "
+            f"stories; a claim drawn from it is sourced):\n{reference}"
+            if reference
             else ""
         )
         raw = await chain.ainvoke(

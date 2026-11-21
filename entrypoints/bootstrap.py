@@ -165,7 +165,8 @@ def daily_visual_maker(config: Config, models: BedrockLanguageModelFactory | Non
 
 
 def research_sources(config: Config) -> ResearchSources:
-    return WebResearchSources(config)
+    """The digest's evidence searches (pipeline.evidence_remarks), logged apart from deep research."""
+    return WebResearchSources(config, usage_stage="evidence-search")
 
 
 def research_ports(config: Config) -> ResearchPorts:

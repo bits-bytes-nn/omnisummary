@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime
 
 from langchain_core.output_parsers import StrOutputParser
@@ -23,9 +24,15 @@ from domain.renderers import footer_overhead
 from shared import THREADS_MAX_POST_CHARS, logger, parse_json_from_llm_output, retry_async
 from shared.config import PipelineConfig
 
+_EVIDENCE_TIMEOUT_SEC = 120
+
 
 def _evidence_block(text: str) -> str:
-    return f"\nBACKGROUND EVIDENCE (search results, not the story):\n{text}" if text else ""
+    return (
+        f"\nBACKGROUND EVIDENCE (search results, not the story; it can support only the IMPLICATION):\n{text}"
+        if text
+        else ""
+    )
 
 
 class DigestContentError(ValueError):
@@ -142,15 +149,30 @@ class DigestGenerator:
         )
 
         evidence: dict[str, str] = {}
+        editor_remarks = [item.implication for item in content.items]
+        rewritten: set[int] = set()
         if research is not None:
-            evidence = await gather_evidence(self.config, self.models, research, shipped_sources)
-            content = await self._argue_from_evidence(content, shipped_sources, evidence)
+            try:
+                # Bounded: the step is on the critical path of a Lambda with no retry, and a run that times out
+                # posts nothing that day.
+                async with asyncio.timeout(_EVIDENCE_TIMEOUT_SEC):
+                    evidence = await gather_evidence(self.config, self.models, research, shipped_sources)
+                    rewritten = await self._argue_from_evidence(content, shipped_sources, evidence)
+            except TimeoutError:
+                logger.warning(
+                    "Evidence step timed out after %ds; the remarks stay the editor's", _EVIDENCE_TIMEOUT_SEC
+                )
+                for item, remark in zip(content.items, editor_remarks, strict=True):
+                    item.implication = remark
 
         grounding_skipped = False
         if self.config.enable_grounding_check:
             content, grounding_skipped = await self._verify_grounding(
                 content, shipped_sources, trends_context, evidence
             )
+
+        if research is not None:
+            self._restore_overflowing_remarks(content, shipped_sources, editor_remarks, rewritten)
 
         # Attach the AGI countdown to the lead at generation time, using the digest's own date
         # (the single KST clock for the run) so the countdown is consistent with trend stamps and
@@ -331,22 +353,23 @@ class DigestGenerator:
 
     async def _argue_from_evidence(
         self, content: DigestContent, sources: list[CollectedItem], evidence: dict[str, str]
-    ) -> DigestContent:
+    ) -> set[int]:
         """Each story's closing remark rewritten from its background evidence. A remark over the story's prose
         budget, or an answer that cannot be read, keeps the editor's remark."""
         limits: dict[int, int] = {}
         blocks: list[str] = []
         for i, (item, src) in enumerate(zip(content.items, sources, strict=True)):
             found = evidence.get(normalize_url(src.url), "")
-            if not found:
+            room = self._item_prose_budget(src) - len(item.title) - len(item.body)
+            if not found or room <= 0:
                 continue
-            limits[i + 1] = self._item_prose_budget(src) - len(item.title) - len(item.body)
+            limits[i + 1] = room
             blocks.append(
                 f"=== Story {i + 1} ===\nTITLE: {item.title}\nBODY: {item.body}\nREMARK: {item.implication}\n"
                 f"CHARACTER LIMIT: {limits[i + 1]}{_evidence_block(found)}"
             )
         if not blocks:
-            return content
+            return set()
         chain = (
             EvidenceImplicationPrompt.get_prompt()
             | self.models.get_model(self.config.digest_model, stage="evidence-implication")
@@ -365,11 +388,21 @@ class DigestGenerator:
                     }
                 )
             )
-            remarks = {int(r["index"]): str(r["remark"]).strip() for r in data.get("remarks", [])}
+            entries = data.get("remarks", []) if isinstance(data, dict) else []
+            if not isinstance(entries, list):
+                entries = []
         except Exception:
             logger.warning("Evidence implications failed; keeping the editor's remarks", exc_info=True)
-            return content
-        changed = 0
+            return set()
+        remarks: dict[int, str] = {}
+        for entry in entries:
+            try:
+                remark = entry["remark"]
+                if isinstance(remark, str):
+                    remarks[int(entry["index"])] = remark.strip()
+            except (KeyError, TypeError, ValueError):
+                continue
+        changed: set[int] = set()
         for index, remark in remarks.items():
             if index not in limits or not remark:
                 continue
@@ -381,9 +414,28 @@ class DigestGenerator:
                 continue
             if remark != item.implication:
                 item.implication = remark
-                changed += 1
-        logger.info("Evidence rewrote %d of %d remark(s)", changed, len(limits))
-        return content
+                changed.add(index - 1)
+        # WARNING when nothing changed: the editor still left each post the remark's room, so the day ships
+        # shorter bodies for nothing.
+        (logger.info if changed else logger.warning)("Evidence rewrote %d of %d remark(s)", len(changed), len(limits))
+        return changed
+
+    def _restore_overflowing_remarks(
+        self,
+        content: DigestContent,
+        sources: list[CollectedItem],
+        editor_remarks: list[str],
+        rewritten: set[int],
+    ) -> None:
+        """A rewritten remark took the post's last free characters, so a grounding edit that lengthened the
+        title or body would push the post past 500 and the renderer would drop the body's closing sentence.
+        Such a post gets the editor's shorter remark back."""
+        for i, (item, src, remark) in enumerate(zip(content.items, sources, editor_remarks, strict=True)):
+            if i not in rewritten:
+                continue
+            if len(item.title) + len(item.body) + len(item.implication) > self._item_prose_budget(src):
+                logger.info("Story %d over its post after grounding; the editor's remark restored", i + 1)
+                item.implication = remark
 
     async def _verify_grounding(
         self,
@@ -452,7 +504,8 @@ class DigestGenerator:
             # This item's OWN prose budget, code-owned like MUST INCLUDE: the fixed parts of a Threads
             # post differ per item, so one worst-case number for the whole pool charged every
             # short-URL item for the longest URL in it.
-            budget = self._item_prose_budget(item) - reserve
+            full = self._item_prose_budget(item)
+            budget = full - reserve if full > reserve else full
             if budget > 0:
                 budgets.append(budget)
                 fields.append(("PROSE BUDGET", f"{budget} characters for `title` + `body` + `implication` together"))

@@ -255,7 +255,9 @@ class PipelineConfig(_StrictModel):
     # theory, research, past cases and data it touches (application/evidence.py). The editor's prose budget
     # leaves evidence_remark_chars of each post for it. Measured 2026-11-21 (docs/decisions.md).
     evidence_remarks: bool = False
-    evidence_remark_chars: int = Field(default=150, ge=0)
+    evidence_remark_chars: int = Field(default=80, ge=0)
+    # How much of each story the query writer reads to decide what to search.
+    evidence_story_tokens: int = Field(default=500, ge=1)
     # Korean editorial rules + translation glossary, injected into the digest prompt's *Language*
     # block so the glossary can be tuned without editing the prompt. NOT a language switch: the
     # digest prompt states the Korean requirement itself, so overriding this alone cannot move the digest to another language.

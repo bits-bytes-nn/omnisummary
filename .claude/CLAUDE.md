@@ -114,7 +114,7 @@ Ports and adapters (hexagonal). Dependencies point inward only, checked in CI by
 - Models per stage: the table with reasons is docs/design.md §6 (`#모델-팩토리`); the measurements are in
   docs/decisions.md. Ranking: Sonnet 5.5 code default, Opus 5.5 in the AI edition's config (Sonnet under-filled
   the AI pool). Digest, grounding, visual editor and art director, comment replies, story groups and the research
-  thread's fact check read `digest_model` (Sonnet 5.5); trends and query refine Sonnet 5.5; deep research Opus 5.5;
+  thread's fact check and the evidence remarks (`evidence-queries`, `evidence-implication`) read `digest_model` (Sonnet 5.5); trends and query refine Sonnet 5.5; deep research Opus 5.5;
   CountTokens Sonnet 4.6 (the 5.5 models don't expose it, and its tokenizer counts English about 1.7x short).
   Schema-shaped answers use json_schema constrained output (an answer outside the schema raises
   OutputParserException; the ranker turns that into [] so the batch is split, not re-sent). The research fact
@@ -151,7 +151,8 @@ Ports and adapters (hexagonal). Dependencies point inward only, checked in CI by
 - The daily-visual Lambda is the ONLY digest publish path (the comment-reply Lambda only answers comments): it loads the snapshot for the date the
   digest Lambda passed it, and both Lambdas re-raise on failure (retry_attempts=0, so a re-raise
   cannot duplicate a post).
-- Prompt changes must SIMPLIFY or restructure AND win a blind both-order judge on stored days
+- Prompt changes must SIMPLIFY or restructure AND win a blind both-order judge on stored days (one owner exception:
+  `pipeline.evidence_remarks` is on for the investing edition too, where it lost 4-8; docs/decisions.md 2026-11-21)
   (`scripts/eval_harness.py`) — iteratively adding rules to these prompts has a documented history of
   making the output worse, and simplifications lose too (2026-11-07: the implication spec 3-9, the comic
   frame clause 10-12 on images).
