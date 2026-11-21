@@ -33,7 +33,15 @@ from adapters.research_backends import WebResearchSources, access_controlled
 from adapters.state_store import create_state_store
 from adapters.threads import ThreadsGateway
 from application.daily_visual import DailyVisualMaker
-from application.ports import ContentSource, LanguageModels, MemoryStore, NoteText, PaidPageCheck, StateStore
+from application.ports import (
+    ContentSource,
+    LanguageModels,
+    MemoryStore,
+    NoteText,
+    PaidPageCheck,
+    ResearchSources,
+    StateStore,
+)
 from application.research import ResearchPorts
 from shared import Config, logger
 
@@ -154,6 +162,11 @@ def daily_visual_maker(config: Config, models: BedrockLanguageModelFactory | Non
         threads(config),
         image_renderer(config),
     )
+
+
+def research_sources(config: Config) -> ResearchSources:
+    """The digest's evidence searches (pipeline.evidence_remarks), logged apart from deep research."""
+    return WebResearchSources(config, usage_stage="evidence-search")
 
 
 def research_ports(config: Config) -> ResearchPorts:

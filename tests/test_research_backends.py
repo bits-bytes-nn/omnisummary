@@ -240,6 +240,7 @@ class TestWebResearchSources:
             topic="news",
             time_range="week",
             include_domains=["x.com"],
+            stage="research-search",
         )
         papers.assert_awaited_once_with("p", agent_config=agent)
         page.assert_awaited_once_with("https://a", cap=agent.research_content_cap_chars)

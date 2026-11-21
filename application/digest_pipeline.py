@@ -16,7 +16,15 @@ from application.history import (
     ThreadsPostLedger,
     published_urls_from_snapshots,
 )
-from application.ports import ContentSource, LanguageModels, MemoryStore, NoteText, PaidPageCheck, StateStore
+from application.ports import (
+    ContentSource,
+    LanguageModels,
+    MemoryStore,
+    NoteText,
+    PaidPageCheck,
+    ResearchSources,
+    StateStore,
+)
 from application.ranker import ContentRanker
 from application.trend_tracker import TrendTracker
 from domain.aggregator import ContentAggregator, normalize_url
@@ -139,6 +147,7 @@ async def run_pipeline(
     sibling_memory: Callable[[], list[MemoryStore]],
     paid_check: PaidPageCheck,
     note_text: NoteText,
+    research: ResearchSources | None = None,
     dry_run: bool = False,
 ) -> PipelineRun | None:
     """Aggregate, rank and write the day's digest, then record its stories and lead. `memory_store`
@@ -185,7 +194,13 @@ async def run_pipeline(
     trends_context = trend_tracker.get_trends_context(today=digest_date)
 
     digest = await write_digest(
-        config.pipeline, models, ranked_items, recent, trends_context=trends_context, today=digest_date
+        config.pipeline,
+        models,
+        ranked_items,
+        recent,
+        trends_context=trends_context,
+        today=digest_date,
+        research=research if config.pipeline.evidence_remarks else None,
     )
     logger.info("Generated digest with %d ranked items", len(digest.ranked_items))
     # Carry the ranking verdict on the result so the delivery/alerting layer can say the digest was
@@ -319,11 +334,17 @@ async def write_digest(
     *,
     trends_context: str,
     today: date,
+    research: ResearchSources | None = None,
 ) -> DigestResult:
     """The editor's call on a ranked pool: the one path run_pipeline and the eval harness's replay share,
     so an input added to the editor reaches both."""
     return await DigestGenerator(config, models).generate(
-        pool, trends_context=trends_context, today=today, recent_leads=recent.leads, recent_titles=recent.titles
+        pool,
+        trends_context=trends_context,
+        today=today,
+        recent_leads=recent.leads,
+        recent_titles=recent.titles,
+        research=research,
     )
 
 

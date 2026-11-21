@@ -139,7 +139,7 @@ def _slug(text: str) -> str:
     return re.sub(r"\W+", "-", text).strip("-")[:40] + "-" + hashlib.sha256(text.encode()).hexdigest()[:6]
 
 
-async def _digest(label: str, dates: list[str]) -> None:
+async def _digest(label: str, dates: list[str], with_evidence: bool = False) -> None:
     from application.digest_pipeline import (
         POOLS_PREFIX,
         editor_context,
@@ -173,7 +173,16 @@ async def _digest(label: str, dates: list[str]) -> None:
         trends = TrendTracker(config.pipeline, models, bootstrap.state_store(config)).get_trends_context(today=today)
         sibling = _posted_before(sibling_snapshots(lambda: bootstrap.sibling_memory_stores(config), today), snapshot)
         recent = editor_context(history, sibling, config.pipeline)
-        result = await write_digest(config.pipeline, models, pool, recent, trends_context=trends, today=today)
+        # Searched today, not on the replayed date: a result published since then can reach the evidence.
+        result = await write_digest(
+            config.pipeline,
+            models,
+            pool,
+            recent,
+            trends_context=trends,
+            today=today,
+            research=bootstrap.research_sources(config) if with_evidence else None,
+        )
         # The judge always sees what the whole Threads account ran, the other editions included, whatever
         # the arm under test was given.
         account = recent_angles(history.dedup, config.pipeline) + recent_angles(
@@ -196,6 +205,7 @@ async def _digest(label: str, dates: list[str]) -> None:
             "case": day,
             "context": f"CANDIDATES:\n{sources}\n\nRECENT LEADS ON THIS THREADS ACCOUNT:\n" + "\n".join(account),
             "artifact": result.digest_text,
+            "evidence": result.evidence,
         }
         (_case_dir("digest", label) / f"{day}.json").write_text(json.dumps(out, ensure_ascii=False, indent=1))
         logger.info("digest %s %s: %d stories", label, day, len(result.content.items) if result.content else 0)
@@ -290,8 +300,18 @@ async def _judge(kind: str, label_a: str, label_b: str) -> None:
         # Deterministic shuffle per case, so a rerun judges the same order.
         a_first = int(hashlib.sha256(path_a.name.encode()).hexdigest(), 16) % 2 == 0
         first, second = (a, b) if a_first else (b, a)
+        # Evidence either arm was given is reference the judge needs, or a theory or figure cited from it
+        # reads as invented. Both arms' texts, deduplicated and sorted, and worded as neutral reference so it neither says
+        # which arm had it nor differs between the two orders.
+        reference = "\n\n".join(sorted({text for arm in (a, b) for text in (arm.get("evidence") or {}).values()}))
+        context = a["context"] + (
+            f"\n\nREFERENCE MATERIAL (search results on theory, research, past cases and data around these "
+            f"stories; a claim drawn from it is sourced):\n{reference}"
+            if reference
+            else ""
+        )
         raw = await chain.ainvoke(
-            {"context": a["context"], "first": first["artifact"], "second": second["artifact"], "rubric": rubric}
+            {"context": context, "first": first["artifact"], "second": second["artifact"], "rubric": rubric}
         )
         try:
             verdict = parse_json_from_llm_output(raw)
@@ -327,6 +347,7 @@ def main() -> None:
     digest = sub.add_parser("digest")
     digest.add_argument("label")
     digest.add_argument("dates", nargs="+")
+    digest.add_argument("--evidence", action="store_true", help="give the editor background evidence searches")
     visual = sub.add_parser("visual")
     visual.add_argument("label")
     visual.add_argument("dates", nargs="+")
@@ -339,7 +360,7 @@ def main() -> None:
     judge.add_argument("label_b")
     args = parser.parse_args()
     if args.cmd == "digest":
-        asyncio.run(_digest(args.label, args.dates))
+        asyncio.run(_digest(args.label, args.dates, args.evidence))
     elif args.cmd == "visual":
         asyncio.run(_visual(args.label, args.dates))
     elif args.cmd == "research":

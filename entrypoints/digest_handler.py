@@ -150,6 +150,7 @@ async def _run(event: dict[str, Any] | None = None) -> None:
         sibling_memory=lambda: bootstrap.sibling_memory_stores(config),
         paid_check=bootstrap.paid_check(),
         note_text=bootstrap.note_text(config),
+        research=bootstrap.research_sources(config),
     )
 
     digest = result.digest if result else None

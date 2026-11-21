@@ -84,6 +84,7 @@ async def tavily_search(
     topic: str | None = None,
     time_range: str | None = None,
     include_domains: list[str] | None = None,
+    stage: str = "research-search",
 ) -> str:
     client = tavily_client()
     if not client:
@@ -102,7 +103,7 @@ async def tavily_search(
 
     try:
         response = await client.search(**kwargs, include_usage=True)
-        record_tavily_usage("research-search", "search", response)
+        record_tavily_usage(stage, "search", response)
         results = response.get("results", [])
         if not results:
             return "No results found."
@@ -378,9 +379,11 @@ class WebResearchSources:
     """The research agent's reading: Tavily for the web and community search and page reads, OpenAlex
     for papers, and a source page's og:image, each bounded by the run's own config."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, *, usage_stage: str = "research-search") -> None:
         self.agent = config.agent
         self.exclude_domains = config.collectors.web_search.exclude_domains
+        # The stage Tavily credits are logged under: the digest's evidence searches are not research spend.
+        self.usage_stage = usage_stage
 
     async def web_search(
         self,
@@ -397,6 +400,7 @@ class WebResearchSources:
             topic=topic,
             time_range=time_range,
             include_domains=include_domains,
+            stage=self.usage_stage,
         )
 
     async def paper_search(self, query: str) -> str:

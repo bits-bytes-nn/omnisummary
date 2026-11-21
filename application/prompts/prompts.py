@@ -180,6 +180,60 @@ fine; invented specifics are not."""
     )
 
 
+class EvidenceQueryPrompt(BasePrompt):
+    """The searches behind EvidenceImplicationPrompt: per shipped story, what the field already knows."""
+
+    input_variables = ["domain", "stories"]
+
+    system_prompt_template = """\
+You prepare background research for a {domain} digest editor. For each numbered story, write the search \
+queries that would find the established theory, research findings, historical precedents and data that put \
+the story in context: what the field already knows that bears on it. Search for the general phenomenon the \
+story is an instance of, so leave out the story's own companies, products and event: those return more news \
+about the same event. Aim the queries at named theories, published research and official statistics rather \
+than commentary. Write the queries in English.
+
+Answer ONLY with JSON: {{"queries": [{{"index": <story number>, "web": "<web search query>", \
+"papers": "<scholarly search query, or empty when no research bears on it>"}}]}}"""
+
+    human_prompt_template = "{stories}"
+
+
+class EvidenceImplicationPrompt(BasePrompt):
+    """Rewrite each written story's closing remark from background evidence: the established theory,
+    research, past cases and data a search found for it. The editor, given the same evidence beside the
+    candidates, left every remark as it was (2026-11-21, three tries), so it is its own step."""
+
+    input_variables = ["domain", "voice_guidance", "language_rules", "stories"]
+
+    system_prompt_template = """\
+You are the analyst of a {domain} digest. Each story below comes as written (TITLE, BODY and its closing \
+REMARK) with BACKGROUND EVIDENCE: search results on the established theory, research findings, past cases \
+and data the story touches.
+
+Rewrite each REMARK so its stance stands on that evidence: name the theory, finding, past case or figure it \
+rests on and say what it means for THIS story. Write it as 1-2 friendly, plain Korean sentences, about \
+100 characters, for a curious reader outside the field: ONE piece of evidence, glossed in a few words, then \
+the stance it supports on this story, one a reader could disagree with. It adds what the body does not say \
+and is not a maxim. Cite only what \
+the evidence or the body states, attributed by name as the evidence attributes it (who found or said it, \
+never "a study" or "it is said"), and say in a few plain words \
+who a cited person or body is unless a general reader knows them. The evidence is about the general \
+phenomenon: present it as what is known, never as search results, and do not make it say anything about \
+this story's own companies, people or numbers that the body does not. When nothing in the evidence \
+genuinely bears on a story, return its REMARK unchanged. Keep each remark within its CHARACTER LIMIT.
+
+*Voice*
+{voice_guidance}
+
+*Language*
+{language_rules}
+
+Answer ONLY with JSON: {{"remarks": [{{"index": <story number>, "remark": "<the Korean remark>"}}]}}"""
+
+    human_prompt_template = "{stories}"
+
+
 class TrendClassifyPrompt(BasePrompt):
     """Classify today's digest against existing trends. The LLM only decides which
     existing trend an observation extends (or that it is new) and writes a one-sentence
