@@ -93,7 +93,7 @@ uv run python recall_cli.py trends
 | 단계 | 설정 키 | 기본값 |
 |------|---------|--------|
 | 랭킹 | `pipeline.ranking_model` | Sonnet 5.5(AI판 설정은 Opus 5.5) |
-| 다이제스트, 그라운딩, 만화, 댓글 답글, 리서치 사실 확인 | `pipeline.digest_model` | Sonnet 5.5 |
+| 다이제스트, 그라운딩, 근거 시사점, 만화, 댓글 답글, 리서치 사실 확인 | `pipeline.digest_model` | Sonnet 5.5 |
 | 트렌드 | `pipeline.trend_model` | Sonnet 5.5 |
 | 검색어 다듬기 | `collectors.web_search.refine_model` | Sonnet 5.5 |
 | 딥 리서치 | `agent.model_id` | Opus 5.5 |
@@ -128,7 +128,7 @@ docker run -d --name rsshub --restart unless-stopped -p 1200:1200 \
 1. **수집.** 수집기가 동시에 돌고 상태(`OK`, `EMPTY`, `FAILED`, `STALE`, `DEGRADED`)를 보고한다. X와 YouTube 자막은 로컬에서 모아 S3에 적재하고 Lambda가 읽는다.
 2. **중복 제거.** 정규화한 URL과 제목으로 맞추고 더 나은 쪽을 남긴다.
 3. **랭킹.** 랭킹 모델이 채점하고 홍보성 글과 빈약한 글을 거른다. 후보 풀은 `top_n + digest_candidate_buffer`개이고, 채널, 작성자, 사이트마다 `max_per_origin`개까지만 받는다.
-4. **작성.** 에디터가 가장 좋은 기사 `top_n`개를 골라 리드와 기사별 제목, 본문, 시사점을 쓴다. 그라운딩 단계가 주장마다 원문과 대조한다.
+4. **작성.** 에디터가 가장 좋은 기사 `top_n`개를 골라 리드와 기사별 제목, 본문, 시사점을 쓴다. 이어서 별도 단계가 기사마다 닿는 이론, 연구, 과거 사례와 데이터를 검색해 시사점을 그 근거로 다시 쓴다(`pipeline.evidence_remarks`). 그라운딩 단계가 주장마다 원문과 그 근거 자료에 대조한다.
 5. **트렌드 추적.** 작성이 끝난 뒤(dry run에서는 건너뛴다) 모델이 그날 기사를 트렌드로 분류만 하고, 날짜와 상태는 `trends.json`을 다루는 Python 코드가 맡는다.
 6. **렌더링.** 게시물 형태는 프롬프트가 아니라 코드가 정하고, Threads의 500자 한도를 지킨다.
 7. **만화와 게시.** 별도 Lambda가 헤드라인을 한국어 만화로 그리고 스레드를 올린다. 만화가 실패해도 글은 나간다.

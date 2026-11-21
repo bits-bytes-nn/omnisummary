@@ -93,7 +93,7 @@ Every LLM stage runs on Bedrock through the Converse API and takes any id from `
 | Stage | Config key | Default |
 |-------|------------|---------|
 | Ranking | `pipeline.ranking_model` | Sonnet 5.5 (the AI edition's config sets Opus 5.5) |
-| Digest, grounding, comic, comment replies, research fact check | `pipeline.digest_model` | Sonnet 5.5 |
+| Digest, grounding, evidence remarks, comic, comment replies, research fact check | `pipeline.digest_model` | Sonnet 5.5 |
 | Trends | `pipeline.trend_model` | Sonnet 5.5 |
 | Search-query refinement | `collectors.web_search.refine_model` | Sonnet 5.5 |
 | Deep research | `agent.model_id` | Opus 5.5 |
@@ -128,7 +128,7 @@ docker run -d --name rsshub --restart unless-stopped -p 1200:1200 \
 1. **Collect.** Collectors run in parallel and report their health (`OK`, `EMPTY`, `FAILED`, `STALE`, `DEGRADED`). X and YouTube transcripts are collected locally and parked in S3 for the Lambda.
 2. **Deduplicate** by normalized URL and title, keeping the better copy.
 3. **Rank.** The ranking model scores each item and drops promos and thin posts. The candidate pool holds `top_n + digest_candidate_buffer` items, at most `max_per_origin` per channel, author or site.
-4. **Write.** The editor picks the `top_n` strongest stories and writes a lead plus a title, body and takeaway for each. A grounding pass checks every claim against the source.
+4. **Write.** The editor picks the `top_n` strongest stories and writes a lead plus a title, body and takeaway for each. A separate step then searches the theory, research, past cases and data each story touches and rewrites its closing remark from them (`pipeline.evidence_remarks`). A grounding pass checks every claim against the sources and that evidence.
 5. **Track trends.** After the write (and not on a dry run), the model sorts the day's stories into trends; dates and lifecycle are plain Python in `trends.json`.
 6. **Render.** Code, not the prompt, lays out the posts within Threads' 500-character limit.
 7. **Draw and post.** A separate Lambda draws the headline as a Korean comic and posts the thread. A failed render still ships the text.

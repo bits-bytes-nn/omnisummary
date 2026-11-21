@@ -922,6 +922,15 @@ private 헬퍼를 부르면 파이프라인이 출력 채널의 내부 이름에
 **시스템 오브 레코드.** `render_digest_text`가 구조화 콘텐츠를 평문 산문으로 렌더해 `digest_text`를 만들고,
 AgentCore 스냅샷이 그것을 쓴다. 트렌드 분류기는 lead와 implication이 아니라 스토리의 제목과 본문만 받는다. 에디터의 주장을 받던 때에는 그 주장이 트렌드가 되어("the digest cautioned ...") 다음 날 lead의 흐름으로 되돌아왔다.
 
+**근거 시사점(`evidence_remarks`, 두 판 모두 켬).** 다이제스트를 쓴 뒤 실린 스토리 다섯 개마다 그 스토리가 닿는
+확립된 이론, 연구, 과거 사례와 데이터를 검색하고(`application/evidence.py`: Sonnet이 질의를 한 번에 쓰고 스토리마다
+Tavily 웹 검색 하나와 OpenAlex 논문 검색 하나), 별도 단계(`EvidenceImplicationPrompt`)가 implication만 그 근거로 다시 쓴다.
+이론이나 사례가 무엇이고 무엇을 보였는지, 그래서 이 스토리에 어떤 입장이 서는지를 2~3문장으로 풀어 쓴다. 에디터는 각
+게시물에서 `evidence_remark_chars`(150자)를 남겨 두고 쓰고, 다시 쓴 문장이 그 스토리의 남은 예산을 넘거나 응답을 읽을 수
+없으면 에디터의 문장을 그대로 둔다. 검색 결과는 그라운딩의 소스로 함께 들어가 인용한 이론과 수치도 검사를 받는다. 저장은
+하지 않는다(`DigestResult.evidence`는 직렬화에서 빠진다). 에디터에게 같은 근거를 후보 옆에 주었을 때는 세 번 고쳐도
+implication을 하나도 바꾸지 않아 따로 떼었다([결정 기록](decisions.md#2026-11-21-근거-시사점-이론연구데이터로-쓰는-implication)).
+
 **그라운딩(옵션, `enable_grounding_check`).** 산문 필드의 구체적 주장을 소스 항목과 코드가 산출한 트렌드
 사실에 대조해, 근거 없는 부분만 외과적으로 수정한다. 대조 대상은 실제로 실린 스토리의 소스뿐이다
 (`_fill_source_metadata`가 돌려주는 매칭 결과). 랭킹 후보 전체를 이어 붙이면 에디터가 고르지 않은 후보에만 있는
@@ -1371,7 +1380,7 @@ docstring에도 같은 사실을 적어두었다.
 
 ### 단계 태깅과 사용량 로깅
 
-`get_model(model_id, stage="ranking"|"story-groups"|"digest"|"grounding"|"trends"|"visual-editor"|"visual-synopsis"|"query-refine"|"comment-reply"|"research-fact-check")`처럼
+`get_model(model_id, stage="ranking"|"story-groups"|"digest"|"grounding"|"evidence-queries"|"evidence-implication"|"trends"|"visual-editor"|"visual-synopsis"|"query-refine"|"comment-reply"|"research-fact-check")`처럼
 단계를 함께 받는다. 붙은 콜백이 호출마다
 `LLM usage stage=... model=... input=... output=... cache_read=... cache_write=... usd=...`를 남긴다.
 

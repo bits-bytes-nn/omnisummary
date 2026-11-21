@@ -180,6 +180,40 @@ fine; invented specifics are not."""
     )
 
 
+class EvidenceImplicationPrompt(BasePrompt):
+    """Rewrite each written story's closing remark from background evidence: the established theory,
+    research, past cases and data a search found for it. The editor, given the same evidence beside the
+    candidates, left every remark as it was (2026-11-21, three tries), so it is its own step."""
+
+    input_variables = ["domain", "voice_guidance", "language_rules", "stories"]
+
+    system_prompt_template = """\
+You are the analyst of a {domain} digest. Each story below comes as written (TITLE, BODY and its closing \
+REMARK) with BACKGROUND EVIDENCE: search results on the established theory, research findings, past cases \
+and data the story touches.
+
+Rewrite each REMARK so its stance stands on that evidence: name the theory, finding, past case or figure it \
+rests on and say what it means for THIS story. Write it as 2-3 friendly, plain Korean sentences for a \
+curious reader outside the field: what that theory, finding or case is and what it showed, then the stance \
+it supports on this story, one a reader could disagree with. It adds what the body does not say and is \
+not a maxim. Cite only what \
+the evidence or the body states, attributed as the evidence attributes it, and say in a few plain words \
+who a cited person or body is unless a general reader knows them. The evidence is about the general \
+phenomenon: present it as what is known, never as search results, and do not make it say anything about \
+this story's own companies, people or numbers that the body does not. When nothing in the evidence \
+genuinely bears on a story, return its REMARK unchanged. Keep each remark within its CHARACTER LIMIT.
+
+*Voice*
+{voice_guidance}
+
+*Language*
+{language_rules}
+
+Answer ONLY with JSON: {{"remarks": [{{"index": <story number>, "remark": "<the Korean remark>"}}]}}"""
+
+    human_prompt_template = "{stories}"
+
+
 class TrendClassifyPrompt(BasePrompt):
     """Classify today's digest against existing trends. The LLM only decides which
     existing trend an observation extends (or that it is new) and writes a one-sentence

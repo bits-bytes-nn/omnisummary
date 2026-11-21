@@ -251,6 +251,11 @@ class PipelineConfig(_StrictModel):
     # source items and surgically revise unsupported ones (prompt rules alone couldn't
     # move the faithfulness score). Best-effort; disable to skip the extra LLM call.
     enable_grounding_check: bool = True
+    # Each story's closing remark rewritten after the write from what a search finds on the established
+    # theory, research, past cases and data it touches (application/evidence.py). The editor's prose budget
+    # leaves evidence_remark_chars of each post for it. Measured 2026-11-21 (docs/decisions.md).
+    evidence_remarks: bool = False
+    evidence_remark_chars: int = Field(default=150, ge=0)
     # Korean editorial rules + translation glossary, injected into the digest prompt's *Language*
     # block so the glossary can be tuned without editing the prompt. NOT a language switch: the
     # digest prompt states the Korean requirement itself, so overriding this alone cannot move the digest to another language.

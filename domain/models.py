@@ -136,6 +136,8 @@ class DigestResult(BaseModel):
     ranking_health: RankingHealth | None = None
     # The grounding check failed or its answer could not be applied: the content shipped unchecked.
     grounding_skipped: bool = False
+    # Background evidence per shipped story's URL, for the eval judge; never persisted with the snapshot.
+    evidence: dict[str, str] = Field(default_factory=dict, exclude=True)
 
 
 class VisualBrief(BaseModel):

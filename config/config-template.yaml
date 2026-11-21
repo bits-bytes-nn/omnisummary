@@ -99,6 +99,8 @@ pipeline:
   # only 9 (production: 6 and 10 on 11-04/05). The investing edition keeps Sonnet (100+ over the bar).
   ranking_model: "anthropic.claude-opus-5-5"
   digest_model: "anthropic.claude-sonnet-5-5"
+  # Rewrite each closing remark from searched theory, research, past cases and data (docs/design.md)
+  evidence_remarks: true
   item_text_max_tokens: 10000
   # Ranking robustness: cap the in-flight Bedrock batches (a big day self-throttled otherwise) and
   # retry a failed batch instead of silently dropping its whole slice of candidates.

@@ -103,6 +103,7 @@ async def main() -> int:
         sibling_memory=lambda: bootstrap.sibling_memory_stores(config),
         paid_check=bootstrap.paid_check(),
         note_text=bootstrap.note_text(config),
+        research=bootstrap.research_sources(config),
         dry_run=args.dry_run,
     )
     if run is None:

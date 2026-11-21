@@ -4,8 +4,9 @@ from datetime import UTC, date, datetime
 
 from langchain_core.output_parsers import StrOutputParser
 
-from application.ports import LanguageModels
-from application.prompts import DigestPrompt, GroundingCheckPrompt
+from application.evidence import gather_evidence
+from application.ports import LanguageModels, ResearchSources
+from application.prompts import DigestPrompt, EvidenceImplicationPrompt, GroundingCheckPrompt
 from domain.aggregator import normalize_url
 from domain.formatting import (
     countdown_intro,
@@ -21,6 +22,10 @@ from domain.models import CollectedItem, DigestContent, DigestItem, DigestResult
 from domain.renderers import footer_overhead
 from shared import THREADS_MAX_POST_CHARS, logger, parse_json_from_llm_output, retry_async
 from shared.config import PipelineConfig
+
+
+def _evidence_block(text: str) -> str:
+    return f"\nBACKGROUND EVIDENCE (search results, not the story):\n{text}" if text else ""
 
 
 class DigestContentError(ValueError):
@@ -51,6 +56,7 @@ class DigestGenerator:
         trends_context: str = "",
         recent_leads: list[str] | None = None,
         recent_titles: list[str] | None = None,
+        research: ResearchSources | None = None,
     ) -> DigestResult:
         # The ranker hands over top_n + buffer candidates; the editor picks the strongest
         # target_count distinct stories, keeping one of any same-event pair.
@@ -79,7 +85,9 @@ class DigestGenerator:
             self.config.countdown_after,
         )
 
-        items_text = self._format_ranked_items(ranked_items)
+        # The evidence step rewrites each remark at more length, so the editor leaves it room in every post.
+        reserve = self.config.evidence_remark_chars if research is not None else 0
+        items_text = self._format_ranked_items(ranked_items, reserve)
         chain = DigestPrompt.get_prompt() | self.llm | StrOutputParser()
         prompt_vars = {
             "items_text": items_text,
@@ -133,9 +141,16 @@ class DigestGenerator:
             description="Digest content generation",
         )
 
+        evidence: dict[str, str] = {}
+        if research is not None:
+            evidence = await gather_evidence(self.config, self.models, research, shipped_sources)
+            content = await self._argue_from_evidence(content, shipped_sources, evidence)
+
         grounding_skipped = False
         if self.config.enable_grounding_check:
-            content, grounding_skipped = await self._verify_grounding(content, shipped_sources, trends_context)
+            content, grounding_skipped = await self._verify_grounding(
+                content, shipped_sources, trends_context, evidence
+            )
 
         # Attach the AGI countdown to the lead at generation time, using the digest's own date
         # (the single KST clock for the run) so the countdown is consistent with trend stamps and
@@ -151,6 +166,7 @@ class DigestGenerator:
             content=content,
             generated_at=datetime.now(UTC),
             grounding_skipped=grounding_skipped,
+            evidence=evidence,
         )
 
     def _prose_budget(self, meta: str, url: str) -> int:
@@ -313,8 +329,68 @@ class DigestGenerator:
             content.items = kept
         return sources
 
+    async def _argue_from_evidence(
+        self, content: DigestContent, sources: list[CollectedItem], evidence: dict[str, str]
+    ) -> DigestContent:
+        """Each story's closing remark rewritten from its background evidence. A remark over the story's prose
+        budget, or an answer that cannot be read, keeps the editor's remark."""
+        limits: dict[int, int] = {}
+        blocks: list[str] = []
+        for i, (item, src) in enumerate(zip(content.items, sources, strict=True)):
+            found = evidence.get(normalize_url(src.url), "")
+            if not found:
+                continue
+            limits[i + 1] = self._item_prose_budget(src) - len(item.title) - len(item.body)
+            blocks.append(
+                f"=== Story {i + 1} ===\nTITLE: {item.title}\nBODY: {item.body}\nREMARK: {item.implication}\n"
+                f"CHARACTER LIMIT: {limits[i + 1]}{_evidence_block(found)}"
+            )
+        if not blocks:
+            return content
+        chain = (
+            EvidenceImplicationPrompt.get_prompt()
+            | self.models.get_model(self.config.digest_model, stage="evidence-implication")
+            | StrOutputParser()
+        )
+        try:
+            data = parse_json_from_llm_output(
+                await chain.ainvoke(
+                    {
+                        "domain": self.config.domain,
+                        "voice_guidance": "\n".join(
+                            filter(None, (self.config.digest_voice_guidance, self.config.domain_rules.strip()))
+                        ),
+                        "language_rules": self.config.digest_language_rules,
+                        "stories": "\n\n".join(blocks),
+                    }
+                )
+            )
+            remarks = {int(r["index"]): str(r["remark"]).strip() for r in data.get("remarks", [])}
+        except Exception:
+            logger.warning("Evidence implications failed; keeping the editor's remarks", exc_info=True)
+            return content
+        changed = 0
+        for index, remark in remarks.items():
+            if index not in limits or not remark:
+                continue
+            item = content.items[index - 1]
+            if len(remark) > limits[index]:
+                logger.info(
+                    "Evidence remark for story %d over its budget (%d > %d); kept", index, len(remark), limits[index]
+                )
+                continue
+            if remark != item.implication:
+                item.implication = remark
+                changed += 1
+        logger.info("Evidence rewrote %d of %d remark(s)", changed, len(limits))
+        return content
+
     async def _verify_grounding(
-        self, content: DigestContent, sources_items: list[CollectedItem], trends_context: str = ""
+        self,
+        content: DigestContent,
+        sources_items: list[CollectedItem],
+        trends_context: str = "",
+        evidence: dict[str, str] | None = None,
     ) -> tuple[DigestContent, bool]:
         """Check the digest's specific claims against the source items and surgically revise
         unsupported ones; the flag is True when the check did not land and the content ships unchecked. The trend notes the editor was given are passed as a
@@ -330,6 +406,7 @@ class DigestGenerator:
         try:
             sources = "\n\n".join(
                 f"[{i + 1}] {item.title}\n{self._truncate(item.text, self.config.item_text_max_tokens)}"
+                + _evidence_block((evidence or {}).get(normalize_url(item.url), ""))
                 for i, item in enumerate(sources_items)
             )
             if trends_context:
@@ -353,7 +430,7 @@ class DigestGenerator:
             logger.warning("Grounding check failed; keeping original content", exc_info=True)
             return content, True
 
-    def _format_ranked_items(self, ranked_items: list[RankedItem]) -> str:
+    def _format_ranked_items(self, ranked_items: list[RankedItem], reserve: int = 0) -> str:
         parts: list[str] = []
         budgets: list[int] = []
         for i, ranked in enumerate(ranked_items):
@@ -375,7 +452,7 @@ class DigestGenerator:
             # This item's OWN prose budget, code-owned like MUST INCLUDE: the fixed parts of a Threads
             # post differ per item, so one worst-case number for the whole pool charged every
             # short-URL item for the longest URL in it.
-            budget = self._item_prose_budget(item)
+            budget = self._item_prose_budget(item) - reserve
             if budget > 0:
                 budgets.append(budget)
                 fields.append(("PROSE BUDGET", f"{budget} characters for `title` + `body` + `implication` together"))
