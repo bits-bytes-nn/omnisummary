@@ -1126,3 +1126,23 @@ class TestALiveDayStaysProtected:
         assert await publisher.publish(DigestContent(lead="리드.", items=[]), today=date(2026, 10, 31)) is False
         publisher.threads.post_thread.assert_not_awaited()
         assert publisher.threads_outcome == ThreadsDelivery(0, 1)
+
+
+async def test_a_failed_render_is_recorded_for_the_alert():
+    from domain.models import DigestContent, DigestItem
+
+    maker = _maker()
+    maker._compose = AsyncMock(return_value=(MagicMock(), "draw it", "source"))
+    maker.generator.generate = AsyncMock(side_effect=RuntimeError("organization_spend_limit_exceeded"))
+    content = DigestContent(lead="리드.", items=[DigestItem(title="T", url="http://e.com/1", body="본문.")])
+    image, _ = await maker._make_visual(_items(), content, date(2026, 6, 10))
+    assert image is None and "organization_spend_limit_exceeded" in maker.visual_failure
+
+
+def test_an_api_errors_code_survives_a_long_message():
+    from application.daily_visual import _brief_error
+
+    class Api(Exception):
+        status_code, code = 429, "organization_spend_limit_exceeded"
+
+    assert "[429 organization_spend_limit_exceeded]" in _brief_error(Api("x" * 500))

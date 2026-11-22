@@ -153,6 +153,24 @@ class TestVisualRun:
         assert kwargs["deadline"] is None
         assert kwargs["force_republish"] is False
 
+    async def test_the_run_passes_the_makers_visual_failure_to_the_alert(self, monkeypatch):
+        monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
+        config = MagicMock()
+        config.aws.timezone = "Asia/Seoul"
+        store = MagicMock()
+        maker_instance = MagicMock()
+        maker_instance.run = AsyncMock(return_value=True)
+        maker_instance.threads_outcome = ThreadsDelivery(6, 6, False)
+        maker_instance.threads_unprotected = False
+        maker_instance.visual_failure = "the image render failed: spend limit"
+        sns = MagicMock()
+        with patch("entrypoints.visual_handler.Config.load", return_value=config):
+            with patch("entrypoints.visual_handler.bootstrap.memory_store", return_value=store):
+                with patch("entrypoints.visual_handler.bootstrap.daily_visual_maker", return_value=maker_instance):
+                    with patch("adapters.alerts.boto3.client", return_value=sns):
+                        await visual_handler._run({"digest_date": "2026-08-18"})
+        assert "(the image render failed: spend limit)" in sns.publish.call_args.kwargs["Message"]
+
     async def test_a_delivery_that_posted_nothing_raises_for_the_alarm_and_dlq(self):
         config = MagicMock()
         config.aws.timezone = "Asia/Seoul"
@@ -307,6 +325,17 @@ class TestThreadsOutcomeAlert:
             visual_handler._maybe_alert_threads_outcome(ThreadsDelivery(6, 6, False), date(2026, 8, 18))
         sns.publish.assert_called_once()
         assert "TEXT-ONLY" in sns.publish.call_args.kwargs["Message"]
+
+    def test_the_text_only_alert_names_the_cause(self, monkeypatch):
+        monkeypatch.setenv("ALERT_SNS_TOPIC_ARN", "arn:aws:sns:ap-northeast-2:1:alerts")
+        sns = MagicMock()
+        with patch("adapters.alerts.boto3.client", return_value=sns):
+            visual_handler._maybe_alert_threads_outcome(
+                ThreadsDelivery(6, 6, False),
+                date(2026, 8, 18),
+                visual_failure="the image render failed: RateLimitError: organization_spend_limit_exceeded",
+            )
+        assert "organization_spend_limit_exceeded" in sns.publish.call_args.kwargs["Message"]
 
     def test_a_failed_day_alerts_once_not_twice(self, monkeypatch):
         # A total failure has no image either; it must not produce a second, redundant notice.
