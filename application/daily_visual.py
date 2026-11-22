@@ -48,6 +48,9 @@ class DailyVisualMaker:
         self.threads = threads
         self.llm = models.get_model(config.pipeline.digest_model, stage="visual-editor")
         self.publisher = DigestPublisher(config, store, threads)
+        # Why the last run's visual did not reach the post ("" when it did or none was tried): the operator's
+        # text-only alert carries it, because the fix differs (a spend limit, a missing key, a deadline).
+        self.visual_failure = ""
         # What the last few comics drew, shown to the editor so today's does not repeat their sets,
         # props and gags (docs/decisions.md).
         self.comic_log = RollingLog(store, RECENT_COMICS_KEY, config.pipeline.recent_leads_window) if store else None
@@ -97,6 +100,7 @@ class DailyVisualMaker:
         except TimeoutError:
             logger.error("Daily visual ran past its deadline; publishing the digest text-only")
             image_bytes, brief = None, None
+            self.visual_failure = "the visual ran past its deadline"
 
         published = await self.publisher.publish(
             content,
@@ -107,6 +111,8 @@ class DailyVisualMaker:
             deadline=deadline,
         )
         outcome = self.publisher.threads_outcome
+        if image_bytes and outcome is not None and outcome.published and not outcome.with_image:
+            self.visual_failure = "the image rendered but its upload (S3 or Threads) dropped it: see the visual logs"
         if brief and outcome is not None and outcome.with_image:
             self._record_comic(post_date, brief)
         return published
@@ -167,17 +173,21 @@ class DailyVisualMaker:
         OpenAI key, an unusable editor plan, a render error — because the image is an ATTACHMENT to
         the digest, and this is the only Threads publish path. run() used to return early on all
         three, so a visual-only failure silently cost the whole day's digest."""
+        self.visual_failure = ""
         if not self.generator.renderer.ready():
+            self.visual_failure = "no image renderer (OPENAI_API_KEY missing or unreadable)"
             return None, None
 
         try:
             plan, instruction, source = await self._compose(ranked_items, content, post_date)
-        except Exception:
+        except Exception as e:
             # Best-effort: a visual failure must never block the digest, so catch broadly here.
             logger.warning("Daily visual editor failed; publishing the digest text-only", exc_info=True)
+            self.visual_failure = f"the comic editor failed: {_brief_error(e)}"
             return None, None
         if not instruction:
             logger.info("Daily visual: editor could not illustrate the headline; publishing the digest text-only")
+            self.visual_failure = "the comic editor chose not to illustrate the headline (intentional)"
             return None, None
 
         image_bytes: bytes | None = None
@@ -186,11 +196,12 @@ class DailyVisualMaker:
             image_bytes, brief = await self.generator.generate(
                 instruction, source, references=self._references(plan), deadline=self._image_deadline(deadline)
             )
-        except Exception:
+        except Exception as e:
             # The image is an optional attachment; its failure must NOT sink the Threads text
             # digest, which stands on its own. Fall through with no image so the publisher still
             # posts the lead + per-story replies (text-only).
             logger.warning("Daily visual generation failed; posting Threads text-only", exc_info=True)
+            self.visual_failure = f"the image render failed: {_brief_error(e)}"
 
         return image_bytes, brief
 
@@ -327,3 +338,11 @@ def recent_comics(entries: list) -> list[RecentComic]:
 def _format_recent_comics(entries: list[RecentComic]) -> str:
     lines = [f"- {e.date} ({e.orientation}): {e.comic}" for e in entries if e.comic]
     return "\n".join(lines) or "(none yet)"
+
+
+def _brief_error(e: Exception) -> str:
+    """The exception's type, its API status and code when it carries them (an OpenAI 429 says
+    organization_spend_limit_exceeded there, past a long message), then the start of its message."""
+    status, code = getattr(e, "status_code", None), getattr(e, "code", None)
+    known = f" [{status} {code}]" if status or code else ""
+    return f"{type(e).__name__}{known}: {str(e)[:200]}"

@@ -70,7 +70,7 @@ def _requested_date(event: dict[str, Any], tz: ZoneInfo) -> tuple[date, bool]:
 
 
 def _maybe_alert_threads_outcome(
-    outcome: ThreadsDelivery | None, digest_date: date, *, marker_kept: bool = False
+    outcome: ThreadsDelivery | None, digest_date: date, *, marker_kept: bool = False, visual_failure: str = ""
 ) -> None:
     """SNS notice when the Threads post did not fully land: a partial reply chain (the reader sees
     a digest whose stories stop mid-way), a total delivery failure, or a day that published without
@@ -103,7 +103,8 @@ def _maybe_alert_threads_outcome(
             {
                 "Digest date": digest_date.isoformat(),
                 "Delivered": outcome.summary(),
-                "Detail": "published TEXT-ONLY — the day's visual never reached the root post",
+                "Detail": "published TEXT-ONLY — the day's visual never reached the root post"
+                + (f" ({visual_failure})" if visual_failure else ""),
             },
         )
 
@@ -179,7 +180,7 @@ async def _run(event: dict[str, Any] | None = None, *, deadline: float | None = 
     outcome = maker.threads_outcome
     ledger = maker.threads_ledger
     marker_kept = bool(outcome is not None and outcome.posted == 0 and ledger and ledger.already_posted(digest_date))
-    _maybe_alert_threads_outcome(outcome, digest_date, marker_kept=marker_kept)
+    _maybe_alert_threads_outcome(outcome, digest_date, marker_kept=marker_kept, visual_failure=maker.visual_failure)
     if maker.threads_unprotected:
         publish_alert(
             "Threads Delivery",

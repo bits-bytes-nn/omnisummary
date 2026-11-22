@@ -92,7 +92,7 @@ tail -1 digest_state/last_park_sync_rsshub.txt   # 정상 동기화로 기록된
 
 | Detail | 뜻 | 할 일 |
 |--------|----|-------|
-| `published TEXT-ONLY` | 만화 없이 글만 올라갔다 | 로그에서 렌더 실패 이유를 본다(OpenAI 키, 모더레이션, 시간 부족). 다시 올리지 않는다 |
+| `published TEXT-ONLY` | 만화 없이 글만 올라갔다. 괄호 안에 원인이 붙는다 | 원인을 고친다. `organization_spend_limit_exceeded`면 platform.openai.com의 Organization > Limits에서 지출 한도를 올린다(조직 단위라 다른 판의 다음 실행도 막힌다). 키가 없으면 SSM, 시간 초과면 로그를 본다. 만화까지 다시 올리려면 Threads 앱에서 그날 글을 지운 뒤 비주얼 Lambda에 `{"digest_date": "YYYY-MM-DD", "force_republish": true}`를 넘긴다(만화를 새로 그리므로 이미지 비용이 다시 들고 그림도 달라진다). 지우지 않고 다시 올리면 그날 글이 둘이 된다. 편집기가 일부러 그리지 않은 날(`intentional`)은 고칠 것이 없다 |
 | `reply chain incomplete` | 첫 글은 있고 답글 일부가 빠졌다 | Threads 앱에서 그날 첫 글과 그 답글을 지운 뒤 알림의 `force_republish: true` 명령으로 저장된 다이제스트를 다시 올린다. 지우지 않고 다시 올리면 그날 글이 둘이 된다 |
 | `Standalone posts` 항목이 있다 | 답글이 첫 글 아래가 아니라 별도 게시물로 올라갔다 | 첫 글을 지워도 이 게시물은 남으니 함께 지운 뒤 다시 올린다 |
 | `the root is live but no story reply landed under it` | 첫 글만 올라갔다(답글이 실패했거나 별도 게시물로 올라갔다) | 첫 글(과 별도 게시물)을 지운 뒤 알림의 `force_republish: true` 명령을 실행한다. 지우지 않고 다시 올리면 첫 글이 둘이 된다 |
