@@ -15,6 +15,9 @@ from domain.models import CollectedItem
 from shared import logger, parse_json_from_llm_output
 from shared.config import PipelineConfig
 
+# How much of each story the query writer reads to decide what to search: its opening is enough.
+_STORY_TOKENS = 500
+
 
 async def gather_evidence(
     config: PipelineConfig, models: LanguageModels, sources: ResearchSources, items: list[CollectedItem]
@@ -23,8 +26,7 @@ async def gather_evidence(
     evidence; it never fails the digest."""
     try:
         stories = "\n\n".join(
-            f"[{i + 1}] {it.title}\n{models.truncate_to_tokens(it.text, config.evidence_story_tokens)}"
-            for i, it in enumerate(items)
+            f"[{i + 1}] {it.title}\n{models.truncate_to_tokens(it.text, _STORY_TOKENS)}" for i, it in enumerate(items)
         )
         chain = EvidenceQueryPrompt.get_prompt() | models.get_model(config.digest_model, stage="evidence-queries")
         data = parse_json_from_llm_output(
