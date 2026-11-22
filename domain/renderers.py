@@ -130,7 +130,12 @@ def render_threads_posts(
     trimmed = 0
     for item in content.items:
         meta = _item_meta(item)
-        implication = f"{implication_label}{item.implication.strip()}" if item.implication.strip() else ""
+        remark = item.implication.strip()
+        # A remark that already carries the code-owned label (a model can copy it) is not labelled twice.
+        label = implication_label.strip()
+        if label and remark.startswith(label):
+            remark = remark[len(label) :].strip()
+        implication = f"{implication_label}{remark}" if remark else ""
         post = _fit_one_post(item.title, meta, item.body, implication, item.url if item.show_link else "")
         replies.append(post)
         # _fit_one_post ships the prose as written whenever it fits, so a missing piece was trimmed.
