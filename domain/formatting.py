@@ -484,7 +484,7 @@ def threads_meta_line(source_tag: str, metrics: str) -> str:
     return " · ".join(p.strip() for p in (source_tag, metrics) if p.strip())
 
 
-def threads_item_overhead_chars(meta: str, url: str) -> int:
+def threads_item_overhead_chars(meta: str, url: str, implication_label: str = "") -> int:
     """Characters ONE item's Threads post spends on the parts CODE owns: the source line, the URL,
     and the blank-line separators between title / source / body / implication / URL. Everything left
     over is what the editor may write (title + body + implication), so the prose budget it is told
@@ -501,7 +501,12 @@ def threads_item_overhead_chars(meta: str, url: str) -> int:
     the editor's budget without importing an output channel."""
     blocks = [p for p in (url.strip(),) if p]
     inline_meta = len(meta.strip()) + len(" ()") if meta.strip() else 0
-    return inline_meta + sum(len(p) for p in blocks) + len(THREADS_POST_SEPARATOR) * (len(blocks) + 2)
+    return (
+        inline_meta
+        + sum(len(p) for p in blocks)
+        + len(THREADS_POST_SEPARATOR) * (len(blocks) + 2)
+        + len(implication_label)
+    )
 
 
 def format_recent_titles(recent_titles: list[str] | None) -> str:

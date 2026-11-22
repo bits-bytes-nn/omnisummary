@@ -194,7 +194,7 @@ class DigestGenerator:
         charged every short-URL item for the longest URL in it. The TITLE is inside the number because
         the editor authors it — the old budget covered body + implication only, so every Korean title
         was spent off-budget and 5 of 95 sampled items lost their closing sentence."""
-        return max(0, THREADS_MAX_POST_CHARS - threads_item_overhead_chars(meta, url))
+        return max(0, THREADS_MAX_POST_CHARS - threads_item_overhead_chars(meta, url, self.config.implication_label))
 
     def _item_prose_budget(self, item: CollectedItem) -> int:
         """The budget for one ranked candidate, off the provenance line its post will really carry."""
@@ -364,12 +364,12 @@ class DigestGenerator:
             )
         if not blocks:
             return set()
-        chain = (
-            EvidenceImplicationPrompt.get_prompt()
-            | self.models.get_model(self.config.digest_model, stage="evidence-implication")
-            | StrOutputParser()
-        )
         try:
+            chain = (
+                EvidenceImplicationPrompt.get_prompt()
+                | self.models.get_model(self.config.digest_model, stage="evidence-implication")
+                | StrOutputParser()
+            )
             data = parse_json_from_llm_output(
                 await chain.ainvoke(
                     {
@@ -379,6 +379,12 @@ class DigestGenerator:
                         ),
                         "language_rules": self.config.digest_language_rules,
                         "stories": "\n\n".join(blocks),
+                        "label_clause": (
+                            f' The post opens the remark with "{label.strip()}", so state the view itself and never'
+                            " open or tag it with a first-person phrase that says the same."
+                            if (label := self.config.implication_label).strip()
+                            else ""
+                        ),
                     }
                 )
             )
@@ -389,14 +395,19 @@ class DigestGenerator:
             logger.warning("Evidence implications failed; keeping the editor's remarks", exc_info=True)
             return set()
         remarks: dict[int, str] = {}
+        argued: set[int] = set()
         for entry in entries:
             try:
                 remark = entry["remark"]
                 if isinstance(remark, str):
-                    remarks[int(entry["index"])] = remark.strip()
-            except (KeyError, TypeError, ValueError):
+                    index = int(entry["index"])
+                    remarks[index] = remark.strip()
+                    if str(entry.get("finding") or "").strip():
+                        argued.add(index)
+            except (KeyError, TypeError, ValueError, OverflowError, AttributeError):
                 continue
         changed: set[int] = set()
+        over_budget = 0
         for index, remark in remarks.items():
             if index not in limits or not remark:
                 continue
@@ -405,13 +416,21 @@ class DigestGenerator:
                 logger.info(
                     "Evidence remark for story %d over its budget (%d > %d); kept", index, len(remark), limits[index]
                 )
+                over_budget += 1
                 continue
             if remark != item.implication:
                 item.implication = remark
                 changed.add(index - 1)
-        # WARNING when nothing changed: the editor still left each post the remark's room, so the day ships
-        # shorter bodies for nothing.
-        (logger.info if changed else logger.warning)("Evidence rewrote %d of %d remark(s)", len(changed), len(limits))
+        # A remark is recast even when no finding fits, so the health signal is how many stand on a finding.
+        # WARNING at none: the editor still left each post the remark's room for evidence that never came.
+        from_finding = len({i + 1 for i in changed} & argued)
+        (logger.info if from_finding else logger.warning)(
+            "Evidence rewrote %d of %d remark(s), %d from a finding, %d over budget",
+            len(changed),
+            len(limits),
+            from_finding,
+            over_budget,
+        )
         return changed
 
     async def _verify_grounding(

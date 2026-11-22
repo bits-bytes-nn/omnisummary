@@ -1083,3 +1083,16 @@ async def test_a_timeout_during_the_rewrite_call_changes_no_remark():
         async with asyncio.timeout(0.01):
             await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "Theory X."})
     assert content.items[0].implication == "시사점."
+
+
+async def test_a_model_client_failure_in_the_evidence_step_never_fails_the_digest():
+    from application.evidence import gather_evidence
+    from tests.fakes import FakeSources
+
+    factory = MagicMock()
+    factory.get_model.side_effect = RuntimeError("token expired")
+    factory.truncate_to_tokens.side_effect = lambda text, _n: text
+    assert await gather_evidence(PipelineConfig(), factory, FakeSources(), _sources()) == {}
+    gen = DigestGenerator.__new__(DigestGenerator)
+    gen.config, gen.models = PipelineConfig(), factory
+    assert await gen._argue_from_evidence(_content(), _sources(), {normalize_url("u"): "x"}) == set()

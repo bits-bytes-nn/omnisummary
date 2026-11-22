@@ -288,6 +288,9 @@ class PipelineConfig(_StrictModel):
     # Closes every Threads root and research thread this edition posts (the investing disclaimer).
     # Code-owned, never trimmed: the lead budget and the research post budget make room for it.
     threads_footer: str = ""
+    # Code-owned label the Threads post puts before each story's closing remark ("내 생각: "), so the
+    # narrator's view reads as the narrator's. Empty: none. Counted in every item's prose budget.
+    implication_label: str = ""
     ranking_audience_description: str = "a daily digest aimed at practicing ML engineers"
     digest_audience_description: str = "Korean readers who follow AI news, engineers and curious non-specialists alike"
     # Editorial voice for the digest lead/implications: a recurring narrator persona (a singularity-

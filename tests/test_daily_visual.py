@@ -162,6 +162,25 @@ class TestThePublishPathStandsOnItsOwn:
         )
 
     @pytest.mark.asyncio
+    async def test_the_configured_label_opens_each_posted_remark(self):
+        from domain.models import DigestContent, DigestItem
+
+        publisher = self._publisher(enable_threads_post=True, implication_label="내 생각: ")
+        publisher.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(3, 3))
+        content = DigestContent(
+            lead="리드.",
+            items=[
+                DigestItem(title="A", url="http://e.com/1", body="본문.", implication="판단."),
+                DigestItem(title="B", url="http://e.com/2", body="본문."),
+            ],
+        )
+        assert await publisher.publish(content, today=date(2026, 6, 10)) is True
+        call = publisher.threads.post_thread.await_args
+        replies = call.kwargs.get("replies") or call.args[1]
+        assert "내 생각: 판단." in replies[0]
+        assert "내 생각:" not in replies[1]
+
+    @pytest.mark.asyncio
     async def test_a_digest_publishes_with_no_image_at_all(self):
         publisher = self._publisher(enable_threads_post=True)
         publisher.threads.post_thread = AsyncMock(return_value=ThreadsDelivery(2, 2))

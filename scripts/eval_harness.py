@@ -78,6 +78,14 @@ RUBRICS = {
 # What an edition's owner asks of the set beyond the shared rubric. Investing (2026-11-06): the edition is
 # meant for market reads, analyst reports and expert insight, not an economics newspaper.
 EDITION_RUBRIC = {
+    # AI (2026-11-22): the owner wants more papers, research and insight, less event news.
+    ("digest", ""): [
+        (
+            "depth",
+            "Where the candidates allow it, the set leans on papers, research results and experts' reasoned "
+            "insight over event news (launches, funding, deals, policy, lawsuits).",
+        )
+    ],
     ("digest", "invest"): [
         (
             "analysis",

@@ -81,7 +81,8 @@ One codebase, several editions. `OMNISUMMARY_EDITION=invest` (research CLI: `--e
 AgentCore sessions (`digest-invest-<date>`), Lambdas (`omnisummary-dev-invest-digest`/`-visual`), EMF
 `Edition` dimension and empty-digest alarm. With no extra edition the synthesized templates are
 byte-identical to before. `pipeline.domain`, `pipeline.ranking_criteria` and `pipeline.threads_footer`
-(code-owned disclaimer, never trimmed) and `pipeline.countdown_*` (the lead's opening gag, paired: "AGI 등장까지 N일 남았다" to 2027-12-31 by default,
+(code-owned disclaimer, never trimmed), `pipeline.implication_label` (code-owned "내 생각: " before each
+closing remark in the Threads post, both editions; never stored) and `pipeline.countdown_*` (the lead's opening gag, paired: "AGI 등장까지 N일 남았다" to 2027-12-31 by default,
 "보편적 고소득 시대까지 N일 남았다" to 2035-11-19 for investing) are the edition's knobs; research gets `market_quote` + `analyst_ratings` and
 `search_reports` via `agent.market_quotes` / `agent.report_search_domains`. No buy/sell calls or own
 price targets (`pipeline.domain_rules`; the comment prompt declines such questions). Korean real estate is one lens of the investing edition (policy, lending, official statistics; 분양/견본주택 promotion is not news). Sources (both editions): technical access controls are never circumvented (paywall, bot check, 403/429, someone else's login wall; not via a UA swap or Tavily extraction either), while policy signals (robots.txt, ToS) are the owner's documented call: Korean press, X and Reddit are used, Telegram is not (docs/design.md, 수집 원칙). Korean broker research comes

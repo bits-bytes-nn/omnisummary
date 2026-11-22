@@ -114,7 +114,9 @@ def footer_overhead(footer: str) -> int:
     return len(THREADS_POST_SEPARATOR) + len(footer.strip()) if footer.strip() else 0
 
 
-def render_threads_posts(content: DigestContent, footer: str = "") -> tuple[str, list[str]]:
+def render_threads_posts(
+    content: DigestContent, footer: str = "", implication_label: str = ""
+) -> tuple[str, list[str]]:
     """Render DigestContent for Threads: a root text (the lead, then the other stories' titles, then the
     edition's footer, e.g. the investing edition's disclaimer) and a reply chain with EXACTLY ONE reply per
     item (title + source line + body + implication + URL). Each reply is trimmed to fit Threads' 500-char
@@ -128,7 +130,7 @@ def render_threads_posts(content: DigestContent, footer: str = "") -> tuple[str,
     trimmed = 0
     for item in content.items:
         meta = _item_meta(item)
-        implication = item.implication or ""
+        implication = f"{implication_label}{item.implication.strip()}" if item.implication.strip() else ""
         post = _fit_one_post(item.title, meta, item.body, implication, item.url if item.show_link else "")
         replies.append(post)
         # _fit_one_post ships the prose as written whenever it fits, so a missing piece was trimmed.
