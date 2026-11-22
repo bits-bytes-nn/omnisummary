@@ -51,8 +51,9 @@ collectors:
     max_concurrency: 5
   web_search:
     enabled: true
-    # Hosts never returned by any search, broad or refined (Tavily exclude_domains), e.g. content farms:
-    # exclude_domains: ["example-content-farm.com"]
+    # Hosts never returned by any search, broad or refined, the evidence remarks' included (Tavily
+    # exclude_domains): login walls and Telegram (never collected: docs/design.md 수집 원칙); add content farms here.
+    exclude_domains: ["t.me", "telegram.me", "instagram.com", "facebook.com", "linkedin.com"]
     trend_searches:
       - name: frontier_models
         queries:

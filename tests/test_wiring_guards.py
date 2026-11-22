@@ -243,3 +243,26 @@ def test_config_defaults():
     assert PipelineConfig().item_text_max_tokens == 10000
     with pytest.raises(ValidationError):
         AWSConfig(monthly_budget_usd=-1)
+
+
+def test_both_digest_entrypoints_hand_the_pipeline_the_evidence_searches():
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    for path in ("entrypoints/digest_handler.py", "main.py"):
+        calls = [
+            n
+            for n in ast.walk(ast.parse((root / path).read_text()))
+            if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "run_pipeline"
+        ]
+        assert calls, path
+        research = [k.value for k in calls[0].keywords if k.arg == "research"]
+        assert research and isinstance(research[0], ast.Call), path
+        assert getattr(research[0].func, "attr", "") == "research_sources", path
+
+
+def test_the_evidence_searches_are_billed_to_their_own_stage():
+    from entrypoints import bootstrap
+
+    assert bootstrap.research_sources(Config()).usage_stage == "evidence-search"

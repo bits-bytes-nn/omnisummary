@@ -923,13 +923,13 @@ class TestEvidenceRemarks:
         return DigestGenerator(PipelineConfig(), factory)
 
     async def test_rewrites_a_remark_that_fits(self):
-        gen = self._gen('{"remarks": [{"index": 1, "remark": "새 시사점."}]}')
+        gen = self._gen('{"remarks": [{"index": 1, "finding": "f", "remark": "새 시사점."}]}')
         content = _content()
         await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "Theory X."})
         assert content.items[0].implication == "새 시사점."
 
     async def test_keeps_a_remark_over_its_budget(self):
-        gen = self._gen(json.dumps({"remarks": [{"index": 1, "remark": "가" * 600}]}))
+        gen = self._gen(json.dumps({"remarks": [{"index": 1, "finding": "f", "remark": "가" * 600}]}))
         content = _content()
         await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "Theory X."})
         assert content.items[0].implication == "시사점."
@@ -940,7 +940,7 @@ class TestEvidenceRemarks:
         assert content.items[0].implication == "시사점."
 
     async def test_a_story_without_evidence_is_not_sent(self):
-        gen = self._gen('{"remarks": [{"index": 1, "remark": "새 시사점."}]}')
+        gen = self._gen('{"remarks": [{"index": 1, "finding": "f", "remark": "새 시사점."}]}')
         content = _content()
         await gen._argue_from_evidence(content, _sources(), {})
         assert content.items[0].implication == "시사점."
@@ -1001,7 +1001,7 @@ class TestEvidenceRemarkEdges:
         return content, sources
 
     async def test_numbering_follows_the_story_with_partial_evidence(self):
-        answer = '{"remarks": [{"index": 1, "remark": "틀린 자리."}, {"index": 2, "remark": "B 새 문장."}]}'
+        answer = '{"remarks": [{"index": 1, "finding": "f", "remark": "틀린 자리."}, {"index": 2, "finding": "f", "remark": "B 새 문장."}]}'
         content, sources = self._two()
         out = content
         await TestEvidenceRemarks._gen(answer)._argue_from_evidence(content, sources, {normalize_url("ub"): "x"})
@@ -1010,7 +1010,7 @@ class TestEvidenceRemarkEdges:
     async def test_a_bad_entry_keeps_the_good_ones(self):
         answer = (
             '{"remarks": [{"index": "two", "remark": "x"}, {"index": 1, "remark": null}, {"index": 9, "remark": "y"},'
-            ' {"index": 2, "remark": "B 새 문장."}]}'
+            ' {"index": 2, "finding": "f", "remark": "B 새 문장."}]}'
         )
         content, sources = self._two()
         evidence = {normalize_url("ua"): "x", normalize_url("ub"): "x"}
@@ -1096,3 +1096,41 @@ async def test_a_model_client_failure_in_the_evidence_step_never_fails_the_diges
     gen = DigestGenerator.__new__(DigestGenerator)
     gen.config, gen.models = PipelineConfig(), factory
     assert await gen._argue_from_evidence(_content(), _sources(), {normalize_url("u"): "x"}) == set()
+
+
+class TestEvidenceRemarkGuards:
+    async def test_a_remark_with_no_finding_stays_the_editors(self):
+        gen = TestEvidenceRemarks._gen('{"remarks": [{"index": 1, "finding": "", "remark": "새 문장."}]}')
+        content = _content()
+        await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "x"})
+        assert content.items[0].implication == "시사점."
+
+    async def test_a_copied_label_is_not_stored(self):
+        factory = MagicMock()
+        factory.get_model.return_value = RunnableLambda(
+            lambda _: AIMessage(content='{"remarks": [{"index": 1, "finding": "f", "remark": "내 생각: 새 문장."}]}')
+        )
+        gen = DigestGenerator(PipelineConfig(implication_label="내 생각: "), factory)
+        content = _content()
+        await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "x"})
+        assert content.items[0].implication == "새 문장."
+
+
+def test_the_label_is_charged_to_the_editors_prose_budget():
+    factory = MagicMock()
+    factory.get_model.return_value = MagicMock()
+    item = CollectedItem(item_id="a", source_type=SourceType.WEB, title="T", url="https://e.com/a")
+    plain = DigestGenerator(PipelineConfig(), factory)._item_prose_budget(item)
+    labelled = DigestGenerator(PipelineConfig(implication_label="내 생각: "), factory)._item_prose_budget(item)
+    assert plain - labelled == len("내 생각: ")
+
+
+async def test_a_remark_that_is_only_the_label_keeps_the_editors():
+    factory = MagicMock()
+    factory.get_model.return_value = RunnableLambda(
+        lambda _: AIMessage(content='{"remarks": [{"index": 1, "finding": "f", "remark": "내 생각:"}]}')
+    )
+    gen = DigestGenerator(PipelineConfig(implication_label="내 생각: "), factory)
+    content = _content()
+    await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "x"})
+    assert content.items[0].implication == "시사점."

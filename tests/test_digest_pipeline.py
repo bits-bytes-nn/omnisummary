@@ -472,3 +472,21 @@ class TestRequirePrimary:
         pool = [self._ranked("note", SourceType.RESEARCH, 0.8, nid=1)]
         await runner.require_primary(pool, 0, [SourceType.RESEARCH], AsyncMock(side_effect=AssertionError))
         assert not pool[0].item.primary
+
+
+class TestEvidenceSwitch:
+    """pipeline.evidence_remarks is the operator's off switch: off, the research port must not reach the editor."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("enabled", [True, False])
+    async def test_the_research_port_reaches_the_editor_only_when_switched_on(self, enabled):
+        research = object()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with _Pipeline(tmpdir) as p:
+                await _run(
+                    p,
+                    _config(evidence_remarks=enabled),
+                    [_item(f"https://e.com/{i}", f"t{i}") for i in range(3)],
+                    research=research,
+                )
+        assert p.generate_kwargs["research"] is (research if enabled else None)

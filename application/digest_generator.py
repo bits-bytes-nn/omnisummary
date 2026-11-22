@@ -409,8 +409,14 @@ class DigestGenerator:
                 continue
         changed: set[int] = set()
         over_budget = 0
+        label = self.config.implication_label.strip()
         for index, remark in remarks.items():
-            if index not in limits or not remark:
+            # A remark that stands on no finding is the editor's to keep (the prompt asks for it unchanged).
+            if index not in limits or index not in argued or not remark:
+                continue
+            if label and remark.startswith(label):
+                remark = remark[len(label) :].strip()
+            if not remark:
                 continue
             item = content.items[index - 1]
             if len(remark) > limits[index]:
@@ -422,15 +428,10 @@ class DigestGenerator:
             if remark != item.implication:
                 item.implication = remark
                 changed.add(index - 1)
-        # A remark is recast even when no finding fits, so the health signal is how many stand on a finding.
-        # WARNING at none: the editor still left each post the remark's room for evidence that never came.
-        from_finding = len({i + 1 for i in changed} & argued)
-        (logger.info if from_finding else logger.warning)(
-            "Evidence rewrote %d of %d remark(s), %d from a finding, %d over budget",
-            len(changed),
-            len(limits),
-            from_finding,
-            over_budget,
+        # Only a remark that stands on a finding is applied. WARNING at none: the editor still left each post the
+        # remark's room for evidence that never came.
+        (logger.info if changed else logger.warning)(
+            "Evidence rewrote %d of %d remark(s) from a finding, %d over budget", len(changed), len(limits), over_budget
         )
         return changed
 

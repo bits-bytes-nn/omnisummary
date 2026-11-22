@@ -147,7 +147,7 @@ def _slug(text: str) -> str:
     return re.sub(r"\W+", "-", text).strip("-")[:40] + "-" + hashlib.sha256(text.encode()).hexdigest()[:6]
 
 
-async def _digest(label: str, dates: list[str], with_evidence: bool = False) -> None:
+async def _digest(label: str, dates: list[str], with_evidence: bool | None = None) -> None:
     from application.digest_pipeline import (
         POOLS_PREFIX,
         editor_context,
@@ -189,7 +189,12 @@ async def _digest(label: str, dates: list[str], with_evidence: bool = False) -> 
             recent,
             trends_context=trends,
             today=today,
-            research=bootstrap.research_sources(config) if with_evidence else None,
+            # The deployed config decides unless the arm overrides it, so a replay matches production by default.
+            research=(
+                bootstrap.research_sources(config)
+                if (config.pipeline.evidence_remarks if with_evidence is None else with_evidence)
+                else None
+            ),
         )
         # The judge always sees what the whole Threads account ran, the other editions included, whatever
         # the arm under test was given.
@@ -355,7 +360,12 @@ def main() -> None:
     digest = sub.add_parser("digest")
     digest.add_argument("label")
     digest.add_argument("dates", nargs="+")
-    digest.add_argument("--evidence", action="store_true", help="give the editor background evidence searches")
+    digest.add_argument(
+        "--evidence",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="force the evidence remarks on or off (default: the config's pipeline.evidence_remarks)",
+    )
     visual = sub.add_parser("visual")
     visual.add_argument("label")
     visual.add_argument("dates", nargs="+")
