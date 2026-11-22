@@ -606,3 +606,18 @@ class TestNoPostEverExceedsTheCap:
             ]
             render = render_threads_research("\n---\n".join(posts), max_posts=10)
             assert all(len(post) <= THREADS_MAX_POST_CHARS for post in [render[0], *render[1]])
+
+
+def test_the_implication_label_opens_each_remark_and_is_counted_in_the_budget():
+    from domain.formatting import threads_item_overhead_chars
+    from domain.models import DigestContent, DigestItem
+    from domain.renderers import render_threads_posts
+
+    content = DigestContent(
+        lead="리드.", items=[DigestItem(title="T", url="https://e.com/a", body="본문.", implication="근거로 본 판단.")]
+    )
+    _, replies = render_threads_posts(content, implication_label="내 생각: ")
+    assert "\n\n내 생각: 근거로 본 판단.\n\n" in replies[0]
+    assert threads_item_overhead_chars("m", "u", "내 생각: ") == threads_item_overhead_chars("m", "u") + len(
+        "내 생각: "
+    )

@@ -88,7 +88,9 @@ class DigestPublisher:
             # Record a verdict so the caller alerts: expected=1, posted=0 cannot read as success.
             self.threads_outcome = ThreadsDelivery(0, 1)
             return False
-        root_text, replies = render_threads_posts(content, self.config.pipeline.threads_footer)
+        root_text, replies = render_threads_posts(
+            content, self.config.pipeline.threads_footer, self.config.pipeline.implication_label
+        )
 
         # Idempotency: a dated ledger marker, claimed BEFORE the multi-minute post so a concurrent
         # invoke skips, and rolled back on failure only if THIS run (run_id) wrote it, so a retry stays

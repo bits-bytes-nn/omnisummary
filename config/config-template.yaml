@@ -101,6 +101,8 @@ pipeline:
   digest_model: "anthropic.claude-sonnet-5-5"
   # Rewrite each closing remark from searched theory, research, past cases and data (docs/design.md)
   evidence_remarks: true
+  # Code-owned label before each closing remark in the Threads post
+  implication_label: "내 생각: "
   item_text_max_tokens: 10000
   # Ranking robustness: cap the in-flight Bedrock batches (a big day self-throttled otherwise) and
   # retry a failed batch instead of silently dropping its whole slice of candidates.

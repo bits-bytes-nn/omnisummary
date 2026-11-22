@@ -196,7 +196,7 @@ ECR은 이미지를 30개까지(`latest` 포함) 남긴다. 태그는 다시 빌
 | 지금 답할 댓글 초안(게시하지 않는다) | `uv run python scripts/sample_comment_replies.py` |
 | 저장된 날의 만화 계획(그리지 않는다) | `uv run python scripts/sample_visual_brief.py 2026-10-28 /tmp/vis` |
 | 최근 비용(일별, Lambda별 또는 단계별) | `uv run python scripts/cost_report.py --days 7 [--by stage]` |
-| 근거 시사점이 도는지(다시 쓴 수, 실패, 시간 초과) | Logs Insights, digest Lambda: `filter @message like /Evidence rewrote\|Evidence queries failed\|Evidence implications failed\|Evidence step timed out\|Background evidence/` |
+| 근거 시사점이 도는지(다시 쓴 수와 그중 근거의 결과로 쓴 수, 실패, 시간 초과) | Logs Insights, digest Lambda: `filter @message like /Evidence rewrote\|Evidence queries failed\|Evidence implications failed\|Evidence step timed out\|Background evidence/` |
 
 근거 시사점(`pipeline.evidence_remarks`)을 끄려면 `config/config.yaml`이나 `config/invest.yaml`에서 `false`로 바꾸고
 `scripts/release.sh`로 배포한다. 설정이 이미지에 들어가므로 배포 전에는 반영되지 않는다. 끄면 에디터 예산의 유보(80자)도 함께

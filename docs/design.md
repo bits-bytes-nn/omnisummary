@@ -235,6 +235,7 @@ DEGRADED 사유는 덮어쓰지 않고 이어 붙인다. park 파일이 없다�
 | 영역 | 필드 | 설명 |
 |------|------|------|
 | 모델 | `ranking_model`(기본 Sonnet 5.5, AI판 config는 Opus 5.5), `digest_model`(Sonnet 5.5, 그라운딩, 근거 시사점, 비주얼 편집기·아트 디렉터도 이 모델을 쓴다), `trend_model`(Sonnet 5.5) | 단계별 모델([§6](#모델-팩토리)) |
+| 끝문장 라벨 | `implication_label`(코드 기본 "", 두 판 배포 설정 `"내 생각: "`) | Threads 게시물에서 각 스토리의 끝문장 앞에 코드가 붙이는 라벨. 저장되는 콘텐츠에는 없고 렌더러만 붙인다. 길이는 에디터의 글자 예산(`threads_item_overhead_chars`)에서 뺀다 |
 | 근거 시사점 | `evidence_remarks`(코드 기본 off, 두 판 배포 설정 on), `evidence_remark_chars`(기본 80), `evidence_story_tokens`(기본 500) | 실린 스토리마다 이론·연구·사례·데이터를 검색해 implication을 그 근거로 다시 쓰는 단계, 에디터가 게시물마다 남겨 두는 자리, 질의 작성기가 읽는 스토리 앞부분([§5.4](#54-다이제스트-생성기-digest_generatorpy)) |
 | 다이제스트 재질의 | `digest_max_retries`(기본 3), `digest_retry_backoff_sec`(기본 5) | 에디터의 JSON이 깨졌을 때 다시 묻는 횟수와 간격 |
 | 랭킹 | `ranking_batch_size`(기본 40), `ranking_max_concurrency`(기본 4), `ranking_max_retries`(기본 3), `ranking_retry_backoff_sec`(기본 5), `ranking_scoring_rubric`, `item_text_max_tokens` | 병렬 배치, Bedrock fan-out 상한, 배치 재시도, 점수 루브릭 |
@@ -927,7 +928,9 @@ AgentCore 스냅샷이 그것을 쓴다. 트렌드 분류기는 lead와 implicat
 **근거 시사점(`evidence_remarks`, 두 판 모두 켬).** 다이제스트를 쓴 뒤 실린 스토리 다섯 개마다 그 스토리가 닿는
 확립된 이론, 연구, 과거 사례와 데이터를 검색하고(`application/evidence.py`: Sonnet이 질의를 한 번에 쓰고 스토리마다
 Tavily 웹 검색 하나와 OpenAlex 논문 검색 하나), 별도 단계(`EvidenceImplicationPrompt`)가 implication만 그 근거로 다시 쓴다.
-근거 하나를 이름과 함께 짧게 풀고 그 근거로 이 스토리에 서는 입장을 1~2문장, 100자 안팎으로 쓴다. 에디터는 각
+근거 하나가 밝힌 결과(숫자가 있으면 숫자, 누가 밝혔는지)와 그것이 이 스토리에 뜻하는 바, 거기서 서는 입장을 한 흐름으로
+1~3문장, 120자 안팎으로 쓴다. "누가 무엇을 분석했다"처럼 주제만 말하는 것은 결과가 아니다. 모델은 고른 결과를 `finding`에 적고,
+맞는 근거가 없으면 비워 둔 채 에디터의 문장을 그대로 돌려준다. 로그의 "from a finding" 수가 실제로 근거에 선 끝문장 수다. 에디터는 각
 게시물에서 `evidence_remark_chars`(80자)를 남겨 두고 쓰고, 다시 쓴 문장이 그 스토리의 남은 예산을 넘거나 응답을 읽을 수
 없으면 에디터의 문장을 그대로 둔다. 단계를 120초에서 끊고 에디터의 문장으로 돌아간다(재시도 없는 Lambda에서 시간 초과는 그날
 게시 실패다). 끊어도 Bedrock 호출 스레드는 읽기 타임아웃까지 남을 수 있지만, 만화 Lambda는 그 전에 호출되고 다이제스트

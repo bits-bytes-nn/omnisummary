@@ -21,12 +21,12 @@ async def gather_evidence(
 ) -> dict[str, str]:
     """Background evidence per story, keyed by normalized URL. A failed search leaves that story without
     evidence; it never fails the digest."""
-    stories = "\n\n".join(
-        f"[{i + 1}] {it.title}\n{models.truncate_to_tokens(it.text, config.evidence_story_tokens)}"
-        for i, it in enumerate(items)
-    )
-    chain = EvidenceQueryPrompt.get_prompt() | models.get_model(config.digest_model, stage="evidence-queries")
     try:
+        stories = "\n\n".join(
+            f"[{i + 1}] {it.title}\n{models.truncate_to_tokens(it.text, config.evidence_story_tokens)}"
+            for i, it in enumerate(items)
+        )
+        chain = EvidenceQueryPrompt.get_prompt() | models.get_model(config.digest_model, stage="evidence-queries")
         data = parse_json_from_llm_output(
             await (chain | StrOutputParser()).ainvoke({"domain": config.domain, "stories": stories})
         )
@@ -40,7 +40,7 @@ async def gather_evidence(
     for entry in entries:
         try:
             queries[int(entry["index"])] = entry
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             continue
 
     async def one(i: int, item: CollectedItem) -> tuple[str, str]:

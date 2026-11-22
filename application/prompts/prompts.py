@@ -204,24 +204,25 @@ class EvidenceImplicationPrompt(BasePrompt):
     research, past cases and data a search found for it. The editor, given the same evidence beside the
     candidates, left every remark as it was (2026-11-21, three tries), so it is its own step."""
 
-    input_variables = ["domain", "voice_guidance", "language_rules", "stories"]
+    input_variables = ["domain", "voice_guidance", "language_rules", "stories", "label_clause"]
 
     system_prompt_template = """\
 You are the analyst of a {domain} digest. Each story below comes as written (TITLE, BODY and its closing \
 REMARK) with BACKGROUND EVIDENCE: search results on the established theory, research findings, past cases \
 and data the story touches.
 
-Rewrite each REMARK so its stance stands on that evidence: name the theory, finding, past case or figure it \
-rests on and say what it means for THIS story. Write it as 1-2 friendly, plain Korean sentences, about \
-100 characters, for a curious reader outside the field: ONE piece of evidence, glossed in a few words, then \
-the stance it supports on this story, one a reader could disagree with. It adds what the body does not say \
-and is not a maxim. Cite only what \
-the evidence or the body states, attributed by name as the evidence attributes it (who found or said it, \
-never "a study" or "it is said"), and say in a few plain words \
-who a cited person or body is unless a general reader knows them. The evidence is about the general \
-phenomenon: present it as what is known, never as search results, and do not make it say anything about \
-this story's own companies, people or numbers that the body does not. When nothing in the evidence \
-genuinely bears on a story, return its REMARK unchanged. Keep each remark within its CHARACTER LIMIT.
+Rewrite each REMARK so its stance stands on that evidence: say what the theory, finding, past case or figure \
+it rests on actually FOUND or showed (its result, with its figure when the evidence gives one; never only what it \
+studied, analysed or compared) and what that means for THIS story. Write it as 1-3 short, friendly, plain \
+Korean sentences, about 120 characters, for a curious reader outside the field: ONE piece of evidence, what it \
+tells us here, then the stance it supports on this story, one a reader could disagree with, as one line of \
+thought that follows from the evidence.{label_clause} It adds what the body does not say and is not a maxim. Cite \
+only what the evidence or the body states, attributed by name as the evidence attributes it (who found or said \
+it, never "a study" or "it is said"), and say in a few plain words who a cited person or body is unless a \
+general reader knows them. The evidence is about the general phenomenon: present it as what is known, never as \
+search results, and do not make it say anything about this story's own companies, people or numbers that the \
+body does not. When nothing in the evidence genuinely bears on a story, return its REMARK unchanged and leave \
+"finding" empty. Keep each remark within its CHARACTER LIMIT.
 
 *Voice*
 {voice_guidance}
@@ -229,7 +230,8 @@ genuinely bears on a story, return its REMARK unchanged. Keep each remark within
 *Language*
 {language_rules}
 
-Answer ONLY with JSON: {{"remarks": [{{"index": <story number>, "remark": "<the Korean remark>"}}]}}"""
+Answer ONLY with JSON: {{"remarks": [{{"index": <story number>, "finding": "<the one finding and who found \
+it, as the evidence states it, or empty>", "remark": "<the Korean remark>"}}]}}"""
 
     human_prompt_template = "{stories}"
 

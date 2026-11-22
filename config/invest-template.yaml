@@ -250,6 +250,8 @@ pipeline:
   digest_model: "anthropic.claude-sonnet-5-5"
   # Rewrite each closing remark from searched theory, research, past cases and data (docs/design.md)
   evidence_remarks: true
+  # Code-owned label before each closing remark in the Threads post
+  implication_label: "내 생각: "
   item_text_max_tokens: 10000
   # The ranker scores on each item's opening; the editor reads the full text. Korean runs about a token a
   # character: at 3,000 the weekday pool sent the ranker 1.18M input tokens.
