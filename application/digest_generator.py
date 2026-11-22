@@ -379,10 +379,11 @@ class DigestGenerator:
                         ),
                         "language_rules": self.config.digest_language_rules,
                         "stories": "\n\n".join(blocks),
+                        # The label's own text is not quoted: given it, the model wrote it into 15 of 60 remarks.
                         "label_clause": (
-                            f' The post opens the remark with "{label.strip()}", so state the view itself and never'
-                            " open or tag it with a first-person phrase that says the same."
-                            if (label := self.config.implication_label).strip()
+                            " The post itself marks the remark as your view, so write no label, prefix or"
+                            " first-person tag: state the view itself."
+                            if self.config.implication_label.strip()
                             else ""
                         ),
                     }

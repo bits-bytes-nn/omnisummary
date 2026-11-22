@@ -621,3 +621,14 @@ def test_the_implication_label_opens_each_remark_and_is_counted_in_the_budget():
     assert threads_item_overhead_chars("m", "u", "내 생각: ") == threads_item_overhead_chars("m", "u") + len(
         "내 생각: "
     )
+
+
+def test_a_remark_that_already_carries_the_label_is_not_labelled_twice():
+    from domain.models import DigestContent, DigestItem
+    from domain.renderers import render_threads_posts
+
+    content = DigestContent(
+        lead="리드.", items=[DigestItem(title="T", url="https://e.com/a", body="본문.", implication="내 생각: 판단.")]
+    )
+    _, replies = render_threads_posts(content, implication_label="내 생각: ")
+    assert replies[0].count("내 생각:") == 1 and "내 생각: 판단." in replies[0]
