@@ -17,6 +17,7 @@ from domain.models import ThreadsComment, ThreadsDelivery
 from shared import THREADS_MAX_POST_CHARS, logger
 from shared.config import Config
 from shared.constants import THREADS_TOKEN_SECRET, THREADS_USER_SECRET
+from shared.naming import THREADS_IMAGE_PREFIX
 
 # Meta's cap on an image post's alt_text.
 THREADS_ALT_TEXT_MAX_CHARS = 1000
@@ -561,7 +562,7 @@ class ThreadsGateway:
             if bucket:
                 prefix = f"{root}/" if root else ""
                 digest = hashlib.sha256(image_bytes).hexdigest()[:16]
-                key = f"{prefix}threads/{digest}.{extension_for(image_content_type)}"
+                key = f"{prefix}{THREADS_IMAGE_PREFIX}{digest}.{extension_for(image_content_type)}"
             else:
                 logger.warning("No state bucket configured; the Threads image is skipped (text-only post)")
         return await post_to_threads(

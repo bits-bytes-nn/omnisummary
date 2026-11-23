@@ -43,7 +43,7 @@ uv run python main.py --pin-url "<url>" [...] --force-republish  # Force URL(s) 
 # {"digest_date": "YYYY-MM-DD"} (+ "force_republish": true only after checking nothing is live); the
 # Threads Delivery alert carries that exact command. docs/operations.md is the operator runbook.
 # main.py exits 1 when nothing was collected, no digest was produced, or the post did not fully land.
-uv run python research_cli.py "<topic>"        # Deep research: one JSON object on stdout, nothing published
+uv run --extra research python research_cli.py "<topic>"  # Deep research (needs the `research` extra; `--extra dev` includes it): one JSON object on stdout, nothing published
 uv run python research_cli.py "<topic>" --publish threads   # ...and publish a Threads thread
 uv run python recall_cli.py digest 2026-10-11  # Free, read-only: that day's lead + stories (JSON); `recall_cli.py trends` for trends
 uv run python scripts/sample_visual_brief.py 2026-10-17 /tmp/vis [--render]  # A stored day's comic plan + brief (+ image); publishes nothing

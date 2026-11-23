@@ -16,7 +16,7 @@ from constructs import Construct
 
 from shared import Config
 from shared.constants import THREADS_TOKEN_SECRET, THREADS_USER_SECRET
-from shared.naming import digest_memory_name, state_bucket_name
+from shared.naming import THREADS_IMAGE_PREFIX, digest_memory_name, state_bucket_name
 
 
 class OmniSummaryFoundationStack(Stack):
@@ -168,6 +168,9 @@ class OmniSummaryFoundationStack(Stack):
         edition_roots = {
             edition: (prefixes.get(edition) or f"{root}{edition}").strip("/") + "/" for edition in editions
         }
+        # Staged comics are read once by Threads at publish time; nothing reads them back.
+        for staged in dict.fromkeys([root, *edition_roots.values()]):
+            self.state_bucket.add_lifecycle_rule(prefix=f"{staged}{THREADS_IMAGE_PREFIX}", expiration=Duration.days(7))
         object_scopes = {
             self.lambda_role: f"{root}*",
             self.comment_reply_role: f"{root}digest_state/comment_replies.json",

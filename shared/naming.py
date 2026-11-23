@@ -24,3 +24,8 @@ def metric_dimensions(project: str, stage: str, edition: str = "") -> dict[str, 
 def state_bucket_name(configured: str, project_name: str, stage: str) -> str:
     """The state bucket the foundation stack creates and owns: the configured name, else <project>-<stage>-state."""
     return configured or f"{project_name}-{stage}-state"
+
+
+# Where the visual Lambda stages a comic for Threads to fetch, under each edition's state prefix. Threads copies
+# the image when it publishes and the presigned URL lives 15 minutes, so the stack expires these objects.
+THREADS_IMAGE_PREFIX = "threads/"

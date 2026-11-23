@@ -387,6 +387,15 @@ def extract_urls(text: str) -> list[str]:
     return [_trim_url(url) for url in URL_RE.findall(strip_markup(text))]
 
 
+_RESULT_URL_LINE = re.compile(r"^\s*URL: (\S+)", re.MULTILINE)
+
+
+def result_urls(text: str) -> list[str]:
+    """The URLs a formatted search answer returned: each result's own "URL:" line only, never a URL quoted inside
+    a snippet's content."""
+    return _RESULT_URL_LINE.findall(text)
+
+
 def normalize_citation_url(url: str) -> str:
     """Loose identity for comparing a URL a report CITES against one a tool actually returned.
 

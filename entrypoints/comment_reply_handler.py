@@ -27,7 +27,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         logger.error("Comment-reply Lambda failed: %s", e, exc_info=True)
         raise
     if run.failed:
-        raise RuntimeError(f"Could not answer {len(run.failed)} comment(s): {', '.join(run.failed)}")
+        # Entries are comment ids, or post:<id> for a conversation that could not be read.
+        raise RuntimeError(f"Comment-reply run had {len(run.failed)} failure(s): {', '.join(run.failed)}")
     return {"statusCode": 200, "body": f"{len(run.replied)} replied, {len(run.declined)} declined"}
 
 

@@ -100,6 +100,15 @@ pipeline:
   # only 9 (production: 6 and 10 on 11-04/05). The investing edition keeps Sonnet (100+ over the bar).
   ranking_model: "anthropic.claude-opus-5-5"
   digest_model: "anthropic.claude-sonnet-5-5"
+  ranking_criteria: |-
+    1. Research Significance — papers, benchmarks and technical results with a real new contribution: what they show and what they change in what can be built.
+    2. Original Analysis and Insight — an expert's reasoned analysis, original data or reporting that explains why, over a restatement of an announcement. Thin content scores low.
+    3. Industry Consequence — what it changes in what the AI industry builds, buys, funds or regulates: labs, chips and datacenters, money, policy and markets.
+    4. Novelty — first reports and new releases over rehashes. A story already in a recent digest (listed below) is a rehash unless the item reports a real new development on it or an expert adds reasoning or data the digest did not carry; a summary or roundup of covered stories stays a rehash.
+    5. Source Authority — recognized researchers, labs and analysts get a small bonus.
+  ranking_audience_description: "a daily Korean AI digest for readers who follow the AI industry, its frontier labs, chips, money and markets, as well as the engineers who build with it"
+  sibling_editions: ["invest"]
+  trend_context_notes: false
   # Rewrite each closing remark from searched theory, research, past cases and data (docs/design.md)
   evidence_remarks: true
   # Code-owned label before each closing remark in the Threads post

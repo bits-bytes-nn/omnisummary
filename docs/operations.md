@@ -47,6 +47,9 @@ aws logs filter-log-events --profile research --region ap-northeast-2 --log-grou
 ## 알림을 받았을 때
 
 알림 메일 제목에는 프로젝트, 스테이지, 이벤트, 상태가 들어가고, 본문 끝의 correlation id로 그 실행의 로그를 찾을 수 있다.
+로그 그룹은 알림마다 다르다: Source Health, Ranking Health, Grounding은 다이제스트 Lambda(`omnisummary-dev-digest`,
+투자판 `omnisummary-dev-invest-digest`), Threads Delivery는 비주얼 Lambda(`omnisummary-dev-visual`, 투자판
+`omnisummary-dev-invest-visual`)다. 아래 예의 그룹 이름을 바꿔 쓴다.
 
 ```bash
 aws logs filter-log-events --profile research --region ap-northeast-2 --log-group-name /aws/lambda/omnisummary-dev-visual \
@@ -57,7 +60,8 @@ aws logs filter-log-events --profile research --region ap-northeast-2 --log-grou
 
 | 상태 | 뜻 | 할 일 |
 |------|----|-------|
-| `FAILED` | 소스가 아예 실패했다 | 보고서의 오류를 본다. 대개 일시적이라 다음 날 복구된다 |
+| `FAILED` | 소스가 아예 실패했다 | 보고서의 오류를 본다. 같은 소스가 이틀 연속 실패하면 일시적인 장애가 아니다(11월의 15건이 모두 그랬다: Reddit RSS 404, Tavily 한도). 원인이 바깥에 있으면 그것을 고치고, 소스가 사라졌으면 끌지 운영자가 정한다 |
+| `FAILED` + `pay-as-you-go limit` | Tavily 종량제 한도에 걸려 웹 검색, RSS 본문 보강, 근거 시사점 검색이 모두 멈췄다 | Tavily 대시보드에서 한도를 올린다. 로컬 평가와 운영이 같은 키와 한도를 쓰므로(운영자 결정, 11-24), 평가를 많이 돌린 날에는 다음 실행 전에 남은 한도를 본다. OpenAI 지출 한도도 같다 |
 | `STALE` | X나 YouTube 적재 파일이 12시간보다 오래됐다(그날 18:30 동기화, 투자판은 07:00 동기화가 실패했거나 돌지 않았다). 그 동기화의 일부 실패도 상세에 함께 적힌다 | Mac이 그 시각에 깨어 있었는지(잠든 사이의 cron은 실행되지 않는다), Docker Desktop과 `rsshub` 컨테이너가 떠 있었는지, cron 로그(`logs/sync.log`)를 본다. 하루 건너뛴 것은 다음 정상 동기화가 다시 읽어 와 복구된다(이틀 연속이면 앞날은 잃는다) |
 | `DEGRADED` | 입력의 일부만 응답했다 | 보고서의 상세를 본다. X라면 쿠키 만료가 흔한 원인이다. README의 'RSSHub로 X 읽기' 절에 따라 쿠키를 새로 받아 컨테이너를 다시 만들고, 아래 'X 쿠키를 갱신한 뒤'로 확인한다 |
 | `EMPTY` | 꼭 있어야 하는 소스가 0건이다 | 피드 주소나 API 키를 확인한다 |
@@ -86,6 +90,12 @@ tail -1 digest_state/last_park_sync_rsshub.txt   # 정상 동기화로 기록된
 랭킹 배치 하나가 재시도까지 실패해 후보 일부가 빠진 채 다이제스트가 나갔다는 뜻이다. 게시물 자체는 정상이다. 같은
 경고가 며칠 이어지면 Bedrock 스로틀이나 권한을 본다.
 
+
+### Grounding
+
+`the grounding check did not run; the digest shipped unchecked`: 근거 검사가 실패했거나 그 결과를 적용할 수 없어 그날
+다이제스트가 검사 없이 나갔다. 게시물은 정상이다. 다이제스트 로그에서 `Grounding check failed`의 원인(Bedrock 오류,
+파싱 실패)을 본다. 며칠 이어지면 모델이나 권한을 본다.
 ### Threads Delivery
 
 `Detail`에 할 일이 적혀 있고, 아무것도 게시되지 않은 날에는 날짜를 채운 실행 명령도 함께 온다. `Root post`는 첫 글 id, `Standalone posts`는 답글인데 별도 게시물로 올라간 글의 id다.
@@ -187,6 +197,15 @@ ECR은 이미지를 30개까지(`latest` 포함) 남긴다. 태그는 다시 빌
    뒤에 `DIGEST_IMAGE_REF=<digest> npx cdk deploy --all -a "uv run python scripts/deploy.py" --require-approval never`.
 4. main을 고칠 때까지 `release.sh`를 돌리지 않는다.
 
+옛 이미지에는 그때의 운영 설정(`config/*.yaml`, 게시 여부와 소스 목록)이 함께 들어 있다. 되돌리면 그 설정으로 돈다. 11-23
+이전 이미지는 스토리의 `evidence` 칸을 모르므로, 그 뒤에 저장된 날을 옛 이미지로 다시 게시하면 근거 문장 없이 "내 생각:
+{의견}"만 나간다.
+
+기반 이미지는 `Dockerfile`의 `BASE_IMAGE`와 `.github/workflows/ci.yml`의 `build-args`에 같은 digest로 고정돼 있다. Dependabot은
+ARG로 지정한 이미지를 갱신하지 않으므로, ECR 스캔(`aws ecr describe-image-scan-findings`)에 HIGH가 쌓이면
+`docker pull public.ecr.aws/docker/library/python:3.12-slim`으로 새 digest를 받아 두 곳을 함께 바꾼다. 그 사이의 OS 보안 패치는
+빌드 때 `apt-get upgrade`가 받는다.
+
 ## 자주 하는 점검
 
 | 무엇을 | 명령 |
@@ -196,8 +215,8 @@ ECR은 이미지를 30개까지(`latest` 포함) 남긴다. 태그는 다시 빌
 | 최근 정상 동기화 시각(시작, 업로드) | `cat digest_state/last_park_sync_rsshub.txt digest_state/last_park_sync_youtube.txt`(투자판은 `digest_state/invest/`) |
 | 동기화 로그 | `tail -50 logs/sync.log`(cron이 그 경로에 쓸 때) |
 | 추적 중인 트렌드 | `uv run python recall_cli.py trends` |
-| 지금 답할 댓글 초안(게시하지 않는다) | `uv run python scripts/sample_comment_replies.py` |
-| 저장된 날의 만화 계획(그리지 않는다) | `uv run python scripts/sample_visual_brief.py 2026-10-28 /tmp/vis` |
+| 지금 답할 댓글 초안(게시하지 않는다, Bedrock 비용이 든다) | `uv run python scripts/sample_comment_replies.py` |
+| 저장된 날의 만화 계획(그리지 않는다, Bedrock 비용이 든다) | `uv run python scripts/sample_visual_brief.py 2026-10-28 /tmp/vis` |
 | 최근 비용(일별, Lambda별 또는 단계별) | `uv run python scripts/cost_report.py --days 7 [--by stage]` |
 | 근거 시사점이 도는지(근거의 결과로 다시 쓴 수, 예산 초과, 실패, 시간 초과) | 아래 Logs Insights 쿼리(digest Lambda) |
 

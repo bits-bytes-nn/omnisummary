@@ -162,6 +162,12 @@ class TestThePublishPathStandsOnItsOwn:
         )
 
     @pytest.mark.asyncio
+    async def test_the_publisher_itself_posts_nothing_when_threads_posting_is_off(self):
+        publisher = self._publisher(enable_threads_post=False)
+        assert await publisher.publish(self._content(), today=date(2026, 6, 10)) is False
+        publisher.threads.post_thread.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_the_configured_label_opens_each_posted_remark(self):
         from domain.models import DigestContent, DigestItem
 

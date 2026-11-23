@@ -6,7 +6,6 @@ every outside call goes through the run's ResearchPorts."""
 from __future__ import annotations
 
 import asyncio
-import re
 from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -22,7 +21,7 @@ from pydantic import ValidationError
 from application.ports import LanguageModels, MemoryStore, ResearchSources, StateStore, ThreadsPublisher
 from application.prompts import ThreadFactCheckPrompt
 from domain.digest_snapshot import DigestSnapshot
-from domain.formatting import citation_key, extract_urls, host_matches, normalize_citation_url
+from domain.formatting import citation_key, extract_urls, host_matches, normalize_citation_url, result_urls
 from domain.models import FactIssue, ImageAsset, TrendMemory
 from domain.renderers import footer_overhead, render_threads_research, research_post_budget
 from shared import THREADS_MAX_POST_CHARS, TRENDS_KEY, Config, logger, parse_json_from_llm_output
@@ -251,10 +250,6 @@ async def deliver_research_report(report: str, *, channel: str, delivery: Delive
     return DeliveryOutcome.FAILED
 
 
-# The line every search and paper result carries for its own URL (adapters/research_backends.py).
-_RESULT_URL = re.compile(r"^\s*URL: (\S+)", re.MULTILINE)
-
-
 def record_seen_urls(text: str, *extra: str) -> str:
     """Remember every URL a tool actually surfaced, then return the text unchanged.
 
@@ -267,7 +262,7 @@ def record_seen_urls(text: str, *extra: str) -> str:
     # write (Reddit and X snippets are full of them): recording it let a planted URL pass the citation
     # and image checks.
     for block in text.split("\n\n"):
-        for url in _RESULT_URL.findall(block):
+        for url in result_urls(block):
             key = normalize_citation_url(url)
             delivery.seen_urls.add(key)
             delivery.source_texts.setdefault(key, block)
@@ -347,9 +342,12 @@ async def _market_blocks(symbols: str, limit: int, fetch, missing: str) -> str:
         block = await fetch(symbol)
         if block:
             # The data page is the source of these numbers, for the citation check and the fact check.
-            url = (_RESULT_URL.findall(block) or [""])[0]
+            url = (result_urls(block) or [""])[0]
             record_seen_urls("", url)
-            current_delivery_context().source_texts[normalize_citation_url(url)] = block
+            # Appended, not replaced: the same quote page fetched for two periods backs figures from both.
+            texts = current_delivery_context().source_texts
+            key = normalize_citation_url(url)
+            texts[key] = f"{texts[key]}\n\n{block}" if texts.get(key) else block
         blocks.append(block or f"- {symbol}: {missing} (check the ticker: 005930.KS, AAPL, ^GSPC, BTC-USD).")
     if skipped := tickers[limit:]:
         blocks.append(

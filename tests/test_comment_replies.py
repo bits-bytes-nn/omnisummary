@@ -539,3 +539,13 @@ def test_a_comment_needs_its_draft_budget_plus_the_reply_publish_reserve(tmp_pat
 
     responder = _responder(tmp_path, [])
     assert responder.seconds_per_comment == _DRAFT_BUDGET_SEC + THREADS_PUBLISH_RESERVE_SEC
+
+
+async def test_one_unreadable_conversation_does_not_cost_the_other_posts(tmp_path):
+    second = POST.model_copy(update={"id": "root2"})
+    responder = _responder(tmp_path, [CommentReply(reply=True, text="답글이에요")])
+    session = FakeComments([POST, second])
+    session.fetch_conversation = AsyncMock(side_effect=[RuntimeError("Threads 500"), [_c("c1", "root2")]])
+    run, publish = await _run(responder, session)
+    publish.assert_awaited_once_with("답글이에요", "c1")
+    assert run.failed == [f"post:{POST.id}"]

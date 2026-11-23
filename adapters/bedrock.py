@@ -4,10 +4,12 @@ and application inference-profile resolution, and CountTokens."""
 import hashlib
 import os
 import re
+import time
 from typing import Any, ClassVar, Literal
 
 import boto3
 from botocore.config import Config as BotoConfig
+from botocore.exceptions import ClientError
 from langchain_aws import ChatBedrockConverse
 from langchain_core.callbacks import BaseCallbackHandler
 from pydantic import BaseModel
@@ -297,6 +299,9 @@ class BedrockCrossRegionModelHelper:
 _TRUNCATE_PASSES = 4
 
 
+_COUNT_TOKENS_BACKOFF_SEC = 2.0
+
+
 class BedrockLanguageModelFactory:
     DEFAULT_TEMPERATURE: ClassVar[float] = 0.0
     BOTO_READ_TIMEOUT: ClassVar[int] = 300
@@ -350,11 +355,20 @@ class BedrockLanguageModelFactory:
         cached = cache.get(key)
         if cached is not None:
             return cached
+        request = {
+            "modelId": TOKEN_COUNT_MODEL.value,
+            "input": {"converse": {"messages": [{"role": "user", "content": [{"text": text}]}]}},
+        }
         try:
-            resp = self._client.count_tokens(
-                modelId=TOKEN_COUNT_MODEL.value,
-                input={"converse": {"messages": [{"role": "user", "content": [{"text": text}]}]}},
-            )
+            try:
+                resp = self._client.count_tokens(**request)
+            except ClientError as e:
+                # One throttle used to switch the whole run to the character count, which cuts English to
+                # about 40% of its token budget (11-18). A throttle gets one backoff before that.
+                if e.response.get("Error", {}).get("Code") != "ThrottlingException":
+                    raise
+                time.sleep(_COUNT_TOKENS_BACKOFF_SEC)
+                resp = self._client.count_tokens(**request)
             result = int(resp["inputTokens"])
         except Exception as e:
             logger.warning("Bedrock count_tokens failed (%s); counting characters for the rest of the run", e)
@@ -396,7 +410,7 @@ class BedrockLanguageModelFactory:
                     hi = mid - 1
         space = text.rfind(" ", 0, cut)
         truncated = text[: space if space > cut // 2 else cut].rstrip()
-        logger.warning("Text truncated to <=%d tokens (%d chars)", max_tokens, len(truncated))
+        logger.info("Text truncated to <=%d tokens (%d chars)", max_tokens, len(truncated))
         return truncated
 
     def get_model(self, model_id: LanguageModelId, *, stage: str, **kwargs: Any) -> ChatBedrockConverse:
