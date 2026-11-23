@@ -422,7 +422,8 @@ def parked_items_in_window(
     ]
     dropped = len(items) - len(kept)
     if dropped:
-        logger.warning(
+        # Routine: the sync parks a day beyond the window on purpose, so every run drops some.
+        logger.info(
             "%s: %d of %d parked item(s) fall outside the collection window (%s .. %s) and were skipped",
             description,
             dropped,

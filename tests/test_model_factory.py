@@ -611,3 +611,17 @@ def test_a_local_run_bills_to_its_own_application_profiles(monkeypatch, env, exp
     with patch.object(H, "application_profile_name", side_effect=lambda m, p, s: seen.append(s) or "x"):
         H._application_profile_arn(session, model, "us-west-2", "fallback", AWSConfig())
     assert seen == [expected_stage]
+
+
+def test_a_count_tokens_throttle_is_retried_once_before_counting_characters(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    import adapters.bedrock as bedrock
+
+    monkeypatch.setattr(bedrock.time, "sleep", lambda _s: None)
+    f = _factory()
+    throttle = ClientError({"Error": {"Code": "ThrottlingException"}}, "CountTokens")
+    f._client = MagicMock()
+    f._client.count_tokens.side_effect = [throttle, {"inputTokens": 7}]
+    assert f.count_tokens("hello") == 7
+    assert not f.__dict__.get("_count_tokens_degraded")

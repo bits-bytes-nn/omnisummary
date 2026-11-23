@@ -13,13 +13,22 @@ from domain.formatting import (
     countdown_intro,
     format_collected_item,
     format_recent_titles,
+    normalize_citation_url,
     place_countdown_intro,
+    result_urls,
     source_tag_and_metrics,
     split_sentences,
     threads_item_overhead_chars,
     threads_meta_line,
 )
-from domain.models import CollectedItem, DigestContent, DigestItem, DigestResult, RankedItem
+from domain.models import (
+    CollectedItem,
+    DigestContent,
+    DigestItem,
+    DigestResult,
+    EvidenceRemarks,
+    RankedItem,
+)
 from domain.renderers import footer_overhead
 from shared import THREADS_MAX_POST_CHARS, logger, parse_json_from_llm_output, retry_async
 from shared.config import PipelineConfig
@@ -29,7 +38,7 @@ _EVIDENCE_TIMEOUT_SEC = 120
 
 def _evidence_block(text: str) -> str:
     return (
-        f"\nBACKGROUND EVIDENCE (search results, not the story; it can support only the IMPLICATION):\n{text}"
+        f"\nBACKGROUND EVIDENCE (search results, not the story; it can support only the EVIDENCE and IMPLICATION):\n{text}"
         if text
         else ""
     )
@@ -149,6 +158,7 @@ class DigestGenerator:
         )
 
         evidence: dict[str, str] = {}
+        editor_content = content.model_copy(deep=True)
         if research is not None:
             try:
                 # Bounded: the step is on the critical path of a Lambda with no retry, and a run that times out
@@ -183,6 +193,7 @@ class DigestGenerator:
             generated_at=datetime.now(UTC),
             grounding_skipped=grounding_skipped,
             evidence=evidence,
+            editor_content=editor_content,
         )
 
     def _prose_budget(self, meta: str, url: str) -> int:
@@ -351,6 +362,7 @@ class DigestGenerator:
         """Each story's closing remark rewritten from its background evidence. A remark over the story's prose
         budget, or an answer that cannot be read, keeps the editor's remark."""
         limits: dict[int, int] = {}
+        found_for: dict[int, str] = {}
         blocks: list[str] = []
         for i, (item, src) in enumerate(zip(content.items, sources, strict=True)):
             found = evidence.get(normalize_url(src.url), "")
@@ -358,6 +370,7 @@ class DigestGenerator:
             if not found or room <= 0:
                 continue
             limits[i + 1] = room
+            found_for[i + 1] = found
             blocks.append(
                 f"=== Story {i + 1} ===\nTITLE: {item.title}\nBODY: {item.body}\nREMARK: {item.implication}\n"
                 f"CHARACTER LIMIT: {limits[i + 1]}{_evidence_block(found)}"
@@ -365,73 +378,62 @@ class DigestGenerator:
         if not blocks:
             return set()
         try:
-            chain = (
-                EvidenceImplicationPrompt.get_prompt()
-                | self.models.get_model(self.config.digest_model, stage="evidence-implication")
-                | StrOutputParser()
+            # json_schema constrained output: free-form JSON broke on 1 of 24 eval runs (an unescaped quote).
+            chain = EvidenceImplicationPrompt.get_prompt() | self.models.get_model(
+                self.config.digest_model, stage="evidence-implication"
+            ).with_structured_output(EvidenceRemarks, method="json_schema")
+            answer = await chain.ainvoke(
+                {
+                    "domain": self.config.domain,
+                    "voice_guidance": "\n".join(
+                        filter(None, (self.config.digest_voice_guidance, self.config.domain_rules.strip()))
+                    ),
+                    "language_rules": self.config.digest_language_rules,
+                    "stories": "\n\n".join(blocks),
+                    # The label's own text is not quoted: given it, the model wrote it into 15 of 60 remarks.
+                    "label_clause": (
+                        " The post itself marks the view as yours, so write no label, prefix or first-person"
+                        " tag in it: state the view itself."
+                        if self.config.implication_label.strip()
+                        else ""
+                    ),
+                }
             )
-            data = parse_json_from_llm_output(
-                await chain.ainvoke(
-                    {
-                        "domain": self.config.domain,
-                        "voice_guidance": "\n".join(
-                            filter(None, (self.config.digest_voice_guidance, self.config.domain_rules.strip()))
-                        ),
-                        "language_rules": self.config.digest_language_rules,
-                        "stories": "\n\n".join(blocks),
-                        # The label's own text is not quoted: given it, the model wrote it into 15 of 60 remarks.
-                        "label_clause": (
-                            " The post itself marks the remark as your view, so write no label, prefix or"
-                            " first-person tag: state the view itself."
-                            if self.config.implication_label.strip()
-                            else ""
-                        ),
-                    }
-                )
-            )
-            entries = data.get("remarks", []) if isinstance(data, dict) else []
-            if not isinstance(entries, list):
-                entries = []
+            if not isinstance(answer, EvidenceRemarks):
+                raise TypeError(f"Expected EvidenceRemarks, got {type(answer).__name__}")
+            entries = answer.remarks
         except Exception:
             logger.warning("Evidence implications failed; keeping the editor's remarks", exc_info=True)
             return set()
-        remarks: dict[int, str] = {}
-        argued: set[int] = set()
-        for entry in entries:
-            try:
-                remark = entry["remark"]
-                if isinstance(remark, str):
-                    index = int(entry["index"])
-                    remarks[index] = remark.strip()
-                    if str(entry.get("finding") or "").strip():
-                        argued.add(index)
-            except (KeyError, TypeError, ValueError, OverflowError, AttributeError):
-                continue
         changed: set[int] = set()
-        over_budget = 0
+        over_budget = unsourced = 0
         label = self.config.implication_label.strip()
-        for index, remark in remarks.items():
-            # A remark that stands on no finding is the editor's to keep (the prompt asks for it unchanged).
-            if index not in limits or index not in argued or not remark:
+        for entry in entries:
+            index = entry.index
+            url, cited, view = entry.evidence_url.strip(), entry.evidence.strip(), entry.view.strip()
+            if index not in limits or not (url and cited and view):
+                continue  # no finding fits: the editor's remark stands (the prompt asks for empty fields)
+            if label and view.startswith(label):
+                view = view[len(label) :].strip()
+            # The cited page must be one the search returned for THIS story: a URL the model recalled or
+            # invented cannot carry a finding into the post. Containment, not a reading of the Korean.
+            returned = {normalize_citation_url(u): u for u in result_urls(found_for[index])}
+            if (source := returned.get(normalize_citation_url(url))) is None:
+                unsourced += 1
                 continue
-            if label and remark.startswith(label):
-                remark = remark[len(label) :].strip()
-            if not remark:
-                continue
-            item = content.items[index - 1]
-            if len(remark) > limits[index]:
-                logger.info(
-                    "Evidence remark for story %d over its budget (%d > %d); kept", index, len(remark), limits[index]
-                )
+            if not view or len(cited) + 1 + len(view) > limits[index]:
                 over_budget += 1
                 continue
-            if remark != item.implication:
-                item.implication = remark
-                changed.add(index - 1)
-        # Only a remark that stands on a finding is applied. WARNING at none: the editor still left each post the
-        # remark's room for evidence that never came.
+            item = content.items[index - 1]
+            item.evidence, item.evidence_url, item.implication = cited, source, view
+            changed.add(index - 1)
+        # WARNING at none: the editor still left each post the remark's room for evidence that never came.
         (logger.info if changed else logger.warning)(
-            "Evidence rewrote %d of %d remark(s) from a finding, %d over budget", len(changed), len(limits), over_budget
+            "Evidence rewrote %d of %d remark(s) from a finding, %d over budget, %d citing no search result",
+            len(changed),
+            len(limits),
+            over_budget,
+            unsourced,
         )
         return changed
 
@@ -580,8 +582,9 @@ def render_digest_text(content: DigestContent) -> str:
             parts.append(item.url)
         if item.body:
             parts.append(item.body.strip())
-        if item.implication:
-            parts.append(item.implication.strip())
+        remark = " ".join(p for p in (item.evidence.strip(), item.implication.strip()) if p)
+        if remark:
+            parts.append(remark)
         parts.append("")
     return "\n".join(parts).strip() + "\n"
 
@@ -593,6 +596,8 @@ def _grounding_payload(content: DigestContent) -> str:
     for i, item in enumerate(content.items):
         lines.append(f"ITEM {i} TITLE: {item.title}")
         lines.append(f"ITEM {i} BODY: {item.body}")
+        if item.evidence:
+            lines.append(f"ITEM {i} EVIDENCE: {item.evidence}")
         if item.implication:
             lines.append(f"ITEM {i} IMPLICATION: {item.implication}")
     return "\n".join(lines)
@@ -628,6 +633,7 @@ def _apply_grounding_payload(content: DigestContent, corrected: str) -> DigestCo
     for i, item in enumerate(updated.items):
         item.title = text.get(("TITLE", i)) or item.title
         item.body = text.get(("BODY", i)) or item.body
+        item.evidence = text.get(("EVIDENCE", i)) or item.evidence
         item.implication = text.get(("IMPLICATION", i)) or item.implication
     return updated
 
@@ -643,7 +649,7 @@ def _match_grounding_marker(line: str) -> tuple[tuple[str, int | None] | None, s
                 len(tokens) == 3
                 and tokens[0] == "ITEM"
                 and tokens[1].isdigit()
-                and tokens[2] in ("TITLE", "BODY", "IMPLICATION")
+                and tokens[2] in ("TITLE", "BODY", "EVIDENCE", "IMPLICATION")
             ):
                 return (tokens[2], int(tokens[1])), tokens[2], rest.strip()
     return None, "", ""

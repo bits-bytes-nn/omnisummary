@@ -220,7 +220,17 @@ class WebSearchCollector(BaseCollector):
             async with semaphore:
                 response = await _search_with_retries()
         record_tavily_usage("web-search", "search", response)
-        return self._parse_results(response, trend_name=trend_name)
+        items = self._parse_results(response, trend_name=trend_name)
+        # Per query, so a group that returns nothing useful shows up (investing's IB and Korea groups did for weeks
+        # with no trace): what Tavily returned and what survived the window and parsing.
+        logger.info(
+            "Trend '%s' query returned %d result(s), %d kept: '%s'",
+            trend_name,
+            len(response.get("results") or []),
+            len(items),
+            query,
+        )
+        return items
 
     def _date_only_tz(self) -> tzinfo:
         reference = self.reference_time

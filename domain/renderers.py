@@ -135,7 +135,9 @@ def render_threads_posts(
         label = implication_label.strip()
         if label and remark.startswith(label):
             remark = remark[len(label) :].strip()
-        implication = f"{implication_label}{remark}" if remark else ""
+        # The label marks only the narrator's view; the outside finding it argues from comes before it, unlabelled.
+        view = f"{implication_label}{remark}" if remark else ""
+        implication = " ".join(p for p in (item.evidence.strip(), view) if p)
         post = _fit_one_post(item.title, meta, item.body, implication, item.url if item.show_link else "")
         replies.append(post)
         # _fit_one_post ships the prose as written whenever it fits, so a missing piece was trimmed.

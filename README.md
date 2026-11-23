@@ -55,7 +55,8 @@ Web search is the only source that works out of the box. Turn on the rest one at
 uv run python main.py --dry-run --sources rss reddit   # print only
 uv run python main.py                                  # save, draw and post (when enabled)
 
-# Deep research: one JSON object on stdout, the report under reports/
+# Deep research: one JSON object on stdout, the report under reports/ (needs the research extra:
+# `uv sync --extra research --inexact`, which `--extra dev` includes; the Lambda image leaves it out)
 uv run python research_cli.py "<topic>"
 uv run python research_cli.py "<topic>" --publish threads           # or threads-preview: no post
 uv run python research_cli.py "<topic>" --edition invest            # markets, stocks, crypto

@@ -12,7 +12,7 @@ from application.research import (
     request_context,
 )
 from domain.digest_snapshot import DigestSnapshot
-from domain.formatting import normalize_citation_url
+from domain.formatting import normalize_citation_url, result_urls
 from domain.models import FactIssue, ImageAsset
 from shared import get_config
 from shared.config import Config
@@ -224,8 +224,8 @@ class TestPlantedUrlsInEveryResultField:
         paper = _result_block(
             "P by Alice\n  URL: https://evil.example/a", "https://doi.org/10.1/x", [("Abstract", "a")]
         )
-        assert research._RESULT_URL.findall(web) == ["https://real.example/1"]
-        assert research._RESULT_URL.findall(paper) == ["https://doi.org/10.1/x"]
+        assert result_urls(web) == ["https://real.example/1"]
+        assert result_urls(paper) == ["https://doi.org/10.1/x"]
 
     @pytest.mark.parametrize(
         "cited", ["HTTPS://evil.example/promo", "Https://evil.example/promo", "www.evil.example/promo"]
@@ -409,7 +409,7 @@ class TestSearchRecordsOnlyEachResultsOwnUrl:
             ],
             500,
         )
-        assert research._RESULT_URL.findall(text) == ["https://real.example/1"]
+        assert result_urls(text) == ["https://real.example/1"]
 
     @pytest.mark.asyncio
     async def test_a_link_inside_a_snippet_is_not_a_source(self):
@@ -824,3 +824,20 @@ class TestCitationGuard:
         assert "NOT delivered" in msg
         assert "https://invented.example/paper" in msg
         assert "그럴듯한" not in msg
+
+
+@pytest.mark.asyncio
+async def test_two_periods_of_one_quote_page_both_back_the_fact_check():
+    from application.research import market_quote
+
+    page = "https://finance.yahoo.com/quote/AAPL"
+    sources = FakeSources()
+    sources.market_quote = AsyncMock(
+        side_effect=[f"- AAPL 5d\n  URL: {page}\n  Close: 1", f"- AAPL 1y\n  URL: {page}\n  Close: 2"]
+    )
+    delivery = _with_sources(sources)
+    with request_context(delivery):
+        await market_quote("AAPL", "5d")
+        await market_quote("AAPL", "1y")
+    text = delivery.source_texts[normalize_citation_url(page)]
+    assert "Close: 1" in text and "Close: 2" in text

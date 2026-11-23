@@ -55,7 +55,7 @@ uv run python main.py --dry-run --sources web_search   # 다이제스트를 출�
 uv run python main.py --dry-run --sources rss reddit   # 출력만
 uv run python main.py                                  # 저장, 만화, 게시(켜져 있을 때)
 
-# 딥 리서치: stdout에 JSON 한 개, 리포트는 reports/ 아래
+# 딥 리서치: stdout에 JSON 한 개, 리포트는 reports/ 아래 (research extra 필요: `uv sync --extra research --inexact`, `--extra dev`에 포함, Lambda 이미지에는 없다)
 uv run python research_cli.py "<주제>"
 uv run python research_cli.py "<주제>" --publish threads           # threads-preview는 게시하지 않는다
 uv run python research_cli.py "<주제>" --edition invest            # 시장, 주식, 가상화폐

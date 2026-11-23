@@ -202,9 +202,17 @@ class CommentResponder:
                 # hourly run with the whole post history.
                 if post.created_at is not None and post.created_at < since:
                     continue
+                try:
+                    conversation = await threads.fetch_conversation(post.id)
+                except Exception as e:
+                    # One post's read failing (a Threads 5xx) must not cost every other post's answers this hour;
+                    # it still counts as a failure, so the run ends failed and the alarm fires.
+                    logger.warning("Could not read the conversation of post %s: %s", post.id, e)
+                    run.failed.append(f"post:{post.id}")
+                    continue
                 pending += pending_comments(
                     post,
-                    await threads.fetch_conversation(post.id),
+                    conversation,
                     handled=handled,
                     since=since,
                     max_per_commenter=self.config.comment_reply_max_per_commenter,

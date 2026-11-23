@@ -63,7 +63,14 @@ def _digest(config: Config, day: date) -> dict[str, Any]:
         "found": True,
         "lead": content.lead,
         "stories": [
-            {"title": it.title, "url": it.url if it.show_link else "", "body": it.body, "implication": it.implication}
+            {
+                "title": it.title,
+                "url": it.url if it.show_link else "",
+                "body": it.body,
+                "implication": it.implication,
+                "evidence": it.evidence,
+                "evidence_url": it.evidence_url,
+            }
             for it in content.items
         ],
     }

@@ -217,11 +217,52 @@ async def _digest(label: str, dates: list[str], with_evidence: bool | None = Non
         out = {
             "case": day,
             "context": f"CANDIDATES:\n{sources}\n\nRECENT LEADS ON THIS THREADS ACCOUNT:\n" + "\n".join(account),
-            "artifact": result.digest_text,
+            # What readers see: the rendered Threads root and replies (the label, the root's story list, the
+            # 500-character fit), not the plain digest text a judge once read without them.
+            "artifact": _threads_view(result.content, config) if result.content else result.digest_text,
             "evidence": result.evidence,
+            # For `remarks`: the editor's draft before the evidence step and the URLs of the candidates it came from.
+            "editor_content": result.editor_content.model_dump(mode="json") if result.editor_content else None,
         }
         (_case_dir("digest", label) / f"{day}.json").write_text(json.dumps(out, ensure_ascii=False, indent=1))
         logger.info("digest %s %s: %d stories", label, day, len(result.content.items) if result.content else 0)
+
+
+def _threads_view(content, config: Config) -> str:
+    from domain.renderers import render_threads_posts
+
+    root, replies = render_threads_posts(content, config.pipeline.threads_footer, config.pipeline.implication_label)
+    return "\n\n".join([f"ROOT POST:\n{root}", *(f"REPLY {i}:\n{r}" for i, r in enumerate(replies, 1))])
+
+
+async def _remarks(source: str, label: str) -> None:
+    """Replay ONLY the evidence step on another arm's stored editor draft and evidence: the story choice, lead,
+    bodies and search results stay fixed, so a judge compares remarks rather than two whole regenerated digests."""
+    from application.digest_generator import DigestGenerator
+    from application.digest_pipeline import POOLS_PREFIX
+    from domain.aggregator import normalize_url
+    from domain.models import DigestContent, RankedItem
+
+    config = Config.load()
+    models = bootstrap.language_models(config)
+    store = bootstrap.state_store(config)
+    for path in sorted(_case_dir("digest", source).glob("*.json")):
+        case = json.loads(path.read_text())
+        if not case.get("editor_content"):
+            logger.warning("%s has no editor draft (generated before `remarks` existed); skipped", path.name)
+            continue
+        content = DigestContent.model_validate(case["editor_content"])
+        stored = store.read_json(f"{POOLS_PREFIX}{case['case']}.json") or []
+        pool = {normalize_url(r.item.url): r.item for r in (RankedItem.model_validate(x) for x in stored)}
+        if any(normalize_url(item.url) not in pool for item in content.items):
+            logger.warning("%s: a drafted story is not in the stored pool; skipped", path.name)
+            continue
+        sources = [pool[normalize_url(item.url)] for item in content.items]
+        generator = DigestGenerator(config.pipeline, models)
+        await generator._argue_from_evidence(content, sources, case.get("evidence") or {})
+        out = {**case, "artifact": _threads_view(content, config)}
+        (_case_dir("digest", label) / path.name).write_text(json.dumps(out, ensure_ascii=False, indent=1))
+        logger.info("remarks %s from %s %s", label, source, case["case"])
 
 
 async def _visual(label: str, dates: list[str]) -> None:
@@ -366,6 +407,9 @@ def main() -> None:
         default=None,
         help="force the evidence remarks on or off (default: the config's pipeline.evidence_remarks)",
     )
+    remarks = sub.add_parser("remarks", help="replay only the evidence step on another arm's stored drafts")
+    remarks.add_argument("source")
+    remarks.add_argument("label")
     visual = sub.add_parser("visual")
     visual.add_argument("label")
     visual.add_argument("dates", nargs="+")
@@ -379,6 +423,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.cmd == "digest":
         asyncio.run(_digest(args.label, args.dates, args.evidence))
+    elif args.cmd == "remarks":
+        asyncio.run(_remarks(args.source, args.label))
     elif args.cmd == "visual":
         asyncio.run(_visual(args.label, args.dates))
     elif args.cmd == "research":

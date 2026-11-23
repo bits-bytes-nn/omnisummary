@@ -1518,7 +1518,6 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "requests" },
-    { name = "strands-agents" },
     { name = "tavily-python" },
     { name = "youtube-transcript-api" },
 ]
@@ -1536,7 +1535,11 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "strands-agents" },
     { name = "types-pyyaml" },
+]
+research = [
+    { name = "strands-agents" },
 ]
 
 [package.metadata]
@@ -1553,6 +1556,7 @@ requires-dist = [
     { name = "langchain-aws", specifier = ">=1.7.2,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.4.7,<2.0.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.7.0" },
+    { name = "omnisummary", extras = ["research"], marker = "extra == 'dev'" },
     { name = "openai", specifier = ">=1.55.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.0" },
     { name = "pydantic", specifier = ">=2.12.0" },
@@ -1564,12 +1568,12 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "requests", specifier = ">=2.32.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.9" },
-    { name = "strands-agents", specifier = ">=1.52.0" },
+    { name = "strands-agents", marker = "extra == 'research'", specifier = ">=1.52.0" },
     { name = "tavily-python", specifier = ">=0.5.0" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "youtube-transcript-api", specifier = ">=1.2.2" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["research", "dev"]
 
 [[package]]
 name = "openai"

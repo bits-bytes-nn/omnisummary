@@ -632,3 +632,14 @@ def test_a_remark_that_already_carries_the_label_is_not_labelled_twice():
     )
     _, replies = render_threads_posts(content, implication_label="내 생각: ")
     assert replies[0].count("내 생각:") == 1 and "내 생각: 판단." in replies[0]
+
+
+def test_the_label_marks_only_the_view_not_the_cited_finding():
+    from domain.models import DigestContent, DigestItem
+    from domain.renderers import render_threads_posts
+
+    item = DigestItem(
+        title="T", url="https://e.com/a", body="본문.", evidence="리터는 19%를 셌다.", implication="평범한 출발이다."
+    )
+    _, replies = render_threads_posts(DigestContent(lead="리드.", items=[item]), implication_label="내 생각: ")
+    assert "\n\n리터는 19%를 셌다. 내 생각: 평범한 출발이다.\n\n" in replies[0]

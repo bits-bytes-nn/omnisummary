@@ -172,9 +172,9 @@ jobs:
       # happily. Loading the config here fails the BUILD instead, on a missing COPY, a config the
       # image cannot validate, or a Config.load() that has nothing to fall back to.
       #
-      # trend_searches, NOT rss.feeds: the template deliberately ships no live source lists (a
-      # template must not start collecting from someone else's feeds), but it does carry the trend
-      # searches, and their code default is empty. So this is non-vacuous on a clean checkout and
+      # trend_searches, NOT rss.feeds: the AI template ships no live source lists (the investing
+      # template does carry real feeds), but both carry the trend searches, and their code default
+      # is empty. So this is non-vacuous on a clean checkout and
       # still fails the moment the image resolves to bare defaults. The remaining gap — proving the
       # image carries the OPERATOR's feeds — cannot be closed while config.yaml is untracked.
       - name: Config-check digest image
@@ -217,7 +217,7 @@ jobs:
       # --no-install-project deliberately leaves the local package out: pip-audit reports an
       # editable distribution as unauditable, and --strict turns that into a failure.
       - name: Install the locked dependency set
-        run: uv sync --frozen --no-dev --no-install-project
+        run: uv sync --frozen --no-dev --no-install-project --extra research
       # Audit the INSTALLED venv by path: pip-audit's `-r` mode builds its own venv via `ensurepip`,
       # which uv-managed Pythons do not ship. The path is derived and asserted non-empty, because
       # pip-audit against a nonexistent --path reports "No known vulnerabilities found" and exits 0.

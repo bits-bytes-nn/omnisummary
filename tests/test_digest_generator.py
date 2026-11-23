@@ -918,29 +918,53 @@ class TestEvidenceRemarks:
 
     @staticmethod
     def _gen(answer: str) -> DigestGenerator:
+        from tests.fakes import StructuredLambda
+
         factory = MagicMock()
-        factory.get_model.return_value = RunnableLambda(lambda _: AIMessage(content=answer))
+        factory.get_model.return_value = StructuredLambda(RunnableLambda(lambda _: AIMessage(content=answer)))
         return DigestGenerator(PipelineConfig(), factory)
 
     async def test_rewrites_a_remark_that_fits(self):
-        gen = self._gen('{"remarks": [{"index": 1, "finding": "f", "remark": "새 시사점."}]}')
+        gen = self._gen(
+            '{"remarks": [{"index": 1, "evidence_url": "https://e.com/r", "evidence": "R가 X를 밝혔다.", "view": "새 시사점."}]}'
+        )
         content = _content()
-        await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "Theory X."})
+        await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "- R\n  URL: https://e.com/r"})
         assert content.items[0].implication == "새 시사점."
 
     async def test_keeps_a_remark_over_its_budget(self):
-        gen = self._gen(json.dumps({"remarks": [{"index": 1, "finding": "f", "remark": "가" * 600}]}))
+        gen = self._gen(
+            json.dumps(
+                {
+                    "remarks": [
+                        {
+                            "index": 1,
+                            "evidence_url": "https://e.com/r",
+                            "evidence": "R가 X를 밝혔다.",
+                            "view": "가" * 600,
+                        }
+                    ]
+                }
+            )
+        )
         content = _content()
-        await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "Theory X."})
+        await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "- R\n  URL: https://e.com/r"})
         assert content.items[0].implication == "시사점."
 
     async def test_keeps_remarks_on_an_unreadable_answer(self):
         content = _content()
-        assert await self._gen("not json")._argue_from_evidence(content, _sources(), {normalize_url("u"): "x"}) == set()
+        assert (
+            await self._gen("not json")._argue_from_evidence(
+                content, _sources(), {normalize_url("u"): "- R\n  URL: https://e.com/r"}
+            )
+            == set()
+        )
         assert content.items[0].implication == "시사점."
 
     async def test_a_story_without_evidence_is_not_sent(self):
-        gen = self._gen('{"remarks": [{"index": 1, "finding": "f", "remark": "새 시사점."}]}')
+        gen = self._gen(
+            '{"remarks": [{"index": 1, "evidence_url": "https://e.com/r", "evidence": "R가 X를 밝혔다.", "view": "새 시사점."}]}'
+        )
         content = _content()
         await gen._argue_from_evidence(content, _sources(), {})
         assert content.items[0].implication == "시사점."
@@ -1001,19 +1025,25 @@ class TestEvidenceRemarkEdges:
         return content, sources
 
     async def test_numbering_follows_the_story_with_partial_evidence(self):
-        answer = '{"remarks": [{"index": 1, "finding": "f", "remark": "틀린 자리."}, {"index": 2, "finding": "f", "remark": "B 새 문장."}]}'
+        answer = '{"remarks": [{"index": 1, "evidence_url": "https://e.com/r", "evidence": "R가 X를 밝혔다.", "view": "틀린 자리."}, {"index": 2, "evidence_url": "https://e.com/r", "evidence": "R가 X를 밝혔다.", "view": "B 새 문장."}]}'
         content, sources = self._two()
         out = content
-        await TestEvidenceRemarks._gen(answer)._argue_from_evidence(content, sources, {normalize_url("ub"): "x"})
+        await TestEvidenceRemarks._gen(answer)._argue_from_evidence(
+            content, sources, {normalize_url("ub"): "- R\n  URL: https://e.com/r"}
+        )
         assert [i.implication for i in out.items] == ["원래 A.", "B 새 문장."]
 
     async def test_a_bad_entry_keeps_the_good_ones(self):
         answer = (
-            '{"remarks": [{"index": "two", "remark": "x"}, {"index": 1, "remark": null}, {"index": 9, "remark": "y"},'
-            ' {"index": 2, "finding": "f", "remark": "B 새 문장."}]}'
+            '{"remarks": [{"index": 1, "evidence_url": "", "evidence": "", "view": ""},'
+            ' {"index": 9, "evidence_url": "https://e.com/r", "evidence": "R.", "view": "y"},'
+            ' {"index": 2, "evidence_url": "https://e.com/r", "evidence": "R가 X를 밝혔다.", "view": "B 새 문장."}]}'
         )
         content, sources = self._two()
-        evidence = {normalize_url("ua"): "x", normalize_url("ub"): "x"}
+        evidence = {
+            normalize_url("ua"): "- R\n  URL: https://e.com/r",
+            normalize_url("ub"): "- R\n  URL: https://e.com/r",
+        }
         out = content
         await TestEvidenceRemarks._gen(answer)._argue_from_evidence(content, sources, evidence)
         assert [i.implication for i in out.items] == ["원래 A.", "B 새 문장."]
@@ -1076,13 +1106,15 @@ async def test_a_timeout_during_the_rewrite_call_changes_no_remark():
         return AIMessage(content='{"remarks": [{"index": 1, "remark": "새 문장."}]}')
 
     factory = MagicMock()
-    factory.get_model.return_value = Runnable(lambda _: AIMessage(content="{}"), afunc=slow_answer)
+    from tests.fakes import StructuredLambda
+
+    factory.get_model.return_value = StructuredLambda(Runnable(lambda _: AIMessage(content="{}"), afunc=slow_answer))
     gen = DigestGenerator(PipelineConfig(), factory)
     content = _content()
     with pytest.raises(TimeoutError):
         async with asyncio.timeout(0.01):
-            await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "Theory X."})
-    assert content.items[0].implication == "시사점."
+            await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "- R\n  URL: https://e.com/r"})
+    assert content.items[0].implication == "시사점." and content.items[0].evidence == ""
 
 
 async def test_a_model_client_failure_in_the_evidence_step_never_fails_the_digest():
@@ -1095,24 +1127,35 @@ async def test_a_model_client_failure_in_the_evidence_step_never_fails_the_diges
     assert await gather_evidence(PipelineConfig(), factory, FakeSources(), _sources()) == {}
     gen = DigestGenerator.__new__(DigestGenerator)
     gen.config, gen.models = PipelineConfig(), factory
-    assert await gen._argue_from_evidence(_content(), _sources(), {normalize_url("u"): "x"}) == set()
+    assert (
+        await gen._argue_from_evidence(_content(), _sources(), {normalize_url("u"): "- R\n  URL: https://e.com/r"})
+        == set()
+    )
 
 
 class TestEvidenceRemarkGuards:
     async def test_a_remark_with_no_finding_stays_the_editors(self):
-        gen = TestEvidenceRemarks._gen('{"remarks": [{"index": 1, "finding": "", "remark": "새 문장."}]}')
+        gen = TestEvidenceRemarks._gen(
+            '{"remarks": [{"index": 1, "evidence_url": "", "evidence": "", "view": "새 문장."}]}'
+        )
         content = _content()
-        await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "x"})
+        await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "- R\n  URL: https://e.com/r"})
         assert content.items[0].implication == "시사점."
 
     async def test_a_copied_label_is_not_stored(self):
         factory = MagicMock()
-        factory.get_model.return_value = RunnableLambda(
-            lambda _: AIMessage(content='{"remarks": [{"index": 1, "finding": "f", "remark": "내 생각: 새 문장."}]}')
+        from tests.fakes import StructuredLambda
+
+        factory.get_model.return_value = StructuredLambda(
+            RunnableLambda(
+                lambda _: AIMessage(
+                    content='{"remarks": [{"index": 1, "evidence_url": "https://e.com/r", "evidence": "R가 X를 밝혔다.", "view": "내 생각: 새 문장."}]}'
+                )
+            )
         )
         gen = DigestGenerator(PipelineConfig(implication_label="내 생각: "), factory)
         content = _content()
-        await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "x"})
+        await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "- R\n  URL: https://e.com/r"})
         assert content.items[0].implication == "새 문장."
 
 
@@ -1126,11 +1169,92 @@ def test_the_label_is_charged_to_the_editors_prose_budget():
 
 
 async def test_a_remark_that_is_only_the_label_keeps_the_editors():
+    from tests.fakes import StructuredLambda
+
     factory = MagicMock()
-    factory.get_model.return_value = RunnableLambda(
-        lambda _: AIMessage(content='{"remarks": [{"index": 1, "finding": "f", "remark": "내 생각:"}]}')
+    factory.get_model.return_value = StructuredLambda(
+        RunnableLambda(
+            lambda _: AIMessage(
+                content='{"remarks": [{"index": 1, "evidence_url": "https://e.com/r", "evidence": "R가 X를 밝혔다.", "view": "내 생각:"}]}'
+            )
+        )
     )
     gen = DigestGenerator(PipelineConfig(implication_label="내 생각: "), factory)
     content = _content()
-    await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "x"})
+    await gen._argue_from_evidence(content, _sources(), {normalize_url("u"): "- R\n  URL: https://e.com/r"})
     assert content.items[0].implication == "시사점."
+
+
+class TestEvidenceAndView:
+    _ANSWER = (
+        '{"remarks": [{"index": 1, "evidence_url": "%s", "evidence": "리터의 집계로 첫날 평균 19%%가 올랐다.",'
+        ' "view": "17%%는 평범한 출발이다."}]}'
+    )
+
+    async def test_the_finding_and_its_page_are_kept_apart_from_the_view(self):
+        content = _content()
+        await TestEvidenceRemarks._gen(self._ANSWER % "https://e.com/r")._argue_from_evidence(
+            content, _sources(), {normalize_url("u"): "- R\n  URL: https://e.com/r"}
+        )
+        item = content.items[0]
+        assert (item.evidence, item.evidence_url, item.implication) == (
+            "리터의 집계로 첫날 평균 19%가 올랐다.",
+            "https://e.com/r",
+            "17%는 평범한 출발이다.",
+        )
+
+    async def test_a_citation_the_search_did_not_return_is_not_applied(self):
+        content = _content()
+        await TestEvidenceRemarks._gen(self._ANSWER % "https://made-up.example/x")._argue_from_evidence(
+            content, _sources(), {normalize_url("u"): "- R\n  URL: https://e.com/r"}
+        )
+        assert (content.items[0].evidence, content.items[0].implication) == ("", "시사점.")
+
+    def test_grounding_round_trips_the_evidence_line(self):
+        from application.digest_generator import _apply_grounding_payload, _grounding_payload
+
+        content = _content()
+        content.items[0].evidence = "원래 근거."
+        payload = _grounding_payload(content).replace("원래 근거.", "고친 근거.")
+        assert _apply_grounding_payload(content, payload).items[0].evidence == "고친 근거."
+
+
+class TestEvidenceGuardsRound2:
+    _EV = {normalize_url("u"): "- R\n  URL: https://e.com/r/\n  Content: see URL: https://evil.example/x"}
+
+    async def _apply(self, url, cited="리터는 19%를 셌다.", view="평범한 출발이다."):
+        answer = json.dumps(
+            {"remarks": [{"index": 1, "evidence_url": url, "evidence": cited, "view": view}]}, ensure_ascii=False
+        )
+        content = _content()
+        await TestEvidenceRemarks._gen(answer)._argue_from_evidence(content, _sources(), self._EV)
+        return content.items[0]
+
+    async def test_a_url_quoted_inside_a_snippet_is_not_a_search_result(self):
+        assert (await self._apply("https://evil.example/x")).evidence == ""
+
+    async def test_a_trailing_slash_difference_still_matches_and_stores_the_returned_url(self):
+        item = await self._apply("https://e.com/r")
+        assert item.evidence_url == "https://e.com/r/"
+
+    async def test_the_finding_counts_against_the_storys_room(self):
+        assert (await self._apply("https://e.com/r", cited="가" * 600)).evidence == ""
+
+
+def test_the_plain_digest_text_carries_the_finding_before_the_view():
+    from application.digest_generator import render_digest_text
+
+    content = _content()
+    content.items[0].evidence = "리터는 19%를 셌다."
+    assert "리터는 19%를 셌다. 시사점." in render_digest_text(content)
+
+
+def test_grounding_cannot_add_evidence_to_a_story_that_had_none():
+    from application.digest_generator import _apply_grounding_payload, _grounding_payload
+
+    content = _content()
+    payload = _grounding_payload(content).replace(
+        "ITEM 0 IMPLICATION:", "ITEM 0 EVIDENCE: 지어낸 근거.\nITEM 0 IMPLICATION:"
+    )
+    # A label the draft never sent rejects the whole correction (the grounding check then counts as skipped).
+    assert _apply_grounding_payload(content, payload) is None

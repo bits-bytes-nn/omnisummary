@@ -7,9 +7,9 @@ LABEL org.opencontainers.image.revision=${GIT_REVISION}
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
+# The base is pinned by digest, and its OS packages age between bumps (11 HIGH CVEs on 11-23): take Debian's
+# security updates at build time.
+RUN apt-get update && apt-get -y upgrade && rm -rf /var/lib/apt/lists/*
 
 # Install the EXACT dependency set uv.lock pins — the same one CI resolves and the test suite
 # exercises. `pip install .` re-resolved pyproject's version ranges at build time, so the image

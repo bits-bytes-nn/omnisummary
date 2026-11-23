@@ -105,7 +105,7 @@ class AgentCoreMemoryStore(MemoryStore):
             payload_text = json.dumps(trimmed, ensure_ascii=False)
             overflow = len(payload_text) - self.MAX_EVENT_TEXT
             if overflow <= 0:
-                logger.warning("Digest state still large; truncated each ranked item's text to %d chars", share)
+                logger.info("Digest state still large; truncated each ranked item's text to %d chars", share)
                 return payload_text
             share = max(0, share - overflow // max(1, len(pairs)) - 1)
 

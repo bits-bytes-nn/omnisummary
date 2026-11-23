@@ -33,6 +33,8 @@ class TestDigest:
             "url": "http://e.com/1",
             "body": "본문.",
             "implication": "함의.",
+            "evidence": "",
+            "evidence_url": "",
         }
         store.get_digest.assert_called_once_with("2026-10-11")
 

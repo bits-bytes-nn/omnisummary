@@ -11,3 +11,12 @@ updates:
         update-types:
           - minor
           - patch
+  # The pinned CDK CLI. Not docker: the base image is pinned through an ARG, which Dependabot does not update
+  # (docs/operations.md has the manual bump). Not uv: its newer uv rewrites the lock revision that CI's uv 0.6.14
+  # rejects; pip-audit covers Python advisories weekly.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 2

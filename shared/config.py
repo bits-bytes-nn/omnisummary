@@ -704,8 +704,8 @@ class Config(_StrictModel):
                 f"Copy config/{stem}-template.yaml to config/{stem}.yaml and fill it in."
             )
         logger.warning(
-            "'%s' is missing; falling back to the tracked template '%s'. Its source lists are "
-            "PLACEHOLDERS, so this config collects nothing.",
+            "'%s' is missing; falling back to the tracked template '%s'. Its source lists are the "
+            "template's, not the operator's (the investing template carries real feeds and collects).",
             config_path,
             template_path,
         )

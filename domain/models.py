@@ -74,7 +74,12 @@ class DigestItem(BaseModel):
     source_tag: str = ""  # e.g. "r/LocalLLaMA", "@karpathy", "arxiv.org" — set by code
     metrics: str = ""  # e.g. "조회 12,000" — set by code
     body: str  # 2-4 sentences: what it is and why it matters
-    implication: str = ""  # one sharp closing line (Gruber voice)
+    implication: str = ""  # one sharp closing line (Gruber voice): the narrator's own view
+    # What outside work the view argues from (one sentence naming who found what), and the search result it came
+    # from: kept apart from the view so the post can label only the view as the narrator's, and stored so a
+    # citation can be checked later. Empty when the editor's remark stands on the story alone.
+    evidence: str = ""
+    evidence_url: str = ""
     # False for a source whose page the post must not link (the source line still names it); set by code.
     show_link: bool = True
 
@@ -138,6 +143,8 @@ class DigestResult(BaseModel):
     grounding_skipped: bool = False
     # Background evidence per shipped story's URL, for the eval judge; never persisted with the snapshot.
     evidence: dict[str, str] = Field(default_factory=dict, exclude=True)
+    # The editor's draft before the evidence step, so an eval can replay that step alone; never persisted.
+    editor_content: DigestContent | None = Field(default=None, exclude=True)
 
 
 class VisualBrief(BaseModel):
@@ -208,6 +215,21 @@ class StoryGroups(BaseModel):
         default_factory=list,
         description="One list of candidate numbers per story that two or more candidates report.",
     )
+
+
+class EvidenceRemark(BaseModel):
+    """One story's closing remark rebuilt from background evidence; all three empty when no finding fits."""
+
+    index: int
+    evidence_url: str = ""
+    evidence: str = ""
+    view: str = ""
+
+
+class EvidenceRemarks(BaseModel):
+    """The evidence step's answer, as Bedrock constrained output."""
+
+    remarks: list[EvidenceRemark] = Field(default_factory=list)
 
 
 class CommentReply(BaseModel):

@@ -136,7 +136,7 @@ import하지 않는다. `domain`과 `shared`는 LangChain도 모른다. `applica
 의견은 누구의 것인지 날짜와 함께 밝힌다. 국내 증권사 리포트는 네이버 증권 리서치 수집기로 들어온다([§4.4](#44-네이버-증권-리서치-naver_researchpy)).
 한경 컨센서스와 NH 리서치는 수집하지 않는다([결정 기록](decisions.md#2026-11-0111-07-네이버-증권-리서치)).
 
-**실리는 것은 랭킹 기준이 정한다.** 에디터는 풀의 점수 상위를 거의 그대로 내보내므로 판의 목표는 랭킹 기준(`pipeline.ranking_criteria`)에 쓴다. 투자판은 "돈이 어디로 가는지에 대한 근거 있는 해석"을 앞에 두고, 가격 보도는 움직임의 크기가 아니라 설명하는 것으로 점수를 받는다. AI판 운영 config는 코드 기본값의 엔지니어 중심 기준("엔지니어가 일하는 방식을 바꾸는가") 대신 업계의 결과(무엇을 만들고 사고 투자하고 규제하는지)와 원 분석을 앞에 둔다. 에디터도 "가장 강한" 이야기를 같은 기준(`{criteria}`)으로 고른다. 조용한 날에는 매체·이야기 상한을 실릴 `top_n`만큼만 풀고 버퍼를 채우려 풀지 않는다. 버퍼까지 채우면 대량 발행처가 조용한 날의 풀을 차지했다([결정 기록](decisions.md#2026-11-03-큐레이션-재검토-실리는-것은-랭킹-기준이-정한다)).
+**실리는 것은 랭킹 기준이 정한다.** 에디터는 풀의 점수 상위를 거의 그대로 내보내므로 판의 목표는 랭킹 기준(`pipeline.ranking_criteria`)에 쓴다. 투자판은 "돈이 어디로 가는지에 대한 근거 있는 해석"을 앞에 두고, 가격 보도는 움직임의 크기가 아니라 설명하는 것으로 점수를 받는다. AI판 운영 config는 코드 기본값의 엔지니어 중심 기준("엔지니어가 일하는 방식을 바꾸는가") 대신 연구 중요성, 전문가의 분석과 인사이트, 업계의 결과(무엇을 만들고 사고 투자하고 규제하는지) 순으로 둔다(11-23부터). 새로움 기준은 이미 다룬 이야기라도 전문가가 다이제스트에 없던 추론이나 데이터를 더하면 새 것으로 본다. 에디터도 "가장 강한" 이야기를 같은 기준(`{criteria}`)으로 고른다. 조용한 날에는 매체·이야기 상한을 실릴 `top_n`만큼만 풀고 버퍼를 채우려 풀지 않는다. 버퍼까지 채우면 대량 발행처가 조용한 날의 풀을 차지했다([결정 기록](decisions.md#2026-11-03-큐레이션-재검토-실리는-것은-랭킹-기준이-정한다)).
 
 **1차 출처를 우대한다.** 랭킹 기준의 출처 항목은 "애널리스트·전략가·투자자 본인의 리포트·글·공시가 그것을 전하는 기사보다 높다"이다. 투자판에만 `pipeline.selection_guidance`가 있다. 에디터가 5건을 한 묶음으로 보고, 비슷하면 분석가·하우스·투자자가 시장을 읽은 글을 사건 보도보다 먼저, 그다음 빠진 이야기를 더하게 한다(비우면 프롬프트가 그대로다. AI판에서는 블라인드 비교에서 졌다). 투자판은 원문 두 건도 반드시 싣는다([§7.3](#73-cross-day-dedup-히스토리-applicationhistorypy)). 근거는 [결정 기록](decisions.md#2026-11-03-1차-출처-우대와-투자판-선택-지침)에 있다.
 
@@ -501,7 +501,7 @@ Tavily의 X 프로필 쿼리처럼 결과가 대부분 프로필 페이지인 �
 Tavily extract(`adapters.research_backends.extract_pages`, 요청당 20개)로 페이지 본문을 받아 더 길 때만 바꾼다. DeepMind,
 Google Research, Hugging Face 피드는 설명이 비어 있거나 한 줄이고 OpenAI도 120~150자라서, 랭커가 제목만 보고
 점수를 매겼고, 본문 없이 출고된 글은 근거 검증이 출처에 없는 주장을 모두 지워 한 문장만 남았다([결정 기록](decisions.md#장애에서-나온-규칙)).
-하루 10건 안팎이다. 다만 `content` 없이 `summary`에 글 전체를 싣는
+AI판은 하루 중앙값 16건(0~27건)이지만, 투자판은 요약만 싣는 한국 통신·경제지 피드가 많아 평일 275~393건을 채운다(투자판 Lambda의 Tavily 크레딧 약 83%, 11-06~23). Tavily 한도에 걸린 날(11-09)에는 302건 중 0건을 채워 제목만으로 랭킹했다. 다만 `content` 없이 `summary`에 글 전체를 싣는
 피드도 있다(Simon Willison, 중앙값 1712자). 그 페이지를 받으면 깨끗한 본문이 내비게이션과 푸터가 섞인 텍스트로
 바뀌니, 요약이 500자(`THIN_SUMMARY_MAX_CHARS`) 미만일 때만 채운다. 얇은 피드의 중앙값은 19자(research.google)와
 149자(openai.com)였다. 읽기 실패나 더 짧은 페이지는 피드 문구를 그대로 둔다. 페이지 본문은 피드 요약을 **대신하지 않고 뒤에 붙는다.**
@@ -777,7 +777,8 @@ GUID(RSS와 X는 기사 URL, 그 밖은 글이나 영상 id)라서 그대로 정
 **최근 다이제스트 제목을 랭커도 본다.** `rank(..., recent_titles=...)`는 `run_pipeline`이 에디터에게 주는 것과 같은
 `_recent_story_titles(snapshots)`(1일 전부터 `RECENT_TITLE_DAYS`=14일 전까지의 출고 스토리 제목)를 받아 RankingPrompt의
 *Already in recent digests* 블록에 넣는다(`format_recent_titles`). Novelty 기준은 목록에 있는 스토리를 실질적
-새 진전이 없으면 재탕으로 본다. URL 원장은 정확한 URL만 맞추므로, 다른 매체나 주간 정리로 돌아온 같은 사건은
+새 진전이 없으면 재탕으로 본다(AI판은 전문가가 다이제스트에 없던 추론이나 데이터를 더한 해설도 새 것으로 보고, 요약과 정리는
+재탕으로 둔다). URL 원장은 정확한 URL만 맞추므로, 다른 매체나 주간 정리로 돌아온 같은 사건은
 랭커가 볼 근거가 없어 높은 점수로 풀에 들어왔다([결정 기록](decisions.md#2026-10-11-최근-제목을-랭커와-에디터에)). 정보일 뿐
 필터가 아니다.
 
@@ -931,17 +932,21 @@ AgentCore 스냅샷이 그것을 쓴다. 트렌드 분류기는 lead와 implicat
 **근거 시사점(`evidence_remarks`, 두 판 모두 켬).** 다이제스트를 쓴 뒤 실린 스토리 다섯 개마다 그 스토리가 닿는
 확립된 이론, 연구, 과거 사례와 데이터를 검색하고(`application/evidence.py`: Sonnet이 질의를 한 번에 쓰고 스토리마다
 Tavily 웹 검색 하나와 OpenAlex 논문 검색 하나), 별도 단계(`EvidenceImplicationPrompt`)가 implication만 그 근거로 다시 쓴다.
-근거 하나가 밝힌 결과(숫자가 있으면 숫자, 누가 밝혔는지)와 그것이 이 스토리에 뜻하는 바, 거기서 서는 입장을 한 흐름으로
-1~3문장, 120자 안팎으로 쓴다. "누가 무엇을 분석했다"처럼 주제만 말하는 것은 결과가 아니다. 모델은 고른 결과를 `finding`에 적고,
-맞는 근거가 없으면 비워 둔 채 에디터의 문장을 그대로 돌려준다. 결과가 있는 문장만 반영하므로 로그의 "Evidence rewrote N of M remark(s) from a finding"의 N이 실제로 근거에 선 끝문장 수다. 에디터는 각
+답은 세 칸이다(`EvidenceRemarks`, json_schema 제약 출력): 근거 하나가 밝힌 결과를 누가 밝혔는지와 숫자까지 한 문장으로 쓴
+`evidence`, 그 결과로 이 스토리에 서는 화자의 입장 한 문장 `view`, 그 결과가 나온 검색 결과의 `evidence_url`. "누가 무엇을
+분석했다"처럼 주제만 말하는 것은 결과가 아니다. `evidence_url`이 그 스토리의 검색 결과에 실제로 있는 URL이어야 반영하고(포함
+검사, 한국어를 읽지 않는다), 맞는 근거가 없으면 세 칸을 비워 에디터의 문장을 그대로 둔다. 반영하면 `DigestItem.evidence`,
+`evidence_url`, `implication`(=view)으로 스냅샷에 저장되어 인용을 나중에 확인할 수 있고(`recall_cli`도 내보낸다), 게시물에는
+"{evidence} 내 생각: {view}"로 렌더되어 라벨이 남의 결과가 아니라 화자의 입장에만 붙는다. 로그 "Evidence rewrote N of M
+remark(s) from a finding, K over budget, J citing no search result"의 N이 근거에 선 끝문장 수다. 에디터는 각
 게시물에서 `evidence_remark_chars`(80자)를 남겨 두고 쓰고, 다시 쓴 문장이 그 스토리의 남은 예산을 넘거나 응답을 읽을 수
 없으면 에디터의 문장을 그대로 둔다. 단계를 120초에서 끊고 에디터의 문장으로 돌아간다(재시도 없는 Lambda에서 시간 초과는 그날
 게시 실패다). 끊어도 Bedrock 호출 스레드는 읽기 타임아웃까지 남을 수 있지만, 만화 Lambda는 그 전에 호출되고 다이제스트
 Lambda의 제한은 15분이다. 검색 결과는 그라운딩의 소스로 함께 들어가 인용한 이론과 수치도 검사를 받되,
 implication의 근거로만 쓰인다. 질의 작성기 앞의 토큰 자르기(CountTokens)는 이 시간 안에서 돌지만 동기 호출이라 중간에 끊기지 않는다. 실패하는 호출은
 읽기 타임아웃(300초)과 재시도까지 이벤트 루프를 붙잡을 수 있고, 첫 실패 뒤에는 그 실행의 남은 카운트가 글자 수로 바뀐다.
-그라운딩이 제목이나 본문을 늘려 500자를 넘기면 렌더러가 본문 끝 문장부터 버리고 경고를 남긴다(다른 게시물과 같은 경로). Tavily 사용량은 `evidence-search` 단계로 기록된다. 저장은
-하지 않는다(`DigestResult.evidence`는 직렬화에서 빠진다). 에디터에게 같은 근거를 후보 옆에 주었을 때는 세 번 고쳐도
+그라운딩이 제목이나 본문을 늘려 500자를 넘기면 렌더러가 본문 끝 문장부터 버리고 경고를 남긴다(다른 게시물과 같은 경로). Tavily 사용량은 `evidence-search` 단계로 기록된다. 검색 결과 원문은
+저장하지 않는다(`DigestResult.evidence`는 직렬화에서 빠진다). 인용한 결과 문장과 URL만 스토리에 남는다. 에디터에게 같은 근거를 후보 옆에 주었을 때는 세 번 고쳐도
 implication을 하나도 바꾸지 않아 따로 떼었다([결정 기록](decisions.md#2026-11-21-근거-시사점-이론연구데이터로-쓰는-implication)).
 
 **그라운딩(옵션, `enable_grounding_check`).** 산문 필드의 구체적 주장을 소스 항목과 코드가 산출한 트렌드
@@ -1354,7 +1359,7 @@ GPT도 같은 Bedrock Converse API로 `global.` 프로필을 거쳐 호출하니
 | 단계(`stage=`) | 설정 키 | 모델 | 이유 |
 |------|------|------|------|
 | 랭킹(`ranking`) | `pipeline.ranking_model` | 코드 기본값 Sonnet 5.5(투자판), AI판 config는 Opus 5.5 | 투자판은 Sonnet이 절반 이하 비용으로 블라인드 풀 심사를 이겼고 풀도 늘 찬다. AI판은 Sonnet이 점수를 낮게 매겨 `min_score` 0.6에서 12석 풀이 차지 않았다([결정 기록](decisions.md#2026-11-03-11-05-랭킹-모델-코드-기본-sonnet-55-ai판-opus-55)) |
-| 다이제스트(`digest`), 그라운딩(`grounding`), 비주얼 편집기(`visual-editor`)와 아트 디렉터(`visual-synopsis`), 같은 이야기 묶음(`story-groups`), 댓글 답글(`comment-reply`), 리서치 사실 확인(`research-fact-check`) | `pipeline.digest_model` | Sonnet 5.5 | Opus 5.5는 lead와 본문 길이 스펙을 넘겼고 비용이 두 배를 넘었다. 이 단계들이 한 키를 읽으니 함께 바뀐다([결정 기록](decisions.md#2026-10-11-다이제스트-모델-sonnet-55)) |
+| 다이제스트(`digest`), 그라운딩(`grounding`), 근거 시사점(`evidence-queries`, `evidence-implication`), 비주얼 편집기(`visual-editor`)와 아트 디렉터(`visual-synopsis`), 같은 이야기 묶음(`story-groups`), 댓글 답글(`comment-reply`), 리서치 사실 확인(`research-fact-check`) | `pipeline.digest_model` | Sonnet 5.5 | Opus 5.5는 lead와 본문 길이 스펙을 넘겼고 비용이 두 배를 넘었다. 이 단계들이 한 키를 읽으니 함께 바뀐다([결정 기록](decisions.md#2026-10-11-다이제스트-모델-sonnet-55)) |
 | 트렌드(`trends`) | `pipeline.trend_model` | Sonnet 5.5 | 짧은 구조화 출력 |
 | 쿼리 정제(`query-refine`) | `collectors.web_search.refine_model` | Sonnet 5.5 | 짧은 구조화 출력 |
 | 딥 리서치 | `agent.model_id` | Opus 5.5 | 온디맨드 실행이고 품질이 결과물의 전부다. 실측 한 번에 3분 17초, 11 사이클, 출력 1.55만 토큰과 캐시 입력 약 76만 토큰(추정 약 $1.5) |
@@ -2140,7 +2145,8 @@ Lambda의 RSSHub 수집은 RSSHub에 연결을 시도하지 않고 "X park file 
 - S3는 프로젝트 루트 prefix(`config.aws.s3_prefix`에 `/*`를 붙인 것)의 `s3:GetObject`와 `s3:PutObject`, 그리고
   버킷의 `s3:ListBucket`만 준다. 코드가 부르는 것은 get, put, 그리고 같은 역할로 서명하는 presigned GET뿐이다.
   상태 버킷은 스택이 소유하지만 삭제, 보존, 법적 보존 액션과 버킷 단위 Get은 주지 않는다. state_store의
-  `digest_state`와 수집기 park 파일, 데일리 비주얼의 `threads/*.png`가 그 prefix 안에 있다. `ListBucket`에
+  `digest_state`와 수집기 park 파일, 데일리 비주얼의 `threads/*.png`가 그 prefix 안에 있다. `threads/`는 Threads가 게시할 때 한 번
+가져가는 임시 이미지라 7일 뒤 만료된다(버전 관리 버킷이라 30일 동안은 이전 버전으로 남는다). `ListBucket`에
   `s3:prefix` 조건을 걸지 않는 이유가 있다. 없는 키를 GetObject할 때 S3는 `ListBucket`으로 NoSuchKey와
   AccessDenied를 가르는데, 그 검사에는 `s3:prefix`가 실리지 않아서 조건을 걸면 없는 키 읽기가 전부 AccessDenied가
   된다. 그러면 처음 쓰는 상태 파일이 "히스토리 없음"이 아니라 읽기 실패가 된다.
@@ -2321,7 +2327,7 @@ COPY 누락이나 개발자 머신에서만 해석되는 모듈이 그대로 통
 
 **의존성과 시크릿 스캔(`security` 잡).** `uv.lock`이 핀한 정확한 집합, 곧 이미지가 설치하는 그 버전들을
 `pip-audit --strict`로 감사한다. pyproject 범위를 재해석해 감사하면 배포되지 않는 버전을 검사하게 된다. 감사
-대상은 requirements 파일이 아니라 설치된 트리다. `uv sync --frozen --no-dev --no-install-project`로 잠긴 집합을
+대상은 requirements 파일이 아니라 설치된 트리다. `uv sync --frozen --no-dev --no-install-project --extra research`로 잠긴 집합을(로컬 리서치 CLI의 의존성까지)
 디스크에 올린 뒤 `pip-audit --path <purelib>`로 `dist-info`만 읽는다. 아무것도 빌드하지
 않고, 실제 배포되는 플랫폼으로 이미 좁혀진 집합이다. 이 `<purelib>`는 `.venv/bin/python`의 `sysconfig`에서
 뽑아내고 디렉터리가 비어 있지 않은지까지 확인한다. 존재하지 않는 경로를 넘기면 pip-audit가 "No known
@@ -2347,7 +2353,7 @@ vulnerabilities found"를 찍고 0으로 끝나기 때문이다. 경로에 `pyth
 **액션 고정과 워크플로 검사.** 서드파티 액션은 커밋 SHA로 고정하고(주석에 메이저 태그), 모든 checkout은
 `persist-credentials: false`다. `.github/dependabot.yml`이 GitHub Actions를 매주 갱신한다(minor와 patch는 한 PR로
 묶는다). `.github/workflows/workflow-lint.yml`은 체크섬을 검증한 actionlint로 워크플로와 내장 셸 스크립트를
-shellcheck까지 검사한다. Python과 npm 의존성은 dependabot 대상이 아니다. 잠금 파일 갱신은 위의 주간 pip-audit가
+shellcheck까지 검사한다. npm(고정한 CDK CLI)도 매주 갱신한다. Python은 dependabot 대상이 아니다(그쪽 uv가 잠금 파일의 revision을 다시 써서 CI의 uv 0.6.14가 거부한다). 기반 이미지도 ARG로 지정해 갱신되지 않으니 운영 문서의 수동 절차를 따른다. 잠금 파일 갱신은 위의 주간 pip-audit가
 신호를 준다.
 
 **이미지 하드닝.** Dockerfile은 `uv.lock`이 핀한 집합을 설치한다(`uv export`로 뽑아
@@ -2385,7 +2391,8 @@ uv run mypy .                                           # 레포 전체 타입 �
 uv run lint-imports                                     # 계층 의존 방향(포트와 어댑터) 검사
 npx cdk synth -a "uv run python scripts/ci_synth.py"    # 오프라인 CDK synth(레포에 고정한 CLI, 투자판 템플릿 포함)
 uv run python scripts/cost_report.py --days 7 [--by stage]  # 배포 로그로 본 일별, Lambda별 또는 단계별 비용(읽기 전용)
-uv run python scripts/eval_harness.py judge digest <A> <B>  # 저장된 날의 두 결과를 블라인드로 판정(두 순서로 돌린다)
+uv run python scripts/eval_harness.py judge digest <A> <B>  # 저장된 날의 두 결과를 블라인드로 판정. 사례마다 한 순서이고, 두 순서는 <B> <A>로 한 번 더 돌린다
+uv run python scripts/eval_harness.py remarks <source> <label>  # <source>의 편집 원고와 근거를 고정하고 근거 시사점 단계만 다시 돈다(Tavily 없음)
 scripts/release.sh                                      # CI를 통과한 origin/main HEAD를 빌드, 검사, 배포, 배포 뒤 확인
 uv run pre-commit install                               # 1회 — 커밋 전 게이트
 ```
